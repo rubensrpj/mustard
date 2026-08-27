@@ -98,6 +98,18 @@ fn dispatch(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
     match cli.command {
         Commands::Init { force, yes, dry_run } => {
+            // The RTK gate lives HERE, in the binary, not inside `init`. It ends
+            // in `process::exit(1)`, and a library function that returns
+            // `Result` must never take that decision away from its caller — the
+            // dashboard's integration test proved the cost by vanishing mid-run
+            // on a CI machine with no `rtk`. A terminal user still meets the gate
+            // before any disk write, which is all it ever promised.
+            //
+            // Dry-run writes nothing, so a missing `rtk` cannot leave a broken
+            // `.claude/` behind and the gate does not apply.
+            if !dry_run {
+                init::probe_rtk();
+            }
             init::init(&cwd, &InitOptions { force, yes, dry_run })
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),

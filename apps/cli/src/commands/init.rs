@@ -143,14 +143,25 @@ pub fn init_with_templates(
     templates_dir: &Path,
     options: &InitOptions,
 ) -> Result<()> {
-    // RTK is a mandatory dependency of Mustard — the harness's Golden Rule
-    // prefixes every Bash invocation with `rtk`. Probe before touching disk: if
-    // `rtk` is missing the install would produce a `.claude/` that cannot run,
-    // so we exit hard with install instructions instead. Skipped in dry-run
-    // mode (no disk writes either).
-    if !options.dry_run {
-        probe_rtk();
-    }
+    // NO RTK PROBE HERE, and that is the point of this function's split.
+    //
+    // Probing `PATH` is an environment concern, which the doc above says this
+    // half deliberately does not carry. It used to call `probe_rtk()`, and that
+    // function ends in `std::process::exit(1)` — so this function, which
+    // returns `Result<()>`, could instead KILL ITS CALLER'S PROCESS. Any
+    // library consumer lost the chance to handle it; a `Result` that sometimes
+    // terminates the program is not a contract.
+    //
+    // Measured, not theorised: `apps/dashboard/server/tests/mustard_cli_test.rs`
+    // died as "test exited abnormally" the first time CI ran it (this crate had
+    // never been in the CI test set), because a clean runner has no `rtk` and
+    // the process simply vanished mid-test. The `cfg!(test)` escape hatch in
+    // `probe_rtk` does not reach it: that flag is true only while THIS crate
+    // compiles its own unit tests, never for an integration test living in
+    // another crate.
+    //
+    // The gate itself is not softened — it moved to `cli::dispatch`, where the
+    // terminal user still meets it before any disk write. See `probe_rtk`.
 
     let project_path = project_path
         .canonicalize()
@@ -846,9 +857,16 @@ fn rtk_on_path() -> bool {
 /// This is **not** fail-open — unlike [`ensure_rtk`], which is best-effort
 /// during the install phase. The exit code is `1` so CI and library callers
 /// can detect the failure and surface it to the user.
-fn probe_rtk() {
+pub fn probe_rtk() {
     // Skip the hard gate under unit tests: a clean CI runner has no `rtk`, and a
     // `process::exit` here would kill the whole test process.
+    //
+    // That guard is narrower than it reads, which is why this function may only
+    // be called from the BINARY's dispatch and never from the library: `cfg!(test)`
+    // is true while this crate compiles its own unit tests and false everywhere
+    // else — an integration test in another crate (the dashboard's
+    // `mustard_cli_test`) compiles this as an ordinary dependency and gets the
+    // `exit(1)`. That is exactly how it died on CI's first run of that crate.
     if cfg!(test) || rtk_on_path() {
         return;
     }
