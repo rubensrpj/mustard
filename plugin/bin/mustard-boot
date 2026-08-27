@@ -79,11 +79,17 @@ if [ "$need_fetch" = "1" ] && [ -n "$VER" ] && [ -n "$os" ]; then
   tmp="$DIR/.boot-tmp"
   mkdir -p "$tmp"
   echo "[mustard-boot] fetching plugin binaries v${VER} (first run)" >&2
-  if curl -fsSL "$url" -o "$tmp/bins.tar.gz" && tar -xzf "$tmp/bins.tar.gz" -C "$DIR"; then
+  # Downloading and unpacking fail for different reasons, so they say different
+  # things. The single shared "download failed" message sent a diagnosis session
+  # hunting a network that was perfectly fine — on the Windows twin, where the
+  # download had succeeded and only the extraction had not (field, 2026-08-27).
+  if ! curl -fsSL "$url" -o "$tmp/bins.tar.gz"; then
+    echo "[mustard-boot] download failed ($url) — mustard hooks stay dormant this session" >&2
+  elif ! tar -xzf "$tmp/bins.tar.gz" -C "$DIR"; then
+    echo "[mustard-boot] downloaded, but could not unpack into $DIR — mustard hooks stay dormant this session" >&2
+  else
     printf '%s' "$VER" > "$STAMP"
     chmod +x "$DIR/mustard-rt" "$DIR/scan" "$DIR/mustard-mcp" "$DIR/mustard" 2>/dev/null || true
-  else
-    echo "[mustard-boot] download failed ($url) — mustard hooks stay dormant this session" >&2
   fi
   rm -rf "$tmp" 2>/dev/null || true
 fi
