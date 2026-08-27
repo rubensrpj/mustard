@@ -390,10 +390,10 @@ fn build_convention(
         }
     }
     // Core = present in a majority; optional = recurs (>=2) but not majority.
-    let mut core: Vec<String> = freq.iter().filter(|(_, &c)| c * 2 >= size && c >= 2).map(|(r, _)| r.clone()).collect();
+    let mut core: Vec<String> = freq.iter().filter(|&(_, &c)| c * 2 >= size && c >= 2).map(|(r, _)| r.clone()).collect();
     if core.len() < 2 {
         // fall back to the two most frequent roles
-        let mut by_freq: Vec<(&String, &usize)> = freq.iter().filter(|(_, &c)| c >= 2).collect();
+        let mut by_freq: Vec<(&String, &usize)> = freq.iter().filter(|&(_, &c)| c >= 2).collect();
         by_freq.sort_by(|a, b| b.1.cmp(a.1));
         core = by_freq.iter().take(2).map(|(r, _)| (*r).clone()).collect();
     }
@@ -403,7 +403,7 @@ fn build_convention(
     let core_set: HashSet<&String> = core.iter().collect();
     let mut optional: Vec<String> = freq
         .iter()
-        .filter(|(r, &c)| c >= 2 && !core_set.contains(*r))
+        .filter(|&(r, &c)| c >= 2 && !core_set.contains(r))
         .map(|(r, _)| r.clone())
         .collect();
 

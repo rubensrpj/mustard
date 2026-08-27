@@ -29,14 +29,24 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && npm install -g pnpm@10.18.1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust via rustup (stable — precisa ser >= 1.85 para as crates edition-2024 do
-# workspace). Toolchain mora em /opt/cargo|/opt/rustup (camada da imagem); o
-# cache de registry/target entra por volumes montados no `docker run`, fora daqui.
+# rustup only — NO toolchain baked in. The repo is mounted at /work and pins its
+# compiler in `rust-toolchain.toml`; rustup honours that file over any default,
+# so the first `cargo` inside /work installs exactly the pinned version. Baking
+# `stable` here used to look like a floor ("precisa ser >= 1.85") but it was a
+# second version request that the mounted file overrode anyway — an unused
+# toolchain in the image layer, and a number free to disagree with the one every
+# other build uses.
+#
+# `rustup --version` is the verification: `rustc`/`cargo` have no toolchain to
+# resolve outside a pinned tree, which is the intended state here.
+#
+# rustup home is /opt/rustup, cargo home /opt/cargo; the registry/target caches
+# come in as volumes on `docker run`, outside this file.
 ENV RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/opt/cargo \
     PATH=/opt/cargo/bin:/usr/local/bin:/usr/bin:/bin
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain stable \
-    && rustc --version && cargo --version
+      | sh -s -- -y --profile minimal --default-toolchain none \
+    && rustup --version
 
 WORKDIR /work

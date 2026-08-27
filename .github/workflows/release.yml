@@ -95,8 +95,25 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # NO version is named here, and that is the point: with the `toolchain`
+      # input left empty this action installs exactly what `rust-toolchain.toml`
+      # pins, components included, so the binaries that go out in a release are
+      # built by the same compiler the CI matrix and every developer machine use.
+      # The previous action (`dtolnay/...@stable`) could not read that file — it
+      # demanded a version of its own, and "whatever stable is today" is not a
+      # reproducible input for a shipped artifact. A version written here would
+      # be that same second pin, free to drift from the file.
+      #
+      #   cache: false    — the explicit Rust cache step below is the one cache;
+      #                     this action bundles the same one and would fight it.
+      #   rustflags: ''   — the action otherwise exports `RUSTFLAGS=-D warnings`,
+      #                     which promotes the workspace's warn-level pedantic
+      #                     lints to errors and fails a release on style.
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
 
       # One workspace now. `apps/dashboard/server` was a second Cargo root
       # only because its desktop-shell wrapper pinned its own edition and lock; the
@@ -215,10 +232,16 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # Toolchain from `rust-toolchain.toml` — see the note in the Windows job.
+      # The two Apple targets stay an input: they are needed by THIS job only,
+      # and putting them in the toolchain file would make every machine in the
+      # project download both Darwin std libraries.
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          target: aarch64-apple-darwin,x86_64-apple-darwin
+          cache: false
+          rustflags: ''
 
       # One workspace now — see the note in the Windows job.
       - name: Rust cache
@@ -278,8 +301,12 @@ jobs:
       # plugin baixa este tar na primeira sessão. O `mustard-dashboard` fica de
       # fora pela mesma razão dos outros dois jobs: sem os assets do React ao
       # lado ele não serve nada, e o .deb acima é o veículo que os leva.
+      # Toolchain from `rust-toolchain.toml` — see the note in the Windows job.
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2

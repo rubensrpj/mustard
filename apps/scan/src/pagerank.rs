@@ -506,7 +506,7 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
     // while a query with several RARE identifier matches (id7 sales+channel+hook,
     // id8 bank+approval+status) yields a LARGE floor that surfaces its target.
     // (`max_ds`, above, only gates the all-empty case.)
-    let seed_files = acc.iter().zip(&direct_score).filter(|(&a, &d)| a > 0 || d > 0).count();
+    let seed_files = acc.iter().zip(&direct_score).filter(|&(&a, &d)| a > 0 || d > 0).count();
 
     // Rank the personalization directly (ablation) or after the random walk.
     let r = if cfg.propagate && total > 0 {
@@ -734,10 +734,10 @@ mod tests {
     /// ranks, even when it declares the term AND is import-central.
     #[test]
     fn generated_module_never_seeds_or_ranks() {
-        let mut gen = module("src/generated/contracts.g.ts", &["Contract"], &[]);
-        gen.file_class = "generated".to_string();
+        let mut generated = module("src/generated/contracts.g.ts", &["Contract"], &[]);
+        generated.file_class = "generated".to_string();
         let model = ProjectModel {
-            modules: vec![gen, module("src/contracts/service.ts", &["ContractService"], &["src/generated/contracts.g.ts"])],
+            modules: vec![generated, module("src/contracts/service.ts", &["ContractService"], &["src/generated/contracts.g.ts"])],
             ..Default::default()
         };
         let dict = Dictionary { version: 1, non_english_comments: 0, terms: vec![entry("contract", 6, 2, 2048, &["src/generated/contracts.g.ts"], "both")] };

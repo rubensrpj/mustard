@@ -45,7 +45,12 @@ jobs:
       # (ver o passo abaixo). A imagem `ubuntu-latest` traz Rust, mas depender
       # do que vem pré-instalado numa imagem é como o release da v0.1.29 falhou:
       # por um pressuposto que ninguém tinha verificado. Mesma ação que a CI usa.
-      - uses: dtolnay/rust-toolchain@stable
+      # No version input: the toolchain comes from `rust-toolchain.toml`, the
+      # same single pin the CI and Release workflows now install from.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
 
       - name: Bump PATCH do plugin.json, tag, despacho do Release e selo no dev
         env:
