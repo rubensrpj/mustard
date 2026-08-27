@@ -60,7 +60,7 @@ grammar_py = { package = "tree-sitter-python", version = "0.25" }
 grammar_rs = { package = "tree-sitter-rust", version = "0.24" }
 grammar_go = { package = "tree-sitter-go", version = "0.25" }
 grammar_php = { package = "tree-sitter-php", version = "0.24" }
-grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.3" }
+grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
 
 [build-dependencies]
 # Used only at build time to read the external language registry and embed the
