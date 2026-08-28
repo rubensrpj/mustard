@@ -128,11 +128,11 @@ fn generated_dart_file_is_classed_generated() {
     // (c) The `**/*.g.dart` path marker classes the build_runner output as
     // generated, with the matching marker recorded as provenance — so it is
     // demoted out of the source/stack mining surface.
-    let gen = module(&v, "lib/counter.g.dart");
-    assert_eq!(gen["file_class"], "generated", "*.g.dart classed generated: {gen}");
+    let generated = module(&v, "lib/counter.g.dart");
+    assert_eq!(generated["file_class"], "generated", "*.g.dart classed generated: {generated}");
     assert!(
-        gen["marker"].as_str().unwrap().contains(".g.dart"),
-        "the path glob is recorded as provenance: {gen}"
+        generated["marker"].as_str().unwrap().contains(".g.dart"),
+        "the path glob is recorded as provenance: {generated}"
     );
 
     // And the generated file never contributes its stack evidence: the only

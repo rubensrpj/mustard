@@ -6,17 +6,41 @@
 //!
 //! The `.github/` copy fires on a condition that lives OUTSIDE the flag — the
 //! project having a GitHub remote — so the only honest proof is a full install
-//! against a repository that really has one. Calling the library in-process
-//! would not do: `init_with_templates` opens with the RTK hard gate
-//! (`probe_rtk` → `process::exit(1)`), and `cfg!(test)`, which neutralises it
-//! for the unit tests inside `init.rs`, is FALSE here — an integration test
-//! links the crate as an ordinary dependency. A missing RTK would therefore
-//! take the whole test binary down on a bare CI runner.
+//! against a repository that really has one, driven end to end.
 //!
-//! Running the binary as a child process solves both halves: its exit code is
-//! an assertion instead of a casualty, and a PATH shim (see [`tool_shims`])
-//! answers the two `--version` probes so the best-effort installers never shell
-//! out to `scoop`/`cargo install` on a runner that has neither tool.
+//! Running the binary as a child process also keeps the best-effort installers
+//! honest: a PATH shim (see [`tool_shims`]) answers the two `--version` probes
+//! so they never shell out to `scoop`/`cargo install` on a runner that has
+//! neither tool.
+//!
+//! ## A hazard this header used to describe, now removed at the source
+//!
+//! This comment once gave a second reason: `init_with_templates` opened with the
+//! RTK hard gate (`probe_rtk` → `process::exit(1)`), and `cfg!(test)` — which
+//! neutralises it for the unit tests inside `init.rs` — is FALSE for an
+//! integration test, which links the crate as an ordinary dependency. A missing
+//! RTK would take the whole test binary down on a bare CI runner.
+//!
+//! That was correct, and the workaround here was sound. But the hazard itself
+//! survived, and `apps/dashboard/server/tests/mustard_cli_test.rs` walked into
+//! it the first time CI ran that crate — the process vanished mid-test. So the
+//! gate moved OUT of the library and into `cli::dispatch`, where the terminal
+//! user still meets it and no library caller can be killed by it.
+//!
+//! Moving the gate alone was not enough, and the second half is worth recording
+//! because it nearly shipped. While the gate exited at the top of
+//! `init_with_templates`, the best-effort installers below it (`ensure_rtk`,
+//! `ensure_ripgrep`) could only run with the tools ALREADY present — their
+//! install branches were unreachable from `init`. Removing the exit made them
+//! live for library callers, and a shimmed-PATH run of the dashboard's test
+//! caught it spawning `sh -c "curl … | sh"` twice. Both now sit beside the gate
+//! in `cli::dispatch`, for the same reason: putting software on the operator's
+//! machine is an environment act, and a library call must never take it.
+//!
+//! So an in-process `init_with_templates` no longer exits the process and no
+//! longer installs anything. This test drives the binary for the reasons above,
+//! not for either of those. The gate itself is pinned by
+//! `apps/cli/tests/rtk_gate.rs`.
 //!
 //! The test carries its own CONTROL: the same fixture, installed shared, must
 //! produce `.github/pull_request_template.md`. Without it a green run would

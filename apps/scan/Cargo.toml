@@ -1,10 +1,33 @@
 [package]
 name = "scan"
 version.workspace = true
-edition = "2021"
+edition = "2024"
 description = "Mine a codebase's recurring conventions into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
 license = "MIT"
 build = "build.rs"
+
+# Every `grammar_*` alias below IS used, but never from a file under `src/`: the
+# only reference is the `grammar` column of `languages.toml`, which `build.rs`
+# pastes into `$OUT_DIR/langs_generated.rs` (the file `extract.rs` includes).
+# `cargo shear` (scripts/ac/deps-no-unused.sh) parses `src/`, not `OUT_DIR`, so
+# it reports all seven as unused. Removing any of them drops that language from
+# the scanner; they are ignored one by one — never by muting the tool — so a
+# genuinely dead dependency added later is still reported.
+#
+# `ignored-paths`: the `.rs` files under `tests/fixtures/` are DATA the mining
+# end-to-end tests scan, not modules of any target; without this the tool
+# advises deleting them.
+[package.metadata.cargo-shear]
+ignored = [
+    "grammar_cs",
+    "grammar_dart",
+    "grammar_go",
+    "grammar_php",
+    "grammar_py",
+    "grammar_rs",
+    "grammar_ts",
+]
+ignored-paths = ["tests/fixtures/**/*.rs"]
 
 [[bin]]
 name = "scan"
@@ -60,9 +83,19 @@ grammar_py = { package = "tree-sitter-python", version = "0.25" }
 grammar_rs = { package = "tree-sitter-rust", version = "0.24" }
 grammar_go = { package = "tree-sitter-go", version = "0.25" }
 grammar_php = { package = "tree-sitter-php", version = "0.24" }
-grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.3" }
+grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
 
 [build-dependencies]
 # Used only at build time to read the external language registry and embed the
 # .scm query files. No language knowledge lives in the Rust source.
 toml = "1"
+
+# NO `[lints]` TABLE HERE, and that is a measured decision, not an oversight.
+# Three reviewers flagged this crate as the second one outside the workspace
+# table (the spec had claimed the dashboard was the only one). Adopting it was
+# then attempted and measured: `unwrap_used = "deny"` costs 10 rewrites in
+# `src/` plus 241 in `tests/` — integration tests are their own crates, so the
+# `#![cfg_attr(test, allow(...))]` line that covers `mustard-core` and
+# `mustard-cli` does not reach them. That is more than the 269 the dashboard
+# needed, i.e. a wave of its own, not a repair. `build.rs` was cleaned up here
+# regardless, since it was three sites.

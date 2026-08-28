@@ -4,7 +4,7 @@ import { fetchProjectOverview, type ProjectOverview } from "@/lib/dashboard";
 /**
  * Grain-model project overview (monorepo flag, project count, languages,
  * frameworks, detected stacks) for a single workspace. Backed by the
- * `dashboard_project_overview` Tauri command, which is fail-open — a
+ * `dashboard_project_overview` backend command, which is fail-open — a
  * missing/unscanned `.claude/grain.model.json` resolves to an all-empty
  * overview, so callers render an empty state rather than catch.
  *

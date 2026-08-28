@@ -3,14 +3,15 @@
 # Mustard — instalador completo (Ubuntu / Debian)
 #
 # Instala o pacote .deb que traz TUDO: os binários do CLI (mustard, mustard-rt,
-# mustard-mcp, scan, rtk) E o Mustard Dashboard (app desktop). Usa `apt`, que
-# resolve sozinho as dependências de sistema do dashboard (webkit2gtk-4.1, gtk).
+# mustard-mcp, scan, rtk) E o mustard-dashboard, o servidor HTTP que serve o
+# painel no navegador. Usa `apt`.
 #
 # Layout instalado (gerenciado pelo apt, removível com `sudo apt remove mustard`):
-#   /usr/lib/mustard/bin/        binários reais (CLI + dashboard)
+#   /usr/lib/mustard/bin/        binários reais (CLI + mustard-dashboard)
+#   /usr/lib/mustard/bin/dist/   os arquivos da tela que o servidor serve
 #   /usr/lib/mustard/templates/  a carga do `mustard init`
 #   /usr/bin/mustard, …          symlinks no PATH (criados pelo pacote)
-#   atalho "Mustard Dashboard" no menu de aplicativos
+#   atalho "Mustard Dashboard" no menu de aplicativos (inicia o servidor)
 #
 # Uso:
 #   curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | sh
@@ -430,7 +431,7 @@ echo "==> Pacote: $DEB"
 # `DEBIAN_FRONTEND=… sudo apt-get …` seria descartado antes de chegar ao apt.
 APT_ENV="env DEBIAN_FRONTEND=noninteractive"
 
-echo "==> Atualizando índices do apt (para resolver as dependências do dashboard)…"
+echo "==> Atualizando índices do apt (para resolver as dependências do pacote)…"
 $SUDO $APT_ENV apt-get update </dev/null \
   || echo "  aviso: 'apt-get update' falhou — seguindo (deps podem já estar em cache)."
 
@@ -477,8 +478,9 @@ fi
 echo
 echo "==> Pronto — falta UM passo, e ele não é aqui no terminal."
 echo "    CLI:        mustard --version   (e mustard-rt, scan, rtk)"
-echo "    Dashboard:  procure \"Mustard Dashboard\" no menu de aplicativos,"
-echo "                ou rode  mustard-dashboard  no terminal."
+echo "    Dashboard:  rode  mustard-dashboard  na pasta dos seus projetos —"
+echo "                ele serve em http://127.0.0.1:7777/ e abre o navegador."
+echo "                De outra máquina:  mustard-dashboard --host 0.0.0.0"
 echo
 # Quem instalou pelo `curl … | sh` não baixou documento nenhum: alguma superfície
 # aqui no terminal PRECISA ensinar o passo do plugin, senão os comandos

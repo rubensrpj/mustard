@@ -50,7 +50,7 @@
 //!   returns [`WorkspaceError::AnchorNotFound`]. It never silently picks
 //!   `start_dir` itself.
 //! - **Crosses `.git/` submodule boundaries.** Mustard monorepos commonly
-//!   embed `apps/dashboard/src-tauri` with its own `.git/`; the walker steps
+//!   embed `apps/dashboard/server` with its own `.git/`; the walker steps
 //!   straight past such intermediate `.git/` markers.
 //! - **No `.claude/.claude/`.** Resolved paths are rejected with
 //!   [`WorkspaceError::ForbiddenDotClaudeDotClaude`] if the final segment is
@@ -436,7 +436,7 @@ mod tests {
         make_anchor(dir.path());
         // Plant an intermediate `.git/` (simulated submodule). The walker
         // must not stop here — it has no `mustard.json + .claude/`.
-        let sub = dir.path().join("apps").join("dashboard").join("src-tauri");
+        let sub = dir.path().join("apps").join("dashboard").join("server");
         std::fs::create_dir_all(sub.join(".git")).unwrap();
         let resolved = resolve_with_override(&sub, None).unwrap();
         assert_eq!(

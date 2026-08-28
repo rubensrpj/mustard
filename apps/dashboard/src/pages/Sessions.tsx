@@ -2,14 +2,14 @@
 //
 // Aggregates one row per session from the active project's
 // `.claude/.session/{id}/.events/*.ndjson` event logs via the
-// `dashboard_sessions` Tauri command. Lives next to the rest of the dashboard pages and follows
+// `dashboard_sessions` backend command. Lives next to the rest of the dashboard pages and follows
 // the same primitives (`PageSurface`, `EditorialBand`, `DataCard`,
 // `EmptyState`, `StatusDot`) so it inherits the design-system rhythm.
 //
 // Data flow:
 //   useStore(projectsRoot) → fetchSessions(repoPath) → SessionRow[]
 //
-// The Tauri command is wrapped in `lib/dashboard.ts::fetchSessions`. Live
+// The backend command is wrapped in `lib/dashboard.ts::fetchSessions`. Live
 // tailing is handled by the existing `subscribeFsChange()` listener in
 // `lib/watcher.ts` — it invalidates `["sessions", repoPath]` on every
 // `.session/{id}/.events/*.ndjson` write, so a new SessionStart row appears

@@ -43,7 +43,7 @@ mod pr_metrics;
 /// the projection `project` dispatcher below) continue to use the short name.
 ///
 /// W8A-2 (no-sqlite Wave 8): the canonical walker moved to `mustard-core` so
-/// both the rt crate and the dashboard Tauri layer can fold over the same
+/// both the rt crate and the dashboard backend can fold over the same
 /// event slice without duplicating the converter logic.
 pub(crate) fn read_workspace_events(cwd: &Path) -> Vec<HarnessEvent> {
     core_read_workspace_events(cwd)

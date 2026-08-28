@@ -1,10 +1,10 @@
-// Project-registry invoke wrappers (B6 Wave 1).
+// Project-registry command wrappers (B6 Wave 1).
 //
 // Single import site for the dashboard's per-project install/detection
-// surface. Components MUST NOT call `invoke()` directly — they import from
-// here.
+// surface. Components MUST NOT reach the transport directly — they import
+// from here.
 
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "@/lib/api-client";
 
 export interface ProjectDetection {
   /** True when the project-root `<path>/mustard.json` exists (the workspace
@@ -16,11 +16,11 @@ export interface ProjectDetection {
 }
 
 export function detectProjectMustard(path: string): Promise<ProjectDetection> {
-  return invoke<ProjectDetection>("detect_project_mustard", { path });
+  return call<ProjectDetection>("detect_project_mustard", { path });
 }
 
 export function uninstallMustard(path: string): Promise<void> {
-  return invoke<void>("uninstall_mustard", { path });
+  return call<void>("uninstall_mustard", { path });
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ export interface ArtifactUpdateOutcome {
   manifestWritten: boolean;
 }
 
-// Tauri returns snake_case field names by default (see `#[serde(rename_all =
+// The backend returns snake_case field names (see `#[serde(rename_all =
 // "snake_case")]` on the Rust structs). Map them once at the wrapper layer so
 // the rest of the UI consumes the camelCase shapes declared above.
 interface RawArtifactDrift {
@@ -81,7 +81,7 @@ interface RawArtifactUpdateOutcome {
 export async function artifactUpdateCheck(
   projectPath: string,
 ): Promise<ArtifactDriftReport> {
-  const raw = await invoke<RawArtifactDriftReport>("artifact_update_check", {
+  const raw = await call<RawArtifactDriftReport>("artifact_update_check", {
     projectPath,
   });
   return {
@@ -101,12 +101,63 @@ export async function artifactUpdateCheck(
 export async function artifactUpdateApply(
   projectPath: string,
 ): Promise<ArtifactUpdateOutcome> {
-  const raw = await invoke<RawArtifactUpdateOutcome>("artifact_update_apply", {
+  const raw = await call<RawArtifactUpdateOutcome>("artifact_update_apply", {
     projectPath,
   });
   return { applied: raw.applied, manifestWritten: raw.manifest_written };
 }
 
 export function isMustardRepo(projectPath: string): Promise<boolean> {
-  return invoke<boolean>("is_mustard_repo", { projectPath });
+  return call<boolean>("is_mustard_repo", { projectPath });
+}
+
+// ---------------------------------------------------------------------------
+// The machine-level project registry.
+//
+// The list of folders the dashboard tracks is server state, kept under
+// `~/.claude/`. The dashboard covers EVERY Mustard project on the machine, so
+// the list is a fact ABOUT the machine: held in browser storage instead,
+// opening the dashboard from a second browser — or from a phone over the
+// network — would show an empty list, and neither view would be the truth.
+//
+// Registration is distinct from DISCOVERY (`@/api/discovery`, which walks the
+// disk looking for `mustard.json`): the registry records a choice, the scan
+// finds candidates.
+// ---------------------------------------------------------------------------
+
+export interface ProjectEntry {
+  /** Absolute filesystem path. Doubles as the entry's identity. */
+  path: string;
+  /** Display label — the trailing segment of `path`. */
+  name: string;
+  /** ISO-8601 timestamp the entry was registered (UTC). */
+  addedAt: string;
+}
+
+interface RawProjectEntry {
+  path: string;
+  name: string;
+  added_at: string;
+}
+
+function toProjectEntry(raw: RawProjectEntry): ProjectEntry {
+  return { path: raw.path, name: raw.name, addedAt: raw.added_at };
+}
+
+export async function listRegisteredProjects(): Promise<ProjectEntry[]> {
+  const raw = await call<RawProjectEntry[]>("dashboard_projects_list");
+  return raw.map(toProjectEntry);
+}
+
+/** Register `path` and return the registry as it now stands. Registering an
+ *  already-registered path is a no-op on the server, not an error. */
+export async function registerProject(path: string): Promise<ProjectEntry[]> {
+  const raw = await call<RawProjectEntry[]>("dashboard_projects_add", { path });
+  return raw.map(toProjectEntry);
+}
+
+/** Drop `path` from the registry and return what remains. */
+export async function unregisterProject(path: string): Promise<ProjectEntry[]> {
+  const raw = await call<RawProjectEntry[]>("dashboard_projects_remove", { path });
+  return raw.map(toProjectEntry);
 }

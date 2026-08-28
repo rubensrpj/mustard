@@ -2,7 +2,8 @@
 
 Este tutorial explica, passo a passo, como instalar o Mustard **completo** num
 Ubuntu: os comandos de linha (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`,
-`rtk`) **e** o **Mustard Dashboard** (aplicativo desktop). Tudo num único pacote
+`rtk`) **e** o **Mustard Dashboard**, que é um **servidor**: ele abre uma porta
+na sua máquina e você vê o painel no navegador. Tudo num único pacote
 `.deb`, instalado com `apt` — você não precisa instalar Rust, Node ou qualquer
 ferramenta de desenvolvimento. **Nem baixar o pacote à mão**: a instalação cabe
 numa linha (item 2); baixar o `.deb` é a rota alternativa (item 3), para quem
@@ -11,10 +12,11 @@ quer conferir o `sha256` antes.
 O que será instalado (gerenciado pelo apt):
 
 ```
-/usr/lib/mustard/bin/        binários reais (CLI + dashboard)
+/usr/lib/mustard/bin/        binários reais (CLI + mustard-dashboard)
+/usr/lib/mustard/bin/dist/   os arquivos da tela que o servidor serve
 /usr/lib/mustard/templates/  a carga que o `mustard init` copia para os projetos
 /usr/bin/mustard, …          atalhos no PATH (mustard, mustard-rt, …, mustard-dashboard)
-menu de aplicativos           atalho "Mustard Dashboard"
+menu de aplicativos           atalho "Mustard Dashboard" (inicia o servidor)
 ```
 
 ---
@@ -27,8 +29,9 @@ menu de aplicativos           atalho "Mustard Dashboard"
 | Claude Code instalado e logado (o Mustard trabalha dentro dele) | `claude --version` |
 | `sudo` (para o `apt install`) | `sudo -v` |
 
-> Por que Ubuntu 22.04+: o dashboard depende do `webkit2gtk-4.1`, que não existe
-> no Ubuntu 20.04. O `apt` instala essa dependência automaticamente.
+> Por que Ubuntu 22.04+: é a glibc contra a qual os binários são compilados. Não
+> há mais nenhuma biblioteca gráfica na conta — o dashboard virou um servidor
+> HTTP e a tela quem desenha é o seu navegador.
 
 Se ainda não tiver o Claude Code, instale com:
 
@@ -76,8 +79,8 @@ O instalador chama o `apt`, que:
 
 1. instala os binários do CLI em `/usr/lib/mustard/bin` e os templates em
    `/usr/lib/mustard/templates`, criando os atalhos em `/usr/bin`;
-2. instala o **Mustard Dashboard** e **resolve sozinho** as dependências de
-   sistema dele (`webkit2gtk-4.1`, `gtk`, …);
+2. instala o **mustard-dashboard** (o servidor) com os arquivos da tela ao lado
+   dele;
 3. adiciona o atalho "Mustard Dashboard" ao menu de aplicativos;
 4. se você passou um projeto, roda `mustard init` nele (cria a pasta `.claude/`
    e o `mustard.json`).
@@ -125,12 +128,41 @@ mustard-rt --version
 rtk --version
 ```
 
-Os três devem responder com a versão. E o **dashboard**: procure
-**"Mustard Dashboard"** no menu de aplicativos, ou rode no terminal:
+Os três devem responder com a versão.
+
+E o **dashboard**: rode no terminal, de dentro da pasta onde ficam seus
+projetos — a varredura começa no diretório de onde o servidor foi iniciado:
 
 ```sh
+cd ~/code
 mustard-dashboard
 ```
+
+Ele imprime onde está servindo e abre o navegador sozinho quando há sessão
+gráfica:
+
+```
+mustard-dashboard: serving /home/voce/code at http://127.0.0.1:7777/
+```
+
+Sem sessão gráfica (por SSH, num contêiner) ele **não** morre: imprime a URL e
+segue servindo. Ctrl+C para. O atalho **"Mustard Dashboard"** no menu de
+aplicativos faz o mesmo, num terminal, a partir da sua pasta pessoal.
+
+Opções úteis:
+
+| Opção | Para quê |
+|---|---|
+| `--root /outra/pasta` | varre outra pasta em vez do diretório atual |
+| `--port 8080` | outra porta (ou a variável `MUSTARD_DASHBOARD_PORT`). Porta ocupada não é erro: ele usa a próxima livre e imprime qual |
+| `--host 0.0.0.0` | **expõe na rede** — só assim outra máquina alcança o painel |
+| `--no-open` | não abre o navegador |
+
+> ⚠️ Sem `--host`, o painel só responde na própria máquina (`127.0.0.1`). Isso é
+> proposital: ele lê o `.claude/` de **todos** os seus projetos, então expor à
+> rede tem de ser um ato, não um esquecimento. Para alcançar de outro
+> computador (por exemplo por Tailscale), rode
+> `mustard-dashboard --host 0.0.0.0` e acesse `http://<ip-da-maquina>:7777/`.
 
 ---
 
@@ -180,19 +212,27 @@ descreva o pedido em palavras suas e o roteador escolhe o fluxo sozinho.
 O `/usr/bin` já está no PATH de qualquer shell, então isso é raro. Se acontecer,
 abra um novo terminal. Confirme a instalação com `dpkg -l mustard`.
 
-**O dashboard não abre / erro de biblioteca `webkit`**
-O `apt` deveria ter resolvido. Force a correção de dependências:
+**O navegador abre e a página fica em branco / "dashboard assets not found"**
+Falta a pasta da tela ao lado do binário. Confira que ela veio no pacote:
 
 ```sh
-sudo apt --fix-broken install
+ls /usr/lib/mustard/bin/dist/index.html
 ```
+
+Se não existir, reinstale o `.deb`. Para apontar outra cópia dos arquivos, use a
+variável `MUSTARD_DASHBOARD_DIST`.
+
+**Nada abre e o terminal diz `no graphical session`**
+Não é erro: por SSH ou em contêiner não há navegador para abrir. O servidor está
+de pé — abra a URL que ele imprimiu. Para alcançá-lo de fora da máquina, veja o
+`--host` do item 4.
 
 **`apt` reclama que o pacote é de terceiro / não confiável**
 É um `.deb` local (não vem de um repositório assinado) — isso é esperado. O
 `apt install ./arquivo.deb` instala mesmo assim.
 
 **Versão antiga do Ubuntu (20.04 ou anterior)**
-O dashboard exige glibc 2.35+ (Ubuntu 22.04+). Atualize a distro para usar o
+Os binários exigem glibc 2.35+ (Ubuntu 22.04+). Atualize a distro para usar o
 pacote completo.
 
 **`Plugin "mustard" not found in any marketplace`**

@@ -1,0 +1,26 @@
+# The compiler every Mustard build uses — your machine, CI, and the packaging
+# images alike. rustup reads this file before any `rustup default` or
+# preinstalled toolchain, and installs the version named here if it is missing,
+# so `cargo build` in this tree resolves to the same rustc everywhere.
+#
+# Why it exists: until this file landed, each machine compiled with whatever
+# rustc it happened to have and nothing reported the divergence. A lint that
+# fires on one developer's compiler and not on the runner's is a red build
+# nobody can reproduce locally — and the reverse, a green local build that only
+# breaks in CI, costs a whole round trip to discover.
+#
+# Why an exact version and not `stable`: `stable` reintroduces exactly the
+# problem — two machines, two different "stable"s, no warning. Pinning makes the
+# compiler a reviewed input like any dependency.
+#
+# Bumping it is a deliberate commit: change the line, run
+# `cargo clippy --workspace` and `cargo test --workspace`, and land the fallout
+# in the same change. The floor is 1.85 — every crate in the workspace is
+# edition 2024.
+[toolchain]
+channel = "1.98.0"
+# Installed with the toolchain rather than added by each workflow, so the
+# components land on the PINNED toolchain instead of whichever one a runner
+# happened to make default: clippy backs the CI lint gate (the workspace lint
+# table makes `unwrap_used` deny-level), rustfmt backs `cargo fmt`.
+components = ["clippy", "rustfmt"]

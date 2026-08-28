@@ -20,8 +20,8 @@
 //! ## Which `Cargo.lock` is checked here, and which is not
 //!
 //! A third kind of file carries this version: `Cargo.lock` pins one per local
-//! package. There are TWO of them in this repository, and they need opposite
-//! treatment.
+//! package. There used to be TWO of them in this repository, needing opposite
+//! treatment. There is ONE now.
 //!
 //! **The root lock is NOT checked.** A test for it was written, and then
 //! measured: it CANNOT fail. Plain `cargo test` repairs a stale root lock
@@ -34,24 +34,22 @@
 //! release on all three operating systems ("cannot update the lock file because
 //! `--locked` was passed", before a line compiled).
 //!
-//! **The dashboard lock IS checked**, and the paragraph above is exactly why it
-//! has to be. `apps/dashboard/src-tauri` is deliberately its own workspace root,
-//! so no root build ever resolves it: nothing repairs it before this test reads
-//! it as a plain file, which is what makes the assertion able to fail. Nothing
-//! else looks either — CI excludes the dashboard on purpose (it needs per-OS
-//! system libraries), and the release builds it through `tauri build` WITHOUT
-//! `--locked`, so a stale lock is silently repaired at build time and the repair
-//! is thrown away instead of committed. Measured on 2026-08-22: that lock still
-//! named `mustard-cli` and `mustard-core` at `0.1.41` while the workspace was at
-//! `0.1.44` — three releases behind, and nothing in the repository had noticed.
-//! `bump-on-main` now advances that lock too; this test is what says so out loud
-//! if it ever stops.
+//! **The dashboard lock is gone**, and with it the test that read it. That file
+//! existed because the old desktop-shell wrapper pinned the dashboard crate to
+//! edition 2021, which forced it out of the workspace and gave it a lock of its
+//! own that no root build ever resolved — measured on 2026-08-22 three releases
+//! behind at `0.1.41` while the workspace was at `0.1.44`, and nothing in the
+//! repository had noticed. That wrapper is gone, the crate is a normal member
+//! (`apps/dashboard/server`) and its lock was deleted, so the root lock covers
+//! it like every other crate. A lock that does not exist cannot lag: the guard
+//! for it would be the decoration this file refuses, so it was removed rather
+//! than left to skip. The stamp has THREE legs now.
 //!
 //! ## The guards `bump-on-main` runs are exercised here too
 //!
 //! Every leg of the stamp carries a guard whose only job is to REJECT a file
 //! that did not move. Those guards live in `.github/scripts/check-lock-pins.sh`
-//! — one script, run by both legs of the workflow over both locks — and the
+//! — one script, run by both legs of the workflow over the lock — and the
 //! tests at the bottom of this file run THAT script against forged locks. The
 //! thing measured is therefore the guard the release actually uses, not a second
 //! implementation of the same idea kept in step by hand.
@@ -156,136 +154,6 @@ mod helper_tests {
     }
 }
 
-/// The dashboard's own workspace lock, relative to the workspace root.
-const DASHBOARD_LOCK_REL: &str = "apps/dashboard/src-tauri/Cargo.lock";
-
-/// The dashboard's own manifest, relative to the workspace root.
-const DASHBOARD_MANIFEST_REL: &str = "apps/dashboard/src-tauri/Cargo.toml";
-
-/// The crates of ours the dashboard's lock must NAME, spelled out rather than
-/// derived from that lock.
-///
-/// A set read from the lock alone cannot see a crate that LEFT it: the package
-/// that vanished simply stops being asked about, every package still there is on
-/// the stamp, and the test goes green on exactly the case it exists for — a
-/// dependency dropped by accident. `!ours.is_empty()` is no floor for that
-/// either; it survives as long as one of the two remains. This is the same named
-/// list `check-lock-pins.sh` takes as its arguments, and the same reading: if
-/// the dashboard stops depending on one of these on purpose, the deliberate act
-/// is editing this line.
-const DASHBOARD_LOCK_MUST_PIN: &[&str] = &["mustard-cli", "mustard-core"];
-
-/// One `[[package]]` record of a `Cargo.lock`, reduced to the three fields this
-/// file asks about.
-#[derive(serde::Deserialize)]
-struct LockPackage {
-    name: String,
-    version: String,
-    /// `None` for a package that lives in this repository (reached by path);
-    /// a package pulled from a registry carries a `source` line.
-    source: Option<String>,
-}
-
-/// A `Cargo.lock`, reduced to its package list.
-///
-/// Read with the real `toml` parser: it is a REGULAR dependency of this crate
-/// (`packages/core/Cargo.toml`, for `vocabulary`), so a test target already
-/// links it and there is nothing to save by hand-rolling one. The hand-rolled
-/// reader that stood here claimed the opposite in a comment, which had stopped
-/// being true — and a parser written to dodge a cost that is not there is a
-/// second lock-format reader to keep correct for no reason.
-#[derive(serde::Deserialize)]
-struct Lock {
-    #[serde(default)]
-    package: Vec<LockPackage>,
-}
-
-/// The `[package] name` of a manifest — the one package in the dashboard's lock
-/// that is NOT ours to version.
-fn package_name(manifest: &Path) -> Option<String> {
-    std::fs::read_to_string(manifest).ok()?.lines().find_map(|line| {
-        line.strip_prefix("name = \"")?.strip_suffix('"').map(str::to_string)
-    })
-}
-
-/// Every crate of THIS repository that the dashboard consumes must be pinned at
-/// THIS repository's version in the dashboard's own lock.
-///
-/// This is the assertion the module doc argues for: the dashboard is its own
-/// workspace root, so no root build resolves its lock, and this test reads that
-/// file as data — nothing repairs it first, which is what lets the assertion
-/// fail. `mustard-dashboard` itself is excluded because it carries a version of
-/// its own on purpose; every other local package is one of ours.
-#[test]
-fn the_dashboard_lock_pins_this_repositorys_crates_at_this_version() {
-    let Some(root) = workspace_root() else {
-        // Compiled outside the repository — see the sibling test for why absence
-        // is missing evidence rather than a failure.
-        return;
-    };
-    let lock_path = root.join(DASHBOARD_LOCK_REL);
-    let Ok(raw) = std::fs::read_to_string(&lock_path) else {
-        eprintln!("[skip] {} is absent from this source tree", lock_path.display());
-        return;
-    };
-
-    let own = package_name(&root.join(DASHBOARD_MANIFEST_REL)).unwrap_or_default();
-    let lock: Lock = toml::from_str(&raw)
-        .unwrap_or_else(|e| panic!("{} is not a readable lock: {e}", lock_path.display()));
-    let ours: Vec<LockPackage> = lock
-        .package
-        .into_iter()
-        .filter(|p| p.source.is_none() && p.name != own)
-        .collect();
-
-    // Without this the filters could silently match nothing — a reworded lock
-    // format would turn the guard into a test that always passes, which is the
-    // decoration the module doc refuses.
-    assert!(
-        !ours.is_empty(),
-        "{} names no local package other than `{own}` — either the dashboard \
-         stopped depending on this repository (then delete this test) or the \
-         lock format moved and the parser above no longer reads it",
-        lock_path.display()
-    );
-
-    // …and the named crates are all still THERE. The sweep below only measures
-    // the packages the lock still lists, so a crate that vanished is a crate it
-    // never asks about.
-    let gone: Vec<&&str> = DASHBOARD_LOCK_MUST_PIN
-        .iter()
-        .filter(|want| !ours.iter().any(|p| p.name == **want))
-        .collect();
-    assert!(
-        gone.is_empty(),
-        "{} no longer pins {gone:?}. A crate that left the graph is the case the \
-         version stamp cannot see on its own — restore the dependency, or drop \
-         the name from `DASHBOARD_LOCK_MUST_PIN` deliberately. Local packages \
-         found: {:?}",
-        lock_path.display(),
-        ours.iter().map(|p| p.name.as_str()).collect::<Vec<_>>()
-    );
-
-    let expected = env!("CARGO_PKG_VERSION");
-    let stale: Vec<String> = ours
-        .iter()
-        .filter(|p| p.version != expected)
-        .map(|p| format!("{} {}", p.name, p.version))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "{} still pins {stale:?}, but this repository is at {expected}.\n\
-         Nothing repairs that file on its own: the dashboard is its own workspace \
-         root, CI excludes it (per-OS system libraries) and the release builds it \
-         without `--locked`, so a stale pin is patched at build time and thrown \
-         away. Advance it with\n  \
-         cargo update --workspace --manifest-path {DASHBOARD_MANIFEST_REL}\n\
-         and commit the lock. `bump-on-main` runs that same line on every release \
-         — if this is red after a release, that step is what broke.",
-        lock_path.display()
-    );
-}
-
 // ---------------------------------------------------------------------------
 // The guards `bump-on-main` runs over each leg of the stamp
 // ---------------------------------------------------------------------------
@@ -304,10 +172,10 @@ const REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
 /// from the guard's derived sweep. The shape of this repository's root.
 const VIRTUAL_MANIFEST: &str = "[workspace]\nresolver = \"2\"\nmembers = []\n";
 
-/// A manifest that declares a package of its own — the shape of
-/// `apps/dashboard/src-tauri`, whose package carries a version of its own on
-/// purpose and is never ours to stamp.
-const DASHBOARD_MANIFEST: &str = "[package]\nname = \"mustard-dashboard\"\nversion = \"0.1.0\"\n";
+/// A manifest that declares a package of its own, so the guard's derived sweep
+/// has something to exclude. The counterpart to [`VIRTUAL_MANIFEST`]: both
+/// shapes exist in the wild and the guard has to read either.
+const PACKAGE_MANIFEST: &str = "[package]\nname = \"mustard-dashboard\"\nversion = \"0.1.0\"\n";
 
 /// Write a `Cargo.toml`/`Cargo.lock` pair into `dir`, and answer with the lock.
 /// Each package is `(name, version, foreign)`; a foreign one gets the `source`
@@ -682,7 +550,7 @@ fn bump_guard_checks_every_local_crate_of_each_lock() {
     let behind = tempfile::tempdir().expect("a temp dir for the forged lock");
     forge_lock(
         behind.path(),
-        DASHBOARD_MANIFEST,
+        PACKAGE_MANIFEST,
         &[
             ("mustard-cli", "0.1.44", false),
             ("mustard-core", "0.1.45", false),
@@ -715,7 +583,7 @@ fn bump_guard_checks_every_local_crate_of_each_lock() {
     let level = tempfile::tempdir().expect("a temp dir for the forged lock");
     forge_lock(
         level.path(),
-        DASHBOARD_MANIFEST,
+        PACKAGE_MANIFEST,
         &[
             ("mustard-cli", "0.1.45", false),
             ("mustard-core", "0.1.45", false),
@@ -733,9 +601,9 @@ fn bump_guard_checks_every_local_crate_of_each_lock() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // …and the workflow asks it about BOTH locks, naming more than one crate
-    // every time. A guard that measures everything is worth nothing if the leg
-    // it is pointed at is the only one anybody checks.
+    // …and the workflow really points it at the lock, naming more than one
+    // crate. A guard that measures everything is worth nothing if it is never
+    // reached — and one hand-picked name is the defect it replaced.
     let Some(workflow) = bump_workflow(&root) else {
         return;
     };
@@ -751,60 +619,11 @@ fn bump_guard_checks_every_local_crate_of_each_lock() {
              hand-picked name is the defect this guard replaced"
         );
     }
-    for leg in ["Cargo.lock", "apps/dashboard/src-tauri/Cargo.lock"] {
-        assert!(
-            calls.iter().any(|(lock, _)| lock == leg),
-            "{BUMP_WORKFLOW_REL} never runs the guard over {leg}. Invocations: {calls:?}"
-        );
-    }
-}
-
-/// The two spellings of the dashboard lock's crate list must stay ONE list.
-///
-/// `DASHBOARD_LOCK_MUST_PIN` and the argument list the workflow hands the guard
-/// say the same thing in two files, and naming — rather than deriving — is
-/// deliberate: only a spelled-out name can be missed. But two hand-kept copies
-/// of one list drift, and the drift is silent in the direction that matters:
-/// drop a crate HERE and this file still passes while the release stops being
-/// checked for it, drop it THERE and the release stops checking while this file
-/// still passes. That is the defect the sibling tests exist for, one level up —
-/// two criteria for one thing, which is what the module doc refuses.
-///
-/// So the workflow is the source and this constant is checked against it. Adding
-/// a crate stays a two-line edit; forgetting the second line stops being silent.
-#[test]
-fn the_dashboard_guard_is_asked_about_exactly_the_crates_this_file_names() {
-    let Some(root) = workspace_root() else {
-        return;
-    };
-    let Some(workflow) = bump_workflow(&root) else {
-        return;
-    };
-
-    let asked: Vec<Vec<String>> = guard_invocations(&workflow)
-        .into_iter()
-        .filter(|(lock, _)| lock == DASHBOARD_LOCK_REL)
-        .map(|(_, crates)| crates)
-        .collect();
+    let leg = "Cargo.lock";
     assert!(
-        !asked.is_empty(),
-        "{BUMP_WORKFLOW_REL} never runs the guard over {DASHBOARD_LOCK_REL}, so nothing binds \
-         DASHBOARD_LOCK_MUST_PIN to what the release actually checks"
+        calls.iter().any(|(lock, _)| lock == leg),
+        "{BUMP_WORKFLOW_REL} never runs the guard over {leg}. Invocations: {calls:?}"
     );
-
-    let mut want: Vec<&str> = DASHBOARD_LOCK_MUST_PIN.to_vec();
-    want.sort_unstable();
-    for crates in &asked {
-        let mut got: Vec<&str> = crates.iter().map(String::as_str).collect();
-        got.sort_unstable();
-        assert_eq!(
-            got, want,
-            "{BUMP_WORKFLOW_REL} asks the guard about {DASHBOARD_LOCK_REL} naming {got:?} while \
-             DASHBOARD_LOCK_MUST_PIN names {want:?}. One of the two was edited alone; the release \
-             obeys the workflow and this file obeys the constant, so whichever is short stops \
-             being checked in silence. Make both lists say the same thing."
-        );
-    }
 }
 
 /// A crate of ours that VANISHED from a lock must be named, not passed over.
@@ -821,7 +640,7 @@ fn bump_guard_rejects_a_lock_that_lost_one_of_our_crates() {
     let dir = tempfile::tempdir().expect("a temp dir for the forged lock");
     forge_lock(
         dir.path(),
-        DASHBOARD_MANIFEST,
+        PACKAGE_MANIFEST,
         &[
             ("mustard-core", "0.1.45", false),
             ("mustard-dashboard", "0.1.0", false),
@@ -887,8 +706,8 @@ fn dev_leg_decision_consults_what_the_work_block_repairs() {
         .map(|arg| arg.trim_matches('"'))
         .collect();
     assert!(
-        legs.len() >= 4,
-        "{BUMP_WORKFLOW_REL}: the dev leg stages {legs:?} — the stamp has four legs"
+        legs.len() >= 3,
+        "{BUMP_WORKFLOW_REL}: the dev leg stages {legs:?} — the stamp has three legs"
     );
 
     for leg in &legs {
@@ -928,9 +747,9 @@ fn assignment(line: &str) -> Option<(&str, &str)> {
 
 /// `true` when `haystack` names `token` as a whole word.
 ///
-/// The boundary is what separates the legs: `Cargo.lock` occurs inside
-/// `apps/dashboard/src-tauri/Cargo.lock`, and treating that as a mention would
-/// let one reader stand in for two different files.
+/// The boundary is what separates the legs: `Cargo.lock` occurs inside a
+/// nested path such as `apps/dashboard/server/Cargo.lock`, and treating that as
+/// a mention would let one reader stand in for two different files.
 fn mentions(haystack: &str, token: &str) -> bool {
     let boundary = |c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '.');
     haystack.match_indices(token).any(|(at, _)| {

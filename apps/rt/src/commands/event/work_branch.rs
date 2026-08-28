@@ -1345,8 +1345,7 @@ mod tests {
         seed_three_tier_repo(root);
         let config = mustard_core::ProjectConfig::load(root);
         let flow = BaseFlow::of(&config.git);
-        assert!(flow.emergency_is_ambiguous(), "the fixture really does leave a choice");
-        assert_eq!(flow.emergency_bases(), ["qas", "main"], "…with `main` pre-marked");
+        assert_eq!(flow.bases(), ["dev", "main", "qas"], "the fixture really does leave a choice");
 
         // The operator picks the MIDDLE base. That answer reaches the cut the
         // one way it can — the pending marker `emit-pipeline` writes.

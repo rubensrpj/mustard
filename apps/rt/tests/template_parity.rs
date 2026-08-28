@@ -389,7 +389,8 @@ fn squash_whitespace(text: &str) -> String {
 ///
 /// rt sources exclude the registration/list surfaces (`cli.rs` family files,
 /// `doctor.rs` known-list) and the command's own module — a command's own
-/// docs are not a caller. Dashboard (`src-tauri`) sources count in full.
+/// docs are not a caller. Dashboard backend (`apps/dashboard/server/src`)
+/// sources count in full.
 fn has_argv_caller(root: &Path, name: &str) -> bool {
     let needle = format!("\"run\", \"{name}\"");
     let own_module = format!("{}.rs", name.replace('-', "_"));
@@ -397,7 +398,7 @@ fn has_argv_caller(root: &Path, name: &str) -> bool {
     let mut rt_sources = Vec::new();
     walk_files(&root.join("apps/rt/src"), &mut rt_sources);
     let mut dash_sources = Vec::new();
-    walk_files(&root.join("apps/dashboard/src-tauri/src"), &mut dash_sources);
+    walk_files(&root.join("apps/dashboard/server/src"), &mut dash_sources);
 
     let excluded = |p: &Path| {
         p.file_name()

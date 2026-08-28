@@ -47,7 +47,7 @@ interface SpecDrillDownProps {
 // entry point you read before drilling into the full narrative. It is a
 // READ-only slice of `spec.md` between the `<!-- PRD -->` / `<!-- PLAN -->`
 // markers (spec `matar-prd-standalone-fazer-feature`, wave 3), reusing the
-// same `markdownQ` fetch — no extra Tauri command, no AI, no trigger.
+// same `markdownQ` fetch — no extra backend command, no AI, no trigger.
 // "Spec" follows — the full narrative overview (spec.md) the other tabs drill
 // into. Backed by the long-existing `dashboard_spec_markdown` command +
 // `fetchSpecMarkdown` client, rendered with the shared `Markdown` component.

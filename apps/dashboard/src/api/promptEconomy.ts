@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "@/lib/api-client";
 
 /**
  * Honest prompt-economy payload (Wave 5).
@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
  *  - `claude_events`— operational counters (sessions, active time)
  *  - `freshness`    — drives the green/amber/red badge and canary tail
  *
- * Returned by the `dashboard_prompt_economy` Tauri command.
+ * Returned by the `dashboard_prompt_economy` backend command.
  */
 export type PromptEconomy = {
   cost: {
@@ -51,7 +51,7 @@ export type PromptEconomy = {
 };
 
 export function fetchPromptEconomy(repoPath: string): Promise<PromptEconomy> {
-  return invoke<PromptEconomy>("dashboard_prompt_economy", { repoPath });
+  return call<PromptEconomy>("dashboard_prompt_economy", { repoPath });
 }
 
 /**
@@ -63,5 +63,5 @@ export function fetchPromptEconomy(repoPath: string): Promise<PromptEconomy> {
 export type CollectorHealth = "live" | "stale" | "off";
 
 export function fetchCollectorHealth(repoPath: string): Promise<CollectorHealth> {
-  return invoke<CollectorHealth>("collector_health", { repoPath });
+  return call<CollectorHealth>("collector_health", { repoPath });
 }

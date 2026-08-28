@@ -2,18 +2,19 @@ Mustard — instalador
 ====================
 
 UM instalador por sistema, completo: traz o CLI E o Mustard Dashboard juntos.
-Você NÃO precisa instalar Rust nem compilar nada — já vem pronto.
+O Dashboard é um SERVIDOR: ele abre uma porta na máquina e o painel aparece no
+navegador. Você NÃO precisa instalar Rust nem compilar nada — já vem pronto.
 
   LINUX (Ubuntu): instale numa linha com o install.sh (ele mesmo baixa o
                   mustard_<versao>_amd64.deb do Release e chama o apt)
-  WINDOWS:        Mustard Dashboard_<versao>_x64-setup.exe
+  WINDOWS:        Mustard_<versao>_x64-setup.exe
   macOS:          Mustard-<versao>-universal.pkg  (Intel + Apple Silicon)
 
 
 Requisitos
 ----------
-- Ubuntu 22.04+ (glibc 2.35+). O Dashboard depende do webkit2gtk-4.1, que o apt
-  instala sozinho; ele não existe no Ubuntu 20.04.
+- Ubuntu 22.04+ (glibc 2.35+) — é a glibc contra a qual os binários são
+  compilados. Não há mais dependência de biblioteca gráfica alguma.
 - Windows 10/11.
 - macOS 11+ (Big Sur ou mais novo).
 - Em todos: Claude Code instalado e logado; nenhum toolchain de dev é necessário.
@@ -56,13 +57,15 @@ macOS
 
 O que cada instalador faz
 -------------------------
-- LINUX:   o apt instala o CLI em /usr/lib/mustard/bin (atalhos em /usr/bin) e o
-           Dashboard, resolvendo as dependências de sistema; adiciona o atalho
-           "Mustard Dashboard" ao menu de aplicativos.
-- WINDOWS: instala o Dashboard + os binários do CLI (com os templates) na pasta
-           do programa, adiciona o CLI ao PATH e cria o atalho no Menu Iniciar.
-- macOS:   instala o "Mustard Dashboard.app" em /Applications (com o CLI e os
-           templates embutidos) e cria os atalhos do CLI no PATH (/usr/local/bin).
+- LINUX:   o apt instala o CLI e o mustard-dashboard em /usr/lib/mustard/bin
+           (atalhos em /usr/bin), com os arquivos da tela ao lado do servidor;
+           adiciona o atalho "Mustard Dashboard" ao menu de aplicativos, e esse
+           atalho INICIA O SERVIDOR num terminal.
+- WINDOWS: instala os binários (com os templates e os arquivos da tela) na pasta
+           do programa, adiciona o CLI ao PATH e cria o atalho no Menu Iniciar,
+           que INICIA O SERVIDOR numa janela de console.
+- macOS:   instala tudo em /usr/local/mustard e cria os atalhos no PATH
+           (/usr/local/bin). Não há .app: o painel se abre no navegador.
 - Em todos: depois é só rodar `mustard init` num projeto para criar o .claude/ e
   instalar o plugin dentro do Claude Code (veja "Como usar depois").
 
@@ -84,14 +87,21 @@ Como usar depois
   passo acima, não do `mustard init`: o init só escreve o .claude/ e o
   mustard.json, e o .claude/settings.json que ele grava não traz hook nenhum.
 - Versão instalada:  mustard --version   /   mustard-rt --version
-- Dashboard: "Mustard Dashboard" no menu (Linux) / Launchpad (macOS) / Menu
-  Iniciar (Windows).
+- Dashboard: rode  mustard-dashboard  na pasta onde ficam seus projetos (a
+  varredura começa no diretório de onde o servidor foi iniciado). Ele imprime
+  http://127.0.0.1:7777/ e abre o navegador quando há tela. No Linux e no
+  Windows o atalho "Mustard Dashboard" do menu faz o mesmo.
+  Sem --host o painel só responde na própria máquina, de propósito (ele lê o
+  .claude/ de TODOS os seus projetos). Para alcançar de outro computador:
+      mustard-dashboard --host 0.0.0.0
+  e acesse http://<ip-da-maquina>:7777/ . Outra porta: --port ou a variável
+  MUSTARD_DASHBOARD_PORT; porta ocupada não é erro, ele usa a próxima livre.
 
 
 Como remover
 ------------
 - LINUX:   sudo apt remove mustard
-- WINDOWS: desinstale "Mustard Dashboard" em Aplicativos (Painel de Controle).
-- macOS:   arraste o app para o Lixo e rode:  sudo rm /usr/local/bin/mustard*
+- WINDOWS: desinstale "Mustard" em Aplicativos (Painel de Controle).
+- macOS:   apague /usr/local/mustard e rode:  sudo rm /usr/local/bin/mustard*
                                                      /usr/local/bin/scan /usr/local/bin/rtk
 - Em um projeto testado, a pasta .claude/ pode ser apagada à vontade.

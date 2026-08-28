@@ -2,7 +2,8 @@
 
 Este tutorial explica, passo a passo, como instalar o Mustard **completo** no
 macOS: os comandos de linha (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`,
-`rtk`) **e** o **Mustard Dashboard** (aplicativo desktop). Tudo num único
+`rtk`) **e** o **Mustard Dashboard**, que é um **servidor**: ele abre uma porta
+na sua máquina e você vê o painel no navegador. Tudo num único
 instalador `.pkg` — você não precisa instalar Rust, Node ou qualquer ferramenta
 de desenvolvimento.
 
@@ -17,11 +18,15 @@ Mustard-<versao>-universal.pkg
 O que o instalador faz:
 
 ```
-- instala o "Mustard Dashboard.app" em /Applications (com o CLI e os
-  templates embutidos)
-- cria os atalhos do CLI no PATH, em /usr/local/bin
-  (mustard, mustard-rt, mustard-mcp, scan, rtk)
+- instala os binários em /usr/local/mustard/bin (o CLI e o mustard-dashboard),
+  com os arquivos da tela em /usr/local/mustard/bin/dist e os templates do
+  `mustard init` em /usr/local/mustard/templates
+- cria os atalhos no PATH, em /usr/local/bin
+  (mustard, mustard-rt, mustard-mcp, scan, rtk, mustard-dashboard)
 ```
+
+> Não há mais um `.app` em /Applications: o painel deixou de ser um aplicativo
+> de janela. Quem desenha a tela agora é o seu navegador.
 
 O que ele **não** faz: instalar o plugin do Claude Code. Esse é o item 6 deste
 tutorial, e sem ele o Mustard não tem comandos nem hooks dentro do Claude.
@@ -77,8 +82,38 @@ mustard-rt --version
 rtk --version
 ```
 
-Os três devem responder com a versão. E o **dashboard**: abra o **Launchpad**
-(ou a pasta **Aplicativos**) e procure **"Mustard Dashboard"**.
+Os três devem responder com a versão.
+
+E o **dashboard**: rode no terminal, de dentro da pasta onde ficam seus
+projetos — a varredura começa no diretório de onde o servidor foi iniciado:
+
+```sh
+cd ~/code
+mustard-dashboard
+```
+
+Ele imprime onde está servindo e abre o navegador sozinho:
+
+```
+mustard-dashboard: serving /Users/voce/code at http://127.0.0.1:7777/
+```
+
+Ctrl+C para o servidor.
+
+Opções úteis:
+
+| Opção | Para quê |
+|---|---|
+| `--root /outra/pasta` | varre outra pasta em vez do diretório atual |
+| `--port 8080` | outra porta (ou a variável `MUSTARD_DASHBOARD_PORT`). Porta ocupada não é erro: ele usa a próxima livre e imprime qual |
+| `--host 0.0.0.0` | **expõe na rede** — só assim outra máquina alcança o painel |
+| `--no-open` | não abre o navegador |
+
+> ⚠️ Sem `--host`, o painel só responde na própria máquina (`127.0.0.1`). Isso é
+> proposital: ele lê o `.claude/` de **todos** os seus projetos, então expor à
+> rede tem de ser um ato, não um esquecimento. Para alcançar de outro
+> computador (por exemplo por Tailscale), rode
+> `mustard-dashboard --host 0.0.0.0` e acesse `http://<ip-da-maquina>:7777/`.
 
 ---
 
@@ -158,10 +193,15 @@ atalho não consegue clonar:
 ## 8. Desinstalar
 
 ```sh
-sudo rm -rf "/Applications/Mustard Dashboard.app"
+sudo rm -rf /usr/local/mustard
 sudo rm -f /usr/local/bin/mustard /usr/local/bin/mustard-rt \
-           /usr/local/bin/mustard-mcp /usr/local/bin/scan /usr/local/bin/rtk
+           /usr/local/bin/mustard-mcp /usr/local/bin/scan /usr/local/bin/rtk \
+           /usr/local/bin/mustard-dashboard
 ```
+
+> Se você tem uma instalação anterior, ela deixou um
+> `"/Applications/Mustard Dashboard.app"` — apague-o também:
+> `sudo rm -rf "/Applications/Mustard Dashboard.app"`.
 
 Em projetos testados, a pasta `.claude/` e o `mustard.json` podem ser apagados à
 vontade.

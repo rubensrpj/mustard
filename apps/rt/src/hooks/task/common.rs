@@ -196,4 +196,4 @@ pub(crate) fn cap(s: &str, max: usize) -> String {
 // `pipeline.economy.run` payload, and the OTEL collector does the same for
 // `pipeline.telemetry.run`. The dashboard reader resolves attribution off
 // those keys directly (W5#8 two-tier fallback already covers the late-binding
-// case in `apps/dashboard/src-tauri/src/telemetry.rs`).
+// case in `apps/dashboard/server/src/telemetry.rs`).

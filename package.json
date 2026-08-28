@@ -12,7 +12,7 @@
     "test:dashboard": "pnpm --filter mustard-dashboard test",
     "lint": "cargo clippy --workspace && pnpm --filter mustard-dashboard lint",
     "lint:rust": "cargo clippy --workspace",
-    "dashboard:dev": "pnpm --filter mustard-dashboard tauri:dev",
-    "dashboard:build": "pnpm --filter mustard-dashboard tauri:build"
+    "dashboard:serve": "cargo run -p mustard-dashboard --",
+    "dashboard:build": "pnpm --filter mustard-dashboard build && cargo build --release -p mustard-dashboard"
   }
 }

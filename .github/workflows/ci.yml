@@ -27,6 +27,12 @@ jobs:
       # second build. Same setting, opposite verdicts, for a stated reason —
       # see docs/2026-08-14-build-cycle-measurements.md §5.
       CARGO_INCREMENTAL: 0
+      # Stated because the toolchain action below exports 0 when nothing sets
+      # this, which would quietly override the `debug = 1` that Cargo.toml picks
+      # deliberately — line-table debuginfo is what keeps a panic backtrace from
+      # a failing test readable. The runner keeps the same value the tree asks
+      # for; the action only gets to fill in what we have no opinion about.
+      CARGO_PROFILE_DEV_DEBUG: 1
     strategy:
       # One OS failing should not cancel the others — we want the full
       # cross-platform picture on every run.
@@ -36,10 +42,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # NO version is named here, and that is the point: with the `toolchain`
+      # input left empty this action installs exactly what `rust-toolchain.toml`
+      # pins, components included. The previous action (`dtolnay/...@stable`)
+      # could not read that file — it demanded a version of its own, so the
+      # runner and every developer machine were free to drift apart with nothing
+      # reporting it. A version written here would be that same second pin.
+      #
+      #   cache: false    — the explicit Swatinem step below is the one cache;
+      #                     this action bundles the same one and would fight it.
+      #   rustflags: ''   — the action otherwise exports `RUSTFLAGS=-D warnings`,
+      #                     which promotes the workspace's warn-level pedantic
+      #                     lints to errors and fails the build on style.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy
+          cache: false
+          rustflags: ''
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
@@ -48,11 +67,13 @@ jobs:
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
-      # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
-      # The Tauri dashboard (apps/dashboard/src-tauri) is intentionally
-      # excluded: it needs per-OS system libraries (webkit2gtk on Linux, etc.)
-      # that would make this matrix slow and brittle, and it is not part of the
-      # CLI/runtime surface this workflow guards.
+      # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt /
+      # mustard-dashboard). The dashboard used to be excluded because its
+      # desktop-shell wrapper needed per-OS system libraries (webkit2gtk on Linux,
+      # etc.) that made this matrix slow and brittle. That wrapper is gone — the
+      # backend is a
+      # `tiny_http` server with no system dependency at all — so its suite runs
+      # here like every other crate's.
       #
       # `-p scan` is here because mustard-core's stack-registry tests exercise
       # `Scan::locate()` at runtime (spawn, fail-open): without `scan` reachable
@@ -88,10 +109,23 @@ jobs:
       # round is free — but read 6,8% as the number, not 41%.
       # Full figures: docs/2026-08-14-build-cycle-measurements.md.
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
+        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard -- --test-threads=8
 
       # Plain clippy: the workspace lint table makes `unwrap_used` (and other
       # correctness lints) deny-level while keeping pedantic lints at warn, so
       # this fails the build on real problems without drowning in style noise.
+      #
+      # `mustard-dashboard` is IN now. It used to be absent because it did not
+      # opt into `[lints] workspace = true` — so clippy there had no deny-level
+      # lint behind it — and the exception outlived its reason: the crate carries
+      # the table like every sibling, and leaving it out meant `unwrap_used` was
+      # not enforced on the newest code in the workspace.
+      #
+      # `--all-targets` is what makes the dashboard's entry mean anything. The
+      # crate's `.unwrap()` calls lived entirely in `#[cfg(test)]` modules and
+      # `tests/`, which the default target set never compiles — adding `-p
+      # mustard-dashboard` alone would have linted a surface that was already
+      # clean and reported a pass nobody earned. All 269 were rewritten as
+      # `.expect("<reason>")`; this flag is what keeps them from coming back.
       - name: Clippy
-        run: cargo clippy --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan
+        run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard

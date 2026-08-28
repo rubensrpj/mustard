@@ -34,7 +34,7 @@
 //! - a `.claude/` from an earlier install, plus the `.claude.backup.<stamp>/`
 //!   copy that `mustard init`'s "backup and overwrite" choice leaves behind. The
 //!   backup is seeded rather than produced because that choice is INTERACTIVE:
-//!   with stdin not a terminal — a test, CI, the Tauri backend — `init` takes the
+//!   with stdin not a terminal — a test, CI, a library caller — `init` takes the
 //!   merge branch and never writes one. Placing the directory the branch leaves
 //!   is what puts it under the assertion below, which is the only thing that
 //!   verifies it: a backup sits outside `.claude/`, so nothing that covers the

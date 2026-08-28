@@ -77,7 +77,7 @@
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo,
+    CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo,
 };
 use rmcp::{
     ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
@@ -355,7 +355,7 @@ struct MustardMemory {
 fn json_result<T: Serialize>(data: &T) -> CallToolResult {
     let text = serde_json::to_string_pretty(data)
         .unwrap_or_else(|_| "null".to_string());
-    CallToolResult::success(vec![Content::text(text)])
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 #[tool_router]

@@ -9,7 +9,7 @@
 // `.claude/.obsidian`); the vault NAME (what Obsidian's URI consumes) is the
 // last path segment.
 //
-// This module is intentionally framework-free — no React, no Tauri, no I/O.
+// This module is intentionally framework-free — no React, no I/O, no server.
 // The dashboard wires it into the markdown renderer via
 // `WikilinkText`/`renderWithWikilinks`.
 

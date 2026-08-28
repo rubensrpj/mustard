@@ -1,0 +1,56 @@
+[package]
+name = "mustard-dashboard"
+version.workspace = true
+description = "HTTP server backing the Mustard dashboard"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "mustard_dashboard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mustard-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Minimal blocking HTTP server — the same engine the OTLP collector runs on
+# (`mustard-rt run otel-collector`). No async runtime: every request is served
+# on a worker thread, which is why the command bodies are plain synchronous
+# functions.
+tiny_http = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+chrono = { workspace = true }
+# Resolve the user's home dir to locate `~/.claude/` — the project registry
+# lives there, and so do the Claude Code session transcripts
+# (`<home>/.claude/projects/<encoded-cwd>/<session_id>.jsonl`) that supply the
+# assistant narration behind each tool.use.
+dirs = { workspace = true }
+mustard-core = { path = "../../../packages/core" }
+
+[[test]]
+name = "telemetry_test"
+path = "tests/telemetry_test.rs"
+
+[[test]]
+name = "mustard_cli_test"
+path = "tests/mustard_cli_test.rs"
+
+[dev-dependencies]
+# Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
+tempfile = { workspace = true }
+# `mustard-cli` was a normal dependency, described as "the dashboard
+# installs/updates Mustard by calling `mustard_cli::init`/`update` directly".
+# Nothing under `src/` names it — the only consumer left is
+# `tests/mustard_cli_test.rs`, so the server binary was linking a CLI it never
+# calls. Moved here rather than deleted: the smoke test still asserts the two
+# crates compose.
+mustard-cli = { path = "../../cli" }
+
+# Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
+# unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.
+[lints]
+workspace = true

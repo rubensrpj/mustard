@@ -98,7 +98,34 @@ fn dispatch(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
     match cli.command {
         Commands::Init { force, yes, dry_run } => {
-            init::init(&cwd, &InitOptions { force, yes, dry_run })
+            // The RTK gate lives HERE, in the binary, not inside `init`. It ends
+            // in `process::exit(1)`, and a library function that returns
+            // `Result` must never take that decision away from its caller — the
+            // dashboard's integration test proved the cost by vanishing mid-run
+            // on a CI machine with no `rtk`. A terminal user still meets the gate
+            // before any disk write, which is all it ever promised.
+            //
+            // Dry-run writes nothing, so a missing `rtk` cannot leave a broken
+            // `.claude/` behind and the gate does not apply.
+            if !dry_run {
+                init::probe_rtk();
+            }
+            let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run })?;
+            // Environment acts live HERE, never in the library: putting software
+            // on the operator's machine, and writing their global settings, are
+            // things a library call must never take on its caller's behalf.
+            //
+            // The condition is `Installed`, not "no error". `Ok` used to cover
+            // the operator answering Cancel to an existing `.claude/` — and on
+            // that path this arm still ran `rtk init -g --no-patch`, a GLOBAL
+            // write, after an explicit refusal. Measured through a pty in
+            // review. `InitOutcome` exists so the caller can tell the two apart.
+            if outcome == init::InitOutcome::Installed {
+                init::ensure_global_permissions_if_opted_in();
+                init::ensure_rtk();
+                init::ensure_ripgrep();
+            }
+            Ok(())
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
         Commands::Add { template, force } => {

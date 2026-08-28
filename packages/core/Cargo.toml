@@ -56,7 +56,12 @@ tree-sitter-python = "0.25.0"
 tree-sitter-go = "0.25.0"
 tree-sitter-java = "0.23.5"
 tree-sitter-c-sharp = "0.23.5"
-tree-sitter-dart-orchard = "0.3"
+# Moved 0.3 -> 0.6: the crate's only normal dep is still `tree-sitter-language
+# ^0.1`, so the ABI constraint above is untouched, but its dev-dep moved from
+# tree-sitter ^0.25.8 to ^0.26.11 — the 0.6 line is the first that is tested
+# against the same core this workspace runs. The dart `.scm` queries were
+# re-verified against 0.6 node types (`apps/scan/tests/dart_mining_e2e.rs`).
+tree-sitter-dart-orchard = "0.6"
 # Line-based textual diff for `regression_check` — used as fallback when no
 # tree-sitter grammar is installed for the file's language. The 3.x line keeps
 # the same `TextDiff::from_lines` / `iter_all_changes` / `ChangeTag` surface

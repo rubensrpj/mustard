@@ -1,5 +1,5 @@
 ; Dart named type declarations.
-; Verified against tree-sitter-dart-orchard 0.3 node-types.json:
+; Verified against tree-sitter-dart-orchard 0.6 node-types.json:
 ;   class_definition / enum_declaration / extension_declaration carry a `name:`
 ;   field of type `identifier`; `mixin_declaration` has NO field (fields = {}) —
 ;   its name is a positional (identifier) child, so match it positionally or the

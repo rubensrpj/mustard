@@ -218,7 +218,7 @@ fn audit_targets(root: &Path) -> Vec<PathBuf> {
         "apps/cli/src",
         "apps/rt/src",
         "apps/dashboard/src",
-        "apps/dashboard/src-tauri/src",
+        "apps/dashboard/server/src",
         "packages/core/src",
         // The compiled-in harness seeds (settings, injectable instruction
         // files) — moved from apps/cli/templates, still under the EN policy.

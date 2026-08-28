@@ -1,10 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { call, subscribe } from "@/lib/api-client";
 import { queryClient } from "./query-client";
 import { onSpecsSnapshot } from "./dashboard";
 
 export async function startWatcher(repoPaths: string[]): Promise<void> {
-  await invoke("dashboard_watch_repos", { repoPaths });
+  await call("dashboard_watch_repos", { repoPaths });
 }
 
 /**
@@ -17,7 +16,7 @@ export async function startWatcher(repoPaths: string[]): Promise<void> {
  * keep their own staleTime / refetchInterval fallbacks to reconcile the
  * theoretical case of two overlapping rebuilds landing out of order.
  */
-function subscribeSpecsSnapshot(): Promise<() => void> {
+function subscribeSpecsSnapshot(): () => void {
   return onSpecsSnapshot(({ repo_path, specs, active_pipelines }) => {
     queryClient.setQueryData(["specs", repo_path], specs);
     queryClient.setQueryData(["active-pipelines", repo_path], active_pipelines);
@@ -32,13 +31,16 @@ function subscribeSpecsSnapshot(): Promise<() => void> {
  * (applied via `setQueryData` above) and the `dashboard:fs-change`
  * compatibility channel, which now invalidates ONLY the keys derived from the
  * changed kind — the specs list / active-pipeline keys come exclusively from
- * the push. Resolves to one combined unlisten.
+ * the push. Returns one combined unsubscribe.
+ *
+ * Both channels ride the single events stream `lib/api-client.ts` holds open,
+ * so subscribing costs no round trip and the caller can wire the teardown
+ * straight into an effect's cleanup.
  */
-export function subscribeFsChange(): Promise<() => void> {
-  const fsChange = listen<{ repo_path: string; kind: string }>(
+export function subscribeFsChange(): () => void {
+  const fsChange = subscribe<{ repo_path: string; kind: string }>(
     "dashboard:fs-change",
-    ({ payload }) => {
-      const { repo_path, kind } = payload;
+    ({ repo_path, kind }) => {
       if (kind === "events") {
         // Sessions are rebuilt from the per-spec/.session NDJSON event log,
         // so a new `.events/*.ndjson` line is their refresh trigger.
@@ -73,9 +75,9 @@ export function subscribeFsChange(): Promise<() => void> {
       }
     },
   );
-  return Promise.all([fsChange, subscribeSpecsSnapshot()]).then(
-    (unlistens) => () => {
-      for (const unlisten of unlistens) unlisten();
-    },
-  );
+  const specsSnapshot = subscribeSpecsSnapshot();
+  return () => {
+    fsChange();
+    specsSnapshot();
+  };
 }
