@@ -125,23 +125,33 @@ mod toolchain_tests {
         );
     }
 
-    /// A candidate is never appended twice, however many times it is offered.
+    /// A candidate is never appended twice, however many times it is OFFERED.
+    ///
+    /// The offering list really does repeat here — an earlier version of this
+    /// test passed two distinct candidates, so it asserted ordering and called
+    /// it de-duplication (found in review).
     #[test]
     fn a_candidate_is_appended_at_most_once() {
         let existing = vec![PathBuf::from("/usr/bin")];
         let out = append_missing(
             &existing,
-            vec![PathBuf::from("/opt/a"), PathBuf::from("/opt/b")],
+            vec![
+                PathBuf::from("/opt/a"),
+                PathBuf::from("/opt/b"),
+                PathBuf::from("/opt/a"),
+                PathBuf::from("/opt/a"),
+            ],
         )
-        .expect("two were missing");
+        .expect("two distinct ones were missing");
         let after = split(&out);
         assert_eq!(
             after,
             vec![
                 PathBuf::from("/usr/bin"),
                 PathBuf::from("/opt/a"),
-                PathBuf::from("/opt/b")
-            ]
+                PathBuf::from("/opt/b"),
+            ],
+            "a repeated candidate must appear once, in first-offered order"
         );
     }
 
@@ -212,10 +222,18 @@ fn augmented_path() -> Option<std::ffi::OsString> {
 /// 2. What is missing is APPENDED, so an inherited entry always wins.
 /// 3. Nothing to add ⇒ `None`, and the child inherits the environment untouched.
 fn append_missing(existing: &[PathBuf], candidates: Vec<PathBuf>) -> Option<std::ffi::OsString> {
-    let missing: Vec<PathBuf> = candidates
-        .into_iter()
-        .filter(|d| !existing.contains(d))
-        .collect();
+    // Filtered against BOTH the inherited entries and what has already been
+    // taken from this very list. Filtering only against `existing` let the same
+    // candidate in twice when it was offered twice — latent today, because
+    // `toolchain_bin_dirs` never repeats itself, and caught by the test that
+    // finally offered a duplicate (found in review).
+    let mut missing: Vec<PathBuf> = Vec::new();
+    for dir in candidates {
+        if existing.contains(&dir) || missing.contains(&dir) {
+            continue;
+        }
+        missing.push(dir);
+    }
     if missing.is_empty() {
         return None;
     }
