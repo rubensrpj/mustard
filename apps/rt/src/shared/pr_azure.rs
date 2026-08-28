@@ -30,6 +30,7 @@
 //! that records every request — the same design as `branch_state`'s `FakePr`.
 //! No test ever touches the network.
 
+use std::fmt::Write as _;
 use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -411,7 +412,9 @@ fn query_encode(value: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 out.push(byte as char);
             }
-            _ => out.push_str(&format!("%{byte:02X}")),
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
         }
     }
     out

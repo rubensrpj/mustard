@@ -62,10 +62,7 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
             continue;
         }
 
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
         for entry in entries {
             if !entry.is_dir {
                 continue;

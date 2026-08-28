@@ -340,17 +340,14 @@ fn dashboard_skills(repo_path: String) -> Result<Vec<SkillMeta>, String> {
         if !root.exists() {
             continue;
         }
-        let entries = match fs::read_dir(root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let Ok(entries) = fs::read_dir(root) else { continue };
         for entry in entries {
             let skill_path = entry.path.join("SKILL.md");
             if !skill_path.exists() { continue; }
-            let content = match fs::read_to_string(&skill_path) { Ok(c) => c, Err(_) => continue };
+            let Ok(content) = fs::read_to_string(&skill_path) else { continue };
             if !content.starts_with("---\n") { continue; }
             let (mut skill_name, description) = parse_skill_frontmatter(&content);
-            if skill_name.is_empty() { skill_name = entry.file_name.clone(); }
+            if skill_name.is_empty() { skill_name.clone_from(&entry.file_name); }
             results.push(SkillMeta { name: skill_name, description, source: source.to_string() });
         }
     }
@@ -682,10 +679,7 @@ fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
     let spec_root = base.join(".claude").join("spec");
     let mut rows: Vec<(SpecRow, Option<std::time::SystemTime>)> = Vec::new();
 
-    let rd = match fs::read_dir(&spec_root) {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
+    let Ok(rd) = fs::read_dir(&spec_root) else { return vec![] };
 
     for entry in rd {
         let path = &entry.path;
@@ -776,10 +770,7 @@ fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
 //   `### Status: closed | Phase: CLOSE`
 //   `- **Status**: closed` / `- **Phase**: CLOSE` (legacy bullet form)
 fn parse_spec_md(path: &PathBuf) -> (Option<String>, Option<String>) {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return (None, None),
-    };
+    let Ok(content) = fs::read_to_string(path) else { return (None, None) };
     let mut phase: Option<String> = None;
     let mut status: Option<String> = None;
 
@@ -1391,10 +1382,7 @@ fn dashboard_read_env(repo_path: String) -> Result<HashMap<String, String>, Stri
     }
     let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    let env_obj = match v.get("env").and_then(|e| e.as_object()) {
-        Some(obj) => obj,
-        None => return Ok(HashMap::new()),
-    };
+    let Some(env_obj) = v.get("env").and_then(|e| e.as_object()) else { return Ok(HashMap::new()) };
     let mut map = HashMap::new();
     for (k, val) in env_obj {
         map.insert(k.clone(), val.as_str().unwrap_or("").to_string());

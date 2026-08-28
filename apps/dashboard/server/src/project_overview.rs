@@ -543,7 +543,7 @@ fn dotnet_outdated(cwd: &Path) -> Vec<OutdatedDep> {
         return Vec::new();
     };
     let csproj_str = csproj.to_string_lossy().into_owned();
-    let stdout = match run_capture(
+    let Some(stdout) = run_capture(
         cwd,
         "dotnet",
         &[
@@ -554,10 +554,7 @@ fn dotnet_outdated(cwd: &Path) -> Vec<OutdatedDep> {
             "--format",
             "json",
         ],
-    ) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
+    ) else { return Vec::new() };
     let value: serde_json::Value = match serde_json::from_str(&stdout) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -602,10 +599,7 @@ fn dotnet_outdated(cwd: &Path) -> Vec<OutdatedDep> {
 /// JSON body → fail-open empty. The shape is
 /// `{ dependencies: [{ name, project, latest }] }`.
 fn cargo_outdated(cwd: &Path) -> Vec<OutdatedDep> {
-    let stdout = match run_capture(cwd, "cargo", &["outdated", "--format", "json"]) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
+    let Some(stdout) = run_capture(cwd, "cargo", &["outdated", "--format", "json"]) else { return Vec::new() };
     let value: serde_json::Value = match serde_json::from_str(&stdout) {
         Ok(v) => v,
         Err(_) => return Vec::new(),

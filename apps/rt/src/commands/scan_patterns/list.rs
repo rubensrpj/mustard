@@ -1240,7 +1240,7 @@ mod tests {
         let core = Proj { name: "core".into(), dir: "apps/api/core".into() };
         // Root (empty dir) is excluded by `collect`; here we pass only non-empty.
         let mut projects: Vec<&Proj> = vec![&root, &api, &core].into_iter().filter(|p| !p.dir.is_empty()).collect();
-        projects.sort_by(|a, b| b.dir.len().cmp(&a.dir.len()));
+        projects.sort_by_key(|a| std::cmp::Reverse(a.dir.len()));
         assert_eq!(owner_of("apps/api/core/services", &projects).unwrap().dir, "apps/api/core");
         assert_eq!(owner_of("apps/api/services", &projects).unwrap().dir, "apps/api");
         assert!(owner_of("apps/web/services", &projects).is_none());

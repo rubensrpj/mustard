@@ -438,7 +438,7 @@ mod tests {
                     "actual_words {actual_words} must exceed cap {cap}"
                 );
             }
-            other => panic!("unexpected error variant: {other:?}"),
+            other @ WaveContextError::Io { .. } => panic!("unexpected error variant: {other:?}"),
         }
     }
 

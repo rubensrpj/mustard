@@ -323,10 +323,7 @@ fn wave_status_from_header(stage: &str, outcome: &str) -> String {
 /// vec when the file is absent or malformed.
 fn read_ac_results_from_sidecar(wave_dir: &Path) -> Vec<AcResult> {
     let path = wave_dir.join("qa-report.json");
-    let text = match mfs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
+    let Ok(text) = mfs::read_to_string(&path) else { return Vec::new() };
     let v: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(_) => return Vec::new(),

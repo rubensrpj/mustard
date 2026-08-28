@@ -5,6 +5,7 @@
 //! process environment, mirroring how the JS scripts did (`CLAUDE_PROJECT_DIR`,
 //! `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`).
 
+use std::fmt::Write as _;
 use mustard_core::io::fs;
 use mustard_core::io::workspace::{workspace_root, WorkspaceError};
 use mustard_core::ClaudePaths;
@@ -944,11 +945,11 @@ pub fn clarify_marker_body(
         .filter(|t| !t.is_empty())
         .collect();
     if !terms.is_empty() {
-        body.push_str(&format!("terms={}\n", terms.join(", ")));
+        let _ = write!(body, "terms={}\n", terms.join(", "));
     }
     let reason = one_line(reason);
     if !reason.is_empty() {
-        body.push_str(&format!("reason={reason}\n"));
+        let _ = write!(body, "reason={reason}\n");
     }
     body
 }

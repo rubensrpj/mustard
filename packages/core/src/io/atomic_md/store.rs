@@ -21,6 +21,7 @@
 //!   files a sequential walk is fast enough and avoids rayon's thread-pool
 //!   overhead.
 
+use std::fmt::Write as _;
 use super::frontmatter::{self, Frontmatter};
 use std::fs;
 use std::io;
@@ -78,7 +79,7 @@ impl MarkdownDoc {
                             serde_json::Value::Null => String::new(),
                             other => other.to_string(),
                         };
-                        out.push_str(&format!("{k}: {val_str}\n"));
+                        let _ = write!(out, "{k}: {val_str}\n");
                     }
                 }
                 out.push_str("---\n");
@@ -173,10 +174,7 @@ fn collect_md_paths(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn collect_md_paths_inner(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
+    let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {

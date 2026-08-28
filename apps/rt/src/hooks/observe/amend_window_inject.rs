@@ -116,10 +116,7 @@ fn read_window(project_dir: &str, spec_id: &str) -> WindowState {
     let Some(path) = window_path(project_dir, spec_id) else {
         return WindowState::default();
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return WindowState::default(),
-    };
+    let Ok(text) = std::fs::read_to_string(&path) else { return WindowState::default() };
     serde_json::from_str(&text).unwrap_or_default()
 }
 

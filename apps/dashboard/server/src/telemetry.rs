@@ -860,17 +860,11 @@ fn run_rtk_gain(repo_path: Option<&Path>) -> RtkBlock {
         cmd.arg("-p").current_dir(p);
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(_) => return rtk_unavailable(),
-    };
+    let Ok(output) = cmd.output() else { return rtk_unavailable() };
     if !output.status.success() {
         return rtk_unavailable();
     }
-    let stdout = match std::str::from_utf8(&output.stdout) {
-        Ok(s) => s,
-        Err(_) => return rtk_unavailable(),
-    };
+    let Ok(stdout) = std::str::from_utf8(&output.stdout) else { return rtk_unavailable() };
     let v: Value = match serde_json::from_str(stdout) {
         Ok(v) => v,
         Err(_) => return rtk_unavailable(),
@@ -934,10 +928,7 @@ const EXCLUDED_HOOKS: &[&str] = &["rtk-gain", "rtk-rewrite", "budget-observation
 #[must_use]
 pub fn hook_fire_counts(repo_path: &Path, session_since: Option<&str>) -> Vec<HookFireCount> {
     let metrics_dir = repo_path.join(".claude").join(".metrics");
-    let entries = match std::fs::read_dir(&metrics_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
+    let Ok(entries) = std::fs::read_dir(&metrics_dir) else { return Vec::new() };
 
     let mut results: Vec<HookFireCount> = Vec::new();
     for entry in entries.flatten() {
@@ -952,10 +943,7 @@ pub fn hook_fire_counts(repo_path: &Path, session_since: Option<&str>) -> Vec<Ho
         if EXCLUDED_HOOKS.contains(&stem.as_str()) {
             continue;
         }
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
         let mut fires: u64 = 0;
         let mut tokens_saved: u64 = 0;
         let mut session_fires: u64 = 0;
@@ -1007,10 +995,7 @@ pub fn routing_breakdown(repo_path: &Path, session_since: Option<&str>) -> Routi
     if !path.exists() {
         return RoutingBlock::default();
     }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return RoutingBlock::default(),
-    };
+    let Ok(content) = std::fs::read_to_string(&path) else { return RoutingBlock::default() };
 
     let mut total_blocks: u64 = 0;
     let mut total_allows: u64 = 0;
@@ -1898,11 +1883,7 @@ fn repo_cache_handle(repo: &Path) -> std::sync::Arc<std::sync::Mutex<RepoEventsC
 #[must_use]
 pub(crate) fn walk_ndjson_events_cached(repo: &Path) -> std::sync::Arc<Vec<Value>> {
     let handle = repo_cache_handle(repo);
-    let mut cache = match handle.lock() {
-        Ok(c) => c,
-        // Poisoned entry: fail-open with a fresh uncached parse.
-        Err(_) => return std::sync::Arc::new(walk_ndjson_events(repo)),
-    };
+    let Ok(mut cache) = handle.lock() else { return std::sync::Arc::new(walk_ndjson_events(repo)) };
     cache.ensure_fresh(repo);
     match &cache.snapshot {
         Some(s) => std::sync::Arc::clone(s),
@@ -1927,16 +1908,13 @@ pub(crate) fn workspace_harness_events_cached(
     repo: &Path,
 ) -> std::sync::Arc<Vec<mustard_core::domain::model::event::HarnessEvent>> {
     let handle = repo_cache_handle(repo);
-    let mut cache = match handle.lock() {
-        Ok(c) => c,
-        Err(_) => {
+    let Ok(mut cache) = handle.lock() else {
             // Poisoned entry: fail-open with a fresh uncached parse + convert.
             let values = walk_ndjson_events(repo);
             return std::sync::Arc::new(
                 mustard_core::view::projection::harness_events_from_values(values.iter()),
             );
-        }
-    };
+        };
     cache.ensure_fresh(repo);
     if cache.harness.is_none() {
         let converted = match &cache.snapshot {

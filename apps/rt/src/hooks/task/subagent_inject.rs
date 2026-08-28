@@ -1542,7 +1542,7 @@ mod tests {
             review_spans::ConsolidationCheck::Blocked { entry } => {
                 assert_eq!(entry.verdict, VERDICT_RED);
             }
-            other => panic!("expected Blocked, got {other:?}"),
+            other @ review_spans::ConsolidationCheck::Allowed => panic!("expected Blocked, got {other:?}"),
         }
     }
 

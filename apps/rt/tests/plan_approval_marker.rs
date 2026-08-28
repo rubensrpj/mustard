@@ -11,6 +11,7 @@
 //! does NOT appear on the rejection shape. End-to-end equivalent of the
 //! in-module unit tests in `apps/rt/src/hooks/observe/plan_approval_observer.rs`.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -53,7 +54,7 @@ fn seed_full_plan_spec(project: &Path, session: &str, spec: &str) {
     fs::create_dir_all(&spec_dir).unwrap();
     fs::write(
         spec_dir.join("meta.json"),
-        r#"{"scope":"full (wave plan)","stage":"Plan","outcome":"Active"}"#.to_string(),
+        r#"{"scope":"full (wave plan)","stage":"Plan","outcome":"Active"}"#,
     )
     .unwrap();
     let session_dir = project.join(".claude").join(".session").join(session);

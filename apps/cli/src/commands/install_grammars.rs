@@ -32,6 +32,7 @@
 //! inside any `.rs` file under `apps/cli/src/`. Adding a new language is a
 //! one-line edit to the JSON.
 
+use std::fmt::Write as _;
 use anyhow::Result;
 use mustard_core::domain::ast::GrammarLoader;
 use mustard_core::platform::i18n::I18n;
@@ -250,16 +251,12 @@ fn render_suggestion_block(entry: &GrammarEntry, i18n: &I18n, is_installed: bool
     } else {
         String::new()
     };
-    block.push_str(&format!("### {}{marker}\n", label_for(entry)));
-    block.push_str(&format!(
-        "- {}: <{}>\n",
+    let _ = write!(block, "### {}{marker}\n", label_for(entry));
+    let _ = write!(block, "- {}: <{}>\n",
         i18n.render("cli.install_grammars.repo_label"),
-        entry.repo_url
-    ));
-    block.push_str(&format!(
-        "- {}:\n",
-        i18n.render("cli.install_grammars.install_cmd_label")
-    ));
+        entry.repo_url);
+    let _ = write!(block, "- {}:\n",
+        i18n.render("cli.install_grammars.install_cmd_label"));
     block.push_str("```sh\n");
     block.push_str(&entry.install_cmd);
     block.push('\n');
@@ -285,10 +282,8 @@ fn render_output(
     i18n: &I18n,
 ) -> String {
     let mut out = String::new();
-    out.push_str(&format!(
-        "# {}\n\n",
-        i18n.render("cli.install_grammars.title")
-    ));
+    let _ = write!(out, "# {}\n\n",
+        i18n.render("cli.install_grammars.title"));
     out.push_str(&i18n.render("cli.install_grammars.lead"));
     out.push_str("\n\n");
 

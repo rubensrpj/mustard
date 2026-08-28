@@ -100,7 +100,7 @@ pub(super) fn load_pruned_prior_summaries(
         by_wave.push((n, dir_name, summary_path));
     }
     // Sort descending by wave number so most-recent prior wave is first.
-    by_wave.sort_by(|a, b| b.0.cmp(&a.0));
+    by_wave.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     for (n, dir_name, path) in by_wave {
         // T6.4 — when the operational spec declared its inheritance via wikilinks,
@@ -239,7 +239,7 @@ fn wave_summary_addresses(spec_dir: &Path, current_wave: u32) -> Vec<String> {
         }
         rows.push((n, format!("{}/_summary", entry.file_name)));
     }
-    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.sort_by_key(|a| std::cmp::Reverse(a.0));
     rows.into_iter().map(|(_, addr)| addr).collect()
 }
 

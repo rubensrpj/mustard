@@ -153,7 +153,7 @@ pub fn ingest(root: &Path) -> Result<Ingested> {
         .into_iter()
         .map(|(language, (files, loc))| LanguageStat { language, files, loc })
         .collect();
-    languages.sort_by(|a, b| b.loc.cmp(&a.loc));
+    languages.sort_by_key(|a| std::cmp::Reverse(a.loc));
 
     let frameworks = infer_frameworks(&manifests);
 
