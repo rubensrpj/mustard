@@ -32,7 +32,7 @@
 //!    - migration: a legacy Mustard-planted `.claude/CLAUDE.md` (identified by
 //!      its `# Orchestrator Rules` marker) is deleted, and the Mustard import
 //!      + breadcrumb lines are removed from the project-root `CLAUDE.md` —
-//!      the file goes back to being fully the user's;
+//!        the file goes back to being fully the user's;
 //! 4. copy `templates/.github/` → project-root `.github/` when a GitHub remote
 //!    is detected (project-level scaffolding, not part of the plugin);
 //! 5. write the single project-root `mustard.json`: git-flow + agnostically

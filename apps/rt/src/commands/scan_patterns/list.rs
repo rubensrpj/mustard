@@ -912,7 +912,7 @@ fn confirm_implements(candidates: &mut [Candidate], modules: &[Mod]) {
         if known.is_empty() {
             continue; // no parsed file in this house — nothing to judge with.
         }
-        let evidencing = known.iter().filter(|ss| ss.iter().any(|s| *s == hint)).count();
+        let evidencing = known.iter().filter(|ss| ss.contains(&hint)).count();
         if evidencing < MIN_EXEMPLARS {
             c.implements = None;
         }
@@ -1210,6 +1210,7 @@ fn matches_affix(stem: String, affix: &str, kind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn write_model(root: &Path, json: &str) {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
@@ -1235,12 +1236,12 @@ mod tests {
 
     #[test]
     fn owner_picks_longest_prefix() {
-        let root = Proj { name: "root".into(), dir: "".into() };
+        let root = Proj { name: "root".into(), dir: String::new() };
         let api = Proj { name: "api".into(), dir: "apps/api".into() };
         let core = Proj { name: "core".into(), dir: "apps/api/core".into() };
         // Root (empty dir) is excluded by `collect`; here we pass only non-empty.
         let mut projects: Vec<&Proj> = vec![&root, &api, &core].into_iter().filter(|p| !p.dir.is_empty()).collect();
-        projects.sort_by(|a, b| b.dir.len().cmp(&a.dir.len()));
+        projects.sort_by_key(|a| std::cmp::Reverse(a.dir.len()));
         assert_eq!(owner_of("apps/api/core/services", &projects).unwrap().dir, "apps/api/core");
         assert_eq!(owner_of("apps/api/services", &projects).unwrap().dir, "apps/api");
         assert!(owner_of("apps/web/services", &projects).is_none());
@@ -2391,7 +2392,10 @@ mod tests {
         // and the check correctly abstains.
         // Directly in `src/`, so the folder role resolves its exemplars there.
         let modules: String =
-            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+            (0..10).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, r#"{{"path":"apps/api/src/thing{i}.x"}},"#);
+                acc
+            });
         write_model(
             root,
             &format!(
@@ -2431,9 +2435,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let prod: String =
-            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+            (0..10).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, r#"{{"path":"apps/api/src/thing{i}.x"}},"#);
+                acc
+            });
         let tests: String =
-            (0..30).map(|i| format!(r#"{{"path":"apps/api/tests/fixtures/case{i}.x"}},"#)).collect();
+            (0..30).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, r#"{{"path":"apps/api/tests/fixtures/case{i}.x"}},"#);
+                acc
+            });
         write_model(
             root,
             &format!(

@@ -111,9 +111,24 @@ jobs:
       - name: Test
         run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard -- --test-threads=8
 
-      # Plain clippy: the workspace lint table makes `unwrap_used` (and other
-      # correctness lints) deny-level while keeping pedantic lints at warn, so
-      # this fails the build on real problems without drowning in style noise.
+      # `-D warnings`: EVERY warning fails the build, not only the deny-level
+      # ones. The lint table used to keep pedantic at warn "without drowning in
+      # style noise", and the drowning happened anyway — 347 warnings, zero
+      # errors, CI green. That count is not a cosmetic problem: with 347 in the
+      # background a NEW warning becomes 348 and nobody sees it. Measured on
+      # this very repository, 2026-08-27: two warnings introduced in one session
+      # were found only by comparing counts against the previous commit, never
+      # by reading the build.
+      #
+      # What normally makes `-D warnings` risky in CI is a compiler bump lighting
+      # up new lints on a Friday afternoon. That does not apply here:
+      # `rust-toolchain.toml` pins the compiler, so changing it is already a
+      # deliberate commit that lands its own fallout.
+      #
+      # The escape hatch stays open and stays honest: a lint that is not worth
+      # obeying is turned off in `[workspace.lints.clippy]` WITH the reason
+      # written beside it, and `scripts/ac/lint-allows-have-reasons.py` fails the
+      # build on a silent one.
       #
       # `mustard-dashboard` is IN now. It used to be absent because it did not
       # opt into `[lints] workspace = true` — so clippy there had no deny-level
@@ -128,4 +143,9 @@ jobs:
       # clean and reported a pass nobody earned. All 269 were rewritten as
       # `.expect("<reason>")`; this flag is what keeps them from coming back.
       - name: Clippy
-        run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard
+        run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard -- -D warnings
+
+      # A válvula de escape do passo acima é desligar o lint. Isto garante que
+      # ela nunca seja usada em silêncio.
+      - name: Lint allows carry a reason
+        run: python3 scripts/ac/lint-allows-have-reasons.py

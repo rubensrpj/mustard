@@ -187,8 +187,8 @@ fn walk_workspace_events(spec_root: &Path) -> Vec<HarnessEvent> {
 /// Freshness fingerprint of the workspace event shards: the newest mtime across
 /// every `<spec>/.events/*.ndjson` plus their total byte length. A pure stat walk
 /// - no shard is opened or parsed - so the many projection views rendered in one
-/// process pay the walk + parse ONCE and reuse the cached slice. `total_len`
-/// catches a shard truncated or removed without advancing the max mtime.
+///   process pay the walk + parse ONCE and reuse the cached slice. `total_len`
+///   catches a shard truncated or removed without advancing the max mtime.
 fn workspace_events_freshness(spec_root: &Path) -> WorkspaceEventsFreshness {
     let Ok(spec_entries) = std::fs::read_dir(spec_root) else {
         return (None, 0);
@@ -230,10 +230,11 @@ type WorkspaceEventsFreshness = (Option<SystemTime>, u64);
 /// (`event_projections` folds several views per invocation); the dashboard feeds
 /// the projections from its own parsed-events cache and never reaches this walker,
 /// so a process-lived cache here is bounded by the CLI's short life.
-fn workspace_events_cache(
-) -> &'static Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>>> =
-        OnceLock::new();
+/// O que o cache guarda por raiz: quando a leitura foi feita, e o que ela leu.
+type WorkspaceEventsCache = Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>>;
+
+fn workspace_events_cache() -> &'static WorkspaceEventsCache {
+    static CACHE: OnceLock<WorkspaceEventsCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -288,11 +289,9 @@ mod tests {
     #[test]
     fn harness_events_from_values_converts_a_loaded_slice_without_io() {
         // Sparse record: missing payload/spec/wave must default safely.
-        let records = vec![
-            json!({ "event": "pipeline.phase", "ts": "2026-06-10T10:00:00Z",
+        let records = [json!({ "event": "pipeline.phase", "ts": "2026-06-10T10:00:00Z",
                     "spec": "alpha", "payload": { "to": "EXECUTE" } }),
-            json!({ "event": "tool.use", "ts": "2026-06-10T10:01:00Z" }),
-        ];
+            json!({ "event": "tool.use", "ts": "2026-06-10T10:01:00Z" })];
         let events = harness_events_from_values(records.iter());
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event, "pipeline.phase");

@@ -280,7 +280,7 @@ mod tests {
                 assert_eq!(path, "apps/api/.claude/skills/api-a-pattern/SKILL.md");
                 assert!(body.contains("## Purpose"), "the body survives whole");
             }
-            other => panic!("expected a file block, got {other:?}"),
+            other @ Block::Decline { .. } => panic!("expected a file block, got {other:?}"),
         }
         assert_eq!(
             blocks[1],

@@ -104,16 +104,13 @@ pub(crate) fn append_change_request(
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }
-    let mut line = match serde_json::to_string(&json!({
+    let Ok(mut line) = serde_json::to_string(&json!({
         "ts": now_iso8601(),
         "session_id": session_id,
         "spec": spec,
         "stage": stage,
         "prompt": prompt,
-    })) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+    })) else { return };
     line.push('\n');
     // Append-only NDJSON: UserPromptSubmit is serialised per session, so a plain
     // append (not atomic write) is the correct, idiomatic log primitive here.

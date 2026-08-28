@@ -382,7 +382,7 @@ mod tests {
     /// when the on-disk fixture is missing or has fewer than five
     /// patterns.
     fn synthetic_source() -> &'static str {
-        r#"
+        r"
 pub fn pattern_none() -> Option<u32> {
     None
 }
@@ -402,7 +402,7 @@ pub fn pattern_unimplemented() -> u32 {
 pub fn pattern_todo() -> u32 {
     todo!()
 }
-"#
+"
     }
 
     fn declared_for_synthetic() -> Vec<String> {
@@ -479,8 +479,7 @@ pub fn pattern_todo() -> u32 {
             assert_eq!(
                 hit.mode,
                 DetectionMode::Textual,
-                "textual-only loader must tag mode=Textual; hit={:?}",
-                hit
+                "textual-only loader must tag mode=Textual; hit={hit:?}"
             );
         }
         assert_all_five_patterns(&textual_hits, "textual");

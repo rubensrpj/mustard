@@ -12,8 +12,8 @@
 //!     `manifests.toml`, so no dependency evidence exists to match
 //!     `manifest_deps` against (a data gap, not an engine fault) → medium
 //!     confidence.
-//! Everything Laravel/Django-specific lives in the fixtures and in the data
-//! files (core's stacks.toml); `src/` stays blind to stack names.
+//!     Everything Laravel/Django-specific lives in the fixtures and in the data
+//!     files (core's stacks.toml); `src/` stays blind to stack names.
 
 use std::path::PathBuf;
 use std::process::Command;

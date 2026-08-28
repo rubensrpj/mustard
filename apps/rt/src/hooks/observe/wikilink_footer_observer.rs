@@ -67,10 +67,7 @@ fn is_atomic_md_path(path: &Path) -> bool {
 /// `[[rt.entity.Y]]` link resolve to a capability/graph node by frontmatter
 /// `id:` just like a spec reference does.
 fn search_dirs(project: &str) -> Vec<PathBuf> {
-    let claude = match ClaudePaths::for_project(project) {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
-    };
+    let Ok(claude) = ClaudePaths::for_project(project) else { return Vec::new() };
     let claude_dir = claude.claude_dir();
     vec![
         claude_dir.join("memory"),

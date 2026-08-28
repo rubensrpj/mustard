@@ -669,9 +669,11 @@ fn unmet_gate_message(
              can forge none of them — (1) the user accepts the plan in plan mode \
              (ExitPlanMode); (2) the user SELECTS the approval option of the approval \
              AskUserQuestion (fallback) — a label carrying `approv`/`aprov`, since free text \
-             typed instead of selected mints nothing; (3) the user types `/mustard:spec \
-             {letter}r` — or `/mustard:spec r` inside the unit's own work branch, where the \
-             branch already names the unit — as the WHOLE prompt"
+             typed instead of selected mints nothing; (3) the user types a picker form as the \
+             WHOLE prompt — `/mustard:spec {letter}` (the row letter alone IS the approval), \
+             `/mustard:spec {letter}r` (the same, older alias), `/mustard:spec r`, or \
+             `/mustard:spec` on its own inside the unit's own work branch, where the branch \
+             already names the unit"
                 .to_string(),
         );
     }
@@ -1492,10 +1494,14 @@ mod tests {
             msg.contains("approv") && msg.contains("aprov"),
             "the modal gesture must name the label stems its recorder matches: {msg}"
         );
-        // 3. The picker — both spellings, under the whole-prompt rule that is the
-        //    only thing keeping the form unforgeable.
+        // 3. The picker — every spelling, under the whole-prompt rule that is the
+        //    only thing keeping the form unforgeable. The BARE letter is named
+        //    first: it is the cheapest way out and the one this message used to
+        //    omit, sending the operator to a longer form for no reason.
         assert!(
-            msg.contains("/mustard:spec {letter}r") && msg.contains("/mustard:spec r"),
+            msg.contains("/mustard:spec {letter}")
+                && msg.contains("/mustard:spec {letter}r")
+                && msg.contains("/mustard:spec r"),
             "the picker gestures are unnamed — the operator's one-line way out is \
              missing from the message that explains what to do instead: {msg}"
         );
@@ -1568,8 +1574,7 @@ mod tests {
             |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
 
         let refused = approve_at(root_str, &opts, ApprovalMode::Strict, "s-1", &mut record)
-            .err()
-            .expect("a marker that recorded nothing must refuse the approval");
+            .expect_err("a marker that recorded nothing must refuse the approval");
         assert!(refused.exit_nonzero, "a gate refusal exits non-zero");
         assert!(
             refused.error.contains(".clarified") && refused.error.contains("recorded NOTHING"),

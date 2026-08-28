@@ -200,7 +200,7 @@ mod tests {
     fn aho_matcher_skips_empty_terms() {
         let m = AhoMatcher::from_layers(vec![VocabLayer {
             kind: Layer::Semantic,
-            terms: vec!["fail-open".into(), "".into(), "   ".into()],
+            terms: vec!["fail-open".into(), String::new(), "   ".into()],
         }])
         .unwrap();
         assert_eq!(m.term_count(), 1);

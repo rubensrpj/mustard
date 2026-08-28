@@ -244,17 +244,17 @@ pub fn dispatch(cmd: ScanCmd) {
         ScanCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
         ScanCmd::ScanGuardsList { root } => scan_guards::list::run(&root),
         ScanCmd::ScanGuardsApply { path, root, guards } => {
-            scan_guards::apply::run(&path, &root, &guards)
+            scan_guards::apply::run(&path, &root, &guards);
         }
         ScanCmd::ScanLapidation { root } => crate::commands::lapidation::run(&root),
         ScanCmd::ScanPatternsList { root, rejected, subproject } => {
-            scan_patterns::list::run(&root, rejected, subproject.as_deref())
+            scan_patterns::list::run(&root, rejected, subproject.as_deref());
         }
         ScanCmd::ScanPatternsApply { path, content, root } => {
-            scan_patterns::apply::run(&path, &content, &root)
+            scan_patterns::apply::run(&path, &content, &root);
         }
         ScanCmd::ScanPatternsDecline { root, slug, reason } => {
-            scan_patterns::decline::run(&root, &slug, &reason)
+            scan_patterns::decline::run(&root, &slug, &reason);
         }
         ScanCmd::ScanPatternsRelay { root, content } => scan_patterns::relay::run(&root, &content),
         ScanCmd::ScanPatternsSweep { root } => scan_patterns::sweep::run(&root),

@@ -21,7 +21,7 @@ pub struct EventReader;
 impl EventReader {
     /// Create a new, empty reader.
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     /// Return a streaming iterator over all events in `path`.
@@ -34,10 +34,7 @@ impl EventReader {
     /// an unreadable file returns an empty iterator.
     pub fn stream(path: &Path) -> impl Iterator<Item = Event> {
         // Open the file; if it doesn't exist / can't be opened, return empty.
-        let file = match fs::File::open(path) {
-            Ok(f) => f,
-            Err(_) => return itertools_either::Either::Left(std::iter::empty()),
-        };
+        let Ok(file) = fs::File::open(path) else { return itertools_either::Either::Left(std::iter::empty()) };
 
         // Line-by-line: each `BufRead::lines()` call yields exactly one NDJSON
         // record. This correctly isolates malformed lines — a bad line is

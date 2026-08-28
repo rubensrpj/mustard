@@ -11,10 +11,10 @@
 //!     so nothing else fails loudly);
 //!   * every kind the fixture produces is declared — the manifest never lies
 //!     by omission.
-//! Adding a language = a languages.toml row + tags.scm + a graph_<dir>
-//! fixture + a manifest entry; a gap in any of the four surfaces here.
-//! A second test cross-checks languages.toml against the manifest, so a
-//! declared `dir` with no manifest entry cannot pass in silence.
+//!     Adding a language = a languages.toml row + tags.scm + a graph_<dir>
+//!     fixture + a manifest entry; a gap in any of the four surfaces here.
+//!     A second test cross-checks languages.toml against the manifest, so a
+//!     declared `dir` with no manifest entry cannot pass in silence.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

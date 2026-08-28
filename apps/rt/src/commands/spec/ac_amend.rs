@@ -858,7 +858,7 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // Assigned HERE, before the report clones it. It used to be set after, so
     // stdout — the documented interface — omitted the field the ledger carried,
     // and an auditor reading the report could not make the distinction either.
-    proof.proof_tree = proof_tree_record.clone();
+    proof.proof_tree.clone_from(&proof_tree_record);
 
     let mut report = AcAmendReport {
         ok: false,

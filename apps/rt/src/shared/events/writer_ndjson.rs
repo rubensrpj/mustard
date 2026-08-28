@@ -309,7 +309,6 @@ pub fn write_event_with_ts(
 
 
 /// of 400 (1900 not leap, 2000 leap).
-
 #[cfg(test)]
 mod tests {
     use super::*;

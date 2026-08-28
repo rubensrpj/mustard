@@ -75,10 +75,7 @@ fn structural_role(lower_path: &str) -> String {
     let norm = lower_path.replace('\\', "/");
     let segments: Vec<&str> = norm.split('/').collect();
     // Drop the filename (last segment); consider only directory segments.
-    let dir_segments = match segments.split_last() {
-        Some((_file, dirs)) => dirs,
-        None => return "lib".to_string(),
-    };
+    let Some((_file, dir_segments)) = segments.split_last() else { return "lib".to_string() };
     // Deepest meaningful (non-generic, non-empty) directory segment.
     for seg in dir_segments.iter().rev() {
         let seg = seg.trim();

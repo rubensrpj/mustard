@@ -185,13 +185,11 @@ fn render(
     let mut seen = HashSet::new();
     for l in lines {
         for r in &l.roles {
-            if let Some(rm) = roles_meta.get(r.as_str()) {
-                if let Some(impl_) = &rm.implements {
-                    if seen.insert(impl_.clone()) {
+            if let Some(rm) = roles_meta.get(r.as_str())
+                && let Some(impl_) = &rm.implements
+                    && seen.insert(impl_.clone()) {
                         o.push_str(&format!("- **{r}** implements `{impl_}`\n"));
                     }
-                }
-            }
         }
     }
     for sc in model.shared_contracts.iter().take(4) {

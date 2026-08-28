@@ -307,7 +307,7 @@ fn check_subtractions(claude_root: &Path) -> Value {
     let count = events
         .iter()
         .filter(|e| e.kind == KIND_SUBTRACTION)
-        .filter(|e| event_ts_ms(e).map_or(true, |ts| ts >= since_ms))
+        .filter(|e| event_ts_ms(e).is_none_or(|ts| ts >= since_ms))
         .count() as i64;
     json!({ "ok": true, "count": count })
 }

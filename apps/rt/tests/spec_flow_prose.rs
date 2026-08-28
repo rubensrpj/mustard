@@ -79,7 +79,7 @@ fn assert_superseded_gone(rel: &str, body: &str) {
     );
 }
 
-/// AC-4 — the picker states that the typed `r` IS the approval.
+/// AC-4 — the picker states that SELECTING is approving.
 ///
 /// The picker used to say the opposite in four places, and it was load-bearing
 /// prose: the operator read it and routed a user who had already typed their
@@ -87,22 +87,39 @@ fn assert_superseded_gone(rel: &str, body: &str) {
 /// property is that the model cannot author it — and the text a user types is
 /// exactly that class of act, so honouring it removes a gesture without
 /// weakening the gate.
+///
+/// This test used to pin the HALFWAY version of that contract: `ar` approved,
+/// a bare letter did not. That half-step was the ceremony, not a safeguard — a
+/// letter reaches the observer through the same channel `ar` does, and the
+/// table's own legend had always called it *act on row — PLAN approve*. So the
+/// assertions below pin the whole contract, and they stay exactly as strict
+/// about the half that carries the security: WHICH gestures mint, and which
+/// still mint nothing.
 #[test]
 fn picker_prose_states_the_typed_letter_is_the_approval() {
     let picker = read("plugin/commands/spec.md");
 
     // --- 1. The new contract, where each reader arrives at it -------------
     // The header line: the first thing anyone opening the command reads.
-    let intro = line_with(&picker, "A letter + `r` (e.g. `ar`)")
-        .expect("the picker header no longer explains the `r` suffix");
+    let intro = line_with(&picker, "**Selecting IS approving:**")
+        .expect("the picker header no longer states that selecting a row approves it");
     assert!(
         intro.contains(".approved-by-user"),
-        "the header says what `ar` does without naming the marker it mints: {intro}",
+        "the header says selecting approves without naming the marker it mints: {intro}",
     );
-    // Saying it approves is not the whole contract — the bare letter must NOT.
+    // Saying it approves is not the whole contract. The header must ALSO carry
+    // the exactness rule, which is the half that keeps the gesture unforgeable,
+    // and must name at least one gesture that still mints nothing — or the page
+    // reads as "the picker always approves".
     assert!(
-        intro.contains("ALONE"),
-        "the header must keep the bare letter on the normal approval path: {intro}",
+        intro.contains("whole prompt") || intro.contains("WHOLE prompt"),
+        "the header must keep the whole-prompt rule — a substring match would let a \
+         message quoting the form forge the marker: {intro}",
+    );
+    assert!(
+        intro.contains("mints nothing"),
+        "the header must name what does NOT approve, or selecting reads as \
+         unconditional: {intro}",
     );
 
     // The parse rule: where the letter form is actually decoded.
@@ -110,7 +127,12 @@ fn picker_prose_states_the_typed_letter_is_the_approval() {
         .expect("the picker no longer documents the letter-mode pattern");
     assert!(
         parse.contains(".approved-by-user"),
-        "the parse rule does not say the typed `r` mints the marker: {parse}",
+        "the parse rule does not say the typed letter mints the marker: {parse}",
+    );
+    assert!(
+        parse.contains("A bare letter MINTS"),
+        "the parse rule must state the bare letter approves — the halfway contract \
+         is what made the operator answer the same question twice: {parse}",
     );
     assert!(
         parse.contains(".clarified"),
@@ -150,8 +172,8 @@ fn resume_prose_skips_the_second_gesture_for_the_typed_form() {
     let loop_ref = read("plugin/refs/spec/resume-loop.md");
 
     // --- 1. The shortcut is written down, inside §A -----------------------
-    let shortcut = line_with(&loop_ref, "Typed `{letter}r`")
-        .expect("§A never tells the orchestrator what to do with a typed `{letter}r`");
+    let shortcut = line_with(&loop_ref, "Typed `{letter}`")
+        .expect("§A never tells the orchestrator what to do with a typed picker gesture");
     assert!(
         shortcut.contains(".approved-by-user"),
         "the shortcut does not name the marker that is already minted: {shortcut}",
@@ -167,10 +189,18 @@ fn resume_prose_skips_the_second_gesture_for_the_typed_form() {
          relay: {shortcut}",
     );
     // The counterweight, so the paragraph cannot be read as "the picker always
-    // approves": a bare letter mints nothing and takes the normal gate.
+    // approves". The limit moved when the bare letter started minting: it is no
+    // longer "a letter without `r`" but the two positions where a gesture names
+    // no spec — a table answer, and the bare command off a unit's branch.
     assert!(
-        shortcut.contains("bare letter"),
-        "the shortcut omits its limit — a letter without `r` mints no marker: {shortcut}",
+        shortcut.contains("mints nothing"),
+        "the shortcut omits its limit — the page must name the gestures that record \
+         no marker, or the picker reads as approving unconditionally: {shortcut}",
+    );
+    assert!(
+        shortcut.contains("integration base"),
+        "the shortcut must say what the bare command does where the tree stands on no \
+         unit; silence there reads as \"approves something\": {shortcut}",
     );
 
     // It belongs in §A, beside the approvedByUser shortcut it extends; the §B
@@ -178,7 +208,7 @@ fn resume_prose_skips_the_second_gesture_for_the_typed_form() {
     let already = loop_ref
         .find("**Already approved — skip re-approval")
         .expect("§A no longer carries the approvedByUser shortcut");
-    let typed = loop_ref.find("Typed `{letter}r`").expect("checked above");
+    let typed = loop_ref.find("Typed `{letter}`").expect("checked above");
     assert!(
         typed > already && typed - already < 1500,
         "the typed-form shortcut must sit with the approvedByUser one it extends \

@@ -8,9 +8,9 @@
 //!   * python      `from mypkg.models import X`     (dotted module path)
 //!   * rust        `use crate::util::helper;`       (root-alias + `::` path)
 //!   * php         `use App\Models\User;`           (FQCN naming a type)
-//! plus `graph_rust_external_std/`: an EXTERNAL `use std::collections::HashMap;`
-//! beside an internal `src/collections.rs` — must yield ZERO edges (the
-//! root-alias branch only runs for declared aliases like `crate`).
+//!     plus `graph_rust_external_std/`: an EXTERNAL `use std::collections::HashMap;`
+//!     beside an internal `src/collections.rs` — must yield ZERO edges (the
+//!     root-alias branch only runs for declared aliases like `crate`).
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -33,7 +33,7 @@ fn fixture(name: &str) -> PathBuf {
 /// Scan a fixture into a temp `grain.model.json` and return the parsed value.
 /// Mirrors `php_laravel_fixture.rs`: a per-CALL temp dir (label + fixture name
 /// + pid) so parallel tests scanning the same fixture never yank each other's
-/// dir (the per-language test and the non-regression test share fixtures).
+///   dir (the per-language test and the non-regression test share fixtures).
 fn scan_fixture_labeled(label: &str, name: &str) -> serde_json::Value {
     let dir = std::env::temp_dir().join(format!("scan-graph-{}-{}-{}", label, name, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

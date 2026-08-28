@@ -1029,7 +1029,6 @@ impl Check for SubagentInject {
 
 /// Emit `pipeline.economy.operation.invoked` for a W8 in-binary operation.
 /// Fail-open. Routes through `route::emit` (NDJSON sink) for uniformity.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1543,7 +1542,7 @@ mod tests {
             review_spans::ConsolidationCheck::Blocked { entry } => {
                 assert_eq!(entry.verdict, VERDICT_RED);
             }
-            other => panic!("expected Blocked, got {other:?}"),
+            other @ review_spans::ConsolidationCheck::Allowed => panic!("expected Blocked, got {other:?}"),
         }
     }
 

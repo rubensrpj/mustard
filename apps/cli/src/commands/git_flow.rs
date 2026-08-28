@@ -397,8 +397,10 @@ mod tests {
     fn apply_choices_preserves_existing_commands() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
-        let mut config = ProjectConfig::default();
-        config.build_command = Some("custom build".into());
+        let mut config = ProjectConfig {
+            build_command: Some("custom build".into()),
+            ..Default::default()
+        };
         let choices = Choices {
             production: "main".into(),
             dev_branch: String::new(),

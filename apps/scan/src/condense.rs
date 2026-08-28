@@ -25,7 +25,7 @@ pub fn build_skeleton(modules: &[Module], depth_by_path: &std::collections::Hash
             SkeletonEntry { dir: dir.clone(), role: format!("L{}", avg.round() as usize), files }
         })
         .collect();
-    entries.sort_by(|a, b| b.files.cmp(&a.files));
+    entries.sort_by_key(|a| std::cmp::Reverse(a.files));
     entries.truncate(25);
     entries
 }

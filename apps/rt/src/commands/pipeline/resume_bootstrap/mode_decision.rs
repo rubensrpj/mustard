@@ -32,14 +32,10 @@ use std::path::{Path, PathBuf};
 /// Reads from the per-spec NDJSON events dir (`.claude/spec/{spec}/.events/`).
 /// Fail-open: an unreadable dir returns `(false, None)`.
 pub(super) fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option<i64>) {
-    let events_dir = match ClaudePaths::for_project(project)
+    let Some(events_dir) = ClaudePaths::for_project(project)
         .ok()
         .and_then(|p| p.for_spec(spec).ok())
-        .map(|sp| sp.events_dir())
-    {
-        Some(d) => d,
-        None => return (false, None),
-    };
+        .map(|sp| sp.events_dir()) else { return (false, None) };
 
     let now_ms = i64::try_from(mustard_core::time::now_unix_millis() as u128).unwrap_or(i64::MAX);
 
@@ -68,11 +64,10 @@ pub(super) fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option
                         last_resume_ts = ts;
                     }
                 }
-                k if k == EVENT_PIPELINE_WAVE_COMPLETE => {
-                    if ts.as_deref() > last_wave_complete_ts.as_deref() {
+                k if k == EVENT_PIPELINE_WAVE_COMPLETE
+                    && ts.as_deref() > last_wave_complete_ts.as_deref() => {
                         last_wave_complete_ts = ts;
                     }
-                }
                 _ => {}
             }
         }

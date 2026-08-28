@@ -159,7 +159,7 @@ fn resolve_pending_plan(cwd: &str, input: &HookInput) -> PendingPlan {
         let Some(spec) = rung() else {
             continue;
         };
-        if !is_full_plan(cwd, &spec) {
+        if !is_awaiting_approval(cwd, &spec) {
             outside.get_or_insert(PendingPlan::Outside { spec, already_approved: false });
             continue;
         }
@@ -181,7 +181,7 @@ fn resolve_pending_plan(cwd: &str, input: &HookInput) -> PendingPlan {
 ///
 /// Field evidence (2026-07-18): the emitter-side session bind raced to a dead
 /// session, so both approval observers went blind and a genuine user approval
-/// minted nothing. Reusing [`is_full_plan`] + [`already_approved`] — the same
+/// minted nothing. Reusing [`is_awaiting_approval`] + [`already_approved`] — the same
 /// predicates the observer's fact 1 already trusts — keeps this fallback aligned
 /// with the gate and free of a second, driftable definition of "pending Full plan".
 fn unique_pending_full_plan(cwd: &str) -> Option<String> {
@@ -191,7 +191,7 @@ fn unique_pending_full_plan(cwd: &str) -> Option<String> {
         .into_iter()
         .filter(|e| e.is_dir)
         .map(|e| e.file_name)
-        .filter(|name| is_full_plan(cwd, name) && !already_approved(cwd, name));
+        .filter(|name| is_awaiting_approval(cwd, name) && !already_approved(cwd, name));
     let first = pending.next()?;
     // A second candidate makes attribution ambiguous → record nothing.
     if pending.next().is_some() {
@@ -200,9 +200,25 @@ fn unique_pending_full_plan(cwd: &str) -> Option<String> {
     Some(first)
 }
 
-/// `true` when `spec` is a Full-scope spec still in stage `Plan` (from its
-/// `meta.json`) — the only lifecycle state where a PLAN approval is pending.
-pub(crate) fn is_full_plan(cwd: &str, spec: &str) -> bool {
+/// `true` when `spec` is still in stage `Plan` (from its `meta.json`) — the one
+/// lifecycle state where a PLAN approval is pending, and therefore the one where
+/// a genuine approval gesture has anything to record.
+///
+/// **Scope is deliberately NOT part of this.** It used to require
+/// `scope=full`, and that made every `light` spec unapprovable: the three doors
+/// that mint `.approved-by-user` all asked this predicate, while `approve-spec`
+/// demands the marker from specs of EVERY scope. So a light spec met a gate that
+/// nothing could open — the operator made the exact gesture the refusal text
+/// names, nothing was written, and the only way out was the
+/// `MUSTARD_APPROVAL_MODE=warn` escape hatch. Measured twice in the field on
+/// this repository (2026-08-26 and again 2026-08-27, the second time on the very
+/// unit that removed it).
+///
+/// Scope was never the reason for the filter. The reason is *is an approval
+/// pending*, and a light plan awaits approval exactly as a full one does — the
+/// scope decides how much ceremony the plan carries, never whether a person's
+/// approval of it counts.
+pub(crate) fn is_awaiting_approval(cwd: &str, spec: &str) -> bool {
     let Some(sp) = ClaudePaths::for_project(Path::new(cwd))
         .and_then(|p| p.for_spec(spec))
         .ok()
@@ -212,17 +228,10 @@ pub(crate) fn is_full_plan(cwd: &str, spec: &str) -> bool {
     let Some(meta) = mustard_core::read_meta(&sp.meta_json_path()) else {
         return false;
     };
-    let is_full = meta
-        .scope
-        .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase().starts_with("full"))
-        .unwrap_or(false);
-    let is_plan = meta
-        .stage
+    meta.stage
         .as_deref()
         .map(|s| s.trim().eq_ignore_ascii_case("Plan"))
-        .unwrap_or(false);
-    is_full && is_plan
+        .unwrap_or(false)
 }
 
 /// `true` when the spec already carries a `pipeline.status{to:approved}` event —
@@ -859,15 +868,21 @@ mod tests {
     }
 
     #[test]
-    fn light_spec_writes_nothing() {
+    /// A `light` spec is approvable through this door too. See
+    /// [`is_awaiting_approval`] for the deadlock that `scope=full` produced:
+    /// every door demanded `full`, `approve-spec` demanded the marker from every
+    /// scope, and a light plan met a gate nothing could open.
+    fn light_spec_can_be_approved() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // A Light spec has no PLAN approval gate at all.
         seed_spec(root, "small", "light", "Plan");
         bind_session(root, "s-1", "small");
         let input = ask_input("s-1", json!({ "Decision": "Aprovar" }));
         ApprovalMarkerObserver.observe(&input, &ctx(root.to_str().unwrap()));
-        assert!(!marker_exists(root, "small"));
+        assert!(
+            marker_exists(root, "small"),
+            "a selected `Aprovar` is a person's approval whatever the plan's scope"
+        );
     }
 
     #[test]

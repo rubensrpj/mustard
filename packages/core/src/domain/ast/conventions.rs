@@ -106,10 +106,10 @@ pub fn is_test_path(rel: &str) -> bool {
         if segment.is_empty() {
             continue;
         }
-        if TEST_DIR_SEGMENTS.iter().any(|d| *d == segment) {
+        if TEST_DIR_SEGMENTS.contains(&segment) {
             return true;
         }
-        if i <= AMBIGUOUS_MAX_DEPTH && AMBIGUOUS_TEST_DIR_SEGMENTS.iter().any(|d| *d == segment) {
+        if i <= AMBIGUOUS_MAX_DEPTH && AMBIGUOUS_TEST_DIR_SEGMENTS.contains(&segment) {
             return true;
         }
     }

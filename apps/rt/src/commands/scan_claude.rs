@@ -40,8 +40,7 @@ use mustard_core::{translate, SupportedLocale};
 pub const SCAN_MAP_HARD_CAP_BYTES: usize = 8192;
 
 /// The mustard-owned map file, relative to each unit's directory
-/// (forward-slashed — it doubles as the import target in [`MAP_IMPORT_LINE`]).
-
+/// (forward-slashed — it doubles as the import target in [`MAP_IMPORT_LINE`]).///
 /// The single line mustard injects at the TOP of a unit's `CLAUDE.md`: Claude
 /// Code's native `@path` import (resolved relative to the importing file), so
 /// the map loads into context together with the CLAUDE.md exactly as the old

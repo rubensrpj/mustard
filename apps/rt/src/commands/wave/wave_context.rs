@@ -405,8 +405,7 @@ mod tests {
     fn test_context_too_long_returns_error() {
         // Each wave's status line is intentionally long so the cap is busted
         // by inputs that nominally fit the wave-count budget.
-        let big_status: String = std::iter::repeat("regressao detectada palavra ")
-            .take(60)
+        let big_status: String = std::iter::repeat_n("regressao detectada palavra ", 60)
             .collect();
         let position: Vec<WaveMapEntry> = (0..50)
             .map(|n| WaveMapEntry {
@@ -439,7 +438,7 @@ mod tests {
                     "actual_words {actual_words} must exceed cap {cap}"
                 );
             }
-            other => panic!("unexpected error variant: {other:?}"),
+            other @ WaveContextError::Io { .. } => panic!("unexpected error variant: {other:?}"),
         }
     }
 

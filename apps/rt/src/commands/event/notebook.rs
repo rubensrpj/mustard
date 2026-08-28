@@ -472,7 +472,7 @@ mod tests {
             (format!("  {EXPLAINS_SYMPTOM}   com espacos   "), true),
         ] {
             for _ in 0..3 {
-                notebook_at(root, None, Some(&typed), flag);
+                let _ = notebook_at(root, None, Some(&typed), flag);
             }
         }
         let read = notebook_at(root, None, None, false);

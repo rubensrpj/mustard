@@ -148,7 +148,7 @@ pub fn run(opts: ReviewDispatchOpts) {
     };
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
     println!("{body}");
-    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "review-dispatch", total as u64, opts.spec.as_deref(), json!({}));
+    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "review-dispatch", total, opts.spec.as_deref(), json!({}));
 }
 
 

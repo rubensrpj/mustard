@@ -189,15 +189,12 @@ fn documented_run_tokens(text: &str) -> Vec<String> {
     // the run with the smallest next hit is consumed, so the tokens stay in order
     // of appearance no matter which spelling produced them.
     let mut cursors = vec![0usize; PREFIXES.len()];
-    loop {
-        let Some((which, pos)) = PREFIXES
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| text[cursors[i]..].find(p).map(|off| (i, cursors[i] + off)))
-            .min_by_key(|(_, pos)| *pos)
-        else {
-            break;
-        };
+    while let Some((which, pos)) = PREFIXES
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| text[cursors[i]..].find(p).map(|off| (i, cursors[i] + off)))
+        .min_by_key(|(_, pos)| *pos)
+    {
         let start = pos + PREFIXES[which].len();
         cursors[which] = start;
         // Every other cursor must clear this hit too, else the same region is

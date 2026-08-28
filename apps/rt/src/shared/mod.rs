@@ -10,6 +10,9 @@
 //!   and the classifier that says what state each is in, behind a PR-lookup
 //!   port. Both faces ask it: the exit ritual (`commands::git_settle`), the spec
 //!   inventory and the statusline.
+//! - [`code_state`] — a fingerprint of the working tree, so a recorded test
+//!   run can be told apart from a stale one. Written by `qa-run`, read by the
+//!   close gate: it answers *did the code move since that green*.
 //! - [`context`] — run-context resolution (cwd / session-id / current-spec),
 //!   the port of `hook-env.js`'s runtime probing.
 //! - [`gate_mode`] — the three-state gate mode (`off`/`warn`/`strict`) and its
@@ -44,6 +47,7 @@
 //!   consumed.
 
 pub mod branch_state;
+pub mod code_state;
 pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about.

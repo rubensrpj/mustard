@@ -203,7 +203,7 @@ impl HookInput {
     /// payload before this field was modelled.
     #[must_use]
     pub fn is_subagent(&self) -> bool {
-        let typed = self.agent_id.as_deref().filter(|s| !s.is_empty()).is_some();
+        let typed = self.agent_id.as_deref().as_ref().is_some_and(|s| !s.is_empty());
         typed
             || self
                 .raw

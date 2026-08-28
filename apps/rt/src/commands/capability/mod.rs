@@ -488,9 +488,11 @@ fn render_link_section(out: &mut String, heading: &str, links: &[String]) {
 /// `[[ ]]` scanner.
 #[must_use]
 pub fn parse(md: &str) -> Capability {
-    let mut cap = Capability::default();
-    cap.id = frontmatter_field(md, "id");
-    cap.status = frontmatter_field(md, "status");
+    let mut cap = Capability {
+        id: frontmatter_field(md, "id"),
+        status: frontmatter_field(md, "status"),
+        ..Default::default()
+    };
 
     let body = strip_frontmatter(md);
 

@@ -53,7 +53,8 @@
 //! 1. **A person's prompt (unforgeable).** `raw.prompt` carries non-empty text
 //!    that is NOT a runtime notice.
 //! 2. **The picker's approve-and-implement form, EXACTLY.** The whole prompt is
-//!    `/mustard:spec <letter>r`, or `/mustard:spec r` on its own — never a
+//!    `/mustard:spec` on its own, or that command plus a single row letter, with
+//!    an optional trailing `r` (`a`, `ar`, `r`) — never a
 //!    message that merely contains either. Exactness is the same rule
 //!    `approval_marker_observer::is_offered` applies to a selected label, and
 //!    for the same reason: a substring rule lets a sentence quoting the form
@@ -63,13 +64,15 @@
 //!    the power to mint the marker.
 //! 3. **The spec THE GESTURE names, in the pre-approval window.** A letter is
 //!    resolved through [`crate::commands::spec::active_specs::spec_for_letter`]
-//!    — the SAME enumerator that rendered the table the user read; the bare `r`
-//!    is resolved through the checkout's own branch
+//!    — the SAME enumerator that rendered the table the user read; the bare
+//!    command and the bare `r` are resolved through the checkout's own branch
 //!    ([`crate::commands::event::work_branch::slug_of_work_branch`], the same
 //!    reading `spec-draft` consumes to name the spec directory). Either way that
-//!    spec must be `scope=full`, `stage=Plan` and carry no
-//!    `pipeline.status{to:approved}` yet, through the SAME predicates the
-//!    AskUserQuestion door trusts, imported rather than re-spelled.
+//!    spec must be `stage=Plan` and carry no `pipeline.status{to:approved}` yet,
+//!    through the SAME predicates the AskUserQuestion door trusts, imported
+//!    rather than re-spelled. **Scope is not asked** — see
+//!    [`crate::hooks::observe::approval_marker_observer::is_awaiting_approval`]
+//!    for the deadlock that requiring `scope=full` here produced.
 //!
 //! ## The gesture decides WHICH spec — never the session
 //!
@@ -99,7 +102,7 @@ use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use serde_json::Value;
 use std::path::Path;
 
-use super::approval_marker_observer::{already_approved, is_full_plan};
+use super::approval_marker_observer::{already_approved, is_awaiting_approval};
 use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
 use crate::commands::spec::active_specs::spec_for_letter;
 use crate::shared::context::{approval_marker_path, marker_body};
@@ -115,8 +118,15 @@ const PICKER_VIA: &str = "picker";
 const PICKER_COMMAND: &str = "/mustard:spec";
 
 /// The picker argument the user typed, when the prompt IS an invocation of the
-/// picker. `None` for anything else — including the bare command with no
-/// argument, which renders the table and decides nothing.
+/// picker — the EMPTY string when the command was typed on its own. `None` for
+/// anything else.
+///
+/// The bare command used to return `None` here, on the reading that it "renders
+/// the table and decides nothing". Inside the unit's own work branch it decides
+/// plenty: the branch names the unit, so there is no table left to render and
+/// nothing left to pick. Returning the empty argument lets
+/// [`approve_and_implement_target`] read that case; the whitespace rule below is
+/// what still keeps `/mustard:specs ar` out.
 fn picker_argument(prompt: &str) -> Option<&str> {
     let text = prompt.trim();
     // `get` rather than `split_at`: a prompt whose byte at that index is inside a
@@ -126,7 +136,9 @@ fn picker_argument(prompt: &str) -> Option<&str> {
         return None;
     }
     let rest = text.get(PICKER_COMMAND.len()..)?;
-    if !rest.starts_with(char::is_whitespace) {
+    // Empty is the bare command. Anything else must be separated by whitespace,
+    // or `/mustard:specs ar` would read as the picker with argument `s ar`.
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return None;
     }
     Some(rest.trim())
@@ -136,11 +148,18 @@ fn picker_argument(prompt: &str) -> Option<&str> {
 /// spellings, and the only thing that differs between them.
 #[derive(Debug, PartialEq, Eq)]
 enum ApprovalTarget {
-    /// `/mustard:spec ar` — the row the LETTER names in the table the user read.
+    /// `/mustard:spec a` (or `ar`) — the row the LETTER names in the table the
+    /// user read.
     Row(char),
-    /// `/mustard:spec r` — the unit the CHECKOUT is standing in. No letter is
-    /// needed, because the branch already names the unit.
-    Checkout,
+    /// `/mustard:spec` on its own, or `/mustard:spec r` — the unit the CHECKOUT
+    /// is standing in. No letter is needed, because the branch already names the
+    /// unit.
+    ///
+    /// `fallback_letter` is `Some('r')` for the spelled-out `r` and `None` for
+    /// the bare command. Off a work branch the checkout names nothing, and there
+    /// the two spellings must part ways: a typed `r` reads as the row letter it
+    /// looks like, while a bare command named no row to begin with.
+    Checkout { fallback_letter: Option<char> },
 }
 
 /// The plan the gesture names, when the WHOLE prompt is the picker's
@@ -153,17 +172,39 @@ enum ApprovalTarget {
 /// session instead lands the marker on whatever spec the session was bound to,
 /// which is the plan the user did NOT name.
 ///
-/// A BARE letter (`/mustard:spec a`) is deliberately not an approval: it only
-/// acts on the row, and on a PLAN-stage spec the approval is still the pending
-/// action. Only the `r` suffix carries "approve and implement now", which is the
-/// gesture this door records — and a lone `r` is that suffix with the row half
-/// left to the checkout instead of to a letter.
+/// **A bare letter counts, and so does the bare command.** They used to be
+/// refused, on the reading that a letter "only acts on the row" and that the
+/// approval was still a separate pending action. That reading is what made the
+/// operator answer the same question twice: they pick row `a`, and the flow then
+/// presents the plan and asks whether they approve it. But the picker's own
+/// table says a letter means *act on row — PLAN approve*, so the second question
+/// re-asks what the first one already answered. The letter arrives through the
+/// same `UserPromptSubmit` channel as `ar` and is exactly as impossible for the
+/// model to author; the only thing missing was recognising it.
+///
+/// So the four accepted spellings, and what tells them apart:
+///
+/// ```text
+/// /mustard:spec        the unit the checkout is standing in — nothing else to name
+/// /mustard:spec r      the same, spelled out; off a work branch, row `r`
+/// /mustard:spec a      row `a`
+/// /mustard:spec ar     row `a`, the older spelling, kept as an alias
+/// ```
+///
+/// The `r` arm is matched BEFORE the general letter arm, because `r` is itself a
+/// letter and the checkout has to win that collision — which is the rule the
+/// picker's prose already stated, back when a bare letter minted nothing and the
+/// collision therefore cost nothing.
 fn approve_and_implement_target(prompt: &str) -> Option<ApprovalTarget> {
     let arg = picker_argument(prompt)?;
     let mut chars = arg.chars();
     match (chars.next(), chars.next(), chars.next()) {
+        (None, _, _) => Some(ApprovalTarget::Checkout { fallback_letter: None }),
         (Some(suffix), None, None) if suffix.eq_ignore_ascii_case(&'r') => {
-            Some(ApprovalTarget::Checkout)
+            Some(ApprovalTarget::Checkout { fallback_letter: Some('r') })
+        }
+        (Some(letter), None, None) if letter.is_ascii_alphabetic() => {
+            Some(ApprovalTarget::Row(letter.to_ascii_lowercase()))
         }
         (Some(letter), Some(suffix), None)
             if letter.is_ascii_alphabetic() && suffix.eq_ignore_ascii_case(&'r') =>
@@ -230,12 +271,13 @@ impl Observer for PickerApprovalObserver {
         let project = Path::new(&cwd);
         let named = match target {
             ApprovalTarget::Row(letter) => spec_for_letter(project, letter),
-            ApprovalTarget::Checkout => spec_of_checkout(project),
+            ApprovalTarget::Checkout { fallback_letter } => spec_of_checkout(project)
+                .or_else(|| fallback_letter.and_then(|l| spec_for_letter(project, l))),
         };
         let Some(spec) = named else {
             return;
         };
-        if !is_full_plan(&cwd, &spec) || already_approved(&cwd, &spec) {
+        if !is_awaiting_approval(&cwd, &spec) || already_approved(&cwd, &spec) {
             return;
         }
 
@@ -340,9 +382,21 @@ mod tests {
             ("/mustard:spec BR", ApprovalTarget::Row('b')),
             // `rr` is still a row: the FIRST char is the letter, as always.
             ("/mustard:spec rr", ApprovalTarget::Row('r')),
-            // The suffix alone leaves the row half to the checkout.
-            ("/mustard:spec r", ApprovalTarget::Checkout),
-            ("  /mustard:spec R  ", ApprovalTarget::Checkout),
+            // A BARE letter is the row too — the gesture the picker's own table
+            // has always called "act on row, PLAN approve".
+            ("/mustard:spec a", ApprovalTarget::Row('a')),
+            ("  /mustard:spec Z  ", ApprovalTarget::Row('z')),
+            // The suffix alone leaves the row half to the checkout, keeping the
+            // letter as the fallback for a tree standing on no unit.
+            ("/mustard:spec r", ApprovalTarget::Checkout { fallback_letter: Some('r') }),
+            (
+                "  /mustard:spec R  ",
+                ApprovalTarget::Checkout { fallback_letter: Some('r') },
+            ),
+            // The bare command names the checkout and nothing else: off a work
+            // branch it has no row to fall back to.
+            ("/mustard:spec", ApprovalTarget::Checkout { fallback_letter: None }),
+            ("  /mustard:spec  ", ApprovalTarget::Checkout { fallback_letter: None }),
         ] {
             assert_eq!(
                 approve_and_implement_target(yes),
@@ -351,11 +405,13 @@ mod tests {
             );
         }
         for no in [
-            // A bare letter acts on the row; the approval is still pending.
-            "/mustard:spec a",
-            // The table render / a spec name / the EXEC continuation.
-            "/mustard:spec",
+            // A spec named in full is not a row letter — the picker routes it
+            // straight to that spec, and the approval happens the ordinary way.
             "/mustard:spec ceremony-costs-more-than-gates",
+            // Two letters that do not end in the `r` suffix name no row.
+            "/mustard:spec ab",
+            // A digit is not a row letter.
+            "/mustard:spec 1",
             // Another command that merely starts the same way.
             "/mustard:specs ar",
             // Free text QUOTING either form is not the form — the exactness
@@ -623,16 +679,56 @@ mod tests {
         );
     }
 
+    /// The letter alone IS the approval. It used to mint nothing, which is what
+    /// made the operator answer the same question twice: pick the row, then
+    /// approve the plan the row named. The picker's table has always said a
+    /// letter means *act on row — PLAN approve*.
     #[test]
-    fn a_bare_letter_writes_nothing() {
+    fn bare_letter_mints_the_marker() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         seed_spec(root, "epic", "full", "Plan");
         bind_session(root, "s-1", "epic");
-        PickerApprovalObserver.observe(&prompt_input("s-1", "/mustard:spec a"), &ctx(root.to_str().unwrap()));
+        PickerApprovalObserver
+            .observe(&prompt_input("s-1", "/mustard:spec a"), &ctx(root.to_str().unwrap()));
+        assert!(
+            marker_exists(root, "epic"),
+            "picking the row IS approving it — the second question was the ceremony"
+        );
+    }
+
+    /// The bare command, inside the unit's own work branch. Standing in the unit
+    /// already answers *which one*, so there is no row left to pick and no
+    /// letter left to type.
+    #[test]
+    fn bare_letter_mints_from_the_command_alone_inside_the_units_branch() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full", "Plan");
+        repo_on(root, "dev");
+        git(root, &["checkout", "-b", "feature/epic"]);
+        PickerApprovalObserver
+            .observe(&prompt_input("s-1", "/mustard:spec"), &ctx(root.to_str().unwrap()));
+        assert!(
+            marker_exists(root, "epic"),
+            "inside the unit's branch the bare command names it and approves it"
+        );
+    }
+
+    /// …and off any unit's branch the bare command names nothing, so it is the
+    /// table render it always was.
+    #[test]
+    fn the_bare_command_mints_nothing_outside_a_unit_branch() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        seed_spec(root, "epic", "full", "Plan");
+        bind_session(root, "s-1", "epic");
+        repo_on(root, "dev");
+        PickerApprovalObserver
+            .observe(&prompt_input("s-1", "/mustard:spec"), &ctx(root.to_str().unwrap()));
         assert!(
             !marker_exists(root, "epic"),
-            "acting on a row is not approving it — only the `r` form is the gesture"
+            "no unit branch and no letter → the gesture names nothing, and the session must not answer for it"
         );
     }
 
@@ -646,14 +742,25 @@ mod tests {
         assert!(!marker_exists(root, "epic"), "no PLAN approval pending → no marker");
     }
 
+    /// A `light` spec is approvable. Requiring `scope=full` here made every
+    /// light plan impossible to approve: the three doors that mint the marker
+    /// all demanded `full`, while `approve-spec` demands the marker from specs
+    /// of EVERY scope. The operator made the gesture the refusal text names,
+    /// nothing was written, and the only way through was the
+    /// `MUSTARD_APPROVAL_MODE=warn` escape hatch. Measured twice on this
+    /// repository — the second time on the unit that removed it.
     #[test]
-    fn light_spec_writes_nothing() {
+    fn light_spec_can_be_approved() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         seed_spec(root, "small", "light", "Plan");
         bind_session(root, "s-1", "small");
-        PickerApprovalObserver.observe(&prompt_input("s-1", "/mustard:spec ar"), &ctx(root.to_str().unwrap()));
-        assert!(!marker_exists(root, "small"), "a Light spec has no PLAN approval gate");
+        PickerApprovalObserver
+            .observe(&prompt_input("s-1", "/mustard:spec ar"), &ctx(root.to_str().unwrap()));
+        assert!(
+            marker_exists(root, "small"),
+            "scope decides how much ceremony a plan carries, never whether a person's approval of it counts"
+        );
     }
 
     #[test]

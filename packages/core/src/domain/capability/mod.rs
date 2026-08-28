@@ -609,9 +609,8 @@ mod tests {
             requirement: Requirement { statement: "R".into(), scenarios: vec![] },
         };
         let drift = CapabilityDrift { id: "cap.x".into(), entity: "rt.entity.Gone".into() };
-        for (a, b) in [
-            (serde_json::to_value(&declared).unwrap(), json!({ "capability": { "id": "cap.x", "title": "", "status": "", "requirements": [], "covers": [], "specs": [], "related": [] } })),
-        ] {
+        {
+            let (a, b) = (serde_json::to_value(&declared).unwrap(), json!({ "capability": { "id": "cap.x", "title": "", "status": "", "requirements": [], "covers": [], "specs": [], "related": [] } }));
             assert_eq!(a, b);
         }
         // op serialises lowercase.

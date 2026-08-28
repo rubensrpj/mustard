@@ -146,7 +146,7 @@ fn isqrt(n: u128) -> u128 {
         return n;
     }
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + n / x) / 2;
@@ -399,11 +399,10 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
             seeds.extend(model_seeds.iter().copied());
         }
         for a in &e.anchors {
-            if let Some(&i) = pos.get(a.replace('\\', "/").as_str()) {
-                if eligible[i] {
+            if let Some(&i) = pos.get(a.replace('\\', "/").as_str())
+                && eligible[i] {
                     seeds.insert(i);
                 }
-            }
         }
         if seeds.is_empty() {
             continue;

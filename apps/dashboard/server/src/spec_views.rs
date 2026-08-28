@@ -355,7 +355,7 @@ fn meta_status_word(spec_md: &std::path::Path) -> Option<String> {
     if reconciled.is_empty() {
         return None;
     }
-    Some(reconciled.to_string())
+    Some(reconciled.clone())
 }
 
 /// Forward-only reconciliation of the lifecycle `stage` against the `phase`
@@ -498,8 +498,8 @@ const EXECUTE_RANK: u8 = 3;
 /// events the core fold dropped:
 ///   * `tools_used`     — attributed `tool.use` ⊇ explicit-spec `tool.use`.
 ///   * `files_touched`  — core counts `pipeline.task.complete.files_modified`;
-///                        attributed counts distinct `tool.use` file targets.
-///                        Different sources → max keeps the richer signal.
+///     attributed counts distinct `tool.use` file targets.
+///     Different sources → max keeps the richer signal.
 ///   * `last_event_at`  — later of the two ISO timestamps.
 ///
 /// `ac_passed`/`ac_total` (from `qa.result` — bound, explicit-spec events),
@@ -549,7 +549,7 @@ pub fn spec_waves_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecWave>, Strin
         .map(|w| {
             let mut row = spec_wave_from_view(w);
             if let Some(info) = meta.get(&row.wave) {
-                if row.role.as_deref().map_or(true, str::is_empty) {
+                if row.role.as_deref().is_none_or(str::is_empty) {
                     row.role = info.role.clone();
                 }
                 if row.summary.is_none() {
@@ -900,10 +900,9 @@ fn parse_ac_description(line: &str) -> Option<(String, String)> {
         let stripped = after_id.trim_start();
         if let Some(r) = strip_ac_separator(stripped) {
             r.trim_start().strip_prefix("**").unwrap_or(r)
-        } else if let Some(r) = stripped.strip_prefix("**") {
-            strip_ac_separator(r.trim_start())?
         } else {
-            return None;
+            let r = stripped.strip_prefix("**")?;
+            strip_ac_separator(r.trim_start())?
         }
     } else {
         strip_ac_separator(after_id.trim_start())?
@@ -971,7 +970,7 @@ fn wave_plan_meta(
     }
 
     // Table rows from `wave-plan.md` — authoritative for role + the summary.
-    if let Ok(text) = fs::read_to_string(&spec_dir.join("wave-plan.md")) {
+    if let Ok(text) = fs::read_to_string(spec_dir.join("wave-plan.md")) {
         for line in text.lines() {
             let Some((n, role, summary)) = parse_wave_plan_row(line) else {
                 continue;
@@ -1023,8 +1022,7 @@ fn parse_wave_plan_row(line: &str) -> Option<(i64, Option<String>, Option<String
     // Column 0 must be a bare wave number (skips the header `Wave` + the
     // `---|---` separator row).
     let n: i64 = cells[0].parse().ok()?;
-    let role = Some(cells[2])
-        .map(str::to_string)
+    let role = Some(str::to_string(cells[2]))
         .filter(|r| !r.is_empty() && r != "—" && r != "-");
     let summary = cells
         .last()

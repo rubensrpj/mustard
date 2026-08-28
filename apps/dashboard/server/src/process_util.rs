@@ -11,7 +11,13 @@ pub fn no_window_command(program: &str) -> std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        // `CREATE_NO_WINDOW`, copiado da documentação da Microsoft. Sem
+        // separadores de dígito de propósito: é uma constante PUBLICADA, e quem
+        // a confere procura por `0x08000000` na página da API — agrupar os
+        // dígitos faz o valor deixar de bater com a fonte.
+        #[allow(clippy::unreadable_literal)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
 }
