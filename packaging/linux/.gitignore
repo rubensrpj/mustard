@@ -1,0 +1,4 @@
+# Cópia temporária do pin da raiz, criada e removida por build-packages.ps1
+# durante o `docker build`. Nunca deve ser versionada: uma segunda cópia do
+# arquivo é a divergência de compilador que o pin existe para impedir.
+rust-toolchain.toml
