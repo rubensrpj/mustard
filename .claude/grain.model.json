@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 489,
-      "loc": 219520
+      "loc": 219729
     },
     {
       "language": "tsx",
@@ -29761,43 +29761,43 @@
         {
           "kind": "function",
           "name": "git_in",
-          "line": 390,
+          "line": 388,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "repo_on_dev",
-          "line": 408,
+          "line": 406,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_merged_unit_with_a_live_branch_warns_and_names_it",
-          "line": 423,
+          "line": 421,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_promotion_does_not_blind_the_advisory",
-          "line": 456,
+          "line": 454,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_pruned_unit_says_nothing",
-          "line": 486,
+          "line": 484,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_unmerged_unit_is_not_a_debt",
-          "line": 504,
+          "line": 502,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_advisory_stays_silent_when_it_cannot_measure",
-          "line": 522,
+          "line": 520,
           "supertypes": []
         },
         {
@@ -34743,7 +34743,7 @@
     {
       "path": "apps/rt/src/hooks/session/statusline_heal_observer.rs",
       "language": "rust",
-      "loc": 298,
+      "loc": 384,
       "imports": [
         "mustard_core::ClaudePaths",
         "mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger}",
@@ -34758,7 +34758,7 @@
         {
           "kind": "struct",
           "name": "StatuslineHealObserver",
-          "line": 47,
+          "line": 76,
           "supertypes": [
             "Observer"
           ]
@@ -34766,103 +34766,127 @@
         {
           "kind": "function",
           "name": "desired_command",
-          "line": 52,
+          "line": 81,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "desired_statusline",
-          "line": 62,
+          "line": 91,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "heal",
-          "line": 74,
+          "line": 104,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "observe",
-          "line": 133,
+          "line": 168,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "seed_claude",
-          "line": 154,
+          "name": "fake_plugin_rt",
+          "line": 187,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "fake_exe",
-          "line": 163,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "read_settings",
-          "line": 167,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "absent_file_is_created_with_statusline_only",
-          "line": 172,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "stale_mustard_path_is_rewritten_and_other_keys_survive",
+          "name": "plugin_command",
           "line": 191,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "bare_mustard_rt_command_is_rewritten_to_absolute_exe",
-          "line": 221,
+          "name": "seed_claude",
+          "line": 196,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "read_settings",
+          "line": 202,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "absent_file_is_created_with_statusline_only",
+          "line": 207,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "no_plugin_in_the_registry_writes_nothing",
+          "line": 226,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "bare_token_is_replaced_by_the_plugin_copy",
+          "line": 242,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "stale_clone_path_is_replaced_and_other_keys_survive",
+          "line": 258,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "quoted_windows_path_is_replaced",
+          "line": 288,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "windows_plugin_path_is_forward_slashed_and_quoted",
+          "line": 307,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "custom_non_mustard_statusline_is_untouched",
-          "line": 240,
+          "line": 322,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "correct_state_writes_nothing",
-          "line": 256,
+          "line": 338,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "corrupt_json_is_left_alone_without_panic",
-          "line": 273,
+          "line": 358,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "missing_claude_dir_does_not_panic",
-          "line": 289,
+          "line": 374,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ctx",
-          "line": 298,
+          "line": 383,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_session_start_trigger_is_noop",
-          "line": 308,
+          "line": 393,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "session_start_heals_via_current_exe",
-          "line": 319,
+          "name": "session_start_never_records_the_running_binary",
+          "line": 410,
           "supertypes": []
         }
       ],
@@ -82315,7 +82339,7 @@
     {
       "path": "packages/core/src/lib.rs",
       "language": "rust",
-      "loc": 173,
+      "loc": 174,
       "imports": [
         "domain::command_detect::{detect_commands, detect_commands_for_unit}",
         "domain::config::{\n    glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, ProjectConfig, RolePattern,\n    Runtime, Subprojects, BUILD_COMMAND_FALLBACK,\n}",
@@ -82334,7 +82358,7 @@
         "platform::git_branches::{\n    branch_catalog, current_branch, default_branch, protected_branches, remote_branch_names,\n    BranchEntry,\n}",
         "platform::git_exclude::{\n    ensure_excluded, exclude_file, tracked_paths, ExcludeFailure, ExcludeOutcome,\n}",
         "platform::git_provider::{detect_provider, provider_of_url, resolve_provider}",
-        "platform::harness::{\n    claude_config_dir, harness_version, installed_harness_version, installed_harness_version_from,\n    is_behind, newer_installed_rt, newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,\n}",
+        "platform::harness::{\n    claude_config_dir, harness_version, installed_harness_version, installed_harness_version_from,\n    installed_plugin_rt, installed_plugin_rt_from, is_behind, newer_installed_rt,\n    newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,\n}",
         "platform::hook_resolve::{\n    resolve_mustard_rt, rewrite_command, rewrite_hooks_value, rewrite_settings_hooks,\n}",
         "platform::i18n::{\n    apply_tone, slugify, translate, wave_label, I18n, LocaleError, SupportedLocale, Tone,\n    UserLocale, UserLocaleError,\n}",
         "platform::project_seed::{\n    carries_private_marks, default_inject_entries, detect_install_mode, footprint,\n    footprint_pathspecs, footprint_rules, is_written_footprint, migrate_orchestrator_footprint,\n    record_version_stamp, record_written_path, retire_planted_plugin_enablement, seed_gitignore,\n    seed_injectable_files, seed_settings, upsert_project, worktree_is_clean, FootprintEntry,\n    InstallMode, MigrationOutcome, RecordOutcome, SeedOutcome, UpsertReport, CLAUDE_LOCAL_MD,\n    CLAUDE_MD,\n    PRIVATE_MARKS,\n}",
@@ -82770,7 +82794,7 @@
     {
       "path": "packages/core/src/platform/harness.rs",
       "language": "rust",
-      "loc": 323,
+      "loc": 445,
       "imports": [
         "super::*"
       ],
@@ -82809,79 +82833,145 @@
         {
           "kind": "function",
           "name": "newer_installed_rt_from",
-          "line": 154,
+          "line": 149,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "installed_plugin_rt",
+          "line": 172,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "installed_plugin_rt_in",
+          "line": 183,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "installed_plugin_rt_from",
+          "line": 193,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "newest_installed_rt_from",
+          "line": 206,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_behind",
-          "line": 184,
+          "line": 236,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compare_versions",
-          "line": 190,
+          "line": 242,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "claude_config_dir",
-          "line": 210,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "harness_version_is_never_empty",
-          "line": 227,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "harness_version_falls_back_to_cargo_pkg_version",
-          "line": 234,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "the_registry_answers_this_plugins_version_whatever_the_marketplace",
-          "line": 247,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "the_highest_recorded_install_wins",
           "line": 262,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "harness_version_is_never_empty",
+          "line": 279,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "harness_version_falls_back_to_cargo_pkg_version",
+          "line": 286,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_registry_answers_this_plugins_version_whatever_the_marketplace",
+          "line": 299,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_highest_recorded_install_wins",
+          "line": 314,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "an_unreadable_registry_proves_nothing",
-          "line": 273,
+          "line": 325,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_runner_hands_over_only_when_strictly_behind",
-          "line": 290,
+          "line": 342,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_handover_target_is_the_newest_records_own_directory",
-          "line": 310,
+          "line": 362,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_unprovable_handover_runs_itself",
-          "line": 323,
+          "line": 375,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "behind_is_a_numeric_component_comparison",
-          "line": 337,
+          "line": 389,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "seed_registry",
+          "line": 401,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "seed_plugin",
+          "line": 415,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_recorded_plugin_binary_is_answered_when_it_is_on_disk",
+          "line": 424,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_registered_plugin_with_no_binary_answers_nothing",
+          "line": 438,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "no_registry_at_all_answers_nothing",
+          "line": 448,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "an_older_plugin_than_the_runner_is_still_the_answer",
+          "line": 457,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_registry_naming_another_plugin_answers_nothing",
+          "line": 470,
           "supertypes": []
         }
       ]
@@ -101983,16 +102073,16 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+Report slice",
+      "name": "tipo base+Kind slice",
       "roles": [
         "(core)",
-        "Report"
+        "Kind"
       ],
       "optional_roles": [
         "Ac",
         "Function",
-        "Kind",
         "Mode",
+        "Report",
         "State",
         "Term",
         "View"
@@ -102022,11 +102112,11 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
+        "Adicione o **Kind** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
@@ -102080,12 +102170,6 @@
           "role": "tipo base"
         },
         {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
-        },
-        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -102096,10 +102180,16 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
+        },
+        {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
@@ -102966,7 +103056,7 @@
       {
         "dir": "scripts",
         "code_files": 1,
-        "other_files": 4
+        "other_files": 5
       },
       {
         "dir": "(root)",
@@ -103025,7 +103115,7 @@
       },
       {
         "ext": ".sh",
-        "count": 10
+        "count": 11
       },
       {
         "ext": ".toml",
