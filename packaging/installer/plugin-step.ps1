@@ -16,6 +16,15 @@
 # caminho termina em `exit 0`. O pacote JÁ está instalado quando este script
 # roda; derrubar o instalador aqui faria a pessoa concluir que nada foi
 # instalado.
+#
+# INSTALAR NÃO BASTA. Instalar deixa o plugin DESLIGADO e SEM binários, e cada
+# um desses estados tranca o remédio do outro — medido nesta mesma máquina
+# Windows em 2026-08-28: três instalações seguidas do .exe e umas duas horas de
+# diagnóstico à mão. Ligar mora em `enabledPlugins`, que instalador nenhum
+# escrevia; baixar mora no `mustard-boot`, que é um HOOK e não roda com o plugin
+# desligado. Daí os dois passos depois do install, LIGAR e BAIXAR, gêmeos linha
+# a linha dos do plugin-step.sh — e há um teste de paridade que reprova quando
+# um dos dois ganha um passo e o outro não.
 # ============================================================================
 
 $ErrorActionPreference = 'Continue'
@@ -33,6 +42,106 @@ function Show-ManualSteps {
     Write-Host "        /plugin marketplace add $MarketplaceRepo"
     Write-Host "        /plugin install $Plugin"
     Write-Host '    Depois feche e abra o Claude Code para os hooks entrarem.'
+}
+
+# --- liga o plugin -----------------------------------------------------------
+# `claude plugin install` NÃO liga o que instalou. Sem esta função o Mustard
+# fica instalado e INERTE: a barra desenha a versão, e mais nada acontece.
+# Sem `-Scope`: o `enable` descobre sozinho o escopo em que o plugin foi
+# instalado, e um escopo dito errado ligaria o plugin em outro lugar.
+function Enable-Plugin {
+    Write-Host "==> Ligando o plugin $Plugin..."
+    & claude plugin enable $Plugin 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host '    Plugin ligado.'
+    } else {
+        # Já ligado também responde erro, e nesse caso não há nada a fazer.
+        # Como os dois casos são indistinguíveis daqui, o aviso diz os dois —
+        # calar seria pior: um plugin que ficou desligado é justamente o defeito
+        # que este passo existe para acabar.
+        Write-Host "aviso: claude plugin enable $Plugin respondeu erro - ou ja"
+        Write-Host '       estava ligado, ou nao ligou. Se os comandos /mustard:*'
+        Write-Host '       nao aparecerem, confira com claude plugin list.'
+    }
+}
+
+# --- onde o Claude Code pôs o plugin ----------------------------------------
+# O caminho vem de `claude plugin list --json`, interface PÚBLICA, e não de uma
+# varredura em ~\.claude\plugins\cache — o layout daquele cache é interno, e
+# este arquivo já se recusa a depender dele para instalar. Sem saída, sem JSON
+# ou sem entrada do Mustard, devolve string vazia e quem chama decide.
+function Get-PluginPath {
+    try {
+        $bruto = (& claude plugin list --json 2>$null | Out-String)
+        if (-not $bruto.Trim()) { return '' }
+        $lista = $bruto | ConvertFrom-Json
+        $entrada = @($lista) | Where-Object { $_.id -like 'mustard@*' } | Select-Object -First 1
+        if ($entrada -and $entrada.installPath) { return [string]$entrada.installPath }
+    } catch {
+        # JSON ausente ou de outro formato: quem chama imprime o aviso.
+    }
+    return ''
+}
+
+# --- dispara a descida dos binários -----------------------------------------
+# O `--version` é de propósito: o `mustard-boot` baixa o que falta e entrega a
+# invocação ao binário, então pedir a versão custa um comando e ainda IMPRIME a
+# prova de que a descida funcionou. Sem argumento nenhum o `mustard-rt` sai com
+# erro de uso, e o passo acusaria falha onde não houve.
+function Start-BinaryDownload {
+    $dir = Get-PluginPath
+    $boot = ''
+    if ($dir) { $boot = Join-Path $dir 'bin\mustard-boot.cmd' }
+    if (-not $boot -or -not (Test-Path -LiteralPath $boot)) {
+        Write-Host 'aviso: nao localizei o mustard-boot do plugin, entao os binarios'
+        Write-Host '       so descem na primeira sessao do Claude Code.'
+        return
+    }
+
+    Write-Host '==> Baixando os binarios do plugin...'
+
+    # COM PRAZO, gêmeo do irmão POSIX: o `curl` do mustard-boot não tem
+    # tempo-limite próprio e agora roda no caminho crítico do instalador, onde
+    # o NSIS espera com `nsExec::ExecToLog` e a janela fica parada. Uma conexão
+    # que trava congelaria a instalação para sempre.
+    # TryParse, e nao um cast: um valor nao-numerico num cast `[int]` levanta
+    # erro, e este arquivo nao pode levantar erro nenhum — ele roda depois de o
+    # pacote ja estar instalado.
+    $limite = 120
+    $lido = 0
+    if ([int]::TryParse($env:MUSTARD_PLUGIN_STEP_TIMEOUT, [ref]$lido) -and $lido -gt 0) {
+        $limite = $lido
+    }
+
+    # O caminho vai com as ASPAS DENTRO do elemento, e isto NAO e preciosismo.
+    # No Windows PowerShell 5.1 o `-ArgumentList` do Start-Process nao cita
+    # elemento nenhum: ele JUNTA a lista com espacos numa string so
+    # (`ProcessStartInfo.Arguments`), e a lista com escape por elemento
+    # (`ArgumentList`) so existe no .NET Core. Sem estas aspas, um perfil como
+    # `C:\Users\Ana Paula\` faz o cmd tentar rodar `C:\Users\Ana` — o
+    # download nunca acontece e a maquina termina com o plugin ligado e VAZIO,
+    # que e exatamente a metade dormente da armadilha que esta unidade fecha.
+    # O `cmd` continua no meio porque o mustard-boot e um `.cmd`, e o
+    # CreateProcess que o -NoNewWindow usa nao sabe abrir um por conta propria.
+    $proc = Start-Process -FilePath $env:ComSpec `
+        -ArgumentList '/c', "`"$boot`"", '--version' -NoNewWindow -PassThru
+    if (-not $proc.WaitForExit($limite * 1000)) {
+        # A ARVORE, nao so o cmd. O Kill() do .NET Framework nao tem
+        # `entireProcessTree` (isso e .NET Core), entao matar o cmd sozinho
+        # deixaria o `curl` — ou pior, o `tar` — vivo, escrevendo dentro do
+        # bin/ do plugin DEPOIS que o instalador seguiu em frente. Um
+        # mustard-rt.exe truncado e pior que nenhum.
+        try { & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null } catch { }
+        try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+        Write-Host "aviso: a descida dos binarios passou de $limite s e foi cortada"
+        Write-Host '       para nao segurar o instalador - a primeira sessao do'
+        Write-Host '       Claude Code tenta de novo.'
+        return
+    }
+    if ($proc.ExitCode -ne 0) {
+        Write-Host 'aviso: a descida dos binarios nao concluiu - a primeira sessao'
+        Write-Host '       do Claude Code tenta de novo.'
+    }
 }
 
 # --- o Claude Code esta na maquina? -----------------------------------------
@@ -66,6 +175,8 @@ if ($listed -match 'mustard@') {
 & claude plugin $acao $Plugin
 if ($LASTEXITCODE -eq 0) {
     Write-Host "==> Plugin: $acao concluido."
+    Enable-Plugin
+    Start-BinaryDownload
     Write-Host '    FECHE E ABRA o Claude Code para a nova versao entrar.'
 } else {
     Write-Host "aviso: claude plugin $acao $Plugin nao concluiu."

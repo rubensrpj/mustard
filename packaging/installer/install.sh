@@ -485,8 +485,10 @@ echo
 # --- o passo do plugin -------------------------------------------------------
 # ESTE bloco é a razão de a instalação não terminar no `apt-get install`. O .deb
 # atualiza a cópia do sistema (/usr/bin/mustard-rt); o Claude Code executa a
-# cópia do PLUGIN (~/.claude/plugins/cache/…), porque o plugin prepende o bin/
-# dele ao PATH. Atualizar só a primeira deixa a máquina rodando a versão velha —
+# cópia do PLUGIN (~/.claude/plugins/cache/…), porque cada gancho é chamado pelo
+# caminho explícito `${CLAUDE_PLUGIN_ROOT}/bin/…`, e não pelo PATH — onde a
+# pasta do plugin entra por último. Atualizar só a primeira deixa a máquina
+# rodando a versão velha —
 # medido em campo (2026-08-28): 0.1.55 instalada, plugin parado em 0.1.54.
 #
 # Até aqui este bloco só IMPRIMIA duas linhas pedindo que a pessoa fizesse o
