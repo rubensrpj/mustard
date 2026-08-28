@@ -15,3 +15,4 @@ pub mod superseded_check;
 pub mod capability_drift_check;
 pub mod guards_scaffold_check;
 pub mod inject_delivery_check;
+pub mod bootstrap_check;

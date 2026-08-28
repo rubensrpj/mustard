@@ -122,6 +122,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             // review. `InitOutcome` exists so the caller can tell the two apart.
             if outcome == init::InitOutcome::Installed {
                 init::ensure_global_permissions_if_opted_in();
+                // The dashboard's project list is a fact about the MACHINE, so
+                // recording it is an environment act like the two below it.
+                init::register_with_dashboard(&cwd);
                 init::ensure_rtk();
                 init::ensure_ripgrep();
             }

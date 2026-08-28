@@ -84,6 +84,10 @@ pub use platform::harness::{
 };
 pub use platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
 
+/// The machine-level dashboard project registry, shared by the dashboard
+/// server (which renders it) and `mustard init` (which fills it in).
+pub use platform::dashboard_registry;
+
 pub use domain::model::view::{
     AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,
     Scope, SegmentState, SpecChild, SpecFilter, SpecState, SpecStatusFilter, SpecSummary,

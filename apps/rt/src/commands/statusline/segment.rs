@@ -272,10 +272,19 @@ pub fn version_segment(data: &Value) -> Option<Segment> {
 }
 
 /// Mustard harness segment. Aligned project → `m{version}` (the running
-/// harness). Drifted stamp (older install, or unstamped) → `m{stamped}⇡{current}`
-/// in yellow — the visual "update available" hint; `/mustard:upsert` realigns.
+/// harness). Drifted stamp → `m{stamped}→{current}` in yellow, read as "the
+/// stamp becomes the harness version"; `/mustard:upsert` realigns.
 /// `None` when the project carries no `mustard.json` (Mustard not installed —
 /// the line stays quiet).
+///
+/// **The glyph used to be `↑`, and it lied in one direction.** `upsert` stamps
+/// whatever harness is RUNNING, so when the stamp is NEWER than the harness the
+/// realignment moves it backwards — and an up-arrow reading `0.1.54↑0.1.52`
+/// promised an upgrade to an older number, which is unreadable (field,
+/// 2026-08-28). `→` states the rewrite without claiming a direction it does not
+/// control. The far worse half of that same report — a harness that was not
+/// running at all — is [`inert_segment`]'s dormant flag, not this one: drift
+/// means two versions disagree, never that nothing is working.
 #[must_use]
 pub fn mustard_segment(cwd: &Path) -> Option<Segment> {
     if !mustard_core::ProjectConfig::exists(cwd) {
@@ -287,7 +296,7 @@ pub fn mustard_segment(cwd: &Path) -> Option<Segment> {
         Some(s) if s == current => Segment::new(SegmentKind::Mustard, format!("m{current}")),
         other => {
             let from = other.unwrap_or_else(|| "?".to_string());
-            let mut seg = Segment::new(SegmentKind::Mustard, format!("m{from}\u{2191}{current}"));
+            let mut seg = Segment::new(SegmentKind::Mustard, format!("m{from}\u{2192}{current}"));
             seg.override_fg = Some(Color::Ansi(3));
             seg
         }
@@ -367,11 +376,25 @@ pub fn inert_segment(cwd: &Path) -> Option<Segment> {
     // their config: the bar looked healthy while no hook ran, which is the very
     // state it exists to show (found in review).
     let settings = mustard_core::platform::harness::claude_config_dir()?.join("settings.json");
-    if plugin_switched_off(&settings) != Some(true) {
+    let switched_off = plugin_switched_off(&settings) == Some(true);
+
+    // Second road to the same dead end, and it is the one that hid for a whole
+    // session: the plugin is ON, but its binary never downloaded, so
+    // `mustard-boot` exits 0 and no hook runs either. The bar can still render
+    // — a leftover binary from an earlier version draws it — which is precisely
+    // why the state was invisible (field, 2026-08-28). Same red, different
+    // word, because "switch it back on" and "the download never happened" are
+    // opposite remedies.
+    let key = if switched_off {
+        "statusline.harness.inert"
+    } else if crate::commands::doctor::bootstrap_check::harness_dormant() {
+        "statusline.harness.dormant"
+    } else {
         return None;
-    }
+    };
+
     let lang = mustard_core::ProjectConfig::load(cwd).i18n().lang;
-    let label = mustard_core::translate("statusline.harness.inert", lang);
+    let label = mustard_core::translate(key, lang);
     let mut seg = Segment::new(SegmentKind::Inert, format!("\u{2a2f} {label}"));
     seg.override_fg = Some(Color::Ansi(1));
     Some(seg)
