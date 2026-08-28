@@ -113,7 +113,15 @@ pub fn resolve_edges(modules: &[Module], go_module: &Option<String>) -> Vec<(usi
     edges
 }
 
-pub fn build(modules: &[Module], go_module: &Option<String>) -> (GraphStats, HashMap<String, (usize, usize)>, HashMap<String, usize>) {
+/// O que uma varredura do grafo produz: as estatísticas gerais, o grau de cada
+/// módulo como `(entrada, saída)`, e o tamanho de cada um.
+pub type GraphBuild = (
+    GraphStats,
+    HashMap<String, (usize, usize)>,
+    HashMap<String, usize>,
+);
+
+pub fn build(modules: &[Module], go_module: &Option<String>) -> GraphBuild {
     let mut g: DiGraph<String, ()> = DiGraph::new();
     for m in modules {
         g.add_node(m.path.clone());

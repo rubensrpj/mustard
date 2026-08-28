@@ -124,7 +124,7 @@ const ASKS_PT_CODE: &[Ask] = &[
 ];
 
 /// How many of `asks` the given phrasing finds.
-fn hits(model: &PathBuf, asks: &[Ask], phrase: impl Fn(&Ask) -> &'static str) -> usize {
+fn hits(model: &Path, asks: &[Ask], phrase: impl Fn(&Ask) -> &'static str) -> usize {
     asks.iter().filter(|a| rank(model, phrase(a), a.target).is_some()).count()
 }
 

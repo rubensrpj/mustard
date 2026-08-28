@@ -2085,11 +2085,12 @@ mod tests {
         write_file(&claude_dir.join("grain.model.json"), "{}");
 
         // Run all checks the same way `run()` does, rooted at the tempdir.
-        let mut results: Vec<CheckResult> = Vec::new();
-        results.push(check_wiring(&claude_dir));
-        results.push(check_drift(&claude_dir));
-        results.push(check_state_health(&claude_dir));
-        results.push(lsp_check(dir.path()));
+        let results: Vec<CheckResult> = vec![
+            check_wiring(&claude_dir),
+            check_drift(&claude_dir),
+            check_state_health(&claude_dir),
+            lsp_check(dir.path()),
+        ];
 
         let has_lsp = results.iter().any(|r| r.name == "lsp");
         assert!(has_lsp, "expected a check named 'lsp' in the report");

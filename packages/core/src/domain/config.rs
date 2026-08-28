@@ -615,10 +615,12 @@ mod tests {
     #[test]
     fn write_then_load_round_trips_and_uses_camelcase() {
         let dir = tempdir().unwrap();
-        let mut cfg = ProjectConfig::default();
-        cfg.build_command = Some("cargo build".into());
-        cfg.spec_lang = Some("pt-BR".into());
-        cfg.tone = Some("technical".into());
+        let cfg = ProjectConfig {
+            build_command: Some("cargo build".into()),
+            spec_lang: Some("pt-BR".into()),
+            tone: Some("technical".into()),
+            ..Default::default()
+        };
         cfg.write(dir.path()).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
@@ -694,19 +696,21 @@ mod tests {
     #[test]
     fn inject_round_trips_through_write_and_load() {
         let dir = tempdir().unwrap();
-        let mut cfg = ProjectConfig::default();
-        cfg.inject = vec![
-            Injectable {
-                on: "userPromptSubmit".into(),
-                file: ".claude/mustard/orchestrator.md".into(),
-                once: true,
-            },
-            Injectable {
-                on: "sessionStart".into(),
-                file: ".claude/mustard/response-style.md".into(),
-                once: false,
-            },
-        ];
+        let cfg = ProjectConfig {
+            inject: vec![
+                Injectable {
+                    on: "userPromptSubmit".into(),
+                    file: ".claude/mustard/orchestrator.md".into(),
+                    once: true,
+                },
+                Injectable {
+                    on: "sessionStart".into(),
+                    file: ".claude/mustard/response-style.md".into(),
+                    once: false,
+                },
+            ],
+            ..Default::default()
+        };
         cfg.write(dir.path()).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
@@ -727,12 +731,14 @@ mod tests {
 
     #[test]
     fn injectables_filters_blank_entries_fail_open() {
-        let mut cfg = ProjectConfig::default();
-        cfg.inject = vec![
-            Injectable { on: "  ".into(), file: "x.md".into(), once: false },
-            Injectable { on: "sessionStart".into(), file: String::new(), once: true },
-            Injectable { on: " SessionStart ".into(), file: " a.md ".into(), once: true },
-        ];
+        let cfg = ProjectConfig {
+            inject: vec![
+                Injectable { on: "  ".into(), file: "x.md".into(), once: false },
+                Injectable { on: "sessionStart".into(), file: String::new(), once: true },
+                Injectable { on: " SessionStart ".into(), file: " a.md ".into(), once: true },
+            ],
+            ..Default::default()
+        };
         let got = cfg.injectables();
         assert_eq!(got.len(), 1, "blank on/file entries are dropped: {got:?}");
         assert_eq!(got[0].on, "sessionstart", "on is trimmed + lowercased");
@@ -784,11 +790,13 @@ mod tests {
 
     #[test]
     fn role_patterns_lowercased_and_filtered() {
-        let mut cfg = ProjectConfig::default();
-        cfg.role_patterns = vec![
-            RolePattern { pattern: "Controllers".into(), role: "api".into() },
-            RolePattern { pattern: " ".into(), role: "x".into() },
-        ];
+        let cfg = ProjectConfig {
+            role_patterns: vec![
+                RolePattern { pattern: "Controllers".into(), role: "api".into() },
+                RolePattern { pattern: " ".into(), role: "x".into() },
+            ],
+            ..Default::default()
+        };
         let got = cfg.role_patterns();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].pattern, "controllers");

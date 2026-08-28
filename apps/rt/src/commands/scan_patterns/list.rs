@@ -1210,6 +1210,7 @@ fn matches_affix(stem: String, affix: &str, kind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn write_model(root: &Path, json: &str) {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
@@ -2391,7 +2392,10 @@ mod tests {
         // and the check correctly abstains.
         // Directly in `src/`, so the folder role resolves its exemplars there.
         let modules: String =
-            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+            (0..10).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, r#"{{"path":"apps/api/src/thing{i}.x"}},"#);
+                acc
+            });
         write_model(
             root,
             &format!(
@@ -2431,9 +2435,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let prod: String =
-            (0..10).map(|i| format!(r#"{{"path":"apps/api/src/thing{i}.x"}},"#)).collect();
+            (0..10).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, r#"{{"path":"apps/api/src/thing{i}.x"}},"#);
+                acc
+            });
         let tests: String =
-            (0..30).map(|i| format!(r#"{{"path":"apps/api/tests/fixtures/case{i}.x"}},"#)).collect();
+            (0..30).fold(String::new(), |mut acc, i| {
+                let _ = write!(acc, r#"{{"path":"apps/api/tests/fixtures/case{i}.x"}},"#);
+                acc
+            });
         write_model(
             root,
             &format!(

@@ -3351,7 +3351,7 @@ fn build_trace_tree(
                     }),
                 ));
             }
-            _ => continue,
+            _ => {}
         }
     }
     prompt_nodes.sort_by_key(|(ts, _)| *ts);

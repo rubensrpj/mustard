@@ -230,10 +230,11 @@ type WorkspaceEventsFreshness = (Option<SystemTime>, u64);
 /// (`event_projections` folds several views per invocation); the dashboard feeds
 /// the projections from its own parsed-events cache and never reaches this walker,
 /// so a process-lived cache here is bounded by the CLI's short life.
-fn workspace_events_cache(
-) -> &'static Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>>> =
-        OnceLock::new();
+/// O que o cache guarda por raiz: quando a leitura foi feita, e o que ela leu.
+type WorkspaceEventsCache = Mutex<HashMap<PathBuf, (WorkspaceEventsFreshness, Vec<HarnessEvent>)>>;
+
+fn workspace_events_cache() -> &'static WorkspaceEventsCache {
+    static CACHE: OnceLock<WorkspaceEventsCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

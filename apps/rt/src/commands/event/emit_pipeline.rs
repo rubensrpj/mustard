@@ -2103,7 +2103,7 @@ mod tests {
         let ps = r#"{\"wave\":1,\"duration_ms\":536342}"#;
         let v = super::parse_payload_tolerant(ps).expect("recovers escaped payload");
         assert_eq!(v["wave"], json!(1));
-        assert_eq!(v["duration_ms"], json!(536342));
+        assert_eq!(v["duration_ms"], json!(536_342));
 
         // A correctly-quoted payload parses on the first try (unchanged path).
         assert_eq!(super::parse_payload_tolerant(r#"{"wave":1}"#).unwrap()["wave"], json!(1));

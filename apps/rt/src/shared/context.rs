@@ -247,8 +247,12 @@ fn active_spec_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 /// Per-`(project, session)` memo of [`spec_for_session`]; evicted by
 /// [`invalidate_session_spec`] whenever the `active-spec` marker is (re)written or
 /// removed, so a resolve after a binding change reflects disk.
-fn session_spec_cache() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
-    static CACHE: OnceLock<Mutex<HashMap<(String, String), Option<String>>>> = OnceLock::new();
+/// Chave `(raiz, sessão)` para a spec que aquela sessão resolveu — `None` quando
+/// a resolução deu em nada, o que também vale a pena lembrar.
+type SessionSpecCache = Mutex<HashMap<(String, String), Option<String>>>;
+
+fn session_spec_cache() -> &'static SessionSpecCache {
+    static CACHE: OnceLock<SessionSpecCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

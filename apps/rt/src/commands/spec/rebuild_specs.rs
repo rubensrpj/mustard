@@ -312,9 +312,10 @@ fn wave_status_from_header(stage: &str, outcome: &str) -> String {
         "completed".to_string()
     } else if outcome.eq_ignore_ascii_case("cancelled") {
         "cancelled".to_string()
-    } else if stage.is_empty() {
-        "in_progress".to_string()
     } else {
+        // Um cabeçalho sem `stage` e um com `stage` desconhecido dizem a mesma
+        // coisa: a onda não terminou. O ramo separado para `stage.is_empty()`
+        // existia e devolvia exatamente este valor.
         "in_progress".to_string()
     }
 }

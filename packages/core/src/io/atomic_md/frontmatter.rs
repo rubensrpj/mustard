@@ -168,7 +168,6 @@ fn parse_yaml_to_object(yaml: &str) -> Map<String, Value> {
                 map.insert(key, Value::Array(items));
             }
             i = j;
-            continue;
         } else {
             map.insert(key, Value::String(unquote(val_str).to_string()));
             i += 1;

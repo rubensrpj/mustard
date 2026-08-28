@@ -11,7 +11,6 @@
 //! does NOT appear on the rejection shape. End-to-end equivalent of the
 //! in-module unit tests in `apps/rt/src/hooks/observe/plan_approval_observer.rs`.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::Path;

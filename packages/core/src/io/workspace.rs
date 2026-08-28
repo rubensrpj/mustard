@@ -365,7 +365,6 @@ mod tests {
     /// Serialise tests that touch the process-wide memo cache and clear it
     /// before the test body runs. The returned guard pins the lock for the
     /// caller's scope, so sibling tests cannot race on the cache state mid-run.
-    #[must_use]
     fn serialize_test() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -889,6 +889,10 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
 
 /// Superseded versions of the `dispatch.md` seed. It grows the same way the
 /// orchestrator catalog does — the ratchet below reads this file's own history.
+///
+/// Sem separadores de dígito pela mesma razão do catálogo acima: o teste-catraca
+/// IMPRIME o valor e o operador cola.
+#[allow(clippy::unreadable_literal)]
 const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[
     // The split-era seed, superseded by the rule-first rewrite: the paragraph
     // arguing why the router needed two events moved to
