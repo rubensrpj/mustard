@@ -476,24 +476,35 @@ if [ -n "$TARGET" ]; then
 fi
 
 echo
-echo "==> Pronto — falta UM passo, e ele não é aqui no terminal."
+echo "==> Pronto."
 echo "    CLI:        mustard --version   (e mustard-rt, scan, rtk)"
 echo "    Dashboard:  rode  mustard-dashboard  na pasta dos seus projetos —"
 echo "                ele serve em http://127.0.0.1:7777/ e abre o navegador."
 echo "                De outra máquina:  mustard-dashboard --host 0.0.0.0"
 echo
-# Quem instalou pelo `curl … | sh` não baixou documento nenhum: alguma superfície
-# aqui no terminal PRECISA ensinar o passo do plugin, senão os comandos
-# /mustard:*, os hooks e o MCP de memória simplesmente não existem — o .deb traz
-# só binários e templates, e nunca toca no ~/.claude.
+# --- o passo do plugin -------------------------------------------------------
+# ESTE bloco é a razão de a instalação não terminar no `apt-get install`. O .deb
+# atualiza a cópia do sistema (/usr/bin/mustard-rt); o Claude Code executa a
+# cópia do PLUGIN (~/.claude/plugins/cache/…), porque o plugin prepende o bin/
+# dele ao PATH. Atualizar só a primeira deixa a máquina rodando a versão velha —
+# medido em campo (2026-08-28): 0.1.55 instalada, plugin parado em 0.1.54.
 #
-# Duas superfícies ensinam esse passo, e cada uma tem que bastar SOZINHA: o
-# `mustard init`, que também é rodado direto por quem já tem o Mustard instalado,
-# e este bloco, lido por quem instalou sem passar um projeto. O que não pode é
-# imprimir as duas — quando o init roda AQUI, o usuário lia as mesmas duas linhas
-# /plugin duas vezes seguidas, em inglês e depois em português. Então quando o
-# init já as imprimiu, este bloco aponta para lá em vez de repetir.
-if [ "$INIT_RAN" -eq 1 ]; then
+# Até aqui este bloco só IMPRIMIA duas linhas pedindo que a pessoa fizesse o
+# passo à mão, e enquanto ninguém as digitasse, nada acontecia. Agora o passo é
+# executado; imprimir vira o caminho de EXCEÇÃO, para quando ele não puder rodar.
+#
+# O script mora dentro do pacote e não ao lado deste arquivo, porque no
+# `curl … | sh` nada além deste install.sh chega ao disco — depois do apt, ele
+# está em /usr/lib/mustard/. Um pacote anterior a esta mudança não o traz, e aí
+# o bloco degrada para o texto de sempre.
+PLUGIN_STEP="/usr/lib/mustard/plugin-step.sh"
+if [ -x "$PLUGIN_STEP" ]; then
+  # Dentro de um `if` porque `set -e` mataria o script se o passo falhasse — e o
+  # passo é fail-open justamente para nunca derrubar uma instalação que deu certo.
+  if ! sh "$PLUGIN_STEP"; then
+    echo "aviso: o passo do plugin não concluiu; o Mustard em si ESTÁ instalado." >&2
+  fi
+elif [ "$INIT_RAN" -eq 1 ]; then
   echo "    Falta o plugin do Claude Code — é ele que traz os comandos /mustard:*,"
   echo "    os hooks e o MCP de memória. As duas linhas /plugin … estão logo acima,"
   echo "    na saída do 'mustard init' (\"Next: 1.\"): elas são digitadas DENTRO do"
