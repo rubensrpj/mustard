@@ -225,7 +225,11 @@ fn the_library_half_of_init_calls_no_environment_installer() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
     )
     .expect("cli.rs is readable");
-    for call in ["init::ensure_rtk();", "init::ensure_ripgrep();"] {
+    for call in [
+        "init::ensure_rtk();",
+        "init::ensure_ripgrep();",
+        "init::ensure_global_permissions_if_opted_in();",
+    ] {
         assert!(
             dispatch.contains(call),
             "`{call}` vanished from cli::dispatch — the terminal user lost the tooling"
@@ -305,5 +309,41 @@ fn answering_cancel_leaves_the_machine_untouched() {
     assert!(
         !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
         "a cancelled run ran a tool installer; log was:\n{spawned}"
+    );
+}
+
+/// The POSITIVE control for the global-settings act.
+///
+/// Every other assertion in this file and in `library_is_pure.rs` says the act
+/// must NOT happen somewhere. Review measured what that leaves open: deleting
+/// `init::ensure_global_permissions_if_opted_in();` from dispatch kills the
+/// feature outright and every one of those tests stays green, because "never
+/// written" satisfies them all. A one-sided pin cannot tell a correctly placed
+/// act from a deleted one.
+#[test]
+#[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
+fn the_binary_still_writes_global_settings_when_the_operator_opted_in() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let bin = shim_dir(&log, true);
+    let project = fresh_repo(tmp.path());
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mustard"))
+        .args(["init", "--yes"])
+        .current_dir(&project)
+        .env_clear()
+        .env("PATH", &bin)
+        .env("HOME", &home)
+        .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
+        .output()
+        .expect("the mustard binary runs");
+
+    assert!(out.status.success(), "the install must succeed");
+    assert!(
+        home.join(".claude").join("settings.json").exists(),
+        "the opted-in operator lost the global-settings write; stdout was:\n{}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }
