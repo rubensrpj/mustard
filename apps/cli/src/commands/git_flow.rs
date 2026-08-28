@@ -1,7 +1,7 @@
 //! Git-flow + locale configuration for the project-root `mustard.json`.
 //!
-//! Probes the repository (default branch, current branch, remote branches,
-//! submodules), collects the user's choices (production / dev branch, provider,
+//! Probes the repository (default branch, current branch, submodules),
+//! collects the user's choices (production / dev branch, provider,
 //! **spec language**, **tone**), detects the build/test/lint/type-check command
 //! set agnostically (no hardcoded `npm`), and folds all of it into the single
 //! [`ProjectConfig`] written at the project root. There is no private config
@@ -23,24 +23,16 @@ use dialoguer::Select;
 use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale, Tone};
 
 /// Facts probed from the repository, all fail-open.
+///
+/// It used to carry the remote branch list too, read by a `dev_branch()` helper
+/// that guessed `dev`/`develop` for the branch prompts. Those prompts are gone
+/// (see [`collect_choices`]) — nothing asks which branches the project promotes
+/// through any more — so both the guess and the `git branch -r` call that fed it
+/// went with them.
 pub struct GitFacts {
     default_branch: String,
     current_branch: Option<String>,
     has_submodules: bool,
-    remote_branches: Vec<String>,
-}
-
-impl GitFacts {
-    /// Name of the detected shared dev branch (`dev` or `develop`), if any.
-    fn dev_branch(&self) -> Option<&'static str> {
-        if self.remote_branches.iter().any(|b| b == "dev") {
-            Some("dev")
-        } else if self.remote_branches.iter().any(|b| b == "develop") {
-            Some("develop")
-        } else {
-            None
-        }
-    }
 }
 
 /// The user's git-flow + locale choices, resolved either from prompts or from
@@ -85,16 +77,7 @@ pub fn probe_git(project_path: &Path) -> GitFacts {
 
     let has_submodules = project_path.join(".gitmodules").exists();
 
-    let remote_branches = git(project_path, &["branch", "-r", "--format=%(refname:short)"])
-        .map(|out| {
-            out.lines()
-                .filter(|l| !l.is_empty())
-                .map(|l| l.trim().trim_start_matches("origin/").to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    GitFacts { default_branch, current_branch, has_submodules, remote_branches }
+    GitFacts { default_branch, current_branch, has_submodules }
 }
 
 /// Build the branch-promotion flow map. An empty dev branch yields an empty map.
@@ -286,12 +269,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn facts(dev: Option<&str>, submodules: bool) -> GitFacts {
+    fn facts(submodules: bool) -> GitFacts {
         GitFacts {
             default_branch: "main".to_string(),
             current_branch: None,
             has_submodules: submodules,
-            remote_branches: dev.map(|d| vec![d.to_string()]).unwrap_or_default(),
         }
     }
 
@@ -307,9 +289,11 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
 
-        // A repository whose probe WOULD have supplied both answers: a default
-        // branch and a `dev` line the old code guessed from. Neither is used.
-        let probed = facts(Some("dev"), false);
+        // A repository whose probe supplies a default branch the old code would
+        // have seeded the flow from. It is not used. (The remote branch list the
+        // `dev`/`develop` guess read is gone from `GitFacts` altogether — no
+        // fixture can hand it over any more.)
+        let probed = facts(false);
         let fresh = ProjectConfig::default();
         let choices = collect_choices(&probed, &fresh, true).expect("no prompt to fail");
         assert!(
@@ -349,7 +333,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
 
-        let probed = facts(Some("dev"), false);
+        let probed = facts(false);
         let choices = collect_choices(&probed, &ProjectConfig::default(), true)
             .expect("no prompt to fail");
         assert!(
@@ -392,7 +376,6 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
         let mut config = ProjectConfig::default();
-        let f = facts(Some("dev"), true);
         let choices = Choices {
             production: "main".into(),
             dev_branch: "dev".into(),
@@ -416,7 +399,6 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
         let mut config = ProjectConfig::default();
         config.build_command = Some("custom build".into());
-        let f = facts(None, false);
         let choices = Choices {
             production: "main".into(),
             dev_branch: String::new(),

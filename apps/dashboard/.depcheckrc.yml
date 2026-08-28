@@ -1,0 +1,25 @@
+# Configuration for `depcheck`, the frontend half of
+# `scripts/ac/deps-no-unused.sh` (the Rust half is `cargo shear`).
+#
+# Every entry below is a package depcheck reports as unused that IS used. It is
+# listed one by one, with the reason, rather than relaxing the tool: a package
+# genuinely orphaned tomorrow must still be reported.
+ignores:
+  # depcheck has no CSS parser, so it never sees `src/style.css`. These three
+  # are reached only from its `@import` lines:
+  #   @import "tailwindcss";
+  #   @import "tw-animate-css";
+  #   @import "shadcn/tailwind.css";
+  # `tailwindcss` is additionally the engine behind the `@tailwindcss/vite`
+  # plugin in vite.config.ts, and `shadcn` is the CLI that `components.json`
+  # configures — but the CSS import alone already makes all three real.
+  - "tailwindcss"
+  - "tw-animate-css"
+  - "shadcn"
+  # Type-only packages: TypeScript resolves `@types/*` from node_modules by
+  # convention, so no file ever imports them by name. depcheck usually infers
+  # this; they are pinned here so a depcheck version that stops inferring it
+  # cannot turn the criterion red for a package that is doing its job.
+  - "@types/react"
+  - "@types/react-dom"
+  - "@types/react-syntax-highlighter"

@@ -1,7 +1,7 @@
 //! `mustard-rt run spec-children-tree --spec NAME` — a single round-trip
 //! projection of a parent spec's **waves**, **acceptance criteria** and
-//! **sub-specs**, consumed by the dashboard's `spec_children_tree` Tauri
-//! command (Wave 3 of `spec-lifecycle-unification`).
+//! **sub-specs**, consumed by the dashboard's `spec_children_tree` command
+//! (Wave 3 of `spec-lifecycle-unification`).
 //!
 //! Why one subcommand
 //! ------------------

@@ -35,13 +35,11 @@
 //!      the file goes back to being fully the user's;
 //! 4. copy `templates/.github/` → project-root `.github/` when a GitHub remote
 //!    is detected (project-level scaffolding, not part of the plugin);
-//! 5. ensure global Claude Code permissions in `~/.claude/settings.json` (opt-in);
-//! 6. install RTK + ripgrep (token economy) if missing — fail-open;
-//! 7. write the single project-root `mustard.json`: git-flow + agnostically
+//! 5. write the single project-root `mustard.json`: git-flow + agnostically
 //!    detected build/test/lint/type-check commands + spec language + tone +
 //!    the `runtime`/`version` stamp + the default `inject` declarations
 //!    (seeded only when the user has none — a curated list is preserved);
-//! 8. settle that stamp (`mustard_core::record_version_stamp`): where the host
+//! 6. settle that stamp (`mustard_core::record_version_stamp`): where the host
 //!    repository TRACKS `mustard.json`, an install that found a clean tree
 //!    commits the line it just wrote, so the install never hands the next
 //!    command a dirty file to blame on the operator. A tree that already held
@@ -84,6 +82,11 @@
 //! of a file it had already hidden — two settings layers, hooks registered
 //! twice. There is no prompt: an ordinary install is never asked a question it
 //! does not need.
+//! What is NOT a step of `init`, though it still happens on a `mustard init`
+//! run: the global-permissions write and the RTK/ripgrep installers. Both live
+//! in `cli::dispatch`, because they act on the MACHINE and a library call must
+//! never take that on its caller's behalf — three reviews in a row found that
+//! same shape in this file. `apps/cli/tests/library_is_pure.rs` measures it.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -124,33 +127,68 @@ enum ExistingAction {
 
 /// Run `mustard init` against `project_path`.
 ///
-/// This is the library entry point the Tauri backend calls. The binary passes
+/// This is the library entry point the dashboard backend calls. The binary passes
 /// the process working directory; a caller may pass any folder. The bundled
 /// `templates/` directory is located via [`resolve_templates_dir`]; callers
 /// that already know its location use [`init_with_templates`].
-pub fn init(project_path: &Path, options: &InitOptions) -> Result<()> {
+pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
     let templates_dir = resolve_templates_dir()?;
     init_with_templates(project_path, &templates_dir, options)
+}
+
+/// What an `init` run actually DID, reported as a fact rather than folded into
+/// `Result`.
+///
+/// The distinction is load-bearing and was found in review: `Ok(())` used to
+/// cover both "the project was seeded" and "the operator answered Cancel", so a
+/// caller that acted on success alone changed the machine after an explicit
+/// refusal. A closed set of dispositions lets the caller judge; the callee keeps
+/// its opinion to itself. Mold: `core-outcome-pattern`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitOutcome {
+    /// The project was seeded: `.claude/` and `mustard.json` are on disk.
+    Installed,
+    /// An existing `.claude/` was found and the operator chose to stop.
+    ///
+    /// NOT "nothing was written": `hide_footprint` runs BEFORE the prompt, and a
+    /// cancelled run was measured appending 31 rules to the project's
+    /// `.git/info/exclude`. What this variant promises is narrower and is the
+    /// part the caller needs — no install completed, so nothing about the
+    /// MACHINE may change on this run's account.
+    Cancelled,
+    /// `--dry-run`: the plan was printed and no path was touched.
+    DryRun,
 }
 
 /// [`init`] with the `templates/` directory supplied explicitly.
 ///
 /// Splitting this out keeps template resolution (an environment concern) out
-/// of the install logic, so tests can drive a fixture tree and the Tauri
+/// of the install logic, so tests can drive a fixture tree and the dashboard
 /// backend can point at its own bundled payload — no process-global env var.
 pub fn init_with_templates(
     project_path: &Path,
     templates_dir: &Path,
     options: &InitOptions,
-) -> Result<()> {
-    // RTK is a mandatory dependency of Mustard — the harness's Golden Rule
-    // prefixes every Bash invocation with `rtk`. Probe before touching disk: if
-    // `rtk` is missing the install would produce a `.claude/` that cannot run,
-    // so we exit hard with install instructions instead. Skipped in dry-run
-    // mode (no disk writes either).
-    if !options.dry_run {
-        probe_rtk();
-    }
+) -> Result<InitOutcome> {
+    // NO RTK PROBE HERE, and that is the point of this function's split.
+    //
+    // Probing `PATH` is an environment concern, which the doc above says this
+    // half deliberately does not carry. It used to call `probe_rtk()`, and that
+    // function ends in `std::process::exit(1)` — so this function, which
+    // returns `Result<()>`, could instead KILL ITS CALLER'S PROCESS. Any
+    // library consumer lost the chance to handle it; a `Result` that sometimes
+    // terminates the program is not a contract.
+    //
+    // Measured, not theorised: `apps/dashboard/server/tests/mustard_cli_test.rs`
+    // died as "test exited abnormally" the first time CI ran it (this crate had
+    // never been in the CI test set), because a clean runner has no `rtk` and
+    // the process simply vanished mid-test. The `cfg!(test)` escape hatch in
+    // `probe_rtk` does not reach it: that flag is true only while THIS crate
+    // compiles its own unit tests, never for an integration test living in
+    // another crate.
+    //
+    // The gate itself is not softened — it moved to `cli::dispatch`, where the
+    // terminal user still meets it before any disk write. See `probe_rtk`.
 
     let project_path = project_path
         .canonicalize()
@@ -190,7 +228,7 @@ pub fn init_with_templates(
             project_path.join("mustard.json").display()
         );
         println!("  (dry-run) content payload (commands/skills/agents/refs) + .mcp.json now ship in the `mustard` plugin — not written");
-        return Ok(());
+        return Ok(InitOutcome::DryRun);
     }
 
     // Sampled BEFORE the first write — the only moment at which the operator's
@@ -212,7 +250,11 @@ pub fn init_with_templates(
         match decide_existing_action(&claude_path, options)? {
             ExistingAction::Cancel => {
                 println!("\n  Cancelled.\n");
-                return Ok(());
+                // Cancelled, NOT installed. The caller reads the difference: an
+                // `Ok(())` here used to let `cli::dispatch` run the tool
+                // installers after an explicit refusal, writing RTK's global
+                // config on a run the operator stopped (found in review).
+                return Ok(InitOutcome::Cancelled);
             }
             ExistingAction::Merge => false,
             ExistingAction::Overwrite => true,
@@ -276,11 +318,34 @@ pub fn init_with_templates(
         }
     }
 
-    ensure_global_permissions().unwrap_or_else(|err| {
-        eprintln!("[mustard] warning: could not update global permissions: {err}");
-    });
-    ensure_rtk();
-    ensure_ripgrep();
+    // `ensure_global_permissions` is NOT called here either — it writes
+    // `$HOME/.claude/settings.json`, outside the project, which is the same
+    // class of act as the installers below. A reviewer measured it happening
+    // from a plain library call with `MUSTARD_GLOBAL_PERMISSIONS=1`; it sat
+    // three lines above a comment forbidding exactly that. It now runs from
+    // `cli::dispatch`, through `ensure_global_permissions_if_opted_in`.
+
+    // NO TOOL INSTALLERS HERE — `ensure_rtk` / `ensure_ripgrep` live in
+    // `cli::dispatch`, beside the gate, for the same reason the gate does.
+    //
+    // They were called from this spot, and moving the gate out without moving
+    // them nearly shipped a worse bug than the one it fixed. While `probe_rtk`
+    // exited at the top of this function, `ensure_rtk` could only ever run with
+    // `rtk` ALREADY present — its install branch was unreachable from here. Take
+    // the exit away and that branch goes live for every library and
+    // integration-test caller, and it runs
+    // `sh -c "curl … rtk/master/install.sh | sh"` on Unix, or `cargo install`
+    // from git plus `cargo install ripgrep` on Windows.
+    //
+    // Measured in review, not argued: the dashboard's `mustard_cli_test` spawned
+    // that curl pipeline TWICE under a logging `sh` shim. It would have run on
+    // ubuntu, macOS and Windows runners, downloading and executing a remote
+    // script inside a unit test, with no timeout.
+    //
+    // The verification that missed it is worth naming too: `PATH=/nonexistent`
+    // makes every spawn fail instantly, so the installer degrades to printing
+    // instructions — the one environment where this consequence cannot appear.
+    // Re-measure this file with a SHIMMED PATH, never an empty one.
 
     // Write the single project-root mustard.json: git-flow + detected commands
     // + language/tone + runtime/version stamp. One file, one write. A re-run
@@ -297,7 +362,7 @@ pub fn init_with_templates(
     );
 
     print_next_steps();
-    Ok(())
+    Ok(InitOutcome::Installed)
 }
 
 /// Say what became of the version stamp, in the didactic voice the rest of the
@@ -519,7 +584,7 @@ fn templates_beside_exe(exe: &Path) -> Option<PathBuf> {
 ///
 /// Resolution order:
 /// 1. the `MUSTARD_TEMPLATES_DIR` environment variable (explicit override —
-///    used by tests and by the Tauri backend, which knows its own layout);
+///    used by tests and by the dashboard backend, which knows its own layout);
 /// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout),
 ///    resolved from the CANONICALIZED executable path;
 /// 3. `<CARGO_MANIFEST_DIR>/templates` (the in-repo layout, for `cargo run`).
@@ -596,7 +661,8 @@ fn decide_existing_action(claude_path: &Path, options: &InitOptions) -> Result<E
         println!("  .claude/ exists - updating without overwriting user files");
         return Ok(ExistingAction::Merge);
     }
-    // Non-interactive stdin (CI, tests, Tauri): default to the safe merge
+    // Non-interactive stdin (CI, tests, the dashboard backend): default to the
+    // safe merge
     // rather than blocking on a prompt that can never be answered.
     if !std::io::stdin().is_terminal() {
         println!("  .claude/ exists - merging (non-interactive)");
@@ -695,6 +761,17 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
     println!("  wrote mustard.json");
     Ok(())
 }
+/// The binary-side face of [`ensure_global_permissions`].
+///
+/// Exists so `cli::dispatch` can take this environment act without the library
+/// taking it: it is the only caller, it swallows the failure the way the install
+/// always did, and `pub(crate)` keeps it off the crate's public API.
+pub(crate) fn ensure_global_permissions_if_opted_in() {
+    ensure_global_permissions().unwrap_or_else(|err| {
+        eprintln!("[mustard] warning: could not update global permissions: {err}");
+    });
+}
+
 /// Ensure `~/.claude/settings.json` grants `Read`/`Write`/`Edit` and sets the
 /// `CLAUDE_CODE_NO_FLICKER` env var. Non-destructive: only adds what is
 /// missing, preserves everything else.
@@ -801,7 +878,7 @@ fn home_dir() -> Option<PathBuf> {
 /// Flow: if `rtk` is already on PATH, run `rtk init -g --no-patch` and return.
 /// Otherwise attempt an auto-install (see [`install_rtk`]); on success re-run
 /// the `rtk init`, on failure print the manual instructions and carry on.
-fn ensure_rtk() {
+pub(crate) fn ensure_rtk() {
     // No external-tool side effects under unit tests: on a clean CI runner this
     // would shell out to `cargo install --git …rtk` (slow / network-bound).
     if cfg!(test) {
@@ -843,11 +920,21 @@ fn rtk_on_path() -> bool {
 /// failing later in a confusing way.
 ///
 /// This is **not** fail-open — unlike [`ensure_rtk`], which is best-effort
-/// during the install phase. The exit code is `1` so CI/Tauri callers can
-/// detect the failure and surface it to the user.
-fn probe_rtk() {
+/// during the install phase. The exit code is `1` so a script driving the
+/// binary can detect the failure and surface it to the user. NOT library
+/// callers: they never reach this function, which is the whole point of it
+/// living in `cli::dispatch`. `pub(crate)` makes the compiler enforce that
+/// rather than leaving it to this comment.
+pub(crate) fn probe_rtk() {
     // Skip the hard gate under unit tests: a clean CI runner has no `rtk`, and a
     // `process::exit` here would kill the whole test process.
+    //
+    // That guard is narrower than it reads, which is why this function may only
+    // be called from the BINARY's dispatch and never from the library: `cfg!(test)`
+    // is true while this crate compiles its own unit tests and false everywhere
+    // else — an integration test in another crate (the dashboard's
+    // `mustard_cli_test`) compiles this as an ordinary dependency and gets the
+    // `exit(1)`. That is exactly how it died on CI's first run of that crate.
     if cfg!(test) || rtk_on_path() {
         return;
     }
@@ -925,7 +1012,7 @@ fn install_rtk(pinned_rev: Option<&str>) -> bool {
 /// Flow: if `rg` is already on PATH, return silently. Otherwise attempt
 /// auto-install via Scoop (Windows) or `cargo install ripgrep`; on Unix only
 /// print manual instructions (the package manager varies).
-fn ensure_ripgrep() {
+pub(crate) fn ensure_ripgrep() {
     // No external-tool side effects under unit tests (would `cargo install
     // ripgrep` on a clean CI runner). Production keeps `cfg!(test) == false`.
     if cfg!(test) {
@@ -993,6 +1080,11 @@ fn install_ripgrep() -> bool {
 /// teach the same plugin step twice, in English and then in Portuguese. The
 /// installer resolves that on its side: when it ran init itself it points back
 /// at these lines instead of reprinting them (`packaging/installer/install.sh`).
+/// NOTE: in a DIRECT run this is no longer the last thing on screen — the
+/// global-settings line AND the RTK/ripgrep setup lines now follow it, because
+/// all three moved to
+/// `cli::dispatch` and run after `init` returns. The block is still the last
+/// word of the INSTALL; what trails it is tool setup, not project state.
 /// Keep these two commands here regardless; they are what the direct run needs.
 fn print_next_steps() {
     println!("\nDone!\n");

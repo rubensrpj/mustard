@@ -471,10 +471,15 @@ fn looks_non_english(intent: &str) -> bool {
 /// The query terms of `effective` with the GLOSS-ONLY ones filtered down to
 /// vocabulary the project actually declares — see the call site for why.
 ///
-/// A token of the original `intent` ALWAYS survives: the asker's words are the
-/// request, and second-guessing them is not this function's business. A token
-/// that appears only in the translation survives only when some declaration in
-/// the model carries it.
+/// Nothing is filtered until a gloss actually fires: with no translation the
+/// asker's words ARE the request, and second-guessing them is not this
+/// function's business. Once a gloss fires, every concept carries a second
+/// spelling, so a token — original or translated — rides only when some
+/// declaration in the model carries it.
+///
+/// This function no longer takes the original `intent`: it stopped separating
+/// the asker's half from the translated one when the filter became "does the
+/// project declare this word", which reads the same either way.
 ///
 /// The evidence is the MODEL's declaration names, not the scan dictionary. The
 /// dictionary is a ranked term index with frequency floors and it draws heavily
@@ -485,7 +490,7 @@ fn looks_non_english(intent: &str) -> bool {
 ///
 /// Fail-open throughout: an absent or unreadable model keeps every token. The
 /// filter removes noise; it must never become a gate on the request.
-fn keep_known_gloss_terms(intent: &str, effective: &str, model: &Path, glossed: bool) -> Vec<String> {
+fn keep_known_gloss_terms(effective: &str, model: &Path, glossed: bool) -> Vec<String> {
     let all = domain_terms(effective);
     if !glossed {
         // No translation happened: the request is the request, filtered by
@@ -738,10 +743,12 @@ pub fn run(intent: &str, root: &Path) {
     // ORIGINAL words landed fine was pushed under the "weak" line by its own
     // translation and had its planning fields withheld.
     //
-    // So a glossed token rides only when the project actually uses that word.
-    // The intent's OWN tokens are never filtered: the asker's vocabulary is the
-    // request, and second-guessing it is not this function's business.
-    let mut terms = keep_known_gloss_terms(intent, &effective, &model, gloss.is_some());
+    // So once a gloss fires, a token rides only when the project actually uses
+    // that word — an original the project declares included, which is the case
+    // where the asker guessed the code's own vocabulary. With NO gloss nothing
+    // is filtered at all: the asker's vocabulary is the request, and
+    // second-guessing it is not this function's business.
+    let mut terms = keep_known_gloss_terms(&effective, &model, gloss.is_some());
     // The equivalence map + expanded rank query are computed ONCE here (they were
     // reloaded inside each of the removed rank/rank_detail spawns) and fed to the
     // single bundle call; `uncovered_terms` reuses the same map. `expand_query`

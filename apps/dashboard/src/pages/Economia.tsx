@@ -821,7 +821,7 @@ function scopeKey(scope: EconomyScope): string {
 
 // ── Reality: measured consumption (total + per-model + per-spec) ─────────────
 //
-// Backed by the Tauri command `dashboard_consumption` →
+// Backed by the backend command `dashboard_consumption` →
 // `mustard_core::domain::economy` (economy_summary + metric_token_summary +
 // per_spec_costs) — the single source of truth. Every value here is a REAL
 // token count or REAL billed USD, never a duration-ms proxy. Fail-open: a

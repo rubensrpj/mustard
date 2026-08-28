@@ -94,7 +94,7 @@ const SEVERITY_COLOR: Record<DepSeverity, TonalColor> = {
 /**
  * On-demand outdated check for one unit, gated behind an explicit click. The
  * `checked` flag (lifted by the parent node) flips `enabled` so the query never
- * fires on mount — the underlying Tauri command shells out to the registry and
+ * fires on mount — the underlying backend command shells out to the registry and
  * is slow. Keyed by `[repoPath, dir]` so each project caches independently.
  * Fail-open: the command resolves to `[]` on any error, so `isError` is rare;
  * an empty result after a check is surfaced as a discreet "could not check" note
@@ -372,7 +372,7 @@ interface LangGroup {
  * check is on-demand — clicking "check updates" fires `dashboard_deps_outdated`
  * and paints each stale dep by semver severity. The initial tab is the one with
  * the most projects. Empty-state tolerant — an unscanned workspace resolves to
- * an empty overview (the Tauri command is fail-open).
+ * an empty overview (the backend command is fail-open).
  */
 export function ProjectInfoCard({ repoPath }: ProjectInfoCardProps) {
   const t = useT();

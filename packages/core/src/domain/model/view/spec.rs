@@ -409,7 +409,7 @@ pub struct SpecSummary {
     ///
     /// Populated by re-folding the workspace event slice on `spec.link`
     /// payloads whose `parent` matches this spec — see the dashboard adapter
-    /// in `apps/dashboard/src-tauri/src/spec_views.rs`. Defaults to `0` so
+    /// in `apps/dashboard/server/src/spec_views.rs`. Defaults to `0` so
     /// older clients (and rows produced before this field existed) deserialize
     /// cleanly.
     #[serde(default)]

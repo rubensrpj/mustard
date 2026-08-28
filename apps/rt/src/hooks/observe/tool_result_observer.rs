@@ -44,7 +44,7 @@ const FILE_CHUNK_CAP: usize = 4 * 1024;
 /// The wire payload emitted on `tool.result` events.
 ///
 /// Field shape matches the dashboard `ToolResultPayload` consumer in
-/// `apps/dashboard/src-tauri/src/telemetry.rs` (followup-2 § 4c). All inner
+/// `apps/dashboard/server/src/telemetry.rs` (followup-2 § 4c). All inner
 /// fields are optional — different tools populate different subsets.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct ToolResultPayload {

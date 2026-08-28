@@ -8,6 +8,14 @@ license = "MIT"
 publish = false
 build = "build.rs"
 
+# The `.rs` files under `tests/fixtures/regression-w6/` are DATA — snapshots the
+# `regression_check` tests read as text, never modules of any target. Without
+# this, `cargo shear` (scripts/ac/deps-no-unused.sh) reports them as unlinked
+# source files and advises deleting them. The exclusion is scoped to the fixture
+# tree so a genuinely orphaned module under `src/` is still reported.
+[package.metadata.cargo-shear]
+ignored-paths = ["tests/fixtures/**/*.rs"]
+
 [[bin]]
 name = "mustard-rt"
 path = "src/main.rs"
@@ -58,18 +66,13 @@ ureq = { workspace = true }
 # powers the `bash_guard` parity tests.
 tempfile = { workspace = true }
 
-# `notify` powers the opt-in `transcript-watcher` daemon (Wave 3, economia-moat-
-# unification). The watcher re-ingests `~/.claude/projects/**/*.jsonl` into the
-# economy `spans` table whenever Claude Code appends a turn. Pinned to the same
-# 6.x line as `apps/dashboard/src-tauri` so the workspace shares one `notify`
-# resolution. Production callers are fail-open: a missing/unparseable event is
-# warned via `eprintln!` and the loop continues.
-notify = { workspace = true }
-
-# SHA-256 for the `backup-specs` MANIFEST.json digest. Pulled through the
-# workspace table (centralised in the root Cargo.toml) — shared with
-# `mustard-core`, so the workspace stays on one `sha2` graph.
-sha2 = { workspace = true }
+# `notify` and `sha2` were declared here and imported by nothing. The
+# `transcript-watcher` daemon that justified `notify` is gone (the only surviving
+# mention is a doc comment in `shared/events/writer_ndjson.rs` pointing at the
+# dashboard's watcher, which keeps its own `notify`), and the `backup-specs`
+# MANIFEST.json digest that justified `sha2` runs on this crate's own
+# `util::sha256`. Both were removed rather than wired up: adding an import to
+# keep a manifest line honest is the wrong direction.
 
 # Regex engine for the `qa-run` `Expect:` evidence matcher: an AC may declare
 # `Expect: `<regex>`` and qa-run matches it against the command's own output, so
@@ -78,9 +81,8 @@ sha2 = { workspace = true }
 # dependency; the `1` line is the one already resolved in Cargo.lock via scan.
 regex = "1"
 
-[dev-dependencies]
-# Byte-stable snapshot assertions for the `run orient` census renderer (inline
-# snapshots — no external `.snap` files). Shared workspace pin.
+# No `[dev-dependencies]`: the tests use `tempfile`, which is a normal
+# dependency above because `artifact-update --apply` needs it at runtime too.
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
 # unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.

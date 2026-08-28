@@ -76,11 +76,10 @@ function AcRow({
       )}
 
       {editorUrl && (
-        // We deliberately use a plain anchor instead of a Tauri shell-open
-        // call: the `vscode://` URL handler is registered by VS Code on
-        // install, and Tauri's webview hands `target="_blank"` anchors with
-        // unknown schemes to the OS shell, which routes them to VS Code.
-        // This keeps the dependency surface flat (no new npm deps).
+        // A plain anchor is all this needs: the `vscode://` URL handler is
+        // registered by VS Code on install, so the browser hands the unknown
+        // scheme to the OS, which routes it to VS Code. This keeps the
+        // dependency surface flat (no new npm deps).
         <a
           href={editorUrl}
           target="_blank"

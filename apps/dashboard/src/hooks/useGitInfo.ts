@@ -3,7 +3,7 @@ import { fetchGitInfo, type GitInfo } from "@/lib/dashboard";
 
 /**
  * Local git state (remote, branch, ahead/behind, last commit) for a single
- * workspace. Backed by the `dashboard_git_info` Tauri command, which is
+ * workspace. Backed by the `dashboard_git_info` backend command, which is
  * fail-open — a non-repo / no-remote path resolves to an empty `GitInfo`
  * (`is_repo: false`), so callers render an empty state rather than catch.
  *

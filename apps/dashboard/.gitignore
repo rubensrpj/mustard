@@ -12,9 +12,6 @@ dist
 dist-ssr
 *.local
 
-# Tauri build artifacts
-src-tauri/target/
-
 # Environment files
 .env*
 

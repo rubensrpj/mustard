@@ -54,16 +54,14 @@ function App() {
     );
   }, [pathsKey]);
 
-  useEffect(() => {
-    const p = subscribeFsChange();
-    return () => {
-      p.then((u) => u()).catch(() => {});
-    };
-  }, []);
+  useEffect(() => subscribeFsChange(), []);
 
-  // Hydrate the projects registry once on mount (Tauri plugin-store -> in-memory).
+  // Hydrate the projects registry once on mount (server registry -> in-memory).
   useEffect(() => {
-    useProjectsStore.getState().loadFromStore();
+    useProjectsStore
+      .getState()
+      .loadFromServer()
+      .catch((e) => console.error('loadFromServer failed', e));
   }, []);
 
   return (

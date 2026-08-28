@@ -12,8 +12,8 @@
 //!
 //! - the `mustard` binary ([`main`](../main/index.html)) — what a user runs in
 //!   a terminal;
-//! - this library — what the Tauri dashboard backend links against, so the
-//!   desktop app can install Mustard into a folder without spawning a sidecar.
+//! - this library — what the dashboard backend links against, so the server
+//!   can install Mustard into a folder without spawning a sidecar.
 //!
 //! Both faces share the same modules:
 //!

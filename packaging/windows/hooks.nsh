@@ -1,17 +1,41 @@
 ; ============================================================================
-; hooks.nsh — hooks do instalador NSIS do Tauri (Tauri 2) para o Mustard.
+; hooks.nsh — everything the Windows installer does to the machine beyond
+; copying files: the user Path, the templates variable and the Start Menu
+; shortcut. Included by packaging/windows/mustard.nsi, which decides when each
+; macro runs.
 ;
-; O instalador do Mustard Dashboard embute também o CLI: via bundle.resources
-; (ver packaging/windows/tauri.windows.json) os binários do CLI e os templates
-; são copiados para dentro da pasta de instalação:
+; Installed layout (mustard.nsi writes it; this file depends on it):
 ;
-;   $INSTDIR\resources\mustard-cli\        scan.exe, mustard*.exe, rtk.exe
-;   $INSTDIR\resources\mustard-templates\  a carga do `mustard init`
+;   $INSTDIR\mustard-cli\        scan.exe, mustard*.exe, rtk.exe,
+;                                mustard-dashboard.exe
+;   $INSTDIR\mustard-cli\dist\   the built React assets
+;   $INSTDIR\mustard-templates\  the payload `mustard init` copies
 ;
-; O Dashboard.exe fica em $INSTDIR. Como a resolução de templates do Mustard
-; (mustard_cli::resolve_templates_dir) tenta MUSTARD_TEMPLATES_DIR PRIMEIRO,
-; apontar essa variável basta para que TANTO o CLI no terminal QUANTO o
-; Dashboard encontrem os templates — sem depender de layout relativo.
+; THE FOLDER NAME `mustard-cli` IS A CONTRACT WITH mustard.nsi. It used to be a
+; contract with the old desktop-app bundler's Windows config instead, and the two
+; disagreed until 0.1.52:
+; the bundler copied the binaries to $INSTDIR\mustard-cli while this file sent a
+; `resources\mustard-cli` that never existed to the Path, so NOTHING new entered
+; the Path. Anyone with an older install kept being answered by it — that is how
+; a machine updated to 0.1.52 went on reporting 0.1.47 (the number is compiled
+; into the executable: whatever answers 0.1.47 IS a 0.1.47 binary). Anyone with
+; no prior install got no command at all. When touching either file, check the
+; pair: both must name the SAME folder.
+;
+; Templates: `mustard_cli::resolve_templates_dir` tries MUSTARD_TEMPLATES_DIR
+; FIRST, so pointing that variable at the installed folder is enough for both
+; the CLI in a terminal and the dashboard server, with no reliance on relative
+; layout. That resolution tests `is_dir()` before accepting the variable, so a
+; variable aimed at a missing folder degrades to the layout beside the
+; executable instead of breaking — which is why the wrong path above raised no
+; error at all.
+;
+; SHORTCUT: it starts a SERVER, not a window. `mustard-dashboard.exe` binds
+; 127.0.0.1:7777, prints the URL and opens the browser itself when there is a
+; graphical session. The console window that stays open IS the server — closing
+; it stops serving. "Start in" is the user profile because the scan root is the
+; directory the server was started from; a narrower root is `--root DIR` from a
+; terminal.
 ;
 ; POR QUE O PATH É EDITADO PELO POWERSHELL, NUNCA PELO NSIS: o NSIS trunca
 ; toda string no seu limite de compilação (1024 na build clássica, 8192 na de
@@ -25,9 +49,11 @@
 ; diferenciar maiúsculas, e o Set já difunde a mudança de ambiente sozinho.
 ;
 ; A edição também é IDEMPOTENTE, o que o fluxo antigo não era: antes de anexar,
-; toda entrada terminada em \resources\mustard-cli é removida — a desta versão
-; (não duplica em upgrade) e as de $INSTDIR antigos (não deixa entrada morta
-; apontando para pasta desinstalada).
+; toda entrada terminada em \mustard-cli é removida — a desta versão (não
+; duplica em upgrade), as de $INSTDIR antigos (não deixa entrada morta apontando
+; para pasta desinstalada) e as entradas MORTAS que as versões até 0.1.52
+; gravaram sob a subpasta errada. O sufixo casado é o genérico `*\mustard-cli`
+; justamente para alcançar as três de uma vez.
 ;
 ; Fail-open: se o powershell.exe faltar ou falhar, o Path fica como está — o
 ; usuário adiciona a pasta à mão, e nada dele é perdido. O código de saída é
@@ -36,7 +62,7 @@
 ; POSTUNINSTALL: remove a variável de templates e, agora com remoção por
 ; comparação exata de sufixo no PowerShell (o motivo de antes não remover era
 ; a fragilidade de fazê-lo por substring em NSIS), tira do Path só as
-; entradas \resources\mustard-cli.
+; entradas \mustard-cli.
 ;
 ; MUSTARD_TEMPLATES_DIR continua escrita pelo NSIS: é um valor curto que o
 ; instalador acabou de criar — o perigo do limite não a alcança.
@@ -47,12 +73,19 @@
 !include "WinMessages.nsh"
 
 !macro NSIS_HOOK_POSTINSTALL
-  WriteRegExpandStr HKCU "Environment" "MUSTARD_TEMPLATES_DIR" "$INSTDIR\resources\mustard-templates"
+  WriteRegExpandStr HKCU "Environment" "MUSTARD_TEMPLATES_DIR" "$INSTDIR\mustard-templates"
 
   ; Path de usuário: lido, filtrado e gravado inteiramente DENTRO do
   ; PowerShell — o valor nunca entra numa variável NSIS (ver cabeçalho).
-  nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\resources\mustard-cli'; $$p = [Environment]::GetEnvironmentVariable('Path', 'User'); $$k = @(); if ($$p) { $$k = @($$p -split ';' | Where-Object { $$_ -and ($$_ -notlike '*\resources\mustard-cli') }) }; [Environment]::SetEnvironmentVariable('Path', (($$k + $$d) -join ';'), 'User')"`
+  nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$d = '$INSTDIR\mustard-cli'; $$p = [Environment]::GetEnvironmentVariable('Path', 'User'); $$k = @(); if ($$p) { $$k = @($$p -split ';' | Where-Object { $$_ -and ($$_ -notlike '*\mustard-cli') }) }; [Environment]::SetEnvironmentVariable('Path', (($$k + $$d) -join ';'), 'User')"`
   Pop $0
+
+  ; Start Menu entry. SetOutPath decides the shortcut's working directory, and
+  ; that directory is the dashboard's scan root — see the header.
+  CreateDirectory "$SMPROGRAMS\Mustard"
+  SetOutPath "$PROFILE"
+  CreateShortCut "$SMPROGRAMS\Mustard\Mustard Dashboard.lnk" "$INSTDIR\mustard-cli\mustard-dashboard.exe" "" "$INSTDIR\mustard-cli\mustard-dashboard.exe" 0 SW_SHOWNORMAL "" "Serve o Mustard Dashboard em http://127.0.0.1:7777 e abre o navegador"
+  SetOutPath "$INSTDIR"
 
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 !macroend
@@ -60,9 +93,12 @@
 !macro NSIS_HOOK_POSTUNINSTALL
   DeleteRegValue HKCU "Environment" "MUSTARD_TEMPLATES_DIR"
 
-  ; Remove só as entradas \resources\mustard-cli; todo o resto do Path passa
+  Delete "$SMPROGRAMS\Mustard\Mustard Dashboard.lnk"
+  RMDir "$SMPROGRAMS\Mustard"
+
+  ; Remove só as entradas \mustard-cli; todo o resto do Path passa
   ; intocado pelo mesmo caminho sem limite do POSTINSTALL.
-  nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($$p) { $$k = @($$p -split ';' | Where-Object { $$_ -and ($$_ -notlike '*\resources\mustard-cli') }); [Environment]::SetEnvironmentVariable('Path', ($$k -join ';'), 'User') }"`
+  nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -Command "$$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($$p) { $$k = @($$p -split ';' | Where-Object { $$_ -and ($$_ -notlike '*\mustard-cli') }); [Environment]::SetEnvironmentVariable('Path', ($$k -join ';'), 'User') }"`
   Pop $0
 
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000

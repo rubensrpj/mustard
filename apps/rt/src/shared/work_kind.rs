@@ -450,9 +450,6 @@ pub(crate) struct BaseFlow {
     bases: Vec<String>,
     /// The base ordinary work is cut from — `flow["*"]`.
     work: String,
-    /// The bases that are NOT the work base, ordered so the LAST is the
-    /// project's outermost one. See [`BaseFlow::of`].
-    emergency: Vec<String>,
     /// The project root whose UNIT RECORDS this model may consult
     /// ([`BaseFlow::of_at`]), `None` for the pure derivation ([`BaseFlow::of`]).
     ///
@@ -467,14 +464,14 @@ pub(crate) struct BaseFlow {
 impl BaseFlow {
     /// Derive the model from one project's declared flow.
     ///
-    /// The emergency ORDER is the only non-obvious part, and it exists so
-    /// [`base_of_kind`](Self::base_of_kind) can name a default without guessing:
-    /// the promotion chain is walked outward from the work base
-    /// (`flow[work]`, then `flow[that]`, …), each step being one closer to
-    /// production, so the chain's end is the project's outermost base. Bases the
-    /// chain never reaches are off the promotion path altogether, so they are
-    /// listed BEFORE it — leaving the outermost base last whatever else the
-    /// project declares. A cyclic flow terminates on the first repeat.
+    /// It used to also walk the promotion chain outward from the work base, so a
+    /// separate `emergency` list could name the outermost base as a hotfix's
+    /// default. Nothing asks for that default any more —
+    /// [`base_of`](Self::base_of) answers `Known` only when the DECLARED set
+    /// lands on one base or the unit's own record says so, and `Ambiguous`
+    /// otherwise — so the walk and the list it fed are gone. Ordering candidates
+    /// only mattered while something picked one off the list unasked, which is
+    /// exactly the behaviour that was removed.
     pub(crate) fn of(git: &GitConfig) -> Self {
         Self::build(git, None)
     }
@@ -497,25 +494,7 @@ impl BaseFlow {
     fn build(git: &GitConfig, project: Option<PathBuf>) -> Self {
         let bases: Vec<String> = git.preselected_bases().into_iter().collect();
         let work = git.primary_base();
-
-        let mut chain: Vec<String> = Vec::new();
-        let mut seen: Vec<String> = vec![work.clone()];
-        let mut cursor = work.clone();
-        while let Some(next) =
-            git.flow.get(&cursor).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
-        {
-            if seen.contains(&next) {
-                break; // a flow that loops back is still a finite walk
-            }
-            seen.push(next.clone());
-            chain.push(next.clone());
-            cursor = next;
-        }
-        let mut emergency: Vec<String> =
-            bases.iter().filter(|b| !seen.contains(b)).cloned().collect();
-        emergency.extend(chain);
-
-        Self { bases, work, emergency, project }
+        Self { bases, work, project }
     }
 
     /// Every declared integration base — for the consumers that iterate them
@@ -528,23 +507,6 @@ impl BaseFlow {
     pub(crate) fn work_base(&self) -> &str {
         &self.work
     }
-
-    /// The bases an emergency may be cut from — every integration base that is
-    /// not the work base, outermost LAST.
-    ///
-    /// The COUNT is what decides whether the operator is asked anything: with
-    /// exactly one candidate there is nothing to choose and a question would be
-    /// pure ceremony; with several, the choice is theirs and this list is what
-    /// they choose from.
-    pub(crate) fn emergency_bases(&self) -> &[String] {
-        &self.emergency
-    }
-
-    /// `true` when a hotfix leaves the operator a real choice of base.
-    pub(crate) fn emergency_is_ambiguous(&self) -> bool {
-        self.emergency.len() > 1
-    }
-
 
     /// The integration base a work branch belongs to.
     ///
@@ -960,44 +922,41 @@ mod tests {
         );
     }
 
+    /// What the flow derives now that the separately ordered emergency list is
+    /// gone: the DECLARED set, and the one base ordinary work is cut from.
+    ///
+    /// `bases()` comes out of a `BTreeSet`, so it is sorted and not
+    /// promotion-ordered. That is the point — ordering candidates only mattered
+    /// while something picked one off the list unasked, and `base_of` stopped
+    /// doing that: several candidates answer `Ambiguous` and the operator picks.
     #[test]
-    fn the_emergency_candidates_end_at_the_outermost_base() {
+    fn the_flow_derives_its_declared_bases_and_the_work_base() {
         let two = BaseFlow::of(&two_tier());
         assert_eq!(two.work_base(), "dev");
-        assert_eq!(two.emergency_bases(), ["main"]);
-        assert!(!two.emergency_is_ambiguous(), "one candidate is nothing to ask about");
+        assert_eq!(two.bases(), ["dev", "main"]);
 
         let three = BaseFlow::of(&three_tier());
-        assert_eq!(three.emergency_bases(), ["qas", "main"], "outermost last");
-        assert!(three.emergency_is_ambiguous(), "several candidates — the operator picks");
+        assert_eq!(three.work_base(), "dev");
+        assert_eq!(three.bases(), ["dev", "main", "qas"], "several candidates to choose from");
 
-        // A single-base project declares no emergency route at all.
+        // A single-base project has one answer and no choice.
         let mut single = GitConfig::default();
         single.flow.insert("*".to_string(), "main".to_string());
-        let one = BaseFlow::of(&single);
-        assert!(one.emergency_bases().is_empty());
-        assert_eq!(one.bases(), ["main"], "a single-base project has one answer and no choice");
-    }
+        assert_eq!(BaseFlow::of(&single).bases(), ["main"]);
 
-    #[test]
-    fn a_cyclic_flow_still_terminates() {
-        let mut git = GitConfig::default();
-        git.flow.insert("*".to_string(), "dev".to_string());
-        git.flow.insert("dev".to_string(), "main".to_string());
-        git.flow.insert("main".to_string(), "dev".to_string());
-        let flow = BaseFlow::of(&git);
-        assert_eq!(flow.emergency_bases(), ["main"]);
-    }
+        // A flow that loops back is still a finite set of names.
+        let mut cyclic = GitConfig::default();
+        cyclic.flow.insert("*".to_string(), "dev".to_string());
+        cyclic.flow.insert("dev".to_string(), "main".to_string());
+        cyclic.flow.insert("main".to_string(), "dev".to_string());
+        assert_eq!(BaseFlow::of(&cyclic).bases(), ["dev", "main"]);
 
-    #[test]
-    fn a_base_off_the_promotion_path_never_displaces_the_outermost_one() {
-        // `spike` is declared (it is a flow VALUE) but the chain from `dev`
-        // never reaches it, so it is a candidate that is not the outermost base.
-        let mut git = three_tier();
-        git.flow.insert("spike".to_string(), "spike".to_string());
-        let flow = BaseFlow::of(&git);
-        assert_eq!(flow.emergency_bases().last().map(String::as_str), Some("main"));
-        assert!(flow.emergency_bases().contains(&"spike".to_string()));
+        // `spike` is declared (it is a flow VALUE) even though the chain from
+        // `dev` never reaches it — being off the promotion path never took a
+        // base off the list, and now nothing walks the path at all.
+        let mut spike = three_tier();
+        spike.flow.insert("spike".to_string(), "spike".to_string());
+        assert!(BaseFlow::of(&spike).bases().contains(&"spike".to_string()));
     }
 
     #[test]

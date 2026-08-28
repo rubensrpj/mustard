@@ -29,5 +29,5 @@ export default [
     files: ['scripts/**/*.{js,mjs,cjs}'],
     languageOptions: { globals: { ...globals.node, ...globals.es2022 } },
   },
-  { ignores: ['dist', 'src-tauri', 'public', '.tauri', 'node_modules', '*.config.{js,ts}', '.claude'] },
+  { ignores: ['dist', 'public', 'server', 'node_modules', '*.config.{js,ts}', '.claude'] },
 ]

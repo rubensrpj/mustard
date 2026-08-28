@@ -1,14 +1,23 @@
 [workspace]
 resolver = "2"
-members = ["apps/cli", "apps/mcp", "apps/rt", "apps/scan", "packages/core"]
-# Intentionally excluded: edition-2021 / rust-1.77 Tauri shell with its own
-# Cargo.lock and pinned deps. Keeping it out of the workspace means a normal
-# `cargo build --workspace` ignores it (the dashboard is built via
-# `pnpm dashboard:dev` / `pnpm dashboard:build`).
-# Also excluded: the mustard-translate sidecar (apps/translate) — candle +
+members = [
+    "apps/cli",
+    "apps/dashboard/server",
+    "apps/mcp",
+    "apps/rt",
+    "apps/scan",
+    "packages/core",
+]
+# `apps/dashboard/server` was excluded while it was a desktop-shell wrapper: that
+# wrapper pinned it to edition 2021 with its own Cargo.lock and a dependency set
+# that could not consume `[workspace.dependencies]`. The shell is gone — the
+# dashboard backend is now a plain `tiny_http` server — so the reason evaporated
+# and the crate is a normal member: `cargo build --workspace` compiles it.
+#
+# Still excluded: the mustard-translate sidecar (apps/translate) — candle +
 # lingua are heavy deps that must not bloat the hook (`mustard-rt`) or the
 # deterministic scanner; it builds standalone, as its own workspace.
-exclude = ["apps/dashboard/src-tauri", "apps/translate"]
+exclude = ["apps/translate"]
 
 [workspace.package]
 # The Mustard version, inherited by every workspace crate with
@@ -27,16 +36,14 @@ exclude = ["apps/dashboard/src-tauri", "apps/translate"]
 version = "0.1.52"
 
 # Single source of dependency-version truth for every Mustard crate. A crate
-# opts in with `dep = { workspace = true }`; the dashboard crate keeps its own
-# inline deps (Tauri-pinned, edition 2021) and does not consume this table.
-# Versions verified against crates.io, May 2026 (see spec b2 § Stack Rust).
+# opts in with `dep = { workspace = true }`. Versions verified against
+# crates.io, May 2026 (see spec b2 § Stack Rust).
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
-jiff = "0.2.24"
 tempfile = "3.27.0"
 # Interactive terminal prompts for the CLI port (`mustard init` git-flow wizard).
 # Replaces the JS `inquirer` dependency. Pure-Rust, no async runtime.
@@ -49,17 +56,23 @@ ureq = { version = "3.3", features = ["json"] }
 # Tarball extraction for `mustard add` (npm package payloads ship as .tgz).
 tar = "0.4.46"
 flate2 = "1.1.9"
-# Zip extraction for the Windows RTK auto-installer (`init`/`update`): RTK
-# GitHub releases ship the Windows binary as a `.zip`. Latest stable on
-# crates.io, May 2026.
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 # Official Rust SDK for the Model Context Protocol — backs the `mcp` face of
 # `mustard-rt` (the re-port of the `mustard-memory` TypeScript MCP server).
 # The `server` feature already pulls `macros` (in `default`) and `schemars`;
-# `transport-io` adds the stdio (JSON-RPC over stdin/stdout) transport. Pinned
-# to the latest stable verified on crates.io (1.7.0, May 2026); the 1.x line
-# has a substantially different API from the 0.x series.
-rmcp = { version = "1.7", features = ["server", "transport-io"] }
+# `transport-io` adds the stdio (JSON-RPC over stdin/stdout) transport.
+#
+# Moved 1.8 -> 3.1 (two majors) because 1.8 ANSWERS the `2026-07-28` protocol
+# revision without serving it: driving a real stdio handshake against both
+# builds, each replies `"protocolVersion":"2026-07-28"`, but 1.8 returns a bare
+# `{"tools":[...]}` while 3.1 returns that revision's tool-list cache metadata
+# (`resultType` / `ttlMs` / `cacheScope`). Advertising a revision we do not
+# serve is the drift worth closing.
+#
+# The two majors cost two lines — `model::Content` became
+# `model::content::ContentBlock`, and nothing else in `apps/mcp` moved. Crate
+# count moved 281 -> 282 here (the 3.x line drops `async-trait` and adds `uuid`),
+# and the pruning wave then took it to 278.
+rmcp = { version = "3.1", features = ["server", "transport-io"] }
 # Async runtime — required only by `rmcp` (async-only). Scoped to the `mcp`
 # face: the handler builds a `current_thread` runtime locally so the `on` /
 # `run` / `check` faces stay fully synchronous. Latest stable verified on
@@ -71,26 +84,50 @@ tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 # `CoreBPE::encode`/`count` fallible (`Result<_, EncodeError>`) — the
 # estimator only calls `encode_with_special_tokens`, which stays infallible.
 tiktoken-rs = "0.12"
-# Cross-platform filesystem notification — used by `mustard-rt` for the
-# transcript-watcher daemon (Wave 3). Updated to notify 8.2 (May 2026); the
-# dashboard maintains its own Cargo.lock and is decoupled from the workspace via
-# the `exclude` directive, so the two `notify` graphs are already independent.
+# Cross-platform filesystem notification — the dashboard server's per-project
+# `.claude/` watcher. Updated to notify 8.2 (May 2026). `mustard-rt` also
+# declared this entry, for a transcript-watcher daemon that no longer exists;
+# the declaration was removed in the prune, so the dashboard is now the sole
+# consumer and the entry stays here only because that is where versions live.
 notify = "8"
+# Debounced wrapper over `notify` — the dashboard server coalesces a write burst
+# into one ~200 ms batch before pushing it down the server-sent-events channel.
+notify-debouncer-mini = "0.7"
+# Minimal blocking HTTP server, no async runtime. Backs both the OTLP collector
+# (`mustard-rt run otel-collector`) and the dashboard server. Kept at the same
+# version `apps/rt` pins so the two share one graph.
+tiny_http = "0.12"
+# Home-directory resolution — the dashboard server locates `~/.claude/` for the
+# project registry and for the Claude Code transcript store.
+dirs = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Data-parallelism primitives — rayon parallelises the per-subproject
 # verification pass (`verify_pipeline`) so targets are checked concurrently.
 # Latest stable on crates.io (1.10, May 2026); pure-Rust, no async runtime.
 rayon = "1.10"
 # SHA-256 — `mustard-core::model::provenance` fingerprints vendored template
-# trees and `mustard-rt` digests backup-specs MANIFEST.json entries. Centralised
-# here so both crates share one `sha2` graph. Bumped to the 0.11 line (May 2026),
-# which moves the digest output from `generic-array` to `hybrid-array`; this
-# crate only consumes the output as a byte slice / iterator / `[u8; 32]`, all of
-# which stay source-compatible.
+# trees. `mustard-rt` also declared this entry but never imported it (its
+# backup-specs digest runs on the crate's own `util::sha256`), so the prune left
+# `mustard-core` as the only consumer. Bumped to the 0.11 line (May 2026), which
+# moves the digest output from `generic-array` to `hybrid-array`; this crate
+# only consumes the output as a byte slice / iterator / `[u8; 32]`, all of which
+# stay source-compatible.
 sha2 = "0.11"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
-# Only `mustard-core` opts in today; the dashboard crate is intentionally
-# excluded so its edition-2021 / rust-1.77 build is unaffected.
+#
+# Every member opts in except `apps/scan`, which still carries no `[lints]`
+# table. `mustard-dashboard` was the other holdout — the note here used to read
+# "deliberately does not (its command surface predates the `unwrap_used = deny`
+# rule)", which is how the workspace's NEWEST code came to be the only code the
+# rule did not reach.
+#
+# `unwrap_used` below is `deny`, and clippy does NOT exempt `#[cfg(test)]` code
+# from it on its own: `mustard-core`, `mustard-cli`, `mustard-rt` and
+# `mustard-mcp` each open their crate root with
+# `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]`, and THAT
+# is what exempts their tests. `mustard-dashboard` deliberately carries no such
+# line — see its `src/lib.rs` header.
 [workspace.lints.rust]
 # A hook on the critical path must never reach for `unsafe`.
 unsafe_code = "forbid"

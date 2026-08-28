@@ -1,4 +1,4 @@
-// React Query wrapper over the Tauri trace commands — ONE hook for both the
+// React Query wrapper over the backend trace commands — ONE hook for both the
 // spec trace (`dashboard_spec_trace`) and the session trace
 // (`dashboard_session_trace`). The two backends return the identical
 // `TraceNode` shape (one shared `build_trace_tree` on the Rust side), so the
@@ -11,7 +11,7 @@
 // input is null.
 
 import { useQuery } from "@tanstack/react-query";
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "@/lib/api-client";
 import type { TraceNode } from "@/lib/types/trace";
 
 /** What the trace is rooted at — a spec or a session. The `<ExecutionTrace>`
@@ -32,11 +32,11 @@ export function useTrace(projectPath: string | null, source: TraceSource | null)
     queryKey: ["trace", source?.kind, projectPath, leaf] as const,
     queryFn: () =>
       source?.kind === "spec"
-        ? invoke<TraceNode>("dashboard_spec_trace", {
+        ? call<TraceNode>("dashboard_spec_trace", {
             projectPath: projectPath as string,
             specName: source.specName,
           })
-        : invoke<TraceNode>("dashboard_session_trace", {
+        : call<TraceNode>("dashboard_session_trace", {
             projectPath: projectPath as string,
             sessionId: (source as { sessionId: string }).sessionId,
           }),

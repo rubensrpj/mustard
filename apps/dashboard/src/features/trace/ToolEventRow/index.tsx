@@ -52,7 +52,7 @@ import type {
 // Wave 3 (spec `2026-05-21-dashboard-spec-tabs`): every expanded tool card
 // surfaces a meta-strip with `actor.kind:actor.id · relativeTime(ts)`. The
 // actor is derived from the payload itself — `tool` is the kind, the
-// `tool_use_id` (or fallback `actor_id`) is the id — because the Tauri
+// `tool_use_id` (or fallback `actor_id`) is the id — because the backend's
 // `TraceNode` shape does not carry a separate `actor` object. We keep the
 // existing per-tool renderers (DiffViewer / CodeBlock) and add a raw `<pre>`
 // + Copy chip in the bottom drawer for the payload itself.
@@ -97,7 +97,7 @@ export const ToolEventRow = memo(function ToolEventRow({
   // Wave 3 — derive actor + ts + summary from data already on the node.
   // `node.ts` is the canonical event timestamp; `node.payload.tool` doubles
   // as the actor kind because there is no separate `actor` object on the
-  // Tauri-side `TraceNode`. We avoid inventing fields and just surface what
+  // backend's `TraceNode`. We avoid inventing fields and just surface what
   // the upstream already emits.
   const actor: TraceActor = {
     kind: toolName ? `Tool:${toolName}` : "Tool",

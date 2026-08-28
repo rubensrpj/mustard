@@ -26,11 +26,15 @@
 #     somebody typed — the dashboard lock pins `mustard-core` AND `mustard-cli`,
 #     and the old guard read only the first.
 #
-# The lock's own root package is excluded from the derived sweep: it carries a
-# version of its own on purpose (`mustard-dashboard` is at 0.1.0 while this
-# repository is at 0.1.4x). Its name is read from the `Cargo.toml` beside the
-# lock; a virtual workspace manifest declares no `[package]`, so nothing is
-# excluded for the root lock.
+# The lock's own root package is excluded from the derived sweep, for the case
+# where a crate carries a version of its own rather than the workspace's. That
+# case no longer exists here: the dashboard server joined the workspace when the
+# desktop shell was removed, so `mustard-dashboard` inherits
+# `version.workspace` and the derived sweep now covers it like any other member.
+# The exclusion stays because it is about the SHAPE of a lock, not about that one
+# crate. Its name is read from the `Cargo.toml` beside the lock; a virtual
+# workspace manifest declares no `[package]`, so nothing is excluded for the
+# root lock.
 #
 # Exit status: 0 when the lock carries the stamp, 1 when it does not, 2 on a
 # usage error. Every diagnosis goes to stderr, so a caller may read the status

@@ -45,7 +45,12 @@ jobs:
       # (ver o passo abaixo). A imagem `ubuntu-latest` traz Rust, mas depender
       # do que vem pré-instalado numa imagem é como o release da v0.1.29 falhou:
       # por um pressuposto que ninguém tinha verificado. Mesma ação que a CI usa.
-      - uses: dtolnay/rust-toolchain@stable
+      # No version input: the toolchain comes from `rust-toolchain.toml`, the
+      # same single pin the CI and Release workflows now install from.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+          rustflags: ''
 
       - name: Bump PATCH do plugin.json, tag, despacho do Release e selo no dev
         env:
@@ -91,25 +96,18 @@ jobs:
           # PACKAGE instead. See .github/scripts/check-lock-pins.sh.
           bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan   # o lock realmente andou
 
-          # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
-          # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
-          # --workspace` acima nao o alcanca. Ele ficou tres releases para tras sem
-          # ninguem notar: a CI exclui o dashboard (bibliotecas de sistema por SO) e
-          # o Release o compila por `tauri build` SEM `--locked`, entao o lock velho
-          # e consertado na hora do build e o conserto e jogado fora em vez de
-          # commitado. O `--workspace` aqui tambem e o que limita a atualizacao aos
-          # pacotes locais: um `-p mustard-core` re-resolve o grafo inteiro e move
-          # dependencias de terceiros junto (medido: rebaixou windows-sys, toml e
-          # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
-          # ficar para tras.
-          cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-          # That lock pins BOTH `mustard-core` and `mustard-cli`; reading only
-          # the first passed a lock whose second crate had stayed behind.
-          bash .github/scripts/check-lock-pins.sh apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-cli mustard-core   # o lock do dashboard realmente andou
+          # O selo tinha uma QUARTA perna: o dashboard era workspace root PROPRIO
+          # (o involucro de aplicativo de mesa o prendia a edition 2021), tinha o SEU
+          # Cargo.lock, e o `cargo update --workspace` acima nao o alcancava — ficou
+          # tres releases para tras sem ninguem notar. Sem esse involucro o crate
+          # virou membro normal do
+          # workspace (`apps/dashboard/server`) e seu lock foi apagado: o lock da
+          # raiz acima ja o cobre, e uma perna que nao existe mais nao pode ficar
+          # para tras. Sao tres pernas agora.
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
+          git add "$manifest" "$cargo_toml" Cargo.lock
           git commit -m "chore(release): v$nv — bump automático pós-merge na main"
           # Rebase ANTES da tag: se outro merge entrou no meio-tempo, o commit
           # de bump é reescrito e a tag precisa apontar para o sha final.
@@ -129,20 +127,17 @@ jobs:
           git checkout -B dev-sync "origin/dev"
           dv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
           cv=$(sed -n '0,/^version = "/s/^version = "\([^"]*\)".*/\1/p' "$cargo_toml" | head -1)
-          # A QUARTA perna entra na DECISAO tambem, nao so no bloco de trabalho.
-          # As tres primeiras podem ja estar em $nv com o lock do dashboard para
-          # tras — foi exatamente o estado em que este conserto encontrou o
-          # repositorio. Sem este teste o bloco inteiro seria pulado e a quarta
-          # perna nunca andaria, que e o defeito de novo com outra roupa.
-          # The THIRD leg is in the decision for the same reason, and it was the
-          # one still missing: the message below claims all four legs while the
-          # test consulted three, so a dev whose root Cargo.lock alone lagged
-          # skipped the whole block and that lock never moved. One reader per
-          # leg, and the decision consults every one of them.
+          # CADA perna entra na DECISAO tambem, nao so no bloco de trabalho. Duas
+          # podem ja estar em $nv com a terceira para tras — foi exatamente o
+          # estado em que este conserto encontrou o repositorio. Sem este teste o
+          # bloco inteiro seria pulado e a perna atrasada nunca andaria, que e o
+          # defeito de novo com outra roupa. O lock da raiz era a que faltava: a
+          # mensagem abaixo reivindicava todas as pernas enquanto o teste
+          # consultava menos, entao um dev com so o Cargo.lock atrasado pulava o
+          # bloco inteiro. Um leitor por perna, e a decisao consulta todos.
           root_pin=$(bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan && echo ok || echo stale)
-          dash_pin=$(bash .github/scripts/check-lock-pins.sh apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-cli mustard-core && echo ok || echo stale)
-          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$root_pin" = ok ] && [ "$dash_pin" = ok ]; then
-            echo "dev já está em v$nv nas quatro pernas — nada a propagar"
+          if [ "$dv" = "$nv" ] && [ "$cv" = "$nv" ] && [ "$root_pin" = ok ]; then
+            echo "dev já está em v$nv nas três pernas — nada a propagar"
           else
             sed -i "s/\"version\": \"$dv\"/\"version\": \"$nv\"/" "$manifest"
             grep -q "\"version\": \"$nv\"" "$manifest"   # o sed realmente aplicou
@@ -154,21 +149,10 @@ jobs:
             # mesmo motivo que reprovou a main.
             cargo update --workspace
             bash .github/scripts/check-lock-pins.sh Cargo.lock "$nv" mustard-cli mustard-core mustard-mcp mustard-rt scan
-
-            # QUARTA perna: o dashboard (apps/dashboard/src-tauri) e workspace root
-            # PROPRIO de proposito, entao tem o SEU Cargo.lock e o `cargo update
-            # --workspace` acima nao o alcanca. Ele ficou tres releases para tras sem
-            # ninguem notar: a CI exclui o dashboard (bibliotecas de sistema por SO) e
-            # o Release o compila por `tauri build` SEM `--locked`, entao o lock velho
-            # e consertado na hora do build e o conserto e jogado fora em vez de
-            # commitado. O `--workspace` aqui tambem e o que limita a atualizacao aos
-            # pacotes locais: um `-p mustard-core` re-resolve o grafo inteiro e move
-            # dependencias de terceiros junto (medido: rebaixou windows-sys, toml e
-            # getrandom). `packages/core/tests/version_line.rs` reprova se este lock
-            # ficar para tras.
-            cargo update --workspace --manifest-path apps/dashboard/src-tauri/Cargo.toml
-            bash .github/scripts/check-lock-pins.sh apps/dashboard/src-tauri/Cargo.lock "$nv" mustard-cli mustard-core   # o lock do dashboard realmente andou
-            git add "$manifest" "$cargo_toml" Cargo.lock apps/dashboard/src-tauri/Cargo.lock
+            # O lock proprio do dashboard era a quarta perna e nao existe mais:
+            # o crate agora e membro do workspace, entao o `cargo update
+            # --workspace` acima ja o alcanca. Ver a nota na perna da main.
+            git add "$manifest" "$cargo_toml" Cargo.lock
             git commit -m "chore(release): v$nv — sincroniza o selo de versão no dev"
             if git push origin "dev-sync:dev"; then
               echo "dev sincronizado: $dv -> $nv"

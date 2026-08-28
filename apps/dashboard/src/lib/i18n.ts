@@ -105,7 +105,6 @@ const DICTIONARY = new Map<string, TranslationRow>([
   ["sidebar.activity", { pt: "Atividade", en: "Activity" }],
   ["sidebar.telemetry", { pt: "Telemetria", en: "Telemetry" }],
   ["sidebar.quality", { pt: "Qualidade", en: "Quality" }],
-  ["sidebar.add_project", { pt: "Adicionar projeto", en: "Add project" }],
   ["sidebar.tools", { pt: "Ferramentas", en: "Tools" }],
 
   // Route headers (PageHeader title/subtitle pairs).

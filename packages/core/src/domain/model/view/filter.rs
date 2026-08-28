@@ -1,8 +1,8 @@
 //! Filter and window types accepted by the reader trait.
 //!
 //! Kept tiny on purpose — these are arguments, not `ViewModels`. They serialize
-//! so a Tauri command can accept them straight from the React frontend without
-//! a hand-rolled converter.
+//! so a dashboard command can accept them straight from the React frontend
+//! without a hand-rolled converter.
 
 use serde::{Deserialize, Serialize};
 
