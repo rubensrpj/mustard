@@ -130,7 +130,7 @@ fn emit_i18n_op(repo_path: &str, operation: &str, duration_ms: u128) {
             .append(true)
             .open(&path)
         {
-            let _ = writeln!(f, "{}", line);
+            let _ = writeln!(f, "{line}");
         }
     }
 }

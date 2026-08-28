@@ -319,7 +319,7 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    migrated into `wave-plan.md` (step 8), so a rename that leaves a
         //    stale `spec.md` behind is worth a visible diagnostic. Fail-open —
         //    the error is logged, never propagated: the decomposition still stands.
-        let renamed = match fs::rename(spec_file, &spec_dir.join("spec.original.md")) {
+        let renamed = match fs::rename(spec_file, spec_dir.join("spec.original.md")) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!(

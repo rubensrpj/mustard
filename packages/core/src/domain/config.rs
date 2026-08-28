@@ -58,6 +58,7 @@ pub const BUILD_COMMAND_FALLBACK: &str = "<build command>";
 /// existing `mustard.json` is ignored on load, so older files keep working.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
+#[derive(Default)]
 pub struct GitConfig {
     /// Branch promotion map: `"*" → dev`, `dev → production`.
     ///
@@ -96,11 +97,6 @@ pub struct GitConfig {
     pub provider: String,
 }
 
-impl Default for GitConfig {
-    fn default() -> Self {
-        Self { flow: BTreeMap::new(), protected: Vec::new(), provider: String::new() }
-    }
-}
 
 impl GitConfig {
     /// The branches this project's `git.flow` names — the ones a base picker
@@ -734,7 +730,7 @@ mod tests {
         let mut cfg = ProjectConfig::default();
         cfg.inject = vec![
             Injectable { on: "  ".into(), file: "x.md".into(), once: false },
-            Injectable { on: "sessionStart".into(), file: "".into(), once: true },
+            Injectable { on: "sessionStart".into(), file: String::new(), once: true },
             Injectable { on: " SessionStart ".into(), file: " a.md ".into(), once: true },
         ];
         let got = cfg.injectables();

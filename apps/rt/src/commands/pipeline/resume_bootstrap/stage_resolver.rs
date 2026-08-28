@@ -157,6 +157,35 @@ pub(super) fn extract_summary(body: &str) -> String {
     String::new()
 }
 
+/// Pick the first non-empty body line under `## Contexto` / `## Context`
+/// (with a 240-char cap). Empty when neither section exists — the renderer
+/// will substitute the i18n `placeholder.fill` string.
+pub(super) fn extract_objective(body: &str) -> String {
+    let mut in_section = false;
+    for line in body.lines() {
+        let trimmed = line.trim_end();
+        if !in_section {
+            let t = trimmed.trim_start();
+            if t.starts_with("## ") {
+                let after = t.trim_start_matches('#').trim();
+                let lower = after.to_lowercase();
+                if lower == "contexto" || lower == "context" {
+                    in_section = true;
+                }
+            }
+            continue;
+        }
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+        if trimmed.trim_start().starts_with("## ") {
+            return String::new();
+        }
+        return trimmed.trim().chars().take(240).collect();
+    }
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,33 +222,4 @@ mod tests {
             Some("QaReview")
         );
     }
-}
-
-/// Pick the first non-empty body line under `## Contexto` / `## Context`
-/// (with a 240-char cap). Empty when neither section exists — the renderer
-/// will substitute the i18n `placeholder.fill` string.
-pub(super) fn extract_objective(body: &str) -> String {
-    let mut in_section = false;
-    for line in body.lines() {
-        let trimmed = line.trim_end();
-        if !in_section {
-            let t = trimmed.trim_start();
-            if t.starts_with("## ") {
-                let after = t.trim_start_matches('#').trim();
-                let lower = after.to_lowercase();
-                if lower == "contexto" || lower == "context" {
-                    in_section = true;
-                }
-            }
-            continue;
-        }
-        if trimmed.trim().is_empty() {
-            continue;
-        }
-        if trimmed.trim_start().starts_with("## ") {
-            return String::new();
-        }
-        return trimmed.trim().chars().take(240).collect();
-    }
-    String::new()
 }

@@ -315,7 +315,7 @@ pub fn lookup_attribution_extra(
             .or_else(|| first_str(record, &[&["ts"], &["payload", "ts"]]).and_then(iso_to_ms))
             .unwrap_or(0);
         if span_started < started_at_ms
-            && tier2_candidate.as_ref().map_or(true, |(prev, _)| span_started > *prev)
+            && tier2_candidate.as_ref().is_none_or(|(prev, _)| span_started > *prev)
         {
             tier2_candidate = Some((span_started, extract_attribution(record, span_session)));
         }
@@ -1318,13 +1318,13 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                     .to_string();
                 if !ts.is_empty() && !skill.is_empty() {
                     // Any-skill bookkeeping (group fallback "outros" + title fallback).
-                    if earliest_any_skill_ts.as_deref().map_or(true, |p| ts < p) {
+                    if earliest_any_skill_ts.as_deref().is_none_or(|p| ts < p) {
                         earliest_any_skill_ts = Some(ts.to_string());
                     }
                     if !args.is_empty()
                         && earliest_any_skill_args
                             .as_ref()
-                            .map_or(true, |(p, _)| ts < p.as_str())
+                            .is_none_or(|(p, _)| ts < p.as_str())
                     {
                         earliest_any_skill_args = Some((ts.to_string(), args.clone()));
                     }
@@ -1333,7 +1333,7 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                         if !suffix.is_empty()
                             && earliest_mustard_skill
                                 .as_ref()
-                                .map_or(true, |(p, _, _)| ts < p.as_str())
+                                .is_none_or(|(p, _, _)| ts < p.as_str())
                         {
                             earliest_mustard_skill =
                                 Some((ts.to_string(), suffix.to_string(), args));
@@ -1350,7 +1350,7 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                     .unwrap_or("");
                 if !ts.is_empty()
                     && !prompt.is_empty()
-                    && earliest_prompt.as_ref().map_or(true, |(p, _)| ts < p.as_str())
+                    && earliest_prompt.as_ref().is_none_or(|(p, _)| ts < p.as_str())
                 {
                     earliest_prompt = Some((ts.to_string(), prompt.to_string()));
                 }
@@ -1364,7 +1364,7 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                     .unwrap_or("");
                 if !ts.is_empty()
                     && !kind.is_empty()
-                    && earliest_kind.as_ref().map_or(true, |(p, _, _)| ts < p.as_str())
+                    && earliest_kind.as_ref().is_none_or(|(p, _, _)| ts < p.as_str())
                 {
                     let scope = record
                         .get("payload")
@@ -1400,16 +1400,16 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
             }
             let ts = record.get("ts").and_then(Value::as_str).unwrap_or("");
             if !ts.is_empty() {
-                if earliest.as_deref().map_or(true, |e| ts < e) {
+                if earliest.as_deref().is_none_or(|e| ts < e) {
                     earliest = Some(ts.to_string());
                 }
-                if latest.as_deref().map_or(true, |l| ts > l) {
+                if latest.as_deref().is_none_or(|l| ts > l) {
                     latest = Some(ts.to_string());
                 }
                 // Track the spec of the latest event that carried one.
                 if let Some(spec) = record.get("spec").and_then(Value::as_str) {
                     if !spec.is_empty()
-                        && last_spec.as_ref().map_or(true, |(prev, _)| ts >= prev.as_str())
+                        && last_spec.as_ref().is_none_or(|(prev, _)| ts >= prev.as_str())
                     {
                         last_spec = Some((ts.to_string(), spec.to_string()));
                     }
@@ -2162,7 +2162,7 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
             active_seconds += sum;
         }
         if let Some(ts) = ev.get("ts").and_then(Value::as_str) {
-            if last_metric_ts.as_deref().map_or(true, |cur| ts > cur) {
+            if last_metric_ts.as_deref().is_none_or(|cur| ts > cur) {
                 last_metric_ts = Some(ts.to_string());
             }
         }
@@ -2197,7 +2197,7 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
         entry.0 += tokens;
         entry.1 += 1;
         if let Some(ts) = ev.get("ts").and_then(Value::as_str) {
-            if last_subtraction_ts.as_deref().map_or(true, |cur| ts > cur) {
+            if last_subtraction_ts.as_deref().is_none_or(|cur| ts > cur) {
                 last_subtraction_ts = Some(ts.to_string());
             }
         }
@@ -2287,7 +2287,7 @@ pub fn dashboard_economy_summary(scope: EconomyScopeDto) -> Value {
             .unwrap_or_default();
         serde_json::to_value(summary).unwrap_or_else(|_| serde_json::json!({}))
     })
-    .unwrap_or_else(|_| serde_json::json!({}))
+    .unwrap_or_else(|()| serde_json::json!({}))
 }
 
 pub fn dashboard_economy_savings_breakdown(scope: EconomyScopeDto) -> Value {
@@ -2297,7 +2297,7 @@ pub fn dashboard_economy_savings_breakdown(scope: EconomyScopeDto) -> Value {
             .unwrap_or_default();
         serde_json::to_value(breakdown).unwrap_or_else(|_| serde_json::json!({}))
     })
-    .unwrap_or_else(|_| serde_json::json!({}))
+    .unwrap_or_else(|()| serde_json::json!({}))
 }
 
 pub fn dashboard_economy_context_routing(scope: EconomyScopeDto) -> Value {
@@ -2307,7 +2307,7 @@ pub fn dashboard_economy_context_routing(scope: EconomyScopeDto) -> Value {
             .unwrap_or_default();
         serde_json::to_value(metrics).unwrap_or_else(|_| serde_json::json!({}))
     })
-    .unwrap_or_else(|_| serde_json::json!({}))
+    .unwrap_or_else(|()| serde_json::json!({}))
 }
 
 pub fn dashboard_economy_per_spec_costs(scope: EconomyScopeDto) -> Value {
@@ -2317,7 +2317,7 @@ pub fn dashboard_economy_per_spec_costs(scope: EconomyScopeDto) -> Value {
             .unwrap_or_default();
         serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
     })
-    .unwrap_or_else(|_| serde_json::json!([]))
+    .unwrap_or_else(|()| serde_json::json!([]))
 }
 
 pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
@@ -2327,7 +2327,7 @@ pub fn dashboard_economy_per_wave_costs(scope: EconomyScopeDto) -> Value {
             .unwrap_or_default();
         serde_json::to_value(rows).unwrap_or_else(|_| serde_json::json!([]))
     })
-    .unwrap_or_else(|_| serde_json::json!([]))
+    .unwrap_or_else(|()| serde_json::json!([]))
 }
 
 /// Pairs `tool.result` NDJSON events back onto their originating `tool.use`
@@ -2941,7 +2941,7 @@ fn lookup_agent_metric(map: &HashMap<String, i64>, id: &str) -> Option<i64> {
 /// tree). The sync `_impl` is kept so unit tests call it directly.
 pub fn dashboard_spec_trace(project_path: String, spec_name: String) -> Value {
     crate::catch_panic(move || dashboard_spec_trace_impl(project_path, spec_name))
-        .unwrap_or_else(|_| serde_json::json!({}))
+        .unwrap_or_else(|()| serde_json::json!({}))
 }
 
 #[must_use]
@@ -3015,7 +3015,7 @@ pub fn dashboard_spec_trace_impl(project_path: String, spec_name: String) -> Val
                 let already_specced = ev
                     .get("spec")
                     .and_then(Value::as_str)
-                    .map_or(false, |s| !s.is_empty());
+                    .is_some_and(|s| !s.is_empty());
                 if already_specced {
                     continue;
                 }
@@ -3063,7 +3063,7 @@ pub fn dashboard_session_trace(project_path: String, session_id: String) -> Valu
     crate::catch_panic(move || {
         dashboard_session_trace_impl(project_path, session_id)
     })
-    .unwrap_or_else(|_| serde_json::json!({}))
+    .unwrap_or_else(|()| serde_json::json!({}))
 }
 
 /// The hierarchical trace for ONE session, built with the SAME
@@ -4021,7 +4021,7 @@ mod tests {
             "event": "tool.use", "kind": "tool", "ts_ms": 160u64,
             "session_id": Value::Null, "payload": { "tool": "Grep" }
         });
-        let ivs = build_agent_intervals(&[sessionless_start.clone()], &[]);
+        let ivs = build_agent_intervals(std::slice::from_ref(&sessionless_start), &[]);
         assert!(ivs.is_empty(), "a session-less start opens no interval");
         assert_eq!(attribute_tool(&empty_session_use, &ivs).agent, ORCHESTRATOR);
         assert_eq!(attribute_tool(&null_session_use, &ivs).agent, ORCHESTRATOR);
@@ -4521,7 +4521,7 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let lines = format!(
             "{}\n{}\n",
-            r##"{"event":"tool.use","kind":"tool","ts":"2026-06-05T10:00:00.000Z","ts_ms":1000,"session_id":"s","spec":"alpha","wave":1,"actor":"metrics-tracker","payload":{"tool":"Read","target":{"file_path":"/tmp/r.md"}}}"##,
+            r#"{"event":"tool.use","kind":"tool","ts":"2026-06-05T10:00:00.000Z","ts_ms":1000,"session_id":"s","spec":"alpha","wave":1,"actor":"metrics-tracker","payload":{"tool":"Read","target":{"file_path":"/tmp/r.md"}}}"#,
             r##"{"event":"tool.result","kind":"tool","ts":"2026-06-05T10:00:00.100Z","ts_ms":1001,"session_id":"s","spec":"alpha","actor":"tool_result","payload":{"tool_use_id":"tu","tool":"Read","content_excerpt":"# hi"}}"##,
         );
         write_event(tmp.path(), "alpha", "events.ndjson", &lines);

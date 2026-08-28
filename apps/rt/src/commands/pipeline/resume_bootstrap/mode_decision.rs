@@ -68,11 +68,10 @@ pub(super) fn compute_needs_refresh(project: &Path, spec: &str) -> (bool, Option
                         last_resume_ts = ts;
                     }
                 }
-                k if k == EVENT_PIPELINE_WAVE_COMPLETE => {
-                    if ts.as_deref() > last_wave_complete_ts.as_deref() {
+                k if k == EVENT_PIPELINE_WAVE_COMPLETE
+                    && ts.as_deref() > last_wave_complete_ts.as_deref() => {
                         last_wave_complete_ts = ts;
                     }
-                }
                 _ => {}
             }
         }

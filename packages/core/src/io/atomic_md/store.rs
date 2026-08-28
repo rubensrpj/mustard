@@ -157,7 +157,7 @@ impl MarkdownStore {
         let content = doc.to_markdown();
         // Delegate to the canonical atomic-write primitive in crate::io::fs.
         crate::io::fs::write_atomic(path, content.as_bytes())
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            .map_err(|e| io::Error::other(e.to_string()))
     }
 }
 

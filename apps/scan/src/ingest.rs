@@ -98,9 +98,9 @@ pub fn ingest(root: &Path) -> Result<Ingested> {
         walk_paths.push(rel.clone());
 
         // Manifest? Detection + dep/script parsing is data-driven (manifests.toml).
-        if crate::manifests::is_manifest(&fname) {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Some(p) = crate::manifests::parse(&rel, &fname, &content) {
+        if crate::manifests::is_manifest(&fname)
+            && let Ok(content) = fs::read_to_string(path)
+                && let Some(p) = crate::manifests::parse(&rel, &fname, &content) {
                     if p.module.is_some() {
                         go_module = p.module;
                     }
@@ -114,8 +114,6 @@ pub fn ingest(root: &Path) -> Result<Ingested> {
                     *top_other.entry(topdir).or_default() += 1;
                     continue;
                 }
-            }
-        }
 
         // Source file? Language is detected from data (the tree-sitter language
         // registry), never a hardcoded extension map — see extract::detect_language.

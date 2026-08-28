@@ -369,7 +369,7 @@ fn dashboard_recent_events(
     limit: Option<usize>,
 ) -> Result<Vec<RecentEvent>, String> {
     crate::catch_panic(move || dashboard_recent_events_impl(repo_path, limit))
-        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 fn dashboard_recent_events_impl(repo_path: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
@@ -552,7 +552,7 @@ fn event_summary(
 /// from the specs cache when warm). A join error degrades to an empty list.
 fn dashboard_specs(repo_path: String) -> Result<Vec<SpecRow>, String> {
     crate::catch_panic(move || dashboard_specs_impl(repo_path))
-        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 fn dashboard_specs_impl(repo_path: String) -> Result<Vec<SpecRow>, String> {
@@ -880,7 +880,7 @@ fn strip_label(s: &str, label: &str) -> Option<String> {
 
 // Matches "**Label**: value" → Some(value); else None.
 fn strip_bold_label(s: &str, label: &str) -> Option<String> {
-    let bold = format!("**{}**", label);
+    let bold = format!("**{label}**");
     let rest = s.strip_prefix(&bold)?;
     let rest = rest.trim_start();
     let rest = rest.strip_prefix(':')?.trim();
@@ -897,7 +897,7 @@ fn strip_bold_label(s: &str, label: &str) -> Option<String> {
 /// maps to its "not available" state.
 fn dashboard_spec_markdown(repo_path: String, spec_name: String) -> Result<String, String> {
     crate::catch_panic(move || dashboard_spec_markdown_impl(repo_path, spec_name))
-        .unwrap_or_else(|_| Err("spec markdown read failed".to_string()))
+        .unwrap_or_else(|()| Err("spec markdown read failed".to_string()))
 }
 
 fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<String, String> {
@@ -934,10 +934,10 @@ fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<
                 if artifact.exists() {
                     return fs::read_to_string(&artifact).map_err(|e| e.to_string());
                 }
-                return Err(format!("spec markdown not found: {}", spec_name));
+                return Err(format!("spec markdown not found: {spec_name}"));
             }
         }
-        return Err(format!("invalid spec name: {}", spec_name));
+        return Err(format!("invalid spec name: {spec_name}"));
     }
     // 1. Standalone spec — flat layout: .claude/spec/{spec_name}/spec.md
     let path = base.join(&spec_name).join("spec.md");
@@ -949,7 +949,7 @@ fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<
     //    one level down at .claude/spec/{parent}/{spec_name}/spec.md.
     //    Without the parent, search every spec dir for a matching child.
     let Ok(rd) = fs::read_dir(&base) else {
-        return Err(format!("spec markdown not found: {}", spec_name));
+        return Err(format!("spec markdown not found: {spec_name}"));
     };
     for entry in rd {
         if !entry.is_dir {
@@ -969,7 +969,7 @@ fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<
     }
     // 4. Symmetry with case 2: a wave-plan parent nested under another spec dir.
     let Ok(rd2) = fs::read_dir(&base) else {
-        return Err(format!("spec markdown not found: {}", spec_name));
+        return Err(format!("spec markdown not found: {spec_name}"));
     };
     for entry in rd2 {
         if !entry.is_dir {
@@ -980,7 +980,7 @@ fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<
             return fs::read_to_string(&child).map_err(|e| e.to_string());
         }
     }
-    Err(format!("spec markdown not found: {}", spec_name))
+    Err(format!("spec markdown not found: {spec_name}"))
 }
 
 // ── spec status helpers (emit-only, flat layout) ─────────────────────────────
@@ -1080,7 +1080,7 @@ fn lib_sync_spec_status_header(repo_path: &str, spec: &str, to: &str) {
     };
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     let mut rewrote = false;
-    for line in lines.iter_mut() {
+    for line in &mut lines {
         if line.trim_start().to_lowercase().starts_with("### status:") {
             *line = format!("### Status: {to}");
             rewrote = true;
@@ -1145,7 +1145,7 @@ fn dashboard_search_knowledge(repo_path: String, query: String, limit: Option<us
             .collect();
         Ok(rows)
     })
-    .unwrap_or_else(|_| Ok(Vec::new()))
+    .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result<Vec<KnowledgeRow>, String> {
@@ -1159,7 +1159,7 @@ fn dashboard_knowledge_browse(repo_path: String, limit: Option<usize>) -> Result
             .collect();
         Ok(rows)
     })
-    .unwrap_or_else(|_| Ok(Vec::new()))
+    .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 /// Friction telemetry from `.claude/.metrics/friction.json` — measured atrito
@@ -1173,7 +1173,7 @@ fn dashboard_friction(repo_path: String) -> Result<Vec<telemetry::FrictionEntry>
         let base = std::path::PathBuf::from(&repo_path);
         Ok(telemetry::friction_entries(&base))
     })
-    .unwrap_or_else(|_| Ok(Vec::new()))
+    .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 /// Build a [`ConsumptionSummary`] for one project root from the core NDJSON
@@ -1280,7 +1280,7 @@ fn dashboard_consumption(repo_path: String) -> Result<ConsumptionSummary, String
     crate::catch_panic(move || {
         Ok(consumption_for_root(&PathBuf::from(&repo_path)))
     })
-    .unwrap_or_else(|_| Ok(ConsumptionSummary::default()))
+    .unwrap_or_else(|()| Ok(ConsumptionSummary::default()))
 }
 
 // `Clone` because the watcher ships this inside the `dashboard:specs-snapshot`
@@ -1306,7 +1306,7 @@ pub struct ActivePipeline {
 /// list rather than a toast.
 fn dashboard_active_pipelines(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
     crate::catch_panic(move || dashboard_active_pipelines_impl(repo_path))
-        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 /// Shared core for every "card per listed spec" command: discover the
@@ -1433,7 +1433,7 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
 fn dashboard_spec_card(repo_path: String, spec: String) -> Result<spec_views::SpecCard, String> {
     let fallback_spec = spec.clone();
     crate::catch_panic(move || dashboard_spec_card_impl(repo_path, spec))
-        .unwrap_or_else(|_| Ok(no_events_spec_card(fallback_spec)))
+        .unwrap_or_else(|()| Ok(no_events_spec_card(fallback_spec)))
 }
 
 fn dashboard_spec_card_impl(repo_path: String, spec: String) -> Result<spec_views::SpecCard, String> {
@@ -1475,7 +1475,7 @@ fn no_events_spec_card(spec: String) -> spec_views::SpecCard {
 /// error degrades to an empty list (the failure-tolerant contract).
 fn dashboard_spec_cards(repo_path: String) -> Result<Vec<spec_views::SpecCard>, String> {
     crate::catch_panic(move || dashboard_spec_cards_impl(repo_path))
-        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 fn dashboard_spec_cards_impl(repo_path: String) -> Result<Vec<spec_views::SpecCard>, String> {
@@ -1492,7 +1492,7 @@ fn dashboard_spec_cards_impl(repo_path: String) -> Result<Vec<spec_views::SpecCa
 /// join error degrades to an empty list.
 fn dashboard_spec_waves(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecWave>, String> {
     crate::catch_panic(move || spec_views::spec_waves_v2(&repo_path, &spec))
-        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 /// Wave 3 (spec `checklist-progresso-por-onda`) — per-wave checklist progress
@@ -1507,12 +1507,12 @@ fn dashboard_spec_checklist_progress(
     crate::catch_panic(move || {
         spec_views::spec_checklist_progress_v2(&repo_path, &spec)
     })
-    .unwrap_or_else(|_| Ok(Vec::new()))
+    .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 fn dashboard_spec_quality(repo_path: String, spec: String) -> Result<Vec<spec_views::SpecQualityItem>, String> {
     crate::catch_panic(move || spec_views::spec_quality_v2(&repo_path, &spec))
-        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
 fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Result<spec_views::SpecAction, String> {
@@ -1595,7 +1595,7 @@ fn dashboard_spec_waves_planned(
 /// join error degrades to the default summary.
 fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::WorkspaceSummary, String> {
     crate::catch_panic(move || spec_views::workspace_summary_v2(&repo_path))
-        .unwrap_or_else(|_| Ok(spec_views::WorkspaceSummary::default()))
+        .unwrap_or_else(|()| Ok(spec_views::WorkspaceSummary::default()))
 }
 
 // ── Wave-6 hygiene observability ─────────────────────────────────────────────
@@ -1647,14 +1647,14 @@ fn workspace_health_impl(repo_path: String) -> spec_views::WorkspaceHealth {
         }
         let ts = v.get("ts").and_then(|t| t.as_str()).unwrap_or("");
         if !ts.is_empty()
-            && last_hygiene_run_at.as_deref().map_or(true, |c| ts > c)
+            && last_hygiene_run_at.as_deref().is_none_or(|c| ts > c)
         {
             last_hygiene_run_at = Some(ts.to_string());
         }
         let age = telemetry::iso_to_ms_crate(ts).map(|ms| now_ms - ms);
         match name {
             "hygiene.detected" => {
-                if age.map_or(false, |a| a <= 7 * DAY_MS) {
+                if age.is_some_and(|a| a <= 7 * DAY_MS) {
                     if let Some(spec) = v.get("spec").and_then(|s| s.as_str()).filter(|s| !s.is_empty()) {
                         if active_names.contains(spec) {
                             suspect_specs.insert(spec.to_string());
@@ -1662,11 +1662,10 @@ fn workspace_health_impl(repo_path: String) -> spec_views::WorkspaceHealth {
                     }
                 }
             }
-            "hygiene.autoclose" => {
-                if age.map_or(false, |a| a <= DAY_MS) {
+            "hygiene.autoclose"
+                if age.is_some_and(|a| a <= DAY_MS) => {
                     autoclose_today += 1;
                 }
-            }
             _ => {}
         }
     }

@@ -105,18 +105,14 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
     // Legacy fallback: read the lifecycle header from wave-plan.md / spec.md.
     let wave_plan = spec_root.join("wave-plan.md");
     if fs::exists(&wave_plan) {
-        return fs::read_to_string(&wave_plan)
-            .ok()
-            .is_some_and(|t| header_marks_done(&t));
+        return fs::read_to_string(&wave_plan).is_ok_and(|t| header_marks_done(&t));
     }
     let spec_file = spec_root.join("spec.md");
     if !fs::exists(&spec_file) {
         // Spec dir empty / spec.md absent → treat as done.
         return true;
     }
-    fs::read_to_string(&spec_file)
-        .ok()
-        .is_some_and(|t| header_marks_done(&t))
+    fs::read_to_string(&spec_file).is_ok_and(|t| header_marks_done(&t))
 }
 
 /// `true` when a spec's lifecycle header resolves to the terminal `Completed`

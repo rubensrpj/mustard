@@ -57,11 +57,10 @@ fn declared_language_terms() -> BTreeSet<String> {
     let mut terms = BTreeSet::new();
     for entry in entries {
         for key in ["name", "dir"] {
-            if let Some(v) = entry.get(key).and_then(|v| v.as_str()) {
-                if v.len() >= MIN_TERM_LEN {
+            if let Some(v) = entry.get(key).and_then(|v| v.as_str())
+                && v.len() >= MIN_TERM_LEN {
                     terms.insert(v.to_ascii_lowercase());
                 }
-            }
         }
     }
     assert!(!terms.is_empty(), "the registry must declare at least one usable language id");

@@ -86,7 +86,7 @@ fn fnv1a_hex(bytes: &[u8]) -> String {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
-    format!("{:016x}", h)
+    format!("{h:016x}")
 }
 
 fn mtime_ms(p: &Path) -> Option<u64> {

@@ -60,7 +60,7 @@ pub fn classify(rel_path: &str, content: &str, overrides: &Overrides) -> Option<
     let cat = catalog();
 
     let basename = rel_path.rsplit('/').next().unwrap_or(rel_path).to_ascii_lowercase();
-    if cat.lockfiles.iter().any(|l| *l == basename) {
+    if cat.lockfiles.contains(&basename) {
         return Some(Classification { class: LOCKFILE.to_string(), marker: basename });
     }
 

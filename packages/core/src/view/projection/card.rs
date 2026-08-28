@@ -875,7 +875,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_spec_md(tmp.path(), "# Achatamento\n\n## Resumo\n…");
         crate::io::fs::write_atomic(
-            &tmp.path().join("meta.json"),
+            tmp.path().join("meta.json"),
             br#"{"stage":"Close","outcome":"Completed","phase":"close","scope":"full","lang":"pt-BR"}"#,
         )
         .unwrap();
@@ -897,7 +897,7 @@ mod tests {
             "# Auth\n\n### Status: completed\n### Phase: close\n",
         );
         crate::io::fs::write_atomic(
-            &tmp.path().join("meta.json"),
+            tmp.path().join("meta.json"),
             br#"{"stage":"Execute","outcome":"Active"}"#,
         )
         .unwrap();

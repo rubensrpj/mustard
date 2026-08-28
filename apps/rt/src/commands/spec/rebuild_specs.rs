@@ -207,20 +207,20 @@ fn build_timeline_from_events(events_dir: &Path) -> SummaryTimeline {
                 .map(str::to_string);
             let to = ev.payload.get("to").and_then(|v| v.as_str()).map(str::to_string);
             match to.as_deref() {
-                Some("planning") | Some("plan") => {
+                Some("planning" | "plan") => {
                     if draft_at.is_none() {
                         draft_at = ts;
                     }
                 }
                 Some("approved") => approved_at = ts,
-                Some("implementing") | Some("execute") => {
+                Some("implementing" | "execute") => {
                     if execute_started_at.is_none() {
                         execute_started_at = ts;
                     }
                 }
-                Some("reviewing") | Some("review") => review_at = ts,
-                Some("qa") | Some("qa-review") => qa_at = ts,
-                Some("closed") | Some("closed-followup") | Some("close") => closed_at = ts,
+                Some("reviewing" | "review") => review_at = ts,
+                Some("qa" | "qa-review") => qa_at = ts,
+                Some("closed" | "closed-followup" | "close") => closed_at = ts,
                 _ => {}
             }
         }

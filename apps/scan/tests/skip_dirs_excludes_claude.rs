@@ -81,7 +81,7 @@ fn scan_skips_harness_claude_dir() {
     // dir, no manifest path references the pruned subtree).
     let none_under_claude = |arr: &serde_json::Value, key: &str| {
         arr.as_array()
-            .map(|a| !a.iter().any(|e| e[key].as_str().map_or(false, |s| s.contains(".claude"))))
+            .map(|a| !a.iter().any(|e| e[key].as_str().is_some_and(|s| s.contains(".claude"))))
             .unwrap_or(true)
     };
     assert!(none_under_claude(&v["projects"], "dir"), "no project unit under .claude: {:?}", v["projects"]);

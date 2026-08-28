@@ -76,7 +76,7 @@ pub fn dashboard_spec_plan_staleness(
     let result = crate::catch_panic(move || {
         plan_staleness_impl(&repo_path, &spec, started_at.as_deref())
     })
-    .unwrap_or_else(|_| Staleness::unknown("falha ao avaliar"));
+    .unwrap_or_else(|()| Staleness::unknown("falha ao avaliar"));
     Ok(result)
 }
 
@@ -261,7 +261,7 @@ fn normalise_candidate(token: &str) -> Option<String> {
     let cleaned = token
         .trim()
         .trim_matches(|c| c == '`' || c == '"' || c == '\'')
-        .trim_end_matches(|c: char| matches!(c, ',' | ';' | ':' | '.' | ')'))
+        .trim_end_matches([',', ';', ':', '.', ')'])
         .trim();
     if cleaned.is_empty() {
         return None;

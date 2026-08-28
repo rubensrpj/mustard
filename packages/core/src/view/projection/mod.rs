@@ -288,11 +288,9 @@ mod tests {
     #[test]
     fn harness_events_from_values_converts_a_loaded_slice_without_io() {
         // Sparse record: missing payload/spec/wave must default safely.
-        let records = vec![
-            json!({ "event": "pipeline.phase", "ts": "2026-06-10T10:00:00Z",
+        let records = [json!({ "event": "pipeline.phase", "ts": "2026-06-10T10:00:00Z",
                     "spec": "alpha", "payload": { "to": "EXECUTE" } }),
-            json!({ "event": "tool.use", "ts": "2026-06-10T10:01:00Z" }),
-        ];
+            json!({ "event": "tool.use", "ts": "2026-06-10T10:01:00Z" })];
         let events = harness_events_from_values(records.iter());
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event, "pipeline.phase");

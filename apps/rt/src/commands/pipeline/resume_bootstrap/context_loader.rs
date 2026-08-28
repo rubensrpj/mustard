@@ -181,7 +181,7 @@ pub(super) fn generate_context_on_resume(
         // Limit to the count we actually loaded (kept count) — for parity with
         // what the agent sees.
         .take(kept_summary_texts.len().max(1))
-        .map(|addr| WikiLink::new(addr))
+        .map(WikiLink::new)
         .collect();
 
     // Position map: every wave dir under spec_dir, sorted by wave number.
@@ -316,8 +316,7 @@ mod tests {
     /// the operational wave. Returns the spec dir.
     fn seed_12_wave_spec(spec_dir: &Path, declare_wikilinks: bool) {
         // 13 prior waves, each with a ~30 000-character _summary.md.
-        let big_body: String = std::iter::repeat("regressao detectada palavra ")
-            .take(1_200) // 28 chars × 1_200 ≈ 33 600 chars ≈ 8 400 tokens each
+        let big_body: String = std::iter::repeat_n("regressao detectada palavra ", 1_200) // 28 chars × 1_200 ≈ 33 600 chars ≈ 8 400 tokens each
             .collect();
         for n in 0..13u32 {
             let wave_dir = spec_dir.join(format!("wave-{n}-rt"));

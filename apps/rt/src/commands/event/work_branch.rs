@@ -144,8 +144,8 @@ pub(crate) fn sanitize_git_ref(raw: &str) -> String {
         out = out.replace("..", "-");
     }
     let trimmed = out
-        .trim_start_matches(|c| c == '-' || c == '.' || c == '/')
-        .trim_end_matches(|c| c == '/' || c == '.');
+        .trim_start_matches(['-', '.', '/'])
+        .trim_end_matches(['/', '.']);
     if trimmed.is_empty() {
         "work".to_string()
     } else {

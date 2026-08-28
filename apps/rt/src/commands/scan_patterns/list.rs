@@ -912,7 +912,7 @@ fn confirm_implements(candidates: &mut [Candidate], modules: &[Mod]) {
         if known.is_empty() {
             continue; // no parsed file in this house — nothing to judge with.
         }
-        let evidencing = known.iter().filter(|ss| ss.iter().any(|s| *s == hint)).count();
+        let evidencing = known.iter().filter(|ss| ss.contains(&hint)).count();
         if evidencing < MIN_EXEMPLARS {
             c.implements = None;
         }
@@ -1235,7 +1235,7 @@ mod tests {
 
     #[test]
     fn owner_picks_longest_prefix() {
-        let root = Proj { name: "root".into(), dir: "".into() };
+        let root = Proj { name: "root".into(), dir: String::new() };
         let api = Proj { name: "api".into(), dir: "apps/api".into() };
         let core = Proj { name: "core".into(), dir: "apps/api/core".into() };
         // Root (empty dir) is excluded by `collect`; here we pass only non-empty.

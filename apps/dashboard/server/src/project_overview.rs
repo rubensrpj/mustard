@@ -252,7 +252,7 @@ fn read_manifest_deps(unit_root: &Path, kind: &str) -> Vec<DepVersion> {
 
 /// Sort by name (case-insensitive), dedup by name (first wins), and cap.
 fn finalize_deps(deps: &mut Vec<DepVersion>) {
-    deps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    deps.sort_by_key(|a| a.name.to_lowercase());
     deps.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
     deps.truncate(MAX_DEPS_PER_PROJECT);
 }

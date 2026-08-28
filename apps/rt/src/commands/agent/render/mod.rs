@@ -708,7 +708,7 @@ fn git_boundary_block(project: &Path, subproject: &str) -> String {
 /// title + explanatory blurb). Fail-open: a missing/unreadable file, or one with
 /// no bullets, yields an empty string — which collapses the heading.
 fn read_change_log(spec_dir: &Path) -> String {
-    mfs::read_to_string(&spec_dir.join("change-log.md"))
+    mfs::read_to_string(spec_dir.join("change-log.md"))
         .unwrap_or_default()
         .lines()
         .filter(|l| l.trim_start().starts_with("- "))

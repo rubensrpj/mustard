@@ -977,7 +977,7 @@ fn make_unique_from_chars(s: &str, used: &HashMap<String, String>) -> String {
         }
     }
     // Absolute fallback: hash-like suffix
-    format!("{}{}", &s.chars().take(2).collect::<String>(), used.len())
+    format!("{}{}", s.chars().take(2).collect::<String>(), used.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,7 +1216,7 @@ fn render_table(specs: &[ActiveSpec], scan: &BranchScan, lang: SupportedLocale) 
 
         // Pad/truncate columns for alignment
         let letter = format!("{:<2}", spec.letter);
-        let name = format!("{:<45}", &spec.name);
+        let name = format!("{:<45}", spec.name);
         let esc = format!("{scope_str:<3}");
         let stage_col = format!("{stage_str:<7}");
         let prog_col = format!("{prog:>4}");
@@ -1227,7 +1227,7 @@ fn render_table(specs: &[ActiveSpec], scan: &BranchScan, lang: SupportedLocale) 
             .branch
             .as_deref()
             .map_or_else(|| "-".to_string(), |b| truncate_str(b, ONDE_WIDTH - 1));
-        let onde_col = format!("{onde:<width$}", width = ONDE_WIDTH);
+        let onde_col = format!("{onde:<ONDE_WIDTH$}");
         let resumo_col = &spec.resumo;
 
         lines.push(format!(

@@ -1574,8 +1574,7 @@ mod tests {
             |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
 
         let refused = approve_at(root_str, &opts, ApprovalMode::Strict, "s-1", &mut record)
-            .err()
-            .expect("a marker that recorded nothing must refuse the approval");
+            .expect_err("a marker that recorded nothing must refuse the approval");
         assert!(refused.exit_nonzero, "a gate refusal exits non-zero");
         assert!(
             refused.error.contains(".clarified") && refused.error.contains("recorded NOTHING"),

@@ -103,7 +103,7 @@ fn extract_fence(text: &str) -> Option<(String, &str)> {
         text.len()
     } else {
         // Find the first occurrence of the tail's initial bytes in `text`.
-        text.find(&*tail_normalized).unwrap_or(text.len())
+        text.find(tail_normalized).unwrap_or(text.len())
     };
 
     Some((yaml_body, &text[body_start..]))
@@ -141,7 +141,7 @@ fn parse_yaml_to_object(yaml: &str) -> Map<String, Value> {
             let items: Vec<Value> = inner
                 .split(',')
                 .map(|s| Value::String(unquote(s.trim()).to_string()))
-                .filter(|v| v.as_str().map_or(true, |s| !s.is_empty()))
+                .filter(|v| v.as_str().is_none_or(|s| !s.is_empty()))
                 .collect();
             map.insert(key, Value::Array(items));
             i += 1;

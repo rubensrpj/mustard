@@ -192,11 +192,10 @@ impl Analyzer {
                         }
                     }
                     CapKind::Supertype => {
-                        if let Ok(t) = node.utf8_text(bytes) {
-                            if let Some(n) = simple_type_name(t) {
+                        if let Ok(t) = node.utf8_text(bytes)
+                            && let Some(n) = simple_type_name(t) {
                                 here_supers.push(n);
                             }
-                        }
                     }
                     CapKind::Def(kind) => {
                         def = Some((node.start_byte(), kind.as_str(), node.start_position().row + 1));
@@ -208,15 +207,14 @@ impl Analyzer {
             if let (Some((sb, kind, line)), Some(name)) = (def, &name_text) {
                 decls.entry(sb).or_insert_with(|| (kind.to_string(), name.clone(), line));
             }
-            if let Some(name) = &name_text {
-                if !here_supers.is_empty() {
+            if let Some(name) = &name_text
+                && !here_supers.is_empty() {
                     let key = simple_type_name(name).unwrap_or_else(|| name.clone());
                     let bucket = supers_by_name.entry(key).or_default();
                     for s in here_supers {
                         bucket.insert(s);
                     }
                 }
-            }
         }
 
         out.declarations = decls

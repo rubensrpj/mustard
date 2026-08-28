@@ -100,12 +100,11 @@ pub fn resolve_edges(modules: &[Module], go_module: &Option<String>) -> Vec<(usi
             let targets = resolve(imp, &m.path, root_aliases, &ns_index, &stem_index, &dir_index, &module_paths, go_module);
             let w = (1024 / targets.len().max(1) as u64).max(1);
             for t in targets {
-                if let Some(&dst) = pos.get(t.as_str()) {
-                    if dst != src {
+                if let Some(&dst) = pos.get(t.as_str())
+                    && dst != src {
                         let e = edge_w.entry((src, dst)).or_insert(0);
                         *e = (*e).max(w);
                     }
-                }
             }
         }
     }
@@ -279,25 +278,23 @@ fn resolve(
     //     one FQCN doesn't edge to every file in the namespace. When no file
     //     carries the type's name, keep the whole bucket: coupling at
     //     namespace granularity, the same evidence shape (1) accepts.
-    if let Some((ns, type_name)) = canon.rsplit_once('/') {
-        if let Some(v) = ns_index.get(ns) {
+    if let Some((ns, type_name)) = canon.rsplit_once('/')
+        && let Some(v) = ns_index.get(ns) {
             let named: Vec<String> = v.iter().filter(|p| file_stem(p) == type_name).cloned().collect();
             return if named.is_empty() { v.clone() } else { named };
         }
-    }
     // 2) Module-prefixed path: strip a declared module prefix and match the
     //    directory it points at (the import-as-package-path shape). Raw on
     //    both sides: these imports and the declared prefix are already
     //    slash-separated, and canonicalizing a dotted module domain would
     //    corrupt it.
-    if let Some(modpath) = go_module {
-        if let Some(rest) = imp.strip_prefix(modpath.as_str()) {
+    if let Some(modpath) = go_module
+        && let Some(rest) = imp.strip_prefix(modpath.as_str()) {
             let rest = rest.trim_start_matches('/');
             if let Some(v) = dir_index.get(rest) {
                 return v.clone();
             }
         }
-    }
     // 3) File path: a relative or path-ish import resolved to a module file.
     //    The canonical form means dotted / `::` module paths take this branch
     //    too — they are paths spelled with another separator.
@@ -320,8 +317,8 @@ fn resolve(
     //    the tail minus its last segment) against the importer's ancestor
     //    directories, nearest first. The fixed probe order keeps resolution
     //    deterministic. No aliases declared -> this branch never runs.
-    if let Some((alias, tail)) = canon.split_once('/') {
-        if root_aliases.contains(&alias) {
+    if let Some((alias, tail)) = canon.split_once('/')
+        && root_aliases.contains(&alias) {
             let mut tails = vec![tail.to_string()];
             if let Some((head, _)) = tail.rsplit_once('/') {
                 tails.push(head.to_string());
@@ -341,7 +338,6 @@ fn resolve(
                 }
             }
         }
-    }
     Vec::new()
 }
 

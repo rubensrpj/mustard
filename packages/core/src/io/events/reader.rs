@@ -21,7 +21,7 @@ pub struct EventReader;
 impl EventReader {
     /// Create a new, empty reader.
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     /// Return a streaming iterator over all events in `path`.

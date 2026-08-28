@@ -239,7 +239,7 @@ pub fn ensure_watching(
         },
     )
     .map_err(|e| {
-        eprintln!("watcher: debouncer init failed for {}: {}", repo_path, e);
+        eprintln!("watcher: debouncer init failed for {repo_path}: {e}");
         e.to_string()
     })?;
 

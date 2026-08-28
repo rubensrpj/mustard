@@ -53,7 +53,7 @@ fn seed_full_plan_spec(project: &Path, session: &str, spec: &str) {
     fs::create_dir_all(&spec_dir).unwrap();
     fs::write(
         spec_dir.join("meta.json"),
-        format!(r#"{{"scope":"full (wave plan)","stage":"Plan","outcome":"Active"}}"#),
+        r#"{"scope":"full (wave plan)","stage":"Plan","outcome":"Active"}"#.to_string(),
     )
     .unwrap();
     let session_dir = project.join(".claude").join(".session").join(session);

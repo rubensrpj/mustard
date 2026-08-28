@@ -2591,11 +2591,11 @@ mod tests {
         // Derived from the seeds, so this is a property and not a second list.
         for seed in [SETTINGS_JSON, SETTINGS_LOCAL_JSON, CLAUDE_GITIGNORE_PATH] {
             let lifted = format!("**/{seed}");
-            assert!(rules.iter().any(|p| *p == lifted), "{lifted} missing: {rules:?}");
+            assert!(rules.contains(&lifted), "{lifted} missing: {rules:?}");
         }
         for name in harness_claude_output() {
             let expected = format!("**/.claude/{name}");
-            assert!(rules.iter().any(|p| *p == expected), "{expected} missing: {rules:?}");
+            assert!(rules.contains(&expected), "{expected} missing: {rules:?}");
         }
         // Every documented directory that is not client-authored MUST be covered.
         // This is the direction the ratchet lacked: it validated the rules that
@@ -2608,7 +2608,7 @@ mod tests {
             }
             let expected = format!("**/.claude/{dir}/");
             assert!(
-                rules.iter().any(|p| *p == expected),
+                rules.contains(&expected),
                 "{expected} missing — a documented harness directory with no rule leaks: {rules:?}",
             );
         }
