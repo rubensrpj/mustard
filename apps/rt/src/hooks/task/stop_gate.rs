@@ -444,6 +444,42 @@ mod tests {
         }
     }
 
+    /// The day after a release, the advisory must STILL see the debt.
+    ///
+    /// Promoting `dev` into `main` makes every unit merged into `dev`
+    /// reachable from `main` as well. The base resolver behind this advisory
+    /// therefore meets two containing bases as its ordinary case, not its odd
+    /// one — and its first version answered "several candidates, say nothing",
+    /// which goes blind on exactly the repositories that ship regularly. Found
+    /// reviewing this unit's own change, before it left the branch.
+    #[test]
+    fn a_promotion_does_not_blind_the_advisory() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        repo_on_dev(project);
+
+        git_in(project, &["checkout", "-b", "fix/landed"]);
+        std::fs::write(project.join("work.txt"), "the work\n").unwrap();
+        git_in(project, &["add", "-A"]);
+        git_in(project, &["commit", "-m", "work"]);
+        git_in(project, &["checkout", "dev"]);
+        git_in(project, &["merge", "--no-ff", "-m", "merge", "fix/landed"]);
+
+        // The release: `main` now carries everything `dev` does, so BOTH
+        // declared bases contain the unit.
+        git_in(project, &["branch", "main"]);
+
+        match prune_advisory(project.to_str().unwrap()) {
+            Verdict::Warn { message } => {
+                assert!(
+                    message.contains("fix/landed"),
+                    "a promoted base must not hide the debt: {message}"
+                );
+            }
+            other => panic!("expected Warn, got {other:?}"),
+        }
+    }
+
     /// The same repository with the branch pruned says nothing. An advisory
     /// that fires on a clean tree is one the operator learns to ignore.
     #[test]

@@ -266,11 +266,18 @@ impl BranchEnumerator {
     /// there. `git-settle` already reaches for that measurement by hand when a
     /// record is missing; this puts it where every consumer benefits.
     ///
-    /// Deliberately silent in two directions. Reachable from NO base — the
-    /// ordinary unmerged unit — keeps the empty base, because there is nothing
-    /// to prune and nothing to claim. Reachable from SEVERAL keeps it too: two
-    /// candidates is the same non-answer the pure derivation gave, and guessing
-    /// between them is what this function refuses to do.
+    /// Reachable from NO base — the ordinary unmerged unit — keeps the empty
+    /// base: there is nothing to prune and nothing to claim.
+    ///
+    /// **Reachable from SEVERAL is the ordinary state, not the odd one, and
+    /// refusing to answer there was this function's own first bug.** The moment
+    /// `dev` is promoted into `main`, every unit merged into `dev` becomes
+    /// reachable from `main` as well — so a rule of "several candidates, say
+    /// nothing" goes blind on exactly the repositories that ship regularly, and
+    /// goes blind the day after a release. The tie is broken by where work
+    /// LANDS ([`BaseFlow::work_base`]): a unit reachable from the work base was
+    /// delivered there, whatever else has since absorbed it. Only when the work
+    /// base is not among the holders is the answer withheld.
     pub(crate) fn resolve_unrecorded_bases(&mut self, git: GitOut<'_>, flow: &BaseFlow) {
         if !self.units.iter().any(|u| u.base.is_empty()) {
             return;
@@ -279,15 +286,20 @@ impl BranchEnumerator {
         // primitive — never one read per unrecorded unit.
         let per_base: Vec<(&String, BTreeSet<String>)> =
             flow.bases().iter().map(|base| (base, refs_merged_into(git, base))).collect();
+        let work_base = flow.work_base();
         for unit in self.units.iter_mut().filter(|u| u.base.is_empty()) {
             let refnames = unit.refnames();
-            let mut holders =
-                per_base.iter().filter(|(_, merged)| refnames.iter().any(|r| merged.contains(r)));
-            let Some((base, _)) = holders.next() else { continue };
-            if holders.next().is_some() {
-                continue;
-            }
-            unit.base = (*base).clone();
+            let holders: Vec<&str> = per_base
+                .iter()
+                .filter(|(_, merged)| refnames.iter().any(|r| merged.contains(r)))
+                .map(|(base, _)| base.as_str())
+                .collect();
+            unit.base = match holders.as_slice() {
+                [] => continue,
+                [only] => (*only).to_string(),
+                many if many.contains(&work_base) => work_base.to_string(),
+                _ => continue,
+            };
         }
     }
 }
