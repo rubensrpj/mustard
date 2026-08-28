@@ -34,6 +34,32 @@
 //!    restoring the acts into the sibling `init` — the entry point its own doc
 //!    advertises — was green. Both are driven now.
 //!
+//! ## O QUE ESTA TRAVA AINDA NAO PEGA — medido, nao suposto
+//!
+//! Uma revisao dedicada a derrota-la achou onze evasoes que continuam verdes.
+//! Nenhuma e defeito do codigo entregue: sao limites DESTE instrumento, e estao
+//! escritos aqui porque uma trava cujos limites ninguem conhece da mais
+//! confianca do que cobertura.
+//!
+//! - O log so ve as 22 ferramentas calcadas: `snap`, `sudo` ou qualquer caminho
+//!   absoluto (`/bin/mkdir`) passam por fora do PATH e nao sao registrados.
+//! - Vigia so o `$HOME`. Escrita em `temp_dir()`, `/etc` ou nos diretorios XDG
+//!   (que o filho herda do operador real) passa.
+//! - O filho nunca recebe um TERMINAL. Ato escondido atras de
+//!   `stdin().is_terminal()` e invisivel aqui e dispara para todo operador.
+//! - Nenhum teste dirige `--force` nem um projeto que nao seja repositorio git:
+//!   ato preso a esses caminhos passa.
+//! - Ato ADIADO (thread, Drop, atexit) passa: o filho termina antes.
+//! - Um `process::exit(0)` na biblioteca passa e ainda anula a assercao do
+//!   dry-run, porque o filho morre antes dela e o pai le exit 0 como sucesso.
+//! - A metade do ripgrep e presa por PROSA IMPRESSA: no Linux o instalador dele
+//!   nao gera processo, entao renomear os `println!` desarma a checagem.
+//!
+//! O instrumento que fecharia a maioria disso e outro: um observador de nivel de
+//! sistema (strace / LD_PRELOAD / seccomp) ou um retrato do disco inteiro antes
+//! e depois — nao uma lista de calcos maior, que e por onde este defeito se
+//! regenera. Isso e unidade propria, e esta declarada como tal.
+//!
 //! The child is this same test binary, re-run with [`PROBE_ENV`] set.
 
 use std::fs;

@@ -68,14 +68,21 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
     dir
 }
 
-/// Run `mustard init --yes` in `project`, with `bin` as the whole PATH.
-fn run_init(project: &Path, bin: &Path) -> std::process::Output {
+/// Run `mustard init --yes` in `project`, with `bin` as the whole PATH and
+/// `home` as `$HOME`.
+///
+/// The home is a PARAMETER, never the operator's own. It used to be
+/// `std::env::var("HOME")`, and review measured the cost: regress the
+/// global-settings opt-in and `cargo test` writes into the developer's real
+/// `~/.claude/`. A test that can damage the machine it runs on is worse than the
+/// regression it was watching for.
+fn run_init(project: &Path, bin: &Path, home: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_mustard"))
         .args(["init", "--yes"])
         .current_dir(project)
         .env_clear()
         .env("PATH", bin)
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("HOME", home)
         .output()
         .expect("the mustard binary runs")
 }
@@ -101,8 +108,10 @@ fn a_missing_rtk_refuses_the_install_and_writes_nothing() {
     let log = tmp.path().join("spawn.log");
     let bin = shim_dir(&log, false);
     let project = fresh_repo(tmp.path());
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
 
-    let out = run_init(&project, &bin);
+    let out = run_init(&project, &bin, &home);
 
     assert!(!out.status.success(), "a missing rtk must fail the install");
     assert!(
@@ -125,8 +134,10 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
     let log = tmp.path().join("spawn.log");
     let bin = shim_dir(&log, true);
     let project = fresh_repo(tmp.path());
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
 
-    let out = run_init(&project, &bin);
+    let out = run_init(&project, &bin, &home);
 
     assert!(out.status.success(), "a present rtk must let the install run");
     assert!(
@@ -269,7 +280,7 @@ fn answering_cancel_leaves_the_machine_untouched() {
     let project = fresh_repo(tmp.path());
 
     // First install, so the second run meets an existing `.claude/`.
-    let first = run_init(&project, &bin);
+    let first = run_init(&project, &bin, &home);
     assert!(first.status.success(), "the seeding run must succeed");
     fs::write(&log, "").expect("truncate log");
 
