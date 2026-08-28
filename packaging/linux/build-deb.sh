@@ -112,6 +112,14 @@ chmod 0755 "$MERGE"/usr/lib/mustard/bin/*
 cp -R "$DIST_SRC" "$MERGE/usr/lib/mustard/bin/dist"
 cp -R "$BUILD/apps/cli/templates/." "$MERGE/usr/lib/mustard/templates/"
 
+# 5a-bis. o passo do plugin. Ele NÃO fica em bin/ de propósito: bin/ inteiro
+# entra no PATH via symlinks em /usr/bin (passo 5c), e este script não é um
+# comando que alguém digita — é uma etapa que o install.sh chama pelo caminho
+# absoluto. No `curl … | sh` nada além do install.sh chega ao disco, então
+# embarcá-lo aqui é o que torna o passo alcançável depois do apt.
+cp "$REPO/packaging/installer/plugin-step.sh" "$MERGE/usr/lib/mustard/plugin-step.sh"
+chmod 0755 "$MERGE/usr/lib/mustard/plugin-step.sh"
+
 # 5b. atalho .desktop. It starts a SERVER: the entry runs the binary in a
 #     terminal so the URL it prints is visible and Ctrl+C stops it — an app
 #     window is exactly what there no longer is. The icon is a stock

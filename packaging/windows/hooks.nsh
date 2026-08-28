@@ -87,6 +87,26 @@
   CreateShortCut "$SMPROGRAMS\Mustard\Mustard Dashboard.lnk" "$INSTDIR\mustard-cli\mustard-dashboard.exe" "" "$INSTDIR\mustard-cli\mustard-dashboard.exe" 0 SW_SHOWNORMAL "" "Serve o Mustard Dashboard em http://127.0.0.1:7777 e abre o navegador"
   SetOutPath "$INSTDIR"
 
+  ; --- o passo do plugin ----------------------------------------------------
+  ; O .exe atualiza a CÓPIA DO SISTEMA ($INSTDIR\mustard-cli). O Claude Code
+  ; executa a CÓPIA DO PLUGIN (~\.claude\plugins\cache\…), porque o plugin
+  ; prepende o bin/ dele ao PATH. Atualizar só a primeira é o que deixava uma
+  ; máquina com 0.1.55 instalada desenhando 0.1.47 na barra de status.
+  ;
+  ; O script vai junto para $INSTDIR\mustard-cli e é chamado dali. Sem
+  ; rebaixamento de usuário: o NSIS já roda como a própria pessoa e grava em
+  ; HKCU, então o `claude` enxerga o ~\.claude certo — ao contrário do .deb e do
+  ; .pkg, que rodam como root e por isso precisam do rebaixamento no irmão POSIX.
+  ;
+  ; Fail-open como todo o resto deste arquivo: o código de saída é lido e
+  ; descartado. O Mustard já está instalado quando esta linha roda, e derrubar o
+  ; instalador aqui faria a pessoa concluir que nada foi instalado.
+  SetOutPath "$INSTDIR\mustard-cli"
+  File "${__FILEDIR__}\..\installer\plugin-step.ps1"
+  SetOutPath "$INSTDIR"
+  nsExec::ExecToLog `powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\mustard-cli\plugin-step.ps1"`
+  Pop $0
+
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 !macroend
 

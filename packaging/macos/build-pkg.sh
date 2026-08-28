@@ -101,6 +101,12 @@ cp -R "$DIST_SRC" "$BIN/dist"
 # templates um nível acima -> <exe>/../templates resolve (igual ao .deb)
 cp -R "$REPO/apps/cli/templates/." "$PKGROOT$PREFIX/templates/"
 
+# O passo do plugin, o MESMO script que o .deb embarca. Fora de bin/ de
+# propósito: bin/ vira symlinks no PATH (postinstall), e este não é um comando
+# que alguém digita — é uma etapa que o postinstall chama pelo caminho absoluto.
+cp "$REPO/packaging/installer/plugin-step.sh" "$PKGROOT$PREFIX/plugin-step.sh"
+chmod 0755 "$PKGROOT$PREFIX/plugin-step.sh"
+
 # --- 4. script de pós-instalação (symlinks no PATH + tira a quarentena) ------
 echo "==> [4/5] montando o postinstall"
 SCRIPTS="$DIST/_pkgscripts"
@@ -125,6 +131,16 @@ WRAP
 chmod 0755 /usr/local/bin/mustard-dashboard
 # binários não assinados/notarizados: libera o Gatekeeper para esta instalação.
 xattr -dr com.apple.quarantine "$PREFIX" 2>/dev/null || true
+
+# O passo do plugin: atualiza a CÓPIA DO PLUGIN, que é a que o Claude Code
+# executa — o .pkg acabou de atualizar apenas a cópia do sistema. Este
+# postinstall roda como root e o plugin mora no ~/.claude de UMA pessoa; o
+# próprio script descobre quem está no console e se rebaixa para essa pessoa.
+# Fail-open: o `|| true` protege o `set -e` do topo, porque o pacote já está
+# instalado e um exit != 0 aqui reprovaria a instalação inteira.
+if [ -x "$PREFIX/plugin-step.sh" ]; then
+  sh "$PREFIX/plugin-step.sh" || true
+fi
 exit 0
 EOF
 chmod +x "$SCRIPTS/postinstall"
