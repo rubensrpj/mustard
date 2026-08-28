@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-cli"
-version = "0.1.53"
+version = "0.1.54"
 dependencies = [
  "anyhow",
  "clap",
@@ -1091,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-core"
-version = "0.1.53"
+version = "0.1.54"
 dependencies = [
  "aho-corasick",
  "rayon",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-dashboard"
-version = "0.1.53"
+version = "0.1.54"
 dependencies = [
  "chrono",
  "dirs",
@@ -1132,7 +1132,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-mcp"
-version = "0.1.53"
+version = "0.1.54"
 dependencies = [
  "mustard-core",
  "rmcp",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "mustard-rt"
-version = "0.1.53"
+version = "0.1.54"
 dependencies = [
  "clap",
  "mustard-core",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "scan"
-version = "0.1.53"
+version = "0.1.54"
 dependencies = [
  "anyhow",
  "clap",
