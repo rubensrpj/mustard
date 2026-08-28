@@ -26,7 +26,7 @@
 // slug and looked up per spec-backed row — never one query per row. The expand
 // additionally lazy-loads the per-wave / per-AC lists.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router";
 import { ChevronRight, ArrowUpRight } from "lucide-react";
@@ -60,6 +60,20 @@ const NULL_BUCKET = "__null__";
 
 // Fixed front of the section order, by work TYPE.
 const PRIORITY_ORDER = ["feature", "task", "bugfix", "tactical-fix", "analyze"];
+
+/**
+ * Ceiling the activity page asks the server for.
+ *
+ * The list is sorted open-first then most-recent, so a cap is the newest N, not
+ * an arbitrary slice. It is a ceiling and not pagination on purpose — paging
+ * this list was considered and refused; the goal is for the route to open fast
+ * at any history size, not to change how the list behaves.
+ *
+ * The number matters on the SERVER side more than here: `dashboard_sessions`
+ * cuts to this limit before it aggregates, so the ceiling bounds the work, not
+ * just the payload.
+ */
+const SESSION_LIMIT = 200;
 
 // The grouping key for one session: the `pipeline.kind` work-type when present,
 // else the `category` (skill suffix) fallback, else the loose null bucket.
@@ -221,6 +235,7 @@ function SpecJourney({
   card,
   fallbackStatus,
   onOpenSpec,
+  open,
 }: {
   repoPath: string | null;
   spec: string;
@@ -228,10 +243,19 @@ function SpecJourney({
   /** The session's own status — the rail's source until the card resolves. */
   fallbackStatus: string;
   onOpenSpec: () => void;
+  /**
+   * Whether the row this detail belongs to is actually expanded.
+   *
+   * The caller already refuses to render this component while the row is shut,
+   * so this is the second lock on the same door: a later edit that mounts the
+   * detail unconditionally again would still not fire the two requests. That
+   * exact regression is what made the activity route take minutes to open.
+   */
+  open: boolean;
 }) {
   const t = useT();
-  const wavesQ = useSpecWaves(repoPath, spec);
-  const qualityQ = useSpecQuality(repoPath, spec);
+  const wavesQ = useSpecWaves(repoPath, spec, open);
+  const qualityQ = useSpecQuality(repoPath, spec, open);
 
   const railStatus = card?.status ?? fallbackStatus;
   const waves = wavesQ.data ?? [];
@@ -325,6 +349,11 @@ function ActivityRow({
   const t = useT();
   const navigate = useNavigate();
   const projectsRoot = useStore((s) => s.projectsRoot);
+  // `<details>` renders its children whether or not it is open — the browser
+  // only HIDES them. So the detail below has to be gated on real expansion
+  // state, tracked from the element's own `toggle` event, or every closed row
+  // on the page mounts it and fires its requests.
+  const [expanded, setExpanded] = useState(false);
   const specBacked = isSpecBacked(session);
   const card = specBacked ? cardsBySpec.get(session.last_spec) : undefined;
   const handle = session.is_unknown_bucket
@@ -350,7 +379,10 @@ function ActivityRow({
         session.is_unknown_bucket && "opacity-70",
       )}
     >
-      <details className="group">
+      <details
+        className="group"
+        onToggle={(e) => setExpanded((e.currentTarget as HTMLDetailsElement).open)}
+      >
         <summary className={cn("flex items-center gap-3 px-3 py-2.5 cursor-pointer list-none", "hover:bg-muted/30 transition-colors")}>
           {/* Spec-backed items carry a mustard kind-tick; lean items a neutral one. */}
           <span
@@ -399,15 +431,19 @@ function ActivityRow({
           />
         </summary>
 
-        {/* Depth-adaptive detail: spec-backed → the pipeline journey; lean → narrative. */}
+        {/* Depth-adaptive detail: spec-backed → the pipeline journey; lean →
+            narrative. The whole block is mounted only once the row is really
+            expanded: `<details>` hides its children, it does not skip them, so
+            an unconditional child here is an unconditional request. */}
         <div className="px-3 pb-3 pt-1 pl-[2.1rem]">
-          {specBacked ? (
+          {!expanded ? null : specBacked ? (
             <SpecJourney
               repoPath={projectsRoot ?? null}
               spec={session.last_spec}
               card={card}
               fallbackStatus={session.status}
               onOpenSpec={openSpec}
+              open={expanded}
             />
           ) : (
             <div className="flex flex-col gap-2 text-[11px]">
@@ -539,8 +575,8 @@ export function Activity() {
   const activeProjectName = useActiveProjectName();
 
   const { data, isLoading, error } = useQuery<SessionRow[]>({
-    queryKey: ["sessions", projectsRoot],
-    queryFn: () => fetchSessions(projectsRoot!),
+    queryKey: ["sessions", projectsRoot, SESSION_LIMIT],
+    queryFn: () => fetchSessions(projectsRoot!, SESSION_LIMIT),
     enabled: !!projectsRoot,
     staleTime: 30_000,
   });
