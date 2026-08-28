@@ -429,7 +429,7 @@ fn check_claude_cli() -> CheckResult {
         }
         // Windows: try .cmd / .bat / .exe extensions.
         #[cfg(windows)]
-        for ext in &[".cmd", ".bat", ".exe"] {
+        for ext in [".cmd", ".bat", ".exe"] {
             let candidate = std::path::Path::new(dir).join(format!("claude{ext}"));
             if candidate.exists() {
                 let p = candidate.to_string_lossy().into_owned();
