@@ -840,6 +840,12 @@ const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] = &[
 /// current seed fixes stayed in force — with the version stamp bumped, which
 /// silenced the drift notice on top. An untouched seed is Mustard's own
 /// text; only an operator's EDIT earns preservation.
+///
+/// The literals carry no digit separators on purpose: the ratchet test PRINTS
+/// the fingerprint it expects, and the operator pastes that value in. Grouping
+/// the digits by hand on every paste is an editing step that buys nothing —
+/// nobody reads a 64-bit hash, they compare it against the tool's output.
+#[allow(clippy::unreadable_literal)]
 const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     0x1c5e2e706274fc17,
     0x0fb06c788d11566b,
