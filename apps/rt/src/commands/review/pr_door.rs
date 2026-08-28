@@ -666,6 +666,34 @@ fn merge_core(
         };
     }
 
+    // **A promotion has no unit, so it has nothing to settle.** `dev` → `main`
+    // is the ordinary end of a cycle and its HEAD is a declared BASE; handing
+    // that name to the prune asks it to delete the project's own integration
+    // branch, here and on the server. `spec_of_branch` already answered `None`
+    // for it several lines up — that answer was read for the review verdict and
+    // then dropped, and the head went to the prune regardless. The prune refuses
+    // this too now, but the refusal is the second line of defence: this door
+    // knows it is promoting and must not ask.
+    if flow.is_declared_base(&facts.head) {
+        return PrMergeReport {
+            ok: true,
+            action: "merged",
+            reason: Some("base-to-base-promotion"),
+            pr: facts.number,
+            head: facts.head.clone(),
+            spec,
+            verdict,
+            warning: None,
+            settle: None,
+            hint: Some(format!(
+                "`{head}` é uma base, não uma unidade: a promoção termina no merge e não há \
+                 poda a fazer. Atualize as bases locais com \
+                 `git fetch origin <base>:<base>` — nenhuma branch foi apagada.",
+                head = facts.head,
+            )),
+        };
+    }
+
     // Merged. The rest — back to the base, pull it, remove the worktree, delete
     // the local and remote branch — IS `git-settle`, called rather than
     // rewritten: it already verifies the merge landed, already advances every
@@ -886,6 +914,47 @@ mod tests {
         assert_eq!(merges.get(), 1);
         assert_eq!(settles.get(), 1);
         assert_eq!(confirmed.settle, Some(json!({ "ok": true })));
+    }
+
+    /// A base→base promotion is merged and NEVER handed to the prune.
+    ///
+    /// `dev` → `main` is the ordinary end of a cycle, and the pull request's
+    /// HEAD is then a declared BASE. The prune deletes whatever branch it is
+    /// handed, here and on the server, so passing `dev` to it asks for the
+    /// project's own integration branch to be destroyed. `spec_of_branch`
+    /// already answers `None` for such a head — that answer was read for the
+    /// verdict and then dropped.
+    ///
+    /// The assertion is on the CALL COUNT, not on the report: a version that
+    /// called the prune and merely reported nicely would satisfy any check of
+    /// the JSON alone.
+    #[test]
+    fn a_base_to_base_promotion_is_merged_but_never_pruned() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let bases = door_flow();
+        // The head IS a base — this is what a promotion looks like to this door.
+        let facts = PrFacts { number: 231, head: "dev".to_string() };
+
+        let merges = Cell::new(0u32);
+        let settles = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
+        };
+        let settle = |_: &Path, _: &str| {
+            settles.set(settles.get() + 1);
+            json!({ "ok": true })
+        };
+
+        let done = merge_core(root, &facts, &bases, true, &merge, &settle);
+
+        assert!(done.ok, "a promotion is a success, not a refusal: {done:?}");
+        assert_eq!(done.action, "merged");
+        assert_eq!(done.reason, Some("base-to-base-promotion"));
+        assert_eq!(merges.get(), 1, "the promotion IS merged");
+        assert_eq!(settles.get(), 0, "and the prune is never even asked");
+        assert!(done.settle.is_none(), "so there is no settle report to carry: {done:?}");
     }
 
     /// The consent rule itself: only an `approved` verdict (or the operator's
