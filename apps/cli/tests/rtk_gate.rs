@@ -56,15 +56,25 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
     }
     // The real git: `init` inspects the repository, and faking that would test a
     // path the product never runs.
-    let real_git = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .expect("git on PATH");
+    //
+    // The whole block is unix-only, and BOTH halves have to be. It used to
+    // compute `real_git` unconditionally and only symlink it under
+    // `#[cfg(unix)]`, which made the variable unused on Windows — invisible
+    // while warnings were merely warnings, and the FIRST thing `-D warnings`
+    // caught when this repository turned it on. The lookup would not have
+    // worked there either: it shells out to `sh -c command -v git`, and the
+    // `.expect` would have panicked rather than degraded.
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&real_git, dir.join("git")).expect("link git");
+    {
+        let real_git = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .expect("git on PATH");
+        std::os::unix::fs::symlink(&real_git, dir.join("git")).expect("link git");
+    }
     dir
 }
 
