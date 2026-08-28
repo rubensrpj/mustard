@@ -1791,12 +1791,10 @@ fn i1_to_check_result(report: &crate::commands::doctor::doctor_i1::I1Report) -> 
     CheckResult::fail("i1", report.violations.clone())
 }
 
-/// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
-
+// /// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;

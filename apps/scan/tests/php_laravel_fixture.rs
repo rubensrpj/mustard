@@ -7,8 +7,8 @@
 //!   * `php_laravel_fixture` — scanning the whole fixture yields a model whose
 //!     languages/modules carry php, whose project is `kind = composer`, and whose
 //!     framework ranking names the Laravel dependency.
-//! Everything PHP/Laravel/composer-specific lives in the fixture and in the
-//! data files (languages.toml / manifests.toml / queries); `src/` stays agnostic.
+//!     Everything PHP/Laravel/composer-specific lives in the fixture and in the
+//!     data files (languages.toml / manifests.toml / queries); `src/` stays agnostic.
 
 use std::path::PathBuf;
 use std::process::Command;

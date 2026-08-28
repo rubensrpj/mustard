@@ -44,8 +44,7 @@ use std::time::UNIX_EPOCH;
 
 
 /// Build + route a `HarnessEvent` from `(event_name, payload)` produced by an
-/// `economy::writer::*_event` builder. Fail-open per the router's contract.
-
+/// `economy::writer::*_event` builder. Fail-open per the router's contract.///
 /// `.compact-state` files older than this are pruned — 24 hours.
 const ONE_DAY_MS: u128 = 24 * 60 * 60 * 1000;
 
@@ -60,8 +59,7 @@ const TERMINAL_STATUSES: &[&str] = &["implemented", "completed", "validated", "c
 pub struct SessionCleanupObserver;
 
 
-/// Current time as milliseconds since the Unix epoch.
-
+/// Current time as milliseconds since the Unix epoch.///
 /// Read the `status` field of a pipeline-state JSON file.
 fn state_status(path: &Path) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;

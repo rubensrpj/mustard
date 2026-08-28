@@ -187,8 +187,8 @@ fn walk_workspace_events(spec_root: &Path) -> Vec<HarnessEvent> {
 /// Freshness fingerprint of the workspace event shards: the newest mtime across
 /// every `<spec>/.events/*.ndjson` plus their total byte length. A pure stat walk
 /// - no shard is opened or parsed - so the many projection views rendered in one
-/// process pay the walk + parse ONCE and reuse the cached slice. `total_len`
-/// catches a shard truncated or removed without advancing the max mtime.
+///   process pay the walk + parse ONCE and reuse the cached slice. `total_len`
+///   catches a shard truncated or removed without advancing the max mtime.
 fn workspace_events_freshness(spec_root: &Path) -> WorkspaceEventsFreshness {
     let Ok(spec_entries) = std::fs::read_dir(spec_root) else {
         return (None, 0);

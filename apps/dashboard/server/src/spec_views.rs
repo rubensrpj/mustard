@@ -498,8 +498,8 @@ const EXECUTE_RANK: u8 = 3;
 /// events the core fold dropped:
 ///   * `tools_used`     — attributed `tool.use` ⊇ explicit-spec `tool.use`.
 ///   * `files_touched`  — core counts `pipeline.task.complete.files_modified`;
-///                        attributed counts distinct `tool.use` file targets.
-///                        Different sources → max keeps the richer signal.
+///     attributed counts distinct `tool.use` file targets.
+///     Different sources → max keeps the richer signal.
 ///   * `last_event_at`  — later of the two ISO timestamps.
 ///
 /// `ac_passed`/`ac_total` (from `qa.result` — bound, explicit-spec events),

@@ -151,9 +151,9 @@ pub struct ConsumptionSummary {
 /// store is gone). Field mapping:
 ///   * decision → `title` = `payload.title`, `body` = `payload.rationale`
 ///   * lesson   → `title` = `payload.takeaway`, `body` = `payload.trigger`
-/// Attribution (`spec`) and `ts` come from the event envelope. Rows sort
-/// newest-first by `ts`. Fail-open: a project with no events (or a title-less
-/// record) contributes nothing — never an error.
+///     Attribution (`spec`) and `ts` come from the event envelope. Rows sort
+///     newest-first by `ts`. Fail-open: a project with no events (or a title-less
+///     record) contributes nothing — never an error.
 fn knowledge_rows_from_events(base: &std::path::Path) -> Vec<KnowledgeRow> {
     let events = telemetry::walk_ndjson_events_cached(base);
     let mut rows: Vec<KnowledgeRow> = Vec::new();
@@ -1603,9 +1603,9 @@ fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::Workspac
 /// Onda 2 (§5): honest hygiene health roll-up. There is no fabricated health
 /// score — every field is a real count:
 ///   * `active`            — discovered specs whose latest projected status is
-///                           non-terminal (the FS spec walk ∩ `spec_card_v2`).
+///     non-terminal (the FS spec walk ∩ `spec_card_v2`).
 ///   * `suspects`          — distinct active specs with a `hygiene.detected`
-///                           event in the last 7 days (sparse in practice).
+///     event in the last 7 days (sparse in practice).
 ///   * `autoclose_today`   — `hygiene.autoclose` events in the last 24h.
 ///   * `blocked` / `wave_failed` / `followup_open` — these qualifiers live in
 ///     spec `meta.json` flags, which are not folded here; left at 0 honestly

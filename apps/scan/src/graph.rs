@@ -26,8 +26,8 @@
 //!     alias segment and probe the tail against the importer's ancestor dirs.
 //!     Languages that declare no aliases never take this branch, so an external
 //!     package path can never be mistaken for an internal module.
-//! Nothing here switches on a language name, so a new language needs no change.
-//! Imports that resolve to nothing internal are treated as external deps.
+//!     Nothing here switches on a language name, so a new language needs no change.
+//!     Imports that resolve to nothing internal are treated as external deps.
 
 use crate::model::{GraphStats, LayerInfo, Module, NodeDegree, Touchpoint};
 use petgraph::graph::{DiGraph, NodeIndex};

@@ -1029,7 +1029,6 @@ impl Check for SubagentInject {
 
 /// Emit `pipeline.economy.operation.invoked` for a W8 in-binary operation.
 /// Fail-open. Routes through `route::emit` (NDJSON sink) for uniformity.
-
 #[cfg(test)]
 mod tests {
     use super::*;

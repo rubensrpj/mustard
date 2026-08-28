@@ -2103,11 +2103,11 @@ fn value_in_window(record: &Value, from_ms: Option<i64>, to_ms: Option<i64>) -> 
 /// from the NDJSON event channels:
 ///
 /// 1. `cost`         — Anthropic-measured USD from `pipeline.telemetry.metric`
-///                     (`claude_code.cost.usage`).
+///    (`claude_code.cost.usage`).
 /// 2. `subtractions` — counterfactual bytes from `pipeline.economy.savings.*`
-///                     (`tokens_saved × 4` byte proxy, grouped by wave).
+///    (`tokens_saved × 4` byte proxy, grouped by wave).
 /// 3. `claude_events`— operational counters from
-///                     `pipeline.telemetry.metric:claude_code.active_time` + session count.
+///    `pipeline.telemetry.metric:claude_code.active_time` + session count.
 ///
 /// Plus a `freshness` block surfacing the most-recent timestamps + OTEL
 /// collector health (re-uses [`collector_health_block`]).

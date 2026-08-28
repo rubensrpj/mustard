@@ -302,7 +302,7 @@ pub fn workspace_root_strict() -> Result<PathBuf, WorkspaceError> {
 /// 2. `CLAUDE_PROJECT_DIR` env var.
 /// 3. `std::env::current_dir()`.
 /// 4. `"."` as a last resort.
-/// The raw process working directory as a `String`, defaulting to `"."`.
+///    The raw process working directory as a `String`, defaulting to `"."`.
 ///
 /// This is the plain `std::env::current_dir()` idiom (NOT the workspace-root
 /// walk of [`project_dir`]) — the single home for the `current_dir → String`
