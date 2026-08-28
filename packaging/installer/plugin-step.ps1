@@ -104,19 +104,35 @@ function Start-BinaryDownload {
     # tempo-limite próprio e agora roda no caminho crítico do instalador, onde
     # o NSIS espera com `nsExec::ExecToLog` e a janela fica parada. Uma conexão
     # que trava congelaria a instalação para sempre.
+    # TryParse, e nao um cast: um valor nao-numerico num cast `[int]` levanta
+    # erro, e este arquivo nao pode levantar erro nenhum — ele roda depois de o
+    # pacote ja estar instalado.
     $limite = 120
-    if ($env:MUSTARD_PLUGIN_STEP_TIMEOUT) { $limite = [int]$env:MUSTARD_PLUGIN_STEP_TIMEOUT }
+    $lido = 0
+    if ([int]::TryParse($env:MUSTARD_PLUGIN_STEP_TIMEOUT, [ref]$lido) -and $lido -gt 0) {
+        $limite = $lido
+    }
 
-    # `-ArgumentList` com uma LISTA, nunca uma string montada à mão: o
-    # PowerShell cita cada elemento sozinho. O cache do plugin mora sob
-    # `C:\Users\<nome>\`, que costuma ter espaço, e um `cmd /c "..."` com
-    # aspas montadas no braço é o jeito clássico de mutilar esse caminho.
-    # O `cmd` continua no meio porque o mustard-boot é um `.cmd`, e o
-    # CreateProcess que o -NoNewWindow usa não sabe abrir um por conta própria.
+    # O caminho vai com as ASPAS DENTRO do elemento, e isto NAO e preciosismo.
+    # No Windows PowerShell 5.1 o `-ArgumentList` do Start-Process nao cita
+    # elemento nenhum: ele JUNTA a lista com espacos numa string so
+    # (`ProcessStartInfo.Arguments`), e a lista com escape por elemento
+    # (`ArgumentList`) so existe no .NET Core. Sem estas aspas, um perfil como
+    # `C:\Users\Ana Paula\` faz o cmd tentar rodar `C:\Users\Ana` — o
+    # download nunca acontece e a maquina termina com o plugin ligado e VAZIO,
+    # que e exatamente a metade dormente da armadilha que esta unidade fecha.
+    # O `cmd` continua no meio porque o mustard-boot e um `.cmd`, e o
+    # CreateProcess que o -NoNewWindow usa nao sabe abrir um por conta propria.
     $proc = Start-Process -FilePath $env:ComSpec `
-        -ArgumentList '/c', $boot, '--version' -NoNewWindow -PassThru
+        -ArgumentList '/c', "`"$boot`"", '--version' -NoNewWindow -PassThru
     if (-not $proc.WaitForExit($limite * 1000)) {
-        try { $proc.Kill() } catch { }
+        # A ARVORE, nao so o cmd. O Kill() do .NET Framework nao tem
+        # `entireProcessTree` (isso e .NET Core), entao matar o cmd sozinho
+        # deixaria o `curl` — ou pior, o `tar` — vivo, escrevendo dentro do
+        # bin/ do plugin DEPOIS que o instalador seguiu em frente. Um
+        # mustard-rt.exe truncado e pior que nenhum.
+        try { & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null } catch { }
+        try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
         Write-Host "aviso: a descida dos binarios passou de $limite s e foi cortada"
         Write-Host '       para nao segurar o instalador - a primeira sessao do'
         Write-Host '       Claude Code tenta de novo.'

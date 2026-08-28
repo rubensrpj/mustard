@@ -150,7 +150,13 @@ baixar_os_binarios() {
 
   # 124 é como o `timeout` diz "eu cortei". Vale uma frase própria: "não
   # concluiu" mandaria a pessoa procurar um erro que não existe.
-  if [ "$codigo" -eq 124 ]; then
+  # 125 é o `timeout` dizendo que ele próprio não conseguiu rodar — quase sempre
+  # um valor não-numérico na variável. Vale frase própria: mandar procurar erro
+  # de rede quando o erro está na configuração custa a tarde de alguém.
+  if [ "$codigo" -eq 125 ]; then
+    echo "aviso: não consegui aplicar o prazo de '${limite}' à descida dos" >&2
+    echo "       binários — confira MUSTARD_PLUGIN_STEP_TIMEOUT." >&2
+  elif [ "$codigo" -eq 124 ]; then
     echo "aviso: a descida dos binários passou de ${limite}s e foi cortada para" >&2
     echo "       não segurar o instalador — a primeira sessão do Claude Code" >&2
     echo "       tenta de novo." >&2
@@ -183,8 +189,12 @@ if [ "$(id -u)" -eq 0 ] && [ -z "${MUSTARD_PLUGIN_STEP_DEESCALATED:-}" ]; then
     # sairia daqui com 0 e em SILÊNCIO: o instalador diria "pronto" e o plugin
     # continuaria na versão velha, que é exatamente o defeito que este arquivo
     # existe para acabar.
+    # O prazo da descida atravessa junto: sem ele o ramo rebaixado — que é o do
+    # `apt` e o do `.pkg` — seria o único que nenhum teste consegue alcançar.
     if ! sudo -H -u "$dono" \
-         env MUSTARD_PLUGIN_STEP_DEESCALATED=1 sh "$0" "$@"; then
+         env MUSTARD_PLUGIN_STEP_DEESCALATED=1 \
+             MUSTARD_PLUGIN_STEP_TIMEOUT="${MUSTARD_PLUGIN_STEP_TIMEOUT:-}" \
+             sh "$0" "$@"; then
       echo "aviso: não consegui rodar o passo do plugin como $dono." >&2
       instrucoes_manuais
     fi

@@ -224,11 +224,20 @@ $saida"
 
     faltou=0
 
-    # O corpo do arquivo SEM os comentários. As duas linguagens comentam com `#`
-    # no começo da linha, e a primeira versão deste teste passava porque achava
-    # `exit 0` dentro de um comentário do cabeçalho do .ps1. Um teste que lê
-    # comentário não está lendo código.
-    sem_comentarios() { grep -v '^[[:space:]]*#' "$1"; }
+    # O corpo do arquivo SEM os comentários — os TRÊS tipos. Comentário de linha
+    # inteira, comentário no FIM de uma linha de código, e bloco `<# … #>` do
+    # PowerShell. Este teste já reprovou duas vezes por ler comentário: primeiro
+    # achando `exit 0` no cabeçalho, depois deixando passar uma chamada apagada
+    # com `# ` no fim da linha e outra embrulhada num `<# … #>`. Nenhum dos dois
+    # arquivos tem `#` fora de comentário, então cortar cedo demais só produz
+    # reprovação barulhenta, nunca aprovação silenciosa.
+    sem_comentarios() {
+      awk '
+        /<#/       { dentro = 1 }
+        dentro     { if (/#>/) dentro = 0; next }
+                   { sub(/#.*$/, ""); print }
+      ' "$1"
+    }
 
     # Quantas linhas de código casam com o texto. A contagem importa: uma função
     # aparece uma vez ao ser DEFINIDA e outra ao ser CHAMADA, e foi exatamente
@@ -254,6 +263,9 @@ $saida"
     exigir "o comando que BAIXA"        "mustard-boot"             1 "mustard-boot"                1
     exigir "e a CHAMADA que baixa"      "baixar_os_binarios"       2 "Start-BinaryDownload"        2
     exigir "o prazo da descida"         "MUSTARD_PLUGIN_STEP_TIMEOUT" 1 "MUSTARD_PLUGIN_STEP_TIMEOUT" 1
+    # E o prazo APLICADO, não só lido: um `WaitForExit()` sem argumento espera
+    # para sempre e continua carregando o nome da variável duas linhas acima.
+    exigir "e o prazo aplicado"         'timeout "$limite"'        1 'WaitForExit($limite'         1
     exigir "as instruções manuais"      "instrucoes_manuais"       2 "Show-ManualSteps"            2
     exigir "sair com 0 (fail-open)"     "exit 0"                   1 "exit 0"                      1
 
@@ -269,8 +281,12 @@ $saida"
 
     [ "$faltou" -eq 0 ] || falhar "os gêmeos divergiram — veja as linhas acima"
 
-    # Comparar não é executar, e vale dizer isso em voz alta: nada neste
-    # repositório RODA o plugin-step.ps1. Onde houver PowerShell, ao menos o
+    # Comparar não é executar, e o limite disto precisa ficar escrito: NADA neste
+    # repositório roda o plugin-step.ps1. Um teste de texto não vê uma chamada
+    # que continua no arquivo mas ficou inalcançável — `if ($false) { … }` passa
+    # por aqui e sempre vai passar. O que ele garante é que um passo não SUMA de
+    # um lado só; garantir que ele RODA depende de executar o arquivo no
+    # Windows, e isso ainda não existe. Onde houver PowerShell, ao menos o
     # parser dele opina.
     pwsh_bin=$(command -v pwsh 2>/dev/null || command -v powershell 2>/dev/null || true)
     if [ -n "$pwsh_bin" ]; then
