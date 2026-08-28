@@ -3,21 +3,31 @@
 //! ## Why
 //!
 //! The plugin-based install moved the `mustard-rt` binary into the plugin's
-//! gitignored `plugin/bin/` directory, so any absolute binary path recorded in
-//! settings goes stale whenever the binary moves (and is wrong on every other
-//! machine). The law: versioned files never carry a machine-absolute path —
-//! per-machine paths live in `.claude/settings.local.json` (gitignored). This
-//! observer keeps that file's `statusLine` entry pointing at the *running*
-//! binary on every `SessionStart`, healing stale paths without any installer
-//! involvement.
+//! gitignored `plugin/bin/` directory, and the plugin prepends that directory
+//! to `PATH` before Claude Code runs anything. So the bare token
+//! `mustard-rt` already resolves to the copy the harness is meant to run —
+//! whichever version the plugin currently holds — on every machine and every
+//! OS.
+//!
+//! This observer used to write the absolute path of [`std::env::current_exe`]
+//! instead, and that turned out to be the third link of a trap. On the field
+//! machine of 2026-08-28 a forgotten build inside a source clone
+//! (`C:/atiz/mustard/plugin/bin/mustard-rt.exe`, version 0.1.47) ran once,
+//! recorded its own path here, and from then on it was the binary the status
+//! bar started — so it kept re-recording that path, session after session, in
+//! a directory no installer can reach. Three reinstalls of the `.exe` changed
+//! nothing.
+//!
+//! A path is what pins a machine to one executable; the bare name follows the
+//! plugin. So the canonical form is the PORTABLE one, and an absolute path
+//! already on disk is healed back to it.
 //!
 //! ## Behaviour (all fail-open)
 //!
 //! 1. No `statusLine` key → install the canonical
-//!    `{"type":"command","command":"<exe> run statusline","padding":1}`.
-//! 2. `statusLine.command` references a `mustard-rt` binary that differs from
-//!    [`std::env::current_exe`] (stale path, moved binary, bare name) →
-//!    rewrite it to the current exe.
+//!    `{"type":"command","command":"mustard-rt run statusline","padding":1}`.
+//! 2. `statusLine.command` names `mustard-rt` in any other shape — an absolute
+//!    path, a quoted path, a stale clone — → rewrite it to the portable form.
 //! 3. `statusLine.command` is some other user command (no `mustard-rt` in it)
 //!    → never touched.
 //!
@@ -46,32 +56,26 @@ use std::path::{Path, PathBuf};
 /// The `SessionStart` statusline self-heal module.
 pub struct StatuslineHealObserver;
 
-/// The canonical statusline command for `exe`: forward slashes (project
-/// convention for hook-written paths), quoted when the path contains a space
-/// so the harness shell does not split it.
-fn desired_command(exe: &Path) -> String {
-    let exe = exe.to_string_lossy().replace('\\', "/");
-    if exe.contains(' ') {
-        format!("\"{exe}\" run statusline")
-    } else {
-        format!("{exe} run statusline")
-    }
-}
+/// The canonical statusline command: the bare binary name, resolved through
+/// the `PATH` the plugin prepends its own `bin/` to. No machine-absolute path
+/// ever goes into settings from here — see the module doc for the incident
+/// that rule comes from.
+const PORTABLE_COMMAND: &str = "mustard-rt run statusline";
 
-/// The canonical `statusLine` settings object for `exe`.
-fn desired_statusline(exe: &Path) -> Value {
+/// The canonical `statusLine` settings object.
+fn desired_statusline() -> Value {
     json!({
         "type": "command",
-        "command": desired_command(exe),
+        "command": PORTABLE_COMMAND,
         "padding": 1,
     })
 }
 
-/// Heal `<root>/.claude/settings.local.json` so its `statusLine` points at
-/// `current_exe`. Inner, testable form of the observer — see the module doc
+/// Heal `<root>/.claude/settings.local.json` so its `statusLine` carries the
+/// portable command. Inner, testable form of the observer — see the module doc
 /// for the case table. Fail-open at every step: any read, parse, or write
 /// failure degrades to a no-op.
-pub(crate) fn heal(root: &Path, current_exe: &Path) {
+pub(crate) fn heal(root: &Path) {
     let Ok(paths) = ClaudePaths::for_project(root) else {
         return;
     };
@@ -92,7 +96,6 @@ pub(crate) fn heal(root: &Path, current_exe: &Path) {
         },
     };
 
-    let desired_cmd = desired_command(current_exe);
     match obj.get("statusLine") {
         // Case 1: no statusLine at all → install the canonical entry.
         None => {}
@@ -106,14 +109,14 @@ pub(crate) fn heal(root: &Path, current_exe: &Path) {
                 // Case 3: some other user command — respect the customization.
                 return;
             }
-            if cmd.replace('\\', "/") == desired_cmd {
-                // Already pointing at the running binary — idempotent no-op.
+            if cmd == PORTABLE_COMMAND {
+                // Already portable — idempotent no-op.
                 return;
             }
-            // Case 2: stale / moved / bare mustard-rt reference → rewrite.
+            // Case 2: an absolute / quoted / stale mustard-rt path → rewrite.
         }
     }
-    obj.insert("statusLine".to_string(), desired_statusline(current_exe));
+    obj.insert("statusLine".to_string(), desired_statusline());
 
     // Serialize with the workspace's stable key order (serde_json's default
     // sorted map) + trailing newline, and only write on a real change.
@@ -138,10 +141,7 @@ impl Observer for StatuslineHealObserver {
             .workspace_root
             .clone()
             .unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
-        let Ok(exe) = std::env::current_exe() else {
-            return;
-        };
-        heal(&root, &exe);
+        heal(&root);
     }
 }
 
@@ -157,13 +157,6 @@ mod tests {
         dir.join("settings.local.json")
     }
 
-    /// A fake current-exe path. Windows-style separators on purpose: the
-    /// backslashes are plain filename bytes on Unix, so the string-level
-    /// normalization is exercised identically on both platforms.
-    fn fake_exe() -> PathBuf {
-        PathBuf::from("C:\\plugins\\mustard\\bin\\mustard-rt.exe")
-    }
-
     fn read_settings(path: &Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
@@ -172,15 +165,12 @@ mod tests {
     fn absent_file_is_created_with_statusline_only() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
-        heal(dir.path(), &fake_exe());
+        heal(dir.path());
 
         let obj = read_settings(&settings);
         let map = obj.as_object().expect("settings must be a JSON object");
         assert_eq!(map.len(), 1, "only statusLine may be introduced");
-        assert_eq!(
-            obj["statusLine"]["command"],
-            "C:/plugins/mustard/bin/mustard-rt.exe run statusline"
-        );
+        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
         assert_eq!(obj["statusLine"]["type"], "command");
         assert_eq!(obj["statusLine"]["padding"], 1);
         // Trailing newline, per the write convention.
@@ -188,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_mustard_path_is_rewritten_and_other_keys_survive() {
+    fn absolute_mustard_path_is_made_portable_and_other_keys_survive() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
         std::fs::write(
@@ -197,7 +187,7 @@ mod tests {
                 "enabledMcpjsonServers": ["mustard-memory"],
                 "statusLine": {
                     "type": "command",
-                    "command": "C:/Users/ruben/.cargo/bin/mustard-rt.exe run statusline",
+                    "command": "C:/atiz/mustard/plugin/bin/mustard-rt.exe run statusline",
                     "padding": 1
                 }
             }))
@@ -205,35 +195,32 @@ mod tests {
         )
         .unwrap();
 
-        heal(dir.path(), &fake_exe());
+        heal(dir.path());
 
         let obj = read_settings(&settings);
-        assert_eq!(
-            obj["statusLine"]["command"],
-            "C:/plugins/mustard/bin/mustard-rt.exe run statusline"
-        );
+        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
         // The unrelated key is preserved with its exact value.
         assert_eq!(obj["enabledMcpjsonServers"], json!(["mustard-memory"]));
         assert_eq!(obj.as_object().map(Map::len), Some(2));
     }
 
+    /// The exact shape the field machine of 2026-08-28 was pinned by: a
+    /// quoted, backslashed path into a source clone. Quoting must not hide the
+    /// `mustard-rt` token from the rewrite.
     #[test]
-    fn bare_mustard_rt_command_is_rewritten_to_absolute_exe() {
+    fn quoted_windows_path_is_made_portable() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
         std::fs::write(
             &settings,
-            r#"{"statusLine":{"type":"command","command":"mustard-rt run statusline","padding":1}}"#,
+            r#"{"statusLine":{"type":"command","command":"\"C:\\Program Files\\Mustard\\mustard-rt.exe\" run statusline","padding":1}}"#,
         )
         .unwrap();
 
-        heal(dir.path(), &fake_exe());
+        heal(dir.path());
 
         let obj = read_settings(&settings);
-        assert_eq!(
-            obj["statusLine"]["command"],
-            "C:/plugins/mustard/bin/mustard-rt.exe run statusline"
-        );
+        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
     }
 
     #[test]
@@ -243,7 +230,7 @@ mod tests {
         let original = r#"{"statusLine":{"type":"command","command":"my-status --fast"}}"#;
         std::fs::write(&settings, original).unwrap();
 
-        heal(dir.path(), &fake_exe());
+        heal(dir.path());
 
         assert_eq!(
             std::fs::read_to_string(&settings).unwrap(),
@@ -258,11 +245,12 @@ mod tests {
         let settings = seed_claude(dir.path());
         // Compact formatting on purpose: a rewrite would re-serialize pretty,
         // so byte-equality proves no write happened — not merely an equal one.
-        let original = r#"{"statusLine":{"command":"C:/plugins/mustard/bin/mustard-rt.exe run statusline","padding":1,"type":"command"}}"#;
+        let original =
+            r#"{"statusLine":{"command":"mustard-rt run statusline","padding":1,"type":"command"}}"#;
         std::fs::write(&settings, original).unwrap();
         let mtime_before = std::fs::metadata(&settings).unwrap().modified().unwrap();
 
-        heal(dir.path(), &fake_exe());
+        heal(dir.path());
 
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), original);
         let mtime_after = std::fs::metadata(&settings).unwrap().modified().unwrap();
@@ -276,7 +264,7 @@ mod tests {
         let original = "{not json at all";
         std::fs::write(&settings, original).unwrap();
 
-        heal(dir.path(), &fake_exe());
+        heal(dir.path());
 
         assert_eq!(
             std::fs::read_to_string(&settings).unwrap(),
@@ -290,7 +278,7 @@ mod tests {
         let dir = tempdir().unwrap();
         // No `.claude/` seeded — must not panic (write_atomic creates the
         // parent, which is acceptable; the invariant here is no panic).
-        heal(dir.path(), &fake_exe());
+        heal(dir.path());
     }
 
     // --- observer routing --------------------------------------------------
@@ -316,18 +304,16 @@ mod tests {
     }
 
     #[test]
-    fn session_start_heals_via_current_exe() {
+    fn session_start_heals_to_the_portable_command() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
         StatuslineHealObserver.observe(
             &HookInput::default(),
             &ctx(dir.path().to_str().unwrap(), Trigger::SessionStart),
         );
-        // current_exe here is the test binary — the exact path is irrelevant;
-        // the shape of the installed entry is what matters.
+        // The running binary here is the test harness, and its path must NOT
+        // appear: what the observer writes is the same on every machine.
         let obj = read_settings(&settings);
-        let cmd = obj["statusLine"]["command"].as_str().unwrap();
-        assert!(cmd.ends_with(" run statusline"), "got: {cmd}");
-        assert!(!cmd.contains('\\'), "paths must be forward-slashed: {cmd}");
+        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
     }
 }
