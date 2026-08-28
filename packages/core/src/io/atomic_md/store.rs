@@ -79,7 +79,7 @@ impl MarkdownDoc {
                             serde_json::Value::Null => String::new(),
                             other => other.to_string(),
                         };
-                        let _ = write!(out, "{k}: {val_str}\n");
+                        let _ = writeln!(out, "{k}: {val_str}");
                     }
                 }
                 out.push_str("---\n");

@@ -945,11 +945,11 @@ pub fn clarify_marker_body(
         .filter(|t| !t.is_empty())
         .collect();
     if !terms.is_empty() {
-        let _ = write!(body, "terms={}\n", terms.join(", "));
+        let _ = writeln!(body, "terms={}", terms.join(", "));
     }
     let reason = one_line(reason);
     if !reason.is_empty() {
-        let _ = write!(body, "reason={reason}\n");
+        let _ = writeln!(body, "reason={reason}");
     }
     body
 }

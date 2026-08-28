@@ -49,6 +49,7 @@
 //! working these numbers go UP and the test fails, asking to be re-baselined
 //! with the improvement.
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -89,7 +90,7 @@ fn model_of(fixture_dir: &str) -> PathBuf {
 
 /// Rank of `target` in the digest's file list for `query`, or `None` when the
 /// request does not surface it within [`FOUND_WITHIN`].
-fn rank(model: &PathBuf, query: &str, target: &str) -> Option<usize> {
+fn rank(model: &Path, query: &str, target: &str) -> Option<usize> {
     let out = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["digest", model.to_str().expect("model"), "--query", query])
         .output()

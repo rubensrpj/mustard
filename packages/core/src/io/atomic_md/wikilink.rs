@@ -175,10 +175,10 @@ pub fn render_footer(body: &str, search_dirs: &[&Path]) -> String {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(name);
-                let _ = write!(footer, "- [{name}]({display})\n");
+                let _ = writeln!(footer, "- [{name}]({display})");
             }
             None => {
-                let _ = write!(footer, "- [{name}](?) ⚠ unresolved\n");
+                let _ = writeln!(footer, "- [{name}](?) ⚠ unresolved");
             }
         }
     }

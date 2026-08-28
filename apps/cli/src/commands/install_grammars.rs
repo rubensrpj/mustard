@@ -251,11 +251,11 @@ fn render_suggestion_block(entry: &GrammarEntry, i18n: &I18n, is_installed: bool
     } else {
         String::new()
     };
-    let _ = write!(block, "### {}{marker}\n", label_for(entry));
-    let _ = write!(block, "- {}: <{}>\n",
+    let _ = writeln!(block, "### {}{marker}", label_for(entry));
+    let _ = writeln!(block, "- {}: <{}>",
         i18n.render("cli.install_grammars.repo_label"),
         entry.repo_url);
-    let _ = write!(block, "- {}:\n",
+    let _ = writeln!(block, "- {}:",
         i18n.render("cli.install_grammars.install_cmd_label"));
     block.push_str("```sh\n");
     block.push_str(&entry.install_cmd);
