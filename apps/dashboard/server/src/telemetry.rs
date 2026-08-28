@@ -5086,7 +5086,11 @@ mod tests {
         };
         // Four sessions, four events each.
         for s in 0..4u32 {
-            let body: String = (0..4).map(|j| format!("{}\n", ev(s * 4 + j))).collect();
+            let mut body = String::new();
+            for j in 0..4u32 {
+                body.push_str(&ev(s * 4 + j));
+                body.push('\n');
+            }
             let dir = tmp
                 .path()
                 .join(".claude")
@@ -5148,50 +5152,84 @@ mod tests {
     #[test]
     fn events_cache_incremental_rebuild_is_proportional() {
         let tmp = TempDir::new().expect("tempdir");
-        let ev = |n: u32, tool: &str| {
+        // `n` doubles as the event's minute AND its identity, so the flattened
+        // order can be asserted exactly.
+        let ev = |n: u32| {
             format!(
-                r#"{{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:{n:02}:00.000Z","spec":"a","payload":{{"tool":"{tool}"}}}}"#
+                r#"{{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:{n:02}:00.000Z","spec":"a","payload":{{"tool":"t{n}"}}}}"#
             )
         };
+        let lines = |ns: &[u32]| {
+            let mut body = String::new();
+            for n in ns {
+                body.push_str(&ev(*n));
+                body.push('\n');
+            }
+            body
+        };
 
-        // A corpus big enough that "everything" and "one shard" cannot be
-        // confused: 8 shards of 4 events, plus the one shard under test.
-        for i in 0..8u32 {
-            let body: String = (0..4)
-                .map(|j| format!("{}\n", ev(i * 4 + j, "Read")))
-                .collect();
-            write_event(tmp.path(), "a", &format!("bulk{i}.ndjson"), &body);
+        // NINE shards of 4 events, named so they sort `shard-0 … shard-8`, and
+        // the one under test is shard-4 — the MIDDLE of the order.
+        //
+        // The middle matters. Splicing the LAST run cannot expose an offset
+        // mistake, because there is nothing after it to shift; every earlier
+        // run has a tail that a wrong start or length would corrupt. An
+        // earlier version of this test used a shard that sorted last and would
+        // have passed over exactly that bug (found in review).
+        const HOT: u32 = 4;
+        for s in 0..9u32 {
+            let ns: Vec<u32> = (0..4).map(|j| s * 10 + j).collect();
+            write_event(tmp.path(), "a", &format!("shard-{s}.ndjson"), &lines(&ns));
         }
-        write_event(tmp.path(), "a", "hot.ndjson", &format!("{}\n", ev(40, "Edit")));
 
         let cold = walk_ndjson_events_cached(tmp.path());
-        assert_eq!(cold.len(), 33, "8 shards x 4 events + 1");
+        assert_eq!(cold.len(), 36, "9 shards x 4 events");
         let after_cold = events_cache_cloned_events(tmp.path());
-        assert_eq!(
-            after_cold, 33,
-            "a cold start clones the corpus exactly once"
-        );
+        assert_eq!(after_cold, 36, "a cold start clones the corpus exactly once");
 
-        // Append ONE event to ONE shard, the way the watcher sees it.
-        let hot = tmp
+        // Append ONE event to the MIDDLE shard, the way the watcher sees it.
+        let hot_path = tmp
             .path()
             .join(".claude")
             .join("spec")
             .join("a")
             .join(".events")
-            .join("hot.ndjson");
-        std::fs::write(&hot, format!("{}\n{}\n", ev(40, "Edit"), ev(41, "Bash")))
-            .expect("append");
-        invalidate_events_cache_path(&tmp.path().to_string_lossy(), &hot);
+            .join(format!("shard-{HOT}.ndjson"));
+        let hot_ns: Vec<u32> = (0..5).map(|j| HOT * 10 + j).collect();
+        std::fs::write(&hot_path, lines(&hot_ns)).expect("append");
+        invalidate_events_cache_path(&tmp.path().to_string_lossy(), &hot_path);
 
         let fresh = walk_ndjson_events_cached(tmp.path());
-        assert_eq!(fresh.len(), 34, "the appended event must surface");
+        assert_eq!(fresh.len(), 37, "the appended event must surface");
 
+        // The cost followed the changed shard, not the corpus.
         let delta = events_cache_cloned_events(tmp.path()) - after_cold;
         assert_eq!(
-            delta, 2,
-            "one dirty shard must clone only ITS events (2), never the corpus \
-             (34) — got {delta}"
+            delta, 5,
+            "one dirty shard must clone only ITS events (5), never the corpus \
+             (37) — got {delta}"
+        );
+
+        // And the splice landed in the right place: every run still sits where
+        // its shard's name says it should, with the middle one grown by one.
+        let mut expected: Vec<u32> = Vec::new();
+        for s in 0..9u32 {
+            let count = if s == HOT { 5 } else { 4 };
+            expected.extend((0..count).map(|j| s * 10 + j));
+        }
+        let actual: Vec<String> = fresh
+            .iter()
+            .filter_map(|e| {
+                e.get("payload")
+                    .and_then(|p| p.get("tool"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        let want: Vec<String> = expected.iter().map(|n| format!("t{n}")).collect();
+        assert_eq!(
+            actual, want,
+            "splicing a middle run must not shift the runs after it"
         );
     }
 

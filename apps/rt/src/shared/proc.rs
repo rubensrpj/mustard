@@ -82,38 +82,66 @@ mod toolchain_tests {
         }
     }
 
-    /// The augmentation must never DROP an inherited entry: a criterion that
-    /// worked before must still work.
+    /// Fixed inputs, so the three rules are ASSERTED on every host — not only
+    /// on one that happens to be missing a toolchain.
+    fn split(v: &std::ffi::OsString) -> Vec<PathBuf> {
+        std::env::split_paths(v).collect()
+    }
+
+    /// Rule 1: every inherited entry survives, in its original order and
+    /// position. A criterion that worked before must still work.
     #[test]
     fn augmentation_preserves_every_inherited_entry() {
-        let Some(augmented) = augmented_path() else {
-            return; // nothing to add on this host — the free path
-        };
-        let after: Vec<PathBuf> = std::env::split_paths(&augmented).collect();
-        let before = std::env::var_os("PATH").unwrap_or_default();
-        for entry in std::env::split_paths(&before) {
-            assert!(
-                after.contains(&entry),
-                "augmenting PATH dropped {}",
-                entry.display()
-            );
+        let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")])
+            .expect("something was missing, so there must be a result");
+        let after = split(&out);
+        for entry in &existing {
+            assert!(after.contains(entry), "dropped {}", entry.display());
         }
     }
 
-    /// Appended, never prepended — a toolchain the operator put on `PATH`
-    /// deliberately keeps winning over a conventional location.
+    /// Rule 2: appended, never prepended — a toolchain the operator put on
+    /// `PATH` deliberately keeps winning over a conventional location.
     #[test]
     fn inherited_entries_keep_their_priority() {
-        let Some(augmented) = augmented_path() else {
-            return;
-        };
-        let after: Vec<PathBuf> = std::env::split_paths(&augmented).collect();
-        let before: Vec<PathBuf> =
-            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+        let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")])
+            .expect("something was missing, so there must be a result");
+        let after = split(&out);
+        assert_eq!(after[..existing.len()], existing[..], "inherited must lead");
+        assert_eq!(after.last(), Some(&PathBuf::from("/opt/tool/bin")));
+    }
+
+    /// Rule 3: nothing to add ⇒ `None`, so the child inherits the environment
+    /// untouched. The common case, and it must stay free.
+    #[test]
+    fn nothing_missing_means_the_environment_is_left_alone() {
+        let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/opt/tool/bin")];
+        assert!(append_missing(&existing, vec![]).is_none());
+        assert!(
+            append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")]).is_none(),
+            "a candidate already on PATH is not missing"
+        );
+    }
+
+    /// A candidate is never appended twice, however many times it is offered.
+    #[test]
+    fn a_candidate_is_appended_at_most_once() {
+        let existing = vec![PathBuf::from("/usr/bin")];
+        let out = append_missing(
+            &existing,
+            vec![PathBuf::from("/opt/a"), PathBuf::from("/opt/b")],
+        )
+        .expect("two were missing");
+        let after = split(&out);
         assert_eq!(
-            after[..before.len()],
-            before[..],
-            "the inherited PATH must stay in front, unchanged"
+            after,
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/opt/a"),
+                PathBuf::from("/opt/b")
+            ]
         );
     }
 
@@ -168,14 +196,30 @@ pub fn resolves(program: &str) -> bool {
 fn augmented_path() -> Option<std::ffi::OsString> {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
-    let missing: Vec<PathBuf> = toolchain_bin_dirs()
+    append_missing(&existing, toolchain_bin_dirs())
+}
+
+/// The whole decision, as a pure function of its two inputs.
+///
+/// Split out so the rules below can be ASSERTED rather than observed: driven
+/// through [`augmented_path`], every test depends on what this particular
+/// machine happens to have installed, and on a host where nothing is missing
+/// the test asserts nothing at all while still reporting green (found in
+/// review).
+///
+/// Three rules, and they are the contract:
+/// 1. Every inherited entry survives, in its original order and position.
+/// 2. What is missing is APPENDED, so an inherited entry always wins.
+/// 3. Nothing to add ⇒ `None`, and the child inherits the environment untouched.
+fn append_missing(existing: &[PathBuf], candidates: Vec<PathBuf>) -> Option<std::ffi::OsString> {
+    let missing: Vec<PathBuf> = candidates
         .into_iter()
-        .filter(|d| !existing.iter().any(|e| e == d))
+        .filter(|d| !existing.contains(d))
         .collect();
     if missing.is_empty() {
         return None;
     }
-    let joined: Vec<PathBuf> = existing.into_iter().chain(missing).collect();
+    let joined: Vec<PathBuf> = existing.iter().cloned().chain(missing).collect();
     std::env::join_paths(joined).ok()
 }
 
