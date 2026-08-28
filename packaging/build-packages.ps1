@@ -91,9 +91,31 @@ if ($Targets -in 'linux', 'both') {
     # packaging/linux/build-deb.sh, lendo o repo montado em /work.
     $img        = 'mustard-linux-builder'
     $linuxCtx   = Join-Path $PkgDir 'linux'
-    Write-Host "==> [linux] docker build $img  (Ubuntu 22.04 + Rust + Node)"
-    docker build -t $img $linuxCtx
-    if ($LASTEXITCODE -ne 0) { throw "docker build da imagem Linux falhou (exit $LASTEXITCODE)." }
+
+    # O Dockerfile faz `COPY rust-toolchain.toml` para assar o compilador fixado
+    # na imagem, mas o contexto do build é `packaging/linux/` e esse arquivo mora
+    # na RAIZ do repositório — então o COPY não achava nada e o release quebrava
+    # com "/rust-toolchain.toml": not found. Medido em 2026-08-27.
+    #
+    # A correção é trazer o arquivo para dentro do contexto, não mover o
+    # contexto: este Dockerfile tem UM único COPY e recebe o repositório como
+    # volume em tempo de execução, então apontar o contexto para a raiz enviaria
+    # a árvore inteira ao daemon por causa de um arquivo.
+    #
+    # A cópia é temporária e removida no `finally`, inclusive quando o build
+    # falha — um arquivo esquecido aqui seria uma versão paralela do pin, que é
+    # exatamente a divergência que o pin existe para impedir.
+    $pinSrc  = Join-Path $Root 'rust-toolchain.toml'
+    $pinDest = Join-Path $linuxCtx 'rust-toolchain.toml'
+    if (-not (Test-Path $pinSrc)) { throw "rust-toolchain.toml não encontrado em $Root — a imagem Linux não tem como fixar o compilador." }
+    Copy-Item $pinSrc $pinDest -Force
+    try {
+        Write-Host "==> [linux] docker build $img  (Ubuntu 22.04 + Rust + Node)"
+        docker build -t $img $linuxCtx
+        if ($LASTEXITCODE -ne 0) { throw "docker build da imagem Linux falhou (exit $LASTEXITCODE)." }
+    } finally {
+        Remove-Item $pinDest -Force -ErrorAction SilentlyContinue
+    }
 
     # Volumes nomeados cacheiam registry/target/pnpm entre execuções (re-empacotar
     # fica rápido). O volume do target do aplicativo de mesa saiu junto com ele — há um único

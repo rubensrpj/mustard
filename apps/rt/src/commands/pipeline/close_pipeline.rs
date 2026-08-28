@@ -111,16 +111,36 @@ pub(crate) fn close(cwd: &Path, spec: &str) -> Value {
     // 1. Reviews — advisory listing of every review.result verdict.
     let reviews = collect_review_verdicts(cwd, spec);
 
-    // 2. QA — the in-process run (emits qa.result, writes the sidecar/report).
-    let qa = qa_run::run_qa_with_options(cwd, spec, QaRunOptions { self_invoked: true });
-    let qa_json = json!({
-        "overall": qa.overall,
-        "criteria": qa_run::criteria_json(&qa.criteria),
+    // 2. QA — reuse a still-valid record, or run.
+    //
+    // Mustard's law is that a pass is an OBSERVED exit code. Re-running is how
+    // that used to be honoured here, unconditionally, even when the last green
+    // was observed against the very tree in front of us — which is not
+    // verification, it is repetition. What makes reuse honest is a key that
+    // covers everything able to change the answer: `qa.result` now records the
+    // fingerprint of the tree its criteria ran against, and
+    // `code_state::still_current` is fail-closed, so *cannot tell* runs.
+    //
+    // The reuse is narrow ON PURPOSE — a recorded `pass`, nothing else. A `fail`
+    // or a `skip` is re-run whatever the fingerprint says: those are the states
+    // the operator is actively working out of, and answering them from a record
+    // would tell someone who just fixed the code that it is still broken.
+    let qa_json = reusable_qa_pass(cwd, spec).unwrap_or_else(|| {
+        let qa = qa_run::run_qa_with_options(cwd, spec, QaRunOptions { self_invoked: true });
+        json!({
+            "overall": qa.overall,
+            "criteria": qa_run::criteria_json(&qa.criteria),
+        })
     });
+    let qa_overall = qa_json
+        .get("overall")
+        .and_then(Value::as_str)
+        .unwrap_or("skip")
+        .to_string();
 
     // 3. Only a hard pass closes. `skip` (no AC / nothing ran) is NOT a pass
     //    here — an unverified spec must not be finalized by the composite.
-    if qa.overall != "pass" {
+    if qa_overall != "pass" {
         return json!({
             "completed": false,
             "confirmation": confirmation_not_taken(CONFIRMATION_NOT_DUE),
@@ -345,6 +365,58 @@ fn confirmation_not_taken(reason: &str) -> Value {
     })
 }
 
+/// The last recorded `qa.result` for `spec` when it is a `pass` that still
+/// describes THIS tree — shaped exactly like the `qa` block a fresh run
+/// produces, so the report cannot tell the two apart. `None` means run.
+///
+/// Every one of these conditions must hold, and each is a way the answer could
+/// otherwise be wrong rather than merely cheap:
+///
+/// | Condition | Why it is not optional |
+/// |---|---|
+/// | a `qa.result` exists for this spec | nothing to reuse |
+/// | its `overall` is `pass` | a `fail`/`skip` is the state the operator is working out of; answering it from a record tells someone who just fixed the code that it is still broken |
+/// | it carries a `codeState` | a record with no key describes no particular tree |
+/// | that key still matches | otherwise the green was observed against something else |
+///
+/// The comparison itself is fail-closed
+/// ([`crate::shared::code_state::still_current`]): no repository, no `git`, any
+/// read error — all answer *cannot tell*, which runs.
+fn reusable_qa_pass(cwd: &Path, spec: &str) -> Option<Value> {
+    let events_dir = ClaudePaths::for_project(cwd)
+        .and_then(|p| p.for_spec(spec))
+        .ok()
+        .map(|sp| sp.events_dir())?;
+    let mut events = read_harness_events_from_ndjson_dir(&events_dir);
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+    let last = events.into_iter().rfind(|e| {
+        e.event == "qa.result"
+            && e.payload
+                .get("spec")
+                .and_then(Value::as_str)
+                .is_none_or(|s| s == spec)
+    })?;
+
+    if last.payload.get("overall").and_then(Value::as_str) != Some("pass") {
+        return None;
+    }
+    let recorded = last
+        .payload
+        .get(crate::shared::code_state::CODE_STATE_KEY)
+        .and_then(Value::as_str)?;
+    if !crate::shared::code_state::still_current(cwd, Some(recorded)) {
+        return None;
+    }
+    Some(json!({
+        "overall": "pass",
+        "criteria": last.payload.get("criteria").cloned().unwrap_or_else(|| json!([])),
+        // The one field that differs from a fresh run, and it must: a reader
+        // deciding whether to trust this close has to be able to see that
+        // nothing was executed here.
+        "reused": true,
+    }))
+}
+
 /// Every `review.result` verdict recorded for `spec`, chronological. Advisory
 /// — the composite lists them verbatim (verdict / critical count /
 /// subproject); it never blocks on a rejection. Fail-open: a missing events
@@ -407,6 +479,117 @@ mod tests {
         )
         .unwrap();
         spec_dir
+    }
+
+    /// Emit a `qa.result` for `spec`, optionally carrying a `codeState`
+    /// fingerprint — the same shape `qa-run` records.
+    fn emit_qa(project: &Path, spec: &str, overall: &str, code_state: Option<&str>) {
+        let mut payload = json!({
+            "spec": spec,
+            "overall": overall,
+            "criteria": [{ "id": "AC-1", "status": "pass" }],
+        });
+        if let (Some(map), Some(state)) = (payload.as_object_mut(), code_state) {
+            map.insert(
+                crate::shared::code_state::CODE_STATE_KEY.to_string(),
+                json!(state),
+            );
+        }
+        let event = HarnessEvent {
+            v: SCHEMA_VERSION,
+            ts: "2026-01-01T00:00:00.000Z".to_string(),
+            session_id: "test-session".to_string(),
+            wave: 0,
+            actor: Actor {
+                kind: ActorKind::Cli,
+                id: Some("qa-run".to_string()),
+                actor_type: None,
+            },
+            event: "qa.result".to_string(),
+            payload,
+            spec: Some(spec.to_string()),
+        };
+        crate::shared::events::route::emit(project.to_str().unwrap(), &event);
+    }
+
+    /// Turn `project` into a git repository, so a fingerprint can be taken.
+    fn repo(project: &Path) {
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "t"][..],
+        ] {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(project)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} failed");
+        }
+        std::fs::write(project.join("src.rs"), "fn a() {}\n").unwrap();
+        for args in [&["add", "-A"][..], &["commit", "-qm", "init"][..]] {
+            let _ = std::process::Command::new("git")
+                .args(args)
+                .current_dir(project)
+                .output();
+        }
+    }
+
+    /// **A green already observed against THIS tree is not re-run.** The close
+    /// used to re-execute every criterion unconditionally, even when the last
+    /// pass was recorded against the very tree in front of it — repetition, not
+    /// verification.
+    ///
+    /// The criterion here would FAIL if executed (`exit 1`), so a `pass` in the
+    /// report can only have come from the record: the test cannot be satisfied
+    /// by accidentally re-running.
+    #[test]
+    fn close_reuses_a_fresh_qa_record_instead_of_running() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        anchor(project);
+        repo(project);
+        seed_spec(project, "feat", "sh -c 'exit 1'");
+        let state = crate::shared::code_state::fingerprint(project).expect("a repo has one");
+        emit_qa(project, "feat", "pass", Some(&state));
+
+        let reused =
+            reusable_qa_pass(project, "feat").expect("the record still describes the tree");
+        assert_eq!(reused.get("overall").and_then(Value::as_str), Some("pass"));
+        assert_eq!(
+            reused.get("reused").and_then(Value::as_bool),
+            Some(true),
+            "a reader must be able to see that nothing was executed"
+        );
+    }
+
+    /// The three ways reuse is refused, each one a way the answer could be
+    /// wrong rather than merely stale.
+    #[test]
+    fn close_refuses_to_reuse_a_record_it_cannot_trust() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        anchor(project);
+        repo(project);
+        seed_spec(project, "feat", "true");
+
+        // 1. No fingerprint at all — the record describes no particular tree.
+        emit_qa(project, "feat", "pass", None);
+        assert!(reusable_qa_pass(project, "feat").is_none());
+
+        // 2. A fingerprint that matches nothing — the green was observed
+        //    elsewhere. THIS is the hole: without the key, this record looked
+        //    exactly like a fresh one.
+        emit_qa(project, "feat", "pass", Some("deadbeefdeadbeef"));
+        assert!(reusable_qa_pass(project, "feat").is_none());
+
+        // 3. A matching fingerprint on a NON-pass. The operator is working out
+        //    of that state; answering from the record would tell someone who
+        //    just fixed the code that it is still broken.
+        let state = crate::shared::code_state::fingerprint(project).expect("a repo has one");
+        emit_qa(project, "feat", "fail", Some(&state));
+        assert!(reusable_qa_pass(project, "feat").is_none());
     }
 
     /// Emit a `review.result` event for `spec` (the same shape `review-result`

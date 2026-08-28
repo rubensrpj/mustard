@@ -32,7 +32,7 @@
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use serde_json::Value;
 
-use super::approval_marker_observer::{active_spec, already_approved, is_full_plan};
+use super::approval_marker_observer::{active_spec, already_approved, is_awaiting_approval};
 use crate::shared::context::{approval_marker_path, marker_body};
 
 /// The PostToolUse(ExitPlanMode) approval recorder.
@@ -68,7 +68,7 @@ impl Observer for PlanApprovalObserver {
         let Some(spec) = active_spec(&cwd, input) else {
             return;
         };
-        if !is_full_plan(&cwd, &spec) || already_approved(&cwd, &spec) {
+        if !is_awaiting_approval(&cwd, &spec) || already_approved(&cwd, &spec) {
             return;
         }
 
@@ -238,14 +238,19 @@ mod tests {
     }
 
     #[test]
-    fn light_spec_writes_nothing() {
+    /// A `light` spec is approvable through the plan-mode door too — the same
+    /// deadlock the sibling doors carried. See [`is_awaiting_approval`].
+    fn light_spec_can_be_approved() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         seed_spec(root, "small", "light", "Plan");
         bind_session(root, "s-1", "small");
         let input = exit_plan_input("s-1", json!({ "plan": "# p" }));
         PlanApprovalObserver.observe(&input, &ctx(root.to_str().unwrap()));
-        assert!(!marker_exists(root, "small"));
+        assert!(
+            marker_exists(root, "small"),
+            "accepting the plan in plan mode is a person's approval whatever the scope"
+        );
     }
 
     #[test]

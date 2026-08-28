@@ -616,7 +616,24 @@ fn run_ac_command_inner(
 }
 
 /// Emit the `qa.result` harness event.
+///
+/// The payload carries a `codeState` fingerprint of the tree the criteria were
+/// actually run against ([`crate::shared::code_state`]). Without it the record
+/// says *these criteria passed* but not *against what*, and the close gate then
+/// had nothing to compare: it watched the mtime of `spec.md` and let a green
+/// observed BEFORE the change under review carry a unit through. The field is
+/// absent — not empty — where no fingerprint can be taken (no repository, no
+/// `git`), and every reader treats an absent one as stale.
 pub(super) fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[Value]) {
+    let mut payload = json!({ "spec": spec, "overall": overall, "criteria": criteria });
+    if let (Some(map), Some(state)) =
+        (payload.as_object_mut(), crate::shared::code_state::fingerprint(cwd))
+    {
+        map.insert(
+            crate::shared::code_state::CODE_STATE_KEY.to_string(),
+            Value::String(state),
+        );
+    }
     let ev = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
@@ -628,7 +645,7 @@ pub(super) fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[V
             actor_type: None,
         },
         event: "qa.result".to_string(),
-        payload: json!({ "spec": spec, "overall": overall, "criteria": criteria }),
+        payload,
         spec: Some(spec.to_string()),
     };
     // `qa.result` is non-pipeline → per-spec NDJSON via the W5 router.
