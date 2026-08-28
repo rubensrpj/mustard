@@ -247,6 +247,61 @@ impl BranchEnumerator {
     pub(crate) fn units(&self) -> &[BranchRefs] {
         &self.units
     }
+
+    /// Fill in the base of every swept unit whose base nothing RECORDED, by
+    /// MEASURING which declared base already contains it.
+    ///
+    /// [`from_refs`](Self::from_refs) is pure, so it can only answer from the
+    /// unit's own directory; with several declared bases a unit nobody recorded
+    /// comes back `Ambiguous` and is filed under the empty base. Every
+    /// per-base measurement below then skips it —
+    /// [`refs_ahead_of_base`] iterates `flow.bases()` and matches on equality —
+    /// so the unit is invisible to every consumer of this sweep. Measured
+    /// 2026-08-28: a branch cut by hand (no `work-unit-open`) merged into `dev`
+    /// and left alive was reported by nothing at all, which is the exact debt
+    /// the prune advisory exists to name.
+    ///
+    /// Containment IS the answer this sweep needs, and it needs no record: a
+    /// unit reachable from exactly ONE declared base was demonstrably merged
+    /// there. `git-settle` already reaches for that measurement by hand when a
+    /// record is missing; this puts it where every consumer benefits.
+    ///
+    /// Reachable from NO base — the ordinary unmerged unit — keeps the empty
+    /// base: there is nothing to prune and nothing to claim.
+    ///
+    /// **Reachable from SEVERAL is the ordinary state, not the odd one, and
+    /// refusing to answer there was this function's own first bug.** The moment
+    /// `dev` is promoted into `main`, every unit merged into `dev` becomes
+    /// reachable from `main` as well — so a rule of "several candidates, say
+    /// nothing" goes blind on exactly the repositories that ship regularly, and
+    /// goes blind the day after a release. The tie is broken by where work
+    /// LANDS ([`BaseFlow::work_base`]): a unit reachable from the work base was
+    /// delivered there, whatever else has since absorbed it. Only when the work
+    /// base is not among the holders is the answer withheld.
+    pub(crate) fn resolve_unrecorded_bases(&mut self, git: GitOut<'_>, flow: &BaseFlow) {
+        if !self.units.iter().any(|u| u.base.is_empty()) {
+            return;
+        }
+        // One reachability read per declared base, reusing the module's ONE
+        // primitive — never one read per unrecorded unit.
+        let per_base: Vec<(&String, BTreeSet<String>)> =
+            flow.bases().iter().map(|base| (base, refs_merged_into(git, base))).collect();
+        let work_base = flow.work_base();
+        for unit in self.units.iter_mut().filter(|u| u.base.is_empty()) {
+            let refnames = unit.refnames();
+            let holders: Vec<&str> = per_base
+                .iter()
+                .filter(|(_, merged)| refnames.iter().any(|r| merged.contains(r)))
+                .map(|(base, _)| base.as_str())
+                .collect();
+            unit.base = match holders.as_slice() {
+                [] => continue,
+                [only] => (*only).to_string(),
+                many if many.contains(&work_base) => work_base.to_string(),
+                _ => continue,
+            };
+        }
+    }
 }
 
 /// The FULL refnames git reports as reachable from `commit` — the ONE
@@ -925,7 +980,11 @@ pub(crate) fn awaiting_prune(
     pr: &dyn PrLookup,
     flow: &BaseFlow,
 ) -> Vec<BranchState> {
-    let units = BranchEnumerator::sweep(git, flow);
+    let mut units = BranchEnumerator::sweep(git, flow);
+    // Before any per-base measurement: a unit filed under the empty base is
+    // skipped by every one of them, so resolving here is what makes a
+    // hand-cut unit visible at all.
+    units.resolve_unrecorded_bases(git, flow);
     let (merged, measured) = try_merged_refs(git, flow);
     let ahead = refs_ahead_of_base(git, units.units(), flow);
     let reach = GitReachability::new(git);

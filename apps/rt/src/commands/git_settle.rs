@@ -524,6 +524,32 @@ fn sync_submodule_pointers(main: &Path, submodules: &[String]) -> Vec<Value> {
 /// The current-base path cannot reach the second arm and needs no equivalent:
 /// `merge --ff-only` answers "Already up to date" with exit 0 there, so an ahead
 /// base already reads `updated:true`. This makes the two paths agree.
+/// The command that clears a named base-advance obstacle, or `None` when this
+/// function does not recognise the obstacle.
+///
+/// The refusal it feeds is the one place the operator looks, and until now it
+/// named only the RERUN — a command whose output is identical until something
+/// else changes. Naming the move is what turns the refusal back into a step.
+///
+/// `None` is a real answer and the safe one: an unrecognised reason gets no
+/// invented command. These run on an integration base, where a wrong paste is
+/// expensive and a missing one merely sends the operator to read
+/// `baseAdvance.reason` — which is where they were already.
+fn clear_first_for(base: &str, reason: &Value) -> Option<String> {
+    match reason.as_str()? {
+        // The local base carries a commit the remote does not, so no fast-forward
+        // exists. Rebasing the base's own unpushed work onto origin rewrites
+        // nothing anybody else has: the commits were never published, which is
+        // exactly why the fast-forward failed.
+        "non-ff-or-no-remote" => Some(format!(
+            "git checkout {base} && git rebase origin/{base}   \
+             # a base local tem commit não publicado; verifique com \
+             `git log --oneline origin/{base}..{base}`"
+        )),
+        _ => None,
+    }
+}
+
 fn holds_origin_tip(report: &Value) -> bool {
     report["updated"] == json!(true) || report["reason"] == json!("ahead-of-origin")
 }
@@ -646,6 +672,28 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             inv_branch.clone()
         }
     };
+    // **A base is never a unit, however it arrived here.** The bare call asks
+    // `has_unit_record` above and refuses a base with `on-integration-base`;
+    // `--unit` skipped that question entirely and took the name at its word. The
+    // prune below then runs `branch -D` and `push origin --delete` on whatever
+    // it was handed — and `pr-merge` hands it the pull request's HEAD, which in
+    // a base→base promotion (`dev` → `main`, the ordinary end of a cycle) IS a
+    // base. Nothing downstream could catch it: every later step reads
+    // `unit_branch` as settled fact. Refusing costs a promotion nothing, since a
+    // base has no branch to prune in the first place.
+    if flow.is_declared_base(&unit_branch) {
+        return json!({
+            "ok": false,
+            "reason": "unit-is-a-declared-base",
+            "branch": unit_branch,
+            "bases": bases,
+            "hint": format!(
+                "`{unit_branch}` é uma base declarada em mustard.json#git.flow, não uma unidade: \
+                 não há o que podar. Um merge de base para base (promoção) termina no próprio \
+                 merge — nada a apagar."
+            ),
+        });
+    }
     let mut answer = flow.base_of(&unit_branch);
     // **Before refusing for a missing RECORD, ask git.** A unit that is already
     // contained in exactly one branch was demonstrably merged there, and that is
@@ -958,12 +1006,21 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "advanced": false,
             "reason": if named.is_null() { json!("unreported") } else { named },
         });
-        // The way out, as ARGV the caller can paste. A refusal that names the
-        // obstacle (`baseAdvance.reason`) but not the move leaves the operator to
-        // invent one — and the move most likely to be invented is deleting the
-        // branch by hand, which is precisely what this pass just refused to do.
-        // Clear what `baseAdvance.reason` names, then run this: the unit is
-        // untouched, so the same command finishes the ritual.
+        // **`clearFirst` before `nextAction`, and the order is the whole point.**
+        // `nextAction` is the RERUN, correct only once the obstacle is gone;
+        // read alone it is a command that reproduces its own output forever, and
+        // in the field (2026-08-28) it did exactly that — the operator ran it
+        // twice and got byte-identical JSON, with the real move
+        // (`git rebase origin/<base>`) named nowhere. This project's rule is
+        // that every refusal names the command that resolves it, and a refusal
+        // whose only command is itself does not.
+        //
+        // Named per `baseAdvance.reason`, never generically: an unrecognised
+        // reason gets NO invented command, because a wrong paste on an
+        // integration base costs more than a missing one.
+        if let Some(fix) = clear_first_for(&base, &report["baseAdvance"]["reason"]) {
+            report["clearFirst"] = json!(fix);
+        }
         report["nextAction"] = json!(format!("mustard-rt run git-settle --unit {unit_branch}"));
     }
     report
@@ -2110,6 +2167,65 @@ mod tests {
         assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
         assert_eq!(v["unit"]["remoteDeleted"], json!(true), "{v}");
         assert_eq!(v["nextAction"], json!(null), "a pass that finished names no next step: {v}");
+    }
+
+    /// A declared BASE handed to `--unit` is refused, and the base survives.
+    ///
+    /// The bare call already refuses a base (`on-integration-base`), but
+    /// `--unit` skipped that question and took the name at its word — and
+    /// `pr-merge` feeds this call the pull request's HEAD, which in a base→base
+    /// promotion (`dev` → `main`) IS a base. The prune would then have run
+    /// `branch -D dev` and `push origin --delete dev`.
+    ///
+    /// The assertion that matters is the EFFECT: both refs still exist. A test
+    /// reading only the JSON would pass over a refusal that reported itself
+    /// correctly and deleted anyway.
+    #[test]
+    fn settle_refuses_to_prune_a_declared_base() {
+        let (_dir, main) = fixture();
+
+        let v = settle_at(&main, Some("dev"));
+
+        assert_eq!(v["ok"], json!(false), "{v}");
+        assert_eq!(v["reason"], json!("unit-is-a-declared-base"), "{v}");
+        assert!(
+            git_ok(&main, &["rev-parse", "--verify", "dev"]),
+            "the local base survives the refusal: {v}",
+        );
+        assert!(
+            !git_out(&main, &["ls-remote", "--heads", "origin", "dev"])
+                .unwrap_or_default()
+                .is_empty(),
+            "and so does the base on the server — the irreversible half: {v}",
+        );
+    }
+
+    /// The `base-behind` refusal names the REBASE, not itself.
+    ///
+    /// `nextAction` is the rerun, correct only once the obstacle is gone. Read
+    /// alone it reproduces its own output forever — measured in the field on
+    /// 2026-08-28, where the operator ran it twice and got byte-identical JSON
+    /// while the real move was named nowhere.
+    #[test]
+    fn base_behind_names_the_rebase_not_itself() {
+        let (_dir, main) = fixture();
+        git(&main, &["push", "origin", "dev_done"]);
+        // The obstacle: a commit on the LOCAL base that origin does not carry,
+        // so no fast-forward exists. This is the shape the field hit.
+        std::fs::write(main.join("local-only.txt"), "never pushed\n").expect("local commit");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "local only"]);
+
+        let v = settle_at(&main, Some("dev_done"));
+
+        assert_eq!(v["reason"], json!("base-behind"), "{v}");
+        let clear = v["clearFirst"].as_str().unwrap_or_default();
+        assert!(clear.contains("rebase"), "the refusal names the rebase: {v}");
+        assert!(
+            !clear.contains("git-settle"),
+            "and the move is NOT the rerun — that is the loop this exists to end: {v}",
+        );
+        assert_ne!(v["clearFirst"], v["nextAction"], "two different steps, in order: {v}");
     }
 
     /// AC-2 — the prune is authorised by the BASE ADVANCE, never by the unit's

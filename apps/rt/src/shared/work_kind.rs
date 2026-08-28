@@ -575,7 +575,7 @@ impl BaseFlow {
     /// the harness from mistaking a branch the project ITSELF called a base for
     /// a disposable unit, which is the only direction of this question where
     /// being wrong destroys something.
-    fn is_declared_base(&self, name: &str) -> bool {
+    pub(crate) fn is_declared_base(&self, name: &str) -> bool {
         self.bases.iter().any(|b| b == name)
     }
 

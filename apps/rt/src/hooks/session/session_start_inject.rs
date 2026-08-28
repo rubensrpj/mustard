@@ -557,7 +557,14 @@ const PRUNE_NOTICE_NAMES: usize = 4;
 /// `None` for a project with no `mustard.json` (never installed — the harness
 /// does not nag it) and whenever nothing is owed. Fail-open throughout: a git
 /// that cannot answer yields no advisory.
-fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
+///
+/// **Shared with the `Stop` gate, deliberately.** Session start is the wrong
+/// moment on its own: the debt is BORN mid-session, at the merge, and the agent
+/// that created it is the only party this notice never reached — the statusline
+/// shows the same count live, but only to the human. `stop_gate` calls this at
+/// the end of every turn, which is the first moment the party responsible is
+/// still present. One builder, one wording, two moments.
+pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
     }

@@ -34,6 +34,31 @@
 //! active+approved spec with an executable criterion, never on a subagent stop
 //! ([`HookInput::is_subagent`]); anything else releases silently.
 //!
+//! ## The second thing this gate says: an unpruned delivered unit
+//!
+//! Two halves, and only the first can refuse. [`qa_verdict`] is the gate as it
+//! always was; [`prune_advisory`] runs on the RELEASE path only and can add a
+//! non-blocking `Warn`.
+//!
+//! It is here because of WHO is present. A merged unit whose branch is still
+//! alive is a debt that is born mid-session, at the merge, and the party that
+//! created it — the agent — was the only one never told. The classifier
+//! ([`crate::shared::branch_state::awaiting_prune`]) already had two consumers
+//! and neither closed that loop: the statusline shows the count live, but to
+//! the HUMAN, and the agent has no eyes on a status bar; the `SessionStart`
+//! injection reaches the agent, but hours late and only if a next session
+//! happens at all. `Stop` fires at the end of every turn, which is the first
+//! moment the responsible party is still there.
+//!
+//! Measured in the field, 2026-08-28: a unit was merged into `main` and left
+//! unpruned, and it surfaced only because the operator asked why the branch
+//! still existed.
+//!
+//! **It warns and never blocks**, which is the operator's own call: pruning is
+//! theirs, not every prune is immediate (a branch can be kept on purpose), and
+//! a legitimate merge must not have its turn refused over housekeeping. A QA
+//! `Deny` therefore always wins — an advisory never downgrades a refusal.
+//!
 //! ## The text speaks the project's language
 //!
 //! What returns to Claude is user-facing text, so it comes from the
@@ -91,62 +116,114 @@ impl Check for StopGate {
             return Ok(Verdict::Allow);
         }
         // Only the main session is verified; a subagent stop never blocks.
+        // It also never carries the prune advisory: a subagent does not merge,
+        // so the debt is never its to hear about.
         if input.is_subagent() {
             return Ok(Verdict::Allow);
         }
 
         let project_dir = ctx.project_dir_or_cwd(input);
 
-        // Self-restriction: no active+approved spec with an executable
-        // criterion ⇒ release in silence.
-        let Some(spec) = resolve_gated_spec(&project_dir, input) else {
-            return Ok(Verdict::Allow);
-        };
-
-        // Loop guards, BEFORE running QA so a capped / already-looping stop is
-        // released without paying for another run. `stop_hook_active` is the
-        // platform's repeat signal (honoured when present); the own per-spec
-        // counter is the guarantee that does not depend on it.
-        if stop_hook_active(input) {
-            return Ok(Verdict::Allow);
+        // QA first, and its refusal is FINAL. An advisory never downgrades a
+        // block: a red criterion is a reason to keep working, and burying it
+        // under a housekeeping note would be the louder message losing to the
+        // quieter one.
+        match qa_verdict(&project_dir, input)? {
+            Verdict::Allow => Ok(prune_advisory(&project_dir)),
+            blocked => Ok(blocked),
         }
-        let blocks = read_block_count(&project_dir, &spec);
-        if blocks >= STOP_GATE_MAX_CONSECUTIVE_BLOCKS {
-            // Ceiling reached: 8 auto-retries did not turn the criteria green.
-            // Release and DELIBERATELY do not reset — the marker persists, so the
-            // gate stays quiet for this spec until it genuinely passes (the reset
-            // is the `pass` arm below) or the spec closes. The spec's own rule is
-            // "reset when the criteria pass", not "reset at the ceiling"; resetting
-            // here would re-arm every later turn and turn a stuck spec into a
-            // per-turn block storm. The fail-safe hands a stuck spec to the human.
-            return Ok(Verdict::Allow);
-        }
+    }
+}
 
-        // Verify by EXECUTING the criteria through the qa-run executor.
-        // `self_invoked`: this IS the `mustard-rt` process, so an AC that
-        // rebuilds it is skipped rather than deadlocking on the exe lock.
-        let outcome = run_for_stop_gate(
-            Path::new(&project_dir),
-            &spec,
-            QaRunOptions { self_invoked: true },
-        );
+/// The QA half — the gate as it was before the advisory joined it.
+///
+/// Split out so the advisory applies to the RELEASE path only, without
+/// threading a second concern through every early return below. Each of those
+/// returns is a different reason to release, and every one of them is equally a
+/// moment where an outstanding prune is worth saying.
+fn qa_verdict(project_dir: &str, input: &HookInput) -> Result<Verdict, Error> {
+    // Self-restriction: no active+approved spec with an executable
+    // criterion ⇒ release in silence.
+    let Some(spec) = resolve_gated_spec(project_dir, input) else {
+        return Ok(Verdict::Allow);
+    };
 
-        match outcome.overall.as_str() {
-            // A red criterion blocks the stop; the reason names it.
-            "fail" => {
-                write_block_count(&project_dir, &spec, blocks.saturating_add(1));
-                Ok(Verdict::Deny {
-                    reason: compose_block_reason(&project_dir, outcome.first_failing_ac.as_deref()),
-                })
-            }
-            // Every criterion passed: the loop closed — reset and release.
-            "pass" => {
-                reset_block_count(&project_dir, &spec);
-                Ok(Verdict::Allow)
-            }
-            // `skip` / `timeout` verified nothing cleanly — never loop on them.
-            _ => Ok(Verdict::Allow),
+    // Loop guards, BEFORE running QA so a capped / already-looping stop is
+    // released without paying for another run. `stop_hook_active` is the
+    // platform's repeat signal (honoured when present); the own per-spec
+    // counter is the guarantee that does not depend on it.
+    if stop_hook_active(input) {
+        return Ok(Verdict::Allow);
+    }
+    let blocks = read_block_count(project_dir, &spec);
+    if blocks >= STOP_GATE_MAX_CONSECUTIVE_BLOCKS {
+        // Ceiling reached: 8 auto-retries did not turn the criteria green.
+        // Release and DELIBERATELY do not reset — the marker persists, so the
+        // gate stays quiet for this spec until it genuinely passes (the reset
+        // is the `pass` arm below) or the spec closes. The spec's own rule is
+        // "reset when the criteria pass", not "reset at the ceiling"; resetting
+        // here would re-arm every later turn and turn a stuck spec into a
+        // per-turn block storm. The fail-safe hands a stuck spec to the human.
+        return Ok(Verdict::Allow);
+    }
+
+    // Verify by EXECUTING the criteria through the qa-run executor.
+    // `self_invoked`: this IS the `mustard-rt` process, so an AC that
+    // rebuilds it is skipped rather than deadlocking on the exe lock.
+    let outcome = run_for_stop_gate(
+        Path::new(project_dir),
+        &spec,
+        QaRunOptions { self_invoked: true },
+    );
+
+    match outcome.overall.as_str() {
+        // A red criterion blocks the stop; the reason names it.
+        "fail" => {
+            write_block_count(project_dir, &spec, blocks.saturating_add(1));
+            Ok(Verdict::Deny {
+                reason: compose_block_reason(project_dir, outcome.first_failing_ac.as_deref()),
+            })
         }
+        // Every criterion passed: the loop closed — reset and release.
+        "pass" => {
+            reset_block_count(project_dir, &spec);
+            Ok(Verdict::Allow)
+        }
+        // `skip` / `timeout` verified nothing cleanly — never loop on them.
+        _ => Ok(Verdict::Allow),
+    }
+}
+
+/// The advisory half: a delivered unit whose branch is still alive.
+///
+/// ## Why this moment
+///
+/// The debt is BORN mid-session, at the merge, and until now the party that
+/// created it was the only one never told. The statusline shows the same count
+/// live — but to the human, and the agent has no eyes on it. The other consumer
+/// fires at `SessionStart`, which is hours late and only if a next session
+/// happens at all. Measured in the field, 2026-08-28: a unit was merged to
+/// `main` and left unpruned, and it surfaced only because the operator asked
+/// why the branch still existed.
+///
+/// `Stop` is the first moment the responsible party is still present, so it is
+/// where this belongs.
+///
+/// ## Why it warns and never blocks
+///
+/// Pruning is the operator's call, and not every prune is immediate — a branch
+/// can be kept on purpose. A legitimate merge must not have its turn refused
+/// over housekeeping, in a harness the operator already finds ceremonious.
+///
+/// The wording is not written here: it is the SAME notice `SessionStart`
+/// already uses ([`prune_pending_notice`]), so the two moments cannot drift
+/// into saying different things about one state.
+fn prune_advisory(project_dir: &str) -> Verdict {
+    let root = Path::new(project_dir);
+    let lang = project_config_cached(root).i18n().lang;
+    match crate::hooks::session::session_start_inject::prune_pending_notice(root, lang) {
+        Some(message) => Verdict::Warn { message },
+        None => Verdict::Allow,
     }
 }
 
@@ -307,6 +384,156 @@ mod tests {
 
     /// Seed `<project>/.claude/spec/{spec}/spec.md` with an `## Acceptance
     /// Criteria` section body of `ac_body`.
+    // -- the prune advisory ---------------------------------------------------
+
+    /// Run git in `root`, failing the test with git's own words.
+    fn git_in(root: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A real repository on `dev`, declaring the two-base flow.
+    fn repo_on_dev(root: &Path) {
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"lang":"pt-BR","git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        git_in(root, &["init", "-b", "dev"]);
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-m", "base"]);
+    }
+
+    /// THE case this advisory exists for: a delivered unit whose branch is
+    /// still alive. Measured in the field 2026-08-28 and, before this, told to
+    /// nobody who could act on it at the moment it happened.
+    #[test]
+    fn a_merged_unit_with_a_live_branch_warns_and_names_it() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        repo_on_dev(project);
+
+        // A unit, delivered into its base, and NOT pruned.
+        git_in(project, &["checkout", "-b", "fix/landed"]);
+        std::fs::write(project.join("work.txt"), "the work\n").unwrap();
+        git_in(project, &["add", "-A"]);
+        git_in(project, &["commit", "-m", "work"]);
+        git_in(project, &["checkout", "dev"]);
+        git_in(project, &["merge", "--no-ff", "-m", "merge", "fix/landed"]);
+
+        match prune_advisory(project.to_str().unwrap()) {
+            Verdict::Warn { message } => {
+                assert!(
+                    message.contains("fix/landed"),
+                    "the advisory must NAME the branch: {message}"
+                );
+            }
+            other => panic!("expected Warn, got {other:?}"),
+        }
+    }
+
+    /// The day after a release, the advisory must STILL see the debt.
+    ///
+    /// Promoting `dev` into `main` makes every unit merged into `dev`
+    /// reachable from `main` as well. The base resolver behind this advisory
+    /// therefore meets two containing bases as its ordinary case, not its odd
+    /// one — and its first version answered "several candidates, say nothing",
+    /// which goes blind on exactly the repositories that ship regularly. Found
+    /// reviewing this unit's own change, before it left the branch.
+    #[test]
+    fn a_promotion_does_not_blind_the_advisory() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        repo_on_dev(project);
+
+        git_in(project, &["checkout", "-b", "fix/landed"]);
+        std::fs::write(project.join("work.txt"), "the work\n").unwrap();
+        git_in(project, &["add", "-A"]);
+        git_in(project, &["commit", "-m", "work"]);
+        git_in(project, &["checkout", "dev"]);
+        git_in(project, &["merge", "--no-ff", "-m", "merge", "fix/landed"]);
+
+        // The release: `main` now carries everything `dev` does, so BOTH
+        // declared bases contain the unit.
+        git_in(project, &["branch", "main"]);
+
+        match prune_advisory(project.to_str().unwrap()) {
+            Verdict::Warn { message } => {
+                assert!(
+                    message.contains("fix/landed"),
+                    "a promoted base must not hide the debt: {message}"
+                );
+            }
+            other => panic!("expected Warn, got {other:?}"),
+        }
+    }
+
+    /// The same repository with the branch pruned says nothing. An advisory
+    /// that fires on a clean tree is one the operator learns to ignore.
+    #[test]
+    fn a_pruned_unit_says_nothing() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        repo_on_dev(project);
+
+        git_in(project, &["checkout", "-b", "fix/landed"]);
+        std::fs::write(project.join("work.txt"), "the work\n").unwrap();
+        git_in(project, &["add", "-A"]);
+        git_in(project, &["commit", "-m", "work"]);
+        git_in(project, &["checkout", "dev"]);
+        git_in(project, &["merge", "--no-ff", "-m", "merge", "fix/landed"]);
+        git_in(project, &["branch", "-D", "fix/landed"]);
+
+        assert!(matches!(prune_advisory(project.to_str().unwrap()), Verdict::Allow));
+    }
+
+    /// A unit still IN FLIGHT owes nothing yet — only a delivered one does.
+    #[test]
+    fn an_unmerged_unit_is_not_a_debt() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        repo_on_dev(project);
+
+        git_in(project, &["checkout", "-b", "fix/in-flight"]);
+        std::fs::write(project.join("work.txt"), "wip\n").unwrap();
+        git_in(project, &["add", "-A"]);
+        git_in(project, &["commit", "-m", "wip"]);
+        git_in(project, &["checkout", "dev"]);
+
+        assert!(matches!(prune_advisory(project.to_str().unwrap()), Verdict::Allow));
+    }
+
+    /// Fail-open, both ways: a directory that is not a Mustard project, and one
+    /// that is but where git cannot answer. Neither may produce an advisory —
+    /// a nag nobody can act on is worse than silence.
+    #[test]
+    fn the_advisory_stays_silent_when_it_cannot_measure() {
+        let bare = tempdir().unwrap();
+        assert!(matches!(
+            prune_advisory(bare.path().to_str().unwrap()),
+            Verdict::Allow
+        ));
+
+        let not_a_repo = tempdir().unwrap();
+        std::fs::write(not_a_repo.path().join("mustard.json"), r#"{"lang":"pt-BR"}"#).unwrap();
+        assert!(matches!(
+            prune_advisory(not_a_repo.path().to_str().unwrap()),
+            Verdict::Allow
+        ));
+    }
+
     fn seed_spec(project: &Path, spec: &str, ac_body: &str) {
         let spec_dir = project.join(".claude").join("spec").join(spec);
         std::fs::create_dir_all(&spec_dir).unwrap();
