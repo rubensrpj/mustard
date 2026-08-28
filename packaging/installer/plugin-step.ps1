@@ -99,8 +99,30 @@ function Start-BinaryDownload {
     }
 
     Write-Host '==> Baixando os binarios do plugin...'
-    & cmd /c "`"$boot`" --version"
-    if ($LASTEXITCODE -ne 0) {
+
+    # COM PRAZO, gêmeo do irmão POSIX: o `curl` do mustard-boot não tem
+    # tempo-limite próprio e agora roda no caminho crítico do instalador, onde
+    # o NSIS espera com `nsExec::ExecToLog` e a janela fica parada. Uma conexão
+    # que trava congelaria a instalação para sempre.
+    $limite = 120
+    if ($env:MUSTARD_PLUGIN_STEP_TIMEOUT) { $limite = [int]$env:MUSTARD_PLUGIN_STEP_TIMEOUT }
+
+    # `-ArgumentList` com uma LISTA, nunca uma string montada à mão: o
+    # PowerShell cita cada elemento sozinho. O cache do plugin mora sob
+    # `C:\Users\<nome>\`, que costuma ter espaço, e um `cmd /c "..."` com
+    # aspas montadas no braço é o jeito clássico de mutilar esse caminho.
+    # O `cmd` continua no meio porque o mustard-boot é um `.cmd`, e o
+    # CreateProcess que o -NoNewWindow usa não sabe abrir um por conta própria.
+    $proc = Start-Process -FilePath $env:ComSpec `
+        -ArgumentList '/c', $boot, '--version' -NoNewWindow -PassThru
+    if (-not $proc.WaitForExit($limite * 1000)) {
+        try { $proc.Kill() } catch { }
+        Write-Host "aviso: a descida dos binarios passou de $limite s e foi cortada"
+        Write-Host '       para nao segurar o instalador - a primeira sessao do'
+        Write-Host '       Claude Code tenta de novo.'
+        return
+    }
+    if ($proc.ExitCode -ne 0) {
         Write-Host 'aviso: a descida dos binarios nao concluiu - a primeira sessao'
         Write-Host '       do Claude Code tenta de novo.'
     }

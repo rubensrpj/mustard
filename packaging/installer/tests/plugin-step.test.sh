@@ -3,30 +3,33 @@
 # plugin-step.test.sh — exercita `packaging/installer/plugin-step.sh` nos
 # caminhos que decidem se o instalador cumpre o que promete.
 #
-#   com-claude ......... há um `claude` no PATH: o passo TEM de registrar o
-#                        marketplace e instalar-ou-atualizar o plugin. É o
-#                        caminho normal.
-#   sem-claude ......... não há `claude` nenhum: o passo TEM de sair com 0 e
-#                        ensinar o caminho manual. Um instalador que morre aqui
-#                        faria a pessoa concluir que o pacote não foi instalado
-#                        — e ele foi.
-#   liga-o-plugin ...... instalar NÃO basta: `claude plugin install` deixa o
-#                        plugin desligado, e plugin desligado é zero hooks e
-#                        zero comandos /mustard:*. O passo TEM de chamar
-#                        `plugin enable` depois de instalar.
-#   baixa-os-binarios .. `plugin/bin/*` são artefatos de build e nunca entram no
-#                        git. Quem os baixa é o `mustard-boot` — que é um HOOK,
-#                        e hook não roda com o plugin recém-instalado. O passo
-#                        TEM de disparar o `mustard-boot` ele mesmo, ali, sem
-#                        hook nenhum no meio.
-#   paridade-ps1 ....... o gêmeo Windows não pode ficar para trás. Reprova
-#                        quando um dos dois arquivos ganha um passo e o outro
-#                        não.
+#   com-claude ............. há um `claude` no PATH: o passo TEM de registrar o
+#                            marketplace e instalar-ou-atualizar o plugin. É o
+#                            caminho normal.
+#   sem-claude ............. não há `claude` nenhum: o passo TEM de sair com 0 e
+#                            ensinar o caminho manual. Um instalador que morre
+#                            aqui faria a pessoa concluir que o pacote não foi
+#                            instalado — e ele foi.
+#   liga-o-plugin .......... instalar NÃO basta: `claude plugin install` deixa o
+#                            plugin desligado, e plugin desligado é zero hooks e
+#                            zero comandos /mustard:*. O passo TEM de chamar
+#                            `plugin enable` depois de instalar.
+#   baixa-os-binarios ...... `plugin/bin/*` são artefatos de build e nunca entram
+#                            no git. Quem os baixa é o `mustard-boot` — que é um
+#                            HOOK, e hook não roda com o plugin recém-instalado.
+#                            O passo TEM de disparar o `mustard-boot` ele mesmo,
+#                            ali, sem hook nenhum no meio.
+#   nao-trava-o-instalador . e TEM de largar esse `mustard-boot` se ele não
+#                            voltar. O download não tem prazo próprio, e agora
+#                            roda segurando o cadeado do apt.
+#   paridade-ps1 ........... o gêmeo Windows não pode ficar para trás. Reprova
+#                            quando um dos dois arquivos ganha um passo e o
+#                            outro não.
 #
-# Os três primeiros casos e o quarto medem o mesmo ciclo por dentro: foi ele
-# que, no campo em 2026-08-28, consumiu três instalações seguidas do .exe e
-# uma tarde de diagnóstico à mão. Ligar sem baixar deixa o plugin dormente;
-# baixar sem ligar não roda. Por isso cada metade tem o seu caso.
+# Os quatro casos do meio medem o mesmo ciclo por dentro: foi ele que, no campo
+# em 2026-08-28, consumiu três instalações seguidas do .exe e uma tarde de
+# diagnóstico à mão. Ligar sem baixar deixa o plugin dormente; baixar sem ligar
+# não roda. Por isso cada metade tem o seu caso.
 #
 # O `claude` dos casos felizes é FALSO: um script que só anota o que lhe
 # pediram. O teste não pode instalar plugin de verdade na máquina de quem o
@@ -82,8 +85,11 @@ EOF
 
 # Roda o passo do plugin num ambiente fechado: só o `claude` falso à frente do
 # PATH e um HOME descartável, para nada tocar o ~/.claude de quem roda o teste.
+# LIMITE vazio deixa o passo com o prazo de produção (120s).
+LIMITE=""
 rodar_o_passo() {
-  PATH="$TMP/bin:$PATH" HOME="$TMP/home" "$SH" "$PASSO" 2>&1
+  PATH="$TMP/bin:$PATH" HOME="$TMP/home" \
+    MUSTARD_PLUGIN_STEP_TIMEOUT="$LIMITE" "$SH" "$PASSO" 2>&1
 }
 
 case "$CASO" in
@@ -111,7 +117,7 @@ $saida"
 
   sem-claude)
     # PATH mínimo: só os utilitários que o passo usa, e nenhum `claude`.
-    for u in sh id uname grep stat; do
+    for u in sh id uname grep stat timeout; do
       alvo=$(command -v "$u" 2>/dev/null) || continue
       [ -n "$alvo" ] && ln -sf "$alvo" "$TMP/bin/$u"
     done
@@ -177,47 +183,111 @@ o binário sai com erro de uso e o passo acusaria falha onde não houve"
     echo "ok: o passo dispara a descida dos binários ali mesmo, sem hook nenhum"
     ;;
 
+  nao-trava-o-instalador)
+    # Um `mustard-boot` que NUNCA volta. Até esta unidade ele só rodava dentro
+    # de um hook, onde o Claude Code corta em 120s. Agora ele roda no caminho
+    # crítico do instalador, segurando o cadeado do apt — e o `curl` lá dentro
+    # não tem prazo próprio. Um `apt install` que espera para sempre é pior que
+    # um plugin desatualizado.
+    command -v timeout >/dev/null 2>&1 \
+      || { echo "pulado: não há 'timeout' nesta máquina, e o prazo depende dele"; exit 0; }
+
+    mkdir -p "$TMP/plugin/bin"
+    cat > "$TMP/plugin/bin/mustard-boot" <<'EOF'
+#!/bin/sh
+sleep 60
+EOF
+
+    escrever_claude_falso "$TMP/plugin"
+
+    LIMITE=2
+    inicio=$(date +%s)
+    saida=$(rodar_o_passo)
+    status=$?
+    gasto=$(( $(date +%s) - inicio ))
+
+    [ "$status" -eq 0 ] || falhar "o passo saiu com $status, e ele é fail-open:
+$saida"
+    [ "$gasto" -lt 30 ] || falhar "o passo esperou ${gasto}s por um mustard-boot que
+nunca volta. Com o prazo valendo ele tinha de desistir em 2s — do jeito que
+está, um portal cativo congela o 'apt install' para sempre"
+    echo "$saida" | grep -q "passou de 2" \
+      || falhar "o passo desistiu, mas não disse que foi por prazo — quem lê vai
+procurar um erro de rede que não existe:
+$saida"
+
+    echo "ok: um mustard-boot travado não segura o instalador (largou em ${gasto}s)"
+    ;;
+
   paridade-ps1)
     [ -f "$GEMEO" ] || falhar "não achei o gêmeo Windows em $GEMEO"
 
     faltou=0
 
-    # Cada linha é um passo que os DOIS arquivos têm de ter, na forma que cada
-    # linguagem lhe dá. Um passo que entra só de um lado reprova aqui — foi
-    # exatamente assim que o Windows ficou para trás antes.
+    # O corpo do arquivo SEM os comentários. As duas linguagens comentam com `#`
+    # no começo da linha, e a primeira versão deste teste passava porque achava
+    # `exit 0` dentro de um comentário do cabeçalho do .ps1. Um teste que lê
+    # comentário não está lendo código.
+    sem_comentarios() { grep -v '^[[:space:]]*#' "$1"; }
+
+    # Quantas linhas de código casam com o texto. A contagem importa: uma função
+    # aparece uma vez ao ser DEFINIDA e outra ao ser CHAMADA, e foi exatamente
+    # apagando a chamada — deixando a definição — que o gêmeo Windows conseguiu
+    # instalar e parar sem este teste reclamar.
+    contar() { sem_comentarios "$1" | grep -cF -- "$2"; }
+
     exigir() {
-      rotulo="$1"; no_sh="$2"; no_ps1="$3"
-      grep -qF -- "$no_sh" "$PASSO" \
-        || { echo "  falta no plugin-step.sh:  $rotulo" >&2; faltou=1; }
-      grep -qF -- "$no_ps1" "$GEMEO" \
-        || { echo "  falta no plugin-step.ps1: $rotulo" >&2; faltou=1; }
+      rotulo="$1"; no_sh="$2"; min_sh="$3"; no_ps1="$4"; min_ps1="$5"
+      n=$(contar "$PASSO" "$no_sh")
+      [ "$n" -ge "$min_sh" ] \
+        || { echo "  plugin-step.sh:  $rotulo — achei $n, esperava $min_sh" >&2; faltou=1; }
+      n=$(contar "$GEMEO" "$no_ps1")
+      [ "$n" -ge "$min_ps1" ] \
+        || { echo "  plugin-step.ps1: $rotulo — achei $n, esperava $min_ps1" >&2; faltou=1; }
     }
 
-    exigir "registrar o marketplace"       "plugin marketplace add"    "plugin marketplace add"
-    exigir "instalar ou atualizar"         'claude plugin "$acao"'     'claude plugin $acao'
-    exigir "LIGAR o plugin"                "plugin enable"             "plugin enable"
-    exigir "perguntar onde o plugin ficou" "plugin list --json"        "plugin list --json"
-    exigir "BAIXAR os binários"            "mustard-boot"              "mustard-boot"
-    exigir "as instruções manuais"         "instrucoes_manuais"        "Show-ManualSteps"
-    exigir "sair sempre com 0 (fail-open)" "exit 0"                    "exit 0"
+    exigir "registrar o marketplace"    "plugin marketplace add"   1 "plugin marketplace add"      1
+    exigir "instalar ou atualizar"      'claude plugin "$acao"'    1 'claude plugin $acao'         1
+    exigir "o comando que LIGA"         "plugin enable"            1 "plugin enable"               1
+    exigir "e a CHAMADA que liga"       "ligar_o_plugin"           2 "Enable-Plugin"               2
+    exigir "onde o plugin ficou"        "plugin list --json"       1 "plugin list --json"          1
+    exigir "o comando que BAIXA"        "mustard-boot"             1 "mustard-boot"                1
+    exigir "e a CHAMADA que baixa"      "baixar_os_binarios"       2 "Start-BinaryDownload"        2
+    exigir "o prazo da descida"         "MUSTARD_PLUGIN_STEP_TIMEOUT" 1 "MUSTARD_PLUGIN_STEP_TIMEOUT" 1
+    exigir "as instruções manuais"      "instrucoes_manuais"       2 "Show-ManualSteps"            2
+    exigir "sair com 0 (fail-open)"     "exit 0"                   1 "exit 0"                      1
 
     # Os dois nomes que decidem QUAL plugin é instalado. Uma divergência aqui
     # não quebra nenhum dos dois arquivos sozinho: instala o plugin errado em um
     # só dos sistemas, que é bem pior de achar.
     for chave in "rubensrpj/mustard" "mustard-local"; do
       grep -qF -- "$chave" "$PASSO" \
-        || { echo "  falta no plugin-step.sh:  a constante $chave" >&2; faltou=1; }
+        || { echo "  plugin-step.sh:  falta a constante $chave" >&2; faltou=1; }
       grep -qF -- "$chave" "$GEMEO" \
-        || { echo "  falta no plugin-step.ps1: a constante $chave" >&2; faltou=1; }
+        || { echo "  plugin-step.ps1: falta a constante $chave" >&2; faltou=1; }
     done
 
     [ "$faltou" -eq 0 ] || falhar "os gêmeos divergiram — veja as linhas acima"
 
-    echo "ok: plugin-step.sh e plugin-step.ps1 dão os mesmos passos"
+    # Comparar não é executar, e vale dizer isso em voz alta: nada neste
+    # repositório RODA o plugin-step.ps1. Onde houver PowerShell, ao menos o
+    # parser dele opina.
+    pwsh_bin=$(command -v pwsh 2>/dev/null || command -v powershell 2>/dev/null || true)
+    if [ -n "$pwsh_bin" ]; then
+      "$pwsh_bin" -NoProfile -Command "
+        \$erros = \$null
+        [System.Management.Automation.Language.Parser]::ParseFile('$GEMEO', [ref]\$null, [ref]\$erros) > \$null
+        if (\$erros -and \$erros.Count) { \$erros | ForEach-Object { \$_.Message }; exit 1 }
+      " || falhar "o plugin-step.ps1 não passa nem no parser do PowerShell"
+      echo "ok: plugin-step.sh e plugin-step.ps1 dão os mesmos passos (e o .ps1 parseia)"
+    else
+      echo "ok: plugin-step.sh e plugin-step.ps1 dão os mesmos passos"
+      echo "    (sem PowerShell aqui: o gêmeo foi comparado, não executado)"
+    fi
     ;;
 
   *)
-    echo "uso: $0 com-claude|sem-claude|liga-o-plugin|baixa-os-binarios|paridade-ps1" >&2
+    echo "uso: $0 com-claude|sem-claude|liga-o-plugin|baixa-os-binarios|nao-trava-o-instalador|paridade-ps1" >&2
     exit 1
     ;;
 esac

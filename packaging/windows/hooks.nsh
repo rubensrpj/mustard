@@ -89,8 +89,9 @@
 
   ; --- o passo do plugin ----------------------------------------------------
   ; O .exe atualiza a CÓPIA DO SISTEMA ($INSTDIR\mustard-cli). O Claude Code
-  ; executa a CÓPIA DO PLUGIN (~\.claude\plugins\cache\…), porque o plugin
-  ; prepende o bin/ dele ao PATH. Atualizar só a primeira é o que deixava uma
+  ; executa a CÓPIA DO PLUGIN (~\.claude\plugins\cache\…), porque cada gancho é
+  ; chamado pelo caminho explícito ${CLAUDE_PLUGIN_ROOT}\bin\…, e não pelo PATH
+  ; — onde a pasta do plugin entra por último. Atualizar só a primeira deixava uma
   ; máquina com 0.1.55 instalada desenhando 0.1.47 na barra de status.
   ;
   ; O script vai junto para $INSTDIR\mustard-cli e é chamado dali. Sem

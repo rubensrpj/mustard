@@ -145,13 +145,51 @@ pub fn newer_installed_rt() -> Option<std::path::PathBuf> {
 /// The testable half of [`newer_installed_rt`]: registry JSON and the running
 /// version in, the newer install's `bin/mustard-rt` path out. Existence on
 /// disk is the outer half's business.
+#[must_use]
+pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::PathBuf> {
+    let (version, path) = newest_installed_rt_from(raw)?;
+    is_behind(running, &version).then_some(path)
+}
+
+/// The `mustard-rt` inside the newest install the plugin registry records —
+/// whatever its version, and whether or not it is newer than this process.
 ///
-/// Version and `installPath` are read from the SAME record — the one with the
+/// This is the copy Claude Code runs its hooks, commands and status line from,
+/// and the one the statusline self-heal records. Measured 2026-08-28: Claude
+/// Code APPENDS the plugin's `bin/` to `PATH` (last of 21 entries), so a bare
+/// `mustard-rt` answers with the SYSTEM copy and hides exactly the
+/// plugin-vs-system drift the status bar exists to show.
+///
+/// `None` when the registry is absent, unreadable, records no install of this
+/// plugin, or the recorded directory holds no binary. Callers treat that as
+/// "cannot tell" and must NOT fall back to inferring a path from the running
+/// process — see `statusline_heal_observer` for the incident that rule comes
+/// from.
+#[must_use]
+pub fn installed_plugin_rt() -> Option<std::path::PathBuf> {
+    let raw = std::fs::read_to_string(claude_config_dir()?.join(INSTALLED_PLUGINS)).ok()?;
+    let path = installed_plugin_rt_from(&raw)?;
+    path.is_file().then_some(path)
+}
+
+/// The testable half of [`installed_plugin_rt`]: registry JSON in, the newest
+/// install's `bin/mustard-rt` out. Existence on disk is the outer half's
+/// business.
+#[must_use]
+pub fn installed_plugin_rt_from(raw: &str) -> Option<std::path::PathBuf> {
+    newest_installed_rt_from(raw).map(|(_, path)| path)
+}
+
+/// The newest install of this plugin the registry records: its version paired
+/// with the `bin/mustard-rt` inside it. The single reader of the registry's
+/// shape, shared by the stale-copy handover and the statusline heal, so a
+/// change to that shape can never move one without the other.
+///
+/// Version and `installPath` come from the SAME record — the one with the
 /// highest version. [`installed_harness_version_from`] takes the max over
 /// versions alone; pairing its answer with a path picked independently could
 /// marry scope A's version to scope B's directory.
-#[must_use]
-pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::PathBuf> {
+fn newest_installed_rt_from(raw: &str) -> Option<(String, std::path::PathBuf)> {
     let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
     let (version, install) = doc
         .get("plugins")?
@@ -166,11 +204,11 @@ pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::Pa
             Some((version, install))
         })
         .max_by(|(a, _), (b, _)| compare_versions(a, b))?;
-    if !is_behind(running, version) {
-        return None;
-    }
     let exe = if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" };
-    Some(std::path::Path::new(install).join("bin").join(exe))
+    Some((
+        version.to_string(),
+        std::path::Path::new(install).join("bin").join(exe),
+    ))
 }
 
 /// Whether `running` names a version strictly OLDER than `installed`.

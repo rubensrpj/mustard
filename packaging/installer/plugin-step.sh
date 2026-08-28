@@ -10,9 +10,13 @@
 #   cópia do PLUGIN .... ~/.claude/plugins/cache/<marketplace>/mustard/<v>/bin/
 #                        — o que o Claude Code REALMENTE executa
 #
-# O plugin prepende o `bin/` dele ao PATH, então dentro do Claude Code a cópia
-# do sistema nunca é alcançada: hooks, comandos e barra de status saem todos da
-# cópia do plugin. Instalar o pacote e parar aí deixa a máquina rodando a versão
+# O Claude Code chama cada gancho pelo caminho explícito
+# `${CLAUDE_PLUGIN_ROOT}/bin/…` (ver `plugin/hooks/hooks.json`), então hooks e
+# comandos saem sempre da cópia do plugin, com PATH ou sem ele. A pasta do
+# plugin até entra no PATH, mas por ÚLTIMO — medido em 2026-08-28, última de 21
+# entradas —, de modo que um nome NU ali encontra a cópia do SISTEMA. É essa
+# assimetria que fazia a barra de status contar uma história diferente da dos
+# hooks. Instalar o pacote e parar aí deixa a máquina rodando a versão
 # velha indefinidamente — o instalador se limitava a IMPRIMIR duas linhas
 # pedindo que a pessoa atualizasse o plugin à mão, e enquanto ninguém digitasse,
 # nada acontecia (campo, 2026-08-28: 0.1.55 instalada nos três sistemas, plugin
@@ -120,10 +124,37 @@ baixar_os_binarios() {
   fi
 
   echo "==> Baixando os binários do plugin…"
+
+  # COM PRAZO, e o prazo é a metade importante desta função. O `curl` do
+  # `mustard-boot` não tem tempo-limite próprio. Até esta unidade isso não
+  # pesava: ele só rodava dentro de um hook, onde o Claude Code corta em 120s.
+  # Agora ele roda no caminho crítico do INSTALADOR — o `.deb` segura o cadeado
+  # do apt enquanto espera, o `.pkg` segura o Installer.app, o `.exe` segura a
+  # janela do NSIS. Uma conexão que TRAVA em vez de recusar (portal cativo,
+  # proxy que engole o pacote) congelaria a instalação para sempre. O teto é o
+  # mesmo que o hook já dava; a variável existe para o teste poder encurtá-lo.
+  # `timeout` é do coreutils: onde não houver, seguimos sem prazo, que é
+  # exatamente o que havia antes desta linha.
+  limite="${MUSTARD_PLUGIN_STEP_TIMEOUT:-120}"
+
   # Invocado por `sh`, não pelo bit de execução: o passo funciona igual num
   # cache extraído sem permissões preservadas, e o `mustard-boot` já resolve o
   # próprio diretório a partir de `$0`.
-  if ! sh "$dir/bin/mustard-boot" --version; then
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$limite" sh "$dir/bin/mustard-boot" --version
+    codigo=$?
+  else
+    sh "$dir/bin/mustard-boot" --version
+    codigo=$?
+  fi
+
+  # 124 é como o `timeout` diz "eu cortei". Vale uma frase própria: "não
+  # concluiu" mandaria a pessoa procurar um erro que não existe.
+  if [ "$codigo" -eq 124 ]; then
+    echo "aviso: a descida dos binários passou de ${limite}s e foi cortada para" >&2
+    echo "       não segurar o instalador — a primeira sessão do Claude Code" >&2
+    echo "       tenta de novo." >&2
+  elif [ "$codigo" -ne 0 ]; then
     echo "aviso: a descida dos binários não concluiu — a primeira sessão do" >&2
     echo "       Claude Code tenta de novo." >&2
   fi

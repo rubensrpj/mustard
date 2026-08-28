@@ -2,32 +2,51 @@
 //!
 //! ## Why
 //!
-//! The plugin-based install moved the `mustard-rt` binary into the plugin's
-//! gitignored `plugin/bin/` directory, and the plugin prepends that directory
-//! to `PATH` before Claude Code runs anything. So the bare token
-//! `mustard-rt` already resolves to the copy the harness is meant to run —
-//! whichever version the plugin currently holds — on every machine and every
-//! OS.
+//! Up to three copies of this binary can live on one machine: the SYSTEM copy
+//! an installer put in `/usr/bin` (or `Program Files`), the PLUGIN copy inside
+//! `~/.claude/plugins/cache/…` that Claude Code actually runs its hooks from,
+//! and — on a developer's machine — a build sitting in a source clone. The
+//! status bar renders `m{stamped}→{current}`, where `current` is the version of
+//! whichever copy DRAWS it. So the copy recorded here decides whether the
+//! operator can see the plugin fall behind at all.
 //!
-//! This observer used to write the absolute path of [`std::env::current_exe`]
-//! instead, and that turned out to be the third link of a trap. On the field
-//! machine of 2026-08-28 a forgotten build inside a source clone
+//! Two wrong answers have shipped. Both are on record, because each looks
+//! obviously right until it is measured.
+//!
+//! **`std::env::current_exe()`** was the first. On the field machine of
+//! 2026-08-28 a forgotten build inside a source clone
 //! (`C:/atiz/mustard/plugin/bin/mustard-rt.exe`, version 0.1.47) ran once,
-//! recorded its own path here, and from then on it was the binary the status
-//! bar started — so it kept re-recording that path, session after session, in
-//! a directory no installer can reach. Three reinstalls of the `.exe` changed
+//! recorded its own path here, and from then on it WAS the binary the bar
+//! started — so it re-recorded that same path, session after session, in a
+//! directory no installer can reach. Three reinstalls of the `.exe` changed
 //! nothing.
 //!
-//! A path is what pins a machine to one executable; the bare name follows the
-//! plugin. So the canonical form is the PORTABLE one, and an absolute path
-//! already on disk is healed back to it.
+//! **The bare token `mustard-rt`** was the second, on the belief that the
+//! plugin prepends its own `bin/` to `PATH`. Measured 2026-08-28: Claude Code
+//! APPENDS it — last of 21 entries — so the bare name resolves to the SYSTEM
+//! copy. The bar would then report the system's own version, `stamped ==
+//! current`, a plain green stamp, and the plugin-vs-system drift that started
+//! the incident would never draw again. The bare token also collides with
+//! `hook_resolve::rewrite_statusline_value`, which absolutises that exact
+//! string because a launcher whose `PATH` omits the install dir loses the bar
+//! entirely on Linux — and since `settings.local.json` outranks
+//! `settings.json`, this observer would silently undo that fix every session.
+//!
+//! So the answer is a path, just never one this process INFERS. Claude Code's
+//! own plugin registry (`~/.claude/plugins/installed_plugins.json`) records
+//! where the plugin lives; it follows the plugin across updates and cannot name
+//! a forgotten clone. That is what
+//! [`mustard_core::installed_plugin_rt`] reads.
 //!
 //! ## Behaviour (all fail-open)
 //!
-//! 1. No `statusLine` key → install the canonical
-//!    `{"type":"command","command":"mustard-rt run statusline","padding":1}`.
-//! 2. `statusLine.command` names `mustard-rt` in any other shape — an absolute
-//!    path, a quoted path, a stale clone — → rewrite it to the portable form.
+//! 0. The registry names no plugin `mustard-rt` → no-op, whatever is recorded.
+//!    Writing under that ignorance would be a guess, and a guess is what pinned
+//!    the field machine.
+//! 1. No `statusLine` key → install the canonical entry for the plugin's copy.
+//! 2. `statusLine.command` names `mustard-rt` in any other shape — the bare
+//!    token, another copy's path, a stale clone, a quoted path → rewrite it to
+//!    the plugin's copy.
 //! 3. `statusLine.command` is some other user command (no `mustard-rt` in it)
 //!    → never touched.
 //!
@@ -56,26 +75,38 @@ use std::path::{Path, PathBuf};
 /// The `SessionStart` statusline self-heal module.
 pub struct StatuslineHealObserver;
 
-/// The canonical statusline command: the bare binary name, resolved through
-/// the `PATH` the plugin prepends its own `bin/` to. No machine-absolute path
-/// ever goes into settings from here — see the module doc for the incident
-/// that rule comes from.
-const PORTABLE_COMMAND: &str = "mustard-rt run statusline";
+/// The canonical statusline command for `rt`: forward slashes (project
+/// convention for hook-written paths), quoted when the path contains a space so
+/// the harness shell does not split it.
+fn desired_command(rt: &Path) -> String {
+    let rt = rt.to_string_lossy().replace('\\', "/");
+    if rt.contains(' ') {
+        format!("\"{rt}\" run statusline")
+    } else {
+        format!("{rt} run statusline")
+    }
+}
 
-/// The canonical `statusLine` settings object.
-fn desired_statusline() -> Value {
+/// The canonical `statusLine` settings object for `rt`.
+fn desired_statusline(rt: &Path) -> Value {
     json!({
         "type": "command",
-        "command": PORTABLE_COMMAND,
+        "command": desired_command(rt),
         "padding": 1,
     })
 }
 
-/// Heal `<root>/.claude/settings.local.json` so its `statusLine` carries the
-/// portable command. Inner, testable form of the observer — see the module doc
-/// for the case table. Fail-open at every step: any read, parse, or write
-/// failure degrades to a no-op.
-pub(crate) fn heal(root: &Path) {
+/// Heal `<root>/.claude/settings.local.json` so its `statusLine` points at the
+/// plugin's `mustard-rt`. Inner, testable form of the observer — `plugin_rt` is
+/// what the registry answered, so the case table can be exercised without a
+/// registry on disk. See the module doc for that table. Fail-open at every
+/// step: any read, parse, or write failure degrades to a no-op.
+pub(crate) fn heal(root: &Path, plugin_rt: Option<&Path>) {
+    // Case 0. Nothing the registry can name is nothing this observer may write:
+    // the only other source of a path here is inference, which is the defect.
+    let Some(plugin_rt) = plugin_rt else {
+        return;
+    };
     let Ok(paths) = ClaudePaths::for_project(root) else {
         return;
     };
@@ -96,6 +127,7 @@ pub(crate) fn heal(root: &Path) {
         },
     };
 
+    let desired_cmd = desired_command(plugin_rt);
     match obj.get("statusLine") {
         // Case 1: no statusLine at all → install the canonical entry.
         None => {}
@@ -109,14 +141,14 @@ pub(crate) fn heal(root: &Path) {
                 // Case 3: some other user command — respect the customization.
                 return;
             }
-            if cmd == PORTABLE_COMMAND {
-                // Already portable — idempotent no-op.
+            if cmd.replace('\\', "/") == desired_cmd {
+                // Already the plugin's copy — idempotent no-op.
                 return;
             }
-            // Case 2: an absolute / quoted / stale mustard-rt path → rewrite.
+            // Case 2: bare token / another copy / stale clone → rewrite.
         }
     }
-    obj.insert("statusLine".to_string(), desired_statusline());
+    obj.insert("statusLine".to_string(), desired_statusline(plugin_rt));
 
     // Serialize with the workspace's stable key order (serde_json's default
     // sorted map) + trailing newline, and only write on a real change.
@@ -141,7 +173,7 @@ impl Observer for StatuslineHealObserver {
             .workspace_root
             .clone()
             .unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
-        heal(&root);
+        heal(&root, mustard_core::installed_plugin_rt().as_deref());
     }
 }
 
@@ -149,6 +181,16 @@ impl Observer for StatuslineHealObserver {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// The plugin copy the registry would name. A real cache path, so a reader
+    /// can see at a glance which of the three copies this is.
+    fn fake_plugin_rt() -> PathBuf {
+        PathBuf::from("/home/dev/.claude/plugins/cache/mustard-local/mustard/0.1.57/bin/mustard-rt")
+    }
+
+    fn plugin_command() -> String {
+        format!("{} run statusline", fake_plugin_rt().to_string_lossy())
+    }
 
     /// Create `<root>/.claude/` and return the settings.local.json path.
     fn seed_claude(root: &Path) -> PathBuf {
@@ -165,20 +207,55 @@ mod tests {
     fn absent_file_is_created_with_statusline_only() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
-        heal(dir.path());
+        heal(dir.path(), Some(&fake_plugin_rt()));
 
         let obj = read_settings(&settings);
         let map = obj.as_object().expect("settings must be a JSON object");
         assert_eq!(map.len(), 1, "only statusLine may be introduced");
-        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
+        assert_eq!(obj["statusLine"]["command"], plugin_command());
         assert_eq!(obj["statusLine"]["type"], "command");
         assert_eq!(obj["statusLine"]["padding"], 1);
         // Trailing newline, per the write convention.
         assert!(std::fs::read_to_string(&settings).unwrap().ends_with('\n'));
     }
 
+    /// Case 0 — the lock on the rule that this module never guesses. Without
+    /// it the obvious "fall back to current_exe" returns, and with it the 2026
+    /// -08-28 clone-pinning incident returns too.
     #[test]
-    fn absolute_mustard_path_is_made_portable_and_other_keys_survive() {
+    fn no_plugin_in_the_registry_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let settings = seed_claude(dir.path());
+
+        heal(dir.path(), None);
+
+        assert!(
+            !settings.exists(),
+            "with no plugin to name, the heal must write nothing at all"
+        );
+    }
+
+    /// The measurement of 2026-08-28: Claude Code APPENDS the plugin's `bin/`
+    /// to `PATH`, so the bare token resolves to the SYSTEM copy and the bar
+    /// stops reporting the plugin. It is a shape to heal AWAY from, not to.
+    #[test]
+    fn bare_token_is_replaced_by_the_plugin_copy() {
+        let dir = tempdir().unwrap();
+        let settings = seed_claude(dir.path());
+        std::fs::write(
+            &settings,
+            r#"{"statusLine":{"type":"command","command":"mustard-rt run statusline","padding":1}}"#,
+        )
+        .unwrap();
+
+        heal(dir.path(), Some(&fake_plugin_rt()));
+
+        let obj = read_settings(&settings);
+        assert_eq!(obj["statusLine"]["command"], plugin_command());
+    }
+
+    #[test]
+    fn stale_clone_path_is_replaced_and_other_keys_survive() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
         std::fs::write(
@@ -195,10 +272,10 @@ mod tests {
         )
         .unwrap();
 
-        heal(dir.path());
+        heal(dir.path(), Some(&fake_plugin_rt()));
 
         let obj = read_settings(&settings);
-        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
+        assert_eq!(obj["statusLine"]["command"], plugin_command());
         // The unrelated key is preserved with its exact value.
         assert_eq!(obj["enabledMcpjsonServers"], json!(["mustard-memory"]));
         assert_eq!(obj.as_object().map(Map::len), Some(2));
@@ -208,7 +285,7 @@ mod tests {
     /// quoted, backslashed path into a source clone. Quoting must not hide the
     /// `mustard-rt` token from the rewrite.
     #[test]
-    fn quoted_windows_path_is_made_portable() {
+    fn quoted_windows_path_is_replaced() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
         std::fs::write(
@@ -217,10 +294,28 @@ mod tests {
         )
         .unwrap();
 
-        heal(dir.path());
+        heal(dir.path(), Some(&fake_plugin_rt()));
 
         let obj = read_settings(&settings);
-        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
+        assert_eq!(obj["statusLine"]["command"], plugin_command());
+    }
+
+    /// A plugin cache under a Windows profile carries backslashes and can carry
+    /// a space; the written command must be forward-slashed and quoted, or the
+    /// harness shell splits it at the space.
+    #[test]
+    fn windows_plugin_path_is_forward_slashed_and_quoted() {
+        let dir = tempdir().unwrap();
+        let settings = seed_claude(dir.path());
+        let rt = PathBuf::from("C:\\Users\\Ana Paula\\.claude\\plugins\\bin\\mustard-rt.exe");
+
+        heal(dir.path(), Some(&rt));
+
+        let obj = read_settings(&settings);
+        assert_eq!(
+            obj["statusLine"]["command"],
+            "\"C:/Users/Ana Paula/.claude/plugins/bin/mustard-rt.exe\" run statusline"
+        );
     }
 
     #[test]
@@ -230,7 +325,7 @@ mod tests {
         let original = r#"{"statusLine":{"type":"command","command":"my-status --fast"}}"#;
         std::fs::write(&settings, original).unwrap();
 
-        heal(dir.path());
+        heal(dir.path(), Some(&fake_plugin_rt()));
 
         assert_eq!(
             std::fs::read_to_string(&settings).unwrap(),
@@ -245,12 +340,14 @@ mod tests {
         let settings = seed_claude(dir.path());
         // Compact formatting on purpose: a rewrite would re-serialize pretty,
         // so byte-equality proves no write happened — not merely an equal one.
-        let original =
-            r#"{"statusLine":{"command":"mustard-rt run statusline","padding":1,"type":"command"}}"#;
-        std::fs::write(&settings, original).unwrap();
+        let original = format!(
+            r#"{{"statusLine":{{"command":"{}","padding":1,"type":"command"}}}}"#,
+            plugin_command()
+        );
+        std::fs::write(&settings, &original).unwrap();
         let mtime_before = std::fs::metadata(&settings).unwrap().modified().unwrap();
 
-        heal(dir.path());
+        heal(dir.path(), Some(&fake_plugin_rt()));
 
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), original);
         let mtime_after = std::fs::metadata(&settings).unwrap().modified().unwrap();
@@ -264,7 +361,7 @@ mod tests {
         let original = "{not json at all";
         std::fs::write(&settings, original).unwrap();
 
-        heal(dir.path());
+        heal(dir.path(), Some(&fake_plugin_rt()));
 
         assert_eq!(
             std::fs::read_to_string(&settings).unwrap(),
@@ -278,7 +375,7 @@ mod tests {
         let dir = tempdir().unwrap();
         // No `.claude/` seeded — must not panic (write_atomic creates the
         // parent, which is acceptable; the invariant here is no panic).
-        heal(dir.path());
+        heal(dir.path(), Some(&fake_plugin_rt()));
     }
 
     // --- observer routing --------------------------------------------------
@@ -303,17 +400,31 @@ mod tests {
         assert!(!settings.exists(), "SessionEnd must not heal anything");
     }
 
+    /// Routing test, and the one invariant that holds whether or not the
+    /// machine running the suite has a plugin registry: the path of the binary
+    /// currently executing — here, the test harness — may never be recorded.
+    /// Inferring the running executable IS the defect this module exists to
+    /// prevent, so asserting its absence is stronger than asserting any
+    /// particular value.
     #[test]
-    fn session_start_heals_to_the_portable_command() {
+    fn session_start_never_records_the_running_binary() {
         let dir = tempdir().unwrap();
         let settings = seed_claude(dir.path());
         StatuslineHealObserver.observe(
             &HookInput::default(),
             &ctx(dir.path().to_str().unwrap(), Trigger::SessionStart),
         );
-        // The running binary here is the test harness, and its path must NOT
-        // appear: what the observer writes is the same on every machine.
-        let obj = read_settings(&settings);
-        assert_eq!(obj["statusLine"]["command"], "mustard-rt run statusline");
+
+        let Ok(text) = std::fs::read_to_string(&settings) else {
+            // No registry on this machine → case 0 → nothing written. Correct.
+            return;
+        };
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        assert!(
+            !exe.is_empty() && !text.contains(&exe),
+            "the running binary must never be recorded: {text}"
+        );
     }
 }
