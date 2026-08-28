@@ -71,8 +71,16 @@ if [ "$(id -u)" -eq 0 ] && [ -z "${MUSTARD_PLUGIN_STEP_DEESCALATED:-}" ]; then
     echo "==> Passo do plugin: rodando como $dono, não como root."
     # -H para o HOME ser o da pessoa: é o HOME que decide qual ~/.claude o
     # `claude` enxerga, e é o ponto inteiro deste rebaixamento.
-    sudo -H -u "$dono" \
-      env MUSTARD_PLUGIN_STEP_DEESCALATED=1 sh "$0" "$@"
+    # O resultado do sudo É lido. Sem este `if`, um sudo que falhasse (regra de
+    # sudoers, conta sem shell, o script sem permissão de leitura para o dono)
+    # sairia daqui com 0 e em SILÊNCIO: o instalador diria "pronto" e o plugin
+    # continuaria na versão velha, que é exatamente o defeito que este arquivo
+    # existe para acabar.
+    if ! sudo -H -u "$dono" \
+         env MUSTARD_PLUGIN_STEP_DEESCALATED=1 sh "$0" "$@"; then
+      echo "aviso: não consegui rodar o passo do plugin como $dono." >&2
+      instrucoes_manuais
+    fi
     exit 0
   fi
 
