@@ -274,7 +274,7 @@ fn git_in(tree: &Path, args: &[&str]) -> Option<String> {
 /// `None` when git cannot answer, or when it answers about the repository being
 /// amended — see [`proof_tree_record`] for why that is recorded as nothing
 /// rather than as a path.
-fn proof_tree_commit(tree: &Path, amending: &Path) -> Option<String> {
+pub(crate) fn proof_tree_commit(tree: &Path, amending: &Path) -> Option<String> {
     let resolved = git_root(tree)?;
     // The REPOSITORY the amended tree belongs to, asked of git the same way —
     // never the project anchor, which in a monorepo is a subdirectory of it.
@@ -304,7 +304,7 @@ fn git_root(dir: &Path) -> Option<std::path::PathBuf> {
 /// A proof git cannot speak for is therefore recorded as absent, and the report
 /// says so through the `remedy` a reader can act on rather than through a field
 /// that looks like evidence and is not.
-fn proof_tree_record(tree: Option<&Path>, amending: &Path) -> Option<String> {
+pub(crate) fn proof_tree_record(tree: Option<&Path>, amending: &Path) -> Option<String> {
     proof_tree_commit(tree?, amending)
 }
 

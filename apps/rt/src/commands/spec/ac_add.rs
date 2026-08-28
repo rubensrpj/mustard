@@ -88,6 +88,21 @@ pub struct AcAddOpts {
     pub expect: Option<String>,
     /// Why the criterion is being added. Never blank.
     pub reason: String,
+    /// Take the negative proof against ANOTHER checkout instead of this tree.
+    ///
+    /// The same door `ac-amend` carries, for the same reason and one step
+    /// earlier. The negative proof asks "can this criterion FAIL?", and that is
+    /// only answerable where the behaviour is ABSENT. A criterion added to
+    /// cover work that has ALREADY LANDED comes back green here, and green
+    /// proves nothing — so without this flag the only way through is to hide
+    /// the work, add the criterion, and put the work back: a contrivance that
+    /// leaves no trace of where the red was taken.
+    ///
+    /// Point it at a worktree of a commit that predates the work
+    /// (`git worktree add --detach <dir> <base>`). The spec is still read and
+    /// rewritten HERE; only the command runs elsewhere, and the ledger records
+    /// the COMMIT the red was taken on, so the claim can be checked later.
+    pub proof_tree: Option<PathBuf>,
 }
 
 /// JSON report printed on stdout. Deterministic: repo-relative paths, sorted,
@@ -377,7 +392,32 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     // says the control was not declared, which is the truth; the next
     // `ac-negative-check` pass sees the markdown's control (if the author adds
     // one) differ from the record and takes it then.
-    let proof = ac_negative_check::prove_one(root, &id, &opts.command, expect.as_deref(), None, false);
+    // WHERE the command runs, which is not always where the spec lives — see
+    // `AcAddOpts::proof_tree`. Everything else (reading the spec, rewriting the
+    // artefacts, appending to the ledger) stays in THIS tree.
+    let proof_root: &Path = opts.proof_tree.as_deref().unwrap_or(root);
+    if let Some(tree) = opts.proof_tree.as_deref() {
+        if !tree.is_dir() {
+            // `error` is a CODE — a closed vocabulary a caller can match on.
+            // The path is volatile, so it belongs in `remedy`, which is prose.
+            return AcAddReport::refused(
+                opts,
+                &id,
+                "proof_tree_not_a_directory",
+                &format!(
+                    "`--proof-tree {}` is not a directory — point it at a checkout of this \
+                     repository that does not carry the work yet \
+                     (`git worktree add --detach <dir> <base-commit>`)",
+                    tree.display()
+                ),
+            );
+        }
+    }
+    let proof_tree_record =
+        crate::commands::spec::ac_amend::proof_tree_record(opts.proof_tree.as_deref(), root);
+    let mut proof =
+        ac_negative_check::prove_one(proof_root, &id, &opts.command, expect.as_deref(), None, false);
+    proof.proof_tree.clone_from(&proof_tree_record);
     if proof.proof != ac_negative_check::Proof::Red {
         let why = proof.reason.clone().unwrap_or_default();
         let mut report = AcAddReport::refused(
@@ -536,7 +576,72 @@ mod tests {
             command: command.to_string(),
             expect: None,
             reason: "the review found a defect no criterion names".to_string(),
+            // The default door: the proof is taken in the tree the spec lives
+            // in. `--proof-tree` is exercised by its own test below.
+            proof_tree: None,
         }
+    }
+
+    /// `--proof-tree` — a criterion added to cover work that ALREADY LANDED.
+    ///
+    /// The pair below is the whole argument for the flag existing. The command
+    /// asserts a file the work created: in the current tree it is GREEN, so the
+    /// door refuses it — correctly, because a criterion that already passes
+    /// proves nothing. Pointed at a checkout that predates the work, the same
+    /// command comes back RED and the addition is accepted.
+    ///
+    /// Without this, the only way to cover landed work was to hide it, add the
+    /// criterion, and put it back — which works and leaves no trace of where
+    /// the evidence came from.
+    #[test]
+    fn proof_tree_takes_the_red_where_the_work_is_absent() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "added");
+        // The "work": a file that exists HERE and not in the older checkout.
+        std::fs::write(dir.path().join("landed.txt"), "the work").unwrap();
+        let older = tempdir().unwrap();
+
+        // Refused in this tree — the behaviour is present, so the command is
+        // green and the criterion would verify nothing.
+        let o = opts("added", "AC-3", "test -f landed.txt");
+        let refused = add(dir.path(), &o);
+        assert!(!refused.ok, "a green criterion must never be accepted");
+        assert_eq!(refused.error.as_deref(), Some("criterion_not_proven"));
+
+        // Accepted against the checkout that predates the work.
+        let mut o = opts("added", "AC-3", "test -f landed.txt");
+        o.proof_tree = Some(older.path().to_path_buf());
+        let report = add(dir.path(), &o);
+        assert!(
+            report.ok,
+            "unexpected refusal: {:?} / {:?}",
+            report.error, report.remedy
+        );
+        let proof = report.proof.clone().expect("the addition records its proof");
+        assert_eq!(proof.proof, ac_negative_check::Proof::Red, "{proof:?}");
+        // The spec was still rewritten HERE — only the command ran elsewhere.
+        assert!(
+            report
+                .written
+                .iter()
+                .any(|w| w.ends_with(".claude/spec/added/spec.md")),
+            "the spec must be rewritten in the current tree: {:?}",
+            report.written
+        );
+    }
+
+    /// A `--proof-tree` that is not a directory is refused by CODE, before any
+    /// artefact is touched.
+    #[test]
+    fn proof_tree_that_is_not_a_directory_is_refused() {
+        let dir = tempdir().unwrap();
+        seed(dir.path(), "added");
+        let mut o = opts("added", "AC-3", RED_COMMAND);
+        o.proof_tree = Some(dir.path().join("nope"));
+        let report = add(dir.path(), &o);
+        assert!(!report.ok);
+        assert_eq!(report.error.as_deref(), Some("proof_tree_not_a_directory"));
+        assert!(report.written.is_empty(), "a refusal writes nothing");
     }
 
     /// AC-1 — the accepted direction. A criterion the spec does not carry is
