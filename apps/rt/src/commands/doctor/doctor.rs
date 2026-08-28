@@ -1389,6 +1389,10 @@ pub fn run(opts: DoctorOpts) {
     // Default: run all checks.
     let mut results: Vec<CheckResult> = vec![
         check_wiring(&claude_dir),
+        // Before drift: a drift reading is only meaningful once the binary the
+        // reading comes FROM is known to be the installed one. A dormant
+        // bootstrap makes every version answer below it untrustworthy.
+        bootstrap_to_check_result(&crate::commands::doctor::bootstrap_check::run(&cwd)),
         check_drift(&claude_dir),
         check_state_health(&claude_dir),
         check_claude_cli(),
@@ -1731,6 +1735,42 @@ fn capability_drift_to_check_result(
 /// reach the window is not a style problem, it is the harness not running. Each
 /// detail line carries its own remedy, so a failing report is actionable
 /// without opening the JSON.
+/// Fold the bootstrap report into the doctor's OK/WARN/FAIL envelope.
+///
+/// `binary-missing`, `stamp-mismatch` and `toolchain-unreachable` are FAIL:
+/// each one means the harness cannot do a job it will nonetheless APPEAR to
+/// do — dormant hooks, or criteria recorded `unproven` that read like failing
+/// tests. `session-stale` is a WARN: everything works, it is just older than
+/// what is installed.
+fn bootstrap_to_check_result(
+    report: &crate::commands::doctor::bootstrap_check::BootstrapReport,
+) -> CheckResult {
+    if report.ok && report.findings.is_empty() {
+        let mut r = CheckResult::ok("bootstrap");
+        r.details.push(format!(
+            "plugin {} · binary {} · stamp {}",
+            report.installed_version.as_deref().unwrap_or("?"),
+            report.running_version,
+            report.stamped_version.as_deref().unwrap_or("—"),
+        ));
+        return r;
+    }
+    let details: Vec<String> = report
+        .findings
+        .iter()
+        .map(|f| format!("{}: {} — fix: {}", f.kind, f.detail, f.remedy))
+        .collect();
+    if report.failed {
+        CheckResult::fail("bootstrap", details)
+    } else if report.ok {
+        let mut r = CheckResult::ok("bootstrap");
+        r.details = details;
+        r
+    } else {
+        CheckResult::warn("bootstrap", details)
+    }
+}
+
 fn inject_delivery_to_check_result(
     report: &crate::commands::doctor::inject_delivery_check::InjectDeliveryReport,
 ) -> CheckResult {

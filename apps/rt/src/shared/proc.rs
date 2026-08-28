@@ -18,9 +18,228 @@
 //! `util` is a leaf like `shared` and depends on neither face.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+/// Per-user toolchain `bin` directories that every installer of that toolchain
+/// creates, by its own documented convention.
+///
+/// ## Why Mustard resolves these itself
+///
+/// An acceptance criterion runs through a shell, and a NON-INTERACTIVE shell
+/// reads a different (usually smaller) set of startup files than the terminal
+/// the operator types in. So `cargo` can be perfectly installed, work in the
+/// terminal, and still be invisible to the command the harness spawns. The
+/// harness then collects exit 127 — `command not found` — and records the
+/// criterion `unproven`, which a reader sees as a failing test and takes to the
+/// code (field, 2026-08-28: a whole session was spent this way).
+///
+/// The fix must not be a line in one shell's profile. That repairs one machine
+/// with one shell, and says nothing to bash, fish, a Windows host or a CI
+/// container. Looking in the conventional locations is something Mustard can do
+/// ITSELF, in-process, before it spawns anything — so it holds everywhere the
+/// harness runs.
+///
+/// Only directories that EXIST are returned, and the caller APPENDS them, so a
+/// toolchain the operator deliberately put on `PATH` always wins. Mustard
+/// supplements the environment; it never overrides it.
+fn toolchain_bin_dirs() -> Vec<PathBuf> {
+    let Some(home) = crate::util::home_dir() else {
+        return Vec::new();
+    };
+    // Each entry is the location that toolchain's own installer documents.
+    let mut candidates: Vec<PathBuf> = vec![
+        home.join(".cargo").join("bin"),          // rustup
+        home.join(".local").join("bin"),          // pip / pipx / uv
+        home.join("go").join("bin"),              // go install
+        home.join(".bun").join("bin"),            // bun
+        home.join(".deno").join("bin"),           // deno
+        home.join(".volta").join("bin"),          // volta (node)
+        home.join(".dotnet").join("tools"),       // dotnet global tools
+    ];
+    if cfg!(windows) {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local).join("pnpm"));
+        }
+    } else {
+        candidates.push(home.join(".local").join("share").join("pnpm"));
+    }
+    candidates.retain(|p| p.is_dir());
+    candidates
+}
+
+#[cfg(test)]
+mod toolchain_tests {
+    use super::*;
+
+    /// Only real directories are offered, so a `PATH` never grows entries that
+    /// point at nothing.
+    #[test]
+    fn only_existing_directories_are_offered() {
+        for dir in toolchain_bin_dirs() {
+            assert!(dir.is_dir(), "{} was offered but does not exist", dir.display());
+        }
+    }
+
+    /// Fixed inputs, so the three rules are ASSERTED on every host — not only
+    /// on one that happens to be missing a toolchain.
+    fn split(v: &std::ffi::OsString) -> Vec<PathBuf> {
+        std::env::split_paths(v).collect()
+    }
+
+    /// Rule 1: every inherited entry survives, in its original order and
+    /// position. A criterion that worked before must still work.
+    #[test]
+    fn augmentation_preserves_every_inherited_entry() {
+        let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")])
+            .expect("something was missing, so there must be a result");
+        let after = split(&out);
+        for entry in &existing {
+            assert!(after.contains(entry), "dropped {}", entry.display());
+        }
+    }
+
+    /// Rule 2: appended, never prepended — a toolchain the operator put on
+    /// `PATH` deliberately keeps winning over a conventional location.
+    #[test]
+    fn inherited_entries_keep_their_priority() {
+        let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        let out = append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")])
+            .expect("something was missing, so there must be a result");
+        let after = split(&out);
+        assert_eq!(after[..existing.len()], existing[..], "inherited must lead");
+        assert_eq!(after.last(), Some(&PathBuf::from("/opt/tool/bin")));
+    }
+
+    /// Rule 3: nothing to add ⇒ `None`, so the child inherits the environment
+    /// untouched. The common case, and it must stay free.
+    #[test]
+    fn nothing_missing_means_the_environment_is_left_alone() {
+        let existing = vec![PathBuf::from("/usr/bin"), PathBuf::from("/opt/tool/bin")];
+        assert!(append_missing(&existing, vec![]).is_none());
+        assert!(
+            append_missing(&existing, vec![PathBuf::from("/opt/tool/bin")]).is_none(),
+            "a candidate already on PATH is not missing"
+        );
+    }
+
+    /// A candidate is never appended twice, however many times it is OFFERED.
+    ///
+    /// The offering list really does repeat here — an earlier version of this
+    /// test passed two distinct candidates, so it asserted ordering and called
+    /// it de-duplication (found in review).
+    #[test]
+    fn a_candidate_is_appended_at_most_once() {
+        let existing = vec![PathBuf::from("/usr/bin")];
+        let out = append_missing(
+            &existing,
+            vec![
+                PathBuf::from("/opt/a"),
+                PathBuf::from("/opt/b"),
+                PathBuf::from("/opt/a"),
+                PathBuf::from("/opt/a"),
+            ],
+        )
+        .expect("two distinct ones were missing");
+        let after = split(&out);
+        assert_eq!(
+            after,
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/opt/a"),
+                PathBuf::from("/opt/b"),
+            ],
+            "a repeated candidate must appear once, in first-offered order"
+        );
+    }
+
+    #[test]
+    fn resolves_finds_a_program_that_is_there() {
+        let program = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(resolves(program));
+    }
+
+    #[test]
+    fn resolves_rejects_a_program_that_is_not() {
+        assert!(!resolves("mustard-definitely-not-a-real-program-xyz"));
+    }
+}
+
+/// Can `program` be resolved the way a spawned criterion would resolve it —
+/// through `PATH` **or** through a conventional toolchain directory?
+///
+/// The single answer to "will the harness find this", so the `doctor` never
+/// reports a tool missing that `run_shell_with_deadline` would have found. Two
+/// resolvers would drift into telling the operator opposite things about the
+/// same machine.
+///
+/// Deliberately NOT a `which`/`where` subprocess: this is called from the
+/// doctor and from hook code, and a past Windows incident traced a session hang
+/// to child processes inheriting hook stdio pipes. Pure path arithmetic cannot
+/// hang.
+#[must_use]
+pub fn resolves(program: &str) -> bool {
+    // On Windows a bare name resolves through PATHEXT; check the spellings a
+    // toolchain shim actually ships with rather than guessing one.
+    let names: Vec<String> = if cfg!(windows) {
+        [".exe", ".cmd", ".bat", ""]
+            .iter()
+            .map(|ext| format!("{program}{ext}"))
+            .collect()
+    } else {
+        vec![program.to_string()]
+    };
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&inherited)
+        .chain(toolchain_bin_dirs())
+        .any(|dir| names.iter().any(|n| dir.join(n).is_file()))
+}
+
+/// `PATH` for a spawned criterion: the inherited one, plus any conventional
+/// toolchain directory it is missing.
+///
+/// `None` when there is nothing to add, so the child simply inherits the
+/// environment unchanged — the common case, and the one that must stay free.
+/// A directory already present is never appended twice.
+fn augmented_path() -> Option<std::ffi::OsString> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
+    append_missing(&existing, toolchain_bin_dirs())
+}
+
+/// The whole decision, as a pure function of its two inputs.
+///
+/// Split out so the rules below can be ASSERTED rather than observed: driven
+/// through [`augmented_path`], every test depends on what this particular
+/// machine happens to have installed, and on a host where nothing is missing
+/// the test asserts nothing at all while still reporting green (found in
+/// review).
+///
+/// Three rules, and they are the contract:
+/// 1. Every inherited entry survives, in its original order and position.
+/// 2. What is missing is APPENDED, so an inherited entry always wins.
+/// 3. Nothing to add ⇒ `None`, and the child inherits the environment untouched.
+fn append_missing(existing: &[PathBuf], candidates: Vec<PathBuf>) -> Option<std::ffi::OsString> {
+    // Filtered against BOTH the inherited entries and what has already been
+    // taken from this very list. Filtering only against `existing` let the same
+    // candidate in twice when it was offered twice — latent today, because
+    // `toolchain_bin_dirs` never repeats itself, and caught by the test that
+    // finally offered a duplicate (found in review).
+    let mut missing: Vec<PathBuf> = Vec::new();
+    for dir in candidates {
+        if existing.contains(&dir) || missing.contains(&dir) {
+            continue;
+        }
+        missing.push(dir);
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    let joined: Vec<PathBuf> = existing.iter().cloned().chain(missing).collect();
+    std::env::join_paths(joined).ok()
+}
 
 /// Spawn `exe args…` as a detached, long-lived background daemon whose open
 /// handles are NOT inherited from this process.
@@ -135,6 +354,9 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(path) = augmented_path() {
+        cmd.env("PATH", path);
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return ShellOutcome::SpawnFailed { error: e.to_string() },

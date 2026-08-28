@@ -419,6 +419,18 @@ pub enum SpecCmd {
         /// Why the criterion is being added. A blank reason is refused.
         #[arg(long)]
         reason: String,
+        /// Take the proof against ANOTHER checkout — one that does not carry
+        /// the work yet — instead of this tree.
+        ///
+        /// The negative proof asks whether a criterion can FAIL, which is only
+        /// answerable where the behaviour is absent. A criterion added to cover
+        /// work that ALREADY LANDED comes back green here, and green proves
+        /// nothing. Point this at a worktree of the base commit
+        /// (`git worktree add --detach <dir> <base>`); the spec is still read
+        /// and rewritten HERE, and the ledger records the commit the red was
+        /// taken on.
+        #[arg(long)]
+        proof_tree: Option<std::path::PathBuf>,
     },
     /// Declare the DESTINATION of one collected finding, and why it went there.
     ///
@@ -576,6 +588,7 @@ pub fn dispatch(cmd: SpecCmd) {
             command,
             expect,
             reason,
+            proof_tree,
         } => {
             spec::ac_add::run(spec::ac_add::AcAddOpts {
                 spec: slug,
@@ -584,6 +597,7 @@ pub fn dispatch(cmd: SpecCmd) {
                 command,
                 expect,
                 reason,
+                proof_tree,
             });
         }
         SpecCmd::MarkFinding { spec: slug, id, to, reason } => {

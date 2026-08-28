@@ -667,6 +667,11 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("statusline.prune.label", Locale::EnUs) => "to prune",
         ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
         ("statusline.harness.inert", Locale::EnUs) => "harness inert",
+        // Dormant is NOT inert: inert means someone switched the plugin off,
+        // dormant means its binary never downloaded. Same consequence (no hook
+        // runs), opposite remedy — so they must never share a label.
+        ("statusline.harness.dormant", Locale::PtBr) => "harness dormente",
+        ("statusline.harness.dormant", Locale::EnUs) => "harness dormant",
         ("crystallise.nudge", Locale::PtBr) => {
             "[Mustard] A unidade `{spec}` está aberta e o material da conversa não muda há \
              várias rodadas. O que foi assentado aqui — termos definidos, decisões com a \

@@ -73,7 +73,7 @@ fn build_segments(data: &Value) -> Vec<Segment> {
         segs.push(s);
     }
     // Mustard's own tail mark: harness version, or the yellow drift hint
-    // (`m{stamped}↑{current}`) when the project needs `/mustard:upsert`.
+    // (`m{stamped}→{current}`) when the project needs `/mustard:upsert`.
     if let Some(s) = mustard_segment(&cwd) {
         segs.push(s);
     }

@@ -32,6 +32,7 @@ use crate::hooks::write::work_branch_gate::WorkBranchGate;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
+use crate::hooks::session::dashboard_register_observer::DashboardRegisterObserver;
 use crate::hooks::session::statusline_heal_observer::StatuslineHealObserver;
 use crate::hooks::write::size_gate::SizeGate;
 use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
@@ -440,6 +441,19 @@ impl Registry {
                 applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(StatuslineHealObserver)),
+            },
+            Module {
+                id: "dashboard_register_observer",
+                // A project that USES Mustard announces itself to the
+                // dashboard's machine-level list on SessionStart. `mustard
+                // init` covers new installs; this covers every project that was
+                // ALREADY installed, which would otherwise stay invisible
+                // forever. Idempotent — an established project writes nothing.
+                // An `Observer` (pure side effect, no verdict); opt out with
+                // `MUSTARD_DASHBOARD_REGISTER=0`.
+                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(DashboardRegisterObserver)),
             },
             Module {
                 id: "prompt_submit_inject",
