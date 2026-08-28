@@ -703,19 +703,73 @@ fn find_last_qa_result(
     (true, overall, failed_count, criteria_count, Some(last.ts))
 }
 
-/// `Some(filename)` when the spec's acceptance source (`spec.md` / `wave-plan.md`)
-/// was modified strictly AFTER `qa_ts` — i.e. the recorded QA pass predates a
-/// spec edit and is therefore STALE. `None` when nothing changed after QA, no
-/// spec is known, or on any read error (fail-open: never block CLOSE on a sensor
-/// failure).
+/// The `codeState` fingerprint the last `qa.result` for `spec` was recorded
+/// against, or `None` when there is no record, or the record predates the field.
 ///
-/// Both timestamps are ISO-8601 UTC, so a lexicographic `>` is chronological.
-/// mtime-based by design: a post-QA write for ANY reason (folding a change
-/// request into `## Acceptance Criteria`, editing a criterion, a narrative
-/// amendment) is a legitimate re-verification trigger — and a re-render only
-/// bumps mtime when something actually edited the file, which is the very
-/// condition we want to catch.
-fn spec_edited_after(cwd: &str, spec: Option<&str>, qa_ts: &str) -> Option<String> {
+/// Kept apart from [`find_last_qa_result`] rather than widening its already
+/// five-wide tuple: three call sites read that tuple and only one needs this.
+fn last_qa_code_state(cwd: &str, spec: Option<&str>) -> Option<String> {
+    let spec_name = spec.filter(|s| !s.is_empty())?;
+    let events_dir = ClaudePaths::for_project(Path::new(cwd))
+        .ok()?
+        .for_spec(spec_name)
+        .ok()
+        .map(|sp| sp.events_dir())?;
+    let mut events = read_harness_events_from_ndjson_dir(&events_dir);
+    events.sort_by(|a, b| a.ts.cmp(&b.ts));
+    events
+        .into_iter()
+        .rfind(|ev| {
+            ev.event == "qa.result"
+                && ev
+                    .payload
+                    .get("spec")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|s| s == spec_name)
+        })?
+        .payload
+        .get(crate::shared::code_state::CODE_STATE_KEY)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// What went stale since the recorded QA pass, or `None` when nothing did.
+///
+/// Two things can invalidate a recorded run, and until this unit only the first
+/// was checked:
+///
+/// 1. **The acceptance source moved.** `spec.md` / `wave-plan.md` modified
+///    strictly after `qa_ts`. Returns the filename. mtime-based by design: a
+///    post-QA write for ANY reason (folding a change request into
+///    `## Acceptance Criteria`, editing a criterion, a narrative amendment) is a
+///    legitimate re-verification trigger.
+/// 2. **The CODE moved.** The tree no longer matches the fingerprint the run was
+///    recorded against ([`crate::shared::code_state`]). Returns
+///    `"the source tree"`.
+///
+/// **The second one is the hole.** The check watched the spec file and nothing
+/// else, so editing the spec invalidated the record while editing the code did
+/// not — the file that almost never changes gated, and the one that always
+/// changes did not. A unit could therefore close on a green observed BEFORE the
+/// change under review, which is the "nobody watched this pass" outcome the QA
+/// law exists to prevent. Reproduced on this repository, 2026-08-27.
+///
+/// A record carrying NO fingerprint (written before this field existed, or on a
+/// machine with no git) is not treated as stale on that account: the check
+/// degrades to the spec-mtime half it always had, so an old record keeps
+/// behaving exactly as it used to rather than blocking every close on upgrade.
+/// It is [`crate::shared::code_state::still_current`] that is fail-closed —
+/// once a fingerprint IS recorded, an unanswerable comparison re-runs.
+///
+/// `None` also on no spec and on any read error (fail-open: never block CLOSE on
+/// a sensor failure). Both timestamps are ISO-8601 UTC, so a lexicographic `>`
+/// is chronological.
+fn spec_edited_after(
+    cwd: &str,
+    spec: Option<&str>,
+    qa_ts: &str,
+    qa_code_state: Option<&str>,
+) -> Option<String> {
     let spec = spec.filter(|s| !s.is_empty())?;
     let sp = ClaudePaths::for_project(Path::new(cwd)).ok()?.for_spec(spec).ok()?;
     let dir = sp.dir();
@@ -725,6 +779,13 @@ fn spec_edited_after(cwd: &str, spec: Option<&str>, qa_ts: &str) -> Option<Strin
                 return Some(name.to_string());
             }
         }
+    }
+    // Only ask when the record actually carries a fingerprint — see above on why
+    // an old record must not be invalidated merely for predating the field.
+    if qa_code_state.is_some_and(|recorded| {
+        !crate::shared::code_state::still_current(Path::new(cwd), Some(recorded))
+    }) {
+        return Some("the source tree".to_string());
     }
     None
 }
@@ -1366,13 +1427,14 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                 return Verdict::Deny { reason };
             }
             // warn → fall through.
-        } else if let Some(stale_file) =
-            qa_ts.as_deref().and_then(|ts| spec_edited_after(cwd, spec_ref, ts))
-        {
-            // QA passed, but the spec's acceptance source changed AFTER the QA
-            // ran — the green was never re-verified against the current criteria
-            // (e.g. a mid-pipeline change request folded into a new AC). Hold
-            // CLOSE until `qa-run` re-runs.
+        } else if let Some(stale_file) = qa_ts.as_deref().and_then(|ts| {
+            spec_edited_after(cwd, spec_ref, ts, last_qa_code_state(cwd, spec_ref).as_deref())
+        }) {
+            // QA passed, but something moved AFTER the run — the spec's
+            // acceptance source (a mid-pipeline change request folded into a new
+            // AC), or the SOURCE TREE itself. Either way the green was never
+            // observed against what is here now. Hold CLOSE until `qa-run`
+            // re-runs.
             let reason = format_gate_message(
                 "Close Gate",
                 &spec_ref.map_or_else(
@@ -1728,13 +1790,46 @@ mod tests {
         let cwd_str = cwd.to_string_lossy().into_owned();
         // QA ran in the distant past → the just-written spec.md is newer → stale.
         assert_eq!(
-            spec_edited_after(&cwd_str, Some("feat"), "2000-01-01T00:00:00.000Z").as_deref(),
+            spec_edited_after(&cwd_str, Some("feat"), "2000-01-01T00:00:00.000Z", None).as_deref(),
             Some("spec.md"),
         );
         // QA ran in the distant future → spec.md predates it → fresh.
-        assert!(spec_edited_after(&cwd_str, Some("feat"), "2999-01-01T00:00:00.000Z").is_none());
+        assert!(
+            spec_edited_after(&cwd_str, Some("feat"), "2999-01-01T00:00:00.000Z", None).is_none()
+        );
         // No spec known → fail-open None.
-        assert!(spec_edited_after(&cwd_str, None, "2000-01-01T00:00:00.000Z").is_none());
+        assert!(spec_edited_after(&cwd_str, None, "2000-01-01T00:00:00.000Z", None).is_none());
+    }
+
+    /// **The hole this unit closes.** A record whose fingerprint no longer
+    /// matches the tree is STALE even when the spec has not been touched since —
+    /// the case that used to close a unit on a green observed before the change
+    /// under review.
+    #[test]
+    fn code_moved_after_qa_is_stale_even_with_an_untouched_spec() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let sp = ClaudePaths::for_project(cwd).unwrap().for_spec("feat").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Spec\n## Acceptance Criteria\n- AC-1\n").unwrap();
+        let cwd_str = cwd.to_string_lossy().into_owned();
+        // Far-future timestamp, so the spec-mtime half can never be what fires.
+        let future = "2999-01-01T00:00:00.000Z";
+
+        // A fingerprint that describes no tree → the record does not describe
+        // this one → stale, and the reason names the tree, not a file.
+        assert_eq!(
+            spec_edited_after(&cwd_str, Some("feat"), future, Some("deadbeefdeadbeef")).as_deref(),
+            Some("the source tree"),
+        );
+
+        // A record carrying NO fingerprint keeps the old behaviour rather than
+        // blocking every close on upgrade — the degradation, stated as a test so
+        // it is a choice and not an accident.
+        assert!(
+            spec_edited_after(&cwd_str, Some("feat"), future, None).is_none(),
+            "a record written before the field existed must not be invalidated for that alone"
+        );
     }
 
     /// Item-#1 regression: only change requests recorded AFTER the QA timestamp
