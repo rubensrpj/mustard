@@ -31,11 +31,10 @@
 //! `find_mustard_root()` is intentionally NOT used — the user-selected `path`
 //! is the target, not the dashboard's own scaffold root.
 
-use mustard_core::ClaudePaths;
 use mustard_core::ProjectConfig;
 use mustard_core::io::fs;
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use serde::Serialize;
+use std::path::Path;
 
 /// Result of inspecting a folder for a Mustard installation.
 #[derive(Serialize)]
@@ -94,103 +93,45 @@ pub fn uninstall_mustard(path: String) -> Result<(), String> {
 
 /// One entry in the machine-level project registry.
 ///
-/// Keys are snake_case like every other value this crate returns — the desktop
-/// build's `projects.json` used `addedAt` because it was written by the browser
-/// side, and that spelling died with the plugin-store that produced it.
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-pub struct ProjectEntry {
-    /// Absolute filesystem path. Doubles as the entry's identity.
-    pub path: String,
-    /// Display label — defaults to the trailing segment of `path`.
-    pub name: String,
-    /// ISO-8601 timestamp the entry was added (UTC).
-    pub added_at: String,
-}
+/// Re-exported from `mustard_core`, not declared here. The format used to have
+/// its only implementation in this crate, which the CLI cannot reach — so
+/// `mustard init` had no way to record the project it had just created, and the
+/// dashboard opened on an empty list (field, 2026-08-28). Moving the type and
+/// its IO to the core gave the format ONE owner and two callers, instead of two
+/// owners drifting apart.
+pub use mustard_core::dashboard_registry::ProjectEntry;
 
-/// Where the registry is persisted: `~/.claude/dashboard-projects.json`.
-///
-/// Composed through [`ClaudePaths`] so the `.claude` segment cannot drift from
-/// the rest of the harness. `None` when the home directory does not resolve —
-/// callers degrade to an empty registry rather than inventing a location.
-fn registry_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let paths = ClaudePaths::for_project(&home).ok()?;
-    Some(paths.claude_dir().join("dashboard-projects.json"))
-}
-
-/// Read the registry. Fail-open: a missing, unreadable or malformed file is an
-/// empty list, never an error — an operator who has registered nothing and an
-/// operator whose file we cannot parse both want the dashboard to open.
-fn read_registry() -> Vec<ProjectEntry> {
-    let Some(path) = registry_path() else {
-        return Vec::new();
-    };
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    serde_json::from_str(&raw).unwrap_or_default()
-}
-
-/// Persist the registry, creating `~/.claude/` when it does not exist yet.
-fn write_registry(entries: &[ProjectEntry]) -> Result<(), String> {
-    let path = registry_path().ok_or_else(|| "cannot resolve the home directory".to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
-    }
-    let body = serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?;
-    fs::write_atomic(&path, body.as_bytes())
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))
-}
-
-/// Extract the trailing path segment as a display name. Handles both forward
-/// and back slashes (Windows + POSIX) and trims trailing separators.
-fn basename(path: &str) -> String {
-    let trimmed = path.trim_end_matches(['/', '\\']);
-    match trimmed.rfind(['/', '\\']) {
-        Some(idx) => trimmed[idx + 1..].to_string(),
-        None => trimmed.to_string(),
-    }
-}
+use mustard_core::dashboard_registry as registry;
 
 /// The registered projects, oldest first.
 pub fn list_registered() -> Result<Vec<ProjectEntry>, String> {
-    Ok(read_registry())
+    Ok(registry::read())
 }
 
 /// Register `path`, returning the whole list so the caller re-renders from one
 /// answer. Registering an already-registered path is a no-op, not an error —
 /// the operator's intent ("track this folder") is already satisfied.
 pub fn register(path: String) -> Result<Vec<ProjectEntry>, String> {
-    let mut entries = read_registry();
-    if entries.iter().any(|e| e.path == path) {
-        return Ok(entries);
-    }
-    entries.push(ProjectEntry {
-        name: basename(&path),
-        path,
-        added_at: mustard_core::time::now_iso8601(),
-    });
-    write_registry(&entries)?;
-    Ok(entries)
+    registry::register(std::path::Path::new(&path))?;
+    Ok(registry::read())
 }
 
 /// Drop `path` from the registry, returning the remaining list. Removing an
 /// absent path is a no-op. This does NOT touch the project on disk — that is
 /// [`uninstall_mustard`].
 pub fn unregister(path: String) -> Result<Vec<ProjectEntry>, String> {
-    let mut entries = read_registry();
+    let mut entries = registry::read();
     let before = entries.len();
     entries.retain(|e| e.path != path);
     if entries.len() != before {
-        write_registry(&entries)?;
+        registry::write(&entries)?;
     }
     Ok(entries)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::basename;
+    use mustard_core::dashboard_registry::basename;
 
     #[test]
     fn basename_takes_the_trailing_segment_on_both_separators() {

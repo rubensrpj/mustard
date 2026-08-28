@@ -761,6 +761,49 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
     println!("  wrote mustard.json");
     Ok(())
 }
+
+/// Tell the dashboard this machine has one more Mustard project.
+///
+/// **An environment act, so it lives on the binary side** — `cli::dispatch`
+/// calls it, never the library. `~/.claude/` is outside the project, and
+/// `library_is_pure` enforces that a library call never writes there; it caught
+/// exactly this function placed one layer too deep. Same shape, and same
+/// reason, as [`ensure_global_permissions_if_opted_in`].
+///
+/// `mustard.json` having just been written is the one moment a project becomes
+/// a Mustard project, so it is the only honest moment to record it. Before
+/// this, the machine-level registry had a single writer — the dashboard's own
+/// "add folder" button — so installing Mustard told the dashboard nothing: the
+/// operator installed, opened the dashboard and met an empty list with no hint
+/// that anything was missing (reported in the field, 2026-08-28).
+///
+/// **Never fails the install.** A dashboard listing is a convenience, and an
+/// unwritable home directory is not a reason to refuse a project its harness.
+/// Idempotent by path, so a re-run adds no second row and says so.
+///
+/// This is NOT the global-settings write that [`ensure_global_permissions`]
+/// guards behind `MUSTARD_GLOBAL_PERMISSIONS`: that rule protects the user's
+/// own `~/.claude/settings.json`, which Mustard has no business editing
+/// unprompted. This writes a file Mustard itself owns, whose whole purpose is
+/// to list the projects it was installed into.
+pub(crate) fn register_with_dashboard(project_path: &Path) {
+    use mustard_core::dashboard_registry::{register, RegisterOutcome};
+    // The registry's identity is the absolute path — a relative one would
+    // register a row that resolves differently depending on where the dashboard
+    // was started.
+    let absolute = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    match register(&absolute) {
+        Ok(RegisterOutcome::Added) => {
+            println!("  registered with the dashboard (~/.claude/dashboard-projects.json)");
+        }
+        Ok(RegisterOutcome::AlreadyPresent) => {}
+        Err(err) => {
+            eprintln!("[mustard] warning: could not register with the dashboard: {err}");
+        }
+    }
+}
 /// The binary-side face of [`ensure_global_permissions`].
 ///
 /// Exists so `cli::dispatch` can take this environment act without the library
