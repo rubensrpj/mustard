@@ -62,10 +62,7 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
             continue;
         }
 
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
         for entry in entries {
             if !entry.is_dir {
                 continue;
@@ -80,13 +77,20 @@ pub fn discover(root: &Path) -> Result<Vec<Project>, String> {
     Ok(results)
 }
 
+/// As duas constantes são os valores PUBLICADOS do FNV-1a de 64 bits — a base
+/// de deslocamento e o primo. Agrupar os dígitos faria com que não batessem com
+/// nenhuma referência publicada, e a sugestão do clippy para o primo chega a
+/// preencher com um zero à esquerda (`0x0100_0000_01b3`), que muda a aparência
+/// do número sem mudar o valor. Uma constante de algoritmo se copia, não se
+/// formata.
+#[allow(clippy::unreadable_literal)]
 fn fnv1a_hex(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in bytes {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
-    format!("{:016x}", h)
+    format!("{h:016x}")
 }
 
 fn mtime_ms(p: &Path) -> Option<u64> {

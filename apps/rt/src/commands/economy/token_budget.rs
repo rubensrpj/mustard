@@ -71,10 +71,10 @@ impl PrioritizedItem {
 ///   emitted). Callers worried about a "single must-keep item too big" case
 ///   should pre-clip the text or raise the budget.
 #[must_use]
-pub fn prune_to_budget<'a>(
-    candidates: &'a [PrioritizedItem],
+pub fn prune_to_budget(
+    candidates: &[PrioritizedItem],
     budget: usize,
-) -> Vec<&'a PrioritizedItem> {
+) -> Vec<&PrioritizedItem> {
     let mut kept = Vec::with_capacity(candidates.len());
     let mut used: usize = 0;
     for item in candidates {
@@ -160,6 +160,6 @@ mod tests {
         let items = vec![PrioritizedItem::new("abcd", 1)];
         let kept = prune_to_budget(&items, 1);
         assert_eq!(kept.len(), 1);
-        assert!(std::ptr::eq(kept[0], &items[0]));
+        assert!(std::ptr::eq(kept[0], &raw const items[0]));
     }
 }

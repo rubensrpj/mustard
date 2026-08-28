@@ -192,6 +192,24 @@ map_unwrap_or = "allow"
 # (`.md`, `.json`, `.rs`, `.toml`). A case-insensitive match would over-match
 # files we intentionally ignore (e.g. screenshot `.PNG` from external tools).
 case_sensitive_file_extension_comparisons = "allow"
+#
+# A `Result` that never errs is the SHAPE OF AN INTERFACE here, not a claim
+# that this implementation can fail. Three places rely on it and all three
+# would get worse if the wrapper were removed: (1) the dashboard's HTTP
+# handlers, where `server.rs` maps every argument table onto a uniform
+# `Result<T, String>` — one handler returning a bare `T` would need its own
+# branch in the dispatcher; (2) ports whose OTHER implementations do fail, so
+# the trait's signature is fixed elsewhere; (3) functions that document the
+# reservation out loud, like `economy::sources::rtk::ingest_with` — "the only
+# `Err` shape is reserved for future variants that need to escalate".
+# Verified by reading all three before muting, not assumed.
+unnecessary_wraps = "allow"
+#
+# Every instance is `&I18n` — a two-byte language tag. Clippy is right that
+# passing it by value is marginally cheaper; it is also a change that touches
+# every call site of the rendering layer to buy something no benchmark here
+# could measure. Internal API, no published surface, nothing to police.
+trivially_copy_pass_by_ref = "allow"
 
 # `.unwrap()` panics — a panic in a hook breaks the fail-open contract. Deny
 # it crate-wide. Clippy already exempts `#[cfg(test)]` code from this lint, so

@@ -288,7 +288,7 @@ mod tests {
                 assert_eq!(entry.child_id, "b");
                 assert!(entry.first_message.contains("stub"));
             }
-            other => panic!("expected Blocked, got {other:?}"),
+            other @ ConsolidationCheck::Allowed => panic!("expected Blocked, got {other:?}"),
         }
     }
 

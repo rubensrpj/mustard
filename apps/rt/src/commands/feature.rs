@@ -33,8 +33,8 @@ mod feature_retrieval;
 
 /// Extract domain terms from a free-text intent: lowercased alphanumeric runs
 /// >=3 chars, DEDUPED (first-occurrence order preserved), capped. The digest
-/// matches by token, so over-querying is harmless (it ORs); the AI refines. No
-/// language/framework knowledge.
+/// > matches by token, so over-querying is harmless (it ORs); the AI refines. No
+/// > language/framework knowledge.
 ///
 /// The orchestration layer now passes the cross-lingual translation INSIDE the
 /// intent (`--intent "<PT words> <english translation>"`), so the same concept

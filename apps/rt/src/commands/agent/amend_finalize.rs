@@ -156,7 +156,7 @@ fn read_windows_for_session(project_root: &Path, session_id: &str) -> Vec<(Strin
         }
         // Match by session if window declares it; otherwise include (legacy).
         match &win.session_id {
-            Some(s) if s != session_id => continue,
+            Some(s) if s != session_id => {}
             _ => out.push((spec_id, win)),
         }
     }

@@ -710,8 +710,7 @@ fn write_html_report(cwd: &Path, result: &VerifyResult) -> Option<PathBuf> {
     Some(path)
 }
 
-/// Emit `pipeline.economy.operation.invoked` for one verify run.
-
+/// Emit `pipeline.economy.operation.invoked` for one verify run.///
 /// Dispatch `mustard-rt run verify-pipeline`.
 pub fn run(format: &str) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

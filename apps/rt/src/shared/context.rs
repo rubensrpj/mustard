@@ -5,6 +5,7 @@
 //! process environment, mirroring how the JS scripts did (`CLAUDE_PROJECT_DIR`,
 //! `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`).
 
+use std::fmt::Write as _;
 use mustard_core::io::fs;
 use mustard_core::io::workspace::{workspace_root, WorkspaceError};
 use mustard_core::ClaudePaths;
@@ -246,8 +247,12 @@ fn active_spec_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 /// Per-`(project, session)` memo of [`spec_for_session`]; evicted by
 /// [`invalidate_session_spec`] whenever the `active-spec` marker is (re)written or
 /// removed, so a resolve after a binding change reflects disk.
-fn session_spec_cache() -> &'static Mutex<HashMap<(String, String), Option<String>>> {
-    static CACHE: OnceLock<Mutex<HashMap<(String, String), Option<String>>>> = OnceLock::new();
+/// Chave `(raiz, sessão)` para a spec que aquela sessão resolveu — `None` quando
+/// a resolução deu em nada, o que também vale a pena lembrar.
+type SessionSpecCache = Mutex<HashMap<(String, String), Option<String>>>;
+
+fn session_spec_cache() -> &'static SessionSpecCache {
+    static CACHE: OnceLock<SessionSpecCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -302,7 +307,7 @@ pub fn workspace_root_strict() -> Result<PathBuf, WorkspaceError> {
 /// 2. `CLAUDE_PROJECT_DIR` env var.
 /// 3. `std::env::current_dir()`.
 /// 4. `"."` as a last resort.
-/// The raw process working directory as a `String`, defaulting to `"."`.
+///    The raw process working directory as a `String`, defaulting to `"."`.
 ///
 /// This is the plain `std::env::current_dir()` idiom (NOT the workspace-root
 /// walk of [`project_dir`]) — the single home for the `current_dir → String`
@@ -944,11 +949,11 @@ pub fn clarify_marker_body(
         .filter(|t| !t.is_empty())
         .collect();
     if !terms.is_empty() {
-        body.push_str(&format!("terms={}\n", terms.join(", ")));
+        let _ = writeln!(body, "terms={}", terms.join(", "));
     }
     let reason = one_line(reason);
     if !reason.is_empty() {
-        body.push_str(&format!("reason={reason}\n"));
+        let _ = writeln!(body, "reason={reason}");
     }
     body
 }

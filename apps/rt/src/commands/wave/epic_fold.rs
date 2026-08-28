@@ -177,7 +177,7 @@ fn write_knowledge_entry(
     fm.insert("concluded_at".into(), json!(concluded_at));
     fm.insert(
         "spec_children".into(),
-        json!(children.iter().cloned().collect::<Vec<_>>()),
+        json!(children.to_vec()),
     );
     fm.insert("status".into(), json!("active"));
     let body = format!("{description}\n\n{content}\n");

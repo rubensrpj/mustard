@@ -62,6 +62,7 @@
 //! anything: the dev leg's decision to skip has to consult every leg its work
 //! block repairs.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -189,9 +190,9 @@ fn forge_lock(dir: &Path, manifest: &str, packages: &[(&str, &str, bool)]) -> Pa
          version = 4\n",
     );
     for (name, version, foreign) in packages {
-        raw.push_str(&format!("\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n"));
+        let _ = write!(raw, "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n");
         if *foreign {
-            raw.push_str(&format!("source = \"{REGISTRY}\"\nchecksum = \"00\"\n"));
+            let _ = write!(raw, "source = \"{REGISTRY}\"\nchecksum = \"00\"\n");
         }
         raw.push_str("dependencies = [\n \"nothing\",\n]\n");
     }

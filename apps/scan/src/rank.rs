@@ -287,11 +287,11 @@ pub fn stratified_order(strata: &[&str], max: usize) -> Vec<usize> {
         }
     }
     // Fill the rest in relevance order.
-    for i in 0..n {
+    for (i, is_taken) in taken.iter().enumerate().take(n) {
         if out.len() >= max {
             break;
         }
-        if !taken[i] {
+        if !is_taken {
             out.push(i);
         }
     }

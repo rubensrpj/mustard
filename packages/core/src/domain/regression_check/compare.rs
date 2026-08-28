@@ -190,6 +190,7 @@ fn normalise_for_ast(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use crate::domain::regression_check::TextSpan;
     use std::path::PathBuf;
 
@@ -317,7 +318,7 @@ mod tests {
     fn synthetic_capture(idx: usize, variant: &str) -> FunctionCapture {
         let mut body = format!("pub fn synth_{idx}() -> i32 {{\n");
         for j in 0..18 {
-            body.push_str(&format!("    let v_{j} = {idx} + {j} + {variant:?};\n"));
+            let _ = writeln!(body, "    let v_{j} = {idx} + {j} + {variant:?};");
         }
         body.push_str("    0\n}\n");
         FunctionCapture {

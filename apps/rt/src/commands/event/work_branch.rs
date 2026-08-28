@@ -144,8 +144,8 @@ pub(crate) fn sanitize_git_ref(raw: &str) -> String {
         out = out.replace("..", "-");
     }
     let trimmed = out
-        .trim_start_matches(|c| c == '-' || c == '.' || c == '/')
-        .trim_end_matches(|c| c == '/' || c == '.');
+        .trim_start_matches(['-', '.', '/'])
+        .trim_end_matches(['/', '.']);
     if trimmed.is_empty() {
         "work".to_string()
     } else {
@@ -168,7 +168,7 @@ pub(crate) fn sanitize_git_ref(raw: &str) -> String {
 ///    the directory cannot be two different spellings of one unit;
 /// 3. else a date-based fallback (`YYYY-MM-DD` from the event `ts`) suffixed
 ///    with a short session id for uniqueness.
-/// Never fails — every branch degrades to a valid ref.
+///    Never fails — every branch degrades to a valid ref.
 pub(crate) fn compute_work_branch(
     kind: WorkKind,
     spec: &str,
@@ -337,8 +337,8 @@ pub(crate) fn checkout_work_branch(
 ///    - otherwise → `git fetch origin B:B`, a refspec fetch git refuses to
 ///      make non-ff, so it safely fast-forwards the local ref without a
 ///      checkout.
-///    Every per-base error (no matching origin ref, a diverged base, a base
-///    checked out in another worktree, …) is ignored — best-effort, keep going.
+///      Every per-base error (no matching origin ref, a diverged base, a base
+///      checked out in another worktree, …) is ignored — best-effort, keep going.
 ///
 /// **`cut_from` is why the set is no longer the declared flow alone.** The
 /// pre-selected list used to BE the set of bases a cut could start from — the

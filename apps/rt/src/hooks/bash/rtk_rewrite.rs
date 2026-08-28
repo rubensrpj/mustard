@@ -347,14 +347,11 @@ fn env_token_end(rest: &str) -> usize {
         if escaped {
             continue;
         }
-        match quote {
-            Some(q) => {
-                if c == q {
-                    quote = None;
-                }
-                continue;
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
             }
-            None => {}
+            continue;
         }
         match c {
             '\'' | '"' => quote = Some(c),

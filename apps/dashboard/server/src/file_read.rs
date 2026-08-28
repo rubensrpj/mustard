@@ -121,15 +121,12 @@ fn read_file_impl(repo_path: &str, rel_path: &str) -> FileContent {
     // Read the raw bytes (capped at MAX_BYTES + 1 so we can tell "exactly the
     // cap" from "larger than the cap"). A missing file / IO error is not
     // readable, never an Err.
-    let raw = match read_capped(&path, MAX_BYTES + 1) {
-        Some(bytes) => bytes,
-        None => {
+    let Some(raw) = read_capped(&path, MAX_BYTES + 1) else {
             return FileContent {
                 language,
                 ..Default::default()
             };
-        }
-    };
+        };
 
     // True on-disk size for the metadata, independent of how much we read.
     let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);

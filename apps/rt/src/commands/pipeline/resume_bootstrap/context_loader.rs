@@ -100,7 +100,7 @@ pub(super) fn load_pruned_prior_summaries(
         by_wave.push((n, dir_name, summary_path));
     }
     // Sort descending by wave number so most-recent prior wave is first.
-    by_wave.sort_by(|a, b| b.0.cmp(&a.0));
+    by_wave.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     for (n, dir_name, path) in by_wave {
         // T6.4 — when the operational spec declared its inheritance via wikilinks,
@@ -181,7 +181,7 @@ pub(super) fn generate_context_on_resume(
         // Limit to the count we actually loaded (kept count) — for parity with
         // what the agent sees.
         .take(kept_summary_texts.len().max(1))
-        .map(|addr| WikiLink::new(addr))
+        .map(WikiLink::new)
         .collect();
 
     // Position map: every wave dir under spec_dir, sorted by wave number.
@@ -239,7 +239,7 @@ fn wave_summary_addresses(spec_dir: &Path, current_wave: u32) -> Vec<String> {
         }
         rows.push((n, format!("{}/_summary", entry.file_name)));
     }
-    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.sort_by_key(|a| std::cmp::Reverse(a.0));
     rows.into_iter().map(|(_, addr)| addr).collect()
 }
 
@@ -316,8 +316,7 @@ mod tests {
     /// the operational wave. Returns the spec dir.
     fn seed_12_wave_spec(spec_dir: &Path, declare_wikilinks: bool) {
         // 13 prior waves, each with a ~30 000-character _summary.md.
-        let big_body: String = std::iter::repeat("regressao detectada palavra ")
-            .take(1_200) // 28 chars × 1_200 ≈ 33 600 chars ≈ 8 400 tokens each
+        let big_body: String = std::iter::repeat_n("regressao detectada palavra ", 1_200) // 28 chars × 1_200 ≈ 33 600 chars ≈ 8 400 tokens each
             .collect();
         for n in 0..13u32 {
             let wave_dir = spec_dir.join(format!("wave-{n}-rt"));

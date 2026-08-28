@@ -840,6 +840,12 @@ const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] = &[
 /// current seed fixes stayed in force — with the version stamp bumped, which
 /// silenced the drift notice on top. An untouched seed is Mustard's own
 /// text; only an operator's EDIT earns preservation.
+///
+/// The literals carry no digit separators on purpose: the ratchet test PRINTS
+/// the fingerprint it expects, and the operator pastes that value in. Grouping
+/// the digits by hand on every paste is an editing step that buys nothing —
+/// nobody reads a 64-bit hash, they compare it against the tool's output.
+#[allow(clippy::unreadable_literal)]
 const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
     0x1c5e2e706274fc17,
     0x0fb06c788d11566b,
@@ -883,6 +889,10 @@ const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
 
 /// Superseded versions of the `dispatch.md` seed. It grows the same way the
 /// orchestrator catalog does — the ratchet below reads this file's own history.
+///
+/// Sem separadores de dígito pela mesma razão do catálogo acima: o teste-catraca
+/// IMPRIME o valor e o operador cola.
+#[allow(clippy::unreadable_literal)]
 const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[
     // The split-era seed, superseded by the rule-first rewrite: the paragraph
     // arguing why the router needed two events moved to
@@ -2591,11 +2601,11 @@ mod tests {
         // Derived from the seeds, so this is a property and not a second list.
         for seed in [SETTINGS_JSON, SETTINGS_LOCAL_JSON, CLAUDE_GITIGNORE_PATH] {
             let lifted = format!("**/{seed}");
-            assert!(rules.iter().any(|p| *p == lifted), "{lifted} missing: {rules:?}");
+            assert!(rules.contains(&lifted), "{lifted} missing: {rules:?}");
         }
         for name in harness_claude_output() {
             let expected = format!("**/.claude/{name}");
-            assert!(rules.iter().any(|p| *p == expected), "{expected} missing: {rules:?}");
+            assert!(rules.contains(&expected), "{expected} missing: {rules:?}");
         }
         // Every documented directory that is not client-authored MUST be covered.
         // This is the direction the ratchet lacked: it validated the rules that
@@ -2608,7 +2618,7 @@ mod tests {
             }
             let expected = format!("**/.claude/{dir}/");
             assert!(
-                rules.iter().any(|p| *p == expected),
+                rules.contains(&expected),
                 "{expected} missing — a documented harness directory with no rule leaks: {rules:?}",
             );
         }

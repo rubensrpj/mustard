@@ -111,13 +111,12 @@ fn json_deps(txt: &str, paths: &[String]) -> Vec<String> {
 
 fn json_scripts(txt: &str, path: &str) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt) {
-        if let Some(map) = v.get(path).and_then(|d| d.as_object()) {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt)
+        && let Some(map) = v.get(path).and_then(|d| d.as_object()) {
             for (k, val) in map {
                 out.push(format!("{k}: {}", val.as_str().unwrap_or("")));
             }
         }
-    }
     out
 }
 
@@ -138,14 +137,13 @@ fn toml_sections(txt: &str, sections: &[String]) -> Vec<String> {
             in_deps = sections.iter().any(|s| header == s || header.ends_with(&format!(".{s}")));
             continue;
         }
-        if in_deps {
-            if let Some(idx) = t.find(|c| c == '=' || c == ' ') {
+        if in_deps
+            && let Some(idx) = t.find(['=', ' ']) {
                 let name = t[..idx].trim();
                 if !name.is_empty() && !name.starts_with('#') {
                     out.push(name.to_string());
                 }
             }
-        }
     }
     out
 }

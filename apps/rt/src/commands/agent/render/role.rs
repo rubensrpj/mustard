@@ -77,12 +77,10 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
              Emit exactly one valid-JSON block on a single line; if you cannot, omit it and the manual \
              review-result path still records the verdict."
         ),
-        "qa" => format!(
-            "ROLE: qa\n\
+        "qa" => "ROLE: qa\n\
              You run each Acceptance Criterion command in the spec and report pass/fail. You do \
              NOT fix anything. Run the exact `Command:` from each AC and capture its real output. \
-             Deliver: per-AC pass/fail + the proving output; overall=pass only if every AC passes."
-        ),
+             Deliver: per-AC pass/fail + the proving output; overall=pass only if every AC passes.".to_string(),
         _ => format!(
             "ROLE: {role}\n\
              You implement inside {subproject} ONLY — never touch another subproject, the spec, or \

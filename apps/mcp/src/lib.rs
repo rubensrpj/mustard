@@ -740,6 +740,9 @@ fn run_summary_for_phase(
     }
 }
 
+// O `async` sem `.await` e gerado pela macro `#[tool_handler]`, do crate rmcp —
+// nao ha corpo nosso aqui para reescrever, e a assinatura e a que o trait exige.
+#[allow(clippy::unused_async_trait_impl)]
 #[tool_handler]
 impl ServerHandler for MustardMemory {
     /// Advertise the server identity and the single declared capability

@@ -331,9 +331,6 @@ fn parse_netstat_pids(text: &str, port: u16) -> Vec<u32> {
     pids
 }
 
-/// Parse PIDs from `lsof -ti` output — one PID per line. Pure string parse —
-/// unit-testable without spawning `lsof`.
-#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 /// The exact shell query the Unix reap runs. A function so the test can pin
 /// the `-sTCP:LISTEN` state filter — the one token whose absence turns the
 /// reap into a session-killer (see [`free_port`]).
@@ -342,6 +339,20 @@ fn lsof_listener_query(port: u16) -> String {
     format!("lsof -ti tcp:{port} -sTCP:LISTEN")
 }
 
+/// Parse PIDs from `lsof -ti` output — one PID per line. Pure string parse —
+/// unit-testable without spawning `lsof`.
+///
+/// The `allow` belongs to THIS function and it drifted: `lsof_listener_query`
+/// was inserted between this doc comment and the function it describes, so both
+/// landed on the newcomer — which is itself `#[cfg(not(windows))]` and is
+/// stripped on Windows, taking the guard with it. On Windows the only remaining
+/// callers of `parse_lsof_pids` are the `#[cfg(not(windows))]` reap and the test
+/// module, so it went `dead_code` in the binary target, where the crate-root
+/// `#![allow(dead_code)]` does not apply. Invisible while warnings were merely
+/// warnings; the third thing `-D warnings` caught. Its twin
+/// [`parse_netstat_pids`] never lost its own guard, which is why the asymmetry
+/// never showed up on Linux.
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn parse_lsof_pids(text: &str) -> Vec<u32> {
     let mut pids = Vec::new();
     for line in text.lines() {

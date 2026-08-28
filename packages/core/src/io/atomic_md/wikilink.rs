@@ -26,6 +26,7 @@
 //! - **Orphan marking.** Links that cannot be resolved to a real file get a
 //!   `⚠ unresolved` annotation in the footer (internal artefact ⇒ English).
 
+use std::fmt::Write as _;
 use super::store::MarkdownDoc;
 use std::path::{Path, PathBuf};
 
@@ -174,10 +175,10 @@ pub fn render_footer(body: &str, search_dirs: &[&Path]) -> String {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(name);
-                footer.push_str(&format!("- [{name}]({display})\n"));
+                let _ = writeln!(footer, "- [{name}]({display})");
             }
             None => {
-                footer.push_str(&format!("- [{name}](?) ⚠ unresolved\n"));
+                let _ = writeln!(footer, "- [{name}](?) ⚠ unresolved");
             }
         }
     }

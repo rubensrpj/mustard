@@ -116,10 +116,7 @@ fn read_window(project_dir: &str, spec_id: &str) -> WindowState {
     let Some(path) = window_path(project_dir, spec_id) else {
         return WindowState::default();
     };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return WindowState::default(),
-    };
+    let Ok(text) = std::fs::read_to_string(&path) else { return WindowState::default() };
     serde_json::from_str(&text).unwrap_or_default()
 }
 
@@ -607,6 +604,39 @@ fn derive_spec_lang_from_fs(project_dir: &str, spec_id: &str) -> mustard_core::S
 }
 
 // ---------------------------------------------------------------------------
+// Close helper (used by prompt_gate)
+// ---------------------------------------------------------------------------
+
+/// Close all open amendment windows for `session_id` when a new pipeline
+/// command is detected. Status is `"resolved"` when the window has activity,
+/// `"pending"` otherwise. Emits [`EVENT_PIPELINE_AMEND_CLOSE`] per window.
+///
+/// Best-effort — all errors are silently dropped.
+pub fn close_amend_windows_for_session(project_dir: &str, session_id: &str) {
+    let Some((spec_id, mut window)) = active_window(project_dir) else {
+        return;
+    };
+    let status = if window.last_activity_at.is_some() {
+        "resolved"
+    } else {
+        "pending"
+    };
+    window.closed = true;
+    let _ = write_window(project_dir, &spec_id, &window);
+    let now = now_iso8601();
+    let close_payload = serde_json::to_value(PipelineAmendClosePayload {
+        spec_id: spec_id.clone(),
+        session_id: session_id.to_string(),
+        status: status.to_string(),
+        closed_at: Some(now),
+        build_verde: Some(window.build_verde_at.is_some()),
+        drift_emitted: Some(window.drift_emitted),
+    })
+    .unwrap_or(serde_json::Value::Null);
+    emit(project_dir, session_id, EVENT_PIPELINE_AMEND_CLOSE, close_payload);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -909,37 +939,4 @@ mod tests {
         assert!(win.opened_at.is_empty());
         assert!(!win.drift_emitted);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Close helper (used by prompt_gate)
-// ---------------------------------------------------------------------------
-
-/// Close all open amendment windows for `session_id` when a new pipeline
-/// command is detected. Status is `"resolved"` when the window has activity,
-/// `"pending"` otherwise. Emits [`EVENT_PIPELINE_AMEND_CLOSE`] per window.
-///
-/// Best-effort — all errors are silently dropped.
-pub fn close_amend_windows_for_session(project_dir: &str, session_id: &str) {
-    let Some((spec_id, mut window)) = active_window(project_dir) else {
-        return;
-    };
-    let status = if window.last_activity_at.is_some() {
-        "resolved"
-    } else {
-        "pending"
-    };
-    window.closed = true;
-    let _ = write_window(project_dir, &spec_id, &window);
-    let now = now_iso8601();
-    let close_payload = serde_json::to_value(PipelineAmendClosePayload {
-        spec_id: spec_id.clone(),
-        session_id: session_id.to_string(),
-        status: status.to_string(),
-        closed_at: Some(now),
-        build_verde: Some(window.build_verde_at.is_some()),
-        drift_emitted: Some(window.drift_emitted),
-    })
-    .unwrap_or(serde_json::Value::Null);
-    emit(project_dir, session_id, EVENT_PIPELINE_AMEND_CLOSE, close_payload);
 }

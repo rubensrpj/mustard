@@ -391,10 +391,7 @@ fn write_traces(harness_dir: &Path, body: &Value) -> usize {
     for rec in records {
         // SpanRecord is serde-serializable; encode the entire record as the
         // payload so downstream readers (dashboard, MCP) get the full shape.
-        let payload = match serde_json::to_value(&rec) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let Ok(payload) = serde_json::to_value(&rec) else { continue };
         let ts = rec.ts.clone();
         let outcome = writer_ndjson::write_event_with_ts(
             &project,

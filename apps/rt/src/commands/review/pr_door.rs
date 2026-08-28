@@ -455,7 +455,7 @@ fn review_brief(
     let spec_path = spec
         .as_deref()
         .filter(|_| spec_text.is_some())
-        .map(|slug| spec_rel_path(slug));
+        .map(spec_rel_path);
     let subproject = spec_subproject(spec_text.as_deref().unwrap_or_default());
     let patterns = subproject
         .as_deref()

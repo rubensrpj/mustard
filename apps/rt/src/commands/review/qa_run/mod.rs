@@ -362,11 +362,10 @@ pub(crate) fn parse_ac_header(line: &str) -> Option<(String, &str)> {
         if let Some(rest) = strip_separator(stripped) {
             // separator was inside the bold; expect `**` next, then description.
             rest.trim_start().strip_prefix("**")?
-        } else if let Some(rest) = stripped.strip_prefix("**") {
+        } else {
+            let rest = stripped.strip_prefix("**")?;
             // bold closed first, then separator.
             strip_separator(rest.trim_start())?
-        } else {
-            return None;
         }
     } else {
         strip_separator(after_id.trim_start())?

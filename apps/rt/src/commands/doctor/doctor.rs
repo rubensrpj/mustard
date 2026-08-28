@@ -429,7 +429,7 @@ fn check_claude_cli() -> CheckResult {
         }
         // Windows: try .cmd / .bat / .exe extensions.
         #[cfg(windows)]
-        for ext in &[".cmd", ".bat", ".exe"] {
+        for ext in [".cmd", ".bat", ".exe"] {
             let candidate = std::path::Path::new(dir).join(format!("claude{ext}"));
             if candidate.exists() {
                 let p = candidate.to_string_lossy().into_owned();
@@ -1791,12 +1791,10 @@ fn i1_to_check_result(report: &crate::commands::doctor::doctor_i1::I1Report) -> 
     CheckResult::fail("i1", report.violations.clone())
 }
 
-/// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
-
+// /// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2087,11 +2085,12 @@ mod tests {
         write_file(&claude_dir.join("grain.model.json"), "{}");
 
         // Run all checks the same way `run()` does, rooted at the tempdir.
-        let mut results: Vec<CheckResult> = Vec::new();
-        results.push(check_wiring(&claude_dir));
-        results.push(check_drift(&claude_dir));
-        results.push(check_state_health(&claude_dir));
-        results.push(lsp_check(dir.path()));
+        let results: Vec<CheckResult> = vec![
+            check_wiring(&claude_dir),
+            check_drift(&claude_dir),
+            check_state_health(&claude_dir),
+            lsp_check(dir.path()),
+        ];
 
         let has_lsp = results.iter().any(|r| r.name == "lsp");
         assert!(has_lsp, "expected a check named 'lsp' in the report");

@@ -4,9 +4,9 @@
 //!
 //! The canonical signal is the frontmatter `source:` field:
 //!   * `source: scan`             → mustard-generated; the sweep deletes it
-//!                                   before each generation and it is authored
-//!                                   again from scratch (no bias from the old
-//!                                   text).
+//!     before each generation and it is authored
+//!     again from scratch (no bias from the old
+//!     text).
 //!   * `source: manual` / absent  → human-owned; preserved forever.
 //!
 //! Adoption (stop regenerating): flip `source: scan` to `source: manual`. A

@@ -396,7 +396,6 @@ impl Check for PromptSubmitInject {
 ///
 /// W3C: routes via `crate::shared::events::route::emit` (NDJSON for
 /// non-`pipeline.*` events, SQLite lifecycle index for `pipeline.*`).
-
 #[cfg(test)]
 mod tests {
     use super::*;

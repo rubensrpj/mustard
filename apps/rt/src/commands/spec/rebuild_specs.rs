@@ -207,20 +207,20 @@ fn build_timeline_from_events(events_dir: &Path) -> SummaryTimeline {
                 .map(str::to_string);
             let to = ev.payload.get("to").and_then(|v| v.as_str()).map(str::to_string);
             match to.as_deref() {
-                Some("planning") | Some("plan") => {
+                Some("planning" | "plan") => {
                     if draft_at.is_none() {
                         draft_at = ts;
                     }
                 }
                 Some("approved") => approved_at = ts,
-                Some("implementing") | Some("execute") => {
+                Some("implementing" | "execute") => {
                     if execute_started_at.is_none() {
                         execute_started_at = ts;
                     }
                 }
-                Some("reviewing") | Some("review") => review_at = ts,
-                Some("qa") | Some("qa-review") => qa_at = ts,
-                Some("closed") | Some("closed-followup") | Some("close") => closed_at = ts,
+                Some("reviewing" | "review") => review_at = ts,
+                Some("qa" | "qa-review") => qa_at = ts,
+                Some("closed" | "closed-followup" | "close") => closed_at = ts,
                 _ => {}
             }
         }
@@ -312,9 +312,10 @@ fn wave_status_from_header(stage: &str, outcome: &str) -> String {
         "completed".to_string()
     } else if outcome.eq_ignore_ascii_case("cancelled") {
         "cancelled".to_string()
-    } else if stage.is_empty() {
-        "in_progress".to_string()
     } else {
+        // Um cabeçalho sem `stage` e um com `stage` desconhecido dizem a mesma
+        // coisa: a onda não terminou. O ramo separado para `stage.is_empty()`
+        // existia e devolvia exatamente este valor.
         "in_progress".to_string()
     }
 }
@@ -323,10 +324,7 @@ fn wave_status_from_header(stage: &str, outcome: &str) -> String {
 /// vec when the file is absent or malformed.
 fn read_ac_results_from_sidecar(wave_dir: &Path) -> Vec<AcResult> {
     let path = wave_dir.join("qa-report.json");
-    let text = match mfs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
+    let Ok(text) = mfs::read_to_string(&path) else { return Vec::new() };
     let v: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(_) => return Vec::new(),

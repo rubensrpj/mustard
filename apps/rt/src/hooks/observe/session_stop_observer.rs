@@ -120,9 +120,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         SessionStopObserver.observe(&stop_input("s-1"), &ctx(project));
-        let first = fs::modified(&marker_path(project)).unwrap();
+        let first = fs::modified(marker_path(project)).unwrap();
         SessionStopObserver.observe(&stop_input("s-1"), &ctx(project));
-        let second = fs::modified(&marker_path(project)).unwrap();
+        let second = fs::modified(marker_path(project)).unwrap();
         assert_eq!(first, second, "second Stop inside the window is a no-op");
     }
 
