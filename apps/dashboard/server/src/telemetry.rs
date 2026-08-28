@@ -1230,14 +1230,33 @@ pub fn agent_activity(repo_path: &Path) -> AgentActivityBlock {
 /// returned rows after sorting.
 #[must_use]
 pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<SessionRow> {
-    let session_root = PathBuf::from(&repo_path)
-        .join(".claude")
-        .join(".session");
-    let Ok(entries) = std::fs::read_dir(&session_root) else {
-        return Vec::new();
-    };
-
+    let repo = PathBuf::from(&repo_path);
     let now_ms = chrono::Utc::now().timestamp_millis();
+
+    // Settle the ORDER before doing any aggregation work. A row's place depends
+    // on exactly one number — the session's newest `ts`, which decides both its
+    // `status` and its `last_activity_at` — so the cheap digest below can sort
+    // and cut, and the expensive per-session fold then runs only for the rows
+    // that will actually be returned.
+    //
+    // This is what makes `limit` mean something. It used to be a `truncate` on
+    // the finished list: every session on disk was re-read from disk, parsed and
+    // fully aggregated first, and only then thrown away.
+    let is_open = |latest: Option<&str>| {
+        matches!(latest.and_then(iso_to_ms), Some(ms) if now_ms - ms <= SESSION_OPEN_WINDOW_MS)
+    };
+    let mut digest = cached_session_digest(&repo);
+    // An empty dir is not a session worth listing — the same rule the fold
+    // applies below, moved ahead of the work it used to follow.
+    digest.retain(|(_, _, count)| *count > 0);
+    digest.sort_by(|a, b| {
+        is_open(b.1.as_deref())
+            .cmp(&is_open(a.1.as_deref()))
+            .then_with(|| b.1.cmp(&a.1))
+    });
+    if let Some(n) = limit {
+        digest.truncate(n);
+    }
     // Session→spec attribution. A session's OWN events (`.session/{id}/.events/`)
     // are typically spec-less — the spec binding lives in the per-spec pipeline
     // stream (`pipeline.scope/stage/status`, which carry BOTH session_id and
@@ -1247,18 +1266,10 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
     let timeline = build_session_spec_timeline(&PathBuf::from(&repo_path));
     let mut rows: Vec<SessionRow> = Vec::new();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let id = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-
-        let mut records: Vec<Value> = Vec::new();
-        collect_one_dir(&path.join(".events"), &mut records);
+    for (id, _, _) in digest {
+        // From the warm cache, not from the disk: `collect_one_dir` re-opened
+        // and re-parsed every shard of every session on every single call.
+        let records: Vec<Value> = cached_session_events(&repo, &id);
 
         let mut earliest: Option<String> = None;
         let mut latest: Option<String> = None;
@@ -1763,6 +1774,26 @@ struct RepoEventsCache {
     /// incremental contract ("touch 1 file → re-read exactly 1 file") is
     /// asserted by counting parses, not by timing.
     parsed_files: u64,
+    /// The sorted shard order the live `snapshot` was flattened from, with each
+    /// shard's event count at the time. Together they locate every shard's
+    /// contiguous run inside the flat vector, which is what lets a dirty shard
+    /// be spliced in place instead of triggering a whole-corpus re-clone.
+    ///
+    /// Kept as two parallel vectors rather than a map because the ONLY question
+    /// asked of them is "where does shard *i* start", which is a prefix sum.
+    order: Vec<PathBuf>,
+    lens: Vec<usize>,
+    /// How many `Value`s this repo has deep-cloned into a snapshot — the
+    /// test-visible twin of `parsed_files`, and the one that proves the second
+    /// half of the incremental contract.
+    ///
+    /// Parsing was already incremental before this counter existed; FLATTENING
+    /// was not, and the two are easy to confuse. Every rebuild re-cloned every
+    /// event of every shard, so a session writing events (the watcher marks a
+    /// shard dirty on each one) re-cloned the whole history continuously, under
+    /// a single per-repo lock. Counting clones states the cost in the one unit
+    /// that does not vary with the machine.
+    cloned_events: u64,
 }
 
 impl RepoEventsCache {
@@ -1774,7 +1805,91 @@ impl RepoEventsCache {
             snapshot: None,
             harness: None,
             parsed_files: 0,
+            order: Vec::new(),
+            lens: Vec::new(),
+            cloned_events: 0,
         }
+    }
+
+    /// Rebuild the whole flat snapshot from every chunk, recording the shard
+    /// order and per-shard lengths the incremental path needs.
+    ///
+    /// Deterministic flatten: shard paths ascending. Shard names start with a
+    /// nanosecond timestamp, so this is roughly chronological per dir; every
+    /// projection that needs strict order sorts by `ts` itself.
+    fn rebuild_snapshot(&mut self) {
+        let mut keys: Vec<PathBuf> = self.files.keys().cloned().collect();
+        keys.sort();
+        let total: usize = self.files.values().map(|c| c.events.len()).sum();
+        let mut flat: Vec<Value> = Vec::with_capacity(total);
+        let mut lens: Vec<usize> = Vec::with_capacity(keys.len());
+        for k in &keys {
+            let n = match self.files.get(k) {
+                Some(chunk) => {
+                    flat.extend(chunk.events.iter().cloned());
+                    chunk.events.len()
+                }
+                None => 0,
+            };
+            lens.push(n);
+        }
+        self.cloned_events += flat.len() as u64;
+        self.order = keys;
+        self.lens = lens;
+        self.snapshot = Some(std::sync::Arc::new(flat));
+    }
+
+    /// Splice each dirty shard's new events over its old run in the live
+    /// snapshot, cloning ONLY those shards' events.
+    ///
+    /// Returns `false` when the incremental path does not apply and the caller
+    /// must fall back to [`rebuild_snapshot`]: no snapshot yet, the shard SET
+    /// changed (a shard appeared or vanished, so every later offset moves), or
+    /// a dirty path is not in the current order. Refusing rather than guessing
+    /// keeps the flat vector's correctness independent of how clever this
+    /// function is.
+    fn splice_dirty(&mut self, dirty: &[PathBuf]) -> bool {
+        if self.snapshot.is_none() || self.order.len() != self.files.len() {
+            return false;
+        }
+        // Every dirty shard must already occupy a known run. Resolve all
+        // indices BEFORE mutating, so a late miss cannot leave a half-patched
+        // snapshot behind.
+        let mut targets: Vec<(usize, PathBuf)> = Vec::with_capacity(dirty.len());
+        for p in dirty {
+            match self.order.iter().position(|k| k == p) {
+                Some(idx) => targets.push((idx, p.clone())),
+                // A shard the watcher marked but that the refresh dropped (a
+                // deleted spec) also lands here: the set changed, so rebuild.
+                None => return false,
+            }
+        }
+        // Descending, so patching one run cannot move the offset of another
+        // still to be patched.
+        targets.sort_by_key(|(idx, _)| std::cmp::Reverse(*idx));
+
+        let Some(arc) = self.snapshot.as_mut() else {
+            return false;
+        };
+        // `make_mut` writes in place while nobody else holds the snapshot —
+        // the steady state, since consumers take it for the length of one
+        // command. A live reader costs one clone here, exactly what the old
+        // code paid on EVERY rebuild.
+        let flat = std::sync::Arc::make_mut(arc);
+        let mut cloned = 0u64;
+        for (idx, path) in targets {
+            let start: usize = self.lens[..idx].iter().sum();
+            let old_len = self.lens[idx];
+            let events: Vec<Value> = match self.files.get(&path) {
+                Some(chunk) => chunk.events.clone(),
+                None => Vec::new(),
+            };
+            cloned += events.len() as u64;
+            self.lens[idx] = events.len();
+            flat.splice(start..start + old_len, events);
+        }
+        self.cloned_events += cloned;
+        true
     }
 
     /// Bring `snapshot` up to date. Warm + clean → no IO at all. Dirty → stat
@@ -1793,25 +1908,19 @@ impl RepoEventsCache {
             }
             self.sweep = false;
             self.dirty.clear();
+            self.rebuild_snapshot();
         } else {
             let dirty: Vec<PathBuf> = self.dirty.drain().collect();
             for p in &dirty {
                 self.refresh_file(p);
             }
-        }
-        // Deterministic flatten: shard paths ascending. Shard names start with
-        // a nanosecond timestamp, so this is roughly chronological per dir;
-        // every projection that needs strict order sorts by `ts` itself.
-        let mut keys: Vec<PathBuf> = self.files.keys().cloned().collect();
-        keys.sort();
-        let total = self.files.values().map(|c| c.events.len()).sum();
-        let mut flat: Vec<Value> = Vec::with_capacity(total);
-        for k in &keys {
-            if let Some(chunk) = self.files.get(k) {
-                flat.extend(chunk.events.iter().cloned());
+            // The whole point: a dirty shard patches its own run. Only a
+            // changed shard SET falls back to re-cloning everything, and that
+            // is rare — the watcher marks existing shards on every event write.
+            if !self.splice_dirty(&dirty) {
+                self.rebuild_snapshot();
             }
         }
-        self.snapshot = Some(std::sync::Arc::new(flat));
         self.harness = None;
     }
 
@@ -1889,6 +1998,104 @@ pub(crate) fn walk_ndjson_events_cached(repo: &Path) -> std::sync::Arc<Vec<Value
         Some(s) => std::sync::Arc::clone(s),
         None => std::sync::Arc::new(Vec::new()),
     }
+}
+
+/// The session id a shard path belongs to, for shards under the cross-spec
+/// session sink `.claude/.session/{id}/.events/*.ndjson`.
+///
+/// `None` for every other shard (per-spec and per-wave channels), which is what
+/// lets the two session accessors below filter the one cache both they and the
+/// workspace views share.
+fn session_id_of_shard(path: &Path) -> Option<&str> {
+    let events_dir = path.parent()?;
+    if events_dir.file_name()? != ".events" {
+        return None;
+    }
+    let session_dir = events_dir.parent()?;
+    if session_dir.parent()?.file_name()? != ".session" {
+        return None;
+    }
+    session_dir.file_name()?.to_str()
+}
+
+/// Per-session `(id, latest ts, event count)` read off the warm cache.
+///
+/// The CHEAP half of `dashboard_sessions`. Both things that decide a row's
+/// place in the list — its `status` (open when the newest event is inside
+/// [`SESSION_OPEN_WINDOW_MS`]) and its `last_activity_at` — derive from one
+/// number, the session's newest `ts`. So the whole ordering can be settled
+/// without the per-session enrichment fold that builds file sets, tool
+/// breakdowns, categories and titles.
+///
+/// That is what makes a `limit` mean something: the caller can sort and cut
+/// here, and pay the fold only for the rows it will actually return. Before
+/// this, every session on disk was fully aggregated and the `limit` was applied
+/// to the finished list — the work was already spent.
+///
+/// Clones nothing but the ids, and re-reads no shard when the cache is warm.
+#[must_use]
+pub(crate) fn cached_session_digest(repo: &Path) -> Vec<(String, Option<String>, u64)> {
+    let handle = repo_cache_handle(repo);
+    let Ok(mut cache) = handle.lock() else {
+        return Vec::new();
+    };
+    cache.ensure_fresh(repo);
+    let mut by_id: HashMap<String, (Option<String>, u64)> = HashMap::new();
+    for (path, chunk) in &cache.files {
+        let Some(id) = session_id_of_shard(path) else {
+            continue;
+        };
+        let slot = by_id.entry(id.to_string()).or_insert((None, 0));
+        for record in &chunk.events {
+            slot.1 += 1;
+            if let Some(ts) = record.get("ts").and_then(Value::as_str) {
+                if slot.0.as_deref().is_none_or(|cur| ts > cur) {
+                    slot.0 = Some(ts.to_string());
+                }
+            }
+        }
+    }
+    by_id
+        .into_iter()
+        .map(|(id, (latest, count))| (id, latest, count))
+        .collect()
+}
+
+/// The parsed events of ONE session, read off the warm cache.
+///
+/// The EXPENSIVE half, and the reason it takes an id: it is called only for the
+/// sessions that survived the cut in [`cached_session_digest`], so the clone is
+/// bounded by `limit` rather than by how much history the machine has.
+///
+/// Replaces a `collect_one_dir` walk that re-opened and re-parsed every one of
+/// the session's shards on every call, with no cache at all.
+#[must_use]
+pub(crate) fn cached_session_events(repo: &Path, id: &str) -> Vec<Value> {
+    let handle = repo_cache_handle(repo);
+    let Ok(mut cache) = handle.lock() else {
+        return Vec::new();
+    };
+    cache.ensure_fresh(repo);
+    // Shard paths ascending, so a session's events keep the same deterministic
+    // order the flat snapshot gives every other reader.
+    let mut paths: Vec<&PathBuf> = cache
+        .files
+        .keys()
+        .filter(|p| session_id_of_shard(p) == Some(id))
+        .collect();
+    paths.sort();
+    let paths: Vec<PathBuf> = paths.into_iter().cloned().collect();
+    let mut out = Vec::new();
+    for p in &paths {
+        if let Some(chunk) = cache.files.get(p) {
+            out.extend(chunk.events.iter().cloned());
+        }
+    }
+    // Counted on the same meter as the snapshot flatten, so a test can state
+    // the whole cost of a `dashboard_sessions` call in one number — and show
+    // that a `limit` bounds the WORK, not just the returned list.
+    cache.cloned_events += out.len() as u64;
+    out
 }
 
 /// The cached workspace slice converted for the `mustard-core` projections
@@ -1978,6 +2185,26 @@ pub(crate) fn events_cache_parsed_files(repo: &Path) -> u64 {
     };
     entry
         .and_then(|e| e.lock().ok().map(|c| c.parsed_files))
+        .unwrap_or(0)
+}
+
+/// Test-visible: how many `Value`s `repo`'s cache has deep-cloned into a
+/// snapshot so far.
+///
+/// The twin of [`events_cache_parsed_files`], and it answers the half that
+/// counter cannot. Parsing went incremental first; flattening did not, so a
+/// cache could re-read exactly one shard — a perfect `parsed_files` reading —
+/// and still re-clone every event of every shard right after it. Counting
+/// clones is what makes the cost visible, and it is a machine-independent
+/// number, unlike a duration.
+#[cfg(test)]
+pub(crate) fn events_cache_cloned_events(repo: &Path) -> u64 {
+    let entry = match EVENTS_CACHE.lock() {
+        Ok(guard) => guard.get(repo.to_string_lossy().as_ref()).cloned(),
+        Err(_) => None,
+    };
+    entry
+        .and_then(|e| e.lock().ok().map(|c| c.cloned_events))
         .unwrap_or(0)
 }
 
@@ -4837,6 +5064,135 @@ mod tests {
             "after invalidation the slice must be a fresh allocation"
         );
         assert_eq!(fresh.len(), 2, "the re-parse must pick up the new event");
+    }
+
+    /// AC-3 — a second `dashboard_sessions` call with nothing changed on disk
+    /// re-parses no shard, and a `limit` cuts the sessions BEFORE the
+    /// aggregation work rather than after it.
+    ///
+    /// Both halves were true failures, not slow paths: the old code called
+    /// `collect_one_dir` per session on every single call — re-opening and
+    /// re-parsing every shard with no cache whatever — and then applied the
+    /// `limit` by truncating the finished list, so the work of aggregating
+    /// every session on the machine was always spent before anything was
+    /// dropped.
+    #[test]
+    fn sessions_warm_call_parses_no_shard() {
+        let tmp = TempDir::new().expect("tempdir");
+        let ev = |n: u32| {
+            format!(
+                r#"{{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:{n:02}:00.000Z","payload":{{"tool":"Read","file":"a.rs"}}}}"#
+            )
+        };
+        // Four sessions, four events each.
+        for s in 0..4u32 {
+            let body: String = (0..4).map(|j| format!("{}\n", ev(s * 4 + j))).collect();
+            let dir = tmp
+                .path()
+                .join(".claude")
+                .join(".session")
+                .join(format!("sess-{s}"))
+                .join(".events");
+            std::fs::create_dir_all(&dir).expect("session dir");
+            std::fs::write(dir.join("e.ndjson"), body).expect("write");
+        }
+
+        let repo = tmp.path().to_string_lossy().to_string();
+
+        // Cold call: shards are parsed once.
+        let all = dashboard_sessions(repo.clone(), None);
+        assert_eq!(all.len(), 4, "every session with events must be listed");
+        let parsed_cold = events_cache_parsed_files(tmp.path());
+        assert!(parsed_cold >= 4, "cold start parses each session's shard");
+
+        // Warm call: NOT ONE shard is re-read.
+        let again = dashboard_sessions(repo.clone(), None);
+        assert_eq!(again.len(), 4);
+        assert_eq!(
+            events_cache_parsed_files(tmp.path()),
+            parsed_cold,
+            "a warm call must not re-parse any shard"
+        );
+
+        // The limit bounds the WORK, not just the answer. With the cache warm
+        // and clean nothing rebuilds the snapshot, so every counted clone here
+        // is a session the fold actually aggregated.
+        let before_limited = events_cache_cloned_events(tmp.path());
+        let limited = dashboard_sessions(repo.clone(), Some(1));
+        assert_eq!(limited.len(), 1, "the limit caps the returned rows");
+        let limited_cost = events_cache_cloned_events(tmp.path()) - before_limited;
+
+        let before_full = events_cache_cloned_events(tmp.path());
+        let _ = dashboard_sessions(repo, None);
+        let full_cost = events_cache_cloned_events(tmp.path()) - before_full;
+
+        assert_eq!(limited_cost, 4, "limit 1 must aggregate ONE session (4 events)");
+        assert_eq!(full_cost, 16, "no limit aggregates all four (16 events)");
+        assert!(
+            limited_cost < full_cost,
+            "a limit must cut before the aggregation work, not after it: \
+             limited={limited_cost} full={full_cost}"
+        );
+    }
+
+    /// AC-2 — with the cache warm and exactly ONE shard changed, the re-read
+    /// must not re-clone the whole history: the cost has to follow the changed
+    /// shard, not the corpus.
+    ///
+    /// Asserted by counting deep clones rather than by timing, so the claim
+    /// does not depend on the machine. The distinction from its sibling test
+    /// above is the entire point: that one proves the shard is not re-PARSED,
+    /// and it already passed while every rebuild re-CLONED all ~13k events of
+    /// the workspace, under one per-repo lock, on every event a live session
+    /// wrote (measured 2026-08-28).
+    #[test]
+    fn events_cache_incremental_rebuild_is_proportional() {
+        let tmp = TempDir::new().expect("tempdir");
+        let ev = |n: u32, tool: &str| {
+            format!(
+                r#"{{"event":"tool.use","kind":"tool","ts":"2026-06-10T09:{n:02}:00.000Z","spec":"a","payload":{{"tool":"{tool}"}}}}"#
+            )
+        };
+
+        // A corpus big enough that "everything" and "one shard" cannot be
+        // confused: 8 shards of 4 events, plus the one shard under test.
+        for i in 0..8u32 {
+            let body: String = (0..4)
+                .map(|j| format!("{}\n", ev(i * 4 + j, "Read")))
+                .collect();
+            write_event(tmp.path(), "a", &format!("bulk{i}.ndjson"), &body);
+        }
+        write_event(tmp.path(), "a", "hot.ndjson", &format!("{}\n", ev(40, "Edit")));
+
+        let cold = walk_ndjson_events_cached(tmp.path());
+        assert_eq!(cold.len(), 33, "8 shards x 4 events + 1");
+        let after_cold = events_cache_cloned_events(tmp.path());
+        assert_eq!(
+            after_cold, 33,
+            "a cold start clones the corpus exactly once"
+        );
+
+        // Append ONE event to ONE shard, the way the watcher sees it.
+        let hot = tmp
+            .path()
+            .join(".claude")
+            .join("spec")
+            .join("a")
+            .join(".events")
+            .join("hot.ndjson");
+        std::fs::write(&hot, format!("{}\n{}\n", ev(40, "Edit"), ev(41, "Bash")))
+            .expect("append");
+        invalidate_events_cache_path(&tmp.path().to_string_lossy(), &hot);
+
+        let fresh = walk_ndjson_events_cached(tmp.path());
+        assert_eq!(fresh.len(), 34, "the appended event must surface");
+
+        let delta = events_cache_cloned_events(tmp.path()) - after_cold;
+        assert_eq!(
+            delta, 2,
+            "one dirty shard must clone only ITS events (2), never the corpus \
+             (34) — got {delta}"
+        );
     }
 
     #[test]
