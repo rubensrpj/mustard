@@ -18,9 +18,166 @@
 //! `util` is a leaf like `shared` and depends on neither face.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+/// Per-user toolchain `bin` directories that every installer of that toolchain
+/// creates, by its own documented convention.
+///
+/// ## Why Mustard resolves these itself
+///
+/// An acceptance criterion runs through a shell, and a NON-INTERACTIVE shell
+/// reads a different (usually smaller) set of startup files than the terminal
+/// the operator types in. So `cargo` can be perfectly installed, work in the
+/// terminal, and still be invisible to the command the harness spawns. The
+/// harness then collects exit 127 — `command not found` — and records the
+/// criterion `unproven`, which a reader sees as a failing test and takes to the
+/// code (field, 2026-08-28: a whole session was spent this way).
+///
+/// The fix must not be a line in one shell's profile. That repairs one machine
+/// with one shell, and says nothing to bash, fish, a Windows host or a CI
+/// container. Looking in the conventional locations is something Mustard can do
+/// ITSELF, in-process, before it spawns anything — so it holds everywhere the
+/// harness runs.
+///
+/// Only directories that EXIST are returned, and the caller APPENDS them, so a
+/// toolchain the operator deliberately put on `PATH` always wins. Mustard
+/// supplements the environment; it never overrides it.
+fn toolchain_bin_dirs() -> Vec<PathBuf> {
+    let Some(home) = crate::util::home_dir() else {
+        return Vec::new();
+    };
+    // Each entry is the location that toolchain's own installer documents.
+    let mut candidates: Vec<PathBuf> = vec![
+        home.join(".cargo").join("bin"),          // rustup
+        home.join(".local").join("bin"),          // pip / pipx / uv
+        home.join("go").join("bin"),              // go install
+        home.join(".bun").join("bin"),            // bun
+        home.join(".deno").join("bin"),           // deno
+        home.join(".volta").join("bin"),          // volta (node)
+        home.join(".dotnet").join("tools"),       // dotnet global tools
+    ];
+    if cfg!(windows) {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local).join("pnpm"));
+        }
+    } else {
+        candidates.push(home.join(".local").join("share").join("pnpm"));
+    }
+    candidates.retain(|p| p.is_dir());
+    candidates
+}
+
+#[cfg(test)]
+mod toolchain_tests {
+    use super::*;
+
+    /// Only real directories are offered, so a `PATH` never grows entries that
+    /// point at nothing.
+    #[test]
+    fn only_existing_directories_are_offered() {
+        for dir in toolchain_bin_dirs() {
+            assert!(dir.is_dir(), "{} was offered but does not exist", dir.display());
+        }
+    }
+
+    /// The augmentation must never DROP an inherited entry: a criterion that
+    /// worked before must still work.
+    #[test]
+    fn augmentation_preserves_every_inherited_entry() {
+        let Some(augmented) = augmented_path() else {
+            return; // nothing to add on this host — the free path
+        };
+        let after: Vec<PathBuf> = std::env::split_paths(&augmented).collect();
+        let before = std::env::var_os("PATH").unwrap_or_default();
+        for entry in std::env::split_paths(&before) {
+            assert!(
+                after.contains(&entry),
+                "augmenting PATH dropped {}",
+                entry.display()
+            );
+        }
+    }
+
+    /// Appended, never prepended — a toolchain the operator put on `PATH`
+    /// deliberately keeps winning over a conventional location.
+    #[test]
+    fn inherited_entries_keep_their_priority() {
+        let Some(augmented) = augmented_path() else {
+            return;
+        };
+        let after: Vec<PathBuf> = std::env::split_paths(&augmented).collect();
+        let before: Vec<PathBuf> =
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+        assert_eq!(
+            after[..before.len()],
+            before[..],
+            "the inherited PATH must stay in front, unchanged"
+        );
+    }
+
+    #[test]
+    fn resolves_finds_a_program_that_is_there() {
+        let program = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(resolves(program));
+    }
+
+    #[test]
+    fn resolves_rejects_a_program_that_is_not() {
+        assert!(!resolves("mustard-definitely-not-a-real-program-xyz"));
+    }
+}
+
+/// Can `program` be resolved the way a spawned criterion would resolve it —
+/// through `PATH` **or** through a conventional toolchain directory?
+///
+/// The single answer to "will the harness find this", so the `doctor` never
+/// reports a tool missing that `run_shell_with_deadline` would have found. Two
+/// resolvers would drift into telling the operator opposite things about the
+/// same machine.
+///
+/// Deliberately NOT a `which`/`where` subprocess: this is called from the
+/// doctor and from hook code, and a past Windows incident traced a session hang
+/// to child processes inheriting hook stdio pipes. Pure path arithmetic cannot
+/// hang.
+#[must_use]
+pub fn resolves(program: &str) -> bool {
+    // On Windows a bare name resolves through PATHEXT; check the spellings a
+    // toolchain shim actually ships with rather than guessing one.
+    let names: Vec<String> = if cfg!(windows) {
+        [".exe", ".cmd", ".bat", ""]
+            .iter()
+            .map(|ext| format!("{program}{ext}"))
+            .collect()
+    } else {
+        vec![program.to_string()]
+    };
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&inherited)
+        .chain(toolchain_bin_dirs())
+        .any(|dir| names.iter().any(|n| dir.join(n).is_file()))
+}
+
+/// `PATH` for a spawned criterion: the inherited one, plus any conventional
+/// toolchain directory it is missing.
+///
+/// `None` when there is nothing to add, so the child simply inherits the
+/// environment unchanged — the common case, and the one that must stay free.
+/// A directory already present is never appended twice.
+fn augmented_path() -> Option<std::ffi::OsString> {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
+    let missing: Vec<PathBuf> = toolchain_bin_dirs()
+        .into_iter()
+        .filter(|d| !existing.iter().any(|e| e == d))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let joined: Vec<PathBuf> = existing.into_iter().chain(missing).collect();
+    std::env::join_paths(joined).ok()
+}
 
 /// Spawn `exe args…` as a detached, long-lived background daemon whose open
 /// handles are NOT inherited from this process.
@@ -135,6 +292,9 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(path) = augmented_path() {
+        cmd.env("PATH", path);
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return ShellOutcome::SpawnFailed { error: e.to_string() },

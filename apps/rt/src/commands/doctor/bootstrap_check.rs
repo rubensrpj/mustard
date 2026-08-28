@@ -132,30 +132,15 @@ fn manifest_version(install_path: &Path) -> Option<String> {
     Some(doc.get("version")?.as_str()?.to_string())
 }
 
-/// Is `program` resolvable through `PATH`?
+/// Is `program` resolvable the way the harness will resolve it?
 ///
-/// Deliberately NOT a `which`/`where` subprocess: this check runs inside the
-/// doctor, and a past Windows incident (SessionStart hang) traced to child
-/// processes inheriting hook stdio pipes. Pure path arithmetic cannot hang.
+/// Delegates to [`crate::shared::proc::resolves`], the SAME resolver
+/// `run_shell_with_deadline` uses to build a criterion's environment. This
+/// used to be a private `PATH`-only copy, and a private copy is how a doctor
+/// starts reporting a tool missing that the harness would have found — two
+/// answers about one machine.
 fn on_path(program: &str) -> bool {
-    let Some(raw) = std::env::var_os("PATH") else {
-        return false;
-    };
-    // On Windows a bare name resolves through PATHEXT; check the spellings a
-    // toolchain shim actually ships with rather than guessing one.
-    let candidates: Vec<String> = if cfg!(windows) {
-        [".exe", ".cmd", ".bat", ""]
-            .iter()
-            .map(|ext| format!("{program}{ext}"))
-            .collect()
-    } else {
-        vec![program.to_string()]
-    };
-    std::env::split_paths(&raw).any(|dir| {
-        candidates
-            .iter()
-            .any(|name| dir.join(name).is_file())
-    })
+    crate::shared::proc::resolves(program)
 }
 
 /// The toolchains this project's acceptance criteria will actually invoke,
