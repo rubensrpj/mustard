@@ -10,9 +10,13 @@
 #   cópia do PLUGIN .... ~/.claude/plugins/cache/<marketplace>/mustard/<v>/bin/
 #                        — o que o Claude Code REALMENTE executa
 #
-# O plugin prepende o `bin/` dele ao PATH, então dentro do Claude Code a cópia
-# do sistema nunca é alcançada: hooks, comandos e barra de status saem todos da
-# cópia do plugin. Instalar o pacote e parar aí deixa a máquina rodando a versão
+# O Claude Code chama cada gancho pelo caminho explícito
+# `${CLAUDE_PLUGIN_ROOT}/bin/…` (ver `plugin/hooks/hooks.json`), então hooks e
+# comandos saem sempre da cópia do plugin, com PATH ou sem ele. A pasta do
+# plugin até entra no PATH, mas por ÚLTIMO — medido em 2026-08-28, última de 21
+# entradas —, de modo que um nome NU ali encontra a cópia do SISTEMA. É essa
+# assimetria que fazia a barra de status contar uma história diferente da dos
+# hooks. Instalar o pacote e parar aí deixa a máquina rodando a versão
 # velha indefinidamente — o instalador se limitava a IMPRIMIR duas linhas
 # pedindo que a pessoa atualizasse o plugin à mão, e enquanto ninguém digitasse,
 # nada acontecia (campo, 2026-08-28: 0.1.55 instalada nos três sistemas, plugin
@@ -21,6 +25,22 @@
 # Este script fecha isso pela linha de comando PÚBLICA do Claude Code
 # (`claude plugin …`). Escrever direto no cache do plugin foi recusado de
 # propósito: aquele layout é interno e pode mudar sem aviso.
+#
+# INSTALAR NÃO BASTA, e é por isso que este arquivo não termina no `install`.
+# Instalar deixa o plugin DESLIGADO e SEM binários, e cada um desses dois
+# estados tranca o remédio do outro (campo, 2026-08-28: três instalações
+# seguidas do .exe, ~2h de diagnóstico à mão):
+#
+#   - desligado: o Claude Code guarda ligado/desligado em `enabledPlugins`, e
+#     nenhum instalador jamais escreveu ali. Plugin desligado = zero hooks,
+#     zero comandos /mustard:*.
+#   - sem binários: `plugin/bin/*` são artefatos de build e nunca entram no
+#     git. Quem os baixa é o `mustard-boot` — que é um HOOK, e hook não roda
+#     com o plugin desligado.
+#
+# Daí os dois passos depois do install: LIGAR e BAIXAR. Nesta ordem, e aqui
+# dentro, para o instalador terminar com a máquina pronta em vez de deixar a
+# primeira sessão descobrir que ela não está.
 #
 # FAIL-OPEN, sempre. Um instalador não pode falhar porque o passo do plugin
 # falhou: o pacote JÁ está instalado quando chegamos aqui, e um exit != 0 faria
@@ -53,6 +73,99 @@ instrucoes_manuais() {
   echo "    Depois feche e abra o Claude Code para os hooks entrarem."
 }
 
+# --- liga o plugin -----------------------------------------------------------
+# `claude plugin install` NÃO liga o que instalou. Sem esta linha o Mustard fica
+# instalado e INERTE: a barra de status desenha a versão, e mais nada acontece.
+# Sem `--scope`: o `enable` descobre sozinho o escopo em que o plugin foi
+# instalado, e um escopo dito errado ligaria o plugin em outro lugar.
+ligar_o_plugin() {
+  echo "==> Ligando o plugin $PLUGIN…"
+  if claude plugin enable "$PLUGIN" >/dev/null 2>&1; then
+    echo "    Plugin ligado."
+  else
+    # Já ligado também responde erro, e nesse caso não há nada a fazer. Como os
+    # dois casos são indistinguíveis daqui, o aviso diz os dois — calar seria
+    # pior: um plugin que ficou desligado é justamente o defeito que este passo
+    # existe para acabar.
+    echo "aviso: 'claude plugin enable $PLUGIN' respondeu erro — ou já estava" >&2
+    echo "       ligado, ou não ligou. Se os comandos /mustard:* não" >&2
+    echo "       aparecerem, confira com 'claude plugin list'." >&2
+  fi
+}
+
+# --- onde o Claude Code pôs o plugin ----------------------------------------
+# O caminho vem de `claude plugin list --json`, interface PÚBLICA, e não de uma
+# varredura em ~/.claude/plugins/cache — o layout daquele cache é interno, e
+# este arquivo já se recusa a depender dele para instalar. Sem saída, sem JSON
+# ou sem entrada do Mustard, a função devolve vazio e quem chama decide.
+caminho_do_plugin() {
+  claude plugin list --json 2>/dev/null | awk '
+    /"id"[[:space:]]*:/ { meu = ($0 ~ /"mustard@/) }
+    meu && match($0, /"installPath"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+      achado = substr($0, RSTART, RLENGTH)
+      sub(/^"installPath"[[:space:]]*:[[:space:]]*"/, "", achado)
+      sub(/"$/, "", achado)
+      print achado
+      exit
+    }'
+}
+
+# --- dispara a descida dos binários -----------------------------------------
+# O `--version` é de propósito: o `mustard-boot` baixa o que falta e entrega a
+# invocação ao binário, então pedir a versão custa um comando e ainda IMPRIME a
+# prova de que a descida funcionou. Sem argumento nenhum o `mustard-rt` sai com
+# erro de uso, e o passo acusaria falha onde não houve.
+baixar_os_binarios() {
+  dir=$(caminho_do_plugin)
+  if [ -z "$dir" ] || [ ! -f "$dir/bin/mustard-boot" ]; then
+    echo "aviso: não localizei o mustard-boot do plugin, então os binários só" >&2
+    echo "       descem na primeira sessão do Claude Code." >&2
+    return
+  fi
+
+  echo "==> Baixando os binários do plugin…"
+
+  # COM PRAZO, e o prazo é a metade importante desta função. O `curl` do
+  # `mustard-boot` não tem tempo-limite próprio. Até esta unidade isso não
+  # pesava: ele só rodava dentro de um hook, onde o Claude Code corta em 120s.
+  # Agora ele roda no caminho crítico do INSTALADOR — o `.deb` segura o cadeado
+  # do apt enquanto espera, o `.pkg` segura o Installer.app, o `.exe` segura a
+  # janela do NSIS. Uma conexão que TRAVA em vez de recusar (portal cativo,
+  # proxy que engole o pacote) congelaria a instalação para sempre. O teto é o
+  # mesmo que o hook já dava; a variável existe para o teste poder encurtá-lo.
+  # `timeout` é do coreutils: onde não houver, seguimos sem prazo, que é
+  # exatamente o que havia antes desta linha.
+  limite="${MUSTARD_PLUGIN_STEP_TIMEOUT:-120}"
+
+  # Invocado por `sh`, não pelo bit de execução: o passo funciona igual num
+  # cache extraído sem permissões preservadas, e o `mustard-boot` já resolve o
+  # próprio diretório a partir de `$0`.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$limite" sh "$dir/bin/mustard-boot" --version
+    codigo=$?
+  else
+    sh "$dir/bin/mustard-boot" --version
+    codigo=$?
+  fi
+
+  # 124 é como o `timeout` diz "eu cortei". Vale uma frase própria: "não
+  # concluiu" mandaria a pessoa procurar um erro que não existe.
+  # 125 é o `timeout` dizendo que ele próprio não conseguiu rodar — quase sempre
+  # um valor não-numérico na variável. Vale frase própria: mandar procurar erro
+  # de rede quando o erro está na configuração custa a tarde de alguém.
+  if [ "$codigo" -eq 125 ]; then
+    echo "aviso: não consegui aplicar o prazo de '${limite}' à descida dos" >&2
+    echo "       binários — confira MUSTARD_PLUGIN_STEP_TIMEOUT." >&2
+  elif [ "$codigo" -eq 124 ]; then
+    echo "aviso: a descida dos binários passou de ${limite}s e foi cortada para" >&2
+    echo "       não segurar o instalador — a primeira sessão do Claude Code" >&2
+    echo "       tenta de novo." >&2
+  elif [ "$codigo" -ne 0 ]; then
+    echo "aviso: a descida dos binários não concluiu — a primeira sessão do" >&2
+    echo "       Claude Code tenta de novo." >&2
+  fi
+}
+
 # --- quem deve rodar o `claude` ---------------------------------------------
 # A variável abaixo marca que já nos rebaixamos uma vez; sem ela, o `sh "$0"`
 # do sudo entraria aqui de novo e o rebaixamento se repetiria para sempre.
@@ -76,8 +189,12 @@ if [ "$(id -u)" -eq 0 ] && [ -z "${MUSTARD_PLUGIN_STEP_DEESCALATED:-}" ]; then
     # sairia daqui com 0 e em SILÊNCIO: o instalador diria "pronto" e o plugin
     # continuaria na versão velha, que é exatamente o defeito que este arquivo
     # existe para acabar.
+    # O prazo da descida atravessa junto: sem ele o ramo rebaixado — que é o do
+    # `apt` e o do `.pkg` — seria o único que nenhum teste consegue alcançar.
     if ! sudo -H -u "$dono" \
-         env MUSTARD_PLUGIN_STEP_DEESCALATED=1 sh "$0" "$@"; then
+         env MUSTARD_PLUGIN_STEP_DEESCALATED=1 \
+             MUSTARD_PLUGIN_STEP_TIMEOUT="${MUSTARD_PLUGIN_STEP_TIMEOUT:-}" \
+             sh "$0" "$@"; then
       echo "aviso: não consegui rodar o passo do plugin como $dono." >&2
       instrucoes_manuais
     fi
@@ -117,6 +234,8 @@ fi
 
 if claude plugin "$acao" "$PLUGIN"; then
   echo "==> Plugin: $acao concluído."
+  ligar_o_plugin
+  baixar_os_binarios
   echo "    FECHE E ABRA o Claude Code para a nova versão entrar."
 else
   echo "aviso: 'claude plugin $acao $PLUGIN' não concluiu." >&2

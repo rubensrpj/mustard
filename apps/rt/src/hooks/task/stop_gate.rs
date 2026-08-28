@@ -382,8 +382,6 @@ mod tests {
         }
     }
 
-    /// Seed `<project>/.claude/spec/{spec}/spec.md` with an `## Acceptance
-    /// Criteria` section body of `ac_body`.
     // -- the prune advisory ---------------------------------------------------
 
     /// Run git in `root`, failing the test with git's own words.
@@ -534,6 +532,8 @@ mod tests {
         ));
     }
 
+    /// Seed `<project>/.claude/spec/{spec}/spec.md` with an `## Acceptance
+    /// Criteria` section body of `ac_body`.
     fn seed_spec(project: &Path, spec: &str, ac_body: &str) {
         let spec_dir = project.join(".claude").join("spec").join(spec);
         std::fs::create_dir_all(&spec_dir).unwrap();

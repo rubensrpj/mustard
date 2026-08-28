@@ -145,13 +145,65 @@ pub fn newer_installed_rt() -> Option<std::path::PathBuf> {
 /// The testable half of [`newer_installed_rt`]: registry JSON and the running
 /// version in, the newer install's `bin/mustard-rt` path out. Existence on
 /// disk is the outer half's business.
+#[must_use]
+pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::PathBuf> {
+    let (version, path) = newest_installed_rt_from(raw)?;
+    is_behind(running, &version).then_some(path)
+}
+
+/// The `mustard-rt` inside the newest install the plugin registry records —
+/// whatever its version, and whether or not it is newer than this process.
 ///
-/// Version and `installPath` are read from the SAME record — the one with the
+/// This is what the statusline self-heal records. "Newest RECORDED install" is
+/// the honest name for it: the registry can hold one record per scope, and this
+/// takes the highest VERSION across them, which need not be the scope a given
+/// project loads. That imprecision is acceptable here and nowhere else — any
+/// recorded plugin copy beats the two answers this replaced. Measured 2026-08-28: Claude
+/// Code APPENDS the plugin's `bin/` to `PATH` (last of 21 entries), so a bare
+/// `mustard-rt` answers with the SYSTEM copy and hides exactly the
+/// plugin-vs-system drift the status bar exists to show.
+///
+/// `None` when the registry is absent, unreadable, records no install of this
+/// plugin, or the recorded directory holds no binary. Callers treat that as
+/// "cannot tell" and must NOT fall back to inferring a path from the running
+/// process — see `statusline_heal_observer` for the incident that rule comes
+/// from.
+#[must_use]
+pub fn installed_plugin_rt() -> Option<std::path::PathBuf> {
+    installed_plugin_rt_in(&claude_config_dir()?)
+}
+
+/// [`installed_plugin_rt`] with the config directory named explicitly — the
+/// seam the tests need. The `is_file()` gate is the ENTIRE safety story for a
+/// registry that still records a plugin whose binary is gone (the dormant
+/// install: the plugin is registered, `mustard-boot` never ran, `bin/` holds no
+/// `mustard-rt`), and a gate reached only through the real `~/.claude` is a gate
+/// no test can watch.
+#[must_use]
+pub fn installed_plugin_rt_in(config_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let raw = std::fs::read_to_string(config_dir.join(INSTALLED_PLUGINS)).ok()?;
+    let path = installed_plugin_rt_from(&raw)?;
+    path.is_file().then_some(path)
+}
+
+/// The testable half of [`installed_plugin_rt`]: registry JSON in, the newest
+/// install's `bin/mustard-rt` out. Existence on disk is the outer half's
+/// business.
+#[must_use]
+pub fn installed_plugin_rt_from(raw: &str) -> Option<std::path::PathBuf> {
+    newest_installed_rt_from(raw).map(|(_, path)| path)
+}
+
+/// The newest install of this plugin the registry records: its version paired
+/// with the `bin/mustard-rt` inside it. The single reader of the registry's
+/// shape, shared by the stale-copy handover and the statusline heal, so a
+/// change to that shape can never move one without the other.
+///
+/// Version and `installPath` come from the SAME record — the one with the
 /// highest version. [`installed_harness_version_from`] takes the max over
 /// versions alone; pairing its answer with a path picked independently could
 /// marry scope A's version to scope B's directory.
-#[must_use]
-pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::PathBuf> {
+fn newest_installed_rt_from(raw: &str) -> Option<(String, std::path::PathBuf)> {
     let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
     let (version, install) = doc
         .get("plugins")?
@@ -166,11 +218,11 @@ pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::Pa
             Some((version, install))
         })
         .max_by(|(a, _), (b, _)| compare_versions(a, b))?;
-    if !is_behind(running, version) {
-        return None;
-    }
     let exe = if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" };
-    Some(std::path::Path::new(install).join("bin").join(exe))
+    Some((
+        version.to_string(),
+        std::path::Path::new(install).join("bin").join(exe),
+    ))
 }
 
 /// Whether `running` names a version strictly OLDER than `installed`.
@@ -340,5 +392,91 @@ mod tests {
         assert!(!is_behind("0.1.42", "0.1.42"));
         assert!(!is_behind("0.1.43", "0.1.42"));
         assert!(!is_behind("0.1.42", "0.1.42-rc1"), "a pre-release never reads as an upgrade");
+    }
+
+    // --- installed_plugin_rt: o caminho que a barra de status grava ---------
+
+    /// Write a registry naming `install_path` at version `version`, and return
+    /// the config dir holding it.
+    fn seed_registry(dir: &std::path::Path, install_path: &std::path::Path, version: &str) {
+        let plugins = dir.join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(
+            plugins.join("installed_plugins.json"),
+            format!(
+                r#"{{"version":2,"plugins":{{"mustard@mustard-local":[{{"scope":"user","installPath":{},"version":"{version}"}}]}}}}"#,
+                serde_json::to_string(&install_path.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A plugin directory holding a real `bin/mustard-rt`, and its path.
+    fn seed_plugin(dir: &std::path::Path) -> std::path::PathBuf {
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join(if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" });
+        std::fs::write(&exe, b"").unwrap();
+        exe
+    }
+
+    #[test]
+    fn the_recorded_plugin_binary_is_answered_when_it_is_on_disk() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin = home.path().join("cache/mustard/0.1.57");
+        let exe = seed_plugin(&plugin);
+        seed_registry(home.path(), &plugin, "0.1.57");
+
+        assert_eq!(installed_plugin_rt_in(home.path()), Some(exe));
+    }
+
+    /// The DORMANT install: registered, but `mustard-boot` never brought the
+    /// binaries down. Answering a path here would put a command in the status
+    /// bar pointing at a file that does not exist — a blank bar on exactly the
+    /// machine that most needs the bar to say something.
+    #[test]
+    fn a_registered_plugin_with_no_binary_answers_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin = home.path().join("cache/mustard/0.1.57");
+        std::fs::create_dir_all(plugin.join("bin")).unwrap();
+        seed_registry(home.path(), &plugin, "0.1.57");
+
+        assert_eq!(installed_plugin_rt_in(home.path()), None);
+    }
+
+    #[test]
+    fn no_registry_at_all_answers_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(installed_plugin_rt_in(home.path()), None);
+    }
+
+    /// Unlike the handover, this answer does NOT depend on being newer than the
+    /// running process: the statusline must follow the plugin even when the
+    /// plugin is behind — that drift is precisely what the bar exists to show.
+    #[test]
+    fn an_older_plugin_than_the_runner_is_still_the_answer() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin = home.path().join("cache/mustard/0.0.1");
+        let exe = seed_plugin(&plugin);
+        seed_registry(home.path(), &plugin, "0.0.1");
+
+        assert_eq!(installed_plugin_rt_in(home.path()), Some(exe));
+        // The handover, given the same registry, correctly declines.
+        let raw = std::fs::read_to_string(home.path().join(INSTALLED_PLUGINS)).unwrap();
+        assert_eq!(newer_installed_rt_from(&raw, "0.1.57"), None);
+    }
+
+    #[test]
+    fn a_registry_naming_another_plugin_answers_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let plugins = home.path().join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(
+            plugins.join("installed_plugins.json"),
+            r#"{"plugins":{"outro@mkt":[{"installPath":"/tmp/x","version":"9.9.9"}]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(installed_plugin_rt_in(home.path()), None);
     }
 }

@@ -80,7 +80,8 @@ pub use platform::git_exclude::{
 // the file, and the caller degrades to a permanent silent skip no test can see.
 pub use platform::harness::{
     claude_config_dir, harness_version, installed_harness_version, installed_harness_version_from,
-    is_behind, newer_installed_rt, newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,
+    installed_plugin_rt, installed_plugin_rt_from, is_behind, newer_installed_rt,
+    newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,
 };
 pub use platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
 
