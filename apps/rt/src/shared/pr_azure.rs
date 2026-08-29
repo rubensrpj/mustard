@@ -41,7 +41,8 @@ use serde_json::{json, Value};
 
 use crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE};
 use crate::shared::pr_provider::{
-    short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,
+    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrToOpen,
+    PrView, HEADS, PROVIDER_AZURE,
 };
 
 /// The Azure DevOps REST API version every call pins. One spelling, so a bump
@@ -432,6 +433,48 @@ fn do_view_branch(
 }
 
 // ---------------------------------------------------------------------------
+// The checks read — what the merge door asks before it merges
+// ---------------------------------------------------------------------------
+
+/// Reduce Azure's pull-request STATUSES into the port's [`PrChecks`].
+///
+/// A status is what a pipeline posts back onto a pull request, and its `state`
+/// is the `GitStatusState` contract: `notSet`, `pending`, `succeeded`,
+/// `failed`, `error`, `notApplicable`. `notApplicable` reduces to `Passed`
+/// because it is the contract's way of saying this status does not apply to
+/// the target — a thing that cannot block, not a thing that failed. `notSet`
+/// ("state not set, default") is NOT green and NOT a decided failure, so it
+/// takes the unreadable answer rather than a guess in either direction.
+fn checks_from_azure(rows: &[Value]) -> PrChecks {
+    let reduced: Vec<PrChecks> = rows
+        .iter()
+        .map(|row| match row.get("state").and_then(Value::as_str).unwrap_or_default() {
+            "succeeded" | "notApplicable" => PrChecks::Passed,
+            "failed" | "error" => PrChecks::Failed,
+            "pending" => PrChecks::Running,
+            _ => PrChecks::Unknown(PR_UNREADABLE),
+        })
+        .collect();
+    checks_from_rows(&reduced)
+}
+
+/// GET the statuses of PR `number` and reduce them. A document without a
+/// `value` array could not be read — `parse-error`, never an empty answer,
+/// which is exactly the answer that authorises a merge.
+pub(crate) fn do_checks(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    number: u64,
+) -> Result<PrChecks, String> {
+    let url = format!("{}/{number}/statuses?api-version={API_VERSION}", remote.api_pulls());
+    let doc = transport.call("GET", &url, auth, None)?;
+    let rows =
+        doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
+    Ok(checks_from_azure(&rows))
+}
+
+// ---------------------------------------------------------------------------
 // The evidence read — what the exit ritual's pruning verdict stands on
 // ---------------------------------------------------------------------------
 
@@ -663,6 +706,11 @@ impl PrProvider for AzurePrRest {
                 do_view_branch(&remote, self.transport.as_ref(), &auth, &branch)
             }
         }
+    }
+
+    fn checks(&self, number: u64) -> Result<PrChecks, String> {
+        let (remote, auth) = self.context()?;
+        do_checks(&remote, self.transport.as_ref(), &auth, number)
     }
 }
 
@@ -936,6 +984,48 @@ mod tests {
         assert_eq!(threads, vec![json!({ "status": "active" })]);
         let reviewers = fetch_reviewers(&remote, &fake, "a", 7).expect("reviewers answer");
         assert_eq!(reviewers, vec![json!({ "vote": 10 })]);
+    }
+
+    /// The checks read addresses the PR's own `statuses` sub-resource and
+    /// reduces the `GitStatusState` words: a pending pipeline is in flight, an
+    /// `error` is a failure like a `failed`, `notApplicable` cannot block, and
+    /// a `notSet` is unreadable rather than guessed green. No status row at
+    /// all is a MEASURED absence — an Azure project with no pipeline.
+    #[test]
+    fn the_azure_statuses_reduce_to_the_ports_checks_vocabulary() {
+        let remote = remote();
+        let statuses_url = format!("{}/7/statuses?api-version=7.1", remote.api_pulls());
+        let answer = |value: Value| {
+            let fake = FakeTransport::of(&[("GET", &statuses_url, json!({ "value": value }))]);
+            do_checks(&remote, &fake, "a", 7)
+        };
+
+        assert_eq!(answer(json!([])), Ok(PrChecks::Absent), "no pipeline is a measurement");
+        assert_eq!(
+            answer(json!([{ "state": "succeeded" }, { "state": "notApplicable" }])),
+            Ok(PrChecks::Passed),
+        );
+        assert_eq!(
+            answer(json!([{ "state": "succeeded" }, { "state": "pending" }])),
+            Ok(PrChecks::Running),
+        );
+        assert_eq!(
+            answer(json!([{ "state": "pending" }, { "state": "error" }])),
+            Ok(PrChecks::Failed),
+            "an error decides like a failure, whatever is still in flight",
+        );
+        assert_eq!(
+            answer(json!([{ "state": "notSet" }])),
+            Ok(PrChecks::Unknown(PR_UNREADABLE)),
+            "'state not set' is not evidence of a green run",
+        );
+
+        let broken = FakeTransport::of(&[("GET", &statuses_url, json!({ "count": 0 }))]);
+        assert_eq!(
+            do_checks(&remote, &broken, "a", 7),
+            Err("parse-error".to_string()),
+            "a document without `value` could not be read — never an empty answer",
+        );
     }
 
     /// A transport failure travels to the caller untouched — the operations

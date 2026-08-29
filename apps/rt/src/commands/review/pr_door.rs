@@ -90,6 +90,7 @@ use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
 use crate::commands::work_unit_open::checkout_holding_branch;
+use crate::shared::pr_provider::{provider_for, PrChecks};
 use crate::shared::work_kind::BaseFlow;
 
 // ---------------------------------------------------------------------------
@@ -516,17 +517,57 @@ pub(crate) enum MergeConsent {
     Ask { reason: &'static str },
 }
 
-/// The ONE rule the merge step applies before it merges: a unit whose review
-/// did not come back `approved` is ASKED about — never refused, never merged
-/// silently.
+/// What the provider's own checks say about merging — `None` when they do not
+/// stand in the way.
 ///
-/// An absent verdict and a recorded rejection take the SAME branch on purpose.
-/// They are one fact ("not approved") and the answer to both is the same
-/// question; forking them into two behaviours would add a decision the operator
-/// never asked for. `confirmed` is that operator's answer coming back.
+/// The three refusing answers are one shape on purpose: a run still in flight,
+/// a run that failed, and an answer that could not be read are all "no evidence
+/// that this tree is green", and the door's response to each is the same
+/// question. They keep separate REASONS because the operator's next move
+/// differs — wait, fix, or look at why the provider went quiet.
+fn checks_reason(checks: &Result<PrChecks, String>) -> Option<&'static str> {
+    match checks {
+        // A project with no CI measured zero runs; that is an answer, not a
+        // silence, and it merges like it always did.
+        Ok(PrChecks::Passed | PrChecks::Absent) => None,
+        Ok(PrChecks::Running) => Some("provider-checks-running"),
+        Ok(PrChecks::Failed) => Some("provider-checks-failed"),
+        Ok(PrChecks::Unknown(_)) | Err(_) => Some("provider-checks-unreadable"),
+    }
+}
+
+/// The ONE rule the merge step applies before it merges: a merge with no
+/// evidence behind it is ASKED about — never refused, never merged silently.
+///
+/// Two independent sources of evidence, one rule. The review verdict is an
+/// opinion Mustard recorded; the provider's checks are a result the provider
+/// observed. Reading only the first is how a pull request came to be merged
+/// while its CI run was still in flight, and the run then answered a question
+/// nobody had any more.
+///
+/// The checks are read FIRST because they are the fact that expires: a verdict
+/// recorded yesterday still describes the same code, while a run that was
+/// pending a second ago decides something the door is about to make permanent.
+///
+/// Every refusing case takes the SAME branch on purpose. An absent verdict, a
+/// recorded rejection, a pending run and a failed one are one fact ("not
+/// evidently mergeable") and the answer to all of them is the same question;
+/// forking them into separate behaviours would add decisions the operator never
+/// asked for. `confirmed` is that operator's answer coming back — the one way
+/// through the gate, deliberately.
 #[must_use]
-pub(crate) fn merge_consent(verdict: Option<&str>, confirmed: bool) -> MergeConsent {
-    if confirmed || verdict == Some("approved") {
+pub(crate) fn merge_consent(
+    verdict: Option<&str>,
+    checks: &Result<PrChecks, String>,
+    confirmed: bool,
+) -> MergeConsent {
+    if confirmed {
+        return MergeConsent::Proceed;
+    }
+    if let Some(reason) = checks_reason(checks) {
+        return MergeConsent::Ask { reason };
+    }
+    if verdict == Some("approved") {
         return MergeConsent::Proceed;
     }
     MergeConsent::Ask {
@@ -598,6 +639,11 @@ pub(crate) struct PrMergeReport {
     pub spec: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<String>,
+    /// What the PROVIDER'S own checks answered — its closed vocabulary
+    /// (`passed` · `running` · `failed` · `absent`) or, when the query itself
+    /// failed, the reason verbatim. Always present: it is the evidence for
+    /// what this command did with it, including on the paths that merged.
+    pub checks: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
     /// The `git-settle` report, folded verbatim — the pruning half of this
@@ -608,41 +654,80 @@ pub(crate) struct PrMergeReport {
     pub hint: Option<String>,
 }
 
-/// Merge a resolved PR, with both external effects injected: `merge` asks the
-/// provider, `settle` runs the exit ritual. Injected so the consent rule can be
-/// exercised without a provider, a network or a repository — and so a test can
-/// prove that an unreviewed merge calls NEITHER.
+/// Merge a resolved PR, with all three external effects injected: `checks` asks
+/// the provider what its own runs say, `merge` asks it to merge, `settle` runs
+/// the exit ritual. Injected so the consent rule can be exercised without a
+/// provider, a network or a repository — and so a test can prove that a merge
+/// the door refuses calls NEITHER of the other two.
+///
+/// The checks are read on EVERY path, including the confirmed one that ignores
+/// the answer: one call site instead of two, and the report then carries what
+/// the provider said even when the operator overrode it.
 #[must_use]
 fn merge_core(
     root: &Path,
     facts: &PrFacts,
     flow: &BaseFlow,
     confirmed: bool,
+    checks: &dyn Fn(&Path, u64) -> Result<PrChecks, String>,
     merge: &dyn Fn(&Path, u64) -> Result<(), String>,
     settle: &dyn Fn(&Path, &str) -> Value,
 ) -> PrMergeReport {
     let spec = spec_of_branch(&facts.head, flow);
     let verdict = spec.as_deref().and_then(|slug| recorded_verdict(root, slug));
+    let checks = checks(root, facts.number);
+    let checks_word = match &checks {
+        Ok(state) => state.word().to_string(),
+        Err(reason) => reason.clone(),
+    };
 
-    if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), confirmed) {
+    if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), &checks, confirmed) {
         let unit = spec.as_deref().unwrap_or(&facts.head);
+        let waiting = reason.starts_with("provider-checks");
         return PrMergeReport {
             ok: true,
             action: "confirm",
             reason: Some(reason),
             pr: facts.number,
             head: facts.head.clone(),
-            warning: Some(match verdict.as_deref() {
-                None => format!("`{unit}` carries no recorded review verdict — nothing was merged."),
-                Some(v) => format!("the last review of `{unit}` came back `{v}` — nothing was merged."),
+            warning: Some(match reason {
+                "provider-checks-running" => format!(
+                    "the provider's own checks for `{unit}` are still running — nothing was \
+                     merged, so their verdict still has something to stop."
+                ),
+                "provider-checks-failed" => format!(
+                    "the provider's own checks for `{unit}` came back FAILING — nothing was merged."
+                ),
+                "provider-checks-unreadable" => format!(
+                    "the provider's own checks for `{unit}` could not be read \
+                     ({checks_word}) — nothing was merged."
+                ),
+                _ => match verdict.as_deref() {
+                    None => {
+                        format!("`{unit}` carries no recorded review verdict — nothing was merged.")
+                    }
+                    Some(v) => format!(
+                        "the last review of `{unit}` came back `{v}` — nothing was merged."
+                    ),
+                },
             }),
-            hint: Some(format!(
-                "ask the operator, then re-run with `--confirm` to merge anyway, or record a \
-                 verdict first with `mustard-rt run pr-review --pr {} --verdict approved`",
-                facts.number
-            )),
+            hint: Some(if waiting {
+                format!(
+                    "wait for the provider's runs to finish and run `pr merge` again (or fix what \
+                     they reported), then re-run with `--confirm` to merge without them — \
+                     `gh pr checks {}` shows where they stand",
+                    facts.number
+                )
+            } else {
+                format!(
+                    "ask the operator, then re-run with `--confirm` to merge anyway, or record a \
+                     verdict first with `mustard-rt run pr-review --pr {} --verdict approved`",
+                    facts.number
+                )
+            }),
             spec,
             verdict,
+            checks: checks_word,
             settle: None,
         };
     }
@@ -656,6 +741,7 @@ fn merge_core(
             head: facts.head.clone(),
             spec,
             verdict,
+            checks: checks_word,
             warning: Some(e),
             settle: None,
             hint: Some(
@@ -683,6 +769,7 @@ fn merge_core(
             head: facts.head.clone(),
             spec,
             verdict,
+            checks: checks_word,
             warning: None,
             settle: None,
             hint: Some(format!(
@@ -707,6 +794,7 @@ fn merge_core(
         head: facts.head.clone(),
         spec,
         verdict,
+        checks: checks_word,
         warning: None,
         settle: Some(settled),
         hint: None,
@@ -760,7 +848,11 @@ pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
         Ok(facts) => {
             let (flow, _) = bases_and_branch(&repo);
             let settle = |r: &Path, branch: &str| settle_at(r, Some(branch));
-            emit(&merge_core(&repo, &facts, &flow, confirm, &gh_merge, &settle));
+            // Through the PORT, not through `gh`: the question "did YOUR runs
+            // finish?" is the same question on every provider, and the door
+            // must not learn a second provider's vocabulary to ask it.
+            let checks = |r: &Path, number: u64| provider_for(r).checks(number);
+            emit(&merge_core(&repo, &facts, &flow, confirm, &checks, &gh_merge, &settle));
         }
         Err(e) => emit(&serde_json::json!({ "ok": false, "reason": e, "pr": pr })),
     }
@@ -892,12 +984,16 @@ mod tests {
             settles.set(settles.get() + 1);
             json!({ "ok": true })
         };
+        // The provider is green here, so the ONLY thing left to ask about is
+        // the missing verdict.
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
 
-        let asked = merge_core(root, &facts, &bases, false, &merge, &settle);
+        let asked = merge_core(root, &facts, &bases, false, &green, &merge, &settle);
         assert!(asked.ok, "an ASK is an instruction, never a failure");
         assert_eq!(asked.action, "confirm");
         assert_eq!(asked.reason, Some("no-review-verdict"));
         assert_eq!(asked.verdict, None);
+        assert_eq!(asked.checks, "passed", "the provider's own answer is reported either way");
         assert!(asked.settle.is_none(), "nothing was pruned");
         assert!(
             asked.warning.unwrap_or_default().contains("unreviewed"),
@@ -908,7 +1004,7 @@ mod tests {
 
         // The operator's answer comes back as `--confirm`: now it merges and
         // settles. Still not a refusal at any point.
-        let confirmed = merge_core(root, &facts, &bases, true, &merge, &settle);
+        let confirmed = merge_core(root, &facts, &bases, true, &green, &merge, &settle);
         assert!(confirmed.ok);
         assert_eq!(confirmed.action, "merged");
         assert_eq!(merges.get(), 1);
@@ -947,7 +1043,8 @@ mod tests {
             json!({ "ok": true })
         };
 
-        let done = merge_core(root, &facts, &bases, true, &merge, &settle);
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let done = merge_core(root, &facts, &bases, true, &green, &merge, &settle);
 
         assert!(done.ok, "a promotion is a success, not a refusal: {done:?}");
         assert_eq!(done.action, "merged");
@@ -957,22 +1054,136 @@ mod tests {
         assert!(done.settle.is_none(), "so there is no settle report to carry: {done:?}");
     }
 
-    /// The consent rule itself: only an `approved` verdict (or the operator's
-    /// answer) proceeds; absent and rejected both ASK, and neither ever
-    /// produces a refusal.
+    /// The consent rule itself, over BOTH sources of evidence: only an
+    /// `approved` verdict on top of provider checks that are not in the way
+    /// (or the operator's own answer) proceeds. Everything else ASKS, and
+    /// nothing ever produces a refusal.
     #[test]
     fn pr_merge_consent_asks_for_anything_but_approved() {
-        assert_eq!(merge_consent(Some("approved"), false), MergeConsent::Proceed);
-        assert_eq!(merge_consent(None, true), MergeConsent::Proceed);
-        assert_eq!(merge_consent(Some("rejected"), true), MergeConsent::Proceed);
+        let green = Ok(PrChecks::Passed);
+        assert_eq!(merge_consent(Some("approved"), &green, false), MergeConsent::Proceed);
+        assert_eq!(merge_consent(None, &green, true), MergeConsent::Proceed);
+        assert_eq!(merge_consent(Some("rejected"), &green, true), MergeConsent::Proceed);
         assert_eq!(
-            merge_consent(None, false),
+            merge_consent(None, &green, false),
             MergeConsent::Ask { reason: "no-review-verdict" }
         );
         assert_eq!(
-            merge_consent(Some("rejected"), false),
+            merge_consent(Some("rejected"), &green, false),
             MergeConsent::Ask { reason: "review-not-approved" }
         );
+
+        // The provider's own checks, over an approved verdict: only a finished
+        // green (or a measured absence of runs) lets the merge through.
+        let asks = |checks: Result<PrChecks, String>, reason: &'static str| {
+            assert_eq!(
+                merge_consent(Some("approved"), &checks, false),
+                MergeConsent::Ask { reason },
+                "for {checks:?}",
+            );
+            assert_eq!(
+                merge_consent(Some("approved"), &checks, true),
+                MergeConsent::Proceed,
+                "`--confirm` is the one way through, for {checks:?}",
+            );
+        };
+        assert_eq!(
+            merge_consent(Some("approved"), &Ok(PrChecks::Absent), false),
+            MergeConsent::Proceed,
+            "a project with no CI measured zero runs — that is an answer",
+        );
+        asks(Ok(PrChecks::Running), "provider-checks-running");
+        asks(Ok(PrChecks::Failed), "provider-checks-failed");
+        asks(Ok(PrChecks::Unknown("pr-unreadable")), "provider-checks-unreadable");
+        asks(Err("gh-not-found".to_string()), "provider-checks-unreadable");
+    }
+
+    /// AC-1 — the run that was still in flight when PR 237 was merged. With an
+    /// APPROVED verdict recorded (so the review half consents), a provider
+    /// whose checks are still running stops the merge dead: the door asks, and
+    /// neither injected effect is called.
+    ///
+    /// The assertion is on the CALL COUNT, not on the JSON: a version that
+    /// merged and merely reported the pending run would satisfy any check of
+    /// the document alone — and that is exactly the bug this AC pins.
+    #[test]
+    fn pr_merge_does_not_merge_while_provider_checks_run() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let bases = door_flow();
+        let facts = PrFacts { number: 237, head: "dev_still-running".to_string() };
+        review_result::record_review(root, "still-running", "approved", 0, Some("apps/rt"), None);
+
+        let merges = Cell::new(0u32);
+        let settles = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
+        };
+        let settle = |_: &Path, _: &str| {
+            settles.set(settles.get() + 1);
+            json!({ "ok": true })
+        };
+        let running = |_: &Path, _: u64| Ok(PrChecks::Running);
+
+        let asked = merge_core(root, &facts, &bases, false, &running, &merge, &settle);
+        assert!(asked.ok, "an ASK is an instruction, never a failure: {asked:?}");
+        assert_eq!(asked.action, "confirm");
+        assert_eq!(asked.reason, Some("provider-checks-running"));
+        assert_eq!(asked.verdict.as_deref(), Some("approved"), "the review half DID consent");
+        assert_eq!(asked.checks, "running");
+        assert_eq!(merges.get(), 0, "nothing may be merged while the provider is still deciding");
+        assert_eq!(settles.get(), 0, "and nothing may be pruned");
+        assert!(asked.settle.is_none());
+
+        // `--confirm` remains the operator's deliberate way through the gate.
+        let confirmed = merge_core(root, &facts, &bases, true, &running, &merge, &settle);
+        assert_eq!(confirmed.action, "merged");
+        assert_eq!(merges.get(), 1);
+        assert_eq!(confirmed.checks, "running", "the override is recorded, not hidden");
+    }
+
+    /// AC-2 — checks that came back FAILING do not merge either. Same one
+    /// rule, its own reason: the operator's next move is to fix, not to wait.
+    #[test]
+    fn pr_merge_refuses_when_provider_checks_failed() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let bases = door_flow();
+        let facts = PrFacts { number: 238, head: "dev_red-ci".to_string() };
+        review_result::record_review(root, "red-ci", "approved", 0, Some("apps/rt"), None);
+
+        let merges = Cell::new(0u32);
+        let settles = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
+        };
+        let settle = |_: &Path, _: &str| {
+            settles.set(settles.get() + 1);
+            json!({ "ok": true })
+        };
+        let failed = |_: &Path, _: u64| Ok(PrChecks::Failed);
+
+        let asked = merge_core(root, &facts, &bases, false, &failed, &merge, &settle);
+        assert_eq!(asked.action, "confirm");
+        assert_eq!(asked.reason, Some("provider-checks-failed"));
+        assert_eq!(asked.checks, "failed");
+        assert_eq!(merges.get(), 0, "a failing tree is never integrated by this door");
+        assert_eq!(settles.get(), 0);
+        assert!(
+            asked.warning.unwrap_or_default().contains("FAILING"),
+            "the warning says which of the two evidences refused",
+        );
+
+        // An unreadable answer takes the same branch: "the provider could not
+        // be asked" is not evidence that its runs passed.
+        let unreadable = |_: &Path, _: u64| Err("gh-not-found".to_string());
+        let blind = merge_core(root, &facts, &bases, false, &unreadable, &merge, &settle);
+        assert_eq!(blind.action, "confirm");
+        assert_eq!(blind.reason, Some("provider-checks-unreadable"));
+        assert_eq!(blind.checks, "gh-not-found", "the reason travels verbatim into the report");
+        assert_eq!(merges.get(), 0);
     }
 
     /// A recorded verdict is read back through the same store `review-result`
