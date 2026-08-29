@@ -6,13 +6,27 @@
 //! hook to merge, kept as its own module so the registry wiring is one-to-one.
 //! It triggers on `SessionEnd` and:
 //!
-//! 1. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
-//!    states whose spec is already done.
+//! 1. Kills this project's OTEL collector and removes its PID file.
 //! 2. Removes the statusline git cache from the temp dir.
-//! 3. Removes `.compact-state` files older than 24h.
-//! 4. Removes a stale OTEL collector PID file.
+//! 3. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
+//!    states whose spec is already done.
+//! 4. Removes `.compact-state` files older than 24h.
 //! 5. Prunes telemetry NDJSON files (`.claude/spec/*/.events/*.ndjson`,
 //!    `.claude/.session/*/.events/*.ndjson`) older than the retention window.
+//! 6. Drains the local `rtk gain --json` ledger into the savings events.
+//! 7. Finalizes the per-session amendment window.
+//!
+//! ## Why the order is load-bearing
+//!
+//! `SessionEnd` is the shortest hook budget the harness hands out (15 s in
+//! `plugin/hooks/hooks.json`); when it is exceeded the harness cancels the hook
+//! mid-flight and whatever had not run yet simply does not run. Every step here
+//! is cosmetic except the collector kill — see the OTEL note below — so the
+//! plan is split in two halves and declared once: [`PROMPT_STEPS`], which only
+//! `stat`/`unlink` paths known up front, then [`DEFERRED_STEPS`], which walk a
+//! subtree of unknown size or spawn an external process carrying no deadline of
+//! its own. `observe` chains them in that order, so the collector teardown is
+//! finished before the first thing that can block ever starts.
 //!
 //! ## Contract shape
 //!
@@ -38,7 +52,7 @@ use mustard_core::io::fs;
 use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
@@ -377,9 +391,93 @@ fn prune_ndjson_under(root: &Path, cutoff_ms: i64) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The cleanup plan
+// ---------------------------------------------------------------------------
+
+/// What every cleanup step is handed: the project root, its `.claude` dir and
+/// the session id (absent for harness payloads that carry none).
+struct CleanupTarget {
+    cwd: String,
+    claude: PathBuf,
+    session_id: Option<String>,
+}
+
+/// The half of the plan that only `stat`s and `unlink`s paths known up front —
+/// bounded work, no subtree walk, no external process. It runs first so that a
+/// hook cancelled anywhere later has already done the one step whose omission
+/// is not cosmetic: killing the OTEL collector.
+const PROMPT_STEPS: &[fn(&CleanupTarget)] = &[step_otel_pid, step_statusline_cache];
+
+/// The half of the plan that walks a subtree of unknown size or spawns an
+/// external process carrying no deadline of its own. Every step here is
+/// cosmetic if it is skipped, which is why it is the tail.
+const DEFERRED_STEPS: &[fn(&CleanupTarget)] = &[
+    step_pipeline_states,
+    step_compact_state,
+    step_prune_telemetry,
+    step_ingest_rtk_savings,
+    step_amend_finalize,
+];
+
+/// Kill this project's OTEL collector and drop its PID file — the only step
+/// whose omission is not cosmetic, hence first in the plan.
+fn step_otel_pid(target: &CleanupTarget) {
+    clean_otel_pid(&target.claude);
+}
+
+/// Drop the statusline git cache from the temp dir.
+fn step_statusline_cache(_target: &CleanupTarget) {
+    clean_statusline_cache();
+}
+
+/// Reap terminal / orphaned pipeline-state files.
+fn step_pipeline_states(target: &CleanupTarget) {
+    clean_pipeline_states(&target.claude);
+}
+
+/// Reap `.compact-state` files past the 24h window.
+fn step_compact_state(target: &CleanupTarget) {
+    clean_compact_state(&target.claude);
+}
+
+/// Telemetry retention: drop NDJSON event files past the window so the spec and
+/// session trees do not grow without bound. Fail-open.
+fn step_prune_telemetry(target: &CleanupTarget) {
+    prune_telemetry(&target.cwd);
+}
+
+/// Wave 2 (economia-didatica-e-economias-reais): drain the local
+/// `rtk gain --json` ledger into `savings_records` once per session. Mirrors
+/// the per-invocation persistence already done by `mustard-rt run rtk-gain`,
+/// but for sessions that never explicitly run that subcommand — without this
+/// hook, RTK rewrites never land in the W1 savings table. Strict side-effect,
+/// fail-open, and it spawns `rtk`, which is why it trails the plan.
+fn step_ingest_rtk_savings(target: &CleanupTarget) {
+    ingest_rtk_savings(&target.cwd, target.session_id.as_deref());
+}
+
+/// wave-18-rt-followups (W4#1): finalize the per-session amendment window
+/// before the session ends. The standalone CLI
+/// (`mustard-rt run amend-finalize --session-id <id>`) is still available; this
+/// re-wires the automatic SessionEnd hook that was dropped during the W3B
+/// migration. Fail-open: no session id, or any internal error inside
+/// `amend_finalize::run`, must never abort the rest of cleanup.
+fn step_amend_finalize(target: &CleanupTarget) {
+    let Some(sid) = target.session_id.as_deref() else {
+        return;
+    };
+    if sid.is_empty() {
+        return;
+    }
+    let _ = crate::commands::agent::amend_finalize::run(sid);
+}
+
 impl Observer for SessionCleanupObserver {
     /// On `SessionEnd`, clean stale state. Any other trigger is a no-op. Pure
-    /// side effect — never panics, never affects a verdict.
+    /// side effect — never panics, never affects a verdict. Runs
+    /// [`PROMPT_STEPS`] and only then [`DEFERRED_STEPS`]; a hook cancelled
+    /// part-way through has therefore already done the step that mattered.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::SessionEnd) {
             return;
@@ -388,36 +486,13 @@ impl Observer for SessionCleanupObserver {
         let Ok(paths) = ClaudePaths::for_project(Path::new(&cwd)) else {
             return;
         };
-        let claude = paths.claude_dir();
-
-        // Wave 2 (economia-didatica-e-economias-reais): drain the local
-        // `rtk gain --json` ledger into `savings_records` once per session.
-        // Mirrors the per-invocation persistence already done by
-        // `mustard-rt run rtk-gain`, but for sessions that never explicitly
-        // run that subcommand — without this hook, RTK rewrites never land in
-        // the W1 savings table. Strict side-effect, fail-open.
-        ingest_rtk_savings(&cwd, input.session_id.as_deref());
-
-        // Telemetry retention: drop `run_usage`/`usage_totals` rows past the
-        // window so telemetry.db does not grow without bound. Fail-open.
-        prune_telemetry(&cwd);
-
-        clean_pipeline_states(&claude);
-        clean_statusline_cache();
-        clean_compact_state(&claude);
-        clean_otel_pid(&claude);
-
-        // wave-18-rt-followups (W4#1): finalize the per-session amendment
-        // window before the session ends. The standalone CLI
-        // (`mustard-rt run amend-finalize --session-id <id>`) is still
-        // available; this re-wires the automatic SessionEnd hook that was
-        // dropped during the W3B migration. Fail-open: no session id, or any
-        // internal error inside `amend_finalize::run`, must never abort the
-        // rest of cleanup.
-        if let Some(sid) = input.session_id.as_deref() {
-            if !sid.is_empty() {
-                let _ = crate::commands::agent::amend_finalize::run(sid);
-            }
+        let target = CleanupTarget {
+            claude: paths.claude_dir(),
+            cwd,
+            session_id: input.session_id.clone(),
+        };
+        for step in PROMPT_STEPS.iter().chain(DEFERRED_STEPS) {
+            step(&target);
         }
     }
 }
@@ -528,6 +603,51 @@ mod tests {
         std::fs::write(&pid, "12345").unwrap();
         SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
         assert!(!pid.exists());
+    }
+
+    /// AC-3: the collector teardown lands entirely inside the half of the plan
+    /// that precedes every subtree walk and every external process. Proven by
+    /// running ONLY that half against a project that also holds a telemetry
+    /// NDJSON file the deferred half would have reaped: the PID file is gone,
+    /// the NDJSON is untouched.
+    #[test]
+    fn otel_pid_is_cleaned_before_any_subprocess() {
+        let dir = tempdir().unwrap();
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+
+        let harness = paths.harness_dir();
+        std::fs::create_dir_all(&harness).unwrap();
+        let pid = harness.join(".otel-collector.pid");
+        // A PID no live process can hold: the kill is a no-op, the removal is not.
+        std::fs::write(&pid, format!("{}", u32::MAX)).unwrap();
+
+        let events_dir = paths.spec_dir().join("some-spec").join(".events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        let ndjson = events_dir.join("old.ndjson");
+        std::fs::write(&ndjson, b"{\"event\":\"old\"}\n").unwrap();
+        // Past the retention window, so the deferred half WOULD have reaped it.
+        let past_retention =
+            Duration::from_secs((TELEMETRY_RETENTION_DAYS as u64 + 1) * 24 * 60 * 60);
+        filetime_set(&ndjson, SystemTime::now() - past_retention).unwrap();
+
+        let target = CleanupTarget {
+            cwd: dir.path().to_string_lossy().into_owned(),
+            claude: paths.claude_dir(),
+            session_id: None,
+        };
+        for step in PROMPT_STEPS {
+            step(&target);
+        }
+
+        assert!(
+            !pid.exists(),
+            "the collector PID file must be gone before the deferred half runs"
+        );
+        assert!(
+            ndjson.exists(),
+            "the prompt half must not have walked the telemetry subtree — \
+             that step belongs to DEFERRED_STEPS"
+        );
     }
 
     #[test]
