@@ -22,11 +22,18 @@
 //! `plugin/hooks/hooks.json`); when it is exceeded the harness cancels the hook
 //! mid-flight and whatever had not run yet simply does not run. Every step here
 //! is cosmetic except the collector kill — see the OTEL note below — so the
-//! plan is split in two halves and declared once: [`PROMPT_STEPS`], which only
-//! `stat`/`unlink` paths known up front, then [`DEFERRED_STEPS`], which walk a
-//! subtree of unknown size or spawn an external process carrying no deadline of
-//! its own. `observe` chains them in that order, so the collector teardown is
-//! finished before the first thing that can block ever starts.
+//! plan is split in two halves and declared once: [`PROMPT_STEPS`], which
+//! touches only paths known up front and spawns nothing but the collector kill
+//! ITSELF, then [`DEFERRED_STEPS`], which walk a subtree of unknown size or
+//! spawn a process that is not what the hook came here to do. [`cleanup_plan`]
+//! chains them in that order and `observe` executes exactly that sequence, so
+//! the collector teardown — its own `kill` / `taskkill` spawn included, which
+//! on Windows is the costliest thing the first half does — is finished before
+//! anything else that can block has started.
+//!
+//! Read the split as "cheapest useful work first", not as "no processes until
+//! later": the one process the first half spawns is the payload the whole
+//! ordering exists to protect.
 //!
 //! ## Contract shape
 //!
@@ -403,15 +410,22 @@ struct CleanupTarget {
     session_id: Option<String>,
 }
 
-/// The half of the plan that only `stat`s and `unlink`s paths known up front —
-/// bounded work, no subtree walk, no external process. It runs first so that a
-/// hook cancelled anywhere later has already done the one step whose omission
-/// is not cosmetic: killing the OTEL collector.
+/// The half of the plan that touches only paths known up front: bounded work,
+/// no subtree walk, no directory of unknown size — and exactly ONE spawned
+/// process, the collector kill in [`kill_pid`] (`sh -c kill` on POSIX,
+/// `cmd /C taskkill` on Windows).
+///
+/// That spawn is not an exception to the rule, it IS the rule. On Windows it is
+/// the most expensive thing this half does, and paying it first is the entire
+/// reason the plan is split: a hook cancelled anywhere later has already done
+/// the one step whose omission is not cosmetic. Anything that reads this
+/// constant as "no processes here" is reading it backwards.
 const PROMPT_STEPS: &[fn(&CleanupTarget)] = &[step_otel_pid, step_statusline_cache];
 
 /// The half of the plan that walks a subtree of unknown size or spawns an
-/// external process carrying no deadline of its own. Every step here is
-/// cosmetic if it is skipped, which is why it is the tail.
+/// external process that is NOT what the hook came here to do (`rtk`, which
+/// carries no deadline of its own). Every step here is cosmetic if it is
+/// skipped, which is why it is the tail.
 const DEFERRED_STEPS: &[fn(&CleanupTarget)] = &[
     step_pipeline_states,
     step_compact_state,
@@ -473,11 +487,26 @@ fn step_amend_finalize(target: &CleanupTarget) {
     let _ = crate::commands::agent::amend_finalize::run(sid);
 }
 
+/// The sequence `observe` executes: [`PROMPT_STEPS`] and only then
+/// [`DEFERRED_STEPS`].
+///
+/// It is a named function rather than an expression written inline in
+/// `observe` because the order is the whole point of this module, and an order
+/// stated in one place is an order a test can hold. `otel_pid_is_cleaned_before_
+/// any_subprocess` asserts against THIS sequence, so swapping the two halves
+/// cannot pass unnoticed — before the extraction the review found exactly that
+/// hole: the test walked `PROMPT_STEPS` by hand, and flipping the chain in
+/// `observe` left it green.
+fn cleanup_plan() -> impl Iterator<Item = &'static fn(&CleanupTarget)> {
+    PROMPT_STEPS.iter().chain(DEFERRED_STEPS)
+}
+
 impl Observer for SessionCleanupObserver {
     /// On `SessionEnd`, clean stale state. Any other trigger is a no-op. Pure
-    /// side effect — never panics, never affects a verdict. Runs
-    /// [`PROMPT_STEPS`] and only then [`DEFERRED_STEPS`]; a hook cancelled
-    /// part-way through has therefore already done the step that mattered.
+    /// side effect — never panics, never affects a verdict. Executes
+    /// [`cleanup_plan`] — [`PROMPT_STEPS`] and only then [`DEFERRED_STEPS`] —
+    /// so a hook cancelled part-way through has already done the step that
+    /// mattered.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::SessionEnd) {
             return;
@@ -491,7 +520,7 @@ impl Observer for SessionCleanupObserver {
             cwd,
             session_id: input.session_id.clone(),
         };
-        for step in PROMPT_STEPS.iter().chain(DEFERRED_STEPS) {
+        for step in cleanup_plan() {
             step(&target);
         }
     }
@@ -605,11 +634,28 @@ mod tests {
         assert!(!pid.exists());
     }
 
-    /// AC-3: the collector teardown lands entirely inside the half of the plan
-    /// that precedes every subtree walk and every external process. Proven by
-    /// running ONLY that half against a project that also holds a telemetry
-    /// NDJSON file the deferred half would have reaped: the PID file is gone,
-    /// the NDJSON is untouched.
+    /// AC-3: on `SessionEnd` the collector teardown is the FIRST thing cleanup
+    /// does — ahead of every subtree walk and every process that is not the
+    /// kill itself.
+    ///
+    /// The name means "before any subprocess" the way the AC means it: before
+    /// any subprocess that is not the collector kill. [`clean_otel_pid`] spawns
+    /// `sh -c kill` / `cmd /C taskkill` of its own (see [`kill_pid`]) — that
+    /// spawn is the payload the ordering exists to protect, not something it is
+    /// racing.
+    ///
+    /// Two assertions, because either one alone is not a lock:
+    ///
+    /// 1. `observe` — the shipped entry point, not a hand-rolled loop — really
+    ///    runs the whole plan: the PID file is gone AND the expired telemetry
+    ///    file the deferred half owns was reaped.
+    /// 2. The sequence `observe` consumes, [`cleanup_plan`], opens with exactly
+    ///    [`PROMPT_STEPS`] in order, `step_otel_pid` first.
+    ///
+    /// Assertion 2 is what makes flipping the chain to
+    /// `DEFERRED_STEPS.iter().chain(PROMPT_STEPS)` turn this test red — under
+    /// that flip assertion 1 alone stays green, which is precisely the hole
+    /// review found in the first cut of this test.
     #[test]
     fn otel_pid_is_cleaned_before_any_subprocess() {
         let dir = tempdir().unwrap();
@@ -625,29 +671,44 @@ mod tests {
         std::fs::create_dir_all(&events_dir).unwrap();
         let ndjson = events_dir.join("old.ndjson");
         std::fs::write(&ndjson, b"{\"event\":\"old\"}\n").unwrap();
-        // Past the retention window, so the deferred half WOULD have reaped it.
+        // Past the retention window, so the deferred half must reap it.
         let past_retention =
             Duration::from_secs((TELEMETRY_RETENTION_DAYS as u64 + 1) * 24 * 60 * 60);
         filetime_set(&ndjson, SystemTime::now() - past_retention).unwrap();
 
-        let target = CleanupTarget {
-            cwd: dir.path().to_string_lossy().into_owned(),
-            claude: paths.claude_dir(),
-            session_id: None,
-        };
-        for step in PROMPT_STEPS {
-            step(&target);
-        }
-
+        // 1 — through the real hook entry point.
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
         assert!(
             !pid.exists(),
-            "the collector PID file must be gone before the deferred half runs"
+            "observe() must tear the collector down and drop its PID file"
         );
         assert!(
-            ndjson.exists(),
-            "the prompt half must not have walked the telemetry subtree — \
-             that step belongs to DEFERRED_STEPS"
+            !ndjson.exists(),
+            "observe() must also run the deferred half — an expired telemetry \
+             file survived, so the plan did not finish"
         );
+
+        // 2 — and in that order. `cleanup_plan()` IS the sequence the loop in
+        // `observe` walks, so this holds the real execution order, not a copy
+        // of it.
+        let plan: Vec<&'static fn(&CleanupTarget)> = cleanup_plan().collect();
+        assert_eq!(
+            plan.len(),
+            PROMPT_STEPS.len() + DEFERRED_STEPS.len(),
+            "cleanup_plan() must run every declared step exactly once"
+        );
+        assert!(
+            std::ptr::fn_addr_eq(*plan[0], step_otel_pid as fn(&CleanupTarget)),
+            "the collector teardown must be the FIRST step cleanup executes"
+        );
+        for (i, declared) in PROMPT_STEPS.iter().enumerate() {
+            assert!(
+                std::ptr::fn_addr_eq(*plan[i], *declared),
+                "step {i} of the executed plan is not PROMPT_STEPS[{i}] — the \
+                 prompt half no longer leads, so a cancelled hook can lose the \
+                 collector kill"
+            );
+        }
     }
 
     #[test]

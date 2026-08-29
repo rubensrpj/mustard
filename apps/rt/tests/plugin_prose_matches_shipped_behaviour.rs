@@ -2010,3 +2010,154 @@ fn router_teaches_the_self_healing_delivery() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The two bootstrap twins under `plugin/bin/`.
+//
+// `mustard-boot.cmd` runs only under cmd.exe, and nothing on this repository's
+// runners can execute it: `.github/workflows/ci.yml`'s `windows-latest` job runs
+// cargo and nothing else, and cargo cannot ask cmd.exe to parse a file. So the
+// two tests below check what IS checkable anywhere — the assumptions those lines
+// rest on, pinned to the literals that rest on them, so a model and its subject
+// can only drift together.
+//
+// The stakes are why they exist at all. This pair has already shipped one
+// Windows-only defect that survived six releases in total silence (the trailing
+// backslash of 0.1.52, documented at the top of the `.cmd`), and both properties
+// below fail the same way: nothing on screen, `bin/` never populated, the whole
+// harness dormant.
+// ---------------------------------------------------------------------------
+
+/// One field of a cmd `for /f` line after `%~` expansion: surrounding double
+/// quotes are dropped, and ONLY when the field carries both of them — a field
+/// like `"https` (what the manifest's `$schema` line yields once `:` is a
+/// delimiter) is left exactly as it is.
+fn cmd_unquote(field: &str) -> &str {
+    match field.strip_prefix('"').and_then(|f| f.strip_suffix('"')) {
+        Some(inner) if field.len() >= 2 => inner,
+        _ => field,
+    }
+}
+
+/// A model of cmd's `for /f "usebackq tokens=1,2 delims=:, "` over one line:
+/// cut on colon, comma or space, treat a run of them as ONE cut, ignore the
+/// leading ones, and hand back the first two fields as `%~a` / `%~b`.
+fn cmd_for_f_tokens(line: &str) -> (Option<&str>, Option<&str>) {
+    let mut fields = line
+        .split([':', ',', ' '])
+        .filter(|f| !f.is_empty())
+        .map(cmd_unquote);
+    (fields.next(), fields.next())
+}
+
+/// The whole of what `mustard-boot.cmd` computes into `VER`: walk the manifest
+/// line by line, skip what cmd's default `eol=;` would skip, and take `%~b` off
+/// the FIRST line whose `%~a` is `version` (`if not defined VER` — first match
+/// wins).
+fn cmd_boot_version(manifest: &str) -> Option<&str> {
+    manifest
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| !l.starts_with(';'))
+        .find_map(|l| {
+            let (key, value) = cmd_for_f_tokens(l);
+            key.filter(|k| k.eq_ignore_ascii_case("version"))
+                .and(value)
+        })
+}
+
+/// The version `mustard-boot.cmd` will read out of the committed manifest is the
+/// version the manifest actually declares.
+///
+/// The failure this guards is silent and total. An empty `VER` sends the Windows
+/// boot to `:noversion` and leaves `bin/` unpopulated, so after a plugin version
+/// bump every hook on every Windows machine goes dormant and stays dormant. The
+/// parse has no other alarm: no exit code, no missing file, nothing in the
+/// session but hooks that quietly do nothing.
+///
+/// Two halves, so the model cannot rot away from its subject:
+///
+/// 1. the `.cmd` still carries the exact `for /f` line modelled above; and
+/// 2. the model, run over the real `plugin/.claude-plugin/plugin.json`, agrees
+///    with `serde_json` — which parses that file by a completely different road.
+///
+/// What it does NOT prove is that cmd.exe tokenises the way this models it; only
+/// a Windows box can answer that, and the `.cmd` carries the one-line command
+/// that asks. What it does prove is the half that actually moves: the manifest's
+/// shape. That shape is what a careless reformat, a new key, or a minifier in
+/// the release path would change.
+#[test]
+fn windows_boot_reads_the_version_the_manifest_actually_ships() {
+    let boot_cmd = read("plugin/bin/mustard-boot.cmd");
+    let shipped_line = r#"for /f "usebackq tokens=1,2 delims=:, " %%a in ("%MANIFEST%") do if not defined VER if /i "%%~a"=="version" set "VER=%%~b""#;
+    assert!(
+        boot_cmd.contains(shipped_line),
+        "mustard-boot.cmd no longer carries the `for /f` line this test models, \
+         so the model below proves nothing about the shipped parser",
+    );
+
+    let manifest = read("plugin/.claude-plugin/plugin.json");
+    let declared: serde_json::Value =
+        serde_json::from_str(&manifest).expect("plugin.json is not valid JSON");
+    let declared = declared
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .expect("plugin.json declares no `version`");
+
+    let parsed = cmd_boot_version(&manifest).unwrap_or_else(|| {
+        panic!(
+            "mustard-boot.cmd would read an EMPTY version out of plugin.json — \
+             every Windows machine goes dormant after the next version bump. \
+             The manifest must keep `version` alone on its own line, as \
+             `  \"version\": \"{declared}\",`"
+        )
+    });
+    assert_eq!(
+        parsed, declared,
+        "mustard-boot.cmd would stamp bin/ with a version the manifest does not \
+         declare, so the download URL points at a release that does not exist",
+    );
+}
+
+/// Both twins cap the download at the SAME number of seconds.
+///
+/// The ceiling is not a free parameter: the tightest hook budget that can still
+/// reach the fetch is 15 s (`plugin/hooks/hooks.json`, the
+/// `clear|compact|resume|fork` arm of `SessionStart`), and unpacking plus the
+/// hand-off still has to fit under it. Both files say in prose "keep this in
+/// step with the twin", and prose is not a lock: a bump applied to one body only
+/// is invisible, and shows up as `Hook cancelled` on exactly one operating
+/// system. AC-1 asserts each twin has SOME deadline; this asserts they are the
+/// same one, and that it fits.
+#[test]
+fn both_boot_twins_carry_the_same_download_deadline() {
+    fn max_time(body: &str, file: &str) -> u32 {
+        let after = body
+            .split("--max-time ")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{file} has no `--max-time` on its curl"));
+        after
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap_or_else(|e| panic!("{file}'s `--max-time` is not a number: {e}"))
+    }
+
+    let posix = max_time(&read("plugin/bin/mustard-boot"), "plugin/bin/mustard-boot");
+    let windows = max_time(
+        &read("plugin/bin/mustard-boot.cmd"),
+        "plugin/bin/mustard-boot.cmd",
+    );
+    assert_eq!(
+        posix, windows,
+        "the two mustard-boot twins cap the download at different deadlines — \
+         one operating system gets `Hook cancelled` and the other does not",
+    );
+    assert!(
+        posix < 15,
+        "a {posix}s download ceiling does not fit the 15s budget of the \
+         tightest hook that can reach it (hooks.json, SessionStart on \
+         clear|compact|resume|fork) — the unpack and the hand-off come after it",
+    );
+}

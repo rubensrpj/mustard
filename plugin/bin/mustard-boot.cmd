@@ -59,8 +59,22 @@ rem nothing left to strip. Every other line fails the key test and costs one
 rem comparison.
 rem
 rem This reads the manifest as one key per line, which is how it is committed
-rem and how the release ships it. Any other shape leaves VER empty, and an empty
-rem VER already means "do nothing" everywhere below — dormant, never wrong.
+rem and how the release ships it: the PATCH bump in
+rem .github/workflows/bump-on-main.yml is a `sed` on that very line, so the shape
+rem survives every release. Any other shape leaves VER empty, and an empty VER
+rem means "do nothing" everywhere below — dormant, and as of :noversion it also
+rem SAYS so instead of going quiet.
+rem
+rem Only cmd.exe runs the line below, so nothing in this repository can execute
+rem it; tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation
+rem against the real manifest instead, and pins the model to the literal below so
+rem the two can only drift together. To confirm it on a real Windows box, from
+rem the repository root, one line:
+rem
+rem   for /f "usebackq tokens=1,2 delims=:, " %a in ("plugin\.claude-plugin\plugin.json") do @if /i "%~a"=="version" @echo %~b
+rem
+rem It must print the manifest version and nothing else. (One % at the prompt,
+rem two inside a file — that difference is cmd, not a typo.)
 set "VER="
 for /f "usebackq tokens=1,2 delims=:, " %%a in ("%MANIFEST%") do if not defined VER if /i "%%~a"=="version" set "VER=%%~b"
 
@@ -82,7 +96,7 @@ rem keeps the right to fetch.
 if /i "%~1"=="on" if /i not "%~2"=="SessionStart" set "NEED=0"
 
 if not "%NEED%"=="1" goto :run
-if "%VER%"=="" goto :run
+if "%VER%"=="" goto :noversion
 
 set "URL=https://github.com/rubensrpj/mustard/releases/download/v%VER%/mustard-bins-%VER%-windows-x64.zip"
 set "ZIP=%TEMP%\mustard-bins-%VER%.zip"
@@ -99,6 +113,18 @@ tar -xf "%ZIP%" -C "%DEST%"
 if errorlevel 1 goto :extractfail
 <nul set /p="%VER%">"%STAMP%"
 del /q "%ZIP%" 2>nul
+goto :run
+
+:noversion
+rem The one failure that is BOTH silent and total, and the reason it gets a
+rem label of its own. NEED=1 says the binaries have to come down; an empty VER
+rem names no release to get them from, so nothing downloads and nothing prints,
+rem and a machine whose bin\ was never populated stays dormant forever with no
+rem line on screen saying why. Nothing here starts a download — there is no URL
+rem to build — but the operator is told, and told WHICH file to look at. Only a
+rem caller that was going to download says anything, so the short-budget path
+rem above stays as quiet as its own paragraph promises.
+echo [mustard-boot] no "version" readable in "%MANIFEST%" — mustard hooks stay dormant this session 1>&2
 goto :run
 
 :fetchfail

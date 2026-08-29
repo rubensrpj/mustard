@@ -83,6 +83,19 @@ if [ "${1-}" = "on" ] && [ "${2-}" != "SessionStart" ]; then
   need_fetch=0
 fi
 
+# A manifest this script cannot read a version out of is the one failure that is
+# BOTH silent and total. `need_fetch` says the binaries have to come down, `$VER`
+# names no release to fetch them from, and every branch below is guarded on
+# `-n "$VER"` — so nothing happens, nothing is printed, and on a machine whose
+# `bin/` was never populated the harness is dormant forever with no line on
+# screen saying why. There is still nothing to download (there is no URL to
+# build), but the operator is told, and told WHICH file to look at. Only a caller
+# that was actually going to fetch says anything, so the short-budget path above
+# stays as quiet as its own paragraph promises.
+if [ "$need_fetch" = "1" ] && [ -z "$VER" ]; then
+  echo "[mustard-boot] no \"version\" readable in $MANIFEST — mustard hooks stay dormant this session" >&2
+fi
+
 # Declared before the branch: `set -u` at the top of this file makes an unset
 # variable fatal, and the second test below reads `$os` whether or not the
 # branch that assigns it ran.
