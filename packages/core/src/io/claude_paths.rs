@@ -174,6 +174,19 @@ const DOCUMENTED_DIRS: &[&str] = &[
     "capabilities",
     // Plan-mode plan files — `settings.json#plansDirectory` points here.
     "plans",
+    // Isolated checkouts of work units, created by the entry ritual
+    // (`work-unit-open`) and retired by `worktree-gc` / `git-settle`.
+    "worktrees",
+    // Sanctioned scratch evidence — the throwaway a diagnosis RUNS to decide
+    // between two hypotheses. Carved out of branch protection by
+    // `work_branch_gate::is_harness_carve_out`, alongside `plans`.
+    "scratch",
+    // Rendered agent dispatch stubs (`agent-prompt-render --emit ref`), read
+    // back by the PreToolUse hook that expands them.
+    ".dispatch",
+    // Per-session event directories, read by the MCP server and the dashboard
+    // watcher.
+    ".session",
 ];
 
 /// File names under `<root>/.claude/.cache/` that Mustard owns. Single source
@@ -182,6 +195,11 @@ const CACHE_FILES: &[&str] = &[
     "detect.json",
     "scan-dispatch.json",
     "knowledge-seen.json",
+    // PLAN-phase materialisation inputs (`plan-materialize`).
+    "plan.json",
+    "plan2.json",
+    // The conversation-material channel `spec-draft --material` reads.
+    "spec-material.json",
 ];
 
 impl ClaudePaths {
@@ -800,7 +818,7 @@ mod tests {
     #[test]
     fn documented_dirs_includes_all_top_level_dirs() {
         let dirs = ClaudePaths::documented_dirs();
-        for expected in [
+        let expected = [
             ".cache",
             ".harness",
             ".metrics",
@@ -817,22 +835,40 @@ mod tests {
             "graph",
             "capabilities",
             "plans",
-        ] {
-            assert!(dirs.contains(&expected), "missing {expected} from documented_dirs");
+            // Live harness state the audit used to call "unexpected" because
+            // the catalog did not know its own directories.
+            "worktrees",
+            "scratch",
+            ".dispatch",
+            ".session",
+        ];
+        for name in expected {
+            assert!(dirs.contains(&name), "missing {name} from documented_dirs");
         }
+        // Exact, not merely a superset — the same ratchet `cache_files` carries.
+        // Every name here becomes a `**/.claude/<name>/` exclude rule in a
+        // private install (`project_seed::harness_claude_output`), so a stray
+        // entry hides a client directory from their own `git add -A`.
+        assert_eq!(dirs.len(), expected.len());
     }
 
     #[test]
-    fn cache_files_lists_three_caches() {
+    fn cache_files_lists_every_owned_cache() {
         let files = ClaudePaths::cache_files();
-        assert_eq!(files.len(), 3);
-        for expected in [
+        let expected = [
             "detect.json",
             "scan-dispatch.json",
             "knowledge-seen.json",
-        ] {
-            assert!(files.contains(&expected), "missing {expected} from cache_files");
+            "plan.json",
+            "plan2.json",
+            "spec-material.json",
+        ];
+        for name in expected {
+            assert!(files.contains(&name), "missing {name} from cache_files");
         }
+        // Exact, not merely a superset: a cache file dropped from the catalog
+        // starts being reported as an orphan by `audit_orphans`.
+        assert_eq!(files.len(), expected.len());
     }
 
     #[test]

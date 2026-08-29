@@ -2926,23 +2926,27 @@ mod tests {
             std_fs::write(dest, body).unwrap();
         }
         // The RUNTIME output — what the harness writes while it runs, as opposed
-        // to what `upsert_project` seeds at install time. The eight rules that
-        // cover these directories are derived from the documented catalog, so
-        // they exist whether or not anything here produces them; a fixture that
-        // only seeded left every one of them looking stale the moment the
-        // operator's global gitignore stopped answering for them.
+        // to what `upsert_project` seeds at install time. The rules that cover
+        // these directories are derived from the documented catalog, so they
+        // exist whether or not anything here produces them; a fixture that only
+        // seeded left every one of them looking stale the moment the operator's
+        // global gitignore stopped answering for them.
         //
         // The names are the real ones this repository carries, so the rule is
         // proven against the shape it will actually meet.
         for (name, body) in [
             (".agent-state/main-context.counter.json", "{}\n"),
             (".cache/spec-material.json", "{}\n"),
+            (".dispatch/wave-1-impl.prompt.md", "# prompt\n"),
             (".harness/.last-stop", "0\n"),
             (".metrics/qa.jsonl", "{}\n"),
             (".pipeline-states/demo.json", "{}\n"),
+            (".session/sess-demo/.events/2026-08-19.ndjson", "{}\n"),
             ("agent-memory/mustard-review.md", "# memory\n"),
             ("graph/entities.json", "{}\n"),
             ("plans/2026-08-19-demo.md", "# plan\n"),
+            ("scratch/probe.json", "{}\n"),
+            ("worktrees/fix/demo/CLAUDE.md", "# unit\n"),
         ] {
             let dest = root.join(".claude").join(name);
             std_fs::create_dir_all(dest.parent().unwrap()).unwrap();
