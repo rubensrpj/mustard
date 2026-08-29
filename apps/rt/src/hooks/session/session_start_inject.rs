@@ -45,6 +45,17 @@
 //! surfaced as a [`Verdict::Inject`] so the single `emit_outcome` owns the
 //! only stdout write. `SessionStartInject` is a `Check`.
 //!
+//! ## The one machine read is an argument
+//!
+//! Everything above works out of the project directory it is handed — except
+//! the two plugin advisories, which need Claude Code's plugin registry, and
+//! that lives in the operator's `~/.claude`, outside any project. So the
+//! `Check` half reads it ONCE and hands the answer to [`session_start_core`],
+//! which decides. Keeping the read inside the decision put the developer's own
+//! machine into every verdict: a test building a temporary project to isolate
+//! itself could not reach past it, and three went red on a box mid-upgrade
+//! while staying green on the runner, where no plugin is installed at all.
+//!
 //! ## OTEL collector spawn (Wave 3 — economia-moat-unification)
 //!
 //! `harness-init.js` historically spawned an OTEL collector subprocess. With
@@ -321,112 +332,139 @@ impl Check for SessionStartInject {
     /// is the verdict — `Inject` when a grain model exists, else `Allow`.
     ///
     /// Any non-`SessionStart` trigger self-allows.
+    ///
+    /// This half exists to READ the machine and nothing else: Claude Code's
+    /// plugin registry is asked ONCE here and the answer is handed to
+    /// [`session_start_core`], which decides. Both plugin advisories used to
+    /// take that read themselves, deep inside the decision, and a test that
+    /// built a temporary project to isolate everything could not reach past it
+    /// — the read escaped the temporary directory onto the developer's own
+    /// `~/.claude`, so three tests went red on any machine mid-upgrade and
+    /// stayed green on the runner, where no plugin is installed at all. The
+    /// argument IS the seam.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        if ctx.trigger != Some(Trigger::SessionStart) {
-            return Ok(Verdict::Allow);
-        }
-        let cwd = ctx.project_dir_or_cwd(input);
-        run_harness_init(input, &cwd);
-        // Wave 3 (economia-moat-unification): the OTEL collector is no longer
-        // an "out-of-scope spawn" — fire it detached and let `session_cleanup`
-        // remove the PID file on `SessionEnd`.
-        spawn_otel_collector(&cwd);
-        run_spec_hygiene(&cwd);
-        // Collect orphan worktrees — those under `<repo>/.claude/worktrees/`
-        // whose name is not a work unit's `{base}_…`, plus the removal-proof
-        // scratch trees an interrupted review left in the OS temp directory. It
-        // REMOVES what is orphaned (owner gone) or stale, and never touches a
-        // work unit's worktree or one holding uncommitted work. Fail-open at
-        // every step.
-        crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));
-        // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
-        // advisory probe for drift in the project's `.claude/` directory.
-        // Read-only; emits a single stderr warning when one or more children
-        // classify as `ORPHAN` (no declared consumer in
-        // `apps/{rt,cli,dashboard}`) — the underlying audit now derives its
-        // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
-        // the single canonical catalog. Fail-open — never blocks.
-        crate::commands::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
-        // orient-census Level 1 (Terrain): project `grain.model.json` into a
-        // once-per-session terrain map so the AI opens the session already
-        // knowing the subprojects instead of grepping to orient. Fail-open: a
-        // missing / unreadable model yields no terrain.
-        let terrain_lang =
-            crate::shared::context::project_config_cached(Path::new(&cwd)).i18n().lang;
-        let terrain = crate::commands::orient::render_terrain(
-            &crate::commands::orient::compute_orientation(Path::new(&cwd)),
-            terrain_lang,
-        );
-        // Declared injectables (`mustard.json#inject`, `on: sessionStart`).
-        // A window-refreshing SessionStart first clears the session's
-        // `injected-*` markers, then re-injects the sessionStart entries
-        // immediately (markers ignored). Two sources refresh the window:
-        // `compact` (auto-compaction) and `clear` (the user ran `/clear`) —
-        // both drop every earlier injection, so the `once` userPromptSubmit
-        // entries must re-deliver on the next prompt and the sessionStart
-        // entries must ride back in. Fail-open throughout.
-        let session = current_session_id(input);
-        let source_refreshes_window = input
-            .raw
-            .get("source")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| {
-                s.eq_ignore_ascii_case("compact") || s.eq_ignore_ascii_case("clear")
-            });
-        if source_refreshes_window {
-            crate::hooks::session::injectables::clear_markers(&cwd, Some(session.as_str()));
-        }
-        let injected = crate::hooks::session::injectables::collect(
-            &cwd,
-            Some(session.as_str()),
-            "sessionstart",
-            source_refreshes_window,
-            None,
-        );
-        // The `userPromptSubmit` family is NOT folded in here, and that is
-        // deliberate. Doing so was tried and MEASURED at 11,973 characters on
-        // this repository — past the 10,000 a hook RESPONSE carries, so the very
-        // router it meant to rescue became a file path instead of text in
-        // force. Worse, `collect` records the delivery markers, so each sibling
-        // hook would then skip on the next prompt: the self-healing path would
-        // be disarmed by the attempt to help it.
-        //
-        // Clearing the markers above IS the fix. The prompt family re-delivers
-        // on the operator's next prompt, through its own sibling hooks, each
-        // measured alone against its own ceiling. The window between the
-        // compaction and that prompt carries no router — accepted, because the
-        // alternative measured worse: no router at all, for the rest of the
-        // session.
-        // Version drift advisory: an installed project whose `mustard.json`
-        // stamp differs from the running harness gets a one-paragraph nudge
-        // toward `/mustard:upsert`. Advisory only — the user decides.
-        let drift = version_drift_notice(Path::new(&cwd));
-        // Stale-plugin advisory: the drift check above compares the stamp with
-        // the RUNNING harness, and the running harness is what wrote the stamp
-        // — so it is blind to a session still carrying a plugin an update has
-        // already replaced on disk. This is the only line that can see it.
-        let stale = stale_plugin_notice();
-        // Plugin-behind-binary advisory: the two above compare the stamp with
-        // the running harness, and the running plugin with the registry. A
-        // package install moves neither pair — it replaces the SYSTEM binary
-        // and leaves the plugin where it was, which is the shape the operator
-        // hit on 2026-08-26.
-        let behind = plugin_behind_binary_notice();
-        // Pending-prune advisory: delivered work units whose branch is still
-        // alive. The prune command already existed and worked; what was missing
-        // was anyone SAYING it was owed, so six units piled up unnoticed.
-        let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
-        // ONE composed Inject (the dispatcher fold is last-writer-wins):
-        // terrain first, injectables after, the advisories last — blank-line
-        // separated.
-        let parts: Vec<String> =
-            [terrain, injected, drift, stale, behind, prune].into_iter().flatten().collect();
-        Ok(if parts.is_empty() {
-            Verdict::Allow
-        } else {
-            Verdict::Inject { context: parts.join("\n\n") }
-        })
+        session_start_core(input, ctx, mustard_core::installed_harness_version().as_deref())
     }
+}
+
+/// The deciding half of [`SessionStartInject`]'s check, with the one machine
+/// read injected: `installed` is the version Claude Code's plugin registry
+/// records, or `None` when the registry could not answer.
+///
+/// `None` is also what every test passes, and it is the honest shape of "no
+/// registry" — the case both plugin advisories already read as nothing to say.
+/// A test asserting silence then gets that silence from the code, not from
+/// whichever machine happens to run it.
+fn session_start_core(
+    input: &HookInput,
+    ctx: &Ctx,
+    installed: Option<&str>,
+) -> Result<Verdict, Error> {
+    if ctx.trigger != Some(Trigger::SessionStart) {
+        return Ok(Verdict::Allow);
+    }
+    let cwd = ctx.project_dir_or_cwd(input);
+    run_harness_init(input, &cwd);
+    // Wave 3 (economia-moat-unification): the OTEL collector is no longer
+    // an "out-of-scope spawn" — fire it detached and let `session_cleanup`
+    // remove the PID file on `SessionEnd`.
+    spawn_otel_collector(&cwd);
+    run_spec_hygiene(&cwd);
+    // Collect orphan worktrees — those under `<repo>/.claude/worktrees/`
+    // whose name is not a work unit's `{base}_…`, plus the removal-proof
+    // scratch trees an interrupted review left in the OS temp directory. It
+    // REMOVES what is orphaned (owner gone) or stale, and never touches a
+    // work unit's worktree or one holding uncommitted work. Fail-open at
+    // every step.
+    crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));
+    // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
+    // advisory probe for drift in the project's `.claude/` directory.
+    // Read-only; emits a single stderr warning when one or more children
+    // classify as `ORPHAN` (no declared consumer in
+    // `apps/{rt,cli,dashboard}`) — the underlying audit now derives its
+    // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
+    // the single canonical catalog. Fail-open — never blocks.
+    crate::commands::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
+    // orient-census Level 1 (Terrain): project `grain.model.json` into a
+    // once-per-session terrain map so the AI opens the session already
+    // knowing the subprojects instead of grepping to orient. Fail-open: a
+    // missing / unreadable model yields no terrain.
+    let terrain_lang =
+        crate::shared::context::project_config_cached(Path::new(&cwd)).i18n().lang;
+    let terrain = crate::commands::orient::render_terrain(
+        &crate::commands::orient::compute_orientation(Path::new(&cwd)),
+        terrain_lang,
+    );
+    // Declared injectables (`mustard.json#inject`, `on: sessionStart`).
+    // A window-refreshing SessionStart first clears the session's
+    // `injected-*` markers, then re-injects the sessionStart entries
+    // immediately (markers ignored). Two sources refresh the window:
+    // `compact` (auto-compaction) and `clear` (the user ran `/clear`) —
+    // both drop every earlier injection, so the `once` userPromptSubmit
+    // entries must re-deliver on the next prompt and the sessionStart
+    // entries must ride back in. Fail-open throughout.
+    let session = current_session_id(input);
+    let source_refreshes_window = input
+        .raw
+        .get("source")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| {
+            s.eq_ignore_ascii_case("compact") || s.eq_ignore_ascii_case("clear")
+        });
+    if source_refreshes_window {
+        crate::hooks::session::injectables::clear_markers(&cwd, Some(session.as_str()));
+    }
+    let injected = crate::hooks::session::injectables::collect(
+        &cwd,
+        Some(session.as_str()),
+        "sessionstart",
+        source_refreshes_window,
+        None,
+    );
+    // The `userPromptSubmit` family is NOT folded in here, and that is
+    // deliberate. Doing so was tried and MEASURED at 11,973 characters on
+    // this repository — past the 10,000 a hook RESPONSE carries, so the very
+    // router it meant to rescue became a file path instead of text in
+    // force. Worse, `collect` records the delivery markers, so each sibling
+    // hook would then skip on the next prompt: the self-healing path would
+    // be disarmed by the attempt to help it.
+    //
+    // Clearing the markers above IS the fix. The prompt family re-delivers
+    // on the operator's next prompt, through its own sibling hooks, each
+    // measured alone against its own ceiling. The window between the
+    // compaction and that prompt carries no router — accepted, because the
+    // alternative measured worse: no router at all, for the rest of the
+    // session.
+    // Version drift advisory: an installed project whose `mustard.json`
+    // stamp differs from the running harness gets a one-paragraph nudge
+    // toward `/mustard:upsert`. Advisory only — the user decides.
+    let drift = version_drift_notice(Path::new(&cwd));
+    // Stale-plugin advisory: the drift check above compares the stamp with
+    // the RUNNING harness, and the running harness is what wrote the stamp
+    // — so it is blind to a session still carrying a plugin an update has
+    // already replaced on disk. This is the only line that can see it.
+    let running = mustard_core::harness_version();
+    let stale = stale_plugin_line(&running, installed);
+    // Plugin-behind-binary advisory: the two above compare the stamp with
+    // the running harness, and the running plugin with the registry. A
+    // package install moves neither pair — it replaces the SYSTEM binary
+    // and leaves the plugin where it was, which is the shape the operator
+    // hit on 2026-08-26.
+    let behind = plugin_behind_binary_line(&running, installed);
+    // Pending-prune advisory: delivered work units whose branch is still
+    // alive. The prune command already existed and worked; what was missing
+    // was anyone SAYING it was owed, so six units piled up unnoticed.
+    let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
+    // ONE composed Inject (the dispatcher fold is last-writer-wins):
+    // terrain first, injectables after, the advisories last — blank-line
+    // separated.
+    let parts: Vec<String> =
+        [terrain, injected, drift, stale, behind, prune].into_iter().flatten().collect();
+    Ok(if parts.is_empty() {
+        Verdict::Allow
+    } else {
+        Verdict::Inject { context: parts.join("\n\n") }
+    })
 }
 
 /// One-paragraph advisory when the project's `mustard.json#version` stamp
@@ -457,21 +495,13 @@ fn version_drift_notice(root: &Path) -> Option<String> {
 
 /// One line when the plugin THIS session loaded is behind the one Claude Code's
 /// registry records as installed — the session is running old prose and only a
-/// reload changes that.
+/// reload changes that. Running version in, registry answer in, advisory out.
 ///
 /// The gap this closes: `/mustard:upsert` installs a new plugin version, and
 /// the running session keeps every command, skill and agent file of the old one
 /// until the operator reloads. Nothing said so. [`version_drift_notice`]
 /// structurally cannot: the stamp it reads was written by the running harness,
 /// so the two agree by construction and a stale session reads as aligned.
-fn stale_plugin_notice() -> Option<String> {
-    stale_plugin_line(
-        &mustard_core::harness_version(),
-        mustard_core::installed_harness_version().as_deref(),
-    )
-}
-
-/// The pure half of [`stale_plugin_notice`] — running version in, advisory out.
 ///
 /// `None` unless the registry ANSWERED and the running version is strictly
 /// older: an unreadable registry, a registry that does not list this plugin,
@@ -487,12 +517,13 @@ fn stale_plugin_line(running: &str, installed: Option<&str>) -> Option<String> {
 }
 
 /// One line when the plugin Claude Code would load is behind the harness that
-/// is RUNNING.
+/// is RUNNING. The running harness's version in, the registry's answer in, the
+/// advisory out.
 ///
 /// The third DIRECTION on the same pair, and neither of the two above reports
 /// it.
 /// [`version_drift_notice`] compares the project stamp with the running
-/// harness; [`stale_plugin_notice`] compares the running plugin with the
+/// harness; [`stale_plugin_line`] compares the running plugin with the
 /// registry. Both are blind to the case where the SYSTEM binary was updated and
 /// the plugin was not — which is exactly what a package install does: `dpkg -i`
 /// (or the Windows installer) replaces `/usr/lib/mustard/bin/mustard-rt` and
@@ -504,15 +535,6 @@ fn stale_plugin_line(running: &str, installed: Option<&str>) -> Option<String> {
 ///
 /// `None` whenever the claim cannot be proven — no registry, no answer, or the
 /// two agree. An advisory that guesses is worse than silence.
-fn plugin_behind_binary_notice() -> Option<String> {
-    plugin_behind_binary_line(
-        &mustard_core::harness_version(),
-        mustard_core::installed_harness_version().as_deref(),
-    )
-}
-
-/// The pure half of [`plugin_behind_binary_notice`]: the running harness's
-/// version in, the advisory out.
 ///
 /// The direction is the opposite of [`stale_plugin_line`], and that is the
 /// whole point. There, the session is BEHIND what the registry records, and a
@@ -940,31 +962,29 @@ mod tests {
         // inject → the verdict degrades to Allow.
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
-        let verdict = SessionStartInject
-            .evaluate(&session_input("s"), &ctx(dir.path().to_str().unwrap()))
-            .unwrap();
-        assert!(is_quiet(&verdict), "nothing to inject must stay quiet: {verdict:?}");
+        let verdict =
+            session_start_core(&session_input("s"), &ctx(dir.path().to_str().unwrap()), NO_REGISTRY)
+                .unwrap();
+        assert!(
+            matches!(verdict, Verdict::Allow),
+            "nothing to inject must stay quiet: {verdict:?}"
+        );
     }
 
-    /// Is this verdict "nothing of substance", once the machine-state advisory
-    /// is set aside?
+    /// What the plugin registry answers when a test asks it: nothing.
     ///
-    /// `stale_plugin_notice` reads the REAL plugin registry of the machine the
-    /// test runs on — there is no seam to substitute it — so on a developer's
-    /// box mid-upgrade every `Allow` here arrives as an `Inject` carrying that
-    /// one line. Asserting on the bare verdict made three tests fail for a
-    /// reason none of them is about (measured on this repository, with the
-    /// session on 0.1.47 and 0.1.49 installed).
+    /// A test that asks this module for a verdict builds a temporary project to
+    /// isolate what it measures, and the two plugin advisories were the one
+    /// thing that escaped that temporary directory — they read the REAL
+    /// `~/.claude` of the machine running the suite. On a box mid-upgrade the
+    /// advisory fired and three tests failed for a reason none of them is
+    /// about; on the CI runner, with no plugin installed at all, they passed
+    /// without proving anything.
     ///
-    /// So the question each of them actually asks is spelled out: nothing was
-    /// injected EXCEPT possibly that advisory.
-    fn is_quiet(verdict: &Verdict) -> bool {
-        match verdict {
-            Verdict::Allow => true,
-            Verdict::Inject { context } => context.starts_with("[Mustard] Stale plugin"),
-            _ => false,
-        }
-    }
+    /// [`session_start_core`] takes that answer as an argument, so a test hands
+    /// it the honest "the registry did not answer" and both advisories are
+    /// silent by construction, on every machine.
+    const NO_REGISTRY: Option<&str> = None;
 
     /// A package install moves the system binary and leaves the plugin behind,
     /// and until this advisory nothing said so.
@@ -1028,9 +1048,12 @@ mod tests {
         seed_session_injectable(dir.path(), "STYLE-BODY\n");
 
         // Startup: the declared file rides the SessionStart inject.
-        let v = SessionStartInject
-            .evaluate(&session_input_with_source("s1", "startup"), &ctx(project))
-            .unwrap();
+        let v = session_start_core(
+            &session_input_with_source("s1", "startup"),
+            &ctx(project),
+            NO_REGISTRY,
+        )
+        .unwrap();
         match v {
             Verdict::Inject { context } => {
                 assert!(context.contains("STYLE-BODY"), "injectable missing: {context}");
@@ -1046,10 +1069,16 @@ mod tests {
 
         // A resume of the SAME session finds the marker → no re-delivery (no
         // terrain here, so the verdict degrades to Allow).
-        let v = SessionStartInject
-            .evaluate(&session_input_with_source("s1", "resume"), &ctx(project))
-            .unwrap();
-        assert!(is_quiet(&v), "once injectable must not re-deliver on resume: {v:?}");
+        let v = session_start_core(
+            &session_input_with_source("s1", "resume"),
+            &ctx(project),
+            NO_REGISTRY,
+        )
+        .unwrap();
+        assert!(
+            matches!(v, Verdict::Allow),
+            "once injectable must not re-deliver on resume: {v:?}"
+        );
     }
 
     #[test]
@@ -1143,9 +1172,12 @@ mod tests {
             ),
         )
         .unwrap();
-        let v = SessionStartInject
-            .evaluate(&session_input_with_source("s1", "startup"), &ctx(project))
-            .unwrap();
-        assert!(is_quiet(&v), "missing declared file must fail open: {v:?}");
+        let v = session_start_core(
+            &session_input_with_source("s1", "startup"),
+            &ctx(project),
+            NO_REGISTRY,
+        )
+        .unwrap();
+        assert!(matches!(v, Verdict::Allow), "missing declared file must fail open: {v:?}");
     }
 }
