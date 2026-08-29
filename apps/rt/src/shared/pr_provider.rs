@@ -105,6 +105,121 @@ pub(crate) fn status_from_github(state: &str) -> PrStatus {
     }
 }
 
+/// What the PROVIDER'S OWN checks say about one pull request.
+///
+/// A different fact from the review verdict Mustard records: that one is an
+/// opinion somebody wrote down, this one is a result the provider OBSERVED —
+/// the workflow runs GitHub starts on its own, the statuses a pipeline posts on
+/// an Azure pull request. The merge door reads both, and neither substitutes
+/// for the other.
+///
+/// The vocabulary is closed and the same on both sides, so no caller ever
+/// re-reduces provider words. What it deliberately does NOT carry is which run
+/// failed or how many are left: the door's question is whether it may merge,
+/// and a list of run names would only invite a caller to re-decide from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrChecks {
+    /// The provider attached no check at all — a MEASURED absence (a project
+    /// with no CI), never "could not ask", which is an `Err`.
+    Absent,
+    /// At least one run has not decided yet.
+    Running,
+    /// Every run decided, and none of them failed.
+    Passed,
+    /// At least one run decided in failure.
+    Failed,
+    /// Rows arrived but no state word inside them could be read — the same
+    /// answer [`status_from_azure`] gives a word outside a provider's
+    /// contract, and for the same reason: an unreadable answer is not a green
+    /// one.
+    Unknown(&'static str),
+}
+
+impl PrChecks {
+    /// The stable token a report prints. `Unknown` prints its own reason, so
+    /// the operator reads WHY it could not be reduced.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Unknown(reason) => reason,
+        }
+    }
+}
+
+/// Reduce every run of one pull request into the ONE answer the door reads.
+///
+/// The precedence is `Failed` > `Running` > `Unknown` > `Passed`, and each step
+/// of it is a decision:
+///
+/// - A decided failure beats a run still in flight: waiting for the rest cannot
+///   un-fail it, and "failed" tells the operator to fix while "running" would
+///   tell them to wait.
+/// - An unreadable row beats a green one for the reason the whole port exists:
+///   a word we could not read is not evidence that a run passed.
+/// - No rows at all is [`PrChecks::Absent`] — a measurement, not an absence of
+///   one. This is what lets a project with no CI merge without an argument.
+///
+/// One spelling, shared by both adapters, so the two can never drift.
+pub(crate) fn checks_from_rows(rows: &[PrChecks]) -> PrChecks {
+    if rows.is_empty() {
+        return PrChecks::Absent;
+    }
+    if rows.contains(&PrChecks::Failed) {
+        return PrChecks::Failed;
+    }
+    if rows.contains(&PrChecks::Running) {
+        return PrChecks::Running;
+    }
+    rows.iter().find(|row| matches!(row, PrChecks::Unknown(_))).copied().unwrap_or(PrChecks::Passed)
+}
+
+/// Reduce ONE row of GitHub's `statusCheckRollup` array.
+///
+/// The array mixes two node types and each spells its state differently — a
+/// `CheckRun` carries `status` plus a `conclusion` that is empty until it
+/// completes, a `StatusContext` carries a single `state`. Keyed on which field
+/// is present rather than on `__typename`, because the field IS the contract
+/// and a third node type would then still reduce by whichever word it speaks.
+fn check_row_from_github(row: &Value) -> PrChecks {
+    let text = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or_default().to_ascii_uppercase();
+    if row.get("status").is_some() {
+        // CheckRun: anything that is not COMPLETED is still in flight
+        // (QUEUED, IN_PROGRESS, WAITING, PENDING, REQUESTED).
+        if text("status") != "COMPLETED" {
+            return PrChecks::Running;
+        }
+        return match text("conclusion").as_str() {
+            "SUCCESS" | "NEUTRAL" | "SKIPPED" => PrChecks::Passed,
+            "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
+            | "STALE" => PrChecks::Failed,
+            _ => PrChecks::Unknown(PR_UNREADABLE),
+        };
+    }
+    match text("state").as_str() {
+        "SUCCESS" => PrChecks::Passed,
+        "FAILURE" | "ERROR" => PrChecks::Failed,
+        "PENDING" | "EXPECTED" => PrChecks::Running,
+        _ => PrChecks::Unknown(PR_UNREADABLE),
+    }
+}
+
+/// Read one `gh pr view --json statusCheckRollup` document into [`PrChecks`].
+///
+/// Pure, so the whole reduction is provable without a network. A document
+/// whose `statusCheckRollup` is not an array could not be read — never an
+/// empty one, because an empty one authorises a merge.
+fn checks_from_github(row: &Value) -> Result<PrChecks, String> {
+    let rollup = row
+        .get("statusCheckRollup")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "parse-error".to_string())?;
+    let rows: Vec<PrChecks> = rollup.iter().map(check_row_from_github).collect();
+    Ok(checks_from_rows(&rows))
+}
+
 /// One pull request as the port answers it — normalised, provider-free data.
 ///
 /// Plain data on purpose, like `branch_state`'s read view: no path, no process
@@ -187,6 +302,17 @@ pub(crate) trait PrProvider {
     /// the checkout is standing on — the shape the doors use from inside a
     /// unit.
     fn view(&self, number: Option<u64>) -> Result<PrView, String>;
+
+    /// What the PROVIDER'S own checks say about pull request `number`.
+    ///
+    /// Its own query and not a field of [`PrView`], because the two have
+    /// different lifetimes: a view is a description that keeps, while this is a
+    /// reading that is stale the moment a run finishes — the merge door asks it
+    /// immediately before it merges, and nothing else should be tempted to
+    /// cache it alongside a title. An unreachable provider answers `Err`, never
+    /// [`PrChecks::Absent`]: "nobody ran anything" and "nobody could be asked"
+    /// are different facts and the door treats them differently.
+    fn checks(&self, number: u64) -> Result<PrChecks, String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +449,18 @@ impl PrProvider for GithubPrCli {
         ]);
         view_from_github(&gh_json(&self.repo, &args)?)
     }
+
+    fn checks(&self, number: u64) -> Result<PrChecks, String> {
+        // `gh pr view --json statusCheckRollup`, NOT `gh pr checks`: the latter
+        // encodes the answer in its EXIT CODE (8 while runs are pending, 1 on
+        // failure), which `gh_out` reads as a failed command — the two states
+        // this query exists to distinguish would both arrive as `Err`.
+        let row = gh_json(
+            &self.repo,
+            &["pr", "view", &number.to_string(), "--json", "statusCheckRollup"],
+        )?;
+        checks_from_github(&row)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +504,10 @@ impl PrProvider for UnsupportedPr {
     }
 
     fn view(&self, _number: Option<u64>) -> Result<PrView, String> {
+        unsupported()
+    }
+
+    fn checks(&self, _number: u64) -> Result<PrChecks, String> {
         unsupported()
     }
 }
@@ -504,7 +646,94 @@ mod tests {
         assert_eq!(provider.edit_body(1, "body"), Err(token()));
         assert_eq!(provider.ready(1), Err(token()));
         assert_eq!(provider.view(Some(1)), Err(token()));
+        assert_eq!(
+            provider.checks(1),
+            Err(token()),
+            "an unasked provider never answers a green check",
+        );
         assert_eq!(provider.provider(), "gitlab");
+    }
+
+    /// The reduction the merge door stands on: a decided failure outranks a
+    /// run still in flight, an unreadable row outranks a green one, and NO row
+    /// at all is a measured absence — the answer that lets a project with no
+    /// CI merge without an argument.
+    #[test]
+    fn the_checks_reduction_ranks_failure_over_flight_and_never_guesses_green() {
+        let unknown = PrChecks::Unknown(PR_UNREADABLE);
+        assert_eq!(checks_from_rows(&[]), PrChecks::Absent);
+        assert_eq!(checks_from_rows(&[PrChecks::Passed, PrChecks::Passed]), PrChecks::Passed);
+        assert_eq!(
+            checks_from_rows(&[PrChecks::Passed, PrChecks::Running]),
+            PrChecks::Running,
+            "one run still in flight is not a finished answer",
+        );
+        assert_eq!(
+            checks_from_rows(&[PrChecks::Running, PrChecks::Failed, PrChecks::Passed]),
+            PrChecks::Failed,
+            "waiting for the rest cannot un-fail a decided failure",
+        );
+        assert_eq!(
+            checks_from_rows(&[PrChecks::Passed, unknown]),
+            unknown,
+            "a word we could not read is not evidence that a run passed",
+        );
+        assert_eq!(
+            checks_from_rows(&[unknown, PrChecks::Running]),
+            PrChecks::Running,
+            "an undecided run is a stronger fact than an unreadable one",
+        );
+    }
+
+    /// GitHub's rollup mixes two node types: `CheckRun` (a `status` plus a
+    /// `conclusion` that is empty until it completes) and `StatusContext` (one
+    /// `state`). Both reduce, and a row speaking neither vocabulary is
+    /// unreadable rather than green.
+    #[test]
+    fn the_github_rollup_reduces_both_of_its_node_types() {
+        let rollup = |rows: Value| json!({ "statusCheckRollup": rows });
+
+        assert_eq!(checks_from_github(&rollup(json!([]))), Ok(PrChecks::Absent));
+        assert_eq!(
+            checks_from_github(&rollup(json!([
+                { "status": "COMPLETED", "conclusion": "SUCCESS" },
+                { "status": "COMPLETED", "conclusion": "SKIPPED" },
+                { "state": "SUCCESS" },
+            ]))),
+            Ok(PrChecks::Passed),
+        );
+        assert_eq!(
+            checks_from_github(&rollup(json!([
+                { "status": "COMPLETED", "conclusion": "SUCCESS" },
+                { "status": "IN_PROGRESS", "conclusion": "" },
+            ]))),
+            Ok(PrChecks::Running),
+            "the run that measured PR 237: one green OS, the others still going",
+        );
+        assert_eq!(
+            checks_from_github(&rollup(json!([
+                { "status": "IN_PROGRESS", "conclusion": "" },
+                { "status": "COMPLETED", "conclusion": "FAILURE" },
+            ]))),
+            Ok(PrChecks::Failed),
+        );
+        assert_eq!(
+            checks_from_github(&rollup(json!([{ "state": "PENDING" }]))),
+            Ok(PrChecks::Running),
+        );
+        assert_eq!(
+            checks_from_github(&rollup(json!([{ "state": "ERROR" }]))),
+            Ok(PrChecks::Failed),
+        );
+        assert_eq!(
+            checks_from_github(&rollup(json!([{ "name": "neither vocabulary" }]))),
+            Ok(PrChecks::Unknown(PR_UNREADABLE)),
+        );
+        assert_eq!(
+            checks_from_github(&json!({ "number": 7 })),
+            Err("parse-error".to_string()),
+            "no rollup array could be read — never an empty one, which would authorise a merge",
+        );
     }
 
     /// The factory picks by the provider IN FORCE — the declared setting wins

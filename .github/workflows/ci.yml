@@ -1,8 +1,21 @@
 name: CI
 
 on:
-  push:
-    branches: [main, dev_rubens]
+  # PULL REQUESTS ONLY — plus the manual button below. There is no `push:`
+  # trigger, and its absence is the point: a run started by a push begins AFTER
+  # the merge that pushed, so its verdict arrives over a tree that is already
+  # integrated. Measured on 2026-08-29: PR 237 merged at 06:26 while its own CI
+  # run was still `in_progress`, and the merge then started two more runs on
+  # `main` that had nothing left to stop. The one run that can still refuse
+  # something is the one on the pull request, before it lands.
+  #
+  # It also listed a personal branch that no longer exists anywhere in the
+  # remote. Nothing reported that, because a trigger for an absent branch
+  # simply never fires — it just quietly never runs.
+  #
+  # `dev` keeps its pull-request run for a reason worth stating: merging a work
+  # unit into `dev` fires nothing at all, so the promotion PR (`dev` → `main`)
+  # is the ONLY run that ever tests the combined tree before it reaches `main`.
   pull_request:
     branches: [main, dev]
   # Manual runs (any branch) — lets a fix branch prove itself on all 3 OSes

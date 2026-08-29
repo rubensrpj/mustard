@@ -269,7 +269,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    use crate::shared::pr_provider::{PrOpened, PrView};
+    use crate::shared::pr_provider::{PrChecks, PrOpened, PrView};
 
     /// A [`PrProvider`] answering from a table, like `branch_state`'s
     /// `FakePr`: each operation's answer is set up front, and every call is
@@ -332,6 +332,13 @@ mod tests {
 
         fn view(&self, _number: Option<u64>) -> Result<PrView, String> {
             Err("view-not-under-test".to_string())
+        }
+
+        fn checks(&self, _number: u64) -> Result<PrChecks, String> {
+            // Publishing never asks the provider's checks — the merge door
+            // does. Answering an `Err` here keeps that visible: a version that
+            // started asking would fail loudly instead of reading a green.
+            Err("checks-not-under-test".to_string())
         }
     }
 

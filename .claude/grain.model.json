@@ -1,10 +1,10 @@
 {
-  "root": "/home/rubens/Projetos/atiz/mustard",
+  "root": "/home/rubens/projetos/atiz/mustard",
   "languages": [
     {
       "language": "rust",
       "files": 489,
-      "loc": 219729
+      "loc": 220052
     },
     {
       "language": "tsx",
@@ -34530,7 +34530,7 @@
     {
       "path": "apps/rt/src/hooks/session/session_cleanup_observer.rs",
       "language": "rust",
-      "loc": 581,
+      "loc": 749,
       "imports": [
         "mustard_core::ClaudePaths",
         "mustard_core::domain::economy::{\n    self, sources::rtk as rtk_source, sources::IngestContext,\n}",
@@ -34540,7 +34540,7 @@
         "mustard_core::io::fs",
         "serde_json::Value",
         "serde_json::json",
-        "std::path::Path",
+        "std::path::{Path, PathBuf}",
         "std::process::{Command, Stdio}",
         "std::time::UNIX_EPOCH",
         "std::time::{Duration, SystemTime}",
@@ -34552,7 +34552,7 @@
         {
           "kind": "struct",
           "name": "SessionCleanupObserver",
-          "line": 59,
+          "line": 80,
           "supertypes": [
             "Observer"
           ]
@@ -34560,181 +34560,259 @@
         {
           "kind": "function",
           "name": "state_status",
-          "line": 64,
+          "line": 85,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "state_spec_name",
-          "line": 73,
+          "line": 94,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "is_spec_done",
-          "line": 88,
+          "line": 109,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "header_marks_done",
-          "line": 122,
+          "line": 143,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clean_pipeline_states",
-          "line": 129,
+          "line": 150,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clean_compact_state",
-          "line": 176,
+          "line": 197,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clean_statusline_cache",
-          "line": 204,
+          "line": 225,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clean_otel_pid",
-          "line": 219,
+          "line": 240,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_pid",
-          "line": 236,
+          "line": 257,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "kill_pid",
-          "line": 244,
+          "line": 265,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spawn_kill",
-          "line": 249,
+          "line": 270,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ingest_rtk_savings",
-          "line": 281,
+          "line": 302,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_telemetry",
-          "line": 321,
+          "line": 342,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_telemetry_with_cutoff",
-          "line": 334,
+          "line": 355,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_ndjson_under",
-          "line": 348,
+          "line": 369,
           "supertypes": []
         },
         {
-          "kind": "method",
-          "name": "observe",
-          "line": 383,
+          "kind": "struct",
+          "name": "CleanupTarget",
+          "line": 407,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "cwd",
+          "line": 408,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "claude",
+          "line": 409,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "session_id",
+          "line": 410,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "ctx",
-          "line": 432,
+          "name": "step_otel_pid",
+          "line": 439,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "session_end_input",
-          "line": 441,
+          "name": "step_statusline_cache",
+          "line": 444,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "write_state",
+          "name": "step_pipeline_states",
           "line": 449,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "step_compact_state",
+          "line": 454,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "step_prune_telemetry",
+          "line": 460,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "step_ingest_rtk_savings",
+          "line": 470,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "step_amend_finalize",
+          "line": 480,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "cleanup_plan",
+          "line": 500,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "observe",
+          "line": 510,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ctx",
+          "line": 536,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "session_end_input",
+          "line": 545,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "write_state",
+          "line": 553,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "non_session_end_trigger_is_noop",
-          "line": 459,
+          "line": 563,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "terminal_states_are_removed",
-          "line": 474,
+          "line": 578,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "orphaned_state_of_completed_spec_is_removed",
-          "line": 486,
+          "line": 590,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "old_compact_state_files_are_pruned",
-          "line": 509,
+          "line": 613,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "otel_pid_file_is_removed",
-          "line": 523,
+          "line": 627,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "otel_pid_is_cleaned_before_any_subprocess",
+          "line": 660,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "observe_is_infallible_on_empty_project",
-          "line": 534,
+          "line": 715,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "filetime_set",
-          "line": 546,
+          "line": 727,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "mtime_ms",
-          "line": 555,
+          "line": 736,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_telemetry_removes_old_ndjson_and_keeps_new",
-          "line": 566,
+          "line": 747,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_telemetry_fail_open_on_missing_spec_root",
-          "line": 605,
+          "line": 786,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_telemetry_walks_session_subtree_too",
-          "line": 612,
+          "line": 793,
           "supertypes": []
         }
       ],
@@ -57264,7 +57342,7 @@
     {
       "path": "apps/rt/src/commands/doctor/bootstrap_check.rs",
       "language": "rust",
-      "loc": 423,
+      "loc": 427,
       "imports": [
         "crate::util::home_dir",
         "mustard_core::io::fs",
@@ -57391,61 +57469,61 @@
         {
           "kind": "function",
           "name": "run",
-          "line": 274,
+          "line": 278,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "on_path_finds_a_program_that_is_there",
-          "line": 352,
+          "line": 356,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "on_path_rejects_a_program_that_is_not",
-          "line": 359,
+          "line": 363,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "expected_toolchains_is_empty_for_a_bare_directory",
-          "line": 364,
+          "line": 368,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "expected_toolchains_names_cargo_for_a_rust_workspace",
-          "line": 370,
+          "line": 374,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "manifest_version_degrades_when_the_manifest_is_absent",
-          "line": 378,
+          "line": 382,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_plugin_whose_binary_never_downloaded_fails_and_names_the_boot_script",
-          "line": 387,
+          "line": 391,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_stale_stamp_fails_against_the_manifest",
-          "line": 411,
+          "line": 415,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_local_build_is_a_note_not_a_failure",
-          "line": 437,
+          "line": 441,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_report_that_measured_nothing_is_ok_but_says_so",
-          "line": 451,
+          "line": 455,
           "supertypes": []
         }
       ]
@@ -72828,7 +72906,7 @@
     {
       "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
       "language": "rust",
-      "loc": 1899,
+      "loc": 2050,
       "imports": [
         "mustard_rt::commands::agent::render::recommended_subagent_type",
         "mustard_rt::commands::event::enrichment_gap::ENRICHMENT_STALE_TAG",
@@ -73008,6 +73086,36 @@
           "kind": "function",
           "name": "router_teaches_the_self_healing_delivery",
           "line": 1948,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "cmd_unquote",
+          "line": 2035,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "cmd_for_f_tokens",
+          "line": 2045,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "cmd_boot_version",
+          "line": 2057,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "windows_boot_reads_the_version_the_manifest_actually_ships",
+          "line": 2090,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "both_boot_twins_carry_the_same_download_deadline",
+          "line": 2133,
           "supertypes": []
         }
       ]
@@ -100132,8 +100240,8 @@
         "mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger}",
         "serde_json::json",
         "mustard_core::ClaudePaths",
-        "serde_json::{json, Value}",
-        "std::path::{Path, PathBuf}"
+        "std::path::{Path, PathBuf}",
+        "serde_json::{json, Value}"
       ]
     },
     {
@@ -100592,6 +100700,22 @@
       ]
     },
     {
+      "affix": "Target",
+      "kind": "suffix",
+      "count": 6,
+      "common_dir": "apps/dashboard/src/lib/types",
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::path::{Path, PathBuf}",
+        "mustard_core::io::fs",
+        "tempfile::tempdir",
+        "crate::shared::proc::{run_shell_with_deadline, ShellOutcome}",
+        "mustard_core::ClaudePaths",
+        "mustard_core::domain::model::event::ActorKind"
+      ]
+    },
+    {
       "affix": "Verdict",
       "kind": "suffix",
       "count": 6,
@@ -100654,21 +100778,6 @@
         "tempfile::tempdir",
         "anyhow::{Context, Result, bail}",
         "crate::commands::git_flow"
-      ]
-    },
-    {
-      "affix": "Target",
-      "kind": "suffix",
-      "count": 5,
-      "common_dir": "apps/dashboard/src/lib/types",
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "std::path::{Path, PathBuf}",
-        "crate::shared::proc::{run_shell_with_deadline, ShellOutcome}",
-        "mustard_core::io::fs",
-        "serde_json::{json, Value}",
-        "tempfile::tempdir"
       ]
     },
     {
@@ -102073,16 +102182,16 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+Kind slice",
+      "name": "tipo base+Report slice",
       "roles": [
         "(core)",
-        "Kind"
+        "Report"
       ],
       "optional_roles": [
         "Ac",
         "Function",
+        "Kind",
         "Mode",
-        "Report",
         "State",
         "Term",
         "View"
@@ -102112,11 +102221,11 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **Kind** para `<Name>`.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
@@ -102170,6 +102279,12 @@
           "role": "tipo base"
         },
         {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
+        },
+        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -102180,16 +102295,10 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
-        },
-        {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
