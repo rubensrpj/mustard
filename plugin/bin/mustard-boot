@@ -12,6 +12,24 @@
 #
 # Dev machines are exempt from re-downloads: a locally built bin/ has no
 # `.version` stamp, and a missing stamp is treated as "hands off".
+#
+# WHO PAYS FOR THE DOWNLOAD — and it is not "whoever gets here first". Every
+# hook comes through this script, and the harness gives each one its own budget
+# (`timeout` in plugin/hooks/hooks.json); the tightest is 15 seconds, and that
+# is not only SessionEnd — the `clear|compact|resume|fork` arm of SessionStart
+# carries 15 too. A download has no ceiling the caller can see, so a 15-second
+# hook that opens one is not unlucky, it is cancelled: the harness kills it and
+# prints `Hook cancelled` (field, Windows, 2026-08-28 — SessionEnd, right after
+# the plugin changed version, so nothing after it ran and the session's OTEL
+# collector outlived the project).
+#
+# So the fetch belongs to the callers that can afford it: `on SessionStart`,
+# whose whole job is preparing the session, and any NON-hook caller — the
+# installer warms the plugin up with `mustard-boot --version`, and wraps that in
+# a `timeout` of its own. Every other trigger stays dormant for the session
+# instead of being cut, which is the promise the paragraph above already makes.
+# `--max-time` on the fetch is the second half of the same rule: even a caller
+# that may pay cannot pay forever.
 set -u
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
@@ -51,6 +69,20 @@ elif [ -f "$STAMP" ] && [ -n "$VER" ] && [ "$(cat "$STAMP" 2>/dev/null)" != "$VE
   need_fetch=1
 fi
 
+# The gate is the trigger the harness passed on argv (`on <Trigger>`), not an
+# environment variable: `VAR=1 prog` is POSIX syntax the Windows twin's `cmd`
+# cannot parse, and the two bodies have to answer the same way. Anything that
+# does not open with `on` is not a hook at all — the installer's `--version`
+# warm-up — and keeps the right to fetch.
+#
+# Dropping `need_fetch` here rather than skipping the block below is what makes
+# the short-budget path silent AND cheap: no `uname`, no notice, and a binary
+# that is merely stamped for another version still gets `exec`'d at the tail —
+# an old harness beats a dormant one.
+if [ "${1-}" = "on" ] && [ "${2-}" != "SessionStart" ]; then
+  need_fetch=0
+fi
+
 # Declared before the branch: `set -u` at the top of this file makes an unset
 # variable fatal, and the second test below reads `$os` whether or not the
 # branch that assigns it ran.
@@ -83,7 +115,15 @@ if [ "$need_fetch" = "1" ] && [ -n "$VER" ] && [ -n "$os" ]; then
   # things. The single shared "download failed" message sent a diagnosis session
   # hunting a network that was perfectly fine — on the Windows twin, where the
   # download had succeeded and only the extraction had not (field, 2026-08-27).
-  if ! curl -fsSL "$url" -o "$tmp/bins.tar.gz"; then
+  #
+  # `--max-time 10` is the ceiling, and the number is not free: the tightest
+  # budget that can still reach this line is 15 seconds (the
+  # `clear|compact|resume|fork` arm of SessionStart), and the unpack plus the
+  # `exec` still have to fit after it. A connection that HANGS rather than
+  # refuses — captive portal, a proxy that swallows the packet — is the case
+  # this covers; it now costs ten seconds and a dormant session instead of a
+  # cancelled hook. Keep this literal and keep it in step with the `.cmd` twin.
+  if ! curl -fsSL --max-time 10 "$url" -o "$tmp/bins.tar.gz"; then
     echo "[mustard-boot] download failed ($url) — mustard hooks stay dormant this session" >&2
   elif ! tar -xzf "$tmp/bins.tar.gz" -C "$DIR"; then
     echo "[mustard-boot] downloaded, but could not unpack into $DIR — mustard hooks stay dormant this session" >&2
