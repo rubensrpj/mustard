@@ -89,6 +89,8 @@
       "Edit(**/.git/config)",
       "Read(**/node_modules/**)",
       "Grep(**/node_modules/**)",
+      "Read(**/bin/**)",
+      "Grep(**/bin/**)",
       "Read(**/obj/**)",
       "Grep(**/obj/**)",
       "Read(**/dist/**)",
