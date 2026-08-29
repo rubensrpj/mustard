@@ -683,7 +683,6 @@ fn merge_core(
 
     if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), &checks, confirmed) {
         let unit = spec.as_deref().unwrap_or(&facts.head);
-        let waiting = reason.starts_with("provider-checks");
         return PrMergeReport {
             ok: true,
             action: "confirm",
@@ -695,8 +694,15 @@ fn merge_core(
                     "the provider's own checks for `{unit}` are still running — nothing was \
                      merged, so their verdict still has something to stop."
                 ),
+                // NOT "FAILING": a CANCELLED run reduces to `Failed` too, and this
+                // repository produces those routinely (`concurrency:
+                // cancel-in-progress` kills the superseded run on every re-push).
+                // Being conservative about a cancelled run is right; telling the
+                // operator it FAILED sends them hunting a failure that never
+                // happened. Say what is actually known — it did not come back green.
                 "provider-checks-failed" => format!(
-                    "the provider's own checks for `{unit}` came back FAILING — nothing was merged."
+                    "the provider's own checks for `{unit}` did not come back green (failed or \
+                     cancelled) — nothing was merged."
                 ),
                 "provider-checks-unreadable" => format!(
                     "the provider's own checks for `{unit}` could not be read \
@@ -711,19 +717,34 @@ fn merge_core(
                     ),
                 },
             }),
-            hint: Some(if waiting {
-                format!(
-                    "wait for the provider's runs to finish and run `pr merge` again (or fix what \
-                     they reported), then re-run with `--confirm` to merge without them — \
-                     `gh pr checks {}` shows where they stand",
-                    facts.number
-                )
-            } else {
-                format!(
+            // One hint per reason, because the three checks cases ask for three
+            // different moves. Grouping them under "is it a checks reason?" gave the
+            // UNREADABLE case the advice to WAIT — and waiting is the one thing that
+            // cannot help when nobody is running anything and the provider simply did
+            // not answer. It also named `gh pr checks`, one provider's command line,
+            // inside the door that goes through the port precisely so it never has to
+            // name one.
+            hint: Some(match reason {
+                "provider-checks-running" => {
+                    "wait for them to finish and run `pr merge` again, or re-run with `--confirm` \
+                     to merge without waiting"
+                        .to_string()
+                }
+                "provider-checks-failed" => {
+                    "fix what they reported and push again, or re-run with `--confirm` to merge \
+                     anyway"
+                        .to_string()
+                }
+                "provider-checks-unreadable" => {
+                    "the provider did not answer — check that its tooling is installed and \
+                     authenticated, then run `pr merge` again; `--confirm` merges without it"
+                        .to_string()
+                }
+                _ => format!(
                     "ask the operator, then re-run with `--confirm` to merge anyway, or record a \
                      verdict first with `mustard-rt run pr-review --pr {} --verdict approved`",
                     facts.number
-                )
+                ),
             }),
             spec,
             verdict,
@@ -1171,8 +1192,15 @@ mod tests {
         assert_eq!(asked.checks, "failed");
         assert_eq!(merges.get(), 0, "a failing tree is never integrated by this door");
         assert_eq!(settles.get(), 0);
+        // "did not come back green", never "FAILING": `Failed` also absorbs a
+        // CANCELLED run, which this repository produces on every re-push
+        // (`concurrency: cancel-in-progress`). The word has to cover both or it
+        // sends the operator hunting a failure that never happened.
         assert!(
-            asked.warning.unwrap_or_default().contains("FAILING"),
+            asked
+                .warning
+                .unwrap_or_default()
+                .contains("did not come back green"),
             "the warning says which of the two evidences refused",
         );
 
