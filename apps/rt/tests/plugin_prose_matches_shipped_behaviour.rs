@@ -2132,9 +2132,18 @@ fn windows_boot_reads_the_version_the_manifest_actually_ships() {
 #[test]
 fn both_boot_twins_carry_the_same_download_deadline() {
     fn max_time(body: &str, file: &str) -> u32 {
+        // Read the deadline off the COMMAND, never off the prose that explains
+        // it. Both twins name `--max-time 10` in a comment several lines ABOVE
+        // the `curl` that carries it, so splitting the whole body on the first
+        // occurrence reads the comment — and a divergence introduced in the
+        // command alone stays invisible. Found in review, 2026-08-29: with the
+        // POSIX `curl` bumped to 90 and its comment left at 10, this test was
+        // still green. A test that locks the prose is the exact failure its own
+        // doc comment above warns about.
         let after = body
-            .split("--max-time ")
-            .nth(1)
+            .lines()
+            .filter(|line| line.contains("curl "))
+            .find_map(|line| line.split("--max-time ").nth(1))
             .unwrap_or_else(|| panic!("{file} has no `--max-time` on its curl"));
         after
             .chars()
