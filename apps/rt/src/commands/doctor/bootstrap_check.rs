@@ -253,8 +253,12 @@ pub fn harness_dormant() -> bool {
     if !bin_dir.join(rt_exe_name()).is_file() {
         return true;
     }
-    // Present but stamped for another version: `mustard-boot` will try to
-    // re-download, and until it succeeds this install answers nothing.
+    // Present but stamped for another version. Only `on SessionStart` re-downloads
+    // now — every other trigger runs on a budget too short to survive a fetch — and
+    // the stamped binary is still handed the invocation at the tail, so this install
+    // keeps answering with the OLD harness until a session start refreshes it. Report
+    // it dormant anyway: what the operator needs to see is that the version they
+    // installed is not the version replying.
     match (
         fs::read_to_string(bin_dir.join(".version"))
             .ok()
