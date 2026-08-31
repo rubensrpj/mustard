@@ -847,6 +847,7 @@ const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] = &[
 /// nobody reads a 64-bit hash, they compare it against the tool's output.
 #[allow(clippy::unreadable_literal)]
 const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
+    0x85e4b5094cedf52e,
     0x1c5e2e706274fc17,
     0x0fb06c788d11566b,
     0x5f1d81459b0bd9c9,
