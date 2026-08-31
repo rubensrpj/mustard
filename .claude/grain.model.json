@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 489,
-      "loc": 220954
+      "loc": 221167
     },
     {
       "language": "tsx",
@@ -73063,7 +73063,7 @@
     {
       "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
       "language": "rust",
-      "loc": 2112,
+      "loc": 2325,
       "imports": [
         "mustard_rt::commands::agent::render::recommended_subagent_type",
         "mustard_rt::commands::event::enrichment_gap::ENRICHMENT_STALE_TAG",
@@ -73248,37 +73248,67 @@
         {
           "kind": "function",
           "name": "cmd_unquote",
-          "line": 2035,
+          "line": 2037,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cmd_for_f_tokens",
-          "line": 2045,
+          "line": 2047,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cmd_boot_version",
-          "line": 2057,
+          "line": 2059,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "windows_boot_reads_the_version_the_manifest_actually_ships",
-          "line": 2090,
+          "line": 2095,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "illegal_percent_tilde",
+          "line": 2173,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_percent_tilde_scanner_knows_which_shapes_cmd_refuses",
+          "line": 2215,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "batch_files",
+          "line": 2253,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "every_batch_file_carries_no_percent_sequence_cmd_will_refuse",
+          "line": 2290,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "windows_boot_really_parses_under_cmd",
+          "line": 2330,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "both_boot_twins_carry_the_same_download_deadline",
-          "line": 2133,
+          "line": 2356,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_project_learns_that_a_door_does_what_it_names",
-          "line": 2195,
+          "line": 2418,
           "supertypes": []
         }
       ]
