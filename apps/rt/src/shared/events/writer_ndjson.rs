@@ -452,15 +452,67 @@ mod tests {
             );
         }
         let avg_us = start.elapsed().as_micros() / u128::from(n as u32);
-        // Sanity ceiling — anything sub-millisecond proves the write path
-        // doesn't do the SQLite open/INSERT/commit dance (~100-500 µs each).
-        // Windows with realtime AV scanning can balloon to tens of ms, so the
-        // ceiling here only guards against pathological regressions
-        // (e.g. accidental fsync, lock acquisition).
-        let ceiling = if cfg!(windows) { 100_000 } else { 5_000 };
+        let ceiling = hot_path_ceiling_us(std::env::consts::OS);
         assert!(
             avg_us < ceiling,
-            "avg write latency {avg_us} µs exceeded ceiling {ceiling} µs"
+            "avg write latency {avg_us} µs exceeded ceiling {ceiling} µs \
+             on {}",
+            std::env::consts::OS,
+        );
+    }
+
+    /// The hot-path ceiling in microseconds for `os`, spelled as
+    /// [`std::env::consts::OS`] spells it.
+    ///
+    /// A FUNCTION and not an inline `cfg!`, because the rule has to be
+    /// checkable from anywhere: a `cfg!(target_os = "macos")` can only be
+    /// verified by running ON macOS, which is exactly the platform whose CI
+    /// answer you cannot reproduce from another one.
+    ///
+    /// **The number is a statement about the HARDWARE, never about the code.**
+    /// It measures wall-clock file IO on whatever machine the suite runs on.
+    /// The real target is under 50 µs on a local SSD; everything here is two to
+    /// three orders of magnitude above that, because the only thing it has to
+    /// catch is a pathological regression — an accidental `fsync`, a lock taken
+    /// once per write. Sub-millisecond also proves the write path is not doing
+    /// the SQLite open/INSERT/commit dance (~100-500 µs each).
+    ///
+    /// Windows and macOS share the loose ceiling for the same reason: on hosted
+    /// CI neither writes to a local SSD. Windows pays realtime virus scanning;
+    /// the macOS runners are virtualised. Measured on this repository,
+    /// 2026-08-31: `95c664e1` and its merge commit `b8350bbd` are byte-identical
+    /// trees, and macOS PASSED the first and FAILED the second at 5,200 µs
+    /// against a 5,000 µs ceiling — four percent over. A ceiling a hundred times
+    /// the target that flips on four percent is a coin toss, not a guard, and a
+    /// test that answers differently for the same tree teaches the reader to
+    /// re-run instead of to read.
+    ///
+    /// Linux keeps the tight ceiling deliberately: that runner does write to
+    /// real file IO, and loosening it everywhere would retire the guard rather
+    /// than calibrate it.
+    fn hot_path_ceiling_us(os: &str) -> u128 {
+        match os {
+            "windows" | "macos" => 100_000,
+            _ => 5_000,
+        }
+    }
+
+    /// The ceiling is calibrated per platform, and this is checkable from any
+    /// of them — which the `cfg!` it replaced was not.
+    #[test]
+    fn hot_path_ceiling_is_loose_on_virtualised_runners() {
+        assert_eq!(
+            hot_path_ceiling_us("macos"),
+            hot_path_ceiling_us("windows"),
+            "both hosted runners lack a local SSD; one ceiling should cover both",
+        );
+        assert!(
+            hot_path_ceiling_us("macos") > 5_000,
+            "macOS still carries the local-SSD ceiling that made it a coin toss",
+        );
+        assert_eq!(
+            hot_path_ceiling_us("linux"), 5_000,
+            "Linux writes to real file IO — loosening it there retires the guard",
         );
     }
 }
