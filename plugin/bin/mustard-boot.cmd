@@ -66,42 +66,18 @@ rem means "do nothing" everywhere below — dormant, and as of :noversion it als
 rem SAYS so instead of going quiet.
 rem
 rem tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation of
-rem the line below against the real manifest, and pins the model to that literal
-rem so the two can only drift together. On Windows it stops modelling and asks
-rem cmd.exe itself, on a copy in a temp tree.
+rem the line below against the real manifest, and on Windows asks cmd.exe
+rem itself. That second half replaces a claim this block used to make — that no
+rem runner here could execute the file — which was false, and cost six releases.
 rem
-rem THAT LAST SENTENCE REPLACES A FALSE ONE, and the false one cost six
-rem releases. This block used to say no runner of this repository could execute
-rem the file — so nobody wrote the test that would have caught the abort. The CI
-rem matrix has always carried windows-latest. Before adding a claim about what
-rem cannot be verified here, open .github/workflows/ci.yml and look.
-rem
-rem A PERCENT-TILDE IN A COMMENT HERE MUST STILL BE A LEGAL ONE, and this
-rem paragraph is written the long way round for exactly that reason. cmd.exe
-rem expands percent sequences BEFORE it notices a line is a rem, so a
-rem percent-tilde written as an EXAMPLE — modifiers naming no argument — is
-rem read as a reference to an argument that does not exist, and the error does
-rem not skip the line: it ABORTS the whole batch file on the spot, exit 255.
-rem
-rem Plain variables in comments are harmless and stay: the DIR, DEST and URL
-rem named above expand to something or to nothing, and cmd reads on either
-rem way. What is illegal is the SHAPE — a tilde whose modifiers close on no
-rem digit — and that is exactly what the test named below refuses, in this
-rem file and in every other .cmd and .bat of the repository.
-rem
-rem This comment used to carry the copy-pasteable one-liner that confirms the
-rem parse on a real Windows box — the very check the paragraph above asks for.
-rem It killed the script here, above the version read, so nothing downloaded
-rem and no hook ever ran: every Windows install sat dormant from 0.1.59 to
-rem 0.1.61 with nothing on screen saying why (measured in the field,
-rem 2026-08-31). The one-liner now lives beside its model, in
-rem tests/plugin_prose_matches_shipped_behaviour.rs, where a percent sign is
-rem inert prose. A test there refuses every percent-tilde that cmd.exe would
-rem not resolve, in this file and in every other .cmd and .bat the repository
-rem tracks. Which shapes those are is the TEST's business to state, not this
-rem comment's: a comment that enumerates them is one more thing that can
-rem disagree with what actually runs, which is the defect this whole file is a
-rem monument to.
+rem NO ILLUSTRATIVE PERCENT-TILDE IN THIS FILE, comment or code. cmd expands
+rem percent sequences BEFORE it notices a line is a rem, so one that names no
+rem argument ABORTS the whole file, exit 255. That is how 0.1.59 through 0.1.61
+rem shipped dormant on every Windows machine: this very comment carried the
+rem copy-pasteable one-liner, which now lives beside its model in that test
+rem file, where a percent sign is inert prose. Plain variables are fine. Which
+rem shapes are not is stated by, and only by,
+rem every_batch_file_carries_no_percent_sequence_cmd_will_refuse.
 set "VER="
 for /f "usebackq tokens=1,2 delims=:, " %%a in ("%MANIFEST%") do if not defined VER if /i "%%~a"=="version" set "VER=%%~b"
 
