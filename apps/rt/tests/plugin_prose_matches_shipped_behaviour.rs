@@ -2171,6 +2171,33 @@ fn manifest_in_cmd_backslashes() -> String {
     MANIFEST_PATH.replace('/', "\\")
 }
 
+/// Every prose pointer to the batch-file guard names a test that EXISTS.
+///
+/// This class already bit once, inside this very unit: the guard was renamed,
+/// two doc comments and the pull request's own validation step kept the old
+/// name, and the published "run this to see it fail" filter matched zero tests
+/// and exited 0 — a proof that proved nothing, on the defect whose whole story
+/// is a false claim nobody could check. Cheap to pin, so pin it.
+#[test]
+fn the_prose_names_a_guard_that_exists() {
+    const GUARD: &str = "every_batch_file_carries_no_percent_sequence_cmd_will_refuse";
+    let this_file = read(file!());
+    assert!(
+        this_file.contains(&format!("fn {GUARD}()")),
+        "the guard named all over this repository is not defined here",
+    );
+    for (file, body) in [
+        (file!(), &this_file),
+        ("plugin/bin/mustard-boot.cmd", &read("plugin/bin/mustard-boot.cmd")),
+    ] {
+        assert!(
+            body.contains(GUARD),
+            "{file} points readers at the batch-file guard without naming it, \
+             so the pointer cannot be followed and cannot be checked",
+        );
+    }
+}
+
 /// The runner that makes the subject askable at all.
 ///
 /// Everything this unit added rests on one line of `ci.yml`, and nothing pinned
