@@ -77,32 +77,20 @@ const KEEP_DIRS: &[&str] = &[
 
 /// Directory basenames that are **documented ephemeral** state.
 ///
-/// Two sources combine here:
+/// ONE source: the canonical catalog [`ClaudePaths::documented_dirs`] — every
+/// top-level directory under `<root>/.claude/` the path catalog documents.
 ///
-/// 1. **W2 canonical catalog** ([`ClaudePaths::documented_dirs`]) — every
-///    top-level directory under `<root>/.claude/` that the path catalog
-///    documents (`.cache`, `.harness`, `.metrics`, `.agent-state`, `.obsidian`,
-///    `commands`, `skills`, `refs`, `agents`, `agent-memory`,
-///    `spec`, `graph`).
-/// 2. **Hold-over names** — directories the canonical catalog does not document
-///    (yet) but which still legitimately appear under `.claude/` in the wild
-///    and must not be flagged as orphans (`worktrees`).
+/// It used to be two. A hold-over set carried `worktrees`, which the catalog
+/// did not document; the catalog carries it now, so the second source is gone
+/// and cannot drift from the first. Adding a new ephemeral directory means
+/// editing `ClaudePaths::documented_dirs` and nothing else — this auditor and
+/// the private-install exclude rules both derive from it.
 ///
-/// The list is computed at the first call and cached for the rest of the
-/// process via `OnceLock`. Adding a new ephemeral directory to the canonical
-/// tree now means editing `ClaudePaths::documented_dirs` only — this auditor
-/// picks it up automatically.
+/// The set is computed at the first call and cached for the rest of the
+/// process via `OnceLock`.
 fn documented_dirs() -> &'static BTreeSet<&'static str> {
     static SET: std::sync::OnceLock<BTreeSet<&'static str>> = std::sync::OnceLock::new();
-    SET.get_or_init(|| {
-        let mut out: BTreeSet<&'static str> =
-            ClaudePaths::documented_dirs().into_iter().collect();
-        // Names still legitimate under `.claude/` but not yet in the
-        // canonical catalog. Kept as-is so the audit does not regress on
-        // existing projects.
-        out.insert("worktrees");
-        out
-    })
+    SET.get_or_init(|| ClaudePaths::documented_dirs().into_iter().collect())
 }
 
 /// Directory basenames that are explicit retired-payloads from prior Mustard
@@ -390,8 +378,8 @@ fn classify(
         );
     }
 
-    // 4. Documented ephemerals — derived from the canonical W2 catalog plus
-    //    the hold-over set.
+    // 4. Documented ephemerals — derived from the canonical W2 catalog,
+    //    which is the only source.
     if documented_dirs().contains(&name) {
         return (
             Classification::Keep,
@@ -502,10 +490,11 @@ mod tests {
     #[test]
     fn documented_ephemerals_are_keep() {
         let dir = tempdir().unwrap();
-        // Sample three names that the W2 canonical catalog documents plus
-        // the hold-over `worktrees` name. `.pipeline-states` and
-        // `.qa-reports` were retired in W2 and are correctly flagged as
-        // orphans now, so they are not exercised here.
+        // Four names the canonical catalog documents — `worktrees` among
+        // them since it joined the catalog and stopped being held over
+        // here. `.pipeline-states` and `.qa-reports` were retired in W2 and
+        // are correctly flagged as orphans now, so they are not exercised
+        // here.
         fake_dirs(dir.path(), &["worktrees", ".cache", ".metrics", ".agent-state"]);
         let report = audit(dir.path());
         for e in &report.entries {
