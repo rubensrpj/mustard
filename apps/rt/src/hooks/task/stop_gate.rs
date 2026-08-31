@@ -54,7 +54,8 @@
 //! unpruned, and it surfaced only because the operator asked why the branch
 //! still existed.
 //!
-//! **It warns and never blocks**, which is the operator's own call: pruning is
+//! **It warns ONCE per session and never refuses**, which is the operator's own
+//! call: pruning is
 //! theirs, not every prune is immediate (a branch can be kept on purpose), and
 //! a legitimate merge must not have its turn refused over housekeeping. A QA
 //! `Deny` therefore always wins — an advisory never downgrades a refusal.
@@ -129,7 +130,7 @@ impl Check for StopGate {
         // under a housekeeping note would be the louder message losing to the
         // quieter one.
         match qa_verdict(&project_dir, input)? {
-            Verdict::Allow => Ok(prune_advisory(&project_dir)),
+            Verdict::Allow => Ok(prune_advisory(&project_dir, input)),
             blocked => Ok(blocked),
         }
     }
@@ -218,13 +219,63 @@ fn qa_verdict(project_dir: &str, input: &HookInput) -> Result<Verdict, Error> {
 /// The wording is not written here: it is the SAME notice `SessionStart`
 /// already uses ([`prune_pending_notice`]), so the two moments cannot drift
 /// into saying different things about one state.
-fn prune_advisory(project_dir: &str) -> Verdict {
+fn prune_advisory(project_dir: &str, input: &HookInput) -> Verdict {
+    // A `Stop` hook has no way to speak without holding the turn open: any text
+    // it returns re-invokes the model. "Warns and never blocks" is therefore a
+    // statement about INTENT, and it only becomes true if the advisory says its
+    // piece ONCE and is silent afterwards. Without that, the notice re-fires on
+    // every re-invocation it just caused — measured in the field, 2026-08-31:
+    // nine consecutive blocks on a repository with 31 unpruned branches, twice
+    // in one session, until the platform's own cap cut the turn. The operator
+    // saw nine empty answers and no explanation.
+    //
+    // Two guards, deliberately independent, mirroring what `qa_verdict` does.
+    // `stop_hook_active` is the platform's repeat signal, honoured when present;
+    // the per-session marker is the guarantee that does not depend on it, since
+    // nothing obliges a host to send that field.
+    if stop_hook_active(input) {
+        return Verdict::Allow;
+    }
     let root = Path::new(project_dir);
+    let session = input.session_id.as_deref().unwrap_or_default();
+    let marker = prune_advisory_marker(root, session);
+    if marker.as_ref().is_some_and(|p| p.exists()) {
+        return Verdict::Allow;
+    }
+
     let lang = project_config_cached(root).i18n().lang;
     match crate::hooks::session::session_start_inject::prune_pending_notice(root, lang) {
-        Some(message) => Verdict::Warn { message },
+        Some(message) => {
+            // Record BEFORE returning: the turn this Warn holds open ends in
+            // another `Stop`, and the marker is what makes that one silent.
+            // A write failure degrades to the old behaviour rather than to a
+            // lost notice — `stop_hook_active` still covers the common host.
+            if let Some(path) = marker {
+                if let Some(parent) = path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write_atomic(&path, b"1");
+            }
+            Verdict::Warn { message }
+        }
         None => Verdict::Allow,
     }
+}
+
+/// Where the once-per-session "already advised" marker lives.
+///
+/// Session-scoped, not spec-scoped: an unpruned branch is a debt of the
+/// REPOSITORY, not of any one spec, and the same session must not be told twice.
+/// `None` when the path catalog refuses the root — the caller then behaves as it
+/// did before the marker existed.
+fn prune_advisory_marker(root: &Path, session: &str) -> Option<std::path::PathBuf> {
+    let session = if session.is_empty() { "unknown" } else { session };
+    Some(
+        ClaudePaths::for_project(root)
+            .ok()?
+            .harness_dir()
+            .join(format!(".prune-advised-{session}")),
+    )
 }
 
 /// Resolve the spec the gate should verify: the session's bound spec (falling
@@ -431,7 +482,7 @@ mod tests {
         git_in(project, &["checkout", "dev"]);
         git_in(project, &["merge", "--no-ff", "-m", "merge", "fix/landed"]);
 
-        match prune_advisory(project.to_str().unwrap()) {
+        match prune_advisory(project.to_str().unwrap(), &stop_input("s-advisory")) {
             Verdict::Warn { message } => {
                 assert!(
                     message.contains("fix/landed"),
@@ -467,7 +518,7 @@ mod tests {
         // declared bases contain the unit.
         git_in(project, &["branch", "main"]);
 
-        match prune_advisory(project.to_str().unwrap()) {
+        match prune_advisory(project.to_str().unwrap(), &stop_input("s-advisory")) {
             Verdict::Warn { message } => {
                 assert!(
                     message.contains("fix/landed"),
@@ -494,7 +545,66 @@ mod tests {
         git_in(project, &["merge", "--no-ff", "-m", "merge", "fix/landed"]);
         git_in(project, &["branch", "-D", "fix/landed"]);
 
-        assert!(matches!(prune_advisory(project.to_str().unwrap()), Verdict::Allow));
+        assert!(matches!(
+            prune_advisory(project.to_str().unwrap(), &stop_input("s-advisory")),
+            Verdict::Allow
+        ));
+    }
+
+    /// **The advisory speaks once and then holds its tongue.**
+    ///
+    /// A `Stop` hook cannot warn without holding the turn open: the text it
+    /// returns re-invokes the model, whose next turn ends in another `Stop`.
+    /// An advisory that re-fires there blocks forever on its own output.
+    /// Measured in the field, 2026-08-31: nine consecutive blocks on a
+    /// repository with 31 unpruned branches, twice in one session, until the
+    /// platform cap cut the turn — and the operator read nine empty answers.
+    ///
+    /// The two guards are asserted SEPARATELY because they are independent:
+    /// nothing obliges a host to send `stop_hook_active`, so the marker must
+    /// hold on its own.
+    #[test]
+    fn the_advisory_fires_once_per_session_and_not_again() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        repo_on_dev(project);
+
+        git_in(project, &["checkout", "-b", "fix/landed"]);
+        std::fs::write(project.join("work.txt"), "the work\n").unwrap();
+        git_in(project, &["add", "-A"]);
+        git_in(project, &["commit", "-m", "work"]);
+        git_in(project, &["checkout", "dev"]);
+        git_in(project, &["merge", "--no-ff", "-m", "merge", "fix/landed"]);
+
+        let root = project.to_str().unwrap();
+
+        // First stop of the session: the debt is real, so it is said.
+        assert!(
+            matches!(prune_advisory(root, &stop_input("s-loop")), Verdict::Warn { .. }),
+            "the first stop must carry the notice"
+        );
+
+        // Second stop, SAME session, no platform signal at all: the marker
+        // alone has to hold, or the notice loops on the turn it opened.
+        assert!(
+            matches!(prune_advisory(root, &stop_input("s-loop")), Verdict::Allow),
+            "the notice repeated in the same session — this is the loop"
+        );
+
+        // A different session hears it once too: the debt did not go away.
+        assert!(
+            matches!(prune_advisory(root, &stop_input("s-other")), Verdict::Warn { .. }),
+            "a new session must still be told"
+        );
+
+        // And the platform's own repeat signal releases on its own, before any
+        // marker is consulted — a fresh session that arrives already flagged.
+        let mut repeat = stop_input("s-flagged");
+        repeat.raw = serde_json::json!({ "stop_hook_active": true });
+        assert!(
+            matches!(prune_advisory(root, &repeat), Verdict::Allow),
+            "stop_hook_active must release the advisory by itself"
+        );
     }
 
     /// A unit still IN FLIGHT owes nothing yet — only a delivered one does.
@@ -510,7 +620,10 @@ mod tests {
         git_in(project, &["commit", "-m", "wip"]);
         git_in(project, &["checkout", "dev"]);
 
-        assert!(matches!(prune_advisory(project.to_str().unwrap()), Verdict::Allow));
+        assert!(matches!(
+            prune_advisory(project.to_str().unwrap(), &stop_input("s-advisory")),
+            Verdict::Allow
+        ));
     }
 
     /// Fail-open, both ways: a directory that is not a Mustard project, and one
@@ -520,14 +633,14 @@ mod tests {
     fn the_advisory_stays_silent_when_it_cannot_measure() {
         let bare = tempdir().unwrap();
         assert!(matches!(
-            prune_advisory(bare.path().to_str().unwrap()),
+            prune_advisory(bare.path().to_str().unwrap(), &stop_input("s-advisory")),
             Verdict::Allow
         ));
 
         let not_a_repo = tempdir().unwrap();
         std::fs::write(not_a_repo.path().join("mustard.json"), r#"{"lang":"pt-BR"}"#).unwrap();
         assert!(matches!(
-            prune_advisory(not_a_repo.path().to_str().unwrap()),
+            prune_advisory(not_a_repo.path().to_str().unwrap(), &stop_input("s-advisory")),
             Verdict::Allow
         ));
     }

@@ -132,7 +132,19 @@ fn current_wave_number() -> Option<u32> {
 pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
     // All events (including `pipeline.*`) are now routed to NDJSON.
     // The `classify_kind` classifier stamps the row's `kind` column.
-    let project = Path::new(project_dir_path);
+    // The contract above says `project_dir_path` IS the project root, and most
+    // callers honour it. A caller that hands its own `cwd` instead — a `run`
+    // command invoked from inside a subproject — used to write the whole event
+    // trail into that subproject's `.claude/`, which nothing downstream reads
+    // (`doctor --check workspace-leaks` reported `spec` leaking that way).
+    // Resolving the anchor HERE covers every caller at once, and falls back to
+    // the given path when there is no anchor, so the fail-silent contract and
+    // the tempdir-based tests both stand.
+    let project_owned = mustard_core::io::workspace::workspace_root_or_self(Path::new(
+        project_dir_path,
+    ));
+    let project_dir_path: &str = project_owned.to_str().unwrap_or(project_dir_path);
+    let project = project_owned.as_path();
 
     // Resolve the session id BEFORE the spec: an event that lacks a spec
     // inherits it from the session's recorded `pipeline.scope` binding, so we

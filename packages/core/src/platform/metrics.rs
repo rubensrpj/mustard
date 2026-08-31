@@ -135,7 +135,7 @@ impl MetricLine {
 /// `cwd`-relative join stands, so a metric is never lost to a resolution error.
 #[must_use]
 pub(crate) fn metric_file_path(cwd: &Path, event: &str) -> std::path::PathBuf {
-    let root = crate::io::workspace::workspace_root(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let root = crate::io::workspace::workspace_root_or_self(cwd);
     root.join(".claude")
         .join(".metrics")
         .join(format!("{event}.jsonl"))

@@ -135,6 +135,26 @@ pub fn workspace_root(start_dir: &Path) -> Result<PathBuf, WorkspaceError> {
     resolve_with_override(start_dir, override_value.as_deref())
 }
 
+/// The workspace root for `start_dir`, falling back to `start_dir` itself.
+///
+/// The fail-open face of [`workspace_root`], for the writers that must produce
+/// a path no matter what. A writer handed a directory INSIDE the workspace —
+/// a subproject that carries a `.claude/` of its own, say — must still land on
+/// the ONE `.claude/` the dashboard and the reports read; a blind
+/// `start_dir.join(".claude")` shards the state per subproject instead, and
+/// `doctor --check workspace-leaks` names the eight directories where that has
+/// already happened.
+///
+/// Falling back rather than erroring is deliberate: every caller here is
+/// fail-silent by contract (a metric, an event line, a verdict file), so a
+/// resolution failure must degrade to the old behaviour instead of dropping
+/// the write. With no anchor above `start_dir` — a `tempdir` in a unit test, a
+/// checkout without `mustard.json` — the answer IS `start_dir`.
+#[must_use]
+pub fn workspace_root_or_self(start_dir: &Path) -> PathBuf {
+    workspace_root(start_dir).unwrap_or_else(|_| start_dir.to_path_buf())
+}
+
 /// Like [`workspace_root`] but takes the override value as an explicit
 /// argument instead of reading `MUSTARD_WORKSPACE_ROOT`.
 ///
