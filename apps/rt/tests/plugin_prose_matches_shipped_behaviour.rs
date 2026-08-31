@@ -2082,10 +2082,13 @@ fn cmd_boot_version(manifest: &str) -> Option<&str> {
 ///    with `serde_json` — which parses that file by a completely different road.
 ///
 /// What it does NOT prove is that cmd.exe tokenises the way this models it; only
-/// a Windows box can answer that, and the `.cmd` carries the one-line command
-/// that asks. What it does prove is the half that actually moves: the manifest's
-/// shape. That shape is what a careless reformat, a new key, or a minifier in
-/// the release path would change.
+/// a Windows box can answer that, and the one-line command that asks lives in
+/// the doc comment of `windows_boot_carries_no_percent_sequence_cmd_will_refuse`
+/// below. It may NOT live in the `.cmd`: a percent sequence in a comment there
+/// aborts the whole file, which is the defect that test exists to keep shut.
+/// What it does prove is the half that actually moves: the manifest's shape.
+/// That shape is what a careless reformat, a new key, or a minifier in the
+/// release path would change.
 #[test]
 fn windows_boot_reads_the_version_the_manifest_actually_ships() {
     let boot_cmd = read("plugin/bin/mustard-boot.cmd");
@@ -2116,6 +2119,75 @@ fn windows_boot_reads_the_version_the_manifest_actually_ships() {
         parsed, declared,
         "mustard-boot.cmd would stamp bin/ with a version the manifest does not \
          declare, so the download URL points at a release that does not exist",
+    );
+}
+
+/// A percent-tilde sequence in `mustard-boot.cmd` is one of exactly two legal
+/// things, and an illegal one does not misbehave — it ABORTS the file.
+///
+/// cmd.exe expands percent sequences BEFORE it notices a line is a `rem`, so a
+/// percent-tilde written to ILLUSTRATE the parser is evaluated as a reference to
+/// a command-line argument by that name. There is none; cmd prints "The
+/// following usage of the path operator in batch parameter substitution is
+/// invalid", stops reading the file and exits 255. Measured on a real Windows
+/// box, 2026-08-31: the illustrative one-liner the test above used to recommend
+/// sat in the `.cmd` as a comment and killed the boot ABOVE the version read. No
+/// download, no hook, `bin\` empty — every Windows install dormant from 0.1.59
+/// to 0.1.61, with nothing on screen saying why. That is why this test scans the
+/// whole file and not only its comments: the shape is what is illegal, wherever
+/// it sits.
+///
+/// The two legal shapes, and there is no third:
+///
+/// - `%%~x` — a FOR variable inside a batch file; the doubled percent is what
+///   makes it one. The parse the test above models is written this way.
+/// - `%~<modifiers><digit>` — a real argument reference, such as `%~dp0` or
+///   `%~1`. The modifiers are `f d p n x s a t z`, and a digit (or `*`) closes
+///   it. Nothing closes `%~b`, which is exactly why cmd refused it.
+///
+/// The one-liner that confirms the tokenisation on a real Windows box lives
+/// HERE, where a percent sign is inert prose. From the repository root, at a
+/// `cmd` prompt:
+///
+/// ```text
+/// for /f "usebackq tokens=1,2 delims=:, " %a in ("plugin\.claude-plugin\plugin.json") do @if /i "%~a"=="version" @echo %~b
+/// ```
+///
+/// It must print the manifest version and nothing else. (One percent at the
+/// prompt, two inside a file — that difference is cmd, not a typo.)
+#[test]
+fn windows_boot_carries_no_percent_sequence_cmd_will_refuse() {
+    const MODIFIERS: &str = "fdpnxsatz";
+    let boot = read("plugin/bin/mustard-boot.cmd");
+    let bytes = boot.as_bytes();
+
+    let offenders: Vec<String> = boot
+        .match_indices("%~")
+        // `%%~x` is a FOR variable, and the doubled percent is the whole
+        // difference. One character back answers it; re-tokenising would not.
+        .filter(|(at, _)| *at == 0 || bytes[at - 1] != b'%')
+        .filter(|(at, _)| {
+            // Everything from `%~` to the first non-modifier character is
+            // modifiers; that character is the argument being named, and cmd
+            // accepts only a digit or `*` in that position.
+            let closer = boot[at + 2..].chars().find(|c| !MODIFIERS.contains(*c));
+            !matches!(closer, Some(c) if c.is_ascii_digit() || c == '*')
+        })
+        .map(|(at, _)| {
+            let line = boot[..at].matches('\n').count() + 1;
+            let text: String = boot[at..].chars().take(24).collect();
+            format!("  line {line}: {text}")
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "mustard-boot.cmd carries a percent sequence cmd.exe refuses, and the \
+         refusal aborts the WHOLE file — every Windows machine goes dormant, in \
+         silence. Write a FOR variable as `%%~x`, an argument as `%~1`, and keep \
+         illustrative percent sequences out of this file entirely (the one-liner \
+         belongs in this test's doc comment):\n{}",
+        offenders.join("\n"),
     );
 }
 

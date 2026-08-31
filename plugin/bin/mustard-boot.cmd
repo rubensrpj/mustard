@@ -68,13 +68,25 @@ rem
 rem Only cmd.exe runs the line below, so nothing in this repository can execute
 rem it; tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation
 rem against the real manifest instead, and pins the model to the literal below so
-rem the two can only drift together. To confirm it on a real Windows box, from
-rem the repository root, one line:
+rem the two can only drift together.
 rem
-rem   for /f "usebackq tokens=1,2 delims=:, " %a in ("plugin\.claude-plugin\plugin.json") do @if /i "%~a"=="version" @echo %~b
+rem NO PERCENT SIGN MAY ENTER A COMMENT IN THIS FILE, not even to illustrate
+rem the parser, and this paragraph is written the long way round for exactly
+rem that reason. cmd.exe expands percent sequences BEFORE it notices a line is
+rem a rem, so a percent-tilde-letter written as an EXAMPLE is read as a
+rem reference to a command-line argument by that name; there is none, and the
+rem error does not skip the line, it ABORTS the whole batch file on the spot
+rem with exit 255.
 rem
-rem It must print the manifest version and nothing else. (One % at the prompt,
-rem two inside a file — that difference is cmd, not a typo.)
+rem This comment used to carry the copy-pasteable one-liner that confirms the
+rem parse on a real Windows box — the very check the paragraph above asks for.
+rem It killed the script here, above the version read, so nothing downloaded
+rem and no hook ever ran: every Windows install sat dormant from 0.1.59 to
+rem 0.1.61 with nothing on screen saying why (measured in the field,
+rem 2026-08-31). The one-liner now lives beside its model, in
+rem tests/plugin_prose_matches_shipped_behaviour.rs, where a percent sign is
+rem inert prose; a test there also refuses any percent-tilde in this file that
+rem is neither a doubled FOR variable nor a real argument reference.
 set "VER="
 for /f "usebackq tokens=1,2 delims=:, " %%a in ("%MANIFEST%") do if not defined VER if /i "%%~a"=="version" set "VER=%%~b"
 
