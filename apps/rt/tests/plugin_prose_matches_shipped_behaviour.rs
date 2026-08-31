@@ -2170,3 +2170,71 @@ fn both_boot_twins_carry_the_same_download_deadline() {
          clear|compact|resume|fork) — the unpack and the hand-off come after it",
     );
 }
+
+/// **A door does what it names — and the rule ships to every project, not just
+/// to the one where it was learned.**
+///
+/// Measured in the field, 2026-08-31, on a repository that is not this one: a
+/// bare `/mustard:pr open` produced a full test-suite run, a 328-commit drift
+/// analysis, a dry-run merge in a throwaway worktree and a proposal to merge an
+/// integration base into the operator's own unit — and no pull request. The
+/// operator had asked for a pull request and nothing else.
+///
+/// Where the rule lives is the whole point of this ratchet. The door's own
+/// prose (`plugin/commands/pr.md`) is read only once the door OPENS, and that
+/// session never got that far — it went wide before it went anywhere. The
+/// ORCHESTRATOR is the file injected at the start of every session of every
+/// project, so that is the copy that has to carry it; the door carries the
+/// operational half. Both, or the rule only reaches the sessions that were
+/// already going to be fine.
+///
+/// This holds all three claims: the general rule, its two operational halves,
+/// and the measurement that justifies them — a reader can check the date rather
+/// than take the rule on faith.
+#[test]
+fn every_project_learns_that_a_door_does_what_it_names() {
+    let orchestrator = mustard_core::ORCHESTRATOR_MD;
+
+    // The general rule, in the file every session reads. It is stated ABOUT
+    // doors, not about `pr open`, because the next over-reach will be at some
+    // other door.
+    assert!(
+        orchestrator.contains("A door does what it NAMES and stops there"),
+        "the injected router never says a door is bounded by its own name",
+    );
+
+    // Half one: a measurement taken for a report is not a gate. A red suite is
+    // `merge`'s business; `open` states the number and publishes.
+    assert!(
+        orchestrator.contains("REPORTED, never investigated"),
+        "the router lets a measurement taken for the body become a gate",
+    );
+
+    // Half two: the environment refusing is news, not a problem to route
+    // around. Carrying an integration base into the operator's unit to make
+    // someone else's failure go green is the specific move that was measured.
+    assert!(
+        orchestrator.contains("Never propose carrying an integration base into the operator's unit"),
+        "the router leaves the 328-commit merge proposal available as an answer",
+    );
+
+    // The measurement itself, with its date — the claim above is checkable.
+    assert!(
+        orchestrator.contains("2026-08-31"),
+        "the router asserts the door-scope rule without the field case behind it",
+    );
+
+    // The door repeats the operational half where the work actually happens, so
+    // a session that DID reach the door is told there too.
+    let pr_door = read("plugin/commands/pr.md");
+    for claim in [
+        "It does not judge, and it does not gate",
+        "A red suite is REPORTED, never investigated here",
+        "A push refused by the repository's own tooling is REPORTED, not routed around",
+    ] {
+        assert!(
+            pr_door.contains(claim),
+            "the `pr` door dropped `{claim}` — the operational half of the rule",
+        );
+    }
+}
