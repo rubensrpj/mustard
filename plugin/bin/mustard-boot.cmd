@@ -65,16 +65,19 @@ rem survives every release. Any other shape leaves VER empty, and an empty VER
 rem means "do nothing" everywhere below — dormant, and as of :noversion it also
 rem SAYS so instead of going quiet.
 rem
-rem Only cmd.exe runs the line below, so nothing in this repository can execute
-rem it; tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation
-rem against the real manifest instead, and pins the model to the literal below so
-rem the two can only drift together. To confirm it on a real Windows box, from
-rem the repository root, one line:
+rem tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation of
+rem the line below against the real manifest, and on Windows asks cmd.exe
+rem itself. That second half replaces a claim this block used to make — that no
+rem runner here could execute the file — which was false, and cost six releases.
 rem
-rem   for /f "usebackq tokens=1,2 delims=:, " %a in ("plugin\.claude-plugin\plugin.json") do @if /i "%~a"=="version" @echo %~b
-rem
-rem It must print the manifest version and nothing else. (One % at the prompt,
-rem two inside a file — that difference is cmd, not a typo.)
+rem NO ILLUSTRATIVE PERCENT-TILDE IN THIS FILE, comment or code. cmd expands
+rem percent sequences BEFORE it notices a line is a rem, so one that names no
+rem argument ABORTS the whole file, exit 255. That is how 0.1.59 through 0.1.61
+rem shipped dormant on every Windows machine: this very comment carried the
+rem copy-pasteable one-liner, which now lives beside its model in that test
+rem file, where a percent sign is inert prose. Plain variables are fine. Which
+rem shapes are not is stated by, and only by,
+rem every_batch_file_carries_no_percent_sequence_cmd_will_refuse.
 set "VER="
 for /f "usebackq tokens=1,2 delims=:, " %%a in ("%MANIFEST%") do if not defined VER if /i "%%~a"=="version" set "VER=%%~b"
 

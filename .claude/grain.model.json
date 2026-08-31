@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 489,
-      "loc": 220904
+      "loc": 221350
     },
     {
       "language": "tsx",
@@ -25789,7 +25789,7 @@
     {
       "path": "apps/rt/src/shared/events/writer_ndjson.rs",
       "language": "rust",
-      "loc": 435,
+      "loc": 485,
       "imports": [
         "mustard_core::io::claude_paths::ClaudePaths",
         "mustard_core::io::fs",
@@ -25978,6 +25978,18 @@
           "kind": "function",
           "name": "event_writer_ndjson_hot_path",
           "line": 435,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hot_path_ceiling_us",
+          "line": 493,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hot_path_ceiling_is_loose_on_virtualised_runners",
+          "line": 503,
           "supertypes": []
         }
       ],
@@ -73051,7 +73063,7 @@
     {
       "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
       "language": "rust",
-      "loc": 2112,
+      "loc": 2508,
       "imports": [
         "mustard_rt::commands::agent::render::recommended_subagent_type",
         "mustard_rt::commands::event::enrichment_gap::ENRICHMENT_STALE_TAG",
@@ -73236,37 +73248,97 @@
         {
           "kind": "function",
           "name": "cmd_unquote",
-          "line": 2035,
+          "line": 2037,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cmd_for_f_tokens",
-          "line": 2045,
+          "line": 2047,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "cmd_boot_version",
-          "line": 2057,
+          "line": 2059,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "windows_boot_reads_the_version_the_manifest_actually_ships",
-          "line": 2090,
+          "line": 2095,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "manifest_in_cmd_backslashes",
+          "line": 2170,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_ci_matrix_still_carries_the_windows_runner",
+          "line": 2181,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "illegal_percent_tilde",
+          "line": 2218,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "illegal_in_line",
+          "line": 2232,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "closes_on_an_argument",
+          "line": 2266,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_percent_tilde_scanner_knows_which_shapes_cmd_refuses",
+          "line": 2325,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "tracked_batch_files",
+          "line": 2352,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "every_batch_file_carries_no_percent_sequence_cmd_will_refuse",
+          "line": 2387,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "windows_boot_really_parses_under_cmd",
+          "line": 2462,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "ask_a_real_cmd",
+          "line": 2485,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "both_boot_twins_carry_the_same_download_deadline",
-          "line": 2133,
+          "line": 2548,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_project_learns_that_a_door_does_what_it_names",
-          "line": 2195,
+          "line": 2610,
           "supertypes": []
         }
       ]
@@ -102351,16 +102423,16 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+Report slice",
+      "name": "tipo base+Kind slice",
       "roles": [
         "(core)",
-        "Report"
+        "Kind"
       ],
       "optional_roles": [
         "Ac",
         "Function",
-        "Kind",
         "Mode",
+        "Report",
         "State",
         "Term",
         "View"
@@ -102390,11 +102462,11 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`).",
+        "Adicione o **Kind** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
@@ -102448,12 +102520,6 @@
           "role": "tipo base"
         },
         {
-          "path": "packages/core/src/domain/regression_check/snapshot.rs",
-          "start_line": 83,
-          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
-          "role": "Report"
-        },
-        {
           "path": "packages/core/src/domain/regression_check/mod.rs",
           "start_line": 138,
           "snippet": "pub struct Function<Name> {\n    /// Stable identifier — the qualifier as declared in `## Funções tocadas`\n    /// (e.g. `regression_check::Snapshot::<name>_for_spec`). Used as the\n    /// [`Snapshot::functions`] map key so two snapshots compare by qualifier,\n    /// not by file path.\n    pub qualifier: String,\n    /// How the body below was produced.\n    pub mode: <Name>Mode,\n    /// Typed signature when the AST path produced one. See doc-comment for",
@@ -102464,10 +102530,16 @@
           "start_line": 94,
           "snippet": "pub enum <Name>Mode {\n    /// Grammar was resolved via [`crate::domain::ast::GrammarLoader`]; the body was\n    /// extracted from the parsed AST (function-declaration node).\n    Ast,\n    /// No grammar was available; the body was extracted by the agnostic\n    /// fallback regex + brace-balancing heuristic in [`snapshot`]. Telemetry\n    /// is expected to carry a \"grammar not installed\" warning so the operator\n    /// can choose to install the grammar for a precise <name>.\n    Textual,",
           "role": "Mode"
+        },
+        {
+          "path": "packages/core/src/domain/regression_check/snapshot.rs",
+          "start_line": 83,
+          "snippet": "pub struct <Name>Report {\n    /// The <name>d snapshot.\n    pub snapshot: Snapshot,\n    /// Warnings emitted during <name> (e.g. \"grammar not installed for X,\n    /// falling back to textual <name>\"). May be empty.\n    pub warnings: Vec<<Name>Warning>,\n}\n\nimpl Snapshot {",
+          "role": "Report"
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Report. Optional roles: Ac, Function, Kind, Mode, State, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
