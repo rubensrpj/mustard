@@ -70,13 +70,18 @@ rem it; tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation
 rem against the real manifest instead, and pins the model to the literal below so
 rem the two can only drift together.
 rem
-rem NO PERCENT SIGN MAY ENTER A COMMENT IN THIS FILE, not even to illustrate
-rem the parser, and this paragraph is written the long way round for exactly
-rem that reason. cmd.exe expands percent sequences BEFORE it notices a line is
-rem a rem, so a percent-tilde-letter written as an EXAMPLE is read as a
-rem reference to a command-line argument by that name; there is none, and the
-rem error does not skip the line, it ABORTS the whole batch file on the spot
-rem with exit 255.
+rem A PERCENT-TILDE IN A COMMENT HERE MUST STILL BE A LEGAL ONE, and this
+rem paragraph is written the long way round for exactly that reason. cmd.exe
+rem expands percent sequences BEFORE it notices a line is a rem, so a
+rem percent-tilde written as an EXAMPLE — modifiers naming no argument — is
+rem read as a reference to an argument that does not exist, and the error does
+rem not skip the line: it ABORTS the whole batch file on the spot, exit 255.
+rem
+rem Plain variables in comments are harmless and stay: the DIR, DEST and URL
+rem named above expand to something or to nothing, and cmd reads on either
+rem way. What is illegal is the SHAPE — a tilde whose modifiers close on no
+rem digit — and that is exactly what the test named below refuses, in this
+rem file and in every other .cmd and .bat of the repository.
 rem
 rem This comment used to carry the copy-pasteable one-liner that confirms the
 rem parse on a real Windows box — the very check the paragraph above asks for.

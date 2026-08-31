@@ -2014,12 +2014,14 @@ fn router_teaches_the_self_healing_delivery() {
 // ---------------------------------------------------------------------------
 // The two bootstrap twins under `plugin/bin/`.
 //
-// `mustard-boot.cmd` runs only under cmd.exe, and nothing on this repository's
-// runners can execute it: `.github/workflows/ci.yml`'s `windows-latest` job runs
-// cargo and nothing else, and cargo cannot ask cmd.exe to parse a file. So the
-// two tests below check what IS checkable anywhere — the assumptions those lines
-// rest on, pinned to the literals that rest on them, so a model and its subject
-// can only drift together.
+// `mustard-boot.cmd` runs only under cmd.exe, and this block used to claim no
+// runner here could execute it. That claim was FALSE, and it cost six releases:
+// `.github/workflows/ci.yml` line 54 runs the suite on `windows-latest`, and a
+// `#[cfg(windows)]` test can hand the script to cmd.exe and read the exit code.
+// So the subject itself is asked, once, in
+// `windows_boot_really_parses_under_cmd` — and the models below are what stays
+// checkable on the other two operating systems, pinned to the literals they
+// rest on so a model and its subject can only drift together.
 //
 // The stakes are why they exist at all. This pair has already shipped one
 // Windows-only defect that survived six releases in total silence (the trailing
@@ -2120,30 +2122,159 @@ fn windows_boot_reads_the_version_the_manifest_actually_ships() {
         "mustard-boot.cmd would stamp bin/ with a version the manifest does not \
          declare, so the download URL points at a release that does not exist",
     );
+
+    // The PROMPT form of that same line lives in this file's own doc comment,
+    // because a percent sequence in the `.cmd` aborts it. Nothing else ties the
+    // two together: in the old layout they sat three lines apart, and the
+    // adjacency WAS the anchor (found in review). Pin the half that drifts —
+    // the `for /f` options — so the line an operator copy-pastes on Windows
+    // cannot go on reporting a PASS for a parse the script no longer performs.
+    let options = shipped_line
+        .split('"')
+        .nth(1)
+        .unwrap_or_else(|| panic!("the shipped `for /f` line carries no quoted options"));
+    // The needle is the DOC-COMMENT prefix, not the one-liner's own text: a
+    // plain substring search matched the source line that performs the search.
+    let this_file = read("apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs");
+    let prompt_line = this_file
+        .lines()
+        .find(|l| l.trim_start().starts_with("/// for /f"))
+        .unwrap_or_else(|| {
+            panic!("the copy-pasteable one-liner is gone from this file's doc comments")
+        });
+    assert!(
+        prompt_line.contains(options),
+        "the one-liner an operator copy-pastes on a Windows box no longer \
+         carries the shipped `for /f` options ({options}):\n{prompt_line}",
+    );
 }
 
-/// A percent-tilde sequence in `mustard-boot.cmd` is one of exactly two legal
-/// things, and an illegal one does not misbehave — it ABORTS the file.
+/// Every `%~` in `body` that cmd.exe would REFUSE, as `(line, excerpt)`.
 ///
-/// cmd.exe expands percent sequences BEFORE it notices a line is a `rem`, so a
-/// percent-tilde written to ILLUSTRATE the parser is evaluated as a reference to
-/// a command-line argument by that name. There is none; cmd prints "The
-/// following usage of the path operator in batch parameter substitution is
-/// invalid", stops reading the file and exits 255. Measured on a real Windows
-/// box, 2026-08-31: the illustrative one-liner the test above used to recommend
-/// sat in the `.cmd` as a comment and killed the boot ABOVE the version read. No
-/// download, no hook, `bin\` empty — every Windows install dormant from 0.1.59
-/// to 0.1.61, with nothing on screen saying why. That is why this test scans the
-/// whole file and not only its comments: the shape is what is illegal, wherever
-/// it sits.
+/// An illegal one does not misbehave — it ABORTS the file. cmd expands percent
+/// sequences BEFORE it notices a line is a `rem`, so a percent-tilde written to
+/// ILLUSTRATE the parser is evaluated as a reference to an argument by that
+/// name. There is none; cmd prints "The following usage of the path operator in
+/// batch parameter substitution is invalid", stops reading and exits 255.
+/// Measured on a real Windows box, 2026-08-31: the illustrative one-liner sat in
+/// the `.cmd` as a comment and killed the boot ABOVE the version read — every
+/// Windows install dormant from 0.1.59 to 0.1.61, nothing on screen saying why.
 ///
-/// The two legal shapes, and there is no third:
+/// Three legal shapes, and the third was missing from the first draft of this
+/// scanner (found in review):
 ///
-/// - `%%~x` — a FOR variable inside a batch file; the doubled percent is what
-///   makes it one. The parse the test above models is written this way.
-/// - `%~<modifiers><digit>` — a real argument reference, such as `%~dp0` or
-///   `%~1`. The modifiers are `f d p n x s a t z`, and a digit (or `*`) closes
-///   it. Nothing closes `%~b`, which is exactly why cmd refused it.
+/// - `%%~x` — a FOR variable; the DOUBLED percent is what makes it one. Parity
+///   decides, not one character back: `%%` collapses to a literal `%`, so an
+///   ODD run leaves a bare `%~` behind and `%%%~b` aborts exactly like `%~b`.
+/// - `%~<modifiers><digit>` — an argument reference, such as `%~dp0` or `%~1`.
+///   The modifiers are `f d p n x s a t z`, cmd reads them CASE-INSENSITIVELY
+///   (`%~DP0` is legal), and a digit or `*` closes the sequence.
+/// - `%~$VAR:n` — the documented PATH-search form, closed by its own digit.
+fn illegal_percent_tilde(body: &str) -> Vec<(usize, String)> {
+    const MODIFIERS: &str = "fdpnxsatz";
+    let bytes = body.as_bytes();
+    body.match_indices("%~")
+        .filter(|(at, _)| {
+            let run = bytes[..*at].iter().rev().take_while(|b| **b == b'%').count();
+            run % 2 == 0
+        })
+        .filter(|(at, _)| {
+            // Bounded to the REST OF THE LINE: cmd resolves the argument inside
+            // the token, so a digit further down the file names nothing.
+            let rest = body[at + 2..].lines().next().unwrap_or_default();
+            let closes = |c: char| c.is_ascii_digit() || c == '*';
+            if let Some(search) = rest.strip_prefix('$') {
+                return !matches!(search.split_once(':'), Some((_, tail)) if tail.starts_with(closes));
+            }
+            let closer = rest
+                .chars()
+                .find(|c| !MODIFIERS.contains(c.to_ascii_lowercase()));
+            !matches!(closer, Some(c) if closes(c))
+        })
+        .map(|(at, _)| {
+            let line = body[..at].matches('\n').count() + 1;
+            // Cut at the line end, never at a fixed character count: this file
+            // is CRLF, and a blind 24-character window bled the excerpt into the
+            // next two lines, carriage returns included (found in review).
+            let excerpt: String = body[at..]
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(24)
+                .collect();
+            (line, excerpt)
+        })
+        .collect()
+}
+
+/// The scanner's own edges — every case here was a hole in its first draft,
+/// found by review, and a guard with holes is worse than none: it says the class
+/// is closed while the exact shape that closed six releases walks through.
+#[test]
+fn the_percent_tilde_scanner_knows_which_shapes_cmd_refuses() {
+    for line in [
+        r#"set "DIR=%~dp0""#,
+        r#"if /i "%~1"=="on""#,
+        r#"set "DIR=%~DP0""#,   // cmd reads modifiers case-insensitively
+        "echo %~$PATH:1",       // the documented search form
+        "for %%a in (x) do echo %%~b", // a FOR variable: percents doubled
+        "echo %%%%~b",          // an even run collapses to a doubled pair
+    ] {
+        assert!(
+            illegal_percent_tilde(line).is_empty(),
+            "cmd accepts this and the scanner refused it: {line}",
+        );
+    }
+
+    for line in [
+        "rem echo %~b",  // the defect this whole block exists for
+        "rem %%%~b",     // an ODD run leaves a bare `%~` behind
+        r#"echo %~a""#,  // modifiers that close on no argument
+        "echo %~",
+    ] {
+        assert!(
+            !illegal_percent_tilde(line).is_empty(),
+            "cmd aborts on this and the scanner let it pass: {line}",
+        );
+    }
+
+    // The excerpt stops at the line end. A blind character window bled three
+    // CRLF lines into one message, at the exact moment an operator needs it.
+    assert_eq!(
+        illegal_percent_tilde("rem head\r\nrem %~b tail\r\nrem next\r\n"),
+        vec![(2, "%~b tail".to_string())],
+    );
+}
+
+/// Every `.cmd`/`.bat` this repository ships, found by WALKING rather than
+/// listed. A second batch file — an installer step, a dev helper — must not
+/// arrive with zero coverage of the defect class that already cost six releases.
+fn batch_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    const SKIP: [&str; 4] = ["target", "node_modules", ".git", "dist"];
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if !SKIP.contains(&entry.file_name().to_string_lossy().as_ref()) {
+                batch_files(&path, out);
+            }
+        } else if matches!(
+            path.extension().and_then(std::ffi::OsStr::to_str),
+            Some("cmd" | "bat")
+        ) {
+            out.push(path);
+        }
+    }
+}
+
+/// No batch file in this repository carries a percent sequence cmd.exe refuses.
+///
+/// The scope is the FILE CLASS, not one path: `.gitattributes` already reasons
+/// this way (`*.cmd text eol=crlf`), and the failure mode is identical wherever
+/// it lands — silent abort, `bin/` empty, the whole harness dormant.
 ///
 /// The one-liner that confirms the tokenisation on a real Windows box lives
 /// HERE, where a percent sign is inert prose. From the repository root, at a
@@ -2156,38 +2287,58 @@ fn windows_boot_reads_the_version_the_manifest_actually_ships() {
 /// It must print the manifest version and nothing else. (One percent at the
 /// prompt, two inside a file — that difference is cmd, not a typo.)
 #[test]
-fn windows_boot_carries_no_percent_sequence_cmd_will_refuse() {
-    const MODIFIERS: &str = "fdpnxsatz";
-    let boot = read("plugin/bin/mustard-boot.cmd");
-    let bytes = boot.as_bytes();
+fn every_batch_file_carries_no_percent_sequence_cmd_will_refuse() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    batch_files(&root, &mut files);
+    assert!(
+        files.iter().any(|p| p.ends_with("mustard-boot.cmd")),
+        "the walk reached no mustard-boot.cmd, so it is guarding nothing",
+    );
 
-    let offenders: Vec<String> = boot
-        .match_indices("%~")
-        // `%%~x` is a FOR variable, and the doubled percent is the whole
-        // difference. One character back answers it; re-tokenising would not.
-        .filter(|(at, _)| *at == 0 || bytes[at - 1] != b'%')
-        .filter(|(at, _)| {
-            // Everything from `%~` to the first non-modifier character is
-            // modifiers; that character is the argument being named, and cmd
-            // accepts only a digit or `*` in that position.
-            let closer = boot[at + 2..].chars().find(|c| !MODIFIERS.contains(*c));
-            !matches!(closer, Some(c) if c.is_ascii_digit() || c == '*')
-        })
-        .map(|(at, _)| {
-            let line = boot[..at].matches('\n').count() + 1;
-            let text: String = boot[at..].chars().take(24).collect();
-            format!("  line {line}: {text}")
-        })
-        .collect();
+    let mut offenders: Vec<String> = Vec::new();
+    for path in &files {
+        let Ok(body) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let rel = path.strip_prefix(&root).unwrap_or(path).display().to_string();
+        for (line, excerpt) in illegal_percent_tilde(&body) {
+            offenders.push(format!("  {rel}:{line}: {excerpt}"));
+        }
+    }
 
     assert!(
         offenders.is_empty(),
-        "mustard-boot.cmd carries a percent sequence cmd.exe refuses, and the \
-         refusal aborts the WHOLE file — every Windows machine goes dormant, in \
-         silence. Write a FOR variable as `%%~x`, an argument as `%~1`, and keep \
-         illustrative percent sequences out of this file entirely (the one-liner \
-         belongs in this test's doc comment):\n{}",
+        "a batch file carries a percent sequence cmd.exe refuses, and the refusal \
+         aborts the WHOLE file — every Windows machine goes dormant, in silence. \
+         Write a FOR variable as `%%~x`, an argument as `%~1`, and keep \
+         illustrative percent sequences out of batch files entirely:\n{}",
         offenders.join("\n"),
+    );
+}
+
+/// The scanner above is a MODEL; on Windows, ask the subject.
+///
+/// `on PreToolUse` is the argument pair that drops the fetch (every trigger but
+/// `SessionStart` runs on a budget too short for a download), so this touches no
+/// network and writes nothing: it is a pure parse, and the exit code is the
+/// whole answer. It closes the class the scanner cannot — an unbalanced
+/// parenthesis, a bad label, a line-ending regression — each of which fails the
+/// same silent way.
+#[cfg(windows)]
+#[test]
+fn windows_boot_really_parses_under_cmd() {
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "call", "plugin\\bin\\mustard-boot.cmd", "on", "PreToolUse"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap_or_else(|e| panic!("could not spawn cmd.exe: {e}"));
+    assert!(
+        out.status.success(),
+        "cmd.exe refused mustard-boot.cmd (exit {:?}) — the script aborts, so \
+         every Mustard hook on every Windows machine does nothing, in silence.\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
     );
 }
 
