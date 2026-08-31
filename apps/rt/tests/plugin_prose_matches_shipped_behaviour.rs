@@ -2328,7 +2328,13 @@ fn closes_on_an_argument(rest: &str) -> bool {
 const PERCENT_CASES: &[(&str, bool)] = &[
     // Accepted by cmd.
     (r#"set "DIR=%~dp0""#, false),
-    (r#"if /i "%~1"=="on""#, false),
+    // A COMPLETE line, and the fix is a measurement: as the bare fragment
+    // `if /i "%~1"=="on"` this entry made cmd.exe refuse it — an `if` with no
+    // command is a syntax error for reasons that have nothing to do with
+    // percent sequences. The table's job is to name shapes, so every entry has
+    // to stand alone as a batch line. Caught by the Windows leg on its first
+    // run, after three review rounds had not.
+    (r#"if /i "%~1"=="on" echo matched"#, false),
     (r#"set "DIR=%~DP0""#, false), // modifiers are case-insensitive
     ("echo %~$PATH:1", false),     // the documented search form
     ("for %%a in (x) do echo %%~b", false), // a FOR variable: percents doubled
