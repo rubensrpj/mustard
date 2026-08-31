@@ -2016,7 +2016,7 @@ fn router_teaches_the_self_healing_delivery() {
 //
 // `mustard-boot.cmd` runs only under cmd.exe, and this block used to claim no
 // runner here could execute it. That claim was FALSE, and it cost six releases:
-// `.github/workflows/ci.yml` line 54 runs the suite on `windows-latest`, and a
+// `.github/workflows/ci.yml`'s `test` job matrix carries `windows-latest`, and a
 // `#[cfg(windows)]` test can hand the script to cmd.exe and read the exit code.
 // So the subject itself is asked, once, in
 // `windows_boot_really_parses_under_cmd` — and the models below are what stays
@@ -2085,7 +2085,7 @@ fn cmd_boot_version(manifest: &str) -> Option<&str> {
 ///
 /// What it does NOT prove is that cmd.exe tokenises the way this models it; only
 /// a Windows box can answer that, and the one-line command that asks lives in
-/// the doc comment of `windows_boot_carries_no_percent_sequence_cmd_will_refuse`
+/// the doc comment of `every_batch_file_carries_no_percent_sequence_cmd_will_refuse`
 /// below. It may NOT live in the `.cmd`: a percent sequence in a comment there
 /// aborts the whole file, which is the defect that test exists to keep shut.
 /// What it does prove is the half that actually moves: the manifest's shape.
@@ -2135,19 +2135,35 @@ fn windows_boot_reads_the_version_the_manifest_actually_ships() {
         .unwrap_or_else(|| panic!("the shipped `for /f` line carries no quoted options"));
     // The needle is the DOC-COMMENT prefix, not the one-liner's own text: a
     // plain substring search matched the source line that performs the search.
-    let this_file = read("apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs");
-    let prompt_line = this_file
+    // `file!()` rather than the path spelled out — a literal path panics with
+    // "unreadable" instead of the assertion the moment the file is renamed.
+    let this_file = read(file!());
+    let prompt: Vec<&str> = this_file
         .lines()
-        .find(|l| l.trim_start().starts_with("/// for /f"))
-        .unwrap_or_else(|| {
-            panic!("the copy-pasteable one-liner is gone from this file's doc comments")
-        });
-    assert!(
-        prompt_line.contains(options),
-        "the one-liner an operator copy-pastes on a Windows box no longer \
-         carries the shipped `for /f` options ({options}):\n{prompt_line}",
+        .filter(|l| l.trim_start().starts_with("/// for /f"))
+        .collect();
+    assert_eq!(
+        prompt.len(),
+        1,
+        "exactly one doc comment may carry the copy-pasteable one-liner, or this \
+         anchor pins whichever came first and the real one drifts unchecked",
     );
+    let prompt_line = prompt[0];
+    // BOTH halves that can rot: the options decide the tokenisation, the path
+    // decides whether the operator parses a file that still exists.
+    for pinned in [options, MANIFEST_REL] {
+        assert!(
+            prompt_line.contains(pinned),
+            "the one-liner an operator copy-pastes on a Windows box no longer \
+             carries `{pinned}`, so it would report a PASS for a parse the \
+             script does not perform:\n{prompt_line}",
+        );
+    }
 }
+
+/// The manifest path as the copy-pasteable one-liner spells it, in cmd's own
+/// backslashes.
+const MANIFEST_REL: &str = r"plugin\.claude-plugin\plugin.json";
 
 /// Every `%~` in `body` that cmd.exe would REFUSE, as `(line, excerpt)`.
 ///
@@ -2160,52 +2176,79 @@ fn windows_boot_reads_the_version_the_manifest_actually_ships() {
 /// the `.cmd` as a comment and killed the boot ABOVE the version read — every
 /// Windows install dormant from 0.1.59 to 0.1.61, nothing on screen saying why.
 ///
-/// Three legal shapes, and the third was missing from the first draft of this
-/// scanner (found in review):
+/// Read LEFT TO RIGHT, the way cmd reads, because looking backwards cannot
+/// work. The first draft asked "is the previous character a percent?", then "is
+/// the run of previous percents odd?" — and both answers are wrong for
+/// `%VAR%%~a`, where the percent in front of the tilde is the one CLOSING an
+/// expansion, not the one escaping the tilde. The heuristic called that legal;
+/// cmd aborts on it. The mirror image, `%DIR%~about`, it called illegal; cmd
+/// accepts it. One left-to-right pass answers both, and it is not a heuristic:
+/// it consumes the same four things cmd consumes.
 ///
-/// - `%%~x` — a FOR variable; the DOUBLED percent is what makes it one. Parity
-///   decides, not one character back: `%%` collapses to a literal `%`, so an
-///   ODD run leaves a bare `%~` behind and `%%%~b` aborts exactly like `%~b`.
-/// - `%~<modifiers><digit>` — an argument reference, such as `%~dp0` or `%~1`.
-///   The modifiers are `f d p n x s a t z`, cmd reads them CASE-INSENSITIVELY
-///   (`%~DP0` is legal), and a digit or `*` closes the sequence.
-/// - `%~$VAR:n` — the documented PATH-search form, closed by its own digit.
+/// - `%%` — an escaped percent. Consume both and read on.
+/// - `%~…` — an argument reference, the ONLY shape that can abort. The
+///   modifiers are `f d p n x s a t z`, read CASE-INSENSITIVELY (`%~DP0` is
+///   legal), and a digit or `*` must close them. `%~$VAR:n`, the documented
+///   PATH-search form, closes on its own digit. Nothing closes `%~b`.
+/// - `%VAR%` — an expansion. Consume it WHOLE, so its closing percent can never
+///   be read as the opening of the next sequence.
+/// - a lone `%` — cmd leaves it alone, and so does this.
 fn illegal_percent_tilde(body: &str) -> Vec<(usize, String)> {
-    const MODIFIERS: &str = "fdpnxsatz";
-    let bytes = body.as_bytes();
-    body.match_indices("%~")
-        .filter(|(at, _)| {
-            let run = bytes[..*at].iter().rev().take_while(|b| **b == b'%').count();
-            run % 2 == 0
-        })
-        .filter(|(at, _)| {
-            // Bounded to the REST OF THE LINE: cmd resolves the argument inside
-            // the token, so a digit further down the file names nothing.
-            let rest = body[at + 2..].lines().next().unwrap_or_default();
-            let closes = |c: char| c.is_ascii_digit() || c == '*';
-            if let Some(search) = rest.strip_prefix('$') {
-                return !matches!(search.split_once(':'), Some((_, tail)) if tail.starts_with(closes));
-            }
-            let closer = rest
-                .chars()
-                .find(|c| !MODIFIERS.contains(c.to_ascii_lowercase()));
-            !matches!(closer, Some(c) if closes(c))
-        })
-        .map(|(at, _)| {
-            let line = body[..at].matches('\n').count() + 1;
-            // Cut at the line end, never at a fixed character count: this file
-            // is CRLF, and a blind 24-character window bled the excerpt into the
-            // next two lines, carriage returns included (found in review).
-            let excerpt: String = body[at..]
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .take(24)
-                .collect();
-            (line, excerpt)
+    body.lines()
+        .enumerate()
+        .flat_map(|(idx, line)| {
+            illegal_in_line(line).into_iter().map(move |at| {
+                // The excerpt cannot outrun the line: a blind character window
+                // bled three CRLF lines into one message (found in review).
+                (idx + 1, line[at..].chars().take(24).collect::<String>())
+            })
         })
         .collect()
+}
+
+/// Byte offsets of the percent sequences in ONE line that cmd.exe would refuse.
+fn illegal_in_line(line: &str) -> Vec<usize> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        match bytes.get(i + 1) {
+            Some(b'%') => i += 2,
+            Some(b'~') => {
+                if !closes_on_an_argument(&line[i + 2..]) {
+                    out.push(i);
+                }
+                i += 2;
+            }
+            _ => {
+                i = match line[i + 1..].find('%') {
+                    Some(rel) => i + 1 + rel + 1,
+                    None => i + 1,
+                };
+            }
+        }
+    }
+    out
+}
+
+/// Does the text after a `%~` name an argument cmd can actually resolve?
+fn closes_on_an_argument(rest: &str) -> bool {
+    const MODIFIERS: &str = "fdpnxsatz";
+    let closes = |c: char| c.is_ascii_digit() || c == '*';
+    if let Some(search) = rest.strip_prefix('$') {
+        return matches!(
+            search.split_once(':'),
+            Some((var, tail)) if !var.is_empty() && tail.starts_with(closes)
+        );
+    }
+    matches!(
+        rest.chars().find(|c| !MODIFIERS.contains(c.to_ascii_lowercase())),
+        Some(c) if closes(c)
+    )
 }
 
 /// The scanner's own edges — every case here was a hole in its first draft,
@@ -2216,10 +2259,12 @@ fn the_percent_tilde_scanner_knows_which_shapes_cmd_refuses() {
     for line in [
         r#"set "DIR=%~dp0""#,
         r#"if /i "%~1"=="on""#,
-        r#"set "DIR=%~DP0""#,   // cmd reads modifiers case-insensitively
-        "echo %~$PATH:1",       // the documented search form
+        r#"set "DIR=%~DP0""#,          // modifiers are case-insensitive
+        "echo %~$PATH:1",              // the documented search form
         "for %%a in (x) do echo %%~b", // a FOR variable: percents doubled
-        "echo %%%%~b",          // an even run collapses to a doubled pair
+        "echo %%%%~b",                 // two escaped pairs, then a literal tilde
+        "rem see %DIR%~about the dir", // an expansion, then literal text
+        r#"set "DEST=%DIR:~0,-1%""#,   // a substring expansion, not an argument
     ] {
         assert!(
             illegal_percent_tilde(line).is_empty(),
@@ -2228,9 +2273,12 @@ fn the_percent_tilde_scanner_knows_which_shapes_cmd_refuses() {
     }
 
     for line in [
-        "rem echo %~b",  // the defect this whole block exists for
-        "rem %%%~b",     // an ODD run leaves a bare `%~` behind
-        r#"echo %~a""#,  // modifiers that close on no argument
+        "rem echo %~b",   // the defect this whole block exists for
+        "rem %%%~b",      // an escaped pair, then a bare `%~`
+        "echo %VAR%%~a",  // the CLOSING percent of an expansion, not an escape
+        r#"echo %~a""#,   // modifiers that close on no argument
+        "echo %~$PATH",   // the search form without its colon
+        "echo %~$PATH:x", // the search form closing on no digit
         "echo %~",
     ] {
         assert!(
@@ -2247,27 +2295,32 @@ fn the_percent_tilde_scanner_knows_which_shapes_cmd_refuses() {
     );
 }
 
-/// Every `.cmd`/`.bat` this repository ships, found by WALKING rather than
-/// listed. A second batch file — an installer step, a dev helper — must not
-/// arrive with zero coverage of the defect class that already cost six releases.
-fn batch_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    const SKIP: [&str; 4] = ["target", "node_modules", ".git", "dist"];
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if !SKIP.contains(&entry.file_name().to_string_lossy().as_ref()) {
-                batch_files(&path, out);
-            }
-        } else if matches!(
-            path.extension().and_then(std::ffi::OsStr::to_str),
-            Some("cmd" | "bat")
-        ) {
-            out.push(path);
-        }
-    }
+/// Every `.cmd`/`.bat` this repository TRACKS, asked of git rather than walked.
+///
+/// A second batch file — an installer step, a dev helper — must not arrive with
+/// zero coverage of a defect class that already cost six releases. The first
+/// draft hand-rolled the walk and bought three defects with it (found in
+/// review): a four-name skip list that would red the suite over a developer's
+/// gitignored scratch `.bat`, `is_dir()` following a symlink into a cycle, and
+/// filesystem ordering that makes the same failure read differently per machine.
+/// `git ls-files` has none of them — it is sorted, it never leaves the index,
+/// and "what the repository ships" is precisely the question it answers.
+fn tracked_batch_files() -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z", "*.cmd", "*.bat"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap_or_else(|e| panic!("could not ask git for the batch files: {e}"));
+    assert!(
+        out.status.success(),
+        "git ls-files refused: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// No batch file in this repository carries a percent sequence cmd.exe refuses.
@@ -2288,21 +2341,22 @@ fn batch_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// prompt, two inside a file — that difference is cmd, not a typo.)
 #[test]
 fn every_batch_file_carries_no_percent_sequence_cmd_will_refuse() {
-    let root = repo_root();
-    let mut files = Vec::new();
-    batch_files(&root, &mut files);
+    let files = tracked_batch_files();
     assert!(
-        files.iter().any(|p| p.ends_with("mustard-boot.cmd")),
-        "the walk reached no mustard-boot.cmd, so it is guarding nothing",
+        files.iter().any(|p| p.ends_with("plugin/bin/mustard-boot.cmd")),
+        "git listed no mustard-boot.cmd, so this test is guarding nothing: {files:?}",
     );
 
     let mut offenders: Vec<String> = Vec::new();
-    for path in &files {
-        let Ok(body) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let rel = path.strip_prefix(&root).unwrap_or(path).display().to_string();
-        for (line, excerpt) in illegal_percent_tilde(&body) {
+    for rel in &files {
+        // LOSSY, never skipped. `let Ok(body) = read_to_string(…) else
+        // { continue }` turned a file re-saved in a non-UTF-8 encoding into a
+        // silent pass — a guard that scans nothing while announcing the class is
+        // closed (found in review). This file carries 21 em-dashes, so that is
+        // one editor away.
+        let bytes = std::fs::read(repo_root().join(rel))
+            .unwrap_or_else(|e| panic!("git listed {rel} but it is unreadable: {e}"));
+        for (line, excerpt) in illegal_percent_tilde(&String::from_utf8_lossy(&bytes)) {
             offenders.push(format!("  {rel}:{line}: {excerpt}"));
         }
     }
@@ -2319,20 +2373,63 @@ fn every_batch_file_carries_no_percent_sequence_cmd_will_refuse() {
 
 /// The scanner above is a MODEL; on Windows, ask the subject.
 ///
-/// `on PreToolUse` is the argument pair that drops the fetch (every trigger but
-/// `SessionStart` runs on a budget too short for a download), so this touches no
-/// network and writes nothing: it is a pure parse, and the exit code is the
-/// whole answer. It closes the class the scanner cannot — an unbalanced
-/// parenthesis, a bad label, a line-ending regression — each of which fails the
-/// same silent way.
+/// It closes the class the scanner cannot — an unbalanced parenthesis, a bad
+/// label, a line-ending regression — each of which fails the same silent way.
+///
+/// Three things this test does deliberately, each one a review finding on the
+/// draft before it:
+///
+/// 1. It runs a COPY, in a temp tree carrying only the script and the manifest
+///    beside it. Against `plugin/bin` the script would find a real
+///    `mustard-rt.exe` (a gitignored build artifact) at `:run` and fire the live
+///    `PreToolUse` hooks against this very checkout, mid-suite.
+/// 2. It invokes the script DIRECTLY, not through `call` — the field
+///    reproduction did, and whether an abort's 255 survives the extra hop is one
+///    more thing nobody has measured.
+/// 3. It proves itself RED. A guard that has never been seen failing is not
+///    known to work, so the same `cmd /c` runs a four-line script carrying the
+///    exact shape that started all this, and requires a refusal.
 #[cfg(windows)]
 #[test]
 fn windows_boot_really_parses_under_cmd() {
-    let out = std::process::Command::new("cmd")
-        .args(["/c", "call", "plugin\\bin\\mustard-boot.cmd", "on", "PreToolUse"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap_or_else(|e| panic!("could not spawn cmd.exe: {e}"));
+    let tmp = std::env::temp_dir().join(format!("mustard-boot-parse-{}", std::process::id()));
+    let bin = tmp.join("bin");
+    let manifest = tmp.join(".claude-plugin");
+    for dir in [&bin, &manifest] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    }
+    let copy = |from: &str, to: PathBuf| {
+        std::fs::copy(repo_root().join(from), &to)
+            .unwrap_or_else(|e| panic!("copying {from}: {e}"));
+        to
+    };
+    let script = copy("plugin/bin/mustard-boot.cmd", bin.join("mustard-boot.cmd"));
+    copy(
+        "plugin/.claude-plugin/plugin.json",
+        manifest.join("plugin.json"),
+    );
+
+    let ask_cmd = |path: &Path| {
+        std::process::Command::new("cmd")
+            .args(["/c", &path.display().to_string(), "on", "PreToolUse"])
+            .output()
+            .unwrap_or_else(|e| panic!("could not spawn cmd.exe: {e}"))
+    };
+
+    let control = bin.join("known-bad.cmd");
+    std::fs::write(
+        &control,
+        "@echo off\r\necho reached\r\nrem echo %~b\r\necho unreachable\r\n",
+    )
+    .unwrap_or_else(|e| panic!("writing the control script: {e}"));
+    let refused = ask_cmd(&control);
+    assert!(
+        !refused.status.success(),
+        "cmd.exe ACCEPTED the shape this whole guard is built on, so the check \
+         below proves nothing about this machine",
+    );
+
+    let out = ask_cmd(&script);
     assert!(
         out.status.success(),
         "cmd.exe refused mustard-boot.cmd (exit {:?}) — the script aborts, so \
@@ -2340,6 +2437,8 @@ fn windows_boot_really_parses_under_cmd() {
         out.status.code(),
         String::from_utf8_lossy(&out.stderr),
     );
+
+    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 /// Both twins cap the download at the SAME number of seconds.

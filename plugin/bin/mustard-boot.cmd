@@ -65,10 +65,16 @@ rem survives every release. Any other shape leaves VER empty, and an empty VER
 rem means "do nothing" everywhere below — dormant, and as of :noversion it also
 rem SAYS so instead of going quiet.
 rem
-rem Only cmd.exe runs the line below, so nothing in this repository can execute
-rem it; tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation
-rem against the real manifest instead, and pins the model to the literal below so
-rem the two can only drift together.
+rem tests/plugin_prose_matches_shipped_behaviour.rs models the tokenisation of
+rem the line below against the real manifest, and pins the model to that literal
+rem so the two can only drift together. On Windows it stops modelling and asks
+rem cmd.exe itself, on a copy in a temp tree.
+rem
+rem THAT LAST SENTENCE REPLACES A FALSE ONE, and the false one cost six
+rem releases. This block used to say no runner of this repository could execute
+rem the file — so nobody wrote the test that would have caught the abort. The CI
+rem matrix has always carried windows-latest. Before adding a claim about what
+rem cannot be verified here, open .github/workflows/ci.yml and look.
 rem
 rem A PERCENT-TILDE IN A COMMENT HERE MUST STILL BE A LEGAL ONE, and this
 rem paragraph is written the long way round for exactly that reason. cmd.exe
@@ -90,8 +96,12 @@ rem and no hook ever ran: every Windows install sat dormant from 0.1.59 to
 rem 0.1.61 with nothing on screen saying why (measured in the field,
 rem 2026-08-31). The one-liner now lives beside its model, in
 rem tests/plugin_prose_matches_shipped_behaviour.rs, where a percent sign is
-rem inert prose; a test there also refuses any percent-tilde in this file that
-rem is neither a doubled FOR variable nor a real argument reference.
+rem inert prose. A test there refuses every percent-tilde that cmd.exe would
+rem not resolve, in this file and in every other .cmd and .bat the repository
+rem tracks. Which shapes those are is the TEST's business to state, not this
+rem comment's: a comment that enumerates them is one more thing that can
+rem disagree with what actually runs, which is the defect this whole file is a
+rem monument to.
 set "VER="
 for /f "usebackq tokens=1,2 delims=:, " %%a in ("%MANIFEST%") do if not defined VER if /i "%%~a"=="version" set "VER=%%~b"
 
