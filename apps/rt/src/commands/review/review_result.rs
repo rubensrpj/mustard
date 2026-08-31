@@ -101,7 +101,11 @@ fn write_review_findings_md(
     let Ok(content) = fs::read_to_string(findings_file) else {
         return;
     };
-    let Some(sp) = ClaudePaths::for_project(cwd)
+    // Same anchor rule the event router and the metric writer follow: the
+    // verdict belongs to the workspace's own `.claude/`, not to whatever
+    // directory this command was invoked from.
+    let root = mustard_core::io::workspace::workspace_root_or_self(cwd);
+    let Some(sp) = ClaudePaths::for_project(&root)
         .ok()
         .and_then(|p| p.for_spec(spec).ok())
     else {
@@ -182,7 +186,11 @@ fn write_review_verdict_md(
     critical_count: i64,
     subproject: Option<&str>,
 ) {
-    let Some(sp) = ClaudePaths::for_project(cwd)
+    // Same anchor rule the event router and the metric writer follow: the
+    // verdict belongs to the workspace's own `.claude/`, not to whatever
+    // directory this command was invoked from.
+    let root = mustard_core::io::workspace::workspace_root_or_self(cwd);
+    let Some(sp) = ClaudePaths::for_project(&root)
         .ok()
         .and_then(|p| p.for_spec(spec).ok())
     else {

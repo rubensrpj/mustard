@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 489,
-      "loc": 220052
+      "loc": 220621
     },
     {
       "language": "tsx",
@@ -23462,7 +23462,7 @@
     {
       "path": "apps/rt/src/shared/pr_provider.rs",
       "language": "rust",
-      "loc": 648,
+      "loc": 866,
       "imports": [
         "crate::shared::branch_state::{PrStatus, PR_UNREADABLE, PR_UNSUPPORTED}",
         "crate::shared::pr_azure::{\n        do_open, do_view_number, pat_from,\n        test_support::{remote, FakeTransport},\n        AzureRemote, PAT_ENV,\n    }",
@@ -23493,177 +23493,243 @@
           "supertypes": []
         },
         {
+          "kind": "enum",
+          "name": "PrChecks",
+          "line": 121,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Absent",
+          "line": 124,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Running",
+          "line": 126,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Passed",
+          "line": 128,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Failed",
+          "line": 130,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Unknown",
+          "line": 135,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "word",
+          "line": 141,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "checks_from_rows",
+          "line": 166,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "check_row_from_github",
+          "line": 186,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "checks_from_github",
+          "line": 214,
+          "supertypes": []
+        },
+        {
           "kind": "struct",
           "name": "PrView",
-          "line": 115,
+          "line": 230,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "number",
-          "line": 117,
+          "line": 232,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "title",
-          "line": 118,
+          "line": 233,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "head",
-          "line": 120,
+          "line": 235,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "base",
-          "line": 122,
+          "line": 237,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "status",
-          "line": 124,
+          "line": 239,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "merge_status",
-          "line": 130,
+          "line": 245,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "draft",
-          "line": 131,
+          "line": 246,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "url",
-          "line": 133,
+          "line": 248,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrToOpen",
-          "line": 139,
+          "line": 254,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "title",
-          "line": 140,
+          "line": 255,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "body",
-          "line": 141,
+          "line": 256,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "head",
-          "line": 143,
+          "line": 258,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "base",
-          "line": 145,
+          "line": 260,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "draft",
-          "line": 146,
+          "line": 261,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrOpened",
-          "line": 154,
+          "line": 269,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "number",
-          "line": 155,
+          "line": 270,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "url",
-          "line": 156,
+          "line": 271,
           "supertypes": []
         },
         {
           "kind": "trait",
           "name": "PrProvider",
-          "line": 172,
+          "line": 287,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "provider",
-          "line": 175,
+          "line": 290,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "open",
-          "line": 178,
+          "line": 293,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "edit_body",
-          "line": 181,
+          "line": 296,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "ready",
-          "line": 184,
+          "line": 299,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "view",
-          "line": 189,
+          "line": 304,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "checks",
+          "line": 315,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gh_out",
-          "line": 204,
+          "line": 330,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gh_json",
-          "line": 227,
+          "line": 353,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "view_from_github",
-          "line": 238,
+          "line": 364,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "number_from_pr_url",
-          "line": 259,
+          "line": 385,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "GithubPrCli",
-          "line": 268,
+          "line": 394,
           "supertypes": [
             "PrProvider"
           ]
@@ -23671,55 +23737,61 @@
         {
           "kind": "field",
           "name": "repo",
-          "line": 269,
+          "line": 395,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "new",
-          "line": 275,
+          "line": 401,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "provider",
-          "line": 281,
+          "line": 407,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "open",
-          "line": 285,
+          "line": 411,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "edit_body",
-          "line": 306,
+          "line": 432,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "ready",
-          "line": 310,
+          "line": 436,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "view",
-          "line": 314,
+          "line": 440,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "checks",
+          "line": 453,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unsupported",
-          "line": 336,
+          "line": 474,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "UnsupportedPr",
-          "line": 345,
+          "line": 483,
           "supertypes": [
             "PrProvider"
           ]
@@ -23727,113 +23799,131 @@
         {
           "kind": "field",
           "name": "provider",
-          "line": 348,
+          "line": 486,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "provider",
-          "line": 352,
+          "line": 490,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "open",
-          "line": 356,
+          "line": 494,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "edit_body",
-          "line": 360,
+          "line": 498,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "ready",
-          "line": 364,
+          "line": 502,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "view",
-          "line": 368,
+          "line": 506,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "checks",
+          "line": 510,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "provider_for",
-          "line": 385,
+          "line": 527,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_full_ref_and_a_short_name_answer_the_same_branch",
-          "line": 409,
+          "line": 551,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "azure_states_map_to_the_canonical_vocabulary",
-          "line": 422,
+          "line": 564,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "github_states_map_onto_the_canonical_vocabulary",
-          "line": 434,
+          "line": 576,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "github_view_normalises_refs_and_never_invents_a_merge_status",
-          "line": 447,
+          "line": 589,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_created_pr_number_is_read_out_of_the_url",
-          "line": 482,
+          "line": 624,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_provider_without_an_adapter_refuses_honestly",
-          "line": 493,
+          "line": 635,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_checks_reduction_ranks_failure_over_flight_and_never_guesses_green",
+          "line": 662,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_github_rollup_reduces_both_of_its_node_types",
+          "line": 693,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_factory_routes_by_the_provider_in_force",
-          "line": 514,
+          "line": 743,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "azure_open_posts_the_pullrequest_contract",
-          "line": 554,
+          "line": 783,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "azure_without_credential_refuses_naming_both_sources",
-          "line": 605,
+          "line": 834,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "an_azure_response_folds_into_the_normalized_view",
-          "line": 631,
+          "line": 860,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_azure_remote_spelling_yields_the_rest_base",
-          "line": 668,
+          "line": 897,
           "supertypes": []
         }
       ],
-      "fan_in": 3
+      "fan_in": 4
     },
     {
       "path": "apps/rt/src/shared/test_fixture.rs",
@@ -24795,11 +24885,11 @@
     {
       "path": "apps/rt/src/shared/pr_azure.rs",
       "language": "rust",
-      "loc": 868,
+      "loc": 951,
       "imports": [
         "crate::shared::branch_state::PrStatus",
         "crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE}",
-        "crate::shared::pr_provider::{\n    short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,\n}",
+        "crate::shared::pr_provider::{\n    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrToOpen,\n    PrView, HEADS, PROVIDER_AZURE,\n}",
         "serde_json::Value",
         "serde_json::{json, Value}",
         "std::cell::RefCell",
@@ -24819,103 +24909,103 @@
         {
           "kind": "function",
           "name": "base64",
-          "line": 68,
+          "line": 69,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "basic_auth",
-          "line": 87,
+          "line": 88,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "AzureRemote",
-          "line": 99,
+          "line": 100,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "base",
-          "line": 102,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "project",
           "line": 103,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "repo",
+          "name": "project",
           "line": 104,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "repo",
+          "line": 105,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "parse",
-          "line": 120,
+          "line": 121,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "api_pulls",
-          "line": 167,
+          "line": 168,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "https_remote",
-          "line": 176,
+          "line": 177,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "pr_url",
-          "line": 181,
+          "line": 182,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "strip_git",
-          "line": 188,
+          "line": 189,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pat_from",
-          "line": 201,
+          "line": 202,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "credential_fill",
-          "line": 224,
+          "line": 225,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_pat",
-          "line": 248,
+          "line": 249,
           "supertypes": []
         },
         {
           "kind": "trait",
           "name": "AzureTransport",
-          "line": 261,
+          "line": 262,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "call",
-          "line": 262,
+          "line": 263,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "UreqTransport",
-          "line": 275,
+          "line": 276,
           "supertypes": [
             "AzureTransport"
           ]
@@ -24923,121 +25013,133 @@
         {
           "kind": "method",
           "name": "call",
-          "line": 278,
+          "line": 279,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "view_from_azure",
-          "line": 331,
+          "line": 332,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "do_open",
-          "line": 352,
+          "line": 353,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "do_patch",
-          "line": 376,
+          "line": 377,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "do_view_number",
-          "line": 389,
+          "line": 390,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "query_encode",
-          "line": 408,
+          "line": 409,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "do_view_branch",
-          "line": 423,
+          "line": 424,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "checks_from_azure",
+          "line": 448,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "do_checks",
+          "line": 464,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "evidence_rows",
-          "line": 443,
+          "line": 486,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "evidence_from_rows",
-          "line": 470,
+          "line": 513,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "evidence_of",
-          "line": 505,
+          "line": 548,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fetch_pr",
-          "line": 530,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "fetch_threads",
-          "line": 542,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "fetch_reviewers",
-          "line": 555,
-          "supertypes": []
-        },
-        {
-          "kind": "struct",
-          "name": "AzurePrefetch",
-          "line": 570,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "pr",
-          "line": 571,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "threads",
-          "line": 572,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "reviewers",
           "line": 573,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "fetch_threads",
+          "line": 585,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "fetch_reviewers",
+          "line": 598,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "AzurePrefetch",
+          "line": 613,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "pr",
+          "line": 614,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "threads",
+          "line": 615,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "reviewers",
+          "line": 616,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "prefetch",
-          "line": 577,
+          "line": 620,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git_out",
-          "line": 594,
+          "line": 637,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "AzurePrRest",
-          "line": 611,
+          "line": 654,
           "supertypes": [
             "PrProvider"
           ]
@@ -25045,91 +25147,97 @@
         {
           "kind": "field",
           "name": "repo",
-          "line": 612,
+          "line": 655,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "transport",
-          "line": 613,
+          "line": 656,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "new",
-          "line": 618,
+          "line": 661,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "context",
-          "line": 626,
+          "line": 669,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "provider",
-          "line": 637,
+          "line": 680,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "open",
-          "line": 641,
+          "line": 684,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "edit_body",
-          "line": 646,
+          "line": 689,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "ready",
-          "line": 651,
+          "line": 694,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "view",
-          "line": 656,
+          "line": 699,
+          "supertypes": []
+        },
+        {
+          "kind": "method",
+          "name": "checks",
+          "line": 711,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "Recorded",
-          "line": 683,
+          "line": 731,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "method",
-          "line": 684,
+          "line": 732,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "url",
-          "line": 685,
+          "line": 733,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "auth",
-          "line": 686,
+          "line": 734,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "body",
-          "line": 687,
+          "line": 735,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "FakeTransport",
-          "line": 694,
+          "line": 742,
           "supertypes": [
             "AzureTransport"
           ]
@@ -25137,85 +25245,91 @@
         {
           "kind": "field",
           "name": "responses",
-          "line": 695,
+          "line": 743,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "calls",
-          "line": 696,
+          "line": 744,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "of",
-          "line": 700,
+          "line": 748,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "call",
-          "line": 712,
+          "line": 760,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "remote",
-          "line": 733,
+          "line": 781,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "base64_matches_the_rfc_vectors",
-          "line": 748,
+          "line": 796,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_foreign_remote_is_refused",
-          "line": 767,
+          "line": 815,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "edit_body_and_ready_patch_one_field_each",
-          "line": 782,
+          "line": 830,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_hostile_branch_name_is_percent_encoded_in_the_search",
-          "line": 801,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "view_by_branch_searches_the_full_source_ref",
-          "line": 807,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "azure_evidence_reduces_states_and_merged_heads",
           "line": 849,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "view_by_branch_searches_the_full_source_ref",
+          "line": 855,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "azure_evidence_reduces_states_and_merged_heads",
+          "line": 897,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "evidence_rows_search_the_full_source_ref_with_status_all",
-          "line": 890,
+          "line": 938,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prefetch_fetchers_address_the_pr_subresources",
-          "line": 922,
+          "line": 970,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_azure_statuses_reduce_to_the_ports_checks_vocabulary",
+          "line": 995,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_transport_failure_travels_verbatim",
-          "line": 944,
+          "line": 1034,
           "supertypes": []
         }
       ],
@@ -35301,7 +35415,7 @@
     {
       "path": "apps/rt/src/hooks/session/session_start_inject.rs",
       "language": "rust",
-      "loc": 1064,
+      "loc": 1097,
       "imports": [
         "crate::shared::branch_state::{awaiting_prune, LocalOnlyPr}",
         "mustard_core::ClaudePaths",
@@ -35322,7 +35436,7 @@
         {
           "kind": "struct",
           "name": "SessionStartInject",
-          "line": 91,
+          "line": 102,
           "supertypes": [
             "Check"
           ]
@@ -35330,271 +35444,259 @@
         {
           "kind": "function",
           "name": "harness_dir",
-          "line": 98,
+          "line": 109,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "sessions_dir",
-          "line": 105,
+          "line": 116,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "current_session_id",
-          "line": 112,
+          "line": 123,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_harness_init",
-          "line": 130,
+          "line": 141,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_old_sessions",
-          "line": 167,
+          "line": 178,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spawn_otel_collector",
-          "line": 206,
+          "line": 217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_pid",
-          "line": 255,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "exe_rebuilt_since_pid_file",
           "line": 266,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "exe_rebuilt_since_pid_file",
+          "line": 277,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "free_otel_port",
-          "line": 295,
+          "line": 306,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_spec_hygiene",
-          "line": 309,
+          "line": 320,
           "supertypes": []
         },
         {
           "kind": "method",
           "name": "evaluate",
-          "line": 324,
+          "line": 345,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "session_start_core",
+          "line": 358,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "version_drift_notice",
-          "line": 440,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "stale_plugin_notice",
-          "line": 467,
+          "line": 478,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stale_plugin_line",
-          "line": 480,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "plugin_behind_binary_notice",
-          "line": 507,
+          "line": 510,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "plugin_behind_binary_line",
-          "line": 526,
+          "line": 548,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_pending_notice",
-          "line": 567,
+          "line": 589,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ctx",
-          "line": 604,
+          "line": 626,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_input",
-          "line": 613,
+          "line": 635,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compact_rearms_the_prompt_family_without_folding_it_in",
-          "line": 636,
+          "line": 658,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "non_session_start_trigger_allows",
-          "line": 678,
+          "line": 700,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "drift_notice_absent_without_mustard_json",
-          "line": 695,
+          "line": 717,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "drift_notice_absent_when_stamp_matches",
-          "line": 701,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "drift_notice_fires_on_mismatch_and_names_upsert",
-          "line": 713,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "drift_notice_fires_on_missing_stamp",
           "line": 723,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "drift_notice_fires_on_mismatch_and_names_upsert",
+          "line": 735,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "drift_notice_fires_on_missing_stamp",
+          "line": 745,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "stale_plugin_is_announced_at_session_start",
-          "line": 737,
+          "line": 759,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stale_plugin_notice_stays_quiet_without_proof",
-          "line": 752,
+          "line": 774,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git",
-          "line": 762,
+          "line": 784,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_advisory_absent_without_mustard_json",
-          "line": 776,
+          "line": 798,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "prune_advisory_names_units_whose_branch_outlived_the_merge",
-          "line": 786,
+          "line": 808,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "harness_init_creates_dirs_and_emits_session_start",
-          "line": 830,
+          "line": 852,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "harness_init_creates_harness_dir_no_jsonl",
-          "line": 865,
+          "line": 887,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_active_spec",
-          "line": 882,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "hygiene_noop_completed_spec_stays_flat",
-          "line": 889,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "hygiene_noop_implementing_spec_stays_flat",
           "line": 904,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "hygiene_noop_completed_spec_stays_flat",
+          "line": 911,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hygiene_noop_implementing_spec_stays_flat",
+          "line": 926,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "hygiene_noop_blocked_spec_stays_flat",
-          "line": 918,
+          "line": 940,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "no_grain_model_returns_allow",
-          "line": 938,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "is_quiet",
-          "line": 961,
+          "line": 960,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_plugin_left_behind_by_a_package_install_is_named",
-          "line": 980,
+          "line": 1000,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "seed_session_injectable",
-          "line": 999,
+          "line": 1019,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_input_with_source",
-          "line": 1015,
+          "line": 1035,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "session_start_injects_declared_file_once",
-          "line": 1025,
+          "line": 1045,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "compact_resets_markers_and_reinjects",
-          "line": 1056,
+          "line": 1085,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "clear_resets_markers_and_reinjects",
-          "line": 1094,
+          "line": 1123,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "missing_declared_file_degrades_to_allow",
-          "line": 1133,
+          "line": 1162,
           "supertypes": []
         }
       ],
@@ -37099,10 +37201,10 @@
     {
       "path": "apps/rt/src/commands/review/pr_publish.rs",
       "language": "rust",
-      "loc": 424,
+      "loc": 430,
       "imports": [
         "crate::commands::review::pr_door::project_root",
-        "crate::shared::pr_provider::{PrOpened, PrView}",
+        "crate::shared::pr_provider::{PrChecks, PrOpened, PrView}",
         "crate::shared::pr_provider::{provider_for, PrProvider, PrToOpen}",
         "serde::Serialize",
         "std::cell::RefCell",
@@ -37295,39 +37397,45 @@
           "supertypes": []
         },
         {
+          "kind": "method",
+          "name": "checks",
+          "line": 337,
+          "supertypes": []
+        },
+        {
           "kind": "function",
           "name": "to_open",
-          "line": 338,
+          "line": 345,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_open_reports_through_the_port",
-          "line": 351,
+          "line": 358,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "failures_degrade_into_the_error_field_never_a_panic",
-          "line": 378,
+          "line": 385,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "edit_and_ready_echo_the_number_and_pass_the_body_through",
-          "line": 408,
+          "line": 415,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "fill_reads_title_and_body_from_the_commit_range",
-          "line": 424,
+          "line": 431,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_title_is_read_out_of_the_body_file",
-          "line": 454,
+          "line": 461,
           "supertypes": []
         }
       ]
@@ -37639,7 +37747,7 @@
     {
       "path": "apps/rt/src/commands/review/pr_door.rs",
       "language": "rust",
-      "loc": 1001,
+      "loc": 1230,
       "imports": [
         "crate::commands::agent::render::reference::files_section_paths",
         "crate::commands::agent::render::skills::build_skills_list",
@@ -37647,6 +37755,7 @@
         "crate::commands::review::dependency_precheck::detect_subproject",
         "crate::commands::review::review_result",
         "crate::commands::work_unit_open::checkout_holding_branch",
+        "crate::shared::pr_provider::{provider_for, PrChecks}",
         "crate::shared::work_kind::BaseFlow",
         "serde::Serialize",
         "serde_json::Value",
@@ -37663,445 +37772,469 @@
         {
           "kind": "function",
           "name": "gh_out",
-          "line": 108,
+          "line": 109,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gh_json",
-          "line": 131,
+          "line": 132,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "project_root",
-          "line": 141,
+          "line": 142,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bases_and_branch",
-          "line": 156,
+          "line": 157,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_of_branch",
-          "line": 169,
+          "line": 170,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_rel_path",
-          "line": 174,
+          "line": 175,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_text_of_unit",
-          "line": 191,
+          "line": 192,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrFacts",
-          "line": 208,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "number",
           "line": 209,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "number",
+          "line": 210,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "head",
-          "line": 211,
+          "line": 212,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "resolve_pr",
-          "line": 216,
+          "line": 217,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_subproject",
-          "line": 244,
+          "line": 245,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrEntry",
-          "line": 257,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "number",
           "line": 258,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "title",
+          "name": "number",
           "line": 259,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "title",
+          "line": 260,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "mergeable",
-          "line": 263,
+          "line": 264,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "draft",
-          "line": 267,
+          "line": 268,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "head",
-          "line": 269,
+          "line": 270,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrListReport",
-          "line": 274,
+          "line": 275,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "ok",
-          "line": 278,
+          "line": 279,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "reason",
-          "line": 280,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "branch",
           "line": 281,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "branch",
+          "line": 282,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "bases",
-          "line": 289,
+          "line": 290,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "prs",
-          "line": 291,
+          "line": 292,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "gh_error",
-          "line": 293,
+          "line": 294,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "hint",
-          "line": 295,
+          "line": 296,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_entry",
-          "line": 300,
+          "line": 301,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "list_at",
-          "line": 330,
+          "line": 331,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrReviewReport",
-          "line": 406,
+          "line": 407,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "ok",
-          "line": 409,
+          "line": 410,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "reason",
-          "line": 411,
-          "supertypes": []
-        },
-        {
-          "kind": "field",
-          "name": "pr",
           "line": 412,
           "supertypes": []
         },
         {
           "kind": "field",
-          "name": "head",
+          "name": "pr",
           "line": 413,
           "supertypes": []
         },
         {
           "kind": "field",
+          "name": "head",
+          "line": 414,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
           "name": "spec",
-          "line": 416,
+          "line": 417,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec_path",
-          "line": 421,
+          "line": 422,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "subproject",
-          "line": 423,
+          "line": 424,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "patterns",
-          "line": 427,
+          "line": 428,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "recorded",
-          "line": 429,
+          "line": 430,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "verdict",
-          "line": 431,
+          "line": 432,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "review_brief",
-          "line": 442,
+          "line": 443,
           "supertypes": []
         },
         {
           "kind": "enum",
           "name": "MergeConsent",
-          "line": 511,
+          "line": 512,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "Proceed",
-          "line": 513,
+          "line": 514,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "Ask",
-          "line": 516,
+          "line": 517,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "reason",
-          "line": 516,
+          "line": 517,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "merge_consent",
+          "name": "checks_reason",
           "line": 528,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "merge_consent",
+          "line": 559,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "recorded_verdict",
-          "line": 546,
+          "line": 587,
           "supertypes": []
         },
         {
           "kind": "struct",
           "name": "PrMergeReport",
-          "line": 583,
+          "line": 624,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "ok",
-          "line": 588,
+          "line": 629,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "action",
-          "line": 591,
+          "line": 632,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "reason",
-          "line": 593,
+          "line": 634,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "pr",
-          "line": 594,
+          "line": 635,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "head",
-          "line": 596,
+          "line": 637,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "spec",
-          "line": 598,
+          "line": 639,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "verdict",
-          "line": 600,
+          "line": 641,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "checks",
+          "line": 646,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "warning",
-          "line": 602,
+          "line": 648,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "settle",
-          "line": 606,
+          "line": 652,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "hint",
-          "line": 608,
+          "line": 654,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "merge_core",
-          "line": 616,
+          "line": 667,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "gh_merge",
-          "line": 720,
+          "line": 829,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "emit",
-          "line": 729,
+          "line": 838,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_list",
-          "line": 734,
+          "line": 843,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_review",
-          "line": 739,
+          "line": 848,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "run_merge",
-          "line": 757,
+          "line": 866,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git",
-          "line": 776,
+          "line": 889,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "repo",
-          "line": 784,
+          "line": 897,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_list_refuses_off_an_integration_base_and_names_it",
-          "line": 801,
+          "line": 914,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_list_rows_keep_the_provider_word_and_sort_by_number",
-          "line": 844,
+          "line": 957,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_without_verdict_warns_and_asks_instead_of_merging",
-          "line": 879,
+          "line": 992,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_base_to_base_promotion_is_merged_but_never_pruned",
-          "line": 932,
+          "line": 1049,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_consent_asks_for_anything_but_approved",
-          "line": 964,
+          "line": 1083,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pr_merge_does_not_merge_while_provider_checks_run",
+          "line": 1131,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "pr_merge_refuses_when_provider_checks_failed",
+          "line": 1170,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_merge_reads_the_verdict_review_result_recorded",
-          "line": 982,
+          "line": 1221,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "door_flow",
-          "line": 999,
+          "line": 1238,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spec_of_branch_reads_the_unit_out_of_the_head_ref",
-          "line": 1009,
+          "line": 1248,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "pr_review_brief_names_the_spec_and_records_the_verdict",
-          "line": 1024,
+          "line": 1263,
           "supertypes": []
         }
       ],
@@ -98955,7 +99088,7 @@
   ],
   "graph": {
     "nodes": 675,
-    "edges": 534,
+    "edges": 535,
     "cyclic": true,
     "top_fan_in": [
       {
@@ -99083,6 +99216,10 @@
         "degree": 4
       },
       {
+        "module": "apps/rt/src/shared/pr_provider.rs",
+        "degree": 4
+      },
+      {
         "module": "packages/core/src/domain/economy/model.rs",
         "degree": 4
       },
@@ -99136,10 +99273,6 @@
       },
       {
         "module": "apps/rt/src/hooks/task/subagent_inject.rs",
-        "degree": 3
-      },
-      {
-        "module": "apps/rt/src/shared/pr_provider.rs",
         "degree": 3
       },
       {
@@ -99221,15 +99354,15 @@
         "degree": 41
       },
       {
+        "module": "apps/rt/src/commands/review/pr_door.rs",
+        "degree": 8
+      },
+      {
         "module": "apps/rt/src/commands/spec/spec_draft.rs",
         "degree": 8
       },
       {
         "module": "apps/rt/src/commands/pipeline/plan_materialize.rs",
-        "degree": 7
-      },
-      {
-        "module": "apps/rt/src/commands/review/pr_door.rs",
         "degree": 7
       },
       {
@@ -99544,7 +99677,7 @@
       },
       {
         "module": "apps/rt/src/commands/review/pr_door.rs",
-        "fan_out": 7,
+        "fan_out": 8,
         "breadth": 4
       },
       {
@@ -100477,6 +100610,25 @@
       ]
     },
     {
+      "affix": "Pr",
+      "kind": "suffix",
+      "count": 9,
+      "common_dir": "apps/rt/src/shared",
+      "dirs": [
+        "apps/rt/src/shared"
+      ],
+      "decl_kind": "struct",
+      "implements": null,
+      "collaborators": [
+        "std::process::Command",
+        "crate::shared::branch_state::{PrStatus, PR_UNREADABLE, PR_UNSUPPORTED}",
+        "crate::shared::pr_azure::{\n        do_open, do_view_number, pat_from,\n        test_support::{remote, FakeTransport},\n        AzureRemote, PAT_ENV,\n    }",
+        "serde_json::Value",
+        "serde_json::json",
+        "std::path::{Path, PathBuf}"
+      ]
+    },
+    {
       "affix": "Status",
       "kind": "suffix",
       "count": 9,
@@ -100528,25 +100680,6 @@
         "crate::platform::error::{Error, Result}",
         "std::path::Path",
         "std::path::PathBuf"
-      ]
-    },
-    {
-      "affix": "Pr",
-      "kind": "suffix",
-      "count": 8,
-      "common_dir": "apps/rt/src/shared",
-      "dirs": [
-        "apps/rt/src/shared"
-      ],
-      "decl_kind": "struct",
-      "implements": null,
-      "collaborators": [
-        "std::process::Command",
-        "crate::shared::branch_state::{PrStatus, PR_UNREADABLE, PR_UNSUPPORTED}",
-        "crate::shared::pr_azure::{\n        do_open, do_view_number, pat_from,\n        test_support::{remote, FakeTransport},\n        AzureRemote, PAT_ENV,\n    }",
-        "crate::shared::work_kind::BaseFlow",
-        "serde_json::Value",
-        "serde_json::json"
       ]
     },
     {
@@ -101161,7 +101294,7 @@
       "collaborators": [
         "crate::shared::branch_state::PrStatus",
         "crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE}",
-        "crate::shared::pr_provider::{\n    short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,\n}",
+        "crate::shared::pr_provider::{\n    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrToOpen,\n    PrView, HEADS, PROVIDER_AZURE,\n}",
         "serde_json::Value",
         "serde_json::{json, Value}",
         "std::cell::RefCell"
@@ -101478,7 +101611,7 @@
       "collaborators": [
         "crate::shared::branch_state::PrStatus",
         "crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE}",
-        "crate::shared::pr_provider::{\n    short_ref, status_from_azure, PrOpened, PrProvider, PrToOpen, PrView, HEADS, PROVIDER_AZURE,\n}",
+        "crate::shared::pr_provider::{\n    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrToOpen,\n    PrView, HEADS, PROVIDER_AZURE,\n}",
         "serde_json::Value",
         "serde_json::{json, Value}",
         "std::cell::RefCell"
@@ -102309,18 +102442,21 @@
       "optional_roles": [
         "D",
         "Info",
+        "Pr",
         "Result"
       ],
-      "recurrence": 11,
+      "recurrence": 13,
       "entities": [
         "Check",
         "Command",
         "Error",
+        "Evidence",
         "Hub",
         "Kept",
         "Lang",
         "Layer",
         "Ledger",
+        "Lookup",
         "Proj",
         "Subproject",
         "Verdict"
@@ -102332,32 +102468,32 @@
         "Adicione o **Entry** para `<Name>`.",
         "Adicione o **D** para `<Name>` em `apps/scan/src/` (ex.: `digest.rs`, modelado em `apps/scan/src/digest.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Info** para `<Name>` em `apps/scan/src/` (ex.: `model.rs`, modelado em `apps/scan/src/model.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Pr** para `<Name>` em `apps/rt/src/shared/` (ex.: `pr_provider.rs`, modelado em `apps/rt/src/shared/pr_provider.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Result** para `<Name>` em `apps/rt/src/commands/maint/` (ex.: `artifact_update.rs`, modelado em `apps/rt/src/commands/maint/artifact_update.rs`) *(opcional — adicione quando necessário)*."
       ],
       "exemplars": [
         {
           "level": "simples",
-          "entity": "Check",
+          "entity": "Error",
           "roles_present": [
             "tipo base",
-            "Result"
+            "Entry"
           ],
           "files": [
-            "apps/rt/src/commands/maint/artifact_update.rs",
-            "packages/core/src/domain/model/contract.rs"
+            "apps/rt/src/commands/maint/worktree_gc.rs",
+            "packages/core/src/platform/error.rs"
           ]
         },
         {
           "level": "média",
-          "entity": "Lang",
+          "entity": "Evidence",
           "roles_present": [
             "tipo base",
-            "D"
+            "Pr"
           ],
           "files": [
-            "apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx",
-            "apps/dashboard/src/lib/i18n.ts",
-            "apps/scan/src/digest.rs"
+            "apps/rt/src/hooks/session/spec_hygiene_observer.rs",
+            "apps/rt/src/shared/branch_state.rs"
           ]
         },
         {
@@ -102396,7 +102532,7 @@
         }
       ],
       "exemplar": "Layer",
-      "summary": "Vertical slice recurring across 11 entities (Check, Command, Error, Hub, Kept, Lang, +5 more). Core roles: tipo base, Entry. Optional roles: D, Info, Result."
+      "summary": "Vertical slice recurring across 13 entities (Check, Command, Error, Evidence, Hub, Kept, +7 more). Core roles: tipo base, Entry. Optional roles: D, Info, Pr, Result."
     },
     {
       "name": "Item+Error+Report slice",
@@ -102966,67 +103102,6 @@
       ],
       "exemplar": "Verify",
       "summary": "Vertical slice recurring across 2 entities (Build, Verify). Core roles: Outcome, Result."
-    },
-    {
-      "name": "Pr+tipo base slice",
-      "roles": [
-        "Pr",
-        "(core)"
-      ],
-      "optional_roles": [],
-      "recurrence": 2,
-      "entities": [
-        "Evidence",
-        "Lookup"
-      ],
-      "confidence": 0.72,
-      "is_slice": true,
-      "steps": [
-        "Adicione o **Pr** para `<Name>` em `apps/rt/src/shared/` (ex.: `branch_state.rs`, modelado em `apps/rt/src/shared/branch_state.rs`).",
-        "Adicione o **tipo base** para `<Name>` em `apps/rt/src/hooks/session/` (ex.: `spec_hygiene_observer.rs`, modelado em `apps/rt/src/hooks/session/spec_hygiene_observer.rs`)."
-      ],
-      "exemplars": [
-        {
-          "level": "simples",
-          "entity": "Lookup",
-          "roles_present": [
-            "tipo base",
-            "Pr"
-          ],
-          "files": [
-            "apps/rt/src/shared/branch_state.rs",
-            "apps/scan/tests/fixtures/graph_rust_external_std/src/collections.rs"
-          ]
-        },
-        {
-          "level": "complexa",
-          "entity": "Evidence",
-          "roles_present": [
-            "tipo base",
-            "Pr"
-          ],
-          "files": [
-            "apps/rt/src/hooks/session/spec_hygiene_observer.rs",
-            "apps/rt/src/shared/branch_state.rs"
-          ]
-        }
-      ],
-      "examples": [
-        {
-          "path": "apps/rt/src/shared/branch_state.rs",
-          "start_line": 481,
-          "snippet": "pub(crate) struct Pr<Name> {\n    /// The strongest status measured.\n    pub(crate) status: PrStatus,\n    /// The head commit of every MERGED pull request of this branch.\n    ///\n    /// A SET, not the newest one: a branch can carry several merged pull\n    /// requests, and picking one would let ROW ORDER decide which merge counts —\n    /// the same trap [`ProviderPrCli::reduce`] already refuses for the status.\n    pub(crate) merged_heads: BTreeSet<String>,",
-          "role": "Pr"
-        },
-        {
-          "path": "apps/rt/src/hooks/session/spec_hygiene_observer.rs",
-          "start_line": 130,
-          "snippet": "struct <Name> {\n    /// Fraction of AC marked `[x]` (`1.0` when all done, `0.0` when none).\n    ac_pct: f64,\n    /// `true` when every AC line is `[x]`.\n    ac_complete: bool,\n    /// `true` when the spec has at least one AC line.\n    has_ac: bool,\n    /// ISO timestamp of the last event of any kind for the spec.\n    last_event_at: Option<String>,",
-          "role": "tipo base"
-        }
-      ],
-      "exemplar": "Evidence",
-      "summary": "Vertical slice recurring across 2 entities (Evidence, Lookup). Core roles: Pr, tipo base."
     },
     {
       "name": "tipo base+Error slice",

@@ -171,3 +171,11 @@ plugin/bin/mustard
 plugin/bin/*-macos
 plugin/bin/.version
 plugin/bin/.boot-tmp/
+
+# Saída de build .NET dentro das fixtures do scan. Foi commitada por engano de
+# uma máquina Windows: os arquivos embutem o SHA do commit corrente e um
+# caminho absoluto (`C:\Atiz\...`), então nunca ficam limpos entre commits nem
+# entre máquinas. Nada as lê — `PRUNE_DIRS` (packages/core/src/io/fs/mod.rs)
+# já faz o scanner pular `obj`/`bin`.
+apps/scan/tests/fixtures/**/obj/
+apps/scan/tests/fixtures/**/bin/

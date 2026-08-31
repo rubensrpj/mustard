@@ -119,10 +119,24 @@ impl MetricLine {
 
 /// The `.claude/.metrics/<event>.jsonl` shard path for an event under `cwd`.
 ///
-/// Mirrors the JS `path.join(cwd, '.claude', '.metrics', event + '.jsonl')`.
+/// `cwd` is a STARTING POINT, not the root. The shard belongs to the workspace
+/// anchor — the ancestor carrying both `mustard.json` and `.claude/` — so a
+/// caller invoked from inside a subproject that has a `.claude/` of its own
+/// still writes to the ONE `.metrics` the dashboard and `metrics-report` read.
+///
+/// Resolving here rather than at each call site is what makes that hold:
+/// `emit_metric` is reached from hooks, commands and observers alike, and the
+/// blind `cwd.join(".claude")` this replaces sharded the telemetry per
+/// subproject instead — `doctor --check workspace-leaks` caught it on this
+/// repository, writing `apps/rt/.claude/.metrics/qa.jsonl`.
+///
+/// Fail-open, like the rest of this module: with no anchor in sight — a
+/// `tempdir` in a unit test, a checkout without `mustard.json` — the original
+/// `cwd`-relative join stands, so a metric is never lost to a resolution error.
 #[must_use]
 pub(crate) fn metric_file_path(cwd: &Path, event: &str) -> std::path::PathBuf {
-    cwd.join(".claude")
+    let root = crate::io::workspace::workspace_root_or_self(cwd);
+    root.join(".claude")
         .join(".metrics")
         .join(format!("{event}.jsonl"))
 }
@@ -218,6 +232,44 @@ mod tests {
             .map(str::to_string)
             .collect();
         assert_eq!(lines.len(), 2);
+    }
+
+    /// The shard belongs to the workspace ANCHOR, not to whatever directory
+    /// the caller happened to be standing in. A subproject with a `.claude/`
+    /// of its own is the case that regressed: `qa-run` invoked from
+    /// `apps/rt/` wrote `apps/rt/.claude/.metrics/qa.jsonl`, which nothing
+    /// downstream reads (`doctor --check workspace-leaks` reported it).
+    #[test]
+    fn metric_file_path_resolves_the_workspace_anchor_not_the_cwd() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // The anchor: BOTH `mustard.json` and `.claude/`.
+        crate::io::fs::create_dir_all(root.join(".claude")).unwrap();
+        crate::io::fs::write_atomic(root.join("mustard.json"), b"{}").unwrap();
+        // A subproject carrying a `.claude/` of its own but no `mustard.json`.
+        let sub = root.join("apps").join("rt");
+        crate::io::fs::create_dir_all(sub.join(".claude")).unwrap();
+
+        let shard = metric_file_path(&sub, "qa");
+
+        assert_eq!(shard, root.join(".claude").join(".metrics").join("qa.jsonl"));
+        assert!(
+            !shard.starts_with(&sub),
+            "the shard leaked into the subproject: {}",
+            shard.display()
+        );
+    }
+
+    /// Fail-open: with no anchor above it, the `cwd`-relative join stands, so
+    /// a metric is never dropped because the workspace could not be resolved.
+    #[test]
+    fn metric_file_path_falls_back_to_cwd_when_no_anchor_exists() {
+        let dir = tempdir().unwrap();
+        let shard = metric_file_path(dir.path(), "ev");
+        assert_eq!(
+            shard,
+            dir.path().join(".claude").join(".metrics").join("ev.jsonl")
+        );
     }
 
     #[test]

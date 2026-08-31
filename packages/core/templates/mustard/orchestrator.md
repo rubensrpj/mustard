@@ -39,6 +39,8 @@ Delegate: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new
 
 **Four doors, and only four: `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`.** Everything else is a flow YOU dispatch. Review, QA and CLOSE are steps of `/mustard:pr merge`. The census refresh is a step of the base gate. Harness off/on and install diagnosis are flags of `/mustard:upsert`. Cancelling an abandoned unit is `/mustard:git delete`. Never tell the user to run a command outside those four.
 
+**A door does what it NAMES and stops there.** `open` opens — it does not validate, and a measurement it takes for the body is REPORTED, never investigated: whether a red suite blocks anything is `merge`'s gate, not its. When the environment refuses — a pre-push hook, a protected branch, an absent provider CLI — quote the refusal, name each choice in one line, and stop. **Never propose carrying an integration base into the operator's unit to make something else go green:** that is work they did not ask for, inside their branch, for a problem that is not theirs; a surgical fix, a skip flag or waiting are all smaller, and the choice is theirs. Measured in the field, 2026-08-31: a bare `/mustard:pr open` produced a full test run, a 328-commit drift analysis, a dry-run merge and a merge proposal — and no pull request. Widening a narrow request into an investigation is the most expensive way to not do it.
+
 ## Locating code
 
 The terrain census is injected at session start, so don't grep to orient. Known literal token: `grep`/`glob`. Concept with an unknown name: `mustard-rt run feature --intent "..."`, then READ the pointed files.
