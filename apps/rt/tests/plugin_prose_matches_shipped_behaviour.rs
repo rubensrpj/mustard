@@ -1284,8 +1284,19 @@ fn bugfix_prose_teaches_the_material_channel() {
     // makes the auto-branch hook cut the branch on this very write and it lands.
     // Two flows describing one mechanism differently is how a reader learns to
     // trust neither (found in review, 2026-08-11).
-    let order = line_with(&bugfix, "Order, said out loud")
+    // The anchor is the CLAIM, not a slogan. It used to be the sentence
+    // "Order, said out loud: …", which /feature §2.2 carried word for word —
+    // one wording maintained in two files is how the two drift apart. Both
+    // flows now point at `dispatch.md`, which states the order once, and each
+    // states the claim in its own words; what this ratchet still holds is that
+    // the paragraph names BOTH outcomes of the write.
+    let order = line_with(&bugfix, "This write happens AFTER the base gate")
         .expect("the bugfix prose no longer states when the unit's branch is cut");
+    assert!(
+        order.contains("dispatch.md"),
+        "the ordering claim must point at the file that states the order once, \
+         or the rule gets restated here and drifts: {order}",
+    );
     assert!(
         order.contains("pending marker"),
         "the ordering warning omits the case that actually happens — the marker \
@@ -1796,11 +1807,23 @@ fn the_git_reference_teaches_the_measured_model() {
     );
 
     // --- 4. Protection is not "being on a base" -----------------------------
-    let protection = line_with(&flow, "Cannot operate directly on protected branch")
+    let protection = line_with(&flow, "one of the **protected** branches")
         .expect("the reference no longer states the write-op refusal");
     assert!(
         protection.contains("origin/HEAD") && protection.contains("git.protected"),
         "the refusal is still taught as 'you are on an integration base': {protection}",
+    );
+    // The refusal WORDING is not a program literal. The reference used to quote
+    // `Cannot operate directly on protected branch '<branch>'. Create a work
+    // branch first.` in backticks, and that string exists nowhere in the
+    // binary — it lived only in the .md and in the anchor this assertion read
+    // back OUT of the same .md, so no change to the code could ever have failed
+    // it. Guard the removal instead: the rule is checked above, the wording
+    // belongs to whichever gate composes the refusal.
+    assert!(
+        !flow.contains("Cannot operate directly on protected branch"),
+        "the invented refusal literal is back — no such string exists in the \
+         binary, and citing it here checks the reference against itself",
     );
 
     // --- 5. The code really works that way ----------------------------------
@@ -2148,6 +2171,47 @@ const MANIFEST_PATH: &str = "plugin/.claude-plugin/plugin.json";
 /// pinned to the old place (found in review).
 fn manifest_in_cmd_backslashes() -> String {
     MANIFEST_PATH.replace('/', "\\")
+}
+
+/// `defaultEnabled` and `displayName` stay in the manifest, and this records WHY.
+///
+/// The manifest's own `$schema` points at
+/// `https://json.schemastore.org/claude-code-plugin-manifest.json`, and that
+/// schema defines **neither** key at the root (`displayName` appears there only
+/// inside `channels`). So an editor validating this file against the schema it
+/// declares flags both. Checked against the source outside this repository on
+/// 2026-09-01: the official Claude Code plugin reference
+/// (`code.claude.com/docs/en/plugins-reference`) documents BOTH in its metadata
+/// table — `displayName` as the human-readable name shown in the `/plugin`
+/// picker, `defaultEnabled` as "whether the plugin starts in an enabled state
+/// when the user has not set one", defaulting to `true`. The published schema is
+/// therefore behind the product; the keys are real.
+///
+/// That divergence is worth pinning rather than "cleaning up", because the
+/// cleanup is not cosmetic: dropping `"defaultEnabled": false` does not remove a
+/// field, it flips the documented default, and Mustard would auto-enable itself
+/// on every marketplace installation that has never expressed a preference. A
+/// schema that lags the product is not a reason to change what the product does.
+#[test]
+fn the_manifest_keeps_the_two_keys_its_schema_does_not_define() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read(MANIFEST_PATH)).expect("plugin.json is not valid JSON");
+    assert_eq!(
+        manifest.get("defaultEnabled").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "`defaultEnabled: false` is gone — the plugin now auto-enables on every \
+         marketplace install that never chose. It is absent from the declared \
+         $schema but documented by the product; see this test's doc comment",
+    );
+    assert!(
+        manifest
+            .get("displayName")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.is_empty()),
+        "`displayName` is gone — the /plugin picker falls back to the bare \
+         `name`. Also absent from the declared $schema, also documented by the \
+         product",
+    );
 }
 
 /// Every prose pointer to the batch-file guard names a test that EXISTS.

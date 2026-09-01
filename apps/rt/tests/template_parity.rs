@@ -153,12 +153,6 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          `/status` door, dropped by the four-door surface prune - an \
          observability escape hatch with no scripted caller",
     ),
-    (
-        "worktree-gc",
-        "SessionStart probe runs it in-process (hooks/session/\
-         session_start_inject.rs -> worktree_gc::session_start_probe) and the \
-         command is the probe's remediation",
-    ),
 ];
 
 /// Caller spellings that precede a `run <name>` instruction in product files.

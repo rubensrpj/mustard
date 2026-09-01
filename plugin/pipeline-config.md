@@ -89,7 +89,21 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 | `bash_command_gate` (native-redirect) | Bash | always-on | `grep`/`ls`/`cat`/`head`/`tail`/`find` → suggests Grep/Glob/Read |
 | `scope_guard` | Write/Edit/Task | fail-open | production change outside an approved spec |
 | `tool_use_counter` | Subagent* | hard | Explore at 15 tool uses (warn 12) |
-| `skills_advisory` | Task | advisory | skills >10 |
+| `main_context_counter` | any tool | `MUSTARD_MAIN_BUDGET_MODE` (warn) | un-delegated main-context tool calls past the L0 budget |
+| `context_budget_gate` | Task/Agent | `CONTEXT_BUDGET_MODE` (strict) | a Task prompt over its role's char budget; advisory (never a refusal) above 40% of the model window |
+| `size_gate` | Write/Edit | `MUSTARD_SPEC_SIZE_MODE` (`strict` in code; the seeded `settings.json` writes `warn`) | a spec over 500 lines; a skill `SKILL.md` whose YAML frontmatter fails validation |
+| `boundary_gate` | Write/Edit | `MUSTARD_BOUNDARY_MODE` (warn) | an edit outside the active spec's declared `## Files` |
+| `scan_gate` | Skill | **none — always strict** | `/feature`, `/bugfix` before `grain.model.json` exists (run `mustard-rt run scan`) |
+| `post_edit` (guard-verify) | PostToolUse Write/Edit | `MUSTARD_GUARD_GATE_MODE` (warn) | an edit introducing something the subproject's Guards forbid — the only half of `post_edit` that returns a verdict; auto-format, checklist auto-mark and the `pipeline-phase` emit are side effects |
+| `session_knowledge_observer` | SessionEnd + PostToolUse Task/Agent | — | **nothing** — an Observer: decision extraction + friction telemetry, no verdict. Listed because the runtime registry names it, so a reader is not left thinking the table hid a gate |
+
+**This table is checked against a registry, not against memory.** `hook_mode_env` in `apps/rt/src/commands/pipeline/status.rs` is the name→env-var map `run status --harness` renders; `apps/rt/src/registry.rs` is where each module's trigger + matcher is declared. Three things a reader has to be told, because they are the exceptions:
+
+- **`context_budget_gate` is the only knob with no `MUSTARD_` prefix** — it reads a bare `CONTEXT_BUDGET_MODE`. Grepping the settings for `MUSTARD_` will not find it.
+- **`scan_gate` has no knob at all.** It is always strict; there is nothing to set to `warn`, and the way past it is to run the scan.
+- **Two names in that registry are read by no hook**: `MUSTARD_POST_EDIT_MODE` and `MUSTARD_KNOWLEDGE_MODE` appear only in `status.rs`. `post_edit`'s refusing half reads `MUSTARD_GUARD_GATE_MODE`, which is what the row above names; `session_knowledge_observer` refuses nothing, so it has no mode to set. Setting either dead name changes nothing.
+
+There is **no `skills_advisory` gate.** The row that used to sit here (`Task` · advisory · "skills >10") named a module with zero occurrences anywhere in the source — `skill_usage_observer` is the only thing listening on `PostToolUse(Skill)`, and it counts, it does not advise on a threshold.
 
 `approve-spec` weighs its three preconditions in ONE decision and reports every unmet one together, each naming the command that mints it. `MUSTARD_APPROVAL_MODE` governs the two MARKER preconditions and nothing else: `off` mutes both, `warn` nudges. **The proof precondition is outside that fork** — a gate blocks with no knob, the same way the AC-coverage gate in `plan-materialize` does — and it is fail-closed: an absent, unreadable or unparsable ledger refuses. A spec that declares no acceptance criteria is not gated by it (an absence of obligation, not a degradation).
 

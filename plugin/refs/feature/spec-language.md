@@ -33,8 +33,10 @@
 | `## Decisions` | `## Decisões não-óbvias` |
 | `## Definitions` | `## Definições` |
 | `## Evidence` | `## Evidências` |
+| `## Reality Obligations` | `## Obrigações de Realidade` |
 | `## Symptom` | `## Sintoma` |
 
+- `## Reality Obligations` is not decorative and not optional to list here: it has THREE consumers. The wave-scaffold renderer writes it into each wave's `spec.md`, the dispatch prompt reads it back to hand the agent its duties, and `wave-done` reads it again to require an accounting per obligation id. All three resolve the heading through the parser below, so a spec written in PT whose heading is missing from this table is a wave whose obligations nobody collects.
 - `## PRD` and `## Plan`/`## Plano` are narrative DIVIDERS (PRD = what/why; Plano = how) grouping subsections in one file — intentionally absent from the parser map. The authoritative matcher is `apps/rt/src/commands/spec/spec_sections.rs`: when adding or renaming a PARSED heading, update the table AND the module.
 
 ## Contexto rules

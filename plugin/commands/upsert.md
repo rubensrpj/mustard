@@ -1,7 +1,6 @@
 ---
 description: Use when the user runs /upsert, asks to install, set up, or update Mustard in the current project, to disable or re-enable the harness hooks, or to diagnose the installation — and when any /mustard:* command is blocked because Mustard is not installed (no mustard.json at the project root). The installation door — install, update, off, on, doctor.
 argument-hint: [--off | --on | --doctor] [--scope this|monorepo|all] [--confirm]
-source: manual
 ---
 <!-- mustard:generated -->
 # /upsert — The Installation Door
@@ -17,7 +16,7 @@ One subject, one door: **the state of Mustard's installation in this project**. 
 | Flag | What it does |
 |------|--------------|
 | *(none)* | Install or update. Seeds `.claude/settings.json`, the injectable instruction files under `.claude/mustard/`, `.claude/.gitignore`, and the project-root `mustard.json`. Idempotent and merge-only — a file you already have is preserved; only what is missing is created. The one exception is `.claude/mustard/orchestrator.md` and `.claude/mustard/dispatch.md`: those are the harness's own rules, not your configuration, so every run lays the shipped text down again and reports the file as updated. A legacy Mustard-planted `.claude/CLAUDE.md` (and the old import/breadcrumb lines in the root `CLAUDE.md`) is migrated away in the same pass. Until this has run, every other `/mustard:*` command is disabled. |
-| `--off` | Harness kill-switch. Sets `"disableAllHooks": true` in `.claude/settings.json` and wipes volatile state (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). The rest of the file — `permissions.deny`, `permissions.allow`, `statusLine`, `env` — is left untouched, so silencing the harness never removes the safety rules. Plugin-provided hooks are covered too. Reversible with `--on`. |
+| `--off` | Harness kill-switch. Sets `"disableAllHooks": true` in `.claude/settings.json` and wipes volatile state — `.agent-state/` and `.cluster-cache.json`, and nothing else. **Worktrees are NOT touched.** The units under `.claude/worktrees/` hold uncommitted work, and silencing the harness is not a reason to destroy it; `mustard-rt run worktree-gc` is the only door that reaps them, and it is dry-run until `--apply`. The rest of the settings file — `permissions.deny`, `permissions.allow`, `statusLine`, `env` — is left untouched, so silencing the harness never removes the safety rules. Plugin-provided hooks are covered too. Reversible with `--on`. |
 | `--on` | Reverses `--off`. For each `.claude/` in scope, removes the `"disableAllHooks"` key from the live `settings.json`. With no live file the legacy path still applies: the most recent `settings.json.disabled*` snapshot is renamed back, so a project unhooked by an older build still recovers. Volatile state directories are **not** recreated — the runtime regenerates them on the next run. |
 | `--doctor` | Read-only installation health report. Never writes. |
 
