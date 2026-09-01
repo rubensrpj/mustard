@@ -158,7 +158,9 @@ pub enum MaintCmd {
     /// Install or update Mustard in the current project (the plugin's
     /// bootstrap door).
     ///
-    /// Idempotent. `.claude/settings.json`, `.claude/.gitignore` and the
+    /// Idempotent. The settings file — `.claude/settings.local.json`, since
+    /// the install is always private-mode and never touches the shared
+    /// `.claude/settings.json` — plus `.claude/.gitignore` and the
     /// project-root `mustard.json` are yours and are merged, never clobbered:
     /// an existing file is preserved, only what is missing is created or
     /// backfilled. The two injectable instruction files under

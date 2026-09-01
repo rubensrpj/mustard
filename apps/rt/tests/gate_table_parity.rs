@@ -15,6 +15,14 @@
 //!   the knob for the gate, so the name is not merely absent, it is wrong, and
 //!   setting it looks accepted. Every such name must be declared in
 //!   [`DEAD_REGISTRY_ENV`] with the name the hook really reads.
+//! - **A dead name kept alive by being MENTIONED.** All three checks above pivot
+//!   on one question — does anything read this name — so the measurement of
+//!   "read" decides what they can see. Counting every quoted occurrence would
+//!   let a doc-comment example, an advisory string or a test assertion vouch for
+//!   a name nothing consults, and a dead name that looks live is invisible to
+//!   every test here. So a read is a literal handed to an [`ENV_READERS`] call,
+//!   comments excluded, and `a_mode_env_name_is_live_only_where_something_reads_it`
+//!   holds the other end: a mention is fine, of a name something really reads.
 //!
 //! What this deliberately does NOT do is demand LITERAL parity with the
 //! `hook_mode_env` map. That map names two vars **no hook reads**
@@ -48,6 +56,20 @@ const REGISTRY_SRC: &str = "apps/rt/src/commands/pipeline/status.rs";
 
 /// The prose that carries the gate table.
 const GATE_TABLE_DOC: &str = "plugin/pipeline-config.md";
+
+/// The callees that READ an environment variable. A `"…_MODE"` literal handed
+/// to one of these is the runtime consulting the knob; the same name anywhere
+/// else is a MENTION, and a mention is not evidence that anything reads it.
+///
+/// `var` and `var_os` are `std::env`'s readers — the identifier scan stops at
+/// the `::`, so `std::env::var(…)` reads as `var`. `resolve_mode`
+/// (`apps/rt/src/shared/gate_mode.rs`) is the crate's own cascade and hands its
+/// first argument straight to `std::env::var`.
+///
+/// A new reader helper belongs here the day it lands: until it does, every
+/// knob it reads looks dead, and the sibling tests say so out loud rather than
+/// quietly excusing it.
+const ENV_READERS: &[&str] = &["resolve_mode", "var", "var_os"];
 
 /// Registry entries whose env var NO hook reads. Each row names what the hook
 /// really reads instead, so the exception carries its own correction.
@@ -257,11 +279,75 @@ fn table_modules(section: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Every `"…_MODE"` string literal in a source file — the shape an env-var name
-/// takes at the point something reads it.
-fn mode_env_literals(text: &str) -> BTreeSet<String> {
+/// Byte-indexed "this position sits in a comment" mask, computed line by line:
+/// a line whose first non-space is `//` is a comment line (`//`, `///` and
+/// `//!` alike), and a `/*` opens a block that runs to the `*/` closing it.
+///
+/// Line granularity is deliberate. A full Rust lexer would have to survive the
+/// `b'"'` char literals and `r#"…"#` raw strings this crate really contains,
+/// and a lexer that desynced would silently DROP a live read — the one failure
+/// a ratchet must never have. The worst this mask can misread is a trailing
+/// `// …` comment on a code line, and [`ENV_READERS`] rejects that case on its
+/// own, so the two together leave no gap.
+fn comment_mask(text: &str) -> Vec<bool> {
+    let mut mask = vec![false; text.len()];
+    let mut in_block = false;
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let end = offset + line.len();
+        if in_block {
+            mask[offset..end].fill(true);
+            if line.contains("*/") {
+                in_block = false;
+            }
+        } else if line.trim_start().starts_with("//") {
+            mask[offset..end].fill(true);
+        } else if let Some(at) = line.find("/*") {
+            mask[offset + at..end].fill(true);
+            if !line[at..].contains("*/") {
+                in_block = true;
+            }
+        }
+        offset = end;
+    }
+    mask
+}
+
+/// The identifier being CALLED on a literal whose opening quote sits at `at`:
+/// walk back over whitespace, require a `(`, walk back over whitespace again,
+/// and take the identifier ending there. Empty when the literal is not the
+/// first argument of a call.
+///
+/// Walking backwards over ASCII-only predicates is byte-safe on UTF-8: a
+/// continuation byte is `>= 0x80` and matches neither, so the walk stops at a
+/// char boundary.
+fn callee_before(text: &str, at: usize) -> &str {
     let bytes = text.as_bytes();
-    let mut out = BTreeSet::new();
+    let mut i = at;
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i == 0 || bytes[i - 1] != b'(' {
+        return "";
+    }
+    i -= 1;
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    let end = i;
+    while i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+        i -= 1;
+    }
+    &text[i..end]
+}
+
+/// Every bare `"…_MODE"` string literal outside a comment, paired with the
+/// callee it is the first argument of — the shape an env-var name takes at the
+/// point something reads it, and the shape it takes when it is merely named.
+fn mode_env_literals(text: &str) -> Vec<(String, String)> {
+    let mask = comment_mask(text);
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] != b'"' {
@@ -277,8 +363,8 @@ fn mode_env_literals(text: &str) -> BTreeSet<String> {
         }
         if end > start && end < bytes.len() && bytes[end] == b'"' {
             let name = &text[start..end];
-            if name.ends_with("_MODE") {
-                out.insert(name.to_string());
+            if name.ends_with("_MODE") && !mask[i] {
+                out.push((name.to_string(), callee_before(text, i).to_string()));
             }
             i = end + 1;
         } else {
@@ -298,14 +384,37 @@ fn rt_sources(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The mode env vars the runtime actually READS — every `"…_MODE"` literal in
-/// the crate except those found only in the registry module, which renders
-/// names rather than consulting them.
-fn live_mode_envs(root: &Path) -> BTreeSet<String> {
+/// Every `(file, name, callee)` a `"…_MODE"` literal appears as, outside the
+/// registry module — which renders names rather than consulting them.
+fn rt_mode_literals(root: &Path) -> Vec<(PathBuf, String, String)> {
     rt_sources(root)
-        .iter()
+        .into_iter()
         .filter(|p| !p.ends_with("commands/pipeline/status.rs"))
-        .flat_map(|p| mode_env_literals(&read_lossy(p)))
+        .flat_map(|p| {
+            mode_env_literals(&read_lossy(&p))
+                .into_iter()
+                .map(move |(name, callee)| (p.clone(), name, callee))
+        })
+        .collect()
+}
+
+/// The mode env vars the runtime actually READS — a `"…_MODE"` literal handed
+/// to one of the [`ENV_READERS`], never one merely written down.
+///
+/// The distinction is the whole point. "Live" is what the other three tests
+/// pivot on: it decides whether a registry name owes the table a row or owes
+/// [`DEAD_REGISTRY_ENV`] a confession, and whether a name owes plugin prose an
+/// explanation. Counting every quoted occurrence would let a MENTION — an
+/// example in a doc comment, a name in an advisory string, a test asserting a
+/// message contains it — pass a dead name off as live, which is the exact
+/// drift `dead_registry_env_names_stay_dead_and_declared` exists to catch.
+/// `a_mode_env_name_is_live_only_where_something_reads_it` guards the other
+/// side: a mention is allowed, but only of a name something really reads.
+fn live_mode_envs(root: &Path) -> BTreeSet<String> {
+    rt_mode_literals(root)
+        .into_iter()
+        .filter(|(_, _, callee)| ENV_READERS.contains(&callee.as_str()))
+        .map(|(_, name, _)| name)
         .collect()
 }
 
@@ -499,6 +608,45 @@ fn every_gate_mode_env_is_documented() {
          add a JUSTIFIED PROSE_EXEMPT_MODE_ENV row saying why prose owes this one \
          nothing:\n{}",
         undocumented.join("\n")
+    );
+}
+
+/// A `_MODE` name is never live by MENTION alone.
+///
+/// [`live_mode_envs`] counts only a literal handed to an [`ENV_READERS`] call,
+/// so a name that appears solely in a message, an assertion or an example
+/// cannot vouch for itself. This is the half that keeps that rule honest as the
+/// crate grows: every remaining occurrence must name something the runtime
+/// really reads. A name that is only ever written down is either a knob whose
+/// read was deleted and whose mention outlived it, or a reader this file has
+/// not been taught — and both are answered here rather than by a test quietly
+/// treating the mention as proof.
+#[test]
+fn a_mode_env_name_is_live_only_where_something_reads_it() {
+    let root = repo_root();
+    let live = live_mode_envs(&root);
+    let literals = rt_mode_literals(&root);
+    assert!(!literals.is_empty(), "no `*_MODE` literals found in the runtime - the scan is broken");
+
+    let mut orphans = Vec::new();
+    for (path, name, callee) in literals {
+        if ENV_READERS.contains(&callee.as_str()) || live.contains(&name) {
+            continue;
+        }
+        let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+        let site = if callee.is_empty() { "no call at all".to_string() } else { format!("`{callee}(…)`") };
+        orphans.push(format!(
+            "`{name}` is written in {rel} under {site}, and NOTHING in the \
+             runtime reads it. Either the read was removed and this mention \
+             outlived it (delete the mention), or the thing that reads it is a \
+             helper ENV_READERS has not been taught (add the callee there)"
+        ));
+    }
+    assert!(
+        orphans.is_empty(),
+        "mode env names that exist only as mentions - a name nothing reads must \
+         never be counted as a live knob:\n{}",
+        orphans.join("\n")
     );
 }
 
