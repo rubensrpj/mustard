@@ -105,8 +105,10 @@ fn record_output_cut(
 // ---------------------------------------------------------------------------
 
 /// The pipeline role a Task dispatch represents, as far as both budgets care.
+/// `pub(crate)` so [`output_budget`] can be called from the role-contract tests
+/// that must not repeat its numbers as literals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
+pub(crate) enum Role {
     /// `subagent_type == "explore"`.
     Explore,
     /// `subagent_type == "plan"`.
@@ -420,7 +422,12 @@ fn context_budget_mode_str(mode: ContextBudgetMode) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Line budgets per role, from `output-budget.js`'s `BUDGETS` table.
-fn output_budget(role: Role) -> usize {
+///
+/// `pub(crate)` because it is the MEASURED cap: the rendered role contracts
+/// (`commands::agent::render::role`) announce a line cap to the subagent, and
+/// their tests read the number from here instead of repeating a literal — so a
+/// budget changed on one side fails the build rather than drifting.
+pub(crate) fn output_budget(role: Role) -> usize {
     match role {
         Role::Explore => 30,
         Role::GeneralReview => 60,

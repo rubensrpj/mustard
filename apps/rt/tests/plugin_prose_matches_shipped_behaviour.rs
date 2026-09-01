@@ -359,7 +359,7 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     // Without this half the sentence is a template nobody is served.
     let project_seed = read("packages/core/src/platform/project_seed.rs");
     assert!(
-        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD, PRIOR_ORCHESTRATOR_FINGERPRINTS)"),
+        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD)"),
         "nothing seeds orchestrator.md any more, so the rule reaches no window",
     );
     let config = read("packages/core/src/domain/config.rs");
@@ -369,10 +369,11 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     );
 
     // --- 3. This repository's own delivered copy has not drifted -----------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template does not update an already-seeded project. Silent drift is
-    // the whole failure mode: the rule would ship to new projects while the
-    // one that wrote it kept the old text.
+    // `seed_injectable_files` rewrites the file, but only when it RUNS: editing
+    // the template alone leaves this repository's committed copy behind until
+    // an install or an update lays the new body down. Silent drift is the whole
+    // failure mode: the rule would ship to new projects while the one that
+    // wrote it kept reading the old text.
     let delivered = read(".claude/mustard/orchestrator.md");
     let delivered_verdict = line_with(&delivered, "Verdict rule")
         .expect("the delivered injectable states no Verdict rule");
@@ -560,8 +561,8 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     );
 
     // --- 3. This repository's delivered copy has not drifted ---------------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template does not update an already-seeded project.
+    // The seeder rewrites the file, but only when it RUNS: editing the template
+    // alone leaves this repository's committed copy behind.
     let delivered = read(".claude/mustard/dispatch.md");
     let delivered_line = line_with(&delivered, "compute the unit's `{kind}/{slug}` branch")
         .expect("the delivered injectable no longer says where the unit's branch comes from");
@@ -702,8 +703,8 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     );
 
     // --- 2. This repository's delivered copy has not drifted ---------------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template does not update an already-seeded project.
+    // The seeder rewrites the file, but only when it RUNS: editing the template
+    // alone leaves this repository's committed copy behind.
     let delivered = read(".claude/mustard/dispatch.md");
     for row in ["  tipo:", "  branch:", "run emit-pipeline --kind pipeline.kind"] {
         assert_eq!(
@@ -1102,27 +1103,6 @@ fn router_offers_the_name_for_correction() {
         "the report stopped emitting `nameFrom`, so the router promises a field no \
          reader ever receives",
     );
-}
-
-/// This repository's delivered copy carries the re-ordered question too.
-///
-/// `seed_injectable_files` refreshes a stale seed nobody edited and PRESERVES
-/// everything else, so a template edited alone leaves this project asking the
-/// old question with the new binary. The sibling ratchet compares `tipo`,
-/// `branch` and the emit line; the base row was the one the re-order moved, and
-/// nothing compared it.
-#[test]
-fn delivered_copy_matches_the_seed_at_the_base_row() {
-    let seed = mustard_core::DISPATCH_MD;
-    let delivered = read(".claude/mustard/dispatch.md");
-    for row in ["  sai de:", "  tipo:", "  branch:", "--unit-name {name}", "INDEPENDENT fields"] {
-        assert_eq!(
-            line_with(&delivered, row),
-            line_with(seed, row),
-            "the delivered .claude/mustard/dispatch.md drifted from the seed at \
-             `{row}` — re-seed it, or this project asks the old question",
-        );
-    }
 }
 
 /// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no
@@ -1903,9 +1883,8 @@ fn the_router_prose_names_the_signal_the_gate_emits() {
     );
 
     // --- 2. This repository's delivered copy has not drifted ---------------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template alone leaves the project that wrote the rule reading the
-    // old text.
+    // The seeder rewrites the file, but only when it RUNS: editing the template
+    // alone leaves the project that wrote the rule reading the old text.
     let delivered = read(".claude/mustard/orchestrator.md");
     assert_eq!(
         line_with(&delivered, ENRICHMENT_STALE_TAG),

@@ -66,8 +66,10 @@ pub enum MaintCmd {
     },
     /// Kill-switch: set `"disableAllHooks": true` in `.claude/settings.json`
     /// and wipe volatile harness state (`.agent-state/`,
-    /// `.cluster-cache.json`, `.worktrees/`). Everything else in the file —
-    /// `permissions.allow`/`deny`, `statusLine`, `env` — is preserved.
+    /// `.cluster-cache.json`). Everything else in the file —
+    /// `permissions.allow`/`deny`, `statusLine`, `env` — is preserved, and so
+    /// are worktrees: `.claude/worktrees/` holds uncommitted work and is only
+    /// ever removed by [`Self::WorktreeGc`], never by silencing the harness.
     /// Restore with [`Self::Rehook`].
     ///
     /// `--scope this` (default) acts on the current repo's `.claude/` only.

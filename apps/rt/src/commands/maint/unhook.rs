@@ -2,8 +2,12 @@
 //!
 //! Disables the Claude Code hook layer by writing `"disableAllHooks": true`
 //! into `.claude/settings.json` and wiping volatile harness state
-//! (`.agent-state/`, `.cluster-cache.json`, `.worktrees/`). Restore with
+//! (`.agent-state/`, `.cluster-cache.json`). Restore with
 //! `mustard-rt run rehook`.
+//!
+//! Worktrees are NOT part of that sweep: the harness keeps them in
+//! `.claude/worktrees/` (no leading dot) and they hold uncommitted work, so a
+//! switch whose job is to stop being observed must not delete them.
 //!
 //! ## Why a surgical write and not a rename
 //!
@@ -272,8 +276,14 @@ fn disable_one(claude_dir: &Path, kind: ScopeKind) -> DisabledEntry {
     }
 }
 
-/// Wipe the three volatile-state paths the user named: `.agent-state/`,
-/// `.cluster-cache.json`, `.worktrees/`. Returns the paths actually removed.
+/// Wipe the volatile-state paths: `.agent-state/` and `.cluster-cache.json`.
+/// Returns the paths actually removed.
+///
+/// Worktrees are deliberately absent. This swept `.claude/.worktrees` — a path
+/// nothing ever creates, so the line only ever looked like cleanup. The real
+/// ones live in `.claude/worktrees/` (no dot) and carry uncommitted agent work;
+/// pointing the sweep at them would make `--off` destructive, so the promise is
+/// dropped instead of retargeted. Nothing here may recurse into either name.
 fn wipe_volatile_state(claude_dir: &Path) -> Vec<String> {
     let mut cleared: Vec<String> = Vec::new();
 
@@ -285,11 +295,6 @@ fn wipe_volatile_state(claude_dir: &Path) -> Vec<String> {
     let cluster_cache = claude_dir.join(".cluster-cache.json");
     if cluster_cache.is_file() && std::fs::remove_file(&cluster_cache).is_ok() {
         cleared.push(cluster_cache.display().to_string());
-    }
-
-    let worktrees = claude_dir.join(".worktrees");
-    if worktrees.is_dir() && std::fs::remove_dir_all(&worktrees).is_ok() {
-        cleared.push(worktrees.display().to_string());
     }
 
     cleared
@@ -337,7 +342,7 @@ pub fn run(opts: UnhookOpts) {
     // JSON.
     eprintln!();
     eprintln!("Mustard now ships as a Claude Code plugin. To turn only Mustard OFF: claude plugin disable mustard");
-    eprintln!("The `disableAllHooks: true` written above silences EVERY hook, not just Mustard's; it also wiped volatile state (.agent-state/, .cluster-cache.json, .worktrees/). Your permissions and statusLine were left intact.");
+    eprintln!("The `disableAllHooks: true` written above silences EVERY hook, not just Mustard's; it also wiped volatile state (.agent-state/, .cluster-cache.json). Your permissions, statusLine and any .claude/worktrees/ were left intact.");
     eprintln!("Re-enable with: claude plugin enable mustard   (or clear the flag: mustard-rt run rehook).");
 }
 
@@ -400,6 +405,9 @@ mod tests {
         write(&claude.join("settings.json"), r#"{"hooks":{}}"#);
         write(&claude.join(".agent-state/counter.json"), "1");
         write(&claude.join(".cluster-cache.json"), "[]");
+        // A worktree holding uncommitted agent work, at the path the harness
+        // really uses (no leading dot).
+        write(&claude.join("worktrees/spec-w1/notes.md"), "unsaved");
 
         let entry = disable_one(&claude, ScopeKind::Repo);
 
@@ -415,6 +423,11 @@ mod tests {
         assert!(!claude.join(".agent-state").exists());
         assert!(!claude.join(".cluster-cache.json").exists());
         assert_eq!(entry.cleared.len(), 2);
+        // Worktrees survive: silencing the harness must never destroy work.
+        assert!(
+            claude.join("worktrees/spec-w1/notes.md").exists(),
+            "the kill-switch must not touch .claude/worktrees/"
+        );
     }
 
     #[test]

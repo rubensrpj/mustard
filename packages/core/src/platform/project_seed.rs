@@ -8,7 +8,14 @@
 //! project-root `mustard.json` — **idempotently and merge-first** (an existing
 //! user file is preserved; only what is missing is created — for
 //! `.claude/.gitignore`, which is a rule list rather than a document, "what is
-//! missing" is read line by line). Consumers:
+//! missing" is read line by line).
+//!
+//! The injectable instruction files under `.claude/mustard/` are the ONE
+//! exception, and they take no overwrite decision from anybody: every install
+//! and every update lays the compiled-in seed down again. They are the
+//! harness's own rules, not project configuration, so a copy that diverges is
+//! replaced and the replacement is REPORTED as `Updated` (see
+//! [`seed_injectable_files`]). Consumers:
 //!
 //! - `mustard init` (the CLI): calls the granular seeders with its own
 //!   overwrite/merge decision, keeping its exclusive concerns (location guard,
@@ -328,7 +335,7 @@ pub fn footprint() -> Vec<FootprintEntry> {
     out.extend(
         INJECTABLE_SEEDS
             .iter()
-            .map(|(name, _, _)| seeded(&format!(".claude/mustard/{name}"))),
+            .map(|(name, _)| seeded(&format!(".claude/mustard/{name}"))),
     );
     out.push(seeded(CLAUDE_GITIGNORE_PATH));
     out.push(anchored(MUSTARD_JSON_RULE, MUSTARD_JSON));
@@ -637,9 +644,10 @@ pub fn upsert_project(
     // 1. Migration away from the planted-orchestrator layout (fail-open).
     report.migrated = migrate_orchestrator_footprint(root, &claude_dir).migrated;
 
-    // 2..4. The `.claude/` seeds, merge-mode.
+    // 2..4. The `.claude/` seeds, merge-mode — except the injectables, which
+    //       take no mode: they are the harness's rules and are always rewritten.
     report.record(settings_footprint(mode), seed_settings(&claude_dir, false, mode)?);
-    for (name, outcome) in seed_injectable_files(&claude_dir, false)? {
+    for (name, outcome) in seed_injectable_files(&claude_dir)? {
         report.record(&format!(".claude/mustard/{name}"), outcome);
     }
     report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);
@@ -820,157 +828,45 @@ fn parse_json_object(raw: &str) -> Map<String, Value> {
 // ---------------------------------------------------------------------------
 
 /// The injectable instruction files seeded under `.claude/mustard/`:
-/// `(basename, compiled-in body, fingerprints of every SUPERSEDED seed)`.
-const INJECTABLE_SEEDS: &[(&str, &str, &[u64])] = &[
-    ("orchestrator.md", ORCHESTRATOR_MD, PRIOR_ORCHESTRATOR_FINGERPRINTS),
-    ("dispatch.md", DISPATCH_MD, PRIOR_DISPATCH_FINGERPRINTS),
-];
-
-/// Every superseded version of the orchestrator seed, as a content
-/// fingerprint ([`seed_fingerprint`]) — generated from this repository's own
-/// history and RATCHETED by `the_fingerprint_catalog_covers_every_history`:
-/// editing the template without appending the superseded fingerprint here
-/// fails that test, so the catalog cannot silently fall behind.
+/// `(basename, compiled-in body)`.
 ///
-/// Why it exists: the merge posture ("an existing file is preserved") could
-/// not tell an operator's customisation from a stale seed nobody ever
-/// touched. Measured in the field (2026-08-20, a corporate install): the
-/// delivered orchestrator was byte-identical to the seed of a year-old
-/// commit, `upsert` reported it PRESERVED, and the very prose defect the
-/// current seed fixes stayed in force — with the version stamp bumped, which
-/// silenced the drift notice on top. An untouched seed is Mustard's own
-/// text; only an operator's EDIT earns preservation.
-///
-/// The literals carry no digit separators on purpose: the ratchet test PRINTS
-/// the fingerprint it expects, and the operator pastes that value in. Grouping
-/// the digits by hand on every paste is an editing step that buys nothing —
-/// nobody reads a 64-bit hash, they compare it against the tool's output.
-#[allow(clippy::unreadable_literal)]
-const PRIOR_ORCHESTRATOR_FINGERPRINTS: &[u64] = &[
-    0x85e4b5094cedf52e,
-    0x1c5e2e706274fc17,
-    0x0fb06c788d11566b,
-    0x5f1d81459b0bd9c9,
-    0xf652575f9c6dec0d,
-    0x9ec6ba629370387e,
-    0xb50cf760d5dc530f,
-    0xbda422538680f39f,
-    0xb143a25ee6a8af4c,
-    0x6300f1e26568e3ad,
-    0x7d7f76c448b623d9,
-    0xde3bd4287222de6a,
-    0x37a94f2e5ca2dab6,
-    0xf6f4a99e0f560462,
-    0xf974485d773315ce,
-    0xaf69d2c72ddafb6c,
-    0x8b2ba8712b354c05,
-    // The one-file router, superseded by the two-event split: everything from
-    // `## Dispatch` moved to `dispatch.md` on `sessionStart`, because one hook
-    // response carries at most 10,000 characters of `additionalContext`.
-    0x4d0554c664812c77,
-    // `## Locating code` said nothing about the base gate's enrichment signal,
-    // so a router reading `base-gate: enrichment stale` on stderr had no rule
-    // for it and the half-authored census stayed half-authored.
-    0x56c5942670aa83aa,
-    // Superseded when the enrichment-stale guidance stopped asserting a work
-    // unit of its own and started telling the reader to obey the line's own
-    // measured prescription.
-    0x8b7a4a64d839a069,
-    // The rule-first rewrite: justification and history moved to
-    // `refs/mustard/router-rationale.md`, the em dashes that hid run-on
-    // sentences went, and both halves moved onto `userPromptSubmit`. Every
-    // operational token was audited across the change; only the prose that
-    // explained the two-event split left the file.
-    0x0d5c58329eeb1bf5,
-    // The `Simple` row dispensed the pipeline and said nothing about the
-    // question, so a one-line fix was committed straight onto `release`
-    // (measured in the field). The row now says which half it exempts.
-    0x4942f9490f128105,
+/// There is no third element any more. The pair used to carry a catalog of
+/// fingerprints of every SUPERSEDED body, so the merge could guess whether the
+/// copy on disk was a stale seed (refresh) or the operator's own text
+/// (preserve). The guess errs on the wrong side: a copy the catalog does not
+/// recognise is PRESERVED, so a corrected rule can fail to reach an installed
+/// project in silence. These files are the harness's rules, so
+/// [`seed_injectable_files`] simply writes them.
+const INJECTABLE_SEEDS: &[(&str, &str)] = &[
+    ("orchestrator.md", ORCHESTRATOR_MD),
+    ("dispatch.md", DISPATCH_MD),
 ];
-
-/// Superseded versions of the `dispatch.md` seed. It grows the same way the
-/// orchestrator catalog does — the ratchet below reads this file's own history.
-///
-/// Sem separadores de dígito pela mesma razão do catálogo acima: o teste-catraca
-/// IMPRIME o valor e o operador cola.
-#[allow(clippy::unreadable_literal)]
-const PRIOR_DISPATCH_FINGERPRINTS: &[u64] = &[
-    // The split-era seed, superseded by the rule-first rewrite: the paragraph
-    // arguing why the router needed two events moved to
-    // `refs/mustard/router-rationale.md` (the premise it taught was wrong —
-    // sibling hooks do not share a ceiling), and the file moved onto
-    // `userPromptSubmit`.
-    0x5169e2cb65869f12,
-    // The rule that says a settled decision is written down when it is settled
-    // named no door, so nobody ever ran it — measured, two units across two
-    // days of conversation and neither carried material. It now names
-    // `material-add`.
-    0x14e5044fb82e2541,
-    // The opening rule said "a unit opens with ONE question" and never said
-    // what counts as a unit, so a one-line edit was treated as too small to
-    // ask about. It now names the test: anything that WRITES opens a unit.
-    0x02e6a5f55ac6f495,
-];
-
-/// FNV-1a/64 over the CRLF-normalised bytes — the one fingerprint the seed
-/// catalog speaks. Normalised so a Windows checkout answers the same as a
-/// Unix one for the same seed.
-fn seed_fingerprint(text: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in text.replace("\r\n", "\n").bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
-/// What the merge does with an EXISTING injectable: refresh a stale seed the
-/// operator never touched, preserve everything else. Pure, so the rule is
-/// testable apart from the filesystem.
-fn injectable_merge_outcome(existing: &str, seed: &str, prior: &[u64]) -> SeedOutcome {
-    let fp = seed_fingerprint(existing);
-    if fp == seed_fingerprint(seed) {
-        return SeedOutcome::Preserved; // already the current seed
-    }
-    if prior.contains(&fp) {
-        return SeedOutcome::Updated; // a stale seed nobody edited — refresh
-    }
-    SeedOutcome::Preserved // the operator's own text
-}
 
 /// Seed the injectable instruction files into `.claude/mustard/`.
 ///
-/// Merge (`overwrite == false`): an existing file is preserved — a
-/// user-customised injectable survives. Overwrite: the seed content is
-/// (re)laid down. Returns `(basename, outcome)` per file, in declaration
-/// order (deterministic).
+/// **Always rewritten.** Unlike every other seeder here there is no
+/// overwrite/merge decision to take: `orchestrator.md` and `dispatch.md` are
+/// the harness's own rules, not project configuration, so each install and each
+/// update lays the compiled-in body down again. A copy that diverged — an
+/// operator's edit, or a seed from an older release — is replaced, and the
+/// replacement is reported as [`SeedOutcome::Updated`], never as
+/// [`SeedOutcome::Preserved`]. The loss is real and deliberate: it is the price
+/// of a corrected rule reaching every installed project, and it shows up in the
+/// caller's report instead of passing unsaid.
+///
+/// Returns `(basename, outcome)` per file, in declaration order
+/// (deterministic).
 ///
 /// # Errors
 ///
 /// An IO error creating the directory or writing a file.
-pub fn seed_injectable_files(
-    claude_dir: &Path,
-    overwrite: bool,
-) -> Result<Vec<(String, SeedOutcome)>> {
+pub fn seed_injectable_files(claude_dir: &Path) -> Result<Vec<(String, SeedOutcome)>> {
     let dest_dir = claude_dir.join("mustard");
     fs::create_dir_all(&dest_dir)?;
     let mut out = Vec::with_capacity(INJECTABLE_SEEDS.len());
-    for (name, body, prior) in INJECTABLE_SEEDS {
+    for (name, body) in INJECTABLE_SEEDS {
         let dest = dest_dir.join(name);
-        let outcome = match fs::read_to_string(&dest) {
-            Ok(existing) if !overwrite => {
-                match injectable_merge_outcome(&existing, body, prior) {
-                    SeedOutcome::Updated => {
-                        fs::write_atomic(&dest, body.as_bytes())?;
-                        SeedOutcome::Updated
-                    }
-                    other => other,
-                }
-            }
-            // Absent, unreadable, or overwrite mode: the original posture.
-            _ => seed_static_file(&dest, body, overwrite)?,
-        };
-        out.push(((*name).to_string(), outcome));
+        out.push(((*name).to_string(), seed_static_file(&dest, body, true)?));
     }
     Ok(out)
 }
@@ -1972,8 +1868,8 @@ mod tests {
     fn merge_preserves_user_files_and_backfills_missing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // A user-customised injectable + a settings.json with a user key + a
-        // curated mustard.json (own inject list, own version).
+        // A diverged injectable + a settings.json with a user key + a curated
+        // mustard.json (own inject list, own version).
         std_fs::create_dir_all(root.join(".claude/mustard")).unwrap();
         std_fs::write(root.join(".claude/mustard/orchestrator.md"), "USER EDIT").unwrap();
         std_fs::write(
@@ -1990,13 +1886,14 @@ mod tests {
         let report = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
 
         assert!(report.installed_before);
-        // The customised injectable survives; only the missing seed is created.
+        // The injectable is NOT a user file: it goes back to the seed, and the
+        // report says `Updated` so the overwrite is never silent.
         assert_eq!(
             std_fs::read_to_string(root.join(".claude/mustard/orchestrator.md")).unwrap(),
-            "USER EDIT",
+            ORCHESTRATOR_MD,
         );
         assert!(report.created.contains(&".claude/.gitignore".to_string()));
-        assert!(report.preserved.contains(&".claude/mustard/orchestrator.md".to_string()));
+        assert!(report.updated.contains(&".claude/mustard/orchestrator.md".to_string()));
         // settings.json: user key kept, missing seed keys backfilled.
         let settings: Value = serde_json::from_str(
             &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
@@ -2583,7 +2480,7 @@ mod tests {
     #[test]
     fn the_footprint_is_derived_from_the_seeds_it_hides() {
         let rules = footprint_rules();
-        for (name, _, _) in INJECTABLE_SEEDS {
+        for (name, _) in INJECTABLE_SEEDS {
             let expected = format!(".claude/mustard/{name}");
             assert!(rules.contains(&expected), "{expected} missing: {rules:?}");
         }
@@ -2634,78 +2531,46 @@ mod tests {
         }
     }
 
-    /// A stale seed nobody edited is REFRESHED; the operator's own text is
-    /// preserved; the current seed is left alone. The rule, apart from disk.
-    #[test]
-    fn an_untouched_stale_seed_refreshes_and_an_edit_survives() {
-        let seed = "# new seed\n";
-        let stale = "# old seed\n";
-        let prior = &[seed_fingerprint(stale)];
-        assert_eq!(injectable_merge_outcome(stale, seed, prior), SeedOutcome::Updated);
-        assert_eq!(injectable_merge_outcome(seed, seed, prior), SeedOutcome::Preserved);
-        assert_eq!(
-            injectable_merge_outcome("# the operator wrote this\n", seed, prior),
-            SeedOutcome::Preserved,
-        );
-        // CRLF answers as its LF twin — a Windows checkout is the same seed.
-        assert_eq!(injectable_merge_outcome("# old seed\r\n", seed, prior), SeedOutcome::Updated);
-    }
-
-    /// RATCHET — every historical version of an injectable template must be in
-    /// that seed's fingerprint catalog (or BE the current seed). Editing a
-    /// template without appending the superseded fingerprint makes this red,
-    /// so the refresh above can never silently stop recognising a stale seed.
-    /// Skips (not passes vacuously) where the repository history is absent —
-    /// a crates.io build or a shallow CI clone has nothing to walk.
+    /// The injectables are ALWAYS rewritten: a diverged copy in the project
+    /// comes back to the seed, and the run reports `Updated`, never `Preserved`.
     ///
-    /// Driven off [`INJECTABLE_SEEDS`], so a new injectable is covered the day
-    /// it is declared instead of the day someone remembers a second list.
+    /// This replaces the fingerprint-catalog merge, which tried to tell a stale
+    /// seed from the operator's own text and preserved whatever it failed to
+    /// recognise — so a corrected rule could stop at the project boundary
+    /// without a word. The write is what makes the rule reach an installed
+    /// project; `Updated` in the report is what makes the overwrite visible.
     #[test]
-    fn the_fingerprint_catalog_covers_every_history() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for (name, body, prior) in INJECTABLE_SEEDS {
-            // Historical homes of the seed tree, newest first.
-            let homes = [
-                format!("packages/core/templates/mustard/{name}"),
-                format!("templates/mustard/{name}"),
-                format!("plugin/templates/mustard/{name}"),
-            ];
-            let log = std::process::Command::new("git")
-                .args(["log", "--format=%H", "--follow", "--", &homes[0]])
-                .current_dir(&repo_root)
-                .output();
-            let Ok(log) = log else { return };
-            if !log.status.success() {
-                return;
-            }
-            let commits: Vec<String> = String::from_utf8_lossy(&log.stdout)
-                .split_whitespace()
-                .map(str::to_string)
-                .collect();
-            if commits.len() < 2 {
-                continue; // shallow clone, or a seed born this commit
-            }
-            let current = seed_fingerprint(body);
-            for commit in commits {
-                for path in &homes {
-                    let show = std::process::Command::new("git")
-                        .args(["show", &format!("{commit}:{path}")])
-                        .current_dir(&repo_root)
-                        .output();
-                    let Ok(show) = show else { continue };
-                    if !show.status.success() {
-                        continue;
-                    }
-                    let fp = seed_fingerprint(&String::from_utf8_lossy(&show.stdout));
-                    assert!(
-                        fp == current || prior.contains(&fp),
-                        "the {name} seed at {commit} (fingerprint {fp:#018x}) is in neither the \
-                         catalog nor the current seed — append the superseded fingerprint to \
-                         that seed's PRIOR_* list",
-                    );
-                    break;
-                }
-            }
+    fn the_injectables_are_always_rewritten() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(claude.join("mustard")).unwrap();
+        for (name, _) in INJECTABLE_SEEDS {
+            std_fs::write(claude.join("mustard").join(name), "# the operator wrote this\n").unwrap();
+        }
+
+        let report = seed_injectable_files(&claude).unwrap();
+
+        assert_eq!(report.len(), INJECTABLE_SEEDS.len());
+        for ((reported, outcome), (name, body)) in report.iter().zip(INJECTABLE_SEEDS) {
+            assert_eq!(reported, name, "the report must name the file it wrote");
+            assert_eq!(
+                *outcome,
+                SeedOutcome::Updated,
+                "{name} diverged and was replaced, so the overwrite has to be \
+                 REPORTED — a silent `Preserved` is the failure this rule removes",
+            );
+            assert_eq!(
+                std_fs::read_to_string(claude.join("mustard").join(name)).unwrap(),
+                *body,
+                "{name} still carries the operator's text, so the harness reads a \
+                 rule Mustard did not ship",
+            );
+        }
+
+        // Idempotent: a second run changes nothing and says so.
+        let again = seed_injectable_files(&claude).unwrap();
+        for (name, outcome) in &again {
+            assert_eq!(*outcome, SeedOutcome::Preserved, "{name} rewritten with no change");
         }
     }
 
@@ -2746,7 +2611,7 @@ mod tests {
 
         // Each injectable is delivered by its OWN sibling hook, so each is
         // measured alone against the real ceiling. No composite budget applies.
-        for (name, body, _) in INJECTABLE_SEEDS {
+        for (name, body) in INJECTABLE_SEEDS {
             let chars = body.chars().count();
             assert!(
                 chars <= 10_000,
