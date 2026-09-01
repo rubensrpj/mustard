@@ -44,8 +44,8 @@ const DESCRIPTION_CHAR_CAP: usize = 1_536;
 /// which a document is carrying prose it should not.
 ///
 /// It is deliberately NOT the real ceiling. Measured on the rewrite that
-/// introduced it, `orchestrator.md` and `dispatch.md` hold nothing but rules at
-/// roughly 5,300 and 6,200 characters, and a tighter target could only be met by
+/// introduced it, `orchestrator.md` and `dispatch.md` held nothing but rules,
+/// and a tighter target could only be met by
 /// deleting instruction — a first attempt at one lost four real rules before
 /// they were restored. A budget that forces a rule out is a guard that lies: it
 /// stays green while the product gets worse. So this is an alarm for prose

@@ -99,10 +99,15 @@ live in `apps/cli/tests/template_budget.rs`:
 it stands IN THE CHECKOUT, line endings included.** Both halves earn their place. Which
 unit the harness counts is undocumented, and the two differ wherever the text is not plain
 ASCII — these files carry accents, em dashes and `▸`/`⨯` — so the conservative reading is
-the only honest one. And a Windows checkout carries CRLF, one extra character PER LINE:
-`dispatch.md` is 7,894 bytes over 54 lines, so it measures 7,948 there — 52 characters
-under the alarm, not the ~2,100 a reader gets by subtracting from 10,000. An earlier budget
-left five characters of margin and passed locally while failing CI on Windows only.
+the only honest one. And a Windows checkout carries CRLF, one extra character PER LINE, so a file measures its
+byte count PLUS its line count there — `wc -c` plus `wc -l`, against the ALARM and never
+against the ceiling, because subtracting from 10,000 hands you thousands of characters that
+do not exist. **Do not write the current slack into this paragraph.** A measured number is
+stale the moment anyone edits the file it measures, and this very sentence has already gone
+stale once: it was written with the room a wave left, and the next commit spent most of it
+while the prose kept promising the old figure. `cargo test -p mustard-cli --test
+template_budget` is the only count that cannot age. An earlier budget left five characters
+of margin and passed locally while failing CI on Windows only.
 
 ## Language
 
