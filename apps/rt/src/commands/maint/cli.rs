@@ -158,12 +158,15 @@ pub enum MaintCmd {
     /// Install or update Mustard in the current project (the plugin's
     /// bootstrap door).
     ///
-    /// Idempotent, always merge-mode: seeds `.claude/settings.json`, the
-    /// injectable instruction files under `.claude/mustard/`,
-    /// `.claude/.gitignore` and the project-root `mustard.json` — an existing
-    /// user file is preserved, only what is missing is created or backfilled;
-    /// the legacy planted-orchestrator footprint is migrated away. Emits the
-    /// `UpsertReport` as deterministic pretty JSON.
+    /// Idempotent. `.claude/settings.json`, `.claude/.gitignore` and the
+    /// project-root `mustard.json` are yours and are merged, never clobbered:
+    /// an existing file is preserved, only what is missing is created or
+    /// backfilled. The two injectable instruction files under
+    /// `.claude/mustard/` — `orchestrator.md` and `dispatch.md` — are ALWAYS
+    /// rewritten: they are the harness's own rules, not project
+    /// configuration, so a copy you edited is replaced and listed under
+    /// `updated`. The legacy planted-orchestrator footprint is migrated away.
+    /// Emits the `UpsertReport` as deterministic pretty JSON.
     #[command(display_order = 44)]
     Upsert {},
 }

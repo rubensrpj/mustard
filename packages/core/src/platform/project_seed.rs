@@ -548,9 +548,18 @@ impl UpsertReport {
 // The composed upsert
 // ---------------------------------------------------------------------------
 
-/// Install or update Mustard in the project rooted at `root` — idempotent,
-/// always merge-mode (an existing user file is preserved; only what is
-/// missing is created or backfilled).
+/// Install or update Mustard in the project rooted at `root` — idempotent, and
+/// merge-only for everything the OPERATOR owns: `.claude/settings.json`,
+/// `.claude/.gitignore` and the project-root `mustard.json` survive when they
+/// exist, and only what is missing is created or backfilled.
+///
+/// The two injectable instruction files under `.claude/mustard/` —
+/// `orchestrator.md` and `dispatch.md` — are the exception, and take no merge
+/// decision from anybody: they are the harness's own rules rather than project
+/// configuration, so every run writes the compiled-in body again. A copy that
+/// diverged (an operator's edit, or an older release's seed) is REPLACED, and
+/// the replacement is reported as [`SeedOutcome::Updated`], never
+/// [`SeedOutcome::Preserved`] — see [`seed_injectable_files`].
 ///
 /// Steps, in order:
 ///
@@ -559,8 +568,10 @@ impl UpsertReport {
 /// 2. `.claude/settings.json` — seed when absent, backfill missing top-level
 ///    keys when present, always passing through
 ///    [`retire_planted_plugin_enablement`];
-/// 3. `.claude/mustard/orchestrator.md` — created when
-///    absent, a user-customised copy survives;
+/// 3. `.claude/mustard/orchestrator.md` AND `.claude/mustard/dispatch.md` —
+///    the compiled-in body is written every time; a user-customised copy does
+///    NOT survive, it is replaced and reported as [`SeedOutcome::Updated`]
+///    (see [`seed_injectable_files`]);
 /// 4. `.claude/.gitignore` — created when absent, and when present the pattern
 ///    lines it lacks are appended, so a project installed before a rule existed
 ///    still receives it (the one seed that merges by LINE — see

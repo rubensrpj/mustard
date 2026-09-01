@@ -1,7 +1,7 @@
 //! Parity ratchet between `plugin/pipeline-config.md § Enforcement Hooks` and
 //! the enforcement surface the runtime really has.
 //!
-//! Two silent failures this turns into a red build:
+//! Three silent failures this turns into a red build:
 //!
 //! - **A gate the runtime registry names and the table does not.** The table is
 //!   what a reader consults to learn what can refuse a write. A gate missing
@@ -10,6 +10,11 @@
 //! - **A mode env var some hook reads that no plugin prose ever spells.** A knob
 //!   whose name is written nowhere cannot be set — it is a switch that exists
 //!   only for whoever wrote it.
+//! - **A mode env var the registry names that NOTHING reads.** The inverse, and
+//!   the worse half for an operator: `run status --harness` renders that name as
+//!   the knob for the gate, so the name is not merely absent, it is wrong, and
+//!   setting it looks accepted. Every such name must be declared in
+//!   [`DEAD_REGISTRY_ENV`] with the name the hook really reads.
 //!
 //! What this deliberately does NOT do is demand LITERAL parity with the
 //! `hook_mode_env` map. That map names two vars **no hook reads**
@@ -354,8 +359,10 @@ fn gate_table_matches_the_runtime_registry() {
             ));
         }
         if !live.contains(env) {
-            // A dead name is not a documentation failure, it is a registry one.
-            // The sibling test owns it; reporting it twice buries the live gaps.
+            // A dead name is not a documentation failure, it is a registry one,
+            // and `dead_registry_env_names_stay_dead_and_declared` owns it in
+            // BOTH directions — declared rows stay dead, and an undeclared dead
+            // name fails there. Reporting it here too would bury the live gaps.
             continue;
         }
         if !section.contains(env.as_str()) {
@@ -373,11 +380,21 @@ fn gate_table_matches_the_runtime_registry() {
     );
 }
 
-/// The dead names stay dead, stay declared, and never occupy a `Mode env` cell.
+/// Every dead name in the registry is DECLARED here, and every declared one
+/// stays dead, stays mentioned in the section, and never occupies a `Mode env`
+/// cell.
 ///
-/// The third half is the one that matters to a reader: the `Mode env` column is
-/// read as *the knob to set*, so a dead name printed there is worse than an
-/// absent row — it sends someone to configure a switch that is wired to
+/// The first half is what closes the hole a ratchet reading only its own list
+/// would leave: `gate_table_matches_the_runtime_registry` skips a registry env
+/// nothing reads (a dead name is a registry defect, not a documentation one),
+/// so without the sweep below a NEW dead name — a row edited to
+/// `MUSTARD_BOUNDARY_GATE_MODE` when the gate reads `MUSTARD_BOUNDARY_MODE`,
+/// say — would pass every test in this file. It is exactly the drift this file
+/// exists to catch, printed by `run status --harness` as the knob to set.
+///
+/// The last half is the one that matters most to a reader: the `Mode env`
+/// column is read as *the knob to set*, so a dead name printed there is worse
+/// than an absent row — it sends someone to configure a switch that is wired to
 /// nothing, and the setting looks accepted.
 #[test]
 fn dead_registry_env_names_stay_dead_and_declared() {
@@ -399,6 +416,30 @@ fn dead_registry_env_names_stay_dead_and_declared() {
             pair[1].0
         );
     }
+
+    // Registry → declaration. Every env the registry maps is either LIVE (some
+    // hook reads it) or DECLARED dead below. A third state — named by the
+    // registry, read by nothing, admitted by nobody — is the silent one: it is
+    // rendered to the operator as the knob to set and wired to nothing.
+    let undeclared: Vec<String> = pairs
+        .iter()
+        .filter(|(_, env)| !live.contains(env))
+        .filter(|(hook, env)| !DEAD_REGISTRY_ENV.iter().any(|(h, e, _)| h == hook && e == env))
+        .map(|(hook, env)| {
+            format!(
+                "`{hook}` => `{env}`: {REGISTRY_SRC} maps this name and NOTHING \
+                 in the runtime reads it. Either fix the arm to name the var the \
+                 hook really reads, or add a justified DEAD_REGISTRY_ENV row \
+                 saying which name it reads instead"
+            )
+        })
+        .collect();
+    assert!(
+        undeclared.is_empty(),
+        "the runtime registry names mode env vars that are neither live nor \
+         declared dead:\n{}",
+        undeclared.join("\n")
+    );
 
     for (hook, env, why) in DEAD_REGISTRY_ENV {
         assert!(
