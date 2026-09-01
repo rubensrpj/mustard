@@ -1,6 +1,6 @@
 ---
 name: core-entry-pattern
-description: Use when adding or refactoring an `*Entry` struct — one row of a list a platform or summary module returns to its caller.
+description: Use when adding or refactoring a small `{Foo}Entry` record struct persisted to a machine- or project-level JSON/registry file under packages/core/src/platform/ or packages/core/src/view/summary/.
 paths:
   - packages/core/src/platform/**
   - packages/core/src/view/summary/**
@@ -18,25 +18,20 @@ metadata:
 
 ## Purpose
 
-An `*Entry` is one item of an enumerable answer: a branch git really has (`BranchEntry`), one path a Mustard install can put in a project (`FootprintEntry`), one aggregated block of a versioned summary artefact (`EconomySummaryEntry`, `TelemetrySummaryEntry`). The type exists so the list's consumers stop disagreeing about what an item *is* — `FootprintEntry`'s doc records that handing one flat `Vec<String>` to three different consumers is precisely what shipped an install that hid the client's own files. Entries are inert data: the module that owns them computes them and returns `Vec<Entry>`, and the entry itself has no behaviour beyond what its fields state.
+A `{Foo}Entry` struct is one row of a small on-disk registry or catalog — `ProjectEntry` (dashboard_registry.rs) is one row of `~/.claude/dashboard-projects.json`; `BranchEntry` (git_branches.rs) is one row of the branch catalog `git_branches::branch_catalog` returns; `FootprintEntry` (project_seed.rs) is one row of the install footprint declaration. Each is plain serde/derived data with no behaviour beyond field access — the module that owns the file (reader/writer functions sitting beside the struct) does the IO and the folding.
 
 ## Convention
 
-Folder: packages/core/src/platform/**, packages/core/src/view/summary/** · Extension: .rs · Files of this role in this subproject: 3
+Folder: packages/core/src/platform/**, packages/core/src/view/summary/** · Extension: .rs · Files of this role in this subproject: 4
 
-- Flat `pub struct` with all-`pub` fields, no nesting beyond `Option`/`Vec`, declared in the module that produces it.
-- Derives follow the consumer, not habit: the two platform exemplars use `#[derive(Debug, Clone, PartialEq, Eq)]` with no serde (they never leave the process), while the versionable summary entries derive `Debug, Clone, Default, Serialize, Deserialize, PartialEq` with `#[serde(rename_all = "camelCase")]` and `#[serde(default)]` on each field.
-- The platform exemplars document every field with a `///` that says what the value means *and* what `None`/`false` means (`FootprintEntry.rule: None` = a path Mustard never writes).
-- Construction is funnelled through small private helpers in the same module rather than spelled at call sites — `seeded`, `anchored`, `watched`, `cover` all return a `FootprintEntry` with the field combination their name promises.
-- The producing function is `#[must_use] pub fn … -> Vec<Entry>` and degrades to `Vec::new()` when the source could not be measured, with a doc line warning that an empty list means "unmeasured", not "there are none".
-- Tests live at the bottom of the same file; the platform ones drive real `git` in a `tempfile::tempdir()` and `return` early when git is unusable instead of failing.
+`ProjectEntry` derives `Serialize, Deserialize, Clone, Debug, PartialEq, Eq` with `#[serde(rename_all = "snake_case")]`; `BranchEntry` and `FootprintEntry` derive `Debug, Clone, PartialEq, Eq` with no serde (they are constructed in-process, not read back off disk). Every field carries a one-line doc comment stating what it is and, for identity fields, calling out that the field "doubles as the entry's identity" when true. The struct sits at the top of the file that also owns the reader/writer functions for the registry it belongs to — never in a separate `types.rs`.
 
 ## How to apply
 
-Add the entry beside the function that emits it — `platform/` for anything that shells out or touches the install footprint, `view/summary/` for a field of the committed `.summary.json` document. Keep field semantics disjoint: when two consumers need different readings of the same item, give the entry one field per reading (rule vs pathspec vs written) instead of overloading a string. Anything under `view/summary/` is a versioned artefact — new fields are `Option`/defaulted and skipped when empty so an existing `.summary.json` still round-trips.
+A new registry-row struct goes in the same file as the reader/writer functions that produce and consume it, named `{Thing}Entry`, with public fields (call sites struct-init directly), a derive set matching whether the type round-trips through JSON (`Serialize, Deserialize` + a `rename_all` matching the file's existing casing) or stays in-process only (`Debug, Clone, PartialEq, Eq`), and a doc comment on every field. Add `#[cfg(test)] mod tests` exercising the read/write round-trip through the owning module's functions, not the struct alone.
 
 ## Examples
 
-- Ref: packages/core/src/platform/git_branches.rs — `BranchEntry` plus `branch_catalog` returning `Vec<BranchEntry>` and degrading to empty.
-- Ref: packages/core/src/platform/project_seed.rs — `FootprintEntry` with the `seeded` / `anchored` / `watched` / `cover` constructors.
-- Ref: packages/core/src/view/summary/mod.rs — `EconomySummaryEntry` / `TelemetrySummaryEntry` inside the camelCase, defaulted summary document.
+- Ref: packages/core/src/platform/dashboard_registry.rs
+- Ref: packages/core/src/platform/git_branches.rs
+- Ref: packages/core/src/platform/project_seed.rs

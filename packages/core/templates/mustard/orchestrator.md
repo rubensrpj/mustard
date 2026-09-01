@@ -12,7 +12,7 @@ Classify intent + coarse scope yourself. There is no pre-spec classifier. Narrat
 | Enhancement (single-layer) | improve, adjust, add field, optimize | `task` (`feature` at ≥2 layers / new entity) |
 | Bugfix | error, broken, fix | `bugfix` |
 | Analyze | analyze, audit, compare, inspect | `task` (direct Grep/Glob; Explore if >3 places) |
-| Vibe / spike | prototype, throwaway | `task`, no spec, no gates |
+| Vibe / spike | prototype, throwaway | `task`, no spec, no phase gates |
 | Simple | config tweak, one-line edit, rename, version bump | direct (no Task) |
 
 **`Simple` dispenses the PIPELINE, never the question.** It means no spec, no waves, no gates — it does not mean writing to whatever branch the checkout happens to be on. Any request that EDITS A FILE opens a work unit, and § Dispatch's opening question is what opens it, one line or five hundred. Measured in the field, 2026-08-26: a one-line fix was read as `Simple` and committed straight onto `release`, and the operator had to ask why nothing was asked. The exemption is for ceremony; where the work is born is not ceremony.
@@ -25,7 +25,7 @@ Confirm only on a genuine fork (bugfix-vs-feature, light-vs-full, under-specifie
 
 **A prompt that arrived from a slash-command is not yours to route.** That flow owns the turn: do not reclassify its answers and do not open a unit inside it.
 
-The DISPATCH lives in the companion injectable `.claude/mustard/dispatch.md`: the question a unit opens with, the base gate, the name it mints. Read it before opening a unit. Why two files: `refs/mustard/router-rationale.md`.
+The DISPATCH lives in the companion injectable `.claude/mustard/dispatch.md`: the question a unit opens with, the base gate, the name it mints. Why two files: `refs/mustard/router-rationale.md`.
 
 ## Delegate via Task
 
@@ -37,7 +37,7 @@ Delegate: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new
 
 `ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob; the flow reclassifies upward as file count grows, so trust its thresholds. Full runs them all. `qa-run` runs each `## Acceptance Criteria`; the close gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The flows own the phase, gate and change-request protocol.
 
-**Four doors, and only four: `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`.** Everything else is a flow YOU dispatch. Review, QA and CLOSE are steps of `/mustard:pr merge`. The census refresh is a step of the base gate. Harness off/on and install diagnosis are flags of `/mustard:upsert`. Cancelling an abandoned unit is `/mustard:git delete`. Never tell the user to run a command outside those four.
+**Four doors, and only four: `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`.** Everything else is a flow YOU dispatch. Review, QA and CLOSE are steps of `/mustard:pr merge`. The census refresh is a step of the base gate. Harness off/on and install diagnosis are flags of `/mustard:upsert`. Cancelling an abandoned unit is `/mustard:git delete`. That rule governs what you say to the USER; a command a gate names in its own refusal is YOURS to run, not theirs.
 
 **A door does what it NAMES and stops there.** `open` opens — it does not validate, and a measurement it takes for the body is REPORTED, never investigated: whether a red suite blocks anything is `merge`'s gate, not its. When the environment refuses — a pre-push hook, a protected branch, an absent provider CLI — quote the refusal, name each choice in one line, and stop. **Never propose carrying an integration base into the operator's unit to make something else go green:** that is work they did not ask for, inside their branch, for a problem that is not theirs; a surgical fix, a skip flag or waiting are all smaller, and the choice is theirs. Measured in the field, 2026-08-31: a bare `/mustard:pr open` produced a full test run, a 328-commit drift analysis, a dry-run merge and a merge proposal — and no pull request. Widening a narrow request into an investigation is the most expensive way to not do it.
 

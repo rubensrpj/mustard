@@ -20,7 +20,12 @@ mustard-rt run agent-prompt-render --spec {specName} --role explore \
   --task-text "EXISTENCE CHECK — read .claude/spec/{specName}/spec.md, sections Files and Checklist. For EACH checklist task (task-level, NOT file-level): (1) extract 1-3 concrete identifiers from the task text (function/component names, path fragments, string literals; e.g. Add LogoutButton with handleLogout -> LogoutButton, handleLogout); (2) identify the task target files from the Files section; (3) grep each target file for the identifiers; (4) verdict: ALL targets contain a MAJORITY of identifiers -> yes, SOME -> partial, NONE -> no. Return ONLY a markdown table with columns task, target_files, all_present (yes/partial/no), evidence (identifier:line or none)." \
   --mode first --emit ref
 ```
-Pass the stdout **verbatim** as the `Task(subagent_type: "Explore")` prompt — with `--emit ref` it is a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands at dispatch (the explorer's return cap + the 15/12 tool-use limit ride in the rendered role block, not the prompt body).
+Pass the stdout **verbatim** as the `Task(subagent_type: "Explore")` prompt — with `--emit ref` it is a 2-line `MUSTARD-PROMPT-REF` stub the PreToolUse hook expands at dispatch.
+
+**Two limits govern that explorer, and only ONE of them travels with the prompt.** They are stated apart here because debugging them sends you to different places:
+
+- **The ≤30-line return cap DOES travel.** It is written into the rendered role block (`build_role_block`, role `explore`), so it reaches the agent as part of its own contract — the agent can read it, and it is what the agent is answering to.
+- **The 15 tool-use limit does NOT travel.** No rendered block mentions it. It is imposed from OUTSIDE by the `tool_use_counter` PreToolUse hook, which counts every tool call the Explore makes, warns at 12 and denies at 15. The agent was never told the number, so an explorer that stops mid-investigation is not disobeying its briefing — look in the hook, not in the prompt.
 
 Decision on the returned table:
 - All tasks `no` → gate is transparent; EXECUTE normally.

@@ -40,10 +40,13 @@ esac
 Before any sync that traverses submodules, emit one state line per submodule:
 
 ```bash
+SUPER=$(rtk git rev-parse --show-toplevel)
 for sm in $(rtk git config --file .gitmodules --get-regexp path | awk '{print $2}'); do
-  ( cd "$sm" && echo "$sm: $(rtk git rev-parse --abbrev-ref HEAD) ($(rtk git rev-parse --short HEAD))" )
+  echo "$sm: $(rtk git -C "$SUPER/$sm" rev-parse --abbrev-ref HEAD) ($(rtk git -C "$SUPER/$sm" rev-parse --short HEAD))"
 done
 ```
+
+`$SUPER/$sm` is the `<SUB_ABS>` of the section above — every `git` here goes through `-C`, per the rule two sections up. (This loop used to wrap the body in `( cd "$sm" && … )`, breaking that rule in the file that states it.)
 
 A submodule in **detached HEAD** → report BEFORE any checkout on it; the user decides (manual fix or proceed via the auto-stash protocol).
 
@@ -55,7 +58,7 @@ Claude/RTK write these continuously during a skill. They are not code, must neve
 .claude/.agent-state/
 .claude/.metrics/
 .claude/.pipeline-states/
-.claude/.detect-cache.json
+.claude/.cache/detect.json
 .claude/.knowledge-seen.json
 ```
 
@@ -69,7 +72,7 @@ EXCLUDE=$(rtk git rev-parse --git-path info/exclude)
 
 ```bash
 EXCLUDE=$(rtk git rev-parse --git-path info/exclude)
-for p in .claude/.agent-state/ .claude/.metrics/ .claude/.pipeline-states/ .claude/.detect-cache.json .claude/.knowledge-seen.json; do
+for p in .claude/.agent-state/ .claude/.metrics/ .claude/.pipeline-states/ .claude/.cache/detect.json .claude/.knowledge-seen.json; do
   grep -qxF "$p" "$EXCLUDE" 2>/dev/null || echo "$p" >> "$EXCLUDE"
 done
 ```
@@ -231,7 +234,7 @@ echo "=== $(basename "$PWD") (branch: $(rtk git rev-parse --abbrev-ref HEAD)) ==
 rtk git status --short | while IFS= read -r line; do
   path=$(echo "$line" | awk '{print $NF}')
   case "$path" in
-    .claude/.agent-state/*|.claude/.metrics/*|.claude/.detect-cache.json|.claude/.knowledge-seen.json)
+    .claude/.agent-state/*|.claude/.metrics/*|.claude/.cache/detect.json|.claude/.knowledge-seen.json)
       echo "  [ephemeral] $line" ;;
     *) [ "${line:0:2}" = "??" ] && echo "  [untracked] $line" || echo "  [pending]   $line" ;;
   esac

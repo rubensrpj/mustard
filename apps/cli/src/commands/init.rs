@@ -289,7 +289,13 @@ pub fn init_with_templates(
     // (b) injectable instruction files — the orchestrator is INJECTED by the
     // session hooks now (per `mustard.json#inject`), never planted as
     // `.claude/CLAUDE.md`.
-    for (name, outcome) in mustard_core::seed_injectable_files(&claude_path, overwrite)
+    //
+    // `overwrite` is deliberately NOT passed: these two files are the harness's
+    // own rules, not project configuration, so the answer to "merge or
+    // overwrite?" is the same either way and the seeder takes no such argument.
+    // Merge mode still means what it says for everything else init seeds —
+    // `settings.json` above and `.gitignore` below keep the user's content.
+    for (name, outcome) in mustard_core::seed_injectable_files(&claude_path)
         .context("seeding .claude/mustard/ injectables")?
     {
         report_seed(&format!(".claude/mustard/{name}"), outcome);
@@ -1614,12 +1620,12 @@ mod tests {
     }
 
     #[test]
-    fn init_merge_preserves_user_injectable() {
+    fn init_merge_rewrites_the_injectable_and_backfills() {
         let work = tempdir().unwrap();
         let templates = fake_templates(work.path());
         let project = work.path().join("project");
         let claude = project.join(".claude");
-        // A user-customised injectable already present in .claude/mustard/.
+        // A diverged injectable already present in .claude/mustard/.
         fs::create_dir_all(claude.join("mustard")).unwrap();
         fs::write(claude.join("mustard/orchestrator.md"), "USER EDIT").unwrap();
 
@@ -1631,11 +1637,12 @@ mod tests {
         )
         .unwrap();
 
-        // The user's customised injectable survives the merge untouched…
+        // The injectable is the harness's own rules, so merge mode does not
+        // reach it: the seed is laid down again whatever was there…
         assert_eq!(
             fs::read_to_string(claude.join("mustard/orchestrator.md")).unwrap(),
-            "USER EDIT",
-            "merge must not overwrite a user-customised injectable"
+            mustard_core::ORCHESTRATOR_MD,
+            "merge must still rewrite the injectable — it is not project configuration"
         );
         // …while a seed the user does not have is backfilled…
         assert!(

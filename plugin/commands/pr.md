@@ -1,7 +1,6 @@
 ---
 description: Use when the user runs /pr or asks to open a pull request, see the open ones, review one, or merge one. The PR door — open, list, review, merge; the merge runs the verification gates, then prunes the unit and returns to the base.
 argument-hint: <open|list|review|merge> [<pr-number>] [--confirm]
-source: manual
 disable-model-invocation: true
 ---
 <!-- mustard:generated -->
@@ -96,16 +95,16 @@ mustard-rt run diff-context --phase execute --subproject {sub}
 
 `review-prefetch` returns `title`/`body`/`author`/`base`/`head`/`additions`/`deletions`/`changedFiles`/`files[]`/`comments[]`/`reviews[]` — source of truth, do NOT re-fetch. Fallback: `gh pr view --json …` + `gh pr diff`.
 
-Bracket the read with the two review events, so the resume gate and the metrics see the same window:
+Bracket the read with the two review events, so the resume gate and the metrics see the same window. `{spec}` is the `spec` field the `pr-review` brief above returned (skip both emits when it came back `null` — a plain diff has no spec to bracket), and `<n>` is the PR number you were given; substitute both literally — there is no environment variable carrying either, so a `$NAME` here would expand to nothing and record an empty `--spec`:
 
 ```bash
-mustard-rt run emit-event --event review.start --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"
+mustard-rt run emit-event --event review.start --spec {spec} --payload "spec={spec}" --payload "target=pr/<n>"
 ```
 
 Paste the diff as a `## DIFF` block → `Skill({ skill: "code-review", args: "<n>" })`. Fallback (skill unavailable): `Task(general-purpose)` with the DIFF as source of truth, reading source only when ambiguous. Checklist: SOLID, Security, Performance, Patterns, Integration. Then:
 
 ```bash
-mustard-rt run emit-event --event review.complete --spec "$MUSTARD_SPEC" --payload "spec=$MUSTARD_SPEC" --payload "target=$PR_TARGET"
+mustard-rt run emit-event --event review.complete --spec {spec} --payload "spec={spec}" --payload "target=pr/<n>"
 ```
 
 Record the outcome — this is what step 3 reads:

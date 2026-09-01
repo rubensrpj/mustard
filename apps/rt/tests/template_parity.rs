@@ -153,11 +153,212 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          `/status` door, dropped by the four-door surface prune - an \
          observability escape hatch with no scripted caller",
     ),
+];
+
+/// Declared long flags that NO product prose spells, kept deliberately. Sorted
+/// by `(command, flag)`; each justification says why a reader is never left
+/// looking for this one.
+///
+/// The bar is not "it is minor". A flag reachable only by reading `--help` of a
+/// command the docs never show is a feature that shipped to nobody, and the
+/// honest fixes are to document it or to remove it. A row here says the flag is
+/// reachable some OTHER way — it mirrors a documented sibling, it is the escape
+/// hatch a refusal message prints, or it exists for a caller that is not prose.
+const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
+    (
+        "ac-negative-check",
+        "from",
+        "the revision the REMOVAL pass restores the work to; omitted it is the \
+         merge base of HEAD and the primary integration base, which is what \
+         every documented `--removal` invocation wants",
+    ),
+    (
+        "adapt-cursor",
+        "repo",
+        "project-root override on a command RUNTIME_WHITELIST already records as \
+         callerless - a path argument, not a behaviour",
+    ),
+    (
+        "amend-finalize",
+        "session-id",
+        "the required argument of a command the SessionEnd hook runs in-process; \
+         the CLI face exists for a CRASHED session, and its operator has the \
+         session id in front of them",
+    ),
+    (
+        "artifact-update",
+        "manifest",
+        "manifest path override, defaulting to `apps/cli/templates/.artifacts.json` \
+         - the documented invocation is the default",
+    ),
+    (
+        "base-candidates",
+        "no-fetch",
+        "opt-out of the `git fetch` the default performs; the flag's own help \
+         states the reason to leave it alone - the whole point of the menu is \
+         that it is true TODAY",
+    ),
+    (
+        "capability",
+        "status",
+        "frontmatter `status` of a created capability doc; the subcommand help \
+         spells the whole `create --slug X --title Y [--status active]` line, and \
+         the default is what every caller wants",
+    ),
+    (
+        "claude-dir-prune",
+        "repo",
+        "project-root override on a command RUNTIME_WHITELIST already records as \
+         callerless",
+    ),
+    (
+        "complete-spec",
+        "archive-followups",
+        "a declared NO-OP retained for compatibility: the single-stage close no \
+         longer produces `closed-followup` specs, so there is nothing to sweep. \
+         Prose naming it would teach a reader to pass a flag that does nothing",
+    ),
+    (
+        "complete-spec",
+        "archive-stale",
+        "the same declared no-op as `--archive-followups`, kept for the same \
+         compatibility reason",
+    ),
+    (
+        "context-slice",
+        "context-claude-md",
+        "the slicer's SECOND input path; the CONTEXT.md slice is the documented \
+         one and this adds a CLAUDE.md pass after it, described in the command's \
+         own help",
+    ),
+    (
+        "diagnose-otel",
+        "expect-rows-after",
+        "the wait window of a telemetry diagnostic RUNTIME_WHITELIST already \
+         records as callerless - documenting the flag ahead of the command would \
+         document a road to nowhere",
+    ),
+    (
+        "docs-stale-check",
+        "from",
+        "narrows the audit to one spec's recorded audits; CLOSE gate 4 runs the \
+         whole-repo default in-process",
+    ),
+    (
+        "docs-stale-check",
+        "include-nested",
+        "opt-in to nested `.claude` installs, with an env twin \
+         (`MUSTARD_DOCS_AUDIT_INCLUDE_NESTED`); the default - skip them - is what \
+         the CLOSE gate runs",
+    ),
+    (
+        "emit-phase",
+        "from",
+        "the optional prior phase; its help says it defaults to the spec's last \
+         known phase, which is why every instructed invocation omits it",
+    ),
+    (
+        "emit-pipeline",
+        "allow-no-qa",
+        "the escape hatch of the REVIEW/QA gate, for trusted callers like \
+         `qa-run` itself. Prose that advertised it would advertise the way \
+         AROUND the gate to exactly the reader the gate is for",
+    ),
+    (
+        "gate-regression-check",
+        "moment",
+        "the 1/2/3 selector (default 1) of an engine consumed in-process by \
+         commands/agent/context_inject.rs; RUNTIME_WHITELIST already records the \
+         CLI face as callerless",
+    ),
+    (
+        "gate-regression-check",
+        "wave-dir",
+        "the `--moment 3` companion on that same callerless CLI face; its help \
+         carries the whole contract, exit code included",
+    ),
+    (
+        "git-settle",
+        "report",
+        "the READING face of the exit ritual, settling nothing. The door prose \
+         instructs the ritual; the report is what an operator runs to look first, \
+         and the command's help describes it",
+    ),
+    (
+        "mark-checklist-item",
+        "cwd",
+        "project-root override; the close-gate refusal that instructs this \
+         command is read from the project root",
+    ),
+    (
+        "mark-checklist-item",
+        "item",
+        "the refusal hands it over already filled in - close_gates.rs prints \
+         `mark-checklist-item --spec {spec} --item <text>` per unchecked box, so \
+         the reader meets the flag at the moment it is needed",
+    ),
+    (
+        "mark-finding",
+        "id",
+        "same shape: `finding_refusal` prints `mark-finding --spec {spec} --id \
+         {id} --to <dest> --reason <why>` once per open finding, with the id \
+         already substituted",
+    ),
+    (
+        "pipeline-summary",
+        "self-test",
+        "a self-check face whose only caller is an acceptance criterion; its help \
+         carries the exact `cargo run` line to type",
+    ),
+    (
+        "rehook",
+        "repo",
+        "project-root override on the harness re-enable door, which `/upsert --on` \
+         runs from the project root",
+    ),
+    (
+        "spec-draft",
+        "output",
+        "output directory override, defaulting to `.claude/spec/{slug}/` - the \
+         layout every flow downstream assumes",
+    ),
+    (
+        "spec-draft",
+        "signals",
+        "an optional free-form comma-separated list embedded in `spec.md` as a \
+         comment; nothing reads it back, so there is no behaviour for prose to \
+         describe",
+    ),
+    (
+        "statusline",
+        "preview",
+        "renders every shipped theme on its own labelled line, for a human \
+         picking one. `statusline` proper is wired by settings.json and reads its \
+         payload from stdin",
+    ),
+    (
+        "unhook",
+        "repo",
+        "project-root override on the harness disable door, which `/upsert --off` \
+         runs from the project root",
+    ),
+    (
+        "work-unit-open",
+        "branch",
+        "the alternative to the documented `--spec`/`--intent` pair, for a unit \
+         whose branch already exists; the flag's help says exactly that",
+    ),
     (
         "worktree-gc",
-        "SessionStart probe runs it in-process (hooks/session/\
-         session_start_inject.rs -> worktree_gc::session_start_probe) and the \
-         command is the probe's remediation",
+        "age-days",
+        "the age threshold (default 7) of a sweep that is dry-run by default; the \
+         command's help carries both numbers",
+    ),
+    (
+        "worktree-gc",
+        "repo",
+        "project-root override; the instructed invocation runs from the project \
+         root",
     ),
 ];
 
@@ -298,7 +499,19 @@ fn long_flags_of(rest: &str) -> Vec<String> {
         .iter()
         .position(|b| matches!(b, b'\n' | b'`' | b'|' | b'&' | b';' | b'<' | b'>'))
         .unwrap_or(bytes.len());
-    let seg = &rest[..stop];
+    scan_long_flags(&rest[..stop])
+}
+
+/// Every long flag spelled anywhere in a stretch of text.
+///
+/// Shared by both directions of the flag ratchet, deliberately: FORWARD asks
+/// whether a flag typed on an invocation is declared, REVERSE asks whether a
+/// declared flag is ever typed, and the two must never disagree about what
+/// counts as "typed". A flag opens on a `--` that starts a token and is followed
+/// by a lowercase letter, so a markdown `---` fence, an em-dash run and the
+/// `--force-with-lease` inside `--no-force-with-lease` are all read the same way
+/// here as they are there.
+fn scan_long_flags(seg: &str) -> Vec<String> {
     let sb = seg.as_bytes();
     let mut flags = Vec::new();
     let mut i = 0;
@@ -320,6 +533,27 @@ fn long_flags_of(rest: &str) -> Vec<String> {
         i = flag_end;
     }
     flags
+}
+
+/// Every long flag ONE subcommand declares, minus the two clap generates on its
+/// own. `--help` and `--version` are the runtime's, not the product's: no file
+/// has to document them and no whitelist should have to excuse them.
+fn declared_long_flags(cmd: &Command) -> BTreeSet<&str> {
+    cmd.get_arguments()
+        .filter_map(clap::Arg::get_long)
+        .filter(|f| *f != "help" && *f != "version")
+        .collect()
+}
+
+/// Every long flag spelled anywhere in the product corpus.
+///
+/// The whole corpus is read as ONE text, because the question is whether a
+/// reader can find the flag at all — not which file happens to carry it.
+fn spelled_long_flags(root: &Path) -> BTreeSet<String> {
+    forward_corpus(root)
+        .iter()
+        .flat_map(|p| scan_long_flags(&read_lossy(p)))
+        .collect()
 }
 
 /// The names half of [`extract_run_invocations`], for the callers that ask only
@@ -504,6 +738,90 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
          add a JUSTIFIED whitelist entry, or remove the registration:\n{}",
         dark.join("\n")
     );
+}
+
+/// Every long flag the binary declares is spelled by some product prose, or
+/// carries a justified [`FLAG_WHITELIST`] row.
+///
+/// The REVERSE of `forward_every_instructed_flag_is_declared`, and the half that
+/// was blind. That one asks whether a flag a file TYPES exists; this one asks
+/// whether a flag that EXISTS is ever typed. An undocumented flag does not
+/// break — it simply never gets used, which is how `--explains-symptom`,
+/// `--allow-no-qa` and `--no-fetch` could sit in the surface with no reader able
+/// to learn they were there.
+///
+/// Citation is loose ON PURPOSE: the flag has to appear somewhere in the corpus,
+/// not necessarily on its own command's invocation. Whether a flag is typed on
+/// the RIGHT command is the forward test's question, and asking it twice would
+/// report one defect as two. What this measures is narrower and it is the thing
+/// nothing measured: can a reader find out the flag exists at all.
+#[test]
+fn reverse_every_declared_flag_is_documented() {
+    let root = repo_root();
+    let spelled = spelled_long_flags(&root);
+    let tree = run_command_tree();
+    let mut dark = Vec::new();
+    for cmd in tree.get_subcommands() {
+        let name = cmd.get_name();
+        if name == "help" {
+            continue;
+        }
+        for flag in declared_long_flags(cmd) {
+            if spelled.contains(flag)
+                || FLAG_WHITELIST.iter().any(|(c, f, _)| *c == name && *f == flag)
+            {
+                continue;
+            }
+            dark.push(format!("run {name} --{flag}"));
+        }
+    }
+    assert!(
+        dark.is_empty(),
+        "declared `run` flags no product file ever spells - they ship, and the \
+         only way to learn one exists is to read `--help` of a command the docs \
+         do not show. Document the flag, drop it, or add a JUSTIFIED \
+         FLAG_WHITELIST row:\n{}",
+        dark.join("\n")
+    );
+}
+
+/// The flag whitelist stays sorted, stays real, and stays necessary.
+#[test]
+fn flag_whitelist_stays_sorted_live_and_not_redundant() {
+    let root = repo_root();
+    let spelled = spelled_long_flags(&root);
+    let tree = run_command_tree();
+
+    for pair in FLAG_WHITELIST.windows(2) {
+        assert!(
+            (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1),
+            "FLAG_WHITELIST must stay sorted: ({}, {}) before ({}, {})",
+            pair[0].0,
+            pair[0].1,
+            pair[1].0,
+            pair[1].1
+        );
+    }
+    for (name, flag, justification) in FLAG_WHITELIST {
+        let cmd = tree
+            .get_subcommands()
+            .find(|c| c.get_name() == *name)
+            .unwrap_or_else(|| panic!("FLAG_WHITELIST names `run {name}`, which is not registered"));
+        assert!(
+            declared_long_flags(cmd).contains(*flag),
+            "FLAG_WHITELIST names `run {name} --{flag}`, which that command no \
+             longer declares - drop the row"
+        );
+        assert!(
+            !justification.trim().is_empty(),
+            "FLAG_WHITELIST entry `run {name} --{flag}` carries no justification"
+        );
+        assert!(
+            !spelled.contains(*flag),
+            "FLAG_WHITELIST entry `run {name} --{flag}` IS spelled in product \
+             prose now - the row is redundant, drop it"
+        );
+    }
 }
 
 #[test]

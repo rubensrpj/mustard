@@ -1,6 +1,6 @@
 ---
 name: core-hit-pattern
-description: Use when adding or refactoring a `*Hit` struct that carries one match produced by a scanning or matching pass.
+description: Use when adding or refactoring a `{Foo}Hit` struct describing one match emitted by a scanner/matcher under packages/core/src/domain/.
 paths:
   - packages/core/src/domain/**
 tags: [add, refactor]
@@ -17,25 +17,19 @@ metadata:
 
 ## Purpose
 
-A `*Hit` is one match, emitted by a pass that produces many: an automaton match (`ScanHit`, `KeyedHit<K>`), or one row of the external scan tool's answer (`ConcernHit`, `TermHit`, `SliceHit`, `ContractHit`). It is deliberately dumb — the ranking, the dedup and the verdict all live in the caller, so a hit only reports *what matched, where, and under which key*. The `domain/scan.rs` family sits on a process boundary: Mustard owns its own view of the tool's JSON and deserializes only the fields it consumes, which is why every one of those structs is `Deserialize`-only and defaults its collections. The `vocabulary` family stays inside the crate and carries byte offsets instead.
+A `{Foo}Hit` struct is the one-match-per-emit output of a scanning/matching pass — not a persisted record, a transient value the caller consumes to build a verdict. `ScanHit` (vocabulary/mod.rs) is what `VocabularyMatcher::scan` emits per term match (layer, term, byte offsets); `KeyedHit<K>` (vocabulary/aho.rs) is the generic version the shared Aho-Corasick engine emits before it is projected into the public `ScanHit`. `domain/scan.rs` in this crate is the grain-tool client module (unrelated struct-wise, but the sibling file the worklist pointed at); the real `Hit` shape sits in the `vocabulary` submodule.
 
 ## Convention
 
 Folder: packages/core/src/domain/** · Extension: .rs · Files of this role in this subproject: 3
 
-- Flat `pub struct` with all-`pub` fields, declared in the module that emits it; no constructors and no methods in the three exemplars.
-- Visibility follows the consumer: `ScanHit` is `pub` (part of the vocabulary surface), `KeyedHit<K>` is `pub(super)` with `pub(super)` fields because it is the engine-internal generic the public matcher maps into `ScanHit`.
-- Hits parsed from an external payload derive `#[derive(Debug, Clone, Deserialize)]` — Deserialize only, never Serialize — and mark every collection or later-added field `#[serde(default)]`, with a `///` saying an older tool payload keeps deserialising. In-crate hits skip serde entirely and derive `Debug, Clone, PartialEq, Eq`.
-- Span fields are named `start` (inclusive) / `end` (exclusive) and documented as byte offsets; the `term` field documents that it is the vocabulary term, not a substring of the haystack.
-- Emission is a `scan(&self, haystack: &str) -> Vec<Hit>` that builds hits with `filter_map` and never panics on hostile input; the engine is built once — reuse `KeyedAutomaton`, do not instantiate another Aho-Corasick.
-- Tests live at the bottom of the emitting module and assert matching semantics (case sensitivity, first-key-wins on collision), not the struct shape.
+`ScanHit` derives `Debug, Clone, PartialEq, Eq` — plain data, no serde (it never crosses a process boundary). Fields are `layer`/`key`, `term: String`, and `start`/`end: usize` byte offsets into the haystack — never a byte slice or a borrowed `&str`, so the hit can outlive the scan call. `KeyedHit<K>` is `pub(super)`-scoped (an internal engine type); `ScanHit` is the crate-public projection a caller actually receives. When a generic internal hit type feeds a public one, keep them as two distinct structs connected by a `From`/mapping closure (see `AhoMatcher::scan`) rather than exposing the generic type directly.
 
 ## How to apply
 
-Put the hit in the module that produces the matches: `domain/vocabulary/` for automaton output, `domain/scan.rs` for a new field of the scan tool's JSON. If the pass is internal plumbing, keep the type `pub(super)` and map it into the public hit at the module boundary rather than widening visibility. When the external tool grows a field, add it defaulted and document the degradation — the payload must keep parsing when an older binary is installed.
+A new `{Foo}Hit` struct is added beside the matcher/scanner function that produces it, carries only owned data (`String`, not `&str`), derives `Debug, Clone, PartialEq, Eq` with no serde unless the hit is meant to cross a process/IPC boundary, and if the engine is generic internally, keeps the internal `Keyed{Foo}<K>` shape private (`pub(super)`/`pub(crate)`) with a public monomorphic `{Foo}Hit` as the crate-facing type.
 
 ## Examples
 
-- Ref: packages/core/src/domain/vocabulary/mod.rs — `ScanHit` (layer + term + byte span), no serde.
-- Ref: packages/core/src/domain/vocabulary/aho.rs — `pub(super) struct KeyedHit<K>` and the `scan` that emits it.
-- Ref: packages/core/src/domain/scan.rs — `ConcernHit` / `TermHit` / `SliceHit` / `ContractHit`, Deserialize-only with `#[serde(default)]` throughout.
+- Ref: packages/core/src/domain/vocabulary/aho.rs
+- Ref: packages/core/src/domain/vocabulary/mod.rs

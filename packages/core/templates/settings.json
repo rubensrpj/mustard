@@ -10,7 +10,7 @@
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
     "MUSTARD_SKILL_SIZE_MODE": "warn",
-    "MUSTARD_SKILL_VALIDATE_LINES_MODE": "warn",
+    "MUSTARD_SKILL_VALIDATE_GATE_MODE": "warn",
     "MUSTARD_CHECKLIST_GATE_MODE": "strict",
     "MUSTARD_BOUNDARY_MODE": "warn",
     "MUSTARD_MAIN_BUDGET_MODE": "warn",

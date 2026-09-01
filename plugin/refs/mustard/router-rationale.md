@@ -15,6 +15,12 @@ mid-sentence: Claude Code saves it to a file and hands the window a preview plus
 path. That is the real danger. A router that becomes a pointer stops being *in force*, and
 this text has to be in force at the moment a unit opens.
 
+That 10,000 is a FIELD MEASUREMENT, not a published limit. It was measured on this
+repository on 2026-08-25, and the official hooks reference and hooks guide were re-read on
+2026-09-01: neither states any size limit on hook output or on `additionalContext`. A
+limit nobody documents can move without notice, which is why the number lives in a test
+(`HOOK_RESPONSE_CAP`, `apps/cli/tests/template_budget.rs`) and not only in this paragraph.
+
 **The cap is per hook response, not per event.** Measured 2026-08-25 on this repository:
 two sibling hooks registered on the same `UserPromptSubmit`, emitting 6,000 characters
 each (12,000 combined), both arrived intact, in separate blocks, each with its own header
@@ -75,9 +81,33 @@ token against the previous revision).
 A first pass at this cut too far and lost four real instructions (`never hand-write it`;
 why `ac-negative-check` accepts either `--spec` form; `trust its thresholds`; `never enter
 it just for guidance`). All were restored. **The safe cut is justification, and it runs out
-well before any aggressive character target** — which is why there is no per-file budget
-below the real 10,000 ceiling. A budget that forces a rule out is a guard that lies: it
-stays green while the product gets worse.
+well before any aggressive character target.** A budget that forces a rule out is a guard
+that lies: it stays green while the product gets worse.
+
+## The two budgets, and how to read the slack
+
+There are TWO numbers, and confusing them is how a reader mis-computes the room left. Both
+live in `apps/cli/tests/template_budget.rs`:
+
+- `HOOK_RESPONSE_CAP` = 10,000 — the ceiling above. Past it the document stops being text
+  and becomes a path.
+- `INJECTABLE_CHAR_CAP` = 8,000 — a per-file ALARM, held deliberately below the ceiling.
+  Not a target and not the limit: it fires while a document is still carrying prose it
+  should not, early enough that the answer is deleting justification and never a rule.
+
+**What is measured is the LARGER of the character count and the byte count, of the file as
+it stands IN THE CHECKOUT, line endings included.** Both halves earn their place. Which
+unit the harness counts is undocumented, and the two differ wherever the text is not plain
+ASCII — these files carry accents, em dashes and `▸`/`⨯` — so the conservative reading is
+the only honest one. And a Windows checkout carries CRLF, one extra character PER LINE, so a file measures its
+byte count PLUS its line count there — `wc -c` plus `wc -l`, against the ALARM and never
+against the ceiling, because subtracting from 10,000 hands you thousands of characters that
+do not exist. **Do not write the current slack into this paragraph.** A measured number is
+stale the moment anyone edits the file it measures, and this very sentence has already gone
+stale once: it was written with the room a wave left, and the next commit spent most of it
+while the prose kept promising the old figure. `cargo test -p mustard-cli --test
+template_budget` is the only count that cannot age. An earlier budget left five characters
+of margin and passed locally while failing CI on Windows only.
 
 ## Language
 

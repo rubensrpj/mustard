@@ -1,6 +1,6 @@
 ---
 name: core-view-pattern
-description: Use when adding or refactoring a `*View` / view-row struct that other crates render — the typed ViewModel a projection folds out of the event stream.
+description: Use when adding or refactoring a per-entity `{Foo}View` ViewModel struct inside packages/core/src/domain/model/view/.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,25 +17,20 @@ metadata:
 
 ## Purpose
 
-The `view/` modules are the surface other crates (rt, dashboard) render against: each file owns one cohesive shape, so a change to "how we surface waves" touches `wave.rs` alone. A view struct is a flat record of pre-computed fields — the projection does the work once so the UI never re-parses a payload. The three exemplars share a discipline about emptiness: a view with no evidence is a coherent zeroed value produced by a named constructor (`SpecView::empty`, `WaveView::queued`), never an `Err` and never a `"unknown"` string. Where a list view would pay for the heavy collections, a lean sibling exists beside the rich one (`SpecSummary` next to `SpecView`) with a `From<&SpecView>` projection between them.
+A `{Foo}View` struct is the rich, per-item ViewModel a drill-down UI renders — built by folding an NDJSON event stream, never touched by IO directly. `SpecView` (spec.rs) is the canonical example: every field is `Option<…>` or a zeroed counter, so an empty event stream still produces a coherent value instead of panicking or requiring `Result`. `WaveView` (wave.rs) follows the identical discipline for a single wave row.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 3
 
-- `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]` on every view struct read here; `Eq` is dropped when a field is `f64` and the struct doc says why (`WorkspaceSummary.events_per_minute`).
-- All fields `pub`, each with a `///` naming the event or payload that produces it and what `None` means; absence is `Option<…>` or a zero counter, never a sentinel string.
-- Fields added after the shape shipped carry `#[serde(default, skip_serializing_if = "Option::is_none")]` (see the W5 hints on `TimelineNode`) so older payloads keep deserialising and unchanged JSON stays byte-identical.
-- The module doc opens with `//! [`TypeName`] — one line about what it backs`, naming the UI surface it feeds (`Backs `SpecDrillDown > Timeline``).
-- Zero-value constructors are `#[must_use] pub fn` returning `Self` with every collection `Vec::new()` and every unknown `None`; emptiness predicates (`SpecView::is_empty`) are inherent, `#[must_use]`, and documented with the caller that needs them.
-- `domain/model/` stays pure — no filesystem, no logging, no panic; tests sit at the bottom of the same file asserting the empty constructor and any `From` projection.
+Both `SpecView` and `WaveView` derive `Debug, Clone, PartialEq, Eq, Serialize, Deserialize` (never `Copy` — these are heavier, growable structs) and pair with an inherent constructor (`SpecView::empty(spec)`, `WaveView::queued(wave)`) that returns the "no evidence yet" starting point: absence is `None`/zero, never a sentinel string. `SpecView` additionally exposes an `is_empty()` predicate so a fold-based caller can distinguish "spec exists, no events" from omission. Optional fields carry a one-line doc comment naming the event/payload path they are populated from (`/// Latest phase from \`pipeline.phase\` events.`). `#[cfg(test)] mod tests` at the bottom asserts the empty constructor's zeroed/`None` shape.
 
 ## How to apply
 
-One view family per file under `packages/core/src/domain/model/view/`; a new file is declared as a private `mod x;` in `mod.rs` and every public type is listed in that file's explicit `pub use` block. Shared cross-cutting enums (`Phase`, `Scope`) are imported with `use super::…` rather than redeclared. Treat the struct as a published contract: change a field name or its meaning only with a migration, add new optional fields defaulted, and give the lean/rich split its `From` impl instead of duplicating the fold.
+A new per-entity view struct is added to its own file under `domain/model/view/`, named `{Entity}View`, with every field `Option<T>` or a numeric counter (never a raw `"unknown"`/sentinel string), an inherent `empty(...)` or equivalent starting-state constructor, and doc comments tracing each field back to the event kind/payload key that populates it. Do not give it methods that touch IO or the filesystem — folding logic lives in the `io`/`reader` layer, this struct stays pure serde data.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/spec.rs — `SpecView::empty`, `SpecSummary`, `impl From<&SpecView> for SpecSummary`.
-- Ref: packages/core/src/domain/model/view/wave.rs — `WaveView::queued` as the fresh-row constructor.
-- Ref: packages/core/src/domain/model/view/timeline.rs — `TimelineNode` with defaulted, skip-serialised late-added hint fields.
+- Ref: packages/core/src/domain/model/view/spec.rs
+- Ref: packages/core/src/domain/model/view/wave.rs
+- Ref: packages/core/src/domain/model/view/timeline.rs

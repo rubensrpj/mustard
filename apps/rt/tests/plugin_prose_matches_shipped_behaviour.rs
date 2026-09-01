@@ -359,7 +359,7 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     // Without this half the sentence is a template nobody is served.
     let project_seed = read("packages/core/src/platform/project_seed.rs");
     assert!(
-        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD, PRIOR_ORCHESTRATOR_FINGERPRINTS)"),
+        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD)"),
         "nothing seeds orchestrator.md any more, so the rule reaches no window",
     );
     let config = read("packages/core/src/domain/config.rs");
@@ -369,10 +369,11 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     );
 
     // --- 3. This repository's own delivered copy has not drifted -----------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template does not update an already-seeded project. Silent drift is
-    // the whole failure mode: the rule would ship to new projects while the
-    // one that wrote it kept the old text.
+    // `seed_injectable_files` rewrites the file, but only when it RUNS: editing
+    // the template alone leaves this repository's committed copy behind until
+    // an install or an update lays the new body down. Silent drift is the whole
+    // failure mode: the rule would ship to new projects while the one that
+    // wrote it kept reading the old text.
     let delivered = read(".claude/mustard/orchestrator.md");
     let delivered_verdict = line_with(&delivered, "Verdict rule")
         .expect("the delivered injectable states no Verdict rule");
@@ -560,8 +561,8 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     );
 
     // --- 3. This repository's delivered copy has not drifted ---------------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template does not update an already-seeded project.
+    // The seeder rewrites the file, but only when it RUNS: editing the template
+    // alone leaves this repository's committed copy behind.
     let delivered = read(".claude/mustard/dispatch.md");
     let delivered_line = line_with(&delivered, "compute the unit's `{kind}/{slug}` branch")
         .expect("the delivered injectable no longer says where the unit's branch comes from");
@@ -702,8 +703,8 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     );
 
     // --- 2. This repository's delivered copy has not drifted ---------------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template does not update an already-seeded project.
+    // The seeder rewrites the file, but only when it RUNS: editing the template
+    // alone leaves this repository's committed copy behind.
     let delivered = read(".claude/mustard/dispatch.md");
     for row in ["  tipo:", "  branch:", "run emit-pipeline --kind pipeline.kind"] {
         assert_eq!(
@@ -1104,27 +1105,6 @@ fn router_offers_the_name_for_correction() {
     );
 }
 
-/// This repository's delivered copy carries the re-ordered question too.
-///
-/// `seed_injectable_files` refreshes a stale seed nobody edited and PRESERVES
-/// everything else, so a template edited alone leaves this project asking the
-/// old question with the new binary. The sibling ratchet compares `tipo`,
-/// `branch` and the emit line; the base row was the one the re-order moved, and
-/// nothing compared it.
-#[test]
-fn delivered_copy_matches_the_seed_at_the_base_row() {
-    let seed = mustard_core::DISPATCH_MD;
-    let delivered = read(".claude/mustard/dispatch.md");
-    for row in ["  sai de:", "  tipo:", "  branch:", "--unit-name {name}", "INDEPENDENT fields"] {
-        assert_eq!(
-            line_with(&delivered, row),
-            line_with(seed, row),
-            "the delivered .claude/mustard/dispatch.md drifted from the seed at \
-             `{row}` — re-seed it, or this project asks the old question",
-        );
-    }
-}
-
 /// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no
 /// environment declaration.
 ///
@@ -1304,8 +1284,19 @@ fn bugfix_prose_teaches_the_material_channel() {
     // makes the auto-branch hook cut the branch on this very write and it lands.
     // Two flows describing one mechanism differently is how a reader learns to
     // trust neither (found in review, 2026-08-11).
-    let order = line_with(&bugfix, "Order, said out loud")
+    // The anchor is the CLAIM, not a slogan. It used to be the sentence
+    // "Order, said out loud: …", which /feature §2.2 carried word for word —
+    // one wording maintained in two files is how the two drift apart. Both
+    // flows now point at `dispatch.md`, which states the order once, and each
+    // states the claim in its own words; what this ratchet still holds is that
+    // the paragraph names BOTH outcomes of the write.
+    let order = line_with(&bugfix, "This write happens AFTER the base gate")
         .expect("the bugfix prose no longer states when the unit's branch is cut");
+    assert!(
+        order.contains("dispatch.md"),
+        "the ordering claim must point at the file that states the order once, \
+         or the rule gets restated here and drifts: {order}",
+    );
     assert!(
         order.contains("pending marker"),
         "the ordering warning omits the case that actually happens — the marker \
@@ -1816,11 +1807,23 @@ fn the_git_reference_teaches_the_measured_model() {
     );
 
     // --- 4. Protection is not "being on a base" -----------------------------
-    let protection = line_with(&flow, "Cannot operate directly on protected branch")
+    let protection = line_with(&flow, "one of the **protected** branches")
         .expect("the reference no longer states the write-op refusal");
     assert!(
         protection.contains("origin/HEAD") && protection.contains("git.protected"),
         "the refusal is still taught as 'you are on an integration base': {protection}",
+    );
+    // The refusal WORDING is not a program literal. The reference used to quote
+    // `Cannot operate directly on protected branch '<branch>'. Create a work
+    // branch first.` in backticks, and that string exists nowhere in the
+    // binary — it lived only in the .md and in the anchor this assertion read
+    // back OUT of the same .md, so no change to the code could ever have failed
+    // it. Guard the removal instead: the rule is checked above, the wording
+    // belongs to whichever gate composes the refusal.
+    assert!(
+        !flow.contains("Cannot operate directly on protected branch"),
+        "the invented refusal literal is back — no such string exists in the \
+         binary, and citing it here checks the reference against itself",
     );
 
     // --- 5. The code really works that way ----------------------------------
@@ -1903,9 +1906,8 @@ fn the_router_prose_names_the_signal_the_gate_emits() {
     );
 
     // --- 2. This repository's delivered copy has not drifted ---------------
-    // `seed_injectable_files` PRESERVES an existing file on merge, so editing
-    // the template alone leaves the project that wrote the rule reading the
-    // old text.
+    // The seeder rewrites the file, but only when it RUNS: editing the template
+    // alone leaves the project that wrote the rule reading the old text.
     let delivered = read(".claude/mustard/orchestrator.md");
     assert_eq!(
         line_with(&delivered, ENRICHMENT_STALE_TAG),
@@ -2169,6 +2171,47 @@ const MANIFEST_PATH: &str = "plugin/.claude-plugin/plugin.json";
 /// pinned to the old place (found in review).
 fn manifest_in_cmd_backslashes() -> String {
     MANIFEST_PATH.replace('/', "\\")
+}
+
+/// `defaultEnabled` and `displayName` stay in the manifest, and this records WHY.
+///
+/// The manifest's own `$schema` points at
+/// `https://json.schemastore.org/claude-code-plugin-manifest.json`, and that
+/// schema defines **neither** key at the root (`displayName` appears there only
+/// inside `channels`). So an editor validating this file against the schema it
+/// declares flags both. Checked against the source outside this repository on
+/// 2026-09-01: the official Claude Code plugin reference
+/// (`code.claude.com/docs/en/plugins-reference`) documents BOTH in its metadata
+/// table — `displayName` as the human-readable name shown in the `/plugin`
+/// picker, `defaultEnabled` as "whether the plugin starts in an enabled state
+/// when the user has not set one", defaulting to `true`. The published schema is
+/// therefore behind the product; the keys are real.
+///
+/// That divergence is worth pinning rather than "cleaning up", because the
+/// cleanup is not cosmetic: dropping `"defaultEnabled": false` does not remove a
+/// field, it flips the documented default, and Mustard would auto-enable itself
+/// on every marketplace installation that has never expressed a preference. A
+/// schema that lags the product is not a reason to change what the product does.
+#[test]
+fn the_manifest_keeps_the_two_keys_its_schema_does_not_define() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read(MANIFEST_PATH)).expect("plugin.json is not valid JSON");
+    assert_eq!(
+        manifest.get("defaultEnabled").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "`defaultEnabled: false` is gone — the plugin now auto-enables on every \
+         marketplace install that never chose. It is absent from the declared \
+         $schema but documented by the product; see this test's doc comment",
+    );
+    assert!(
+        manifest
+            .get("displayName")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.is_empty()),
+        "`displayName` is gone — the /plugin picker falls back to the bare \
+         `name`. Also absent from the declared $schema, also documented by the \
+         product",
+    );
 }
 
 /// Every prose pointer to the batch-file guard names a test that EXISTS.

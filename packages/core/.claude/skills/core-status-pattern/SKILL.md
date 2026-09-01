@@ -1,6 +1,6 @@
 ---
 name: core-status-pattern
-description: Use when adding or refactoring a `*Status` enum in the view layer that records where a wave, criterion or filtered list stands.
+description: Use when adding or refactoring a small closed `{Foo}Status`/state-lifecycle enum inside packages/core/src/domain/model/view/.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,28 +17,20 @@ metadata:
 
 ## Purpose
 
-A `*Status` is the deliberate, closed set of positions a thing can occupy: five for a wave, four for an acceptance criterion, three for a spec-list filter. The exemplars are explicit that no `Unknown` variant exists — an absent wave is simply absent from the returned `Vec`, and "no `qa.result` event yet" is its own named variant (`Pending`), never a grey fallback. New variants earn their place by the distinction they buy: `WaveStatus::Dropped` was added because the previous four could not tell a decision (work let go on purpose) from an omission (a wave still waiting its turn), and its doc says exactly that. Filter enums in the same folder are the neutral end of the role — they default to "no restriction" rather than to a state.
+A `{Foo}Status`-shaped enum expresses a small closed lifecycle a dashboard row moves through, with every state EXPLICIT — never an "unknown" sentinel string. `WaveStatus` (wave.rs: `Queued`/`InProgress`/`Completed`/`Failed`/`Dropped`), `AcStatus` (quality.rs: `Pass`/`Fail`/`Skip`/`Pending`), and `Stage`/`Outcome` (spec.rs, the `SpecState` lifecycle split) are the exemplars in this subproject; `filter.rs`'s `SpecStatusFilter` is the query-side sibling that restricts a `list_specs` call to `Active`/`Closed`/`Any`.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 4
 
-The census tallies four because `timeline.rs` carries a variant literally named `Status` inside `TimelineKind`. The three files that declare a `*Status` type of *this* role, and the three this mold describes, are `wave.rs`, `quality.rs` and `filter.rs`; `TimelineKind` belongs to the `kind` role and is taught by `core-kind-pattern`, which loads on the same glob.
-
-- Field-less `pub enum` with a serde rename pinning the wire word — `#[serde(rename_all = "kebab-case")]` on `WaveStatus`, `"lowercase"` on `AcStatus`; the derive set for those two is `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize`.
-- Filter enums add `Default` with `#[default]` on the neutral variant (`SpecStatusFilter::Any`, `TimeWindow::Today`) and drop derives they do not need — `SpecStatusFilter` is not `Copy` and carries no rename.
-- Free-form input is parsed by `#[must_use] pub fn parse(raw: &str) -> Option<Self>`, case-insensitive on `raw.trim().to_ascii_lowercase()`, accepting legacy synonyms in the same match arm (`"fail" | "failed" | "error"`), and returning `None` for anything unknown. `AcStatus` is the only one of the three that has such a `parse`, because it is the only one fed a raw string (`qa.result.payload.criteria[].status`): a `WaveStatus` is folded from typed events, and the filter enums arrive already deserialised from the frontend.
-- Read predicates are `#[must_use] pub const fn` over `self` by value, implemented with `matches!` — `WaveStatus::is_running` / `is_terminal` are the pair to copy — with a doc explaining which variants count and why. `AcStatus` and the filter enums carry none; add one only when a consumer would otherwise re-spell the variant list.
-- Every variant has a `///` naming the event or payload value that puts it in that state (`WaveStatus::Completed` reads "Matching `pipeline.wave.complete` event present."), or, on a filter enum, the restriction it applies. The closed model is spelled out in the *module* doc — `wave.rs`'s `//!` header lists all five states and says why there is no `Unknown` — while the enum's own doc stays a one-liner.
-- Tests at the bottom of the same file cover the synonym table, each predicate, and — for an added variant — that the existing wire words serialise byte-identically (`dropped_serialises_as_kebab_case_without_touching_the_other_words`).
+Every status enum here derives `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(rename_all = "lowercase")]` or `"kebab-case"` (matching whichever the sibling struct already uses in that file — never mix the two within one file). Each carries a `parse(raw: &str) -> Option<Self>` (or, when malformed input must degrade rather than vanish, `Self::default()`-returning `parse`, as `SpecStatusFilter` shows) that is case-insensitive and accepts documented legacy synonyms in its match arms, with every variant doc-commented with the concrete raw string(s)/condition it maps from. `WaveStatus` additionally exposes `is_running()`/`is_terminal()` const predicate methods so callers never re-derive "is this done?" via a manual match. `#[cfg(test)] mod tests` asserts both the round-trip (`as_str`/`parse` inverse) and the serde wire spelling explicitly, one `assert_eq!` per literal string, so a spelling change is caught even without a consumer noticing.
 
 ## How to apply
 
-Put the status in the `view/` module that owns the entity (`wave.rs`, `quality.rs`) or in `filter.rs` when it is a query argument rather than a ViewModel, then re-export it by name from `packages/core/src/domain/model/view/mod.rs`. These enums are a serde contract other crates render against: additions must be serde-additive, must not renumber or rename existing words, and must state in the variant doc the distinction that justified them. Do not add an `Unknown`/`Other` variant here. A grey fallback is earned only by a `kind` enum that has to classify an *open* input — `TimelineKind`, which must turn any event name in the log into a row; the other kind in this folder, `WorkspaceAlertKind`, is chosen by its producer and has no catch-all either. `core-kind-pattern` loads on the same glob and draws that line from its side.
+A new lifecycle status enum is named `{Domain}Status` (or a domain-specific name like `Stage`/`SegmentState` when "Status" reads oddly), lives beside the struct/row it classifies, derives the `Copy + Hash + Serialize + Deserialize` set with a `rename_all` matching its file's existing convention, ships a case-insensitive `parse` accepting legacy synonyms, and gets a `#[cfg(test)]` block that pins the exact serde wire spelling of every variant — the ratchet these exemplars all carry against accidental renames.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/wave.rs — `WaveStatus`, `is_running` / `is_terminal`, the five-state module doc, and the additive-serialisation test.
-- Ref: packages/core/src/domain/model/view/quality.rs — `AcStatus::parse` with its synonym table and the `Pending` variant.
-- Ref: packages/core/src/domain/model/view/filter.rs — `SpecStatusFilter` / `TimeWindow` as defaulted, unrestricted query arguments.
-- Ref: packages/core/src/domain/model/view/timeline.rs — the fourth file the census counts here: `TimelineKind::Status` is a variant name, not a `*Status` type of this role.
+- Ref: packages/core/src/domain/model/view/wave.rs
+- Ref: packages/core/src/domain/model/view/quality.rs
+- Ref: packages/core/src/domain/model/view/timeline.rs
