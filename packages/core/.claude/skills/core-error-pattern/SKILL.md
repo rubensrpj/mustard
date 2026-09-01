@@ -1,6 +1,6 @@
 ---
 name: core-error-pattern
-description: Use when adding or refactoring an `*Error` enum for an io/ or platform/ module that has to report a failure without panicking.
+description: Use when adding or refactoring a typed `thiserror`-based `{Foo}Error` enum for a module under packages/core/src/io/ or packages/core/src/platform/.
 paths:
   - packages/core/src/io/**
   - packages/core/src/platform/**
@@ -18,25 +18,20 @@ metadata:
 
 ## Purpose
 
-`domain/model/` is pure and error-free; the moment a layer touches the filesystem, spawns a process or parses config it needs a typed error, and that is what these enums are. The crate-wide `platform::error::Error` covers side-effecting operations generally; a module with its own closed failure vocabulary (`ClaudePathsError`, `WorkspaceError`) declares its own enum next to the constructors that return it. Fail-open is the rule the whole family serves: nothing in this crate panics on these errors, callers degrade, and `NotFound` is kept apart from `Io` precisely so an absent file can be treated as "empty" without swallowing a real I/O failure.
+Each IO/platform module that can fail in more than one distinguishable way owns a local `{Module}Error` enum instead of routing every failure through the crate-wide `Error`. `ClaudePathsError` (claude_paths.rs) and `WorkspaceError` (workspace.rs) are the two clearest examples: both are `#[derive(Debug, thiserror::Error)]`, both keep the offending value on the variant for diagnostics, and both exist because the crate-wide `Error` would blur distinctions the caller needs to act on differently (e.g. "not found" vs "guard violated" vs "override invalid").
 
 ## Convention
 
-Folder: packages/core/src/io/**, packages/core/src/platform/** · Extension: .rs · Files of this role in this subproject: 4
+Folder: packages/core/src/io/**, packages/core/src/platform/** · Extension: .rs · Files of this role in this subproject: 5
 
-- `#[derive(Debug, thiserror::Error)]` with one `#[error("lower-case message: {0}")]` per variant; messages are short, lower-case and interpolate the offending value (a path with `{0:?}`), never a whole payload.
-- Every variant carries a `///` saying when it fires and what its payload is; a variant that exists to keep a distinction alive documents the distinction (`NotFound` vs `Io`; `NotHidden` as the one place fail-open is the wrong answer).
-- Variants use tuple payloads for a single value and named-field payloads with per-field docs when there are two (`WorkspaceError::OverrideInvalid { path, reason }`).
-- `#[non_exhaustive]` on enums other crates match against (`platform::error::Error`, `VocabError`), with the reason spelled in the doc; the two `io/` path-guard enums stay closed sets.
-- The crate error owns `pub type Result<T> = std::result::Result<T, Error>;` plus `impl From<…>` conversions and string-like constructors (`Error::config`, `Error::env`); module-local errors are returned as an explicit `Result<T, XError>` and converted at the boundary via `impl From<VocabError> for CoreError`.
-- Every fallible `pub fn` carries a `# Errors` doc section naming each variant it can return; `unwrap`/`expect` are `deny` outside tests, so propagate instead.
+Both exemplars derive only `Debug, thiserror::Error` — no `Clone`/`PartialEq` unless a test needs `matches!` (which both use, so equality is checked via `matches!(err, Variant(_))` rather than `assert_eq!`). Each `#[error("...")]` message is a lowercase, punctuation-free sentence that embeds the offending value with `{0:?}` or a named field. Every variant carries a doc comment explaining WHEN it fires, and the struct/fn that can return it documents each variant under a `# Errors` section. `dashboard_registry.rs` shows the alternative for a module with only ONE recoverable branch: it returns `Result<_, String>` instead of introducing an enum — reach for `{Foo}Error` only once a module has ≥2 distinguishable failure causes a caller might match on.
 
 ## How to apply
 
-Add a new variant to the module's existing enum before inventing another enum — a new enum is justified only when the module owns a closed vocabulary its callers match exhaustively, as `io/claude_paths.rs` and `io/workspace.rs` do. Keep the error pure of policy: report the fact and let the caller judge (`git_exclude` types the failure and leaves `is_blocking` to the install). Treat a missing file as `Error::NotFound` and degrade without panic; write files only through `io::fs::write_atomic`.
+A new module-local error type is named `{Module}Error`, declared near the top of the module it guards, derives `Debug, thiserror::Error` (add `Clone`/`PartialEq`/`Eq` only if a caller needs to compare two errors), and gives every variant a `#[error("...")]` message plus a doc comment. Convert it into the crate-wide `Error` only at the boundary that needs to, via a `From` impl or an explicit `.map_err`, not by making the module return `Error` directly.
 
 ## Examples
 
-- Ref: packages/core/src/platform/error.rs — the crate `Error`, its `Result` alias, `fail_open`, and the `NotFound` vs `Io` split.
-- Ref: packages/core/src/io/claude_paths.rs — `ClaudePathsError` as a closed guard vocabulary with `# Errors` on each constructor.
-- Ref: packages/core/src/io/workspace.rs — `WorkspaceError` with documented named-field payloads.
+- Ref: packages/core/src/io/claude_paths.rs
+- Ref: packages/core/src/io/workspace.rs
+- Ref: packages/core/src/platform/dashboard_registry.rs

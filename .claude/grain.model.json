@@ -4,7 +4,7 @@
     {
       "language": "rust",
       "files": 489,
-      "loc": 221350
+      "loc": 221382
     },
     {
       "language": "tsx",
@@ -73063,7 +73063,7 @@
     {
       "path": "apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs",
       "language": "rust",
-      "loc": 2508,
+      "loc": 2540,
       "imports": [
         "mustard_rt::commands::agent::render::recommended_subagent_type",
         "mustard_rt::commands::event::enrichment_gap::ENRICHMENT_STALE_TAG",
@@ -73277,68 +73277,74 @@
         },
         {
           "kind": "function",
+          "name": "the_prose_names_a_guard_that_exists",
+          "line": 2182,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "the_ci_matrix_still_carries_the_windows_runner",
-          "line": 2181,
+          "line": 2208,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "illegal_percent_tilde",
-          "line": 2218,
+          "line": 2245,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "illegal_in_line",
-          "line": 2232,
+          "line": 2259,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "closes_on_an_argument",
-          "line": 2266,
+          "line": 2293,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_percent_tilde_scanner_knows_which_shapes_cmd_refuses",
-          "line": 2325,
+          "line": 2358,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "tracked_batch_files",
-          "line": 2352,
+          "line": 2385,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_batch_file_carries_no_percent_sequence_cmd_will_refuse",
-          "line": 2387,
+          "line": 2420,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "windows_boot_really_parses_under_cmd",
-          "line": 2462,
+          "line": 2495,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ask_a_real_cmd",
-          "line": 2485,
+          "line": 2518,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "both_boot_twins_carry_the_same_download_deadline",
-          "line": 2548,
+          "line": 2581,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_project_learns_that_a_door_does_what_it_names",
-          "line": 2610,
+          "line": 2643,
           "supertypes": []
         }
       ]
@@ -102423,17 +102429,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+Kind slice",
+      "name": "tipo base+State slice",
       "roles": [
         "(core)",
-        "Kind"
+        "State"
       ],
       "optional_roles": [
         "Ac",
         "Function",
+        "Kind",
         "Mode",
         "Report",
-        "State",
         "Term",
         "View"
       ],
@@ -102462,12 +102468,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **Kind** para `<Name>`.",
+        "Adicione o **State** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -102539,7 +102545,7 @@
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
     },
     {
       "name": "tipo base+Entry slice",

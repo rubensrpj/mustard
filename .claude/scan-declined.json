@@ -1,5 +1,3 @@
 {
-  "dashboard-summary": "Same folder and same `paths` glob as dashboard-use, and both exemplars (`useEconomySummary`, `useWorkspaceSummary`) are ordinary query hooks whose shape the use mold already teaches — a second mold loading alongside it would only repeat the query-key/enabled/staleTime rules.",
-  "rt-azure": "Only `pr_azure.rs` declares `Azure*` types (`AzureRemote`, `AzurePrRest`, `AzureTransport`); `pr_provider.rs` merely references them, and a NEW provider adapter must not be named `Azure*` — the teachable shape here is \"one adapter module behind the port\", already taught by rt-pr-pattern from the same files.",
-  "rt-branch": "`work_kind.rs` declares no `Branch*` type at all (its types are `WorkKind`, `UnitBase`, `BaseFlow`), so the cluster is a single file — `branch_state.rs` — and the plain-data + injected-reader shape its `Branch*` types follow is already covered by rt-pr-pattern, which is grounded in that same module."
+  "rt-azure": "Same two files (pr_azure.rs, pr_provider.rs) already covered in full by rt-pr-pattern; a second mold on the identical pair would duplicate guidance rather than teach a distinct shape."
 }

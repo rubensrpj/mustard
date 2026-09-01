@@ -1,6 +1,6 @@
 ---
 name: core-outcome-pattern
-description: Use when adding or refactoring an `*Outcome` type that reports what a side-effecting platform step actually did, without turning it into an error.
+description: Use when adding or refactoring a small closed `{Foo}Outcome` enum reporting what a side-effecting operation actually did, inside packages/core/src/platform/.
 paths:
   - packages/core/src/platform/**
 tags: [add, refactor]
@@ -17,24 +17,20 @@ metadata:
 
 ## Purpose
 
-The install engine writes files into somebody else's project, so every step has to say what it did rather than merely succeed: `SeedOutcome` reports `Created` / `Updated` / `Preserved` per file, `ExcludeOutcome` reports the rule lines appended *and* why nothing could be appended, `MigrationOutcome` reports what was migrated and what was left alone because it was the user's own. These types are facts, not errors — a step that could not act degrades and records the reason instead of returning `Err`, and the caller renders it (the CLI prints didactic lines, the runtime prints the JSON report). The one refusal in the engine is deliberate and documented at its call site: a private install that had a real repository and still could not hide returns `Error::NotHidden` before writing anything.
+A `{Foo}Outcome` enum is the honest report of what a write/mutation actually did — never a `bool`, because a caller that wants to render "already there, nothing changed" vs "just added it" needs more than true/false. `RegisterOutcome` (dashboard_registry.rs: `Added`/`AlreadyPresent`), `RecordOutcome` (project_seed.rs: `Nothing`/`Recorded`/…), and `SeedOutcome` (project_seed.rs: `Created`/`Updated`/`Preserved`) all follow this shape: a two- or three-variant enum returned from a function that writes something, consumed by a report struct or printed directly by the CLI face.
 
 ## Convention
 
-Folder: packages/core/src/platform/** · Extension: .rs · Files of this role in this subproject: 2
+Folder: packages/core/src/platform/** · Extension: .rs · Files of this role in this subproject: 3
 
-- A closed set of dispositions is a field-less `pub enum` deriving `Debug, Clone, Copy, PartialEq, Eq` with one `///` per variant (`SeedOutcome`, `ExcludeFailure`); a composite report is a `pub struct` with `pub` fields deriving `Debug, Clone, Default, PartialEq, Eq` (`ExcludeOutcome`, `MigrationOutcome`).
-- "Could not act" travels inside the outcome as `Option<Failure>`, and the failure enum keeps the caller's judgement out of itself: `ExcludeFailure::reason() -> &'static str` (path-free, so reports stay byte-stable) and `ExcludeFailure::is_blocking()` are the only two methods, both `#[must_use]`.
-- Producing functions are `#[must_use] pub fn … -> Outcome`, documented as never erroring and never panicking, with the degradation spelled out ("every failure mode degrades to nothing was excluded").
-- Folding many outcomes into one report is a private method on the report struct (`UpsertReport::record(&mut self, name, outcome)`) that pushes into the matching `Vec<String>`; serialized reports use `#[serde(rename_all = "camelCase")]` with `skip_serializing_if` so an unaffected install's JSON is unchanged.
-- Writes go through `io::fs::write_atomic`; a file that exists but cannot be read is `Preserved` — never stomp what could not be inspected.
+All three exemplars derive `Debug, Clone, Copy, PartialEq, Eq` (small, stack-only enums); `RecordOutcome` additionally derives `Serialize, Deserialize` with `#[serde(rename_all = "camelCase")]` because it rides inside a JSON report struct (`UpsertReport`), while the other two stay in-process only. Each variant's doc comment states the concrete condition that produces it, and the "nothing happened" variant is always named plainly (`AlreadyPresent`, `Preserved`, `Nothing`) rather than folded into a boolean. The producing function's own doc comment cross-references which variant means what in context.
 
 ## How to apply
 
-Declare the outcome in the `platform/` module that performs the step, right above the function that returns it, and give each variant a doc that names the on-disk situation it describes. Prefer adding a variant to the existing outcome over returning a new error: the caller decides whether a fact is fatal. If a new failure genuinely must stop the pipeline, type the fact here, add the `is_blocking`-style predicate, and let the caller map it onto `platform::error::Error`.
+A new outcome enum for a mutating function is named `{Verb}Outcome` or `{Noun}Outcome`, lives beside the function that returns it, derives `Debug, Clone, Copy, PartialEq, Eq` (add `Serialize, Deserialize` + `rename_all = "camelCase"` only if it will be embedded in a JSON report), and names its "no-op" variant explicitly rather than collapsing the result to a boolean. Never reuse an existing outcome enum across two unrelated operations — one enum per operation keeps each variant's meaning unambiguous.
 
 ## Examples
 
-- Ref: packages/core/src/platform/project_seed.rs — `SeedOutcome`, `MigrationOutcome`, and `UpsertReport::record` folding them.
-- Ref: packages/core/src/platform/git_exclude.rs — `ExcludeOutcome` + `ExcludeFailure::reason` / `is_blocking`.
-- Ref: packages/core/src/platform/error.rs — `Error::NotHidden`, the documented exception where fail-open is refused.
+- Ref: packages/core/src/platform/dashboard_registry.rs
+- Ref: packages/core/src/platform/project_seed.rs
+- Ref: packages/core/src/platform/git_exclude.rs
