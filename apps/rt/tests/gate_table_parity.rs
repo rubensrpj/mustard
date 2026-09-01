@@ -279,34 +279,37 @@ fn table_modules(section: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Byte-indexed "this position sits in a comment" mask, computed line by line:
-/// a line whose first non-space is `//` is a comment line (`//`, `///` and
-/// `//!` alike), and a `/*` opens a block that runs to the `*/` closing it.
+/// Byte-indexed "this position sits in a comment" mask, computed line by line
+/// and masking exactly ONE thing: a line whose first non-space is `//` (`//`,
+/// `///` and `//!` alike). Nothing else is masked — there is no block-comment
+/// tracking here, deliberately.
 ///
-/// Line granularity is deliberate. A full Rust lexer would have to survive the
-/// `b'"'` char literals and `r#"…"#` raw strings this crate really contains,
-/// and a lexer that desynced would silently DROP a live read — the one failure
-/// a ratchet must never have. The worst this mask can misread is a trailing
-/// `// …` comment on a code line, and [`ENV_READERS`] rejects that case on its
-/// own, so the two together leave no gap.
+/// The obvious `/* … */` half was here, and it was worse than none.
+/// `line.find("/*")` cannot tell a comment opener from the same two bytes
+/// inside a string literal, and this crate really contains `"**/*.rs"` globs;
+/// with no `*/` to close it, the mask latched on and ran to the END OF THE
+/// FILE. Measured across `apps/rt/src`: eleven files had their tails hidden
+/// that way — `hooks/write/post_edit.rs` and `hooks/bash/native_redirect.rs`
+/// among them — so a live read written below such a glob was silently DROPPED,
+/// the one failure a ratchet must never have. Proven by measurement before the
+/// removal: a `std::env::var("MUSTARD_ALGUM_NOVO_MODE")` appended to the end of
+/// `post_edit.rs` left all four tests green.
+///
+/// What remains cannot over-mask, and that is the whole design: it hides only a
+/// whole line that STARTS with `//`. The crate documents with `///` and `//!`
+/// and wraps no live read in a `/* … */` block; a `_MODE` literal parked inside
+/// one now reads as code, and the worst that costs is a loud failure in
+/// `a_mode_env_name_is_live_only_where_something_reads_it` — never a silent
+/// pass. A trailing `// …` comment on a code line is unmasked too, and
+/// [`ENV_READERS`] rejects that on its own: a name written in prose is no
+/// call's first argument.
 fn comment_mask(text: &str) -> Vec<bool> {
     let mut mask = vec![false; text.len()];
-    let mut in_block = false;
     let mut offset = 0usize;
     for line in text.split_inclusive('\n') {
         let end = offset + line.len();
-        if in_block {
+        if line.trim_start().starts_with("//") {
             mask[offset..end].fill(true);
-            if line.contains("*/") {
-                in_block = false;
-            }
-        } else if line.trim_start().starts_with("//") {
-            mask[offset..end].fill(true);
-        } else if let Some(at) = line.find("/*") {
-            mask[offset + at..end].fill(true);
-            if !line[at..].contains("*/") {
-                in_block = true;
-            }
         }
         offset = end;
     }

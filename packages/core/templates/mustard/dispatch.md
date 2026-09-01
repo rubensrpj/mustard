@@ -51,4 +51,4 @@ mustard-rt run material-add --spec {slug} --kind definition --subject "<term>"  
 mustard-rt run material-add --spec {slug} --kind finding    --subject "<claim>" --detail "<file>" [--line N]
 ```
 
-One call per item, when it is settled. Each lands in the unit's `spec-material.json`, which is the file `spec-draft --material` reads. **They open only once the spec directory exists:** before ▸7 they refuse with `unknown_spec`, and until then the channel is the flow's own draft (`--material`).
+One call per item, when it is settled. Each lands in the unit's `spec-material.json`, which is the file `spec-draft --material` reads. **They open from ▸6 on:** the base gate's event log creates `.claude/spec/{slug}/`, so a decision settled before the draft still lands. `unknown_spec` means no gate minted that slug — no unit is open.
