@@ -572,7 +572,8 @@ impl UpsertReport {
 ///    first so the old layout is gone when the new one lands;
 /// 2. `.claude/settings.json` — seed when absent, backfill missing top-level
 ///    keys when present, always passing through
-///    [`retire_planted_plugin_enablement`];
+///    [`retire_planted_plugin_enablement`] and
+///    [`rename_dead_skill_validate_key`];
 /// 3. `.claude/mustard/` — the compiled-in body of EVERY [`INJECTABLE_SEEDS`]
 ///    entry is written every time; a user-customised copy does NOT survive, it
 ///    is replaced and reported as [`SeedOutcome::Updated`]
@@ -705,6 +706,24 @@ const PLUGIN_ID: &str = "mustard@mustard";
 /// user scope (`~/.claude/settings.json`) — the project seed never writes it.
 const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL";
 
+/// The `settings.json#env` name an older seed planted for the skill-frontmatter
+/// gate. No binary ever read it (retired — see
+/// [`rename_dead_skill_validate_key`]).
+///
+/// Written as a plain literal because it has to be: it is the key the migration
+/// matches against what is on disk, and only the name itself can do that.
+/// `apps/rt/tests/gate_table_parity.rs` sweeps `packages/core/src` for bare
+/// `"…_MODE"` strings and fails any name no runtime read consumes — normally a
+/// read that was deleted and a mention that outlived it. A name being RETIRED is
+/// the one legitimate exception, and that ratchet carries it by file and name
+/// (`RETIRING_MODE_ENV`), with a sibling test that drops the exception the day
+/// this migration goes or the day anything starts reading the name again.
+const SKILL_VALIDATE_DEAD_KEY: &str = "MUSTARD_SKILL_VALIDATE_LINES_MODE";
+
+/// The name that gate actually resolves — `size_gate`'s `skill-validate-gate`
+/// mode. The live half of the pair [`rename_dead_skill_validate_key`] joins.
+const SKILL_VALIDATE_LIVE_KEY: &str = "MUSTARD_SKILL_VALIDATE_GATE_MODE";
+
 /// Seed the harness settings from the compiled-in [`SETTINGS_SEED`].
 ///
 /// The destination follows `mode`: `.claude/settings.json` when shared,
@@ -716,7 +735,9 @@ const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_
 /// - Present under merge: the user's file is the base and any top-level seed
 ///   key it lacks is backfilled — user edits are never clobbered.
 ///
-/// Both paths pass through [`retire_planted_plugin_enablement`]. The file is
+/// Both paths pass through the two point migrations —
+/// [`retire_planted_plugin_enablement`] and [`rename_dead_skill_validate_key`],
+/// the only writes that reach INSIDE a key the merge preserves. The file is
 /// only rewritten when the serialized result differs from what is on disk, so
 /// a settled project reports [`SeedOutcome::Preserved`].
 ///
@@ -745,6 +766,7 @@ pub fn seed_settings(claude_dir: &Path, overwrite: bool, mode: InstallMode) -> R
     };
 
     retire_planted_plugin_enablement(&mut settings);
+    rename_dead_skill_validate_key(&mut settings);
 
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))?;
     serialized.push('\n');
@@ -828,6 +850,29 @@ pub fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
             settings.remove(container);
         }
     }
+}
+
+/// Rename the dead skill-validate gate key inside an installed
+/// `settings.json#env` — [`SKILL_VALIDATE_DEAD_KEY`] becomes
+/// [`SKILL_VALIDATE_LIVE_KEY`], carrying the operator's own value over.
+///
+/// The seed merge is top-level only: a project that already has an `env` object
+/// keeps it verbatim, so the corrected name never arrives and the dead one never
+/// leaves. Fusing `env` key by key would read every absent variable as "wanted
+/// back", which is the guess this engine refuses to make; renaming ONE key that
+/// only an old seed ever wrote guesses nothing.
+///
+/// Nothing happens when there is no `env` object or no dead key. When BOTH names
+/// are present the live one wins and the dead one is simply dropped: it is the
+/// name the gate reads, so it is already the operator's effective choice.
+fn rename_dead_skill_validate_key(settings: &mut Map<String, Value>) {
+    let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(value) = env.remove(SKILL_VALIDATE_DEAD_KEY) else {
+        return;
+    };
+    env.entry(SKILL_VALIDATE_LIVE_KEY.to_string()).or_insert(value);
 }
 
 /// Parse a JSON object fail-open: anything that is not a JSON object yields
@@ -2522,6 +2567,64 @@ mod tests {
 
         assert!(settings.get("extraKnownMarketplaces").is_none(), "emptied container dropped");
         assert!(settings.get("enabledPlugins").is_none(), "emptied container dropped");
+    }
+
+    // --- rename_dead_skill_validate_key --------------------------------------
+
+    #[test]
+    fn the_dead_skill_validate_key_is_renamed() {
+        // An INSTALLED project: it already has `env`, so the top-level merge
+        // preserves that object whole and the corrected name can only arrive
+        // through the point migration.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::create_dir_all(root.join(".claude")).unwrap();
+        std_fs::write(
+            root.join(".claude/settings.json"),
+            format!(r#"{{"env":{{"{SKILL_VALIDATE_DEAD_KEY}":"warn","MY_OWN":"1"}}}}"#),
+        )
+        .unwrap();
+
+        upsert_project(root, None, InstallMode::Shared).unwrap();
+
+        let settings: Value = serde_json::from_str(
+            &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
+        )
+        .unwrap();
+        let env = &settings["env"];
+        assert_eq!(env[SKILL_VALIDATE_LIVE_KEY], json!("warn"), "operator's value carried over");
+        assert!(env.get(SKILL_VALIDATE_DEAD_KEY).is_none(), "dead name gone");
+        assert_eq!(env["MY_OWN"], json!("1"), "the rest of their env survives");
+    }
+
+    #[test]
+    fn the_live_skill_validate_key_wins_when_both_names_are_present() {
+        // The live name is what the gate reads, so it is already the effective
+        // choice: the dead one is dropped without overwriting it.
+        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
+            r#"{{"env":{{"{SKILL_VALIDATE_DEAD_KEY}":"warn","{SKILL_VALIDATE_LIVE_KEY}":"strict"}}}}"#,
+        ))
+        .unwrap();
+
+        rename_dead_skill_validate_key(&mut settings);
+
+        assert_eq!(settings["env"][SKILL_VALIDATE_LIVE_KEY], json!("strict"));
+        assert!(settings["env"].get(SKILL_VALIDATE_DEAD_KEY).is_none());
+    }
+
+    #[test]
+    fn a_settings_file_without_the_dead_key_is_untouched() {
+        // No `env` at all, and an `env` carrying only the operator's own names:
+        // neither gains a key.
+        let mut no_env: Map<String, Value> = serde_json::from_str(r#"{"permissions":{}}"#).unwrap();
+        rename_dead_skill_validate_key(&mut no_env);
+        assert!(no_env.get("env").is_none(), "no env object is invented");
+
+        let mut theirs: Map<String, Value> =
+            serde_json::from_str(r#"{"env":{"MY_OWN":"1"}}"#).unwrap();
+        rename_dead_skill_validate_key(&mut theirs);
+        assert!(theirs["env"].get(SKILL_VALIDATE_LIVE_KEY).is_none(), "no name is planted");
+        assert_eq!(theirs["env"]["MY_OWN"], json!("1"));
     }
 
     // --- report determinism ---------------------------------------------------

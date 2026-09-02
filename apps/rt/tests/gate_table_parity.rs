@@ -39,6 +39,10 @@
 //!   every test here. So a read is a literal handed to an [`ENV_READERS`] call,
 //!   comments excluded, and `a_mode_env_name_is_live_only_where_something_reads_it`
 //!   holds the other end: a mention is fine, of a name something really reads.
+//!   The one mention a DEAD name is entitled to is the migration retiring it,
+//!   which must spell the key it strips from an installed file — declared in
+//!   [`RETIRING_MODE_ENV`], and re-measured, never spelled in some form the
+//!   sweep cannot see.
 //!
 //! What this deliberately does NOT do is demand LITERAL parity with the
 //! `hook_mode_env` map: the env half is checked against the name the runtime
@@ -116,6 +120,39 @@ const ENV_READERS: &[&str] = &["resolve_mode", "var", "var_os"];
 /// any dead name rather than passing over it — but a new one should be read as
 /// a registry that has drifted again, not as the normal way to add a gate.
 const DEAD_REGISTRY_ENV: &[(&str, &str, &str)] = &[];
+
+/// Mode env names a source file spells because it is RETIRING them.
+///
+/// [`a_mode_env_name_is_live_only_where_something_reads_it`] reads a name no
+/// runtime consumes as a mention whose read was deleted, and that is the right
+/// default. A retirement migration is the one shape where the mention is the
+/// POINT: the literal is the key the migration matches against an installed
+/// file to strip the name out of it, so it has to be spelled in full, and
+/// nothing may ever read it again — that is what makes it retirable at all. It
+/// is the same admission [`DEAD_REGISTRY_ENV`] takes for the registry, one layer
+/// down: a name with no reader, declared instead of hidden.
+///
+/// A row is `(file, name, why)` and it claims two things
+/// [`retirement_exemptions_stay_sorted_dead_and_still_migrating`] re-measures:
+/// the name is still dead (the day something reads it the row goes, and the name
+/// owes prose the explanation any live knob owes), and the migration is still
+/// there (a file that no longer spells the name has finished retiring it, and
+/// the row excuses nothing). Kept sorted by file, then name.
+///
+/// The alternative this replaces was spelling the name so the sweep cannot see
+/// it — `stringify!(NAME)` yields the identical `&'static str` and leaves no
+/// `"…_MODE"` literal behind. That passes by BLINDING the ratchet, and it
+/// documents in the source a reusable recipe for writing a name this file cannot
+/// find, which is exactly the dead switch it exists to catch.
+const RETIRING_MODE_ENV: &[(&str, &str, &str)] = &[(
+    "packages/core/src/platform/project_seed.rs",
+    "MUSTARD_SKILL_VALIDATE_LINES_MODE",
+    "the recognition key of `rename_dead_skill_validate_key`: an older project \
+     seed planted this name in `settings.json#env` and no binary ever read it, \
+     so `upsert` renames it in place to the name the skill-frontmatter gate \
+     really reads, carrying the operator's own value over. The literal is the \
+     only thing that can match the dead key on disk",
+)];
 
 /// Live mode env vars that no plugin prose spells, kept deliberately.
 ///
@@ -1202,12 +1239,23 @@ fn a_mode_env_name_is_live_only_where_something_reads_it() {
             continue;
         }
         let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+        // The third case: a mention that IS the removal. A migration has to
+        // spell the key it strips out of an installed file, and
+        // `retirement_exemptions_stay_sorted_dead_and_still_migrating` re-measures
+        // the row rather than letting it stand on its own word.
+        if RETIRING_MODE_ENV.iter().any(|(file, env, _)| *file == rel && *env == name) {
+            continue;
+        }
         let site = if callee.is_empty() { "no call at all".to_string() } else { format!("`{callee}(…)`") };
         orphans.push(format!(
             "`{name}` is written in {rel} under {site}, and NOTHING in the \
              runtime reads it. Either the read was removed and this mention \
              outlived it (delete the mention), or the thing that reads it is a \
-             helper ENV_READERS has not been taught (add the callee there)"
+             helper ENV_READERS has not been taught (add the callee there), or \
+             this mention IS the removal - a migration naming the key it strips \
+             from an installed file - and belongs in RETIRING_MODE_ENV with its \
+             justification. What it must never be is a name written so this \
+             sweep cannot see it"
         ));
     }
     assert!(
@@ -1216,6 +1264,51 @@ fn a_mode_env_name_is_live_only_where_something_reads_it() {
          never be counted as a live knob:\n{}",
         orphans.join("\n")
     );
+}
+
+/// The retirement list stays sorted, stays DEAD, and stays necessary.
+///
+/// The sibling of the test above, and what keeps [`RETIRING_MODE_ENV`] from
+/// becoming a place names go to be forgiven. A row is a claim about two things
+/// that both change over time — nothing reads the name, and a migration still
+/// spells it — so both are re-measured here. A retirement that lands leaves a
+/// row excusing a mention nobody makes; a name that comes back to life leaves a
+/// row excusing a live knob. Either way the row is now false, and the build says
+/// so instead of carrying it.
+#[test]
+fn retirement_exemptions_stay_sorted_dead_and_still_migrating() {
+    let root = repo_root();
+    let live = live_mode_envs(&root);
+    let literals = rt_mode_literals(&root);
+    assert!(!literals.is_empty(), "no `*_MODE` literals found in the runtime - the scan is broken");
+
+    for pair in RETIRING_MODE_ENV.windows(2) {
+        assert!(
+            (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1),
+            "RETIRING_MODE_ENV must stay sorted by file then name: {} {} before {} {}",
+            pair[0].0,
+            pair[0].1,
+            pair[1].0,
+            pair[1].1
+        );
+    }
+
+    for (file, env, why) in RETIRING_MODE_ENV {
+        assert!(!why.trim().is_empty(), "RETIRING_MODE_ENV entry {env} carries no justification");
+        assert!(
+            !live.contains(*env),
+            "RETIRING_MODE_ENV excuses `{env}` as a name on its way out, and \
+             something in the runtime READS it now. It is a live knob: drop the \
+             row, and give the name whatever a live knob owes - a plugin prose \
+             mention, or a justified PROSE_EXEMPT_MODE_ENV line"
+        );
+        assert!(
+            literals.iter().any(|(path, name, _)| name == env && path.ends_with(*file)),
+            "RETIRING_MODE_ENV excuses `{env}` in {file}, and that file no longer \
+             spells the name. The retirement finished (or moved), so the row \
+             excuses a mention nobody makes - drop it: {why}"
+        );
+    }
 }
 
 /// The exemption list stays sorted, stays live, and stays necessary.
