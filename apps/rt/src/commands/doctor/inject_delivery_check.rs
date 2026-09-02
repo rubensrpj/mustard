@@ -12,9 +12,11 @@
 //!    field 2026-08-25: three attempts were spent discovering it by error.
 //! 2. A declared injectable names a file that is not on disk. The collector is
 //!    fail-open, so the entry is skipped and the rest still arrives.
-//! 3. The router is declared by halves — `orchestrator.md` with no
-//!    `dispatch.md` — which is what every project installed before the split
-//!    carries. The question that opens a work unit reaches nobody.
+//! 3. The router is declared by HALVES — some of the instruction files the
+//!    seed carries declared and the rest not, which is what every project
+//!    installed before a split carries. The rules the missing ones hold reach
+//!    nobody. The set is asked of `mustard_core`, never retyped here: a
+//!    hard-coded pair goes blind the day a third file is seeded.
 //! 4. An injectable outgrew the 10,000 characters a hook RESPONSE carries. The
 //!    overflow is not truncated: it becomes a file path, so the text stops
 //!    being in force while still looking present on disk.
@@ -46,12 +48,6 @@ use std::path::Path;
 /// invocations and Claude Code keeps every one of their blocks (measured
 /// 2026-08-25). See `plugin/refs/mustard/router-rationale.md`.
 const HOOK_RESPONSE_CAP: usize = 10_000;
-
-/// The router's two halves, by declared path. A project that declares the first
-/// and not the second is HALF-DELIVERED — the shape every install predating the
-/// split carries.
-const ORCHESTRATOR: &str = ".claude/mustard/orchestrator.md";
-const DISPATCH: &str = ".claude/mustard/dispatch.md";
 
 /// How serious one finding is for delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -135,10 +131,10 @@ fn registered_events(manifest: &Path) -> Option<Vec<String>> {
 /// and reading one would answer about a file nothing executes.
 ///
 /// The consequence is stronger than it first looks, and measured: the shipped
-/// manifest claims exactly two fixed paths (`orchestrator.md`, `dispatch.md`).
-/// A THIRD injectable an operator declares is therefore collected by nobody, on
-/// any machine — which is precisely the finding this condition should report,
-/// not a false alarm about the developer's install.
+/// manifest claims one fixed path per injectable the seed carries, and nothing
+/// else. An injectable an OPERATOR declares is therefore collected by nobody,
+/// on any machine — which is precisely the finding this condition should
+/// report, not a false alarm about the developer's install.
 ///
 /// Kept local rather than calling `dispatch::claimed_injectables` so the check
 /// reads the manifest its caller resolved, instead of resolving a second one
@@ -344,14 +340,28 @@ fn build_report(
     }
 
     // (3) The router by halves.
-    let declares = |file: &str| entries.iter().any(|e| crate::shared::paths::same_declared_file(&e.file, file));
-    if declares(ORCHESTRATOR) && !declares(DISPATCH) {
+    //
+    // The set is asked of the seed, never retyped. A hard-coded pair answered
+    // only about the files that existed when it was written: a later
+    // injectable could go undeclared in every project on the machine and this
+    // condition stayed silent — the same defect one layer down from the one it
+    // exists to catch. Declaring NOTHING is not a half (a project that opted
+    // out is not a project mid-migration), so both ends are excluded.
+    let declares =
+        |file: &str| entries.iter().any(|e| crate::shared::paths::same_declared_file(&e.file, file));
+    let seeded = mustard_core::injectable_declared_paths();
+    let undeclared: Vec<String> = seeded.iter().filter(|f| !declares(f)).cloned().collect();
+    if !undeclared.is_empty() && undeclared.len() < seeded.len() {
         findings.push(DeliveryFinding::fail(
             "half-router",
-            "`orchestrator.md` is declared and `dispatch.md` is not: the question that opens \
-             a work unit (base, type, branch name) reaches nobody, so units are opened with \
-             no question asked"
-                .to_string(),
+            format!(
+                "the router is declared by halves: {} of the {} instruction files the harness \
+                 seeds are declared and these are not — `{}`. The rules they carry, the \
+                 question that opens a work unit among them, reach nobody",
+                seeded.len() - undeclared.len(),
+                seeded.len(),
+                undeclared.join("`, `"),
+            ),
             "run /mustard:upsert to consolidate the inject list",
         ));
     }
@@ -397,7 +407,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn seed(root: &Path, inject: &str, files: &[&str]) {
+    fn seed<S: AsRef<str>>(root: &Path, inject: &str, files: &[S]) {
         std::fs::write(
             root.join("mustard.json"),
             format!(r#"{{"version":"1.0.0","inject":[{inject}]}}"#),
@@ -405,8 +415,50 @@ mod tests {
         .unwrap();
         std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
         for f in files {
-            std::fs::write(root.join(f), "RULES").unwrap();
+            std::fs::write(root.join(f.as_ref()), "RULES").unwrap();
         }
+    }
+
+    /// Every path the seed declares — the fixtures ask the seed instead of
+    /// listing names, so a fourth injectable keeps them COMPLETE instead of
+    /// silently turning each one into the half-declared shape they contrast
+    /// against.
+    fn seeded_paths() -> Vec<String> {
+        mustard_core::injectable_declared_paths()
+    }
+
+    /// A `mustard.json#inject` list naming every seeded injectable.
+    fn all_declared() -> String {
+        seeded_paths()
+            .iter()
+            .map(|f| format!(r#"{{"on":"userPromptSubmit","file":"{f}","once":true}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The same declared path in a different CASE. Equal to the original for
+    /// the declaration comparison, which is case-insensitive on purpose, and —
+    /// on a case-sensitive filesystem — a path that opens nothing.
+    fn case_variant(path: &str) -> String {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let mut chars = name.chars();
+        let head = chars.next().map_or('X', |c| c.to_ascii_uppercase());
+        format!(".claude/Mustard/{head}{}", chars.as_str())
+    }
+
+    /// A manifest shaped like the shipped one: one `--inject` sibling hook per
+    /// seeded injectable, and none for anything else.
+    fn manifest_claiming_seeded(path: &Path) {
+        let hooks = seeded_paths()
+            .iter()
+            .map(|f| format!(r#"{{"command":"mustard-rt on userPromptSubmit --inject {f}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            path,
+            format!(r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[{hooks}]}}]}}}}"#),
+        )
+        .unwrap();
     }
 
     fn settings(dir: &Path, enabled: bool) -> std::path::PathBuf {
@@ -419,11 +471,8 @@ mod tests {
         p
     }
 
-    const BOTH: &str = r#"{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true},
-                          {"on":"userPromptSubmit","file":".claude/mustard/dispatch.md","once":true}"#;
-
-    /// A complete declaration, on an enabled plugin, whose manifest claims both
-    /// files, reports nothing at all.
+    /// A complete declaration, on an enabled plugin, whose manifest claims
+    /// every file, reports nothing at all.
     ///
     /// The manifest is passed HERE rather than left `None`. It used to be
     /// `None`, which made this test assert the very thing review caught as
@@ -433,45 +482,42 @@ mod tests {
     #[test]
     fn a_complete_declaration_on_an_enabled_plugin_is_clean() {
         let dir = tempdir().unwrap();
-        seed(
-            dir.path(),
-            BOTH,
-            &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
-        );
+        let files = seeded_paths();
+        seed(dir.path(), &all_declared(), &files);
         let manifest = dir.path().join("hooks.json");
-        std::fs::write(
-            &manifest,
-            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[
-                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/orchestrator.md"},
-                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/dispatch.md"}
-               ]}]}}"#,
-        )
-        .unwrap();
+        manifest_claiming_seeded(&manifest);
         let s = settings(dir.path(), true);
         let report = build_report(dir.path(), &s, Some(&manifest));
         assert!(report.ok, "clean project reported findings: {:?}", report.findings);
-        assert_eq!(report.declared, 2);
+        assert_eq!(report.declared, files.len());
     }
 
     /// The three FAIL conditions, each on its own.
     #[test]
     fn inject_delivery_fails_on_half_router_missing_file_and_disabled_plugin() {
-        // Half-router: the shape every pre-split install carries.
+        // Half-router: the shape every pre-split install carries — the FIRST
+        // injectable declared and every later one absent from the list.
+        let files = seeded_paths();
         let dir = tempdir().unwrap();
         seed(
             dir.path(),
-            r#"{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}"#,
-            &[".claude/mustard/orchestrator.md"],
+            &format!(r#"{{"on":"userPromptSubmit","file":"{}","once":true}}"#, files[0]),
+            &files[..1],
         );
         let s = settings(dir.path(), true);
         let report = build_report(dir.path(), &s, None);
         assert!(report.failed, "a half-declared router must FAIL");
         let half = report.findings.iter().find(|f| f.kind == "half-router").expect("half-router");
         assert!(!half.remedy.is_empty(), "a refusal must name its own remedy");
+        assert!(
+            files[1..].iter().all(|f| half.detail.contains(f.as_str())),
+            "the refusal must name every undeclared half: {}",
+            half.detail,
+        );
 
         // Declared but absent from disk.
         let dir2 = tempdir().unwrap();
-        seed(dir2.path(), BOTH, &[".claude/mustard/orchestrator.md"]);
+        seed(dir2.path(), &all_declared(), &files[..1]);
         let s2 = settings(dir2.path(), true);
         let report2 = build_report(dir2.path(), &s2, None);
         assert!(report2.failed);
@@ -479,11 +525,7 @@ mod tests {
 
         // Plugin installed but switched off: nothing runs at all.
         let dir3 = tempdir().unwrap();
-        seed(
-            dir3.path(),
-            BOTH,
-            &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
-        );
+        seed(dir3.path(), &all_declared(), &files);
         let s3 = settings(dir3.path(), false);
         let report3 = build_report(dir3.path(), &s3, None);
         assert!(report3.failed, "a disabled plugin must FAIL — no hook runs");
@@ -496,34 +538,27 @@ mod tests {
     ///
     /// This is the shape review measured against the binary: the entry survives
     /// every upsert, rides a registered event, and sits on disk at the exact
-    /// declared path. The siblings emit their own two files and nothing emits
-    /// the third. Present, registered, never in force.
+    /// declared path. Each sibling emits the file it claims, and the operator's
+    /// own is claimed by none of them. Present, registered, never in force.
     #[test]
     fn an_injectable_no_sibling_hook_claims_is_reported_as_undelivered() {
         let dir = tempdir().unwrap();
+        let mut files = seeded_paths();
+        files.push(".claude/mustard/my-rules.md".to_string());
         seed(
             dir.path(),
             &format!(
-                r#"{BOTH},
-                   {{"on":"userPromptSubmit","file":".claude/mustard/my-rules.md","once":true}}"#
+                r#"{},
+                   {{"on":"userPromptSubmit","file":".claude/mustard/my-rules.md","once":true}}"#,
+                all_declared(),
             ),
-            &[
-                ".claude/mustard/orchestrator.md",
-                ".claude/mustard/dispatch.md",
-                ".claude/mustard/my-rules.md",
-            ],
+            &files,
         );
-        // A manifest shaped like the shipped one: one sibling per injectable,
-        // each scoped with `--inject`, and none of them claiming the third.
+        // A manifest shaped like the shipped one: one sibling per SEEDED
+        // injectable, each scoped with `--inject`, and none of them claiming
+        // the operator's own.
         let manifest = dir.path().join("hooks.json");
-        std::fs::write(
-            &manifest,
-            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[
-                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/orchestrator.md"},
-                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/dispatch.md"}
-               ]}]}}"#,
-        )
-        .unwrap();
+        manifest_claiming_seeded(&manifest);
         let s = settings(dir.path(), true);
         let report = build_report(dir.path(), &s, Some(&manifest));
 
@@ -557,19 +592,20 @@ mod tests {
     #[test]
     fn the_claim_list_comes_from_this_projects_manifest() {
         let dir = tempdir().unwrap();
-        seed(
-            dir.path(),
-            BOTH,
-            &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
-        );
-        // THIS project's manifest claims only the orchestrator, so `dispatch.md`
-        // is collected by nobody — whatever any installed plugin claims.
+        let files = seeded_paths();
+        seed(dir.path(), &all_declared(), &files);
+        // THIS project's manifest claims only the FIRST injectable, so every
+        // other one is collected by nobody — whatever any installed plugin
+        // claims.
         let manifest = dir.path().join("hooks.json");
         std::fs::write(
             &manifest,
-            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[
-                 {"command":"mustard-rt on userPromptSubmit --inject .claude/mustard/orchestrator.md"}
-               ]}]}}"#,
+            format!(
+                r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[
+                 {{"command":"mustard-rt on userPromptSubmit --inject {}"}}
+               ]}}]}}}}"#,
+                files[0],
+            ),
         )
         .unwrap();
         let s = settings(dir.path(), true);
@@ -579,9 +615,8 @@ mod tests {
         let f = report
             .findings
             .iter()
-            .find(|f| f.kind == "injectable-unclaimed")
-            .expect("dispatch.md is uncollected in THIS project");
-        assert!(f.detail.contains("dispatch.md"), "it must say WHICH file: {}", f.detail);
+            .find(|f| f.kind == "injectable-unclaimed" && f.detail.contains(files[1].as_str()))
+            .expect("the second injectable is uncollected in THIS project");
         // The operator reads these verbatim: no run of collapsed indentation.
         assert!(!f.detail.contains("  "), "detail carries raw indentation: {}", f.detail);
         assert!(!f.remedy.contains("  "), "remedy carries raw indentation: {}", f.remedy);
@@ -607,11 +642,7 @@ mod tests {
     #[test]
     fn a_manifest_that_cannot_be_found_is_reported_not_cleared() {
         let dir = tempdir().unwrap();
-        seed(
-            dir.path(),
-            BOTH,
-            &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
-        );
+        seed(dir.path(), &all_declared(), &seeded_paths());
         let s = settings(dir.path(), true);
         let report = build_report(dir.path(), &s, None);
 
@@ -635,7 +666,7 @@ mod tests {
 
         // A project declaring nothing has no claim question to leave open.
         let empty = tempdir().unwrap();
-        seed(empty.path(), "", &[]);
+        seed(empty.path(), "", &[] as &[&str]);
         let s2 = settings(empty.path(), true);
         let quiet = build_report(empty.path(), &s2, None);
         assert!(
@@ -690,17 +721,21 @@ mod tests {
     #[test]
     fn an_oversized_injectable_and_an_unregistered_event_only_warn() {
         let dir = tempdir().unwrap();
-        seed(
-            dir.path(),
-            r#"{"on":"neverRegistered","file":".claude/mustard/orchestrator.md","once":true},
-               {"on":"userPromptSubmit","file":".claude/mustard/dispatch.md","once":true}"#,
-            &[".claude/mustard/dispatch.md"],
-        );
-        std::fs::write(
-            dir.path().join(".claude/mustard/orchestrator.md"),
-            "x".repeat(HOOK_RESPONSE_CAP + 1),
-        )
-        .unwrap();
+        let files = seeded_paths();
+        // EVERY injectable is declared, so the half-router condition stays
+        // quiet and these two WARNs are the whole of what the report says. The
+        // first rides an event nothing registers, and it is the oversized one.
+        let inject = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let on = if i == 0 { "neverRegistered" } else { "userPromptSubmit" };
+                format!(r#"{{"on":"{on}","file":"{f}","once":true}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        seed(dir.path(), &inject, &files);
+        std::fs::write(dir.path().join(&files[0]), "x".repeat(HOOK_RESPONSE_CAP + 1)).unwrap();
         let manifest = dir.path().join("hooks.json");
         std::fs::write(&manifest, r#"{"hooks":{"UserPromptSubmit":[]}}"#).unwrap();
         let s = settings(dir.path(), true);
@@ -716,14 +751,24 @@ mod tests {
     #[test]
     fn equivalent_path_spellings_do_not_read_as_a_half_router() {
         let dir = tempdir().unwrap();
-        seed(
-            dir.path(),
-            r#"{"on":"userPromptSubmit","file":"./.claude/mustard/orchestrator.md","once":true},
-               {"on":"userPromptSubmit","file":".claude/Mustard/Dispatch.md","once":true}"#,
-            &[],
-        );
-        std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "R").unwrap();
-        std::fs::write(dir.path().join(".claude/mustard/dispatch.md"), "D").unwrap();
+        let files = seeded_paths();
+        // Every injectable declared, two of them spelled differently: a `./`
+        // prefix on the first and a case variant on the second.
+        let cased = case_variant(&files[1]);
+        let inject = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let spelling = match i {
+                    0 => format!("./{f}"),
+                    1 => cased.clone(),
+                    _ => f.clone(),
+                };
+                format!(r#"{{"on":"userPromptSubmit","file":"{spelling}","once":true}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        seed(dir.path(), &inject, &files);
         let s = settings(dir.path(), true);
         let report = build_report(dir.path(), &s, None);
         assert!(
@@ -742,8 +787,7 @@ mod tests {
         // `half-router` was the opposite mistake — it let the test pass while
         // the report FAILed for a reason nobody examined. So the test asks the
         // filesystem the same question the code does, and holds it to that.
-        let case_variant_resolves =
-            dir.path().join(".claude/Mustard/Dispatch.md").is_file();
+        let case_variant_resolves = dir.path().join(&cased).is_file();
         let missing: Vec<&str> = report
             .findings
             .iter()
@@ -777,11 +821,7 @@ mod tests {
     #[test]
     fn an_unreadable_settings_file_reports_no_plugin_finding() {
         let dir = tempdir().unwrap();
-        seed(
-            dir.path(),
-            BOTH,
-            &[".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"],
-        );
+        seed(dir.path(), &all_declared(), &seeded_paths());
         let report = build_report(dir.path(), &dir.path().join("absent.json"), None);
         assert!(!report.findings.iter().any(|f| f.kind == "plugin-disabled"));
     }

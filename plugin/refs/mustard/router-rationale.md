@@ -1,14 +1,14 @@
-# Why the router ships as two injectables
+# Why the router ships as three injectables
 
-Background for a maintainer editing `templates/mustard/{orchestrator,dispatch}.md`. The
+Background for a maintainer editing `templates/mustard/{orchestrator,dispatch,material}.md`. The
 templates themselves carry rules only; the reasoning lives here, loaded on demand.
 
 ## The delivery channel
 
 An injectable is a file declared in `mustard.json#inject`. A hook reads it and returns it
-as `additionalContext`, which Claude Code splices into the model's window. Two SIBLING
-HOOKS carry the router today — one per injectable — and both ride the same event,
-`userPromptSubmit`.
+as `additionalContext`, which Claude Code splices into the model's window. The router
+ships as ONE SIBLING HOOK PER INJECTABLE — three of them today — and every one of those
+hooks rides the same event, `userPromptSubmit`.
 
 **A hook response is capped at 10,000 characters.** Past that, the overflow is not cut
 mid-sentence: Claude Code saves it to a file and hands the window a preview plus that
@@ -30,7 +30,7 @@ from `additionalContext` is kept from every hook and passed to Claude together."
 So the way to give a document its own ceiling is **one sibling hook per injectable**, not
 one hook per event. There is no composite budget between siblings.
 
-## Why two files rather than one
+## Why more than one file
 
 The router was a single file until 2026-08-20. It measured 9,543 characters, under the
 cap. That day a commit improved the opening question (three correctable fields, base asked
@@ -43,11 +43,20 @@ re-inject: `fork` matched no matcher, `startup` never cleared the per-session ma
 a project installed before the split kept declaring only the first half. Every one of
 those failures was silent.
 
-Both halves now ride `userPromptSubmit`, one sibling hook each. That event is
+Every part now rides `userPromptSubmit`, one sibling hook each. That event is
 **self-healing**: the `once` markers live under `.claude/.session/<session_id>/`, so any
 path that loses the window (a new session, a fork, a resume) also loses the marker, and
 the next prompt re-delivers on its own. `sessionStart` can never have that property — it
 only fires on openings.
+
+The router split a SECOND time on 2026-09-02, and the same remedy answered it. The part
+carrying the opening question had reached ten characters of margin under the alarm on a
+CRLF checkout, so the material channel — what the conversation SETTLES and where that
+writing lands — moved out whole into a third injectable with a sibling hook of its own.
+The set is not fixed at three: `INJECTABLE_SEEDS` is the one declaration, and a document
+that spells a count rather than deriving it goes stale the day a fourth is added. That is
+why the ratchet in `apps/rt/tests/plugin_prose_matches_shipped_behaviour.rs` reads both the
+NAMES a paragraph enumerates and the NUMBER it claims, against the seed.
 
 ## Why the internal fold is not the ceiling
 
@@ -80,9 +89,11 @@ token against the previous revision).
 
 A first pass at this cut too far and lost four real instructions (`never hand-write it`;
 why `ac-negative-check` accepts either `--spec` form; `trust its thresholds`; `never enter
-it just for guidance`). All were restored. **The safe cut is justification, and it runs out
-well before any aggressive character target.** A budget that forces a rule out is a guard
-that lies: it stays green while the product gets worse.
+it just for guidance`). All were restored. **Cutting justification buys very little, and it
+runs out well before any aggressive character target.** A budget that forces a rule out is a
+guard that lies: it stays green while the product gets worse. So the remedy the alarm
+prescribes is the one in the section below — SPLIT the document, never compress it until a
+rule or its measurement drops out.
 
 ## The two budgets, and how to read the slack
 
@@ -92,11 +103,17 @@ live in `apps/cli/tests/template_budget.rs`:
 - `HOOK_RESPONSE_CAP` = 10,000 — the ceiling above. Past it the document stops being text
   and becomes a path.
 - `INJECTABLE_CHAR_CAP` = 8,000 — a per-file ALARM, held deliberately below the ceiling.
-  Not a target and not the limit: it fires while a document is still carrying prose it
-  should not, early enough that the answer is deleting justification and never a rule.
+  Not a target and not the limit: it fires while the document is still well under the
+  ceiling, early enough that the answer is a SPLIT — move a self-contained job out whole,
+  into an injectable of its own with a sibling hook of its own. That is the remedy the
+  failure message prints and the one `INJECTABLE_CHAR_CAP`'s own doc in
+  `apps/cli/tests/template_budget.rs` prescribes. Trimming a rule down to the rule alone,
+  with its dated measurement cut off, is the remedy that is NEVER available here: a rule
+  shipped without the incident behind it is a rule the next reader argues away, and the
+  budget that bought its margin that way is a guard that lies.
 
 **What is measured is the LARGER of the character count and the byte count, of the file as
-it stands IN THE CHECKOUT, line endings included.** Both halves earn their place. Which
+it stands IN THE CHECKOUT, line endings included.** Both numbers earn their place. Which
 unit the harness counts is undocumented, and the two differ wherever the text is not plain
 ASCII — these files carry accents, em dashes and `▸`/`⨯` — so the conservative reading is
 the only honest one. And a Windows checkout carries CRLF, one extra character PER LINE, so a file measures its

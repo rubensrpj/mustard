@@ -38,7 +38,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use mustard_core::{
-    footprint_rules, upsert_project, InstallMode, CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD,
+    footprint_rules, upsert_project, InstallMode, CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD,
+    ORCHESTRATOR_MD,
     SETTINGS_SEED,
 };
 
@@ -192,13 +193,16 @@ fn ac4_shared_install_is_byte_identical_to_today() {
 
     let report = upsert_project(root, Some("9.9.9"), InstallMode::Shared).expect("upsert");
 
-    // 1. The same four paths, in the same order, as before the mode existed.
+    // 1. The same paths, in the same order, as before the mode existed — every
+    //    injectable included, so a new one cannot be added without this list
+    //    being told about it.
     assert_eq!(
         report.created,
         vec![
             ".claude/settings.json",
             ".claude/mustard/orchestrator.md",
             ".claude/mustard/dispatch.md",
+            ".claude/mustard/material.md",
             ".claude/.gitignore",
             "mustard.json",
         ],
@@ -218,6 +222,7 @@ fn ac4_shared_install_is_byte_identical_to_today() {
         Some(ORCHESTRATOR_MD.to_string()),
     );
     assert_eq!(read(&root.join(".claude/mustard/dispatch.md")), Some(DISPATCH_MD.to_string()));
+    assert_eq!(read(&root.join(".claude/mustard/material.md")), Some(MATERIAL_MD.to_string()));
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");
 
@@ -321,6 +326,7 @@ fn ac11_private_install_refuses_when_it_cannot_hide() {
         ".claude/settings.local.json",
         ".claude/mustard/orchestrator.md",
         ".claude/mustard/dispatch.md",
+        ".claude/mustard/material.md",
         ".claude/.gitignore",
         ".claude",
         "mustard.json",

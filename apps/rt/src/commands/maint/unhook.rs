@@ -42,6 +42,7 @@ use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -301,6 +302,90 @@ fn wipe_volatile_state(claude_dir: &Path) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Epilogue
+// ---------------------------------------------------------------------------
+
+/// Count the entries by `state`, rendered sorted by state name so the sentence
+/// is byte-stable for a given report.
+fn state_breakdown(entries: &[DisabledEntry]) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in entries {
+        *counts.entry(entry.state.as_str()).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(state, n)| format!("{n} {state}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The stderr epilogue for a finished sweep, every line derived from `report`.
+///
+/// The text this replaces was written once and printed always: it asserted that
+/// `disableAllHooks: true` had been written above and that volatile state had
+/// been wiped. A checkout with no `.claude/settings.json` — every entry
+/// `state: "missing"`, `hooks_disabled: false`, `cleared: []` — got exactly the
+/// same three lines, so the operator walked away believing the harness was off
+/// while every hook was still firing. Guidance that outlives its own report is
+/// worse than no guidance, because it is read as confirmation. So the counts
+/// below are read back out of the report, and a zero is said out loud.
+fn epilogue(report: &UnhookReport) -> Vec<String> {
+    let total = report.entries.len();
+    let disabled = report.entries.iter().filter(|e| e.hooks_disabled).count();
+    let cleared: usize = report.entries.iter().map(|e| e.cleared.len()).sum();
+    let errors = report.entries.iter().filter(|e| e.state == "error").count();
+    let breakdown = state_breakdown(&report.entries);
+
+    // Mustard 2.0 ships as a Claude Code plugin; the native toggle disables
+    // that one plugin, which is the narrower and usually preferable action.
+    // `disableAllHooks` is broader — it silences EVERY hook the harness would
+    // fire, Mustard's and anyone else's. Guidance on stderr keeps stdout pure
+    // JSON.
+    let mut lines = vec![
+        String::new(),
+        "Mustard now ships as a Claude Code plugin. To turn only Mustard OFF: claude plugin disable mustard".to_string(),
+    ];
+
+    lines.push(if disabled == 0 {
+        format!(
+            "Nothing was silenced: `disableAllHooks: true` reached none of the {total} target(s) ({breakdown}) — every hook is still firing."
+        )
+    } else {
+        format!(
+            "Wrote `disableAllHooks: true` into {disabled} of {total} target(s) ({breakdown}); that flag silences EVERY hook, not just Mustard's."
+        )
+    });
+
+    lines.push(if cleared == 0 {
+        "No volatile state was there to wipe (.agent-state/, .cluster-cache.json).".to_string()
+    } else {
+        format!("Wiped {cleared} volatile state path(s) (.agent-state/, .cluster-cache.json).")
+    });
+
+    // True on every path, and the only claim here the report does not measure:
+    // nothing in this command ever opens those. Kept because it answers the
+    // question the switch raises — what else did it take.
+    lines.push(
+        "Left intact either way: your permissions, statusLine, and any .claude/worktrees/."
+            .to_string(),
+    );
+
+    if errors > 0 {
+        lines.push(format!(
+            "{errors} target(s) failed — read the `error` field of the report above; those settings files were left byte-for-byte as found."
+        ));
+    }
+
+    if disabled > 0 {
+        lines.push(
+            "Re-enable with: claude plugin enable mustard   (or clear the flag: mustard-rt run rehook).".to_string(),
+        );
+    }
+
+    lines
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -335,15 +420,9 @@ pub fn run(opts: UnhookOpts) {
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
     );
 
-    // Mustard 2.0 ships as a Claude Code plugin; the native toggle disables
-    // that one plugin, which is the narrower and usually preferable action.
-    // `disableAllHooks` is broader — it silences EVERY hook the harness would
-    // fire, Mustard's and anyone else's. Guidance on stderr keeps stdout pure
-    // JSON.
-    eprintln!();
-    eprintln!("Mustard now ships as a Claude Code plugin. To turn only Mustard OFF: claude plugin disable mustard");
-    eprintln!("The `disableAllHooks: true` written above silences EVERY hook, not just Mustard's; it also wiped volatile state (.agent-state/, .cluster-cache.json). Your permissions, statusLine and any .claude/worktrees/ were left intact.");
-    eprintln!("Re-enable with: claude plugin enable mustard   (or clear the flag: mustard-rt run rehook).");
+    for line in epilogue(&report) {
+        eprintln!("{line}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +538,79 @@ mod tests {
             "{ not json at all",
             "the original bytes must survive"
         );
+    }
+
+    fn entry_of(state: &str, hooks_disabled: bool, cleared: &[&str]) -> DisabledEntry {
+        DisabledEntry {
+            settings_path: format!("/tmp/{state}/.claude/settings.json"),
+            moved_to: None,
+            hooks_disabled,
+            state: state.to_string(),
+            cleared: cleared.iter().map(|s| (*s).to_string()).collect(),
+            error: None,
+        }
+    }
+
+    fn report_of(entries: Vec<DisabledEntry>) -> UnhookReport {
+        UnhookReport {
+            scope: "this".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            entries,
+            revert_with: "mustard-rt run rehook --scope this".into(),
+        }
+    }
+
+    /// The defect this file carried: a sweep that wrote nothing and cleared
+    /// nothing still printed "the `disableAllHooks: true` written above ... it
+    /// also wiped volatile state". The epilogue must never claim an act the
+    /// report says did not happen.
+    #[test]
+    fn epilogue_never_claims_a_write_that_did_not_happen() {
+        let text = epilogue(&report_of(vec![entry_of("missing", false, &[])])).join("\n");
+
+        assert!(
+            !text.contains("Wrote `disableAllHooks"),
+            "no write happened: {text}"
+        );
+        assert!(text.contains("Nothing was silenced"), "{text}");
+        assert!(text.contains("every hook is still firing"), "{text}");
+        assert!(text.contains("1 missing"), "the state breakdown is read back: {text}");
+        assert!(text.contains("No volatile state was there to wipe"), "{text}");
+        assert!(
+            !text.contains("Re-enable with"),
+            "there is nothing to re-enable: {text}"
+        );
+    }
+
+    /// The mirror: when the sweep DID write and DID clear, the epilogue reports
+    /// the counts it read rather than a bare adjective.
+    #[test]
+    fn epilogue_reports_the_counts_it_read() {
+        let text = epilogue(&report_of(vec![
+            entry_of("disabled", true, &["/tmp/a/.claude/.agent-state", "/tmp/a/.claude/.cluster-cache.json"]),
+            entry_of("missing", false, &[]),
+        ]))
+        .join("\n");
+
+        assert!(text.contains("Wrote `disableAllHooks: true` into 1 of 2 target(s)"), "{text}");
+        assert!(text.contains("1 disabled, 1 missing"), "sorted breakdown: {text}");
+        assert!(text.contains("Wiped 2 volatile state path(s)"), "{text}");
+        assert!(text.contains("Re-enable with"), "{text}");
+    }
+
+    /// A partial failure is named, and the epilogue points at the report's own
+    /// `error` field instead of restating a guess.
+    #[test]
+    fn epilogue_names_failed_targets() {
+        let text = epilogue(&report_of(vec![
+            entry_of("error", false, &[]),
+            entry_of("skipped", false, &[]),
+        ]))
+        .join("\n");
+
+        assert!(text.contains("1 target(s) failed"), "{text}");
+        assert!(text.contains("byte-for-byte as found"), "{text}");
+        assert!(text.contains("1 error, 1 skipped"), "{text}");
     }
 
     #[test]

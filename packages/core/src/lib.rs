@@ -55,7 +55,8 @@ pub use platform::hook_resolve::{
 // `mustard-rt run upsert`. See `platform/seeds.rs` + `platform/project_seed.rs`.
 pub use platform::project_seed::{
     carries_private_marks, default_inject_entries, detect_install_mode, footprint,
-    footprint_pathspecs, footprint_rules, is_written_footprint, migrate_orchestrator_footprint,
+    footprint_pathspecs, footprint_rules, injectable_declared_paths, injectable_names,
+    injectable_seeds, is_written_footprint, migrate_orchestrator_footprint,
     record_version_stamp, record_written_path, retire_planted_plugin_enablement, seed_gitignore,
     seed_injectable_files, seed_settings, upsert_project, worktree_is_clean, FootprintEntry,
     InstallMode, MigrationOutcome, RecordOutcome, SeedOutcome, UpsertReport, CLAUDE_LOCAL_MD,
@@ -83,7 +84,9 @@ pub use platform::harness::{
     installed_plugin_rt, installed_plugin_rt_from, is_behind, newer_installed_rt,
     newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,
 };
-pub use platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
+pub use platform::seeds::{
+    CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD, ORCHESTRATOR_MD, SETTINGS_SEED,
+};
 
 /// The machine-level dashboard project registry, shared by the dashboard
 /// server (which renders it) and `mustard init` (which fills it in).

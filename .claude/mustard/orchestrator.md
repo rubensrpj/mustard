@@ -25,7 +25,7 @@ Confirm only on a genuine fork (bugfix-vs-feature, light-vs-full, under-specifie
 
 **A prompt that arrived from a slash-command is not yours to route.** That flow owns the turn: do not reclassify its answers and do not open a unit inside it.
 
-The DISPATCH lives in the companion injectable `.claude/mustard/dispatch.md`: the question a unit opens with, the base gate, the name it mints. Why two files: `refs/mustard/router-rationale.md`.
+THREE injectables carry the router, a sibling hook each: this file, `dispatch.md` (the question a unit opens with, the base gate, the name it mints) and `material.md` (the conversation's own channel). Why three files: `refs/mustard/router-rationale.md`.
 
 ## Delegate via Task
 

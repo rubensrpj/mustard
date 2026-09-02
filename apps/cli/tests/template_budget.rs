@@ -26,8 +26,12 @@
 //!    two siblings emitting 6,000 characters each on one `UserPromptSubmit`
 //!    both arrived intact and separate. A document that outgrows 10,000 is
 //!    SPLIT and given another hook, never compressed until a rule drops out
-//!    (see `packages/core/templates/mustard/{orchestrator,dispatch}.md` and
-//!    `plugin/refs/mustard/router-rationale.md`).
+//!    (see `packages/core/templates/mustard/{orchestrator,dispatch,material}.md`
+//!    and `plugin/refs/mustard/router-rationale.md`). The material channel is
+//!    the second document to take that remedy: `dispatch.md` had reached ten
+//!    characters of margin on a CRLF checkout, and the alternative prescription
+//!    — trim the justification off a rule — buys margin by shipping rules the
+//!    next reader can argue away.
 //!
 //! Everything else (command / ref body size) is governed by structure
 //! (progressive disclosure) and human review, not a numeric tripwire — and
@@ -50,6 +54,13 @@ const DESCRIPTION_CHAR_CAP: usize = 1_536;
 /// they were restored. A budget that forces a rule out is a guard that lies: it
 /// stays green while the product gets worse. So this is an alarm for prose
 /// creep, and [`HOOK_RESPONSE_CAP`] is what actually binds.
+///
+/// **The answer to this alarm is a SPLIT**, which is what the failure message
+/// below prescribes and what the material channel did when `dispatch.md`
+/// reached ten characters of margin. Trimming a rule down to the rule alone,
+/// with its dated justification cut off, is the one remedy that is never
+/// available here: a document of unexplained rules is one the reader argues
+/// with, which is the whole reason these files carry their measurements.
 ///
 /// **The count is of the file AS CHECKED OUT, line endings included.** A Windows
 /// checkout carries CRLF, one extra character per line. An earlier budget left 5

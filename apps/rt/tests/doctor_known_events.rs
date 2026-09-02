@@ -116,7 +116,12 @@ fn sessionstart_matchers_cover_fork() {
 /// The 10,000-character `additionalContext` ceiling is per hook RESPONSE, and
 /// Claude Code keeps the context of every sibling (measured 2026-08-25). One
 /// hook per injectable is what turns that into a ceiling each document owns —
-/// registering both on one hook would put them back under a single response.
+/// registering two on one hook would put them back under a single response.
+///
+/// The set is asked of the SEED (`injectable_declared_paths`), never listed
+/// here. A hand-written list went blind the day a third injectable was added:
+/// the new document rode a sibling nothing checked, and the test that exists to
+/// prove each one is claimed alone stayed green while covering two of three.
 #[test]
 fn each_router_injectable_rides_its_own_sibling_hook() {
     let path = shipped_manifest_path().expect("plugin/hooks/hooks.json must be reachable");
@@ -139,8 +144,13 @@ fn each_router_injectable_rides_its_own_sibling_hook() {
         })
         .collect();
 
-    for file in [".claude/mustard/orchestrator.md", ".claude/mustard/dispatch.md"] {
-        let claimants = commands.iter().filter(|c| c.contains(file)).count();
+    let seeded = mustard_core::injectable_declared_paths();
+    assert!(
+        !seeded.is_empty(),
+        "the seed carries no injectable — this test would pass by measuring nothing"
+    );
+    for file in seeded {
+        let claimants = commands.iter().filter(|c| c.contains(&file)).count();
         assert_eq!(
             claimants, 1,
             "`{file}` is claimed by {claimants} UserPromptSubmit hook(s); it needs exactly \

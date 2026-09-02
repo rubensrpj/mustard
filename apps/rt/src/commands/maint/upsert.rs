@@ -8,13 +8,14 @@
 //! private-mode (see [`run`]); the shared `.claude/settings.json` is never
 //! written here. What the OPERATOR owns is merge-only: an existing
 //! `.claude/settings.local.json`, `.claude/.gitignore` or `mustard.json` is
-//! preserved, and only what is missing is created or backfilled. The two
-//! injectable instruction files —
-//! `.claude/mustard/orchestrator.md` and `.claude/mustard/dispatch.md` — are
+//! preserved, and only what is missing is created or backfilled. The three
+//! injectable instruction files — `.claude/mustard/orchestrator.md`,
+//! `.claude/mustard/dispatch.md` and `.claude/mustard/material.md` — are
 //! ALWAYS rewritten: they are the harness's own rules, not project
 //! configuration, so a copy that diverged is replaced and reported as
-//! `Updated`. The legacy planted-orchestrator footprint is migrated away in
-//! the same pass.
+//! `Updated`, while a copy already byte-identical to the shipped text is
+//! reported as `Preserved` because there was nothing left to write. The
+//! legacy planted-orchestrator footprint is migrated away in the same pass.
 //!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
 //! `UpsertReport` flattened, with `pluginRefresh` appended — deterministic
