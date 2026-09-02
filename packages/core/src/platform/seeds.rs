@@ -27,12 +27,12 @@ pub const SETTINGS_SEED: &str = include_str!("../../templates/settings.json");
 
 /// The orchestrator-rules injectable (`.claude/mustard/orchestrator.md`) —
 /// spliced into the agent's window per `mustard.json#inject`, canonically on
-/// `userPromptSubmit` once per session. Carries the router's FIRST half:
+/// `userPromptSubmit` once per session. Carries the router's FIRST part:
 /// intent routing, delegation, phases, locating code, efficiency.
 pub const ORCHESTRATOR_MD: &str = include_str!("../../templates/mustard/orchestrator.md");
 
 /// The dispatch-rules injectable (`.claude/mustard/dispatch.md`) — the
-/// router's SECOND half: the question a unit opens with, the base gate, and
+/// router's DISPATCH part: the question a unit opens with, the base gate, and
 /// the naming. Declared on `userPromptSubmit`, the same event as
 /// [`ORCHESTRATOR_MD`] and on a sibling hook of its own.
 ///
@@ -66,7 +66,7 @@ pub const DISPATCH_MD: &str = include_str!("../../templates/mustard/dispatch.md"
 /// channel is a self-contained job (what the unit CARRIES), distinct from where
 /// a unit starts and what it is called.
 ///
-/// Like the other two it rides its own sibling hook on `userPromptSubmit`, so
+/// Like every other part it rides its own sibling hook on `userPromptSubmit`, so
 /// it is measured alone against the 10,000-character response ceiling — see
 /// [`DISPATCH_MD`] for why sibling hooks share no budget.
 pub const MATERIAL_MD: &str = include_str!("../../templates/mustard/material.md");
@@ -78,6 +78,27 @@ pub const CLAUDE_GITIGNORE: &str = include_str!("../../templates/.gitignore");
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::project_seed::INJECTABLE_SEEDS;
+
+    /// The marker heading a part named `<stem>.md` owes: `# <Stem> Rules`.
+    ///
+    /// DERIVED, not listed. A per-constant assertion is an enumeration, and an
+    /// enumeration of the injectables is exactly what goes stale the day a
+    /// fourth is seeded — the same defect this file's siblings ratchet against
+    /// in prose.
+    fn marker_heading(name: &str) -> String {
+        let stem = name.strip_suffix(".md").unwrap_or(name);
+        let mut chars = stem.chars();
+        let head = chars.next().map(|c| c.to_ascii_uppercase()).unwrap_or('?');
+        format!("# {head}{} Rules", chars.as_str())
+    }
+
+    /// The sections that must live in EXACTLY ONE part, whichever part that is.
+    ///
+    /// A section in none of them is prose a hook dropped on the floor; a
+    /// section in two is the state where an edit corrects one copy and the
+    /// window reads the other.
+    const SOLE_SECTIONS: &[&str] = &["## Dispatch", "## Intent Routing", "## Material"];
 
     /// The embedded seeds must be non-empty and carry their identifying
     /// shapes — a broken `include_str!` path fails the build, but an emptied
@@ -88,51 +109,55 @@ mod tests {
             serde_json::from_str(SETTINGS_SEED).expect("settings seed is valid JSON");
         assert!(settings.get("permissions").is_some(), "settings seed has permissions");
         assert!(settings.get("statusLine").is_some(), "settings seed has statusLine");
+
         assert!(
-            ORCHESTRATOR_MD.starts_with("# Orchestrator Rules"),
-            "orchestrator seed keeps its marker heading"
+            !INJECTABLE_SEEDS.is_empty(),
+            "the seed carries no injectable — every check below would measure nothing"
         );
-        assert!(
-            DISPATCH_MD.starts_with("# Dispatch Rules"),
-            "dispatch seed keeps its marker heading"
-        );
-        assert!(
-            MATERIAL_MD.starts_with("# Material Rules"),
-            "material seed keeps its marker heading"
-        );
-        // The three are ONE router split across three sibling hooks; each must
-        // still be the part it claims to be, or a split moved prose into a file
-        // nobody's hook delivers — or, worse, into two at once, where an edit
-        // corrects one copy and leaves the window reading the other.
-        assert!(
-            DISPATCH_MD.contains("## Dispatch")
-                && !ORCHESTRATOR_MD.contains("## Dispatch")
-                && !MATERIAL_MD.contains("## Dispatch"),
-            "the dispatch section must live in exactly one of the three parts"
-        );
-        assert!(
-            ORCHESTRATOR_MD.contains("## Intent Routing")
-                && !DISPATCH_MD.contains("## Intent Routing")
-                && !MATERIAL_MD.contains("## Intent Routing"),
-            "intent routing must live in exactly one of the three parts"
-        );
+        for (name, body) in INJECTABLE_SEEDS {
+            let heading = marker_heading(name);
+            assert!(
+                body.starts_with(&heading),
+                "the `{name}` seed no longer opens with `{heading}` — an emptied or \
+                 mis-moved template seeds silence, and the hook that delivers it \
+                 cannot tell"
+            );
+        }
+
+        // The parts are ONE router split across one sibling hook each.
+        for section in SOLE_SECTIONS {
+            let carriers: Vec<&str> = INJECTABLE_SEEDS
+                .iter()
+                .filter(|(_, body)| body.contains(section))
+                .map(|(name, _)| *name)
+                .collect();
+            assert_eq!(
+                carriers.len(),
+                1,
+                "`{section}` must live in exactly one injectable, and it lives in \
+                 {carriers:?}. None means a hook delivers it to nobody; two means an \
+                 edit corrects one copy while the window reads the other",
+            );
+        }
+
         // The material channel MOVED; it did not get copied. A live
-        // `material-add` invocation still standing in `dispatch.md` is the state
+        // `material-add` invocation standing in any OTHER part is the state
         // where the rule is corrected in one file and read from the other.
         // Matched on the INVOCATION, not the bare command name — the pointer
-        // dispatch.md keeps is allowed to say what it points at.
+        // `dispatch.md` keeps is allowed to say what it points at.
         const MATERIAL_CALL: &str = "mustard-rt run material-add";
-        assert!(
-            MATERIAL_MD.contains("## Material")
-                && !ORCHESTRATOR_MD.contains("## Material")
-                && !DISPATCH_MD.contains("## Material"),
-            "the material section must live in exactly one of the three parts"
+        let callers: Vec<&str> = INJECTABLE_SEEDS
+            .iter()
+            .filter(|(_, body)| body.contains(MATERIAL_CALL))
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(
+            callers,
+            vec!["material.md"],
+            "the `material-add` calls must stand in the material part alone; found in \
+             {callers:?}",
         );
-        assert!(
-            MATERIAL_MD.contains(MATERIAL_CALL) && !DISPATCH_MD.contains(MATERIAL_CALL),
-            "the `material-add` calls must be in the material part alone"
-        );
-        // …and the half it left still POINTS at it: a reader of the unit's
+        // …and the part it left still POINTS at it: a reader of the unit's
         // rules who is never told where the channel went stops using it.
         assert!(
             DISPATCH_MD.contains("material.md"),

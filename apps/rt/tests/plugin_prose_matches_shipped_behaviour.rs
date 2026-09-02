@@ -632,8 +632,8 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
 /// happens. The prose IS the feature here; without it the change is a prefix
 /// that altered its spelling and nothing else.
 ///
-/// So both halves are read together: the question a reader arrives at in the
-/// router's own § Dispatch, and the mechanism each of its promises rests on.
+/// So both halves are read together: the question a reader arrives at in
+/// § Dispatch, and the mechanism each of its promises rests on.
 #[test]
 fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
     // --- 1. The shipped seed asks ONE pre-marked question ------------------
@@ -1948,16 +1948,17 @@ fn the_router_prose_names_the_signal_the_gate_emits() {
 /// two-event split this unit undid.
 #[test]
 fn router_teaches_the_self_healing_delivery() {
-    // The wrong claims are gone from every shipped part of the router.
-    for seed in [
-        mustard_core::ORCHESTRATOR_MD,
-        mustard_core::DISPATCH_MD,
-        mustard_core::MATERIAL_MD,
-    ] {
+    // The wrong claims are gone from every shipped part of the router — asked
+    // of the SEED, so a part added later is swept the day it lands rather than
+    // when someone remembers to extend a list here.
+    let seeds = mustard_core::injectable_seeds();
+    assert!(!seeds.is_empty(), "the seed carries no injectable — this test would measure nothing");
+    for (name, seed) in &seeds {
         for retired in ["two events", "sessionStart", "share one ceiling"] {
             assert!(
                 !seed.contains(retired),
-                "the router still teaches `{retired}`, the model the measurement replaced",
+                "the router part `{name}` still teaches `{retired}`, the model the \
+                 measurement replaced",
             );
         }
     }
@@ -2022,14 +2023,14 @@ fn router_teaches_the_self_healing_delivery() {
     );
 
     // The delivered copies are the seeds — a project reading a stale router is
-    // reading rules this repository no longer ships.
-    for (delivered, seed) in [
-        (".claude/mustard/orchestrator.md", mustard_core::ORCHESTRATOR_MD),
-        (".claude/mustard/dispatch.md", mustard_core::DISPATCH_MD),
-        (".claude/mustard/material.md", mustard_core::MATERIAL_MD),
-    ] {
+    // reading rules this repository no longer ships. The SET comes from the
+    // seed too: a hand-written triple stayed green through a fourth injectable
+    // in a measured sabotage, which is the whole failure this file exists to
+    // make impossible.
+    for (name, seed) in &seeds {
+        let delivered = format!(".claude/mustard/{name}");
         assert_eq!(
-            read(delivered).replace("\r\n", "\n"),
+            read(&delivered).replace("\r\n", "\n"),
             seed.replace("\r\n", "\n"),
             "the delivered {delivered} drifted from the seed — re-run `mustard-rt run upsert`",
         );
@@ -2760,13 +2761,18 @@ fn every_project_learns_that_a_door_does_what_it_names() {
 /// Where the always-rewrite contract is stated, and the sentences that state
 /// it: `(file, claims)`, with `claims[0]` the always-rewrite sentence itself.
 ///
-/// Four surfaces describe what `/mustard:upsert` does to the instruction files
-/// the harness seeds — two doc comments, one door, one command reference, in
+/// Five surfaces describe what `/mustard:upsert` does to the instruction files
+/// the harness seeds — three doc comments, one door, one command reference, in
 /// two languages — and until now NOTHING read any of them. The regression they
 /// ratchet against is not hypothetical: a round of this work replaced the
 /// always-rewrite sentence with a merge-mode one and cost two turns of
 /// correction, with a green build both times, because every criterion pinned
 /// the BEHAVIOUR and none pinned the prose that describes it.
+///
+/// `project_seed.rs` is here because that is where the ENGINE states the
+/// contract, and two of the four original offenders lived in it. A ratchet that
+/// reads the doors and not the engine leaves the sentence closest to the code
+/// unguarded.
 ///
 /// The file NAMES are not listed here. They come from the seed, so a new
 /// injectable makes every one of these surfaces owe it a mention rather than
@@ -2785,10 +2791,79 @@ const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
         &["ALWAYS rewritten", "`Updated`", "`Preserved`"],
     ),
     (
+        "packages/core/src/platform/project_seed.rs",
+        &["Always rewritten", "`SeedOutcome::Updated`", "`SeedOutcome::Preserved`"],
+    ),
+    (
         "plugin/commands/upsert.md",
         &["every run lays the shipped text down again", "`updated`", "`preserved`"],
     ),
 ];
+
+/// Sentences that state the OPPOSITE of the always-rewrite contract, forbidden
+/// anywhere in a surface that describes it.
+///
+/// This half exists because the rest of this ratchet catches a SUBSTITUTION and
+/// not an ADDITION. Measured by a reviewer: a contradicting sentence INSERTED
+/// beside the surviving contract sentence left every assertion here green — the
+/// required claims were still present, the names were still all named, and the
+/// line rule only fires on a line that files an injectable under `merge`. A
+/// reader who meets both sentences believes the one that flatters their hope,
+/// which for an operator with a local edit is always the wrong one.
+///
+/// Matched against the surface with its whitespace collapsed, so a claim that
+/// is merely hard-wrapped across two doc-comment lines is caught like any
+/// other. Each phrase here is one that is NEVER true of these files — the
+/// legitimate `preserved` sentences of the other seeds say `an existing file`
+/// or `o que já existe`, never the injectables.
+const CONTRACT_CONTRADICTIONS: &[&str] = &[
+    "an existing user file is preserved",
+    "injectable is preserved",
+    "injectables are preserved",
+    "injetáveis são preservados",
+    "never overwritten",
+    "nunca sobrescrito",
+    "os injetáveis são preservados",
+    "user file is preserved",
+    "user files are preserved",
+];
+
+/// Words that file a file under the OPERATOR's ownership — the category the
+/// injectables are the exception to.
+const OWNERSHIP_MARKERS: &[&str] = &["merge", "preserv", "clobber", "yours", "you own"];
+
+/// Ways of naming the exception, beyond each surface's own headline claim.
+///
+/// A sentence that says `Preserved` about an injectable is fine when it is the
+/// sentence explaining that the always-rewrite contract is what forbids it —
+/// which is how the ENGINE documents the bug it fixed. What is not fine is the
+/// same sentence with no exception named at all.
+const EXCEPTION_MARKERS: &[&str] =
+    &["always rewritten", "always-rewrite", "regrava o texto embarcado"];
+
+/// The prose of a surface: a markdown file whole, a Rust file's `//` comment
+/// lines only.
+///
+/// Code is not prose. A fixture that writes `"orchestrator.md"` into a JSON
+/// literal makes no claim about the contract, and reading it as one would
+/// bury the sentences that do.
+fn contract_prose(rel: &str, body: &str) -> String {
+    if !rel.ends_with(".rs") {
+        return body.to_string();
+    }
+    body.lines()
+        .map(str::trim_start)
+        .filter(|l| l.starts_with("//"))
+        .map(|l| l.trim_start_matches('/').trim_start_matches('!'))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A body with every whitespace run collapsed to one space, lowercased — the
+/// shape a claim takes once hard wrapping stops mattering.
+fn flattened(body: &str) -> String {
+    body.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
 
 /// The basenames the seed carries, asked of the seed.
 fn injectables() -> Vec<&'static str> {
@@ -2800,10 +2875,10 @@ fn injectables() -> Vec<&'static str> {
 /// Every surface that describes the install states the contract, names every
 /// file it holds for, and never files them under what the operator owns.
 ///
-/// Both halves, as everywhere in this file. The PROSE half is the four
-/// surfaces; the CODE half drives `seed_injectable_files` over a diverged copy
-/// and requires the outcome the prose promises — so the pair can only be broken
-/// together, deliberately.
+/// Both halves, as everywhere in this file. The PROSE half is every surface in
+/// [`REWRITE_CONTRACT_SURFACES`]; the CODE half drives `seed_injectable_files`
+/// over a diverged copy and requires the outcome the prose promises — so the
+/// pair can only be broken together, deliberately.
 #[test]
 fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
     let names = injectables();
@@ -2842,6 +2917,49 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
                  on the same line: {}",
                 n + 1,
                 line.trim(),
+            );
+        }
+
+        // The ADDITION half. Everything above passes with the contract sentence
+        // intact and a contradicting one sitting next to it, which is exactly
+        // what a reviewer measured. Two checks close that.
+        //
+        // First: a phrase that is never true of these files, anywhere in the
+        // surface, wrapping ignored.
+        let prose = contract_prose(rel, &body);
+        let flat = flattened(&prose);
+        for forbidden in CONTRACT_CONTRADICTIONS {
+            assert!(
+                !flat.contains(forbidden),
+                "{rel} says `{forbidden}`. These files are ALWAYS rewritten, and a \
+                 surface that says both is worse than one that says neither: the \
+                 reader believes whichever sentence suits them, and the operator \
+                 with a local edit believes the wrong one",
+            );
+        }
+
+        // Second, and derived rather than listed: a SENTENCE that names an
+        // injectable and files it under the operator's ownership must be the
+        // sentence that also states the exception. The line rule above sees one
+        // physical line; this sees the statement, however it is wrapped, and it
+        // widens `merge` to every word that puts a file on the operator's side.
+        for sentence in prose.split(". ") {
+            if !names.iter().any(|name| sentence.contains(name)) {
+                continue;
+            }
+            let lowered = sentence.to_lowercase();
+            let Some(marker) = OWNERSHIP_MARKERS.iter().find(|m| lowered.contains(**m)) else {
+                continue;
+            };
+            let states_exception = sentence.contains(claims[0])
+                || EXCEPTION_MARKERS.iter().any(|m| lowered.contains(*m));
+            assert!(
+                states_exception,
+                "{rel} names an injectable in a sentence that files it under the \
+                 operator's own files (`{marker}`) and never states the exception \
+                 (`{}`) in that same sentence: {}",
+                claims[0],
+                sentence.split_whitespace().collect::<Vec<_>>().join(" "),
             );
         }
     }
@@ -2907,6 +3025,20 @@ const SUBSET_EXEMPT_BLOCKS: &[(&str, &str, &str)] = &[
          files that were measured",
     ),
     (
+        "packages/core/src/platform/project_seed.rs",
+        "on the theory that siblings share one ceiling",
+        "the 2026-08-25 experiment, reported as it ran: two sibling hooks on one \
+         event, 6,000 characters each, both intact. Re-typing the number as the \
+         set grows would claim an experiment that was never performed",
+    ),
+    (
+        "plugin/refs/mustard/router-rationale.md",
+        "both arrived intact, in separate blocks",
+        "the same 2026-08-25 experiment, in the ref that carries it in full. The \
+         count belongs to the hooks that were REGISTERED that day, not to the \
+         set of injectables the seed carries now",
+    ),
+    (
         "plugin/refs/mustard/router-rationale.md",
         "with zero operational tokens lost",
         "the 2026-08-20 character counts, file by file, from before the split — a \
@@ -2963,11 +3095,20 @@ fn scanned_documents() -> Vec<PathBuf> {
 /// two of three — that is the state the doctor exists to FIND — while a comment
 /// or a paragraph makes a claim about the harness, and a claim about some of
 /// the injectables is a claim that goes stale the day another is seeded.
+/// In markdown, the HEADING a block sits under travels with it.
+///
+/// A heading is a claim, and it is usually the shortest one on the page: `##
+/// Why two files rather than one` stands alone between blank lines, names no
+/// file and carries no subject word, so read on its own it says nothing this
+/// scan can weigh — and that is exactly how a section title survived counting
+/// the injectables wrong. Read with the paragraph it opens, it is a sentence of
+/// that paragraph, which is how a reader takes it.
 fn prose_blocks(path: &Path, body: &str) -> Vec<(usize, String)> {
     let rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
     let mut out: Vec<(usize, String)> = Vec::new();
     let mut start = 0usize;
     let mut acc: Vec<&str> = Vec::new();
+    let mut heading: Option<&str> = None;
     for (n, line) in body.lines().enumerate() {
         let keep = if rust { line.trim_start().starts_with("//") } else { !line.trim().is_empty() };
         if keep {
@@ -2976,27 +3117,208 @@ fn prose_blocks(path: &Path, body: &str) -> Vec<(usize, String)> {
             }
             acc.push(line);
         } else if !acc.is_empty() {
-            out.push((start, acc.join("\n")));
+            let block = acc.join("\n");
+            let is_heading = !rust && acc.len() == 1 && acc[0].trim_start().starts_with('#');
+            let carried = match heading {
+                Some(h) if !rust && !is_heading => format!("{h}\n{block}"),
+                _ => block,
+            };
+            if is_heading {
+                heading = Some(acc[0]);
+            }
+            out.push((start, carried));
             acc.clear();
         }
     }
     if !acc.is_empty() {
-        out.push((start, acc.join("\n")));
+        let block = acc.join("\n");
+        let carried = match heading {
+            Some(h) if !rust => format!("{h}\n{block}"),
+            _ => block,
+        };
+        out.push((start, carried));
     }
+    out
+}
+
+/// Brace alternation expanded: `templates/mustard/{orchestrator,dispatch,material}.md`
+/// becomes the paths it stands for.
+///
+/// A shorthand is an enumeration. One of these named a proper subset in a
+/// shipped ref and in a budget test and read as naming NONE, because the scan
+/// matched basenames and a braced group spells no basename at all. A group with
+/// no comma (`{slug}`, `{kind}/{slug}`) is a placeholder and is left alone, and
+/// so is one carrying spaces — that is a JSON or Rust literal, not a path.
+fn expand_braces(block: &str) -> String {
+    let mut out = String::with_capacity(block.len());
+    let mut rest = block;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let inner = &after[..close];
+        let tail = &after[close + 1..];
+        if !inner.contains(',') || inner.contains(' ') {
+            out.push('{');
+            out.push_str(inner);
+            out.push('}');
+            rest = tail;
+            continue;
+        }
+        let end = tail
+            .find(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-'))
+            .unwrap_or(tail.len());
+        for alt in inner.split(',') {
+            out.push_str(alt.trim());
+            out.push_str(&tail[..end]);
+            out.push(' ');
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
     out
 }
 
 /// The injectables a block names, minus the document's own basename — a file
 /// that calls itself "this file" has named the whole set.
 fn named_in(block: &str, own: &str, names: &[&'static str]) -> Vec<&'static str> {
+    let expanded = expand_braces(block);
     names
         .iter()
-        .filter(|name| **name != own && block.contains(*name))
+        .filter(|name| **name != own && expanded.contains(*name))
         .copied()
         .collect()
 }
 
-/// No prose block names SOME of the injectables the seed carries.
+/// Count words a cardinality claim can be spelled with, in both languages this
+/// repository writes in. `both`/`ambas` are `two` said without the digit.
+const COUNT_WORDS: &[(&str, usize)] = &[
+    ("ambas", 2),
+    ("ambos", 2),
+    ("both", 2),
+    ("cinco", 5),
+    ("dois", 2),
+    ("duas", 2),
+    ("five", 5),
+    ("four", 4),
+    ("quatro", 4),
+    ("three", 3),
+    ("tres", 3),
+    ("três", 3),
+    ("two", 2),
+];
+
+/// Nouns whose count IS the number of injectables, wherever they are counted.
+const INJECTABLE_NOUNS: &[&str] = &[
+    "injectable",
+    "injectables",
+    "injetáveis",
+    "injetável",
+    "sibling hook",
+    "sibling hooks",
+];
+
+/// Nouns that count the injectables only inside a block that is ABOUT them.
+///
+/// A count of `halves` is no evidence on its own: this repository uses that
+/// idiom for the two sides of one assertion roughly eighty times, and a ratchet
+/// that reddened on all of them would be deleted within a week. So these are
+/// read only next to a subject word — see [`SUBJECT_WINDOW`].
+const ROUTER_NOUNS: &[&str] = &[
+    "arquivo",
+    "arquivos",
+    "document",
+    "documents",
+    "file",
+    "files",
+    "half",
+    "halves",
+    "metade",
+    "metades",
+    "part",
+    "parte",
+    "partes",
+    "parts",
+];
+
+/// Words that make a COUNT be a count of the router's injectables. Matched as
+/// whole tokens, so `router-rationale` and `seed_injectable_files` both carry
+/// one and `.claude/mustard/` — whose tokens are the two most common words in
+/// this repository — carries none.
+const ROUTER_SUBJECT: &[&str] = &[
+    "injectable",
+    "injectables",
+    "injetáveis",
+    "injetável",
+    "roteador",
+    "router",
+    "sibling",
+];
+
+/// How far a [`ROUTER_SUBJECT`] word may sit from a generic count and still be
+/// what that count is counting.
+///
+/// Measured, not chosen: this crate says "both halves" about the two sides of
+/// one assertion roughly eighty times, and several of those paragraphs mention
+/// the router somewhere else in the same doc comment. At eight tokens every one
+/// of them falls out and the four live claims stay in — the nearest subject to
+/// the count that ships is four tokens away.
+const SUBJECT_WINDOW: usize = 8;
+
+/// The stale cardinality claims a block makes: a count word qualifying a noun
+/// that counts the injectables, where the count is not the number the seed
+/// carries.
+///
+/// The subset scan reads NAMES, and skips any block naming fewer than two. That
+/// is how the sharpest finding of this whole unit survived a green build: the
+/// opening paragraph of the seeded rules asked why there were TWO of them while
+/// naming exactly one, so nothing ever looked at it. A number is an enumeration
+/// too.
+///
+/// `injectable` and `sibling hook` count the set wherever they appear. The
+/// generic nouns — files, halves, parts — count it only with a subject word
+/// inside [`SUBJECT_WINDOW`] tokens.
+fn stale_counts(block: &str, total: usize) -> Vec<String> {
+    let lowered = expand_braces(block).to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let subject_near = |i: usize| {
+        let lo = i.saturating_sub(SUBJECT_WINDOW);
+        let hi = (i + SUBJECT_WINDOW + 1).min(words.len());
+        words[lo..hi].iter().any(|w| ROUTER_SUBJECT.contains(w))
+    };
+
+    let mut out = Vec::new();
+    for (i, word) in words.iter().enumerate() {
+        let Some((_, count)) = COUNT_WORDS.iter().find(|(w, _)| w == word) else {
+            continue;
+        };
+        if *count == total {
+            continue;
+        }
+        for span in 1..=2usize {
+            if i + span >= words.len() {
+                break;
+            }
+            let noun = words[i + 1..=i + span].join(" ");
+            let counts_injectables = INJECTABLE_NOUNS.contains(&noun.as_str())
+                || (ROUTER_NOUNS.contains(&noun.as_str()) && subject_near(i));
+            if counts_injectables {
+                out.push(format!("{word} {noun}"));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// No prose block names — or COUNTS — some of the injectables the seed carries.
 ///
 /// The class, not a list of files. Three places named two of three at once —
 /// two doc blocks in the seeding engine and the ratchet that proves each
@@ -3004,6 +3326,14 @@ fn named_in(block: &str, own: &str, names: &[&'static str]) -> Vec<&'static str>
 /// at a time, months apart. Deriving the set from the seed means the fourth
 /// injectable reddens every place left behind on the day it is added, instead
 /// of being discovered the same way.
+///
+/// The NUMBER half was added after the name half shipped and missed the
+/// sharpest instance of all. A block naming fewer than two files was skipped,
+/// so the first paragraph a router reader ever meets — which named one file and
+/// counted them as two — passed a green build inside the very unit that closed
+/// twenty-seven divergences of exactly that kind. The scan now reads the count
+/// as well as the names, expands a braced shorthand into the paths it stands
+/// for, and reads a markdown heading as part of the section it opens.
 #[test]
 fn no_prose_block_names_a_proper_subset_of_the_injectables() {
     let names = injectables();
@@ -3016,27 +3346,38 @@ fn no_prose_block_names_a_proper_subset_of_the_injectables() {
         let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
         let required = names.iter().filter(|n| **n != own).count();
         for (line, block) in prose_blocks(&path, &body) {
-            let named = named_in(&block, own, &names);
-            if named.len() < 2 || named.len() == required {
-                continue;
-            }
             if SUBSET_EXEMPT_BLOCKS
                 .iter()
                 .any(|(file, anchor, _)| rel.ends_with(file) && block.contains(anchor))
             {
                 continue;
             }
-            let missing: Vec<&str> = names
-                .iter()
-                .filter(|n| **n != own && !named.contains(n))
-                .copied()
-                .collect();
-            offenders.push(format!(
-                "{rel}:{line} names {named:?} and not {missing:?}. Every injectable the \
-                 seed carries takes the same rule, so a document that lists some of them \
-                 tells a reader the set is smaller than it is — say it about the SET, or \
-                 name them all"
-            ));
+            // Half one: the NAMES. A block naming some and not all.
+            let named = named_in(&block, own, &names);
+            if named.len() >= 2 && named.len() != required {
+                let missing: Vec<&str> = names
+                    .iter()
+                    .filter(|n| **n != own && !named.contains(n))
+                    .copied()
+                    .collect();
+                offenders.push(format!(
+                    "{rel}:{line} names {named:?} and not {missing:?}. Every injectable the \
+                     seed carries takes the same rule, so a document that lists some of them \
+                     tells a reader the set is smaller than it is — say it about the SET, or \
+                     name them all"
+                ));
+            }
+            // Half two: the NUMBER. A block that counts them, whether it names
+            // two of them, one, or none at all.
+            for claim in stale_counts(&block, names.len()) {
+                offenders.push(format!(
+                    "{rel}:{line} claims `{claim}` and the seed carries {}. A count is an \
+                     enumeration: it goes stale the day another injectable is seeded, and \
+                     the reader it misleads is the one who never opens the seed. Say it \
+                     about the SET, or carry the real number",
+                    names.len(),
+                ));
+            }
         }
     }
     assert!(
@@ -3067,14 +3408,21 @@ fn subset_exemptions_stay_sorted_present_and_necessary() {
             .unwrap_or_else(|e| panic!("exempted document {file} is unreadable: {e}"));
         let own = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
         let required = names.iter().filter(|n| **n != own).count();
+        // Still an offender of EITHER kind — a dated measurement usually names
+        // the files it measured AND counts them, and a row that stops earning
+        // its place on both counts is a row that hides nothing any more.
         let still_partial = prose_blocks(&path, &body).into_iter().any(|(_, block)| {
+            if !block.contains(*anchor) {
+                return false;
+            }
             let named = named_in(&block, own, &names);
-            block.contains(*anchor) && named.len() >= 2 && named.len() != required
+            (named.len() >= 2 && named.len() != required)
+                || !stale_counts(&block, names.len()).is_empty()
         });
         assert!(
             still_partial,
-            "SUBSET_EXEMPT_BLOCKS names {file} at `{anchor}`, and no block there names a \
-             proper subset any more — drop the row, there is nothing left to excuse",
+            "SUBSET_EXEMPT_BLOCKS names {file} at `{anchor}`, and no block there names or \
+             counts a proper subset any more — drop the row, there is nothing left to excuse",
         );
     }
 }

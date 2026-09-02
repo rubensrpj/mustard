@@ -342,7 +342,7 @@ fn build_report(
     // (3) The router by halves.
     //
     // The set is asked of the seed, never retyped. A hard-coded pair answered
-    // only about the two files that existed when it was written: the third
+    // only about the files that existed when it was written: a later
     // injectable could go undeclared in every project on the machine and this
     // condition stayed silent — the same defect one layer down from the one it
     // exists to catch. Declaring NOTHING is not a half (a project that opted
@@ -538,8 +538,8 @@ mod tests {
     ///
     /// This is the shape review measured against the binary: the entry survives
     /// every upsert, rides a registered event, and sits on disk at the exact
-    /// declared path. The siblings emit their own two files and nothing emits
-    /// the third. Present, registered, never in force.
+    /// declared path. Each sibling emits the file it claims, and the operator's
+    /// own is claimed by none of them. Present, registered, never in force.
     #[test]
     fn an_injectable_no_sibling_hook_claims_is_reported_as_undelivered() {
         let dir = tempdir().unwrap();

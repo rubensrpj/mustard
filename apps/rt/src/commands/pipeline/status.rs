@@ -80,6 +80,38 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The level a gate falls back to when its variable is set NOWHERE — neither in
+/// `settings.json#env` nor in the process environment.
+///
+/// This used to be the single word `strict`, for every row, and that was the
+/// second half of the same lie [`hook_mode_env`] carried: the column named the
+/// right knob and reported the wrong level. Four of the seven gates below
+/// default to `warn`, `post_edit` among them
+/// (`hooks/write/post_edit.rs::parse_guard_gate_mode`), so an operator reading
+/// `strict` there believed a Guard violation would be REFUSED when it is
+/// merely reported — the most expensive direction for a mistake about a gate
+/// to point.
+///
+/// `gate_table_parity.rs` holds this map to the resolvers themselves: it finds
+/// where the runtime reads each name and reads the fallback out of that code,
+/// so a resolver that changes its default and a table that does not fails the
+/// build.
+/// An unknown name answers `warn`, the UNDERSTATING direction: a reader who
+/// expects advice and meets a refusal loses one edit; a reader who expects a
+/// refusal and gets advice ships the thing the gate was there to stop.
+fn hook_default_mode(env_var: &str) -> &'static str {
+    match env_var {
+        "CONTEXT_BUDGET_MODE" => "strict",
+        "MUSTARD_BOUNDARY_MODE" => "warn",
+        "MUSTARD_CHECKLIST_GATE_MODE" => "strict",
+        "MUSTARD_COMMIT_GATE_MODE" => "warn",
+        "MUSTARD_GUARD_GATE_MODE" => "warn",
+        "MUSTARD_MAIN_BUDGET_MODE" => "warn",
+        "MUSTARD_SPEC_SIZE_MODE" => "strict",
+        _ => "warn",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Harness mode
 // ---------------------------------------------------------------------------
@@ -193,7 +225,11 @@ fn extract_hook_name(command: &str, event: &str) -> String {
         .to_string()
 }
 
-/// Build a human-readable mode string, e.g. `"strict (env: MUSTARD_COMMIT_GATE_MODE)"`.
+/// Build a human-readable mode string, e.g. `"warn (env: MUSTARD_COMMIT_GATE_MODE)"`.
+///
+/// The value comes from `settings.json#env` first, then the process
+/// environment, and only when BOTH are silent from [`hook_default_mode`] — the
+/// level the gate's own resolver falls back to, never a blanket `strict`.
 fn build_mode_str(
     _hook_name: &str,
     env_var: Option<&str>,
@@ -206,7 +242,7 @@ fn build_mode_str(
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| std::env::var(var).ok())
-            .unwrap_or_else(|| "strict".to_string());
+            .unwrap_or_else(|| hook_default_mode(var).to_string());
         format!("{val} (env: {var})")
     } else {
         "always-on".to_string()
@@ -645,16 +681,36 @@ mod tests {
         assert!(result.contains("MUSTARD_CHECKLIST_GATE_MODE"), "got: {result}");
     }
 
+    /// An unset knob reports the level its OWN gate falls back to, not a
+    /// blanket `strict`.
+    ///
+    /// Both halves, so the assertion can fail: the same call shape on a gate
+    /// that really defaults to `warn` and on one that really defaults to
+    /// `strict` must answer differently. A single-word default passed this
+    /// test for as long as it existed while telling the operator that a Guard
+    /// violation would be REFUSED — `post_edit` reads
+    /// `MUSTARD_GUARD_GATE_MODE`, whose resolver falls back to `warn`.
     #[test]
-    fn build_mode_str_defaults_to_strict_when_absent() {
+    fn build_mode_str_reports_each_gates_own_default_when_absent() {
+        // The map is asked directly: `build_mode_str` consults the process
+        // environment too, and a machine that really exports one of these
+        // names would make an assertion about the DEFAULT measure something
+        // else.
+        assert_eq!(hook_default_mode("MUSTARD_GUARD_GATE_MODE"), "warn");
+        assert_eq!(hook_default_mode("MUSTARD_COMMIT_GATE_MODE"), "warn");
+        assert_eq!(hook_default_mode("MUSTARD_BOUNDARY_MODE"), "warn");
+        assert_eq!(hook_default_mode("MUSTARD_MAIN_BUDGET_MODE"), "warn");
+        assert_eq!(hook_default_mode("CONTEXT_BUDGET_MODE"), "strict");
+        assert_eq!(hook_default_mode("MUSTARD_CHECKLIST_GATE_MODE"), "strict");
+        assert_eq!(hook_default_mode("MUSTARD_SPEC_SIZE_MODE"), "strict");
+
+        // …and the rendered cell carries that default, not a blanket `strict`.
+        // A name nothing exports, so the process environment cannot answer for
+        // it: the fallback is the only thing left to measure.
         let env_map = serde_json::Map::new();
-        // Use an env var that's unlikely to be set in CI
-        let result = build_mode_str(
-            "budget",
-            Some("MUSTARD_BUDGET_MODE_UNSET_TEST_ZZZ"),
-            &env_map,
-        );
-        assert!(result.contains("strict"), "got: {result}");
+        let unknown = build_mode_str("budget", Some("MUSTARD_BUDGET_MODE_UNSET_TEST_ZZZ"), &env_map);
+        assert!(unknown.contains("warn"), "got: {unknown}");
+        assert!(unknown.contains("MUSTARD_BUDGET_MODE_UNSET_TEST_ZZZ"), "got: {unknown}");
     }
 
     #[test]

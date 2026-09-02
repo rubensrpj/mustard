@@ -5,10 +5,12 @@
 //! One capability, shared by every installer face: lay the Mustard footprint
 //! down in a project — `.claude/settings.json`, the injectable instruction
 //! files under `.claude/mustard/`, `.claude/.gitignore`, and the single
-//! project-root `mustard.json` — **idempotently and merge-first** (an existing
-//! user file is preserved; only what is missing is created — for
+//! project-root `mustard.json` — idempotently, and **merge-first for what the
+//! OPERATOR owns**: an existing settings file, `.claude/.gitignore` or
+//! `mustard.json` survives and only what is missing is created (for
 //! `.claude/.gitignore`, which is a rule list rather than a document, "what is
-//! missing" is read line by line).
+//! missing" is read line by line). The injectable instruction files are NOT in
+//! that category, and the paragraph below is the whole of why.
 //!
 //! The injectable instruction files under `.claude/mustard/` are the ONE
 //! exception, and they take no overwrite decision from anybody: every install
@@ -851,7 +853,7 @@ fn parse_json_object(raw: &str) -> Map<String, Value> {
 /// recognise is PRESERVED, so a corrected rule can fail to reach an installed
 /// project in silence. These files are the harness's rules, so
 /// [`seed_injectable_files`] simply writes them.
-const INJECTABLE_SEEDS: &[(&str, &str)] = &[
+pub(crate) const INJECTABLE_SEEDS: &[(&str, &str)] = &[
     ("orchestrator.md", ORCHESTRATOR_MD),
     ("dispatch.md", DISPATCH_MD),
     ("material.md", MATERIAL_MD),
@@ -1006,9 +1008,10 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 // mustard.json
 // ---------------------------------------------------------------------------
 
-/// The default `mustard.json#inject` declarations: both halves of the router,
-/// on `userPromptSubmit`, one sibling hook each. Written in the same casing the
-/// docs use; the config accessor lowercases `on` at read time.
+/// The default `mustard.json#inject` declarations: every injectable
+/// [`INJECTABLE_SEEDS`] carries, on `userPromptSubmit`, one sibling hook each.
+/// Written in the same casing the docs use; the config accessor lowercases `on`
+/// at read time.
 ///
 /// **Why one event with a hook per injectable.** A hook RESPONSE is capped at
 /// 10,000 characters; past that the harness saves the overflow to a file and
@@ -1059,6 +1062,19 @@ pub fn default_inject_entries() -> Vec<Injectable> {
 #[must_use]
 pub fn injectable_names() -> Vec<&'static str> {
     INJECTABLE_SEEDS.iter().map(|(name, _)| *name).collect()
+}
+
+/// Every injectable the seed carries, as `(basename, compiled-in body)`.
+///
+/// The BODY half is public for the same reason the names are: the ratchet that
+/// compares this repository's own delivered copies under `.claude/mustard/`
+/// against what the binary ships has to ask the seed which files those are AND
+/// what each should contain. Asking for the names and then reaching for a
+/// constant per name is the enumeration that goes stale — it stayed green
+/// through a fourth injectable in a measured sabotage.
+#[must_use]
+pub fn injectable_seeds() -> Vec<(&'static str, &'static str)> {
+    INJECTABLE_SEEDS.to_vec()
 }
 
 /// The path each injectable is DECLARED and delivered under, in the same
@@ -1553,12 +1569,13 @@ fn backfill_dispatch_inject(root: &Path) -> bool {
     // Either half left on another event: move it — but ONLY once the installed
     // plugin registers a hook per injectable.
     //
-    // Moving both halves onto one event is safe because each rides its own
-    // sibling hook and is measured alone. A plugin that predates those siblings
-    // has ONE hook for the event, which folds both into a single response:
-    // measured at 11,646 characters here, over the 10,000 cap. The split the
-    // migration undoes was at least under it, so migrating against a stale
-    // plugin would leave the project worse than it found it.
+    // Moving every declared part onto one event is safe because each rides its
+    // own sibling hook and is measured alone. A plugin that predates those
+    // siblings has ONE hook for the event, which folds the whole set into a
+    // single response: measured at 11,646 characters on the router as it stood
+    // then, over the 10,000 cap. The split the migration undoes was at least
+    // under it, so migrating against a stale plugin would leave the project
+    // worse than it found it.
     //
     // The project's own `mustard.json` is not the authority on this — the
     // installed plugin is. When it cannot be read, the move is SKIPPED: a half
@@ -2177,7 +2194,7 @@ mod tests {
 
         let report = upsert_project(root, None, InstallMode::Shared).unwrap();
 
-        // The stale inject entry is gone; the router's two halves remain.
+        // The stale inject entry is gone; the router's own parts remain.
         let config = ProjectConfig::load(root);
         assert!(
             !config.inject.iter().any(|e| e.file.ends_with("response-style.md")),
@@ -2259,10 +2276,11 @@ mod tests {
     /// The stale-plugin branch the migration test cannot isolate: a manifest
     /// WITHOUT sibling hooks must not authorise the move.
     ///
-    /// With one hook per event, moving both halves onto `userPromptSubmit`
-    /// folds them into a single response — measured at 11,646 characters,
-    /// over the 10,000 cap. The split being undone was at least under it, so
-    /// migrating against a stale plugin leaves the project worse.
+    /// With one hook per event, moving the whole set onto `userPromptSubmit`
+    /// folds it into a single response — measured at 11,646 characters on the
+    /// router as it stood then, over the 10,000 cap. The split being undone was
+    /// at least under it, so migrating against a stale plugin leaves the project
+    /// worse.
     #[test]
     fn a_manifest_without_sibling_hooks_does_not_authorise_the_move() {
         let dir = tempdir().unwrap();
@@ -2330,9 +2348,9 @@ mod tests {
         .unwrap();
 
         // The move is gated on the INSTALLED plugin registering a hook per
-        // injectable: with a stale one, a single hook folds both halves into
-        // one response (measured at 11,646 chars, over the cap) — worse than
-        // the split it would undo.
+        // injectable: with a stale one, a single hook folds the whole set into
+        // one response (measured at 11,646 chars on the router as it stood then,
+        // over the cap) — worse than the split it would undo.
         //
         // That gate reads the plugin registry of the machine running the test,
         // which a tempdir cannot fake, so the stale-plugin BRANCH is covered by

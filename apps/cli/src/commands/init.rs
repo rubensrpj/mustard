@@ -292,8 +292,8 @@ pub fn init_with_templates(
     // session hooks now (per `mustard.json#inject`), never planted as
     // `.claude/CLAUDE.md`.
     //
-    // `overwrite` is deliberately NOT passed: these two files are the harness's
-    // own rules, not project configuration, so the answer to "merge or
+    // `overwrite` is deliberately NOT passed: every file the seed carries here
+    // is the harness's own rules, not project configuration, so the answer to "merge or
     // overwrite?" is the same either way and the seeder takes no such argument.
     // Merge mode still means what it says for everything else init seeds —
     // `settings.json` above and `.gitignore` below keep the user's content.

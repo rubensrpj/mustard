@@ -15,6 +15,13 @@
 //!   the knob for the gate, so the name is not merely absent, it is wrong, and
 //!   setting it looks accepted. Every such name must be declared in
 //!   [`DEAD_REGISTRY_ENV`] with the name the hook really reads.
+//! - **A default level the registry reports and no resolver honours.** The name
+//!   column answers *which knob*; the mode column answers *what happens if you
+//!   never set it*, and the second used to be the word `strict` for every row.
+//!   Four of the seven gates default to `warn`, so an operator was told a
+//!   refusal that never comes. Correcting the NAME half made that half MORE
+//!   credible, which is why the levels are now read out of the resolvers
+//!   themselves — see `the_registry_reports_the_default_each_resolver_falls_back_to`.
 //! - **A dead name kept alive by being MENTIONED.** All three checks above pivot
 //!   on one question — does anything read this name — so the measurement of
 //!   "read" decides what they can see. Counting every quoted occurrence would
@@ -231,6 +238,130 @@ fn registry_pairs(src: &str) -> Vec<(String, String)> {
             Some((name.to_string(), env.to_string()))
         })
         .collect()
+}
+
+/// The `("<ENV>", "<level>")` pairs the `hook_default_mode` match arms declare.
+/// Located by SHAPE, like [`registry_pairs`], so the module around it can move.
+fn registry_defaults(src: &str) -> Vec<(String, String)> {
+    let Some(start) = src.find("fn hook_default_mode(") else {
+        return Vec::new();
+    };
+    let body = &src[start..];
+    let end = body.find("\n}").unwrap_or(body.len());
+    body[..end]
+        .lines()
+        .filter_map(|line| {
+            let (name, rest) = line.trim().strip_prefix('"')?.split_once("\" => \"")?;
+            let level = rest.strip_suffix("\",")?;
+            Some((name.to_string(), level.to_string()))
+        })
+        .collect()
+}
+
+/// The enforcement level a `Foo::Bar` path names, lowercased — `None` when the
+/// variant is not one of the three this vocabulary has.
+fn level_of(path: &str) -> Option<String> {
+    let variant = path.rsplit("::").next()?.trim().trim_end_matches([')', ',', ';']);
+    match variant {
+        "Off" | "Warn" | "Strict" => Some(variant.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+/// Every `(offset, level)` a FALLBACK is written at in one source file: the
+/// argument of an `unwrap_or(…)` and the body of a wildcard `_ => …` arm, both
+/// outside comments.
+///
+/// These are the two shapes every mode resolver in this crate ends with. A
+/// third shape is `resolve_mode`, whose default is an ARGUMENT rather than a
+/// tail, and [`resolver_default`] reads that one directly instead of guessing.
+fn fallback_sites(text: &str) -> Vec<(usize, String)> {
+    let mask = comment_mask(text);
+    let mut out = Vec::new();
+    for (needle, skip) in [("unwrap_or(", 10usize), ("_ => ", 5)] {
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find(needle) {
+            let at = from + rel;
+            from = at + needle.len();
+            if mask[at] {
+                continue;
+            }
+            let tail = &text[at + skip..];
+            let stop = tail.find(['\n', ' ']).unwrap_or(tail.len());
+            if let Some(level) = level_of(&tail[..stop]) {
+                out.push((at, level));
+            }
+        }
+    }
+    out
+}
+
+/// Split a call's argument list — the text after its `(` — into top-level
+/// arguments, balancing nested parentheses.
+fn call_args(after_paren: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut depth = 0i32;
+    let mut acc = String::new();
+    for ch in after_paren.chars() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' if depth == 0 => {
+                args.push(acc.trim().to_string());
+                return args;
+            }
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(acc.trim().to_string());
+                acc.clear();
+                continue;
+            }
+            _ => {}
+        }
+        acc.push(ch);
+    }
+    args
+}
+
+/// The level the runtime falls back to for `env`, read out of the code that
+/// READS it — never out of a doc comment and never out of the registry the
+/// ratchet is checking.
+///
+/// `resolve_mode` states its default as the third argument, so that call is
+/// parsed. Every other resolver here ends in an `unwrap_or(…)` or a wildcard
+/// match arm, so the NEAREST such site to the read is taken. `None` means the
+/// shape was not recognised, and the caller fails loudly rather than passing:
+/// a default this file cannot measure is one it cannot hold.
+fn resolver_default(root: &Path, env: &str) -> Option<String> {
+    let needle = format!("\"{env}\"");
+    for path in scanned_sources(root) {
+        if path.ends_with("commands/pipeline/status.rs") {
+            continue;
+        }
+        let text = read_lossy(&path);
+        let mask = comment_mask(&text);
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find(&needle) {
+            let at = from + rel;
+            from = at + needle.len();
+            if mask[at] {
+                continue;
+            }
+            let callee = callee_before(&text, at);
+            if !ENV_READERS.contains(&callee) {
+                continue;
+            }
+            if callee == "resolve_mode" {
+                // `at` is the opening quote of the FIRST argument, so the
+                // argument list starts exactly there.
+                return call_args(&text[at..]).get(2).and_then(|a| level_of(a));
+            }
+            return fallback_sites(&text)
+                .into_iter()
+                .min_by_key(|(site, _)| site.abs_diff(at))
+                .map(|(_, level)| level);
+        }
+    }
+    None
 }
 
 /// The `## Enforcement Hooks` section of the doc — the table plus the prose
@@ -591,6 +722,109 @@ fn dead_registry_env_names_stay_dead_and_declared() {
             !mode_cells.iter().any(|cell| cell.contains(env)),
             "`{env}` sits in a `Mode env` cell of the gate table. That column is \
              read as the knob to set, and this one is wired to nothing: {why}"
+        );
+    }
+}
+
+/// The level `run status --harness` prints for an UNSET knob is the level that
+/// knob's own resolver falls back to.
+///
+/// The registry used to answer `strict` for every row, and the harness table
+/// rendered that as the gate's enforcement level. Four of the seven rows are
+/// wrong that way, `post_edit` among them — `MUSTARD_GUARD_GATE_MODE` resolves
+/// to `warn`, so a Guard violation is REPORTED and not refused. The wave that
+/// corrected the NAME half made the lie more credible by attaching it to a knob
+/// that really exists, which is why this half is a ratchet and not a note.
+///
+/// The defaults are read out of the code that READS each name — the third
+/// argument of `resolve_mode`, or the nearest `unwrap_or(…)` / wildcard arm to
+/// the read — so a resolver that changes its mind and a registry that does not
+/// fail here rather than in an operator's terminal.
+#[test]
+fn the_registry_reports_the_default_each_resolver_falls_back_to() {
+    let root = repo_root();
+    let src = read_repo(&root, REGISTRY_SRC);
+    let pairs = registry_pairs(&src);
+    let defaults = registry_defaults(&src);
+    assert!(
+        !defaults.is_empty(),
+        "{REGISTRY_SRC} no longer exposes a `hook_default_mode` map of \
+         `\"ENV\" => \"level\",` arms — this ratchet reads that shape, and with no \
+         rows it would pass by measuring nothing"
+    );
+    let live = live_mode_envs(&root);
+
+    let mut offenders = Vec::new();
+    for (hook, env) in &pairs {
+        if !live.contains(env) {
+            // A dead name has no resolver to compare against;
+            // `dead_registry_env_names_stay_dead_and_declared` owns that case.
+            continue;
+        }
+        let Some(real) = resolver_default(&root, env) else {
+            offenders.push(format!(
+                "`{env}` is read by the runtime and this ratchet could not tell what \
+                 it falls back to. The resolver ends in a shape `resolver_default` \
+                 has not been taught — teach it, rather than leaving the level \
+                 `{hook}` prints unmeasured"
+            ));
+            continue;
+        };
+        let declared = defaults
+            .iter()
+            .find(|(name, _)| name == env)
+            .map(|(_, level)| level.clone())
+            .unwrap_or_else(|| "warn".to_string());
+        if declared != real {
+            offenders.push(format!(
+                "`{env}` (gate `{hook}`): the registry reports `{declared}` for an unset \
+                 knob and the resolver really falls back to `{real}`. \
+                 `run status --harness` prints that word as the gate's enforcement \
+                 level, so the operator is told a refusal that does not happen — or \
+                 misses one that does"
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the harness table's default levels have drifted from the resolvers:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every row of `hook_default_mode` is still a knob the registry maps.
+///
+/// The sibling of the test above, and the half that keeps the map from
+/// accumulating: a name the registry stopped mapping leaves a row nothing
+/// renders, and a row nothing renders is a claim nothing re-measures.
+#[test]
+fn every_declared_default_belongs_to_a_registry_row() {
+    let root = repo_root();
+    let src = read_repo(&root, REGISTRY_SRC);
+    let pairs = registry_pairs(&src);
+    let defaults = registry_defaults(&src);
+
+    for pair in defaults.windows(2) {
+        assert!(
+            pair[0].0 < pair[1].0,
+            "hook_default_mode arms must stay sorted: {} before {}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+    for (env, _) in &defaults {
+        assert!(
+            pairs.iter().any(|(_, e)| e == env),
+            "`hook_default_mode` declares a level for `{env}`, which `hook_mode_env` \
+             no longer maps - drop the arm, nothing renders it"
+        );
+    }
+    for (hook, env) in &pairs {
+        assert!(
+            defaults.iter().any(|(name, _)| name == env),
+            "`{hook}` => `{env}` has no `hook_default_mode` arm, so an unset knob \
+             renders the catch-all. State it: a level that is not written down is \
+             a level nobody re-measures"
         );
     }
 }

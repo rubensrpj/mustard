@@ -1,6 +1,6 @@
 # Dispatch Rules
 
-The router's second half: the question that OPENS a work unit, the gate that emits it, and the name that comes out of it. § Intent Routing in `orchestrator.md` classifies; this file runs after. Why three files: `refs/mustard/router-rationale.md`.
+The router's DISPATCH part: the question that OPENS a work unit, the gate that emits it, and the name that comes out of it. § Intent Routing in `orchestrator.md` classifies; this file runs after. Why three files: `refs/mustard/router-rationale.md`.
 
 ## Dispatch
 
