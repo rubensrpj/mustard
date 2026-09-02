@@ -3126,6 +3126,16 @@ const PROSE_SCAN_ROOTS: &[&str] = &[".claude/mustard", "apps", "packages", "plug
 /// Adding a name a measurement never covered would falsify it, and a measured
 /// number is the one thing this project may not edit to keep a test green.
 /// The sibling assertion drops a row that stops being needed.
+/// A repo-relative path spelled with forward slashes on every platform.
+///
+/// Every exemption table in this file is written with `/`. `Path::display` uses
+/// the platform separator, so comparing the two directly is a bug that can only
+/// appear where the separator differs — which is exactly the platform the author
+/// is not running.
+fn normalise_separators(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
 const SUBSET_EXEMPT_BLOCKS: &[(&str, &str, &str)] = &[
     (
         "apps/cli/tests/template_budget.rs",
@@ -3491,7 +3501,13 @@ fn no_prose_block_names_a_proper_subset_of_the_injectables() {
     for path in scanned_documents() {
         let Ok(body) = std::fs::read_to_string(&path) else { continue };
         let own = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-        let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+        // Forward slashes ALWAYS: `SUBSET_EXEMPT_BLOCKS` is written with them, and
+        // `Display` for a Windows path yields `\\`, so the `ends_with` below matched
+        // nothing there and every exemption silently stopped excusing its block.
+        // Measured on CI 2026-09-02: green on ubuntu and macos, red on windows with
+        // five offenders that are all exempted rows — this ratchet was itself the
+        // "green where it is written, red where nobody is looking" it exists to catch.
+        let rel = normalise_separators(path.strip_prefix(&root).unwrap_or(&path));
         let required = names.iter().filter(|n| **n != own).count();
         for (line, block) in prose_blocks(&path, &body) {
             if SUBSET_EXEMPT_BLOCKS
@@ -3573,4 +3589,19 @@ fn subset_exemptions_stay_sorted_present_and_necessary() {
              counts a proper subset any more — drop the row, there is nothing left to excuse",
         );
     }
+}
+
+/// A path comparison that depends on the platform separator is green where it is
+/// written and red where nobody is looking. This pins the normaliser rather than
+/// the call site, so a new exemption table gets the same guarantee for free.
+#[test]
+fn exemption_paths_are_matched_without_a_platform_separator() {
+    let windows = Path::new(r"apps\cli\tests\template_budget.rs");
+    let unix = Path::new("apps/cli/tests/template_budget.rs");
+    assert_eq!(normalise_separators(windows), normalise_separators(unix));
+    let spelled = SUBSET_EXEMPT_BLOCKS[0].0;
+    assert!(
+        normalise_separators(windows).ends_with(spelled),
+        "the exemption table is written with `/` and the lookup must reach it from either platform",
+    );
 }
