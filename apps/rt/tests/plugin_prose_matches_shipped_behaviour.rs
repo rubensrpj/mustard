@@ -3266,6 +3266,17 @@ const ROUTER_SUBJECT: &[&str] = &[
 /// the router somewhere else in the same doc comment. At eight tokens every one
 /// of them falls out and the four live claims stay in — the nearest subject to
 /// the count that ships is four tokens away.
+///
+/// **Widening it was tried and rejected on the measurement.** A reviewer put
+/// `## Why two files rather than one` over a sentence spelling the subject NINE
+/// tokens from the count and watched the suite stay green — the exact title
+/// this ratchet was built for, escaping by one token. Raising the window until
+/// it reached is what turns a hole into noise: at 12 it reddens a pair of true
+/// sentences — one in `apps/rt/src/shared/paths.rs`, counting `dispatch.md`
+/// against `dispatch.md.bak`, whose nearest subject word sits exactly 12 tokens
+/// away, and one in this file's own doc comments — at 24 it reddens five, and
+/// with no window at all thirteen. So the window stays where the measurement
+/// put it and the HEADING is what changed — see [`stale_counts`].
 const SUBJECT_WINDOW: usize = 8;
 
 /// The stale cardinality claims a block makes: a count word qualifying a noun
@@ -3280,17 +3291,44 @@ const SUBJECT_WINDOW: usize = 8;
 ///
 /// `injectable` and `sibling hook` count the set wherever they appear. The
 /// generic nouns — files, halves, parts — count it only with a subject word
-/// inside [`SUBJECT_WINDOW`] tokens.
+/// inside [`SUBJECT_WINDOW`] tokens, or anywhere in the SECTION when a markdown
+/// heading is one of the two.
+///
+/// A heading is not a sentence that happens to sit above a paragraph: it is the
+/// subject line of everything under it, which is why it can name the subject
+/// once and never repeat it — and why `## Why two files rather than one` reads
+/// as a claim about the router even when the word *router* is only spelled four
+/// sentences down. Token distance is the wrong ruler for that relation, so a
+/// count in a heading is weighed against the whole section, and a count in the
+/// body can take its subject from the heading. Everything else keeps the
+/// measured window; see [`SUBJECT_WINDOW`] for what widening it costs.
 fn stale_counts(block: &str, total: usize) -> Vec<String> {
     let lowered = expand_braces(block).to_lowercase();
     let words: Vec<&str> = lowered
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
+    // `prose_blocks` prepends the heading a markdown block sits under, so it is
+    // the first line when there is one. Its word span is the heading.
+    let heading_len = lowered
+        .lines()
+        .next()
+        .filter(|line| line.trim_start().starts_with('#'))
+        .map(|line| {
+            line.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .count()
+        })
+        .unwrap_or(0);
+    let has_subject = |slice: &[&str]| slice.iter().any(|w| ROUTER_SUBJECT.contains(w));
     let subject_near = |i: usize| {
+        if i < heading_len {
+            // The count is IN the title. What the title is about is the section.
+            return has_subject(&words);
+        }
         let lo = i.saturating_sub(SUBJECT_WINDOW);
         let hi = (i + SUBJECT_WINDOW + 1).min(words.len());
-        words[lo..hi].iter().any(|w| ROUTER_SUBJECT.contains(w))
+        has_subject(&words[lo..hi]) || has_subject(&words[..heading_len])
     };
 
     let mut out = Vec::new();

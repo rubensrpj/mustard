@@ -11,10 +11,11 @@
 //!   whose name is written nowhere cannot be set — it is a switch that exists
 //!   only for whoever wrote it.
 //! - **A mode env var the registry names that NOTHING reads.** The inverse, and
-//!   the worse half for an operator: `run status --harness` renders that name as
-//!   the knob for the gate, so the name is not merely absent, it is wrong, and
-//!   setting it looks accepted. Every such name must be declared in
-//!   [`DEAD_REGISTRY_ENV`] with the name the hook really reads.
+//!   the worse half for an operator: `hook_mode_env` is where `run status
+//!   --harness` looks up the knob for a gate, so the name is not merely absent,
+//!   it is wrong, and a reader who reaches it sets something accepted that
+//!   changes nothing. Every such name must be declared in [`DEAD_REGISTRY_ENV`]
+//!   with the name the hook really reads.
 //! - **A default level the registry reports and no resolver honours.** The name
 //!   column answers *which knob*; the mode column answers *what happens if you
 //!   never set it*, and the second used to be the word `strict` for every row.
@@ -40,9 +41,13 @@
 //! because a ratchet demanding the table repeat them would document two dead
 //! names as knobs.
 //!
-//! Documenting a dead name is not the same as removing it, though. The operator
-//! running `run status --harness` still met two knobs wired to nothing, and a
-//! declaration in a test file does not reach them. So the REGISTRY was
+//! Documenting a dead name is not the same as removing it, though. The registry
+//! is what the status command consults, a declaration in a test file is not,
+//! and a wrong entry is wrong whether or not today's wiring happens to surface
+//! it — measured, it does not: every shipped hook command is `mustard-rt on
+//! <Event>`, whose derived name is a composite the map never keyed on, so the
+//! rows print `always-on` and the two names reached nobody. That is luck, not
+//! design, and it is the reason they stayed wrong. So the REGISTRY was
 //! corrected instead: `post_edit` now names the `MUSTARD_GUARD_GATE_MODE` its
 //! one refusing half really reads, and `session_knowledge_observer` names no
 //! var at all, because an Observer has no enforcement level. The list is empty
@@ -96,8 +101,8 @@ const ENV_READERS: &[&str] = &["resolve_mode", "var", "var_os"];
 ///
 /// **Empty, deliberately, and it is meant to stay that way.** The two rows this
 /// list carried were an accurate description of a registry that was wrong, and
-/// a description does not reach the operator: `run status --harness` went on
-/// printing both names in the column a reader takes as *the knob to set*. The
+/// a description does not correct the thing described: the wrong arms went on
+/// sitting in the map `run status --harness` reads for *the knob to set*. The
 /// arms were corrected instead (see `hook_mode_env`), so there is nothing left
 /// to declare. A row is still ACCEPTED here — the sweep below demands one for
 /// any dead name rather than passing over it — but a new one should be read as
