@@ -160,12 +160,6 @@ const PROSE_EXEMPT_MODE_ENV: &[(&str, &str)] = &[
          references/examples.md'), so the blocked author is never sent to prose",
     ),
     (
-        "MUSTARD_SKILL_VALIDATE_GATE_MODE",
-        "the table's size_gate row already describes this half by behaviour ('a \
-         skill SKILL.md whose YAML frontmatter fails validation'); only the env \
-         name is absent",
-    ),
-    (
         "MUSTARD_WAVE_COMPLETE_OBSERVER_MODE",
         "on/off switch of a fire-and-forget observer \
          (hooks/observe/wave_complete_observer.rs) - no verdict, nothing to gate",

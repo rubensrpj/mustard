@@ -83,7 +83,9 @@ pub use platform::harness::{
     installed_plugin_rt, installed_plugin_rt_from, is_behind, newer_installed_rt,
     newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,
 };
-pub use platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
+pub use platform::seeds::{
+    CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD, ORCHESTRATOR_MD, SETTINGS_SEED,
+};
 
 /// The machine-level dashboard project registry, shared by the dashboard
 /// server (which renders it) and `mustard init` (which fills it in).

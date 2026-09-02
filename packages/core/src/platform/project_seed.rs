@@ -61,7 +61,9 @@ use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
 use crate::platform::error::{Error, Result};
 use crate::platform::git_exclude;
-use crate::platform::seeds::{CLAUDE_GITIGNORE, DISPATCH_MD, ORCHESTRATOR_MD, SETTINGS_SEED};
+use crate::platform::seeds::{
+    CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD, ORCHESTRATOR_MD, SETTINGS_SEED,
+};
 
 // ---------------------------------------------------------------------------
 // Install mode + the footprint it hides
@@ -851,6 +853,7 @@ fn parse_json_object(raw: &str) -> Map<String, Value> {
 const INJECTABLE_SEEDS: &[(&str, &str)] = &[
     ("orchestrator.md", ORCHESTRATOR_MD),
     ("dispatch.md", DISPATCH_MD),
+    ("material.md", MATERIAL_MD),
 ];
 
 /// Seed the injectable instruction files into `.claude/mustard/`.
@@ -864,6 +867,13 @@ const INJECTABLE_SEEDS: &[(&str, &str)] = &[
 /// [`SeedOutcome::Preserved`]. The loss is real and deliberate: it is the price
 /// of a corrected rule reaching every installed project, and it shows up in the
 /// caller's report instead of passing unsaid.
+///
+/// **A copy that cannot be READ is rewritten too**, not preserved. It used to be
+/// preserved, on the general rule that we never stomp what we could not inspect
+/// — but that rule belongs to the seeds whose owner is the project. Here it
+/// carved a hole in the always-rewrite contract this doc states: a corrupted or
+/// unreadable `dispatch.md` kept the correction out of the project, silently,
+/// which is the exact failure the fingerprint catalog was removed to end.
 ///
 /// Returns `(basename, outcome)` per file, in declaration order
 /// (deterministic).
@@ -958,9 +968,18 @@ fn missing_ignore_patterns<'a>(existing: &str, seed: &'a str) -> Vec<&'a str> {
 
 /// Write one static seed to `dest` honouring merge/overwrite, reporting what
 /// happened. An existing byte-identical file is [`SeedOutcome::Preserved`]
-/// even under overwrite (no gratuitous rewrite), and a file that exists but
-/// cannot be read (a genuine IO error, not absence) is preserved too — never
-/// stomp what we could not inspect.
+/// even under overwrite (no gratuitous rewrite).
+///
+/// **An unreadable-but-present file follows `overwrite`, not a blanket
+/// "preserve".** Under MERGE (`overwrite == false`) it is preserved: the caller
+/// wanted to keep what is there, and a file we could not inspect is exactly
+/// what must not be stomped. Under OVERWRITE it is REWRITTEN, because that flag
+/// is the always-rewrite contract [`seed_injectable_files`] states three lines
+/// above its own call — these are the harness's rules, not project
+/// configuration, and preserving one is precisely how a corrected rule stops at
+/// the project boundary in silence. That silence is the defect the fingerprint
+/// catalog was removed to end; a file whose bytes cannot even be read is the
+/// LEAST trustworthy copy to leave a window reading.
 fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutcome> {
     match fs::read_to_string(dest) {
         Ok(existing) => {
@@ -973,6 +992,10 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
         Err(crate::platform::error::Error::NotFound(_)) => {
             fs::write_atomic(dest, body.as_bytes())?;
             Ok(SeedOutcome::Created)
+        }
+        Err(_) if overwrite => {
+            fs::write_atomic(dest, body.as_bytes())?;
+            Ok(SeedOutcome::Updated)
         }
         Err(_) => Ok(SeedOutcome::Preserved),
     }
@@ -1024,14 +1047,24 @@ pub fn default_inject_entries() -> Vec<Injectable> {
             file: DISPATCH_INJECT_FILE.to_string(),
             once: true,
         },
+        Injectable {
+            on: "userPromptSubmit".to_string(),
+            file: MATERIAL_INJECT_FILE.to_string(),
+            once: true,
+        },
     ]
 }
 
-/// Declared path of the router's first half (§ Intent Routing).
+/// Declared path of the router's first part (§ Intent Routing).
 const ORCHESTRATOR_INJECT_FILE: &str = ".claude/mustard/orchestrator.md";
 
-/// Declared path of the router's second half (§ Dispatch).
+/// Declared path of the router's second part (§ Dispatch).
 const DISPATCH_INJECT_FILE: &str = ".claude/mustard/dispatch.md";
+
+/// Declared path of the router's third part (§ Material) — the conversation
+/// channel, split off `dispatch.md` when that file reached ten characters of
+/// margin under the size alarm on a CRLF checkout.
+const MATERIAL_INJECT_FILE: &str = ".claude/mustard/material.md";
 
 /// Create or minimally update the project-root `mustard.json` through
 /// [`ProjectConfig`] (the single owner).
@@ -1453,15 +1486,17 @@ pub fn same_declared_path(a: &str, b: &str) -> bool {
 }
 
 /// Bring an already-installed project's `inject` list onto the current router
-/// layout: both halves on `userPromptSubmit`, one sibling hook each.
+/// layout: every part on `userPromptSubmit`, one sibling hook each.
 ///
 /// Two historical shapes reach this, and both are repaired:
 ///
-/// - **Half-delivered** — the project declares the orchestrator and nothing
-///   else, because it was installed before the router was split in two. The
-///   dispatch half was seeded to disk and never declared, so the question that
-///   opens a unit reached nobody and nothing said so.
-/// - **Split across events** — the project declares both, with dispatch on
+/// - **Partly delivered** — the project declares the orchestrator and not every
+///   part that has been split off it since (dispatch, then material). Those
+///   parts are seeded to disk unconditionally, so without this they exist in the
+///   project and are declared by nobody: the rules reach no window and nothing
+///   says so. Derived from [`default_inject_entries`] rather than named one at a
+///   time, so the NEXT split is repaired the day it is declared.
+/// - **Split across events** — the project declares them, with one on
 ///   `sessionStart`. That event misses every path that opens no session:
 ///   `fork` matched no matcher at all, and `startup` never cleared the
 ///   per-session markers. The entry is MOVED, never duplicated.
@@ -1493,15 +1528,16 @@ fn backfill_dispatch_inject(root: &Path) -> bool {
     }
 
     let mut changed = false;
-    // The half that was never declared: add it, on the current event.
-    if !declares(DISPATCH_INJECT_FILE) {
-        if let Some(dispatch) = default_inject_entries()
-            .into_iter()
-            .find(|e| e.file == DISPATCH_INJECT_FILE)
-        {
-            config.inject.push(dispatch);
-            changed = true;
-        }
+    // Every part that was never declared: add it, on the current event. The
+    // orchestrator is excluded by the guard above (it is already declared, or we
+    // returned), so this only ever backfills a part split off it later.
+    let missing: Vec<Injectable> = default_inject_entries()
+        .into_iter()
+        .filter(|e| !declares(&e.file))
+        .collect();
+    if !missing.is_empty() {
+        config.inject.extend(missing);
+        changed = true;
     }
     // Either half left on another event: move it — but ONLY once the installed
     // plugin registers a hook per injectable.
@@ -1807,6 +1843,7 @@ mod tests {
                 ".claude/settings.json",
                 ".claude/mustard/orchestrator.md",
                 ".claude/mustard/dispatch.md",
+                ".claude/mustard/material.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -1867,6 +1904,7 @@ mod tests {
                 ".claude/settings.json",
                 ".claude/mustard/orchestrator.md",
                 ".claude/mustard/dispatch.md",
+                ".claude/mustard/material.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -2303,7 +2341,28 @@ mod tests {
         upsert_project(root, None, InstallMode::Shared).unwrap();
 
         let config = ProjectConfig::load(root);
-        assert_eq!(config.inject.len(), 2, "the entry was duplicated: {:?}", config.inject);
+        // The count is the SEEDED layout, not a literal: the migration adds the
+        // parts a pre-split project never declared, and a fixed 2 would read
+        // that backfill as a duplication the day a third part shipped.
+        assert_eq!(
+            config.inject.len(),
+            default_inject_entries().len(),
+            "the entry was duplicated: {:?}",
+            config.inject,
+        );
+        for seeded in default_inject_entries() {
+            assert_eq!(
+                config
+                    .inject
+                    .iter()
+                    .filter(|e| same_declared_path(&e.file, &seeded.file))
+                    .count(),
+                1,
+                "`{}` is declared more than once: {:?}",
+                seeded.file,
+                config.inject,
+            );
+        }
         for entry in &config.inject {
             assert_eq!(
                 entry.on, "userPromptSubmit",
@@ -2585,7 +2644,48 @@ mod tests {
         }
     }
 
-    /// Both halves of the router ride the SELF-HEALING event, and each fits the
+    /// An injectable that EXISTS but cannot be read is rewritten, not preserved.
+    ///
+    /// The general "never stomp what we could not inspect" rule belongs to the
+    /// seeds whose owner is the project. Applied here it carved a hole straight
+    /// through the always-rewrite contract stated three lines above the call: a
+    /// corrupted `dispatch.md` kept every correction out of the project, in
+    /// silence, and reported `Preserved` — the same shape as the fingerprint
+    /// catalog that was removed for exactly this.
+    ///
+    /// Unreadable is spelled as invalid UTF-8 rather than a permission bit: it
+    /// is a real corruption, it reaches the same `Err(_)` arm, and it behaves
+    /// identically on Windows, where a chmod-based test would silently pass by
+    /// never producing the error at all.
+    #[test]
+    fn an_unreadable_injectable_is_rewritten_not_silently_preserved() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        let mustard = claude.join("mustard");
+        std_fs::create_dir_all(&mustard).unwrap();
+        for (name, _) in INJECTABLE_SEEDS {
+            // Lone continuation bytes: present, non-empty, and not UTF-8.
+            std_fs::write(mustard.join(name), [0x80_u8, 0xFF, 0xFE]).unwrap();
+        }
+
+        let report = seed_injectable_files(&claude).unwrap();
+
+        for ((name, outcome), (_, body)) in report.iter().zip(INJECTABLE_SEEDS) {
+            assert_eq!(
+                *outcome,
+                SeedOutcome::Updated,
+                "{name} was unreadable and reported `{outcome:?}` — a rule corrected \
+                 here never reaches the project, and nothing says so",
+            );
+            assert_eq!(
+                std_fs::read_to_string(mustard.join(name)).unwrap(),
+                *body,
+                "{name} still carries the unreadable bytes the window cannot use",
+            );
+        }
+    }
+
+    /// Every part of the router rides the SELF-HEALING event, and each fits the
     /// ceiling one hook response carries.
     ///
     /// `additionalContext` is capped at 10,000 characters per hook RESPONSE; the
@@ -2607,7 +2707,7 @@ mod tests {
     #[test]
     fn the_router_rides_the_self_healing_event_and_neither_half_overflows() {
         let entries = default_inject_entries();
-        for file in [ORCHESTRATOR_INJECT_FILE, DISPATCH_INJECT_FILE] {
+        for file in [ORCHESTRATOR_INJECT_FILE, DISPATCH_INJECT_FILE, MATERIAL_INJECT_FILE] {
             let entry = entries
                 .iter()
                 .find(|e| e.file == file)

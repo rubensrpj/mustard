@@ -43,12 +43,4 @@ That emit IS the **base gate**, the one check before ANALYZE. It refuses with ex
 
 **That call is also where the unit is NAMED, and the name it returns is the only one.** The gate derives the canonical slug from `--intent`, or canonicalises `--unit-name` through that same derivation, so a correction still yields ONE spelling. It echoes the winner as `spec`, with `renamedFrom` when the `--spec` you passed was not it; that flag is a hint and never decides. Carry that `spec` value into every later step (`spec-draft --slug`, `--spec {slug}`, the spec directory), never the string you typed. `--intent` + `--type` compute the unit's `{kind}/{slug}` branch, echoed as `branch`, and fix the `/git` PR target: the base the unit was cut from, recorded at the cut, never re-derived from the prefix. **The branch IS the isolation, and it is cut at APPROVAL.** `spec-draft` checks `{kind}/{slug}` out in the MAIN checkout, so the whole unit is authored ON it: `spec.md`, the waves, the ceremony and the code alike. There is no `.claude/spec/` carve-out; a spec write on a bare integration base is DENIED like any other write. EXECUTE therefore finds the branch already checked out and reports the unit isolated IN PLACE (`inPlace:true`). `EnterWorktree name=<branch from the output>` still cuts a worktree from a fresh `origin/{base}` when the branch is NOT already out, the parallel-work case. An old `{base}_{slug}` name still reads as its unit.
 
-**A decision the conversation settles is written down when it is settled**, never reconstructed from memory at draft time. What is not written before a compaction is lost — measured: two units shipped and NEITHER carried material.
-
-```
-mustard-rt run material-add --spec {slug} --kind decision   --subject "<what>"  --detail "<why>"
-mustard-rt run material-add --spec {slug} --kind definition --subject "<term>"  --detail "<what it means here>"
-mustard-rt run material-add --spec {slug} --kind finding    --subject "<claim>" --detail "<file>" [--line N]
-```
-
-One call per item, when it is settled. Each lands in the unit's `spec-material.json`, which is the file `spec-draft --material` reads. **They open from ▸6 on:** the base gate's event log creates `.claude/spec/{slug}/`, so a decision settled before the draft still lands. `unknown_spec` means no gate minted that slug — no unit is open.
+**What the conversation SETTLES is written down through the material channel, and that channel is its own injectable:** `material.md`, § Material — the three `material-add` calls, when each is made, and why memory is not a place to keep them.

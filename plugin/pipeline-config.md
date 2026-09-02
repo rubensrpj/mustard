@@ -91,7 +91,8 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 | `tool_use_counter` | Subagent* | hard | Explore at 15 tool uses (warn 12) |
 | `main_context_counter` | any tool | `MUSTARD_MAIN_BUDGET_MODE` (warn) | un-delegated main-context tool calls past the L0 budget |
 | `context_budget_gate` | Task/Agent | `CONTEXT_BUDGET_MODE` (strict) | a Task prompt over its role's char budget; advisory (never a refusal) above 40% of the model window |
-| `size_gate` | Write/Edit | `MUSTARD_SPEC_SIZE_MODE` (`strict` in code; the seeded `settings.json` writes `warn`) | a spec over 500 lines; a skill `SKILL.md` whose YAML frontmatter fails validation |
+| `size_gate` (spec size) | Write/Edit | `MUSTARD_SPEC_SIZE_MODE` (`strict` in code; the seeded `settings.json` writes `warn`) | a spec over 500 lines |
+| `size_gate` (skill frontmatter) | Write/Edit | `MUSTARD_SKILL_VALIDATE_GATE_MODE` (`strict` in code; the seeded `settings.json` writes `warn`; no `mustard.json` override) | a `SKILL.md` with no YAML frontmatter, or whose `name` is not kebab-case, whose `description` is missing / outside 50–600 characters / carries no trigger word, or whose `source` is neither `scan` nor `manual` |
 | `boundary_gate` | Write/Edit | `MUSTARD_BOUNDARY_MODE` (warn) | an edit outside the active spec's declared `## Files` |
 | `scan_gate` | Skill | **none — always strict** | `/feature`, `/bugfix` before `grain.model.json` exists (run `mustard-rt run scan`) |
 | `post_edit` (guard-verify) | PostToolUse Write/Edit | `MUSTARD_GUARD_GATE_MODE` (warn) | an edit introducing something the subproject's Guards forbid — the only half of `post_edit` that returns a verdict; auto-format, checklist auto-mark and the `pipeline-phase` emit are side effects |

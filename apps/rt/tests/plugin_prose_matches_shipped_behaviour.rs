@@ -1948,8 +1948,12 @@ fn the_router_prose_names_the_signal_the_gate_emits() {
 /// two-event split this unit undid.
 #[test]
 fn router_teaches_the_self_healing_delivery() {
-    // The wrong claims are gone from the shipped seeds.
-    for seed in [mustard_core::ORCHESTRATOR_MD, mustard_core::DISPATCH_MD] {
+    // The wrong claims are gone from every shipped part of the router.
+    for seed in [
+        mustard_core::ORCHESTRATOR_MD,
+        mustard_core::DISPATCH_MD,
+        mustard_core::MATERIAL_MD,
+    ] {
         for retired in ["two events", "sessionStart", "share one ceiling"] {
             assert!(
                 !seed.contains(retired),
@@ -1984,11 +1988,29 @@ fn router_teaches_the_self_healing_delivery() {
         "the dispatch half never says WHAT counts as a unit, so a small edit reads as none",
     );
 
-    // The rule the conversation channel depends on rides the dispatch half.
+    // The conversation channel is its OWN part now — `dispatch.md` sat ten
+    // characters under the size alarm on a CRLF checkout, and the remedy the
+    // budget test prescribes is a split, never a trim that costs a rule its
+    // reason. So the rule moved WHOLE, and the file it left points at where it
+    // went: a reader of the unit's rules who is never told stops using it.
+    let material = mustard_core::MATERIAL_MD;
+    assert!(
+        material.contains("spec-material.json"),
+        "the material part never says a settled decision is written down when settled",
+    );
+    assert!(
+        material.contains("mustard-rt run material-add"),
+        "the material part carries no `material-add` call, so the channel has no door",
+    );
     let dispatch = mustard_core::DISPATCH_MD;
     assert!(
-        dispatch.contains("spec-material.json"),
-        "the dispatch half never says a settled decision is written down when settled",
+        !dispatch.contains("mustard-rt run material-add"),
+        "the material calls are in BOTH parts — a correction to one leaves the \
+         window reading the other",
+    );
+    assert!(
+        dispatch.contains("material.md"),
+        "dispatch.md dropped the material channel without saying where it went",
     );
 
     // The ref carries the measurement itself, with its date — a claim a reader
@@ -2004,6 +2026,7 @@ fn router_teaches_the_self_healing_delivery() {
     for (delivered, seed) in [
         (".claude/mustard/orchestrator.md", mustard_core::ORCHESTRATOR_MD),
         (".claude/mustard/dispatch.md", mustard_core::DISPATCH_MD),
+        (".claude/mustard/material.md", mustard_core::MATERIAL_MD),
     ] {
         assert_eq!(
             read(delivered).replace("\r\n", "\n"),
