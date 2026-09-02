@@ -2816,6 +2816,31 @@ const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
 /// other. Each phrase here is one that is NEVER true of these files — the
 /// legitimate `preserved` sentences of the other seeds say `an existing file`
 /// or `o que já existe`, never the injectables.
+///
+/// ## Why this is still a list of phrases, measured
+///
+/// A reviewer escaped it with a paraphrase that names no file — *"Uma cópia que
+/// você editou à mão é mantida como está"* — and the obvious repair is to derive
+/// the rule from a PRESERVATION VERB plus a ROUTER SUBJECT instead of listing
+/// sentences. That repair is now made, for the subjects where it MEASURES
+/// CLEAN: [`PRESERVATION_VERBS`] × ([`injectables`] ∪ [`PRESERVATION_SUBJECTS`]) flags
+/// zero sentences across all five surfaces today and catches five paraphrases
+/// the list misses (`kept as it is`, `left untouched`, `fica intacto`,
+/// `são mantidos como estão`, `never overwritten`).
+///
+/// What it does NOT reach is the reviewer's own sentence, because its subject is
+/// the generic noun `cópia`. Adding `copy`/`cópia` to [`INJECTABLE_NOUNS`] was
+/// measured before being rejected: it catches that paraphrase and flags THREE
+/// true sentences on a clean tree — `MUSTARD-COMMANDS.md`'s *"uma idêntica volta
+/// em `preserved`, porque não havia o que escrever"*, which is the convergence
+/// case and is simply true, and two dated cadavers in `project_seed.rs` (*"The
+/// pair used to carry a catalog of fingerprints…"*, *"The guess errs on the
+/// wrong side: a copy the catalog does not recognise is PRESERVED…"*) that
+/// record the bug this contract fixed. Those three would have to be deleted or
+/// exempted to keep the build green, and deleting a dated measurement to please
+/// a test is the one thing this project may not do. So the generic-noun
+/// paraphrase is a DECLARED LIMIT, not an oversight: detecting contradiction by
+/// meaning is not text matching, and the list below stays as the cheap half.
 const CONTRACT_CONTRADICTIONS: &[&str] = &[
     "an existing user file is preserved",
     "injectable is preserved",
@@ -2831,6 +2856,66 @@ const CONTRACT_CONTRADICTIONS: &[&str] = &[
 /// Words that file a file under the OPERATOR's ownership — the category the
 /// injectables are the exception to.
 const OWNERSHIP_MARKERS: &[&str] = &["merge", "preserv", "clobber", "yours", "you own"];
+
+/// Ways of saying a file SURVIVES an install untouched.
+///
+/// A verb list rather than a sentence list, because a verb list is smaller and
+/// far more stable than the phrases it appears in — the point of deriving. It
+/// is deliberately narrower than [`OWNERSHIP_MARKERS`]: `merge` is a word about
+/// WHO OWNS a file, not about what happens to it, and it stands legitimately in
+/// three sentences of `project_seed.rs` that name the injectables while
+/// explaining the exception in other words (measured).
+const PRESERVATION_VERBS: &[&str] = &[
+    "as-is",
+    "como está",
+    "intact",
+    "keep as",
+    "kept as",
+    "left alone",
+    "mantid",
+    "mantém",
+    "never overwritten",
+    "nunca sobrescrit",
+    "preserv",
+    "unchanged",
+    "untouched",
+];
+
+/// Generic nouns that mean *a file the router seeds*, for the sentences that
+/// state the contract without naming a file. The subject half of the derived
+/// rule.
+///
+/// Narrower than the cardinality half's [`INJECTABLE_NOUNS`], and measured that
+/// way: reusing that list put `sibling hook` in the subject set, which reddened
+/// on `project_seed.rs`'s dated 2026-08-25 note that two siblings' context
+/// *"both arrived intact"* — a measurement about hook DELIVERY, with nothing to
+/// say about what an install writes. `copy`/`cópia` is deliberately absent for
+/// the same kind of reason — see [`CONTRACT_CONTRADICTIONS`] for that
+/// measurement.
+const PRESERVATION_SUBJECTS: &[&str] = &["injectable", "injetáv", "injetav"];
+
+/// Ways of saying the file is written again — the exception stated in other
+/// words than the surface's own headline claim.
+///
+/// Wider than [`EXCEPTION_MARKERS`] and used ONLY by the generic-noun half,
+/// because that half's subject matches identifiers like `seed_injectable_files`
+/// in a doc comment: the sentences that carry them say `is replaced`,
+/// `is rewritten`, `never as Preserved`, and each is the contract stated
+/// correctly rather than contradicted.
+const REWRITE_MARKERS: &[&str] = &[
+    "always rewritten",
+    "always-rewrite",
+    "lays the shipped text down again",
+    "never preserved",
+    "not preserved",
+    "nunca preservad",
+    "reescrit",
+    "regrava",
+    "replaced",
+    "replaces",
+    "rewrite",
+    "rewritten",
+];
 
 /// Ways of naming the exception, beyond each surface's own headline claim.
 ///
@@ -2944,23 +3029,48 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
         // physical line; this sees the statement, however it is wrapped, and it
         // widens `merge` to every word that puts a file on the operator's side.
         for sentence in prose.split(". ") {
-            if !names.iter().any(|name| sentence.contains(name)) {
-                continue;
-            }
             let lowered = sentence.to_lowercase();
-            let Some(marker) = OWNERSHIP_MARKERS.iter().find(|m| lowered.contains(**m)) else {
-                continue;
-            };
-            let states_exception = sentence.contains(claims[0])
-                || EXCEPTION_MARKERS.iter().any(|m| lowered.contains(*m));
-            assert!(
-                states_exception,
-                "{rel} names an injectable in a sentence that files it under the \
-                 operator's own files (`{marker}`) and never states the exception \
-                 (`{}`) in that same sentence: {}",
-                claims[0],
-                sentence.split_whitespace().collect::<Vec<_>>().join(" "),
-            );
+            let headline = sentence.contains(claims[0]);
+
+            // Half one: the sentence NAMES a file the seed carries.
+            if names.iter().any(|name| sentence.contains(name)) {
+                let marker = OWNERSHIP_MARKERS
+                    .iter()
+                    .chain(PRESERVATION_VERBS)
+                    .find(|m| lowered.contains(**m));
+                if let Some(marker) = marker {
+                    let states_exception =
+                        headline || EXCEPTION_MARKERS.iter().any(|m| lowered.contains(*m));
+                    assert!(
+                        states_exception,
+                        "{rel} names an injectable in a sentence that files it under the \
+                         operator's own files (`{marker}`) and never states the exception \
+                         (`{}`) in that same sentence: {}",
+                        claims[0],
+                        sentence.split_whitespace().collect::<Vec<_>>().join(" "),
+                    );
+                }
+            }
+
+            // Half two, DERIVED and file-name-free: a preservation VERB standing
+            // next to a generic name for these files. This is the half the
+            // phrase list could not have — a paraphrase invents its own wording,
+            // and a list of sentences only ever knows the wordings already seen.
+            if PRESERVATION_SUBJECTS.iter().any(|noun| lowered.contains(noun)) {
+                let Some(verb) = PRESERVATION_VERBS.iter().find(|v| lowered.contains(**v)) else {
+                    continue;
+                };
+                let states_exception =
+                    headline || REWRITE_MARKERS.iter().any(|m| lowered.contains(*m));
+                assert!(
+                    states_exception,
+                    "{rel} says an injectable is `{verb}` and never says, in that same \
+                     sentence, that it is written again. These files are ALWAYS \
+                     rewritten — a reader who meets this sentence keeps a local edit \
+                     that the next install will silently take: {}",
+                    sentence.split_whitespace().collect::<Vec<_>>().join(" "),
+                );
+            }
         }
     }
 

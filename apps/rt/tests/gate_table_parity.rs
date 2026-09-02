@@ -23,6 +23,14 @@
 //!   refusal that never comes. Correcting the NAME half made that half MORE
 //!   credible, which is why the levels are now read out of the resolvers
 //!   themselves — see `the_registry_reports_the_default_each_resolver_falls_back_to`.
+//! - **A cascade layer the gate reads and the table does not.** The name column
+//!   answers *which knob* and the mode column *what happens if you never set
+//!   it* — and the second is a CASCADE, not a constant. Four of the seven gates
+//!   consult `mustard.json#gates.<field>` between the env var and their built-in
+//!   default; `build_mode_str` stopped at the env var, so a project stating
+//!   `{"gates":{"boundary":"strict"}}` was told `warn` while the gate denied.
+//!   Both halves are now read out of the resolvers — see
+//!   `the_registry_resolves_from_the_same_layers_the_gates_do`.
 //! - **A dead name kept alive by being MENTIONED.** All three checks above pivot
 //!   on one question — does anything read this name — so the measurement of
 //!   "read" decides what they can see. Counting every quoted occurrence would
@@ -226,11 +234,11 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The `(hook, env)` pairs the `hook_mode_env` match arms declare, in source
-/// order. Located by SHAPE — `"<hook>" => Some("<ENV>"),` inside that function —
-/// so the surrounding module can be reorganised without touching this guard.
-fn registry_pairs(src: &str) -> Vec<(String, String)> {
-    let Some(start) = src.find("fn hook_mode_env(") else {
+/// The `"<key>" => Some("<value>"),` arms of one named function, in source
+/// order. Located by SHAPE, so the surrounding module can be reorganised
+/// without touching this guard.
+fn some_arms(src: &str, func: &str) -> Vec<(String, String)> {
+    let Some(start) = src.find(&format!("fn {func}(")) else {
         return Vec::new();
     };
     let body = &src[start..];
@@ -239,10 +247,22 @@ fn registry_pairs(src: &str) -> Vec<(String, String)> {
         .lines()
         .filter_map(|line| {
             let (name, rest) = line.trim().strip_prefix('"')?.split_once("\" => Some(\"")?;
-            let env = rest.strip_suffix("\"),")?;
-            Some((name.to_string(), env.to_string()))
+            let value = rest.strip_suffix("\"),")?;
+            Some((name.to_string(), value.to_string()))
         })
         .collect()
+}
+
+/// The `(hook, env)` pairs the `hook_mode_env` match arms declare, in source
+/// order.
+fn registry_pairs(src: &str) -> Vec<(String, String)> {
+    some_arms(src, "hook_mode_env")
+}
+
+/// The `(hook, gates field)` pairs the `hook_config_key` match arms declare —
+/// the THIRD cascade layer the harness table consults, in source order.
+fn registry_config_keys(src: &str) -> Vec<(String, String)> {
+    some_arms(src, "hook_config_key")
 }
 
 /// The `("<ENV>", "<level>")` pairs the `hook_default_mode` match arms declare.
@@ -367,6 +387,185 @@ fn resolver_default(root: &Path, env: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The `gates.<field>` an expression names, if it names one — `gates.boundary`,
+/// `config.gates.spec_size.as_deref()`, and `None` alike.
+fn gates_field(expr: &str) -> Option<String> {
+    let rest = expr.split_once("gates.")?.1;
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .unwrap_or(rest.len());
+    (end > 0).then(|| rest[..end].to_string())
+}
+
+/// The name of the innermost `fn` declared before `at` — the resolver a read
+/// sits inside.
+///
+/// Visibility, `async`, `const` and `unsafe` are stripped so a `pub(super) fn`
+/// reads like any other; a `//`-comment line never declares one.
+fn enclosing_fn(text: &str, at: usize) -> Option<&str> {
+    let mut offset = 0usize;
+    let mut last: Option<&str> = None;
+    for line in text.split_inclusive('\n') {
+        if offset >= at {
+            break;
+        }
+        offset += line.len();
+        let mut t = line.trim_start();
+        if t.starts_with("//") {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("pub") {
+            let rest = rest.strip_prefix('(').map_or(rest, |r| {
+                r.find(')').map_or(r, |i| &r[i + 1..])
+            });
+            t = rest.trim_start();
+        }
+        for kw in ["async ", "const ", "unsafe ", "extern "] {
+            t = t.strip_prefix(kw).unwrap_or(t).trim_start();
+        }
+        let Some(rest) = t.strip_prefix("fn ") else { continue };
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        if end > 0 {
+            last = Some(&rest[..end]);
+        }
+    }
+    last
+}
+
+/// The `gates.<field>` handed to `func` at some call site in the same file.
+///
+/// The two hand-rolled resolvers take their config layer as a PARAMETER
+/// (`config_override`), so the field they read is named where they are called,
+/// not where they read the env var. Their own declaration line is harmless
+/// here: a parameter list names no `gates.` anything.
+fn call_site_gates_field(text: &str, mask: &[bool], func: &str) -> Option<String> {
+    let needle = format!("{func}(");
+    let bytes = text.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(&needle) {
+        let at = from + rel;
+        from = at + needle.len();
+        if mask[at] {
+            continue;
+        }
+        // Word boundary: `guard_gate_mode(` must not match inside
+        // `parse_guard_gate_mode(`.
+        if at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_') {
+            continue;
+        }
+        for arg in call_args(&text[at + needle.len()..]) {
+            if let Some(field) = gates_field(&arg) {
+                return Some(field);
+            }
+        }
+    }
+    None
+}
+
+/// The third cascade layer a resolver consults, as this ratchet can measure it.
+#[derive(Debug, PartialEq, Eq)]
+enum ConfigLayer {
+    /// Measured absence: the resolver walks env → built-in default and consults
+    /// no `mustard.json#gates` field at all.
+    Absent,
+    /// The `gates.<field>` it falls back to.
+    Field(String),
+    /// The shape was not recognised. Never a pass — a layer this file cannot
+    /// measure is one it cannot hold, and the caller says so out loud.
+    Unmeasurable,
+}
+
+/// The `mustard.json#gates` field the runtime consults for `env`, read out of
+/// the code that READS the name.
+///
+/// Two shapes, matching the two the crate has. `resolve_mode` takes the
+/// override as its SECOND argument, so that call is parsed. A hand-rolled
+/// resolver (`boundary_mode`, `main_budget_mode`) takes it as a parameter, so
+/// the field is read off the call site instead.
+fn resolver_config_key(root: &Path, env: &str) -> ConfigLayer {
+    let needle = format!("\"{env}\"");
+    for path in scanned_sources(root) {
+        if path.ends_with("commands/pipeline/status.rs") {
+            continue;
+        }
+        let text = read_lossy(&path);
+        let mask = comment_mask(&text);
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find(&needle) {
+            let at = from + rel;
+            from = at + needle.len();
+            if mask[at] {
+                continue;
+            }
+            let callee = callee_before(&text, at);
+            if !ENV_READERS.contains(&callee) {
+                continue;
+            }
+            if callee == "resolve_mode" {
+                let Some(arg) = call_args(&text[at..]).get(1).cloned() else {
+                    return ConfigLayer::Unmeasurable;
+                };
+                if arg.trim() == "None" {
+                    return ConfigLayer::Absent;
+                }
+                return gates_field(&arg).map_or(ConfigLayer::Unmeasurable, ConfigLayer::Field);
+            }
+            let Some(func) = enclosing_fn(&text, at) else {
+                return ConfigLayer::Unmeasurable;
+            };
+            return call_site_gates_field(&text, &mask, func)
+                .map_or(ConfigLayer::Absent, ConfigLayer::Field);
+        }
+    }
+    ConfigLayer::Unmeasurable
+}
+
+/// A [`ConfigLayer`] as a failure message names it.
+fn layer_label(layer: &ConfigLayer) -> String {
+    match layer {
+        ConfigLayer::Field(f) => format!("`mustard.json#gates.{f}`"),
+        _ => "no mustard.json#gates field".to_string(),
+    }
+}
+
+/// The keys the registry's `gate_config_value` accessor answers for — the arms
+/// of `"<key>" => gates.<field>`, in source order.
+fn registry_config_accessors(src: &str) -> Vec<String> {
+    let Some(start) = src.find("fn gate_config_value") else {
+        return Vec::new();
+    };
+    let body = &src[start..];
+    let end = body.find("\n}").unwrap_or(body.len());
+    body[..end]
+        .lines()
+        .filter_map(|line| {
+            let (key, _) = line.trim().strip_prefix('"')?.split_once("\" => gates.")?;
+            Some(key.to_string())
+        })
+        .collect()
+}
+
+/// The field names `GateModes` really declares, read out of the core's config
+/// module — the set a registry config key has to be a member of.
+fn gate_modes_fields(root: &Path) -> BTreeSet<String> {
+    let src = read_repo(root, "packages/core/src/domain/config.rs");
+    let Some(start) = src.find("pub struct GateModes {") else {
+        return BTreeSet::new();
+    };
+    let body = &src[start..];
+    let end = body.find("\n}").unwrap_or(body.len());
+    body[..end]
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("pub ")?;
+            let (name, _) = rest.split_once(": ")?;
+            Some(name.to_string())
+        })
+        .collect()
 }
 
 /// The `## Enforcement Hooks` section of the doc — the table plus the prose
@@ -793,6 +992,119 @@ fn the_registry_reports_the_default_each_resolver_falls_back_to() {
     assert!(
         offenders.is_empty(),
         "the harness table's default levels have drifted from the resolvers:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The harness table resolves a gate's mode from the SAME layers that gate
+/// does.
+///
+/// The sibling of `the_registry_reports_the_default_each_resolver_falls_back_to`
+/// and the half it could not see. That one compares the last layer, the
+/// built-in default; this one compares the layer above it. `build_mode_str`
+/// read `settings.json#env`, then the process environment, then the default,
+/// and STOPPED — while four of the seven gates consult a third layer,
+/// `mustard.json#gates.<field>`, between the two. Measured live before the fix:
+/// a project carrying `{"gates":{"boundary":"strict"}}` with the env unset had
+/// `boundary_mode()` resolve `Strict` while the table printed `warn`. The name
+/// column was right, the default column was right, and the cell was still
+/// wrong, because a cascade is only as true as its shortest half.
+///
+/// Read from the resolvers, never from a doc comment: the second argument of
+/// `resolve_mode`, or — for the two hand-rolled cascades that take the override
+/// as a parameter — the `gates.<field>` handed in at the call site. A gate that
+/// GAINS a config layer the table does not consult fails here, which is the
+/// direction the drift actually travels.
+#[test]
+fn the_registry_resolves_from_the_same_layers_the_gates_do() {
+    let root = repo_root();
+    let src = read_repo(&root, REGISTRY_SRC);
+    let pairs = registry_pairs(&src);
+    let declared = registry_config_keys(&src);
+    let live = live_mode_envs(&root);
+
+    assert!(
+        !declared.is_empty(),
+        "{REGISTRY_SRC} no longer exposes a `hook_config_key` map of \
+         `\"hook\" => Some(\"field\"),` arms — this ratchet reads that shape, and \
+         with no rows it would pass by measuring nothing"
+    );
+    for pair in declared.windows(2) {
+        assert!(
+            pair[0].0 < pair[1].0,
+            "hook_config_key arms must stay sorted: {} before {}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+
+    // A field name that `GateModes` does not have reads as no field at all —
+    // `gate_config_value` answers `None` and the layer is skipped in silence,
+    // which is the very failure this test exists to end.
+    let fields = gate_modes_fields(&root);
+    assert!(!fields.is_empty(), "GateModes exposes no `pub <field>: …` lines — the scan is broken");
+
+    // The map and its accessor answer for the SAME set. A key with no accessor
+    // arm resolves to `None` and drops the cell to the built-in default with no
+    // sign that a layer was skipped; an arm for a key no row maps is a field
+    // nothing renders.
+    let accessors: BTreeSet<String> = registry_config_accessors(&src).into_iter().collect();
+    let keyed: BTreeSet<String> = declared.iter().map(|(_, f)| f.clone()).collect();
+    assert_eq!(
+        accessors, keyed,
+        "`gate_config_value` answers for {accessors:?} and `hook_config_key` maps \
+         {keyed:?}. A key with no arm skips its layer in silence; an arm with no key \
+         renders nothing"
+    );
+
+    for (hook, field) in &declared {
+        assert!(
+            fields.contains(field),
+            "`hook_config_key` files `{hook}` under `mustard.json#gates.{field}`, which \
+             `GateModes` does not declare. The lookup answers None for it, so the layer \
+             is skipped without a word"
+        );
+        assert!(
+            pairs.iter().any(|(h, _)| h == hook),
+            "`hook_config_key` names `{hook}`, which `hook_mode_env` no longer maps — \
+             drop the arm, nothing renders it"
+        );
+    }
+
+    let mut offenders = Vec::new();
+    for (hook, env) in &pairs {
+        if !live.contains(env) {
+            // A dead name has no resolver to compare against;
+            // `dead_registry_env_names_stay_dead_and_declared` owns that case.
+            continue;
+        }
+        let real = resolver_config_key(&root, env);
+        if real == ConfigLayer::Unmeasurable {
+            offenders.push(format!(
+                "`{env}` is read by the runtime and this ratchet could not tell WHICH \
+                 layers it consults. The resolver has a shape `resolver_config_key` has \
+                 not been taught — teach it, rather than leaving the cascade `{hook}` \
+                 renders unmeasured"
+            ));
+            continue;
+        }
+        let stated = declared
+            .iter()
+            .find(|(h, _)| h == hook)
+            .map_or(ConfigLayer::Absent, |(_, f)| ConfigLayer::Field(f.clone()));
+        if stated != real {
+            offenders.push(format!(
+                "`{hook}` => `{env}`: the gate resolves from {} and the harness table \
+                 from {}. `run status --harness` prints a level the gate does not \
+                 enforce on any project that states the field",
+                layer_label(&real),
+                layer_label(&stated),
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the harness table and the gates walk different cascades:\n{}",
         offenders.join("\n")
     );
 }

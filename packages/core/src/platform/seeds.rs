@@ -93,12 +93,18 @@ mod tests {
         format!("# {head}{} Rules", chars.as_str())
     }
 
-    /// The sections that must live in EXACTLY ONE part, whichever part that is.
+    /// The `## …` heading a part OPENS with — its headline section, read out of
+    /// the part's own body.
     ///
-    /// A section in none of them is prose a hook dropped on the floor; a
-    /// section in two is the state where an edit corrects one copy and the
-    /// window reads the other.
-    const SOLE_SECTIONS: &[&str] = &["## Dispatch", "## Intent Routing", "## Material"];
+    /// DERIVED, like [`marker_heading`], and for the same reason. This was a
+    /// hard-typed list of three headings sitting directly above a loop that
+    /// already iterates the seed: a fourth injectable would have been seeded,
+    /// delivered and injected while its headline section was checked by
+    /// nothing, and the list would have looked complete the whole time. Asking
+    /// each part for its own heading makes the fourth carry itself in.
+    fn headline_section(body: &str) -> Option<&str> {
+        body.lines().map(str::trim_end).find(|line| line.starts_with("## "))
+    }
 
     /// The embedded seeds must be non-empty and carry their identifying
     /// shapes — a broken `include_str!` path fails the build, but an emptied
@@ -124,19 +130,29 @@ mod tests {
             );
         }
 
-        // The parts are ONE router split across one sibling hook each.
-        for section in SOLE_SECTIONS {
+        // The parts are ONE router split across one sibling hook each, so each
+        // part's headline section is that part's ALONE. A heading standing in
+        // two of them is the state where an edit corrects one copy while the
+        // window reads the other.
+        for (name, body) in INJECTABLE_SEEDS {
+            let section = headline_section(body).unwrap_or_else(|| {
+                panic!(
+                    "the `{name}` seed carries no `## ` section, so it has no headline \
+                     for this check to hold — a part with no section of its own is a \
+                     hook delivering a title"
+                )
+            });
             let carriers: Vec<&str> = INJECTABLE_SEEDS
                 .iter()
-                .filter(|(_, body)| body.contains(section))
-                .map(|(name, _)| *name)
+                .filter(|(_, other)| other.lines().any(|line| line.trim_end() == section))
+                .map(|(n, _)| *n)
                 .collect();
             assert_eq!(
-                carriers.len(),
-                1,
-                "`{section}` must live in exactly one injectable, and it lives in \
-                 {carriers:?}. None means a hook delivers it to nobody; two means an \
-                 edit corrects one copy while the window reads the other",
+                carriers,
+                vec![*name],
+                "`{section}` is the headline section of `{name}` and it stands in \
+                 {carriers:?}. Two carriers means an edit corrects one copy while the \
+                 window reads the other",
             );
         }
 
