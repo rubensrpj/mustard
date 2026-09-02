@@ -163,11 +163,13 @@ pub enum MaintCmd {
     /// `.claude/settings.json` — plus `.claude/.gitignore` and the
     /// project-root `mustard.json` are yours and are merged, never clobbered:
     /// an existing file is preserved, only what is missing is created or
-    /// backfilled. The two injectable instruction files under
-    /// `.claude/mustard/` — `orchestrator.md` and `dispatch.md` — are ALWAYS
-    /// rewritten: they are the harness's own rules, not project
-    /// configuration, so a copy you edited is replaced and listed under
-    /// `updated`. The legacy planted-orchestrator footprint is migrated away.
+    /// backfilled. The three injectable instruction files under
+    /// `.claude/mustard/` — `orchestrator.md`, `dispatch.md` and
+    /// `material.md` — are ALWAYS rewritten: they are the harness's own
+    /// rules, not project configuration, so a copy you edited is replaced and
+    /// listed under `updated`, while one that already matched the shipped
+    /// text comes back under `preserved` because there was nothing left to
+    /// write. The legacy planted-orchestrator footprint is migrated away.
     /// Emits the `UpsertReport` as deterministic pretty JSON.
     #[command(display_order = 44)]
     Upsert {},
