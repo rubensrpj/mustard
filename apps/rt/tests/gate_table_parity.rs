@@ -25,14 +25,23 @@
 //!   holds the other end: a mention is fine, of a name something really reads.
 //!
 //! What this deliberately does NOT do is demand LITERAL parity with the
-//! `hook_mode_env` map. That map names two vars **no hook reads**
-//! (`MUSTARD_POST_EDIT_MODE`, `MUSTARD_KNOWLEDGE_MODE` — measured: they occur
-//! nowhere but `status.rs`). A ratchet requiring the table to repeat them would
-//! pin two dead names into the documentation, which is the same defect the
-//! table was corrected to remove. So the env half is checked against the name
-//! the runtime ACTUALLY reads, and the two dead names are declared dead in
-//! [`DEAD_REGISTRY_ENV`] — with a sibling test that fails the day either stops
-//! being dead, so the exception cannot outlive its reason.
+//! `hook_mode_env` map: the env half is checked against the name the runtime
+//! ACTUALLY reads, never against the name the map happens to carry. That map
+//! used to carry two vars **no hook reads** — `MUSTARD_POST_EDIT_MODE` and
+//! `MUSTARD_KNOWLEDGE_MODE`, which occurred nowhere but `status.rs` — and they
+//! were DECLARED in [`DEAD_REGISTRY_ENV`] rather than pinned into the table,
+//! because a ratchet demanding the table repeat them would document two dead
+//! names as knobs.
+//!
+//! Documenting a dead name is not the same as removing it, though. The operator
+//! running `run status --harness` still met two knobs wired to nothing, and a
+//! declaration in a test file does not reach them. So the REGISTRY was
+//! corrected instead: `post_edit` now names the `MUSTARD_GUARD_GATE_MODE` its
+//! one refusing half really reads, and `session_knowledge_observer` names no
+//! var at all, because an Observer has no enforcement level. The list is empty
+//! now, and the sweep in `dead_registry_env_names_stay_dead_and_declared` is
+//! what keeps it that way — the next dead name fails the build instead of
+//! earning a row.
 //!
 //! The name half is checked in ONE direction, registry → table. The reverse
 //! would demand a `hook_mode_env` row for every documented gate, and the table
@@ -77,21 +86,16 @@ const ENV_READERS: &[&str] = &["resolve_mode", "var", "var_os"];
 /// A row here is a claim of deadness, and the sibling test re-measures it: the
 /// day something starts reading one of these names, the row fails and has to go
 /// (and the table then owes the name a row like any live knob). Kept sorted.
-const DEAD_REGISTRY_ENV: &[(&str, &str, &str)] = &[
-    (
-        "post_edit",
-        "MUSTARD_POST_EDIT_MODE",
-        "no hook reads it; the only refusing half of post_edit reads \
-         MUSTARD_GUARD_GATE_MODE (hooks/write/post_edit.rs), which is the name \
-         the table's post_edit row carries. Setting this one changes nothing",
-    ),
-    (
-        "session_knowledge_observer",
-        "MUSTARD_KNOWLEDGE_MODE",
-        "no hook reads it; session_knowledge_observer returns no verdict at all \
-         (an Observer), so it has no enforcement level to set",
-    ),
-];
+///
+/// **Empty, deliberately, and it is meant to stay that way.** The two rows this
+/// list carried were an accurate description of a registry that was wrong, and
+/// a description does not reach the operator: `run status --harness` went on
+/// printing both names in the column a reader takes as *the knob to set*. The
+/// arms were corrected instead (see `hook_mode_env`), so there is nothing left
+/// to declare. A row is still ACCEPTED here — the sweep below demands one for
+/// any dead name rather than passing over it — but a new one should be read as
+/// a registry that has drifted again, not as the normal way to add a gate.
+const DEAD_REGISTRY_ENV: &[(&str, &str, &str)] = &[];
 
 /// Live mode env vars that no plugin prose spells, kept deliberately.
 ///
@@ -371,20 +375,36 @@ fn mode_env_literals(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Every `.rs` file of the runtime crate, sorted.
-fn rt_sources(root: &Path) -> Vec<PathBuf> {
-    let dir = root.join("apps/rt/src");
-    assert!(dir.is_dir(), "runtime sources missing at {}", dir.display());
+/// The source trees a gate mode env var can be read from.
+///
+/// `apps/rt/src` alone was the whole scan, and that made every test here blind
+/// outside it: a knob read from `packages/core` or `apps/cli` would measure as
+/// DEAD, so a registry row naming it would demand a false `DEAD_REGISTRY_ENV`
+/// confession, and prose spelling it would look like a redundant exemption.
+/// Nothing outside `apps/rt/src` reads one TODAY — measured before widening:
+/// `apps/cli` holds the only other `_MODE` literal and hands it to a JSON
+/// `get`, not to an env reader, and `packages/core` holds none — so closing the
+/// hole changed no verdict. It closes it for the day the first one lands.
+const SCANNED_SOURCE_ROOTS: &[&str] = &["apps/cli/src", "apps/rt/src", "packages/core/src"];
+
+/// Every `.rs` file of the scanned source trees, in root order and sorted
+/// within each.
+fn scanned_sources(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    walk_files(&dir, &mut files);
+    for rel in SCANNED_SOURCE_ROOTS {
+        let dir = root.join(rel);
+        assert!(dir.is_dir(), "scanned sources missing at {}", dir.display());
+        walk_files(&dir, &mut files);
+    }
     files.retain(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"));
     files
 }
 
-/// Every `(file, name, callee)` a `"…_MODE"` literal appears as, outside the
-/// registry module — which renders names rather than consulting them.
+/// Every `(file, name, callee)` a `"…_MODE"` literal appears as, across
+/// [`SCANNED_SOURCE_ROOTS`] and outside the registry module — which renders
+/// names rather than consulting them.
 fn rt_mode_literals(root: &Path) -> Vec<(PathBuf, String, String)> {
-    rt_sources(root)
+    scanned_sources(root)
         .into_iter()
         .filter(|p| !p.ends_with("commands/pipeline/status.rs"))
         .flat_map(|p| {

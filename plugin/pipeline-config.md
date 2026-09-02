@@ -102,7 +102,7 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 
 - **`context_budget_gate` is the only knob with no `MUSTARD_` prefix** — it reads a bare `CONTEXT_BUDGET_MODE`. Grepping the settings for `MUSTARD_` will not find it.
 - **`scan_gate` has no knob at all.** It is always strict; there is nothing to set to `warn`, and the way past it is to run the scan.
-- **Two names in that registry are read by no hook**: `MUSTARD_POST_EDIT_MODE` and `MUSTARD_KNOWLEDGE_MODE` appear only in `status.rs`. `post_edit`'s refusing half reads `MUSTARD_GUARD_GATE_MODE`, which is what the row above names; `session_knowledge_observer` refuses nothing, so it has no mode to set. Setting either dead name changes nothing.
+- **Two names that registry USED to render are read by no hook**: `MUSTARD_POST_EDIT_MODE` and `MUSTARD_KNOWLEDGE_MODE`. Neither was ever consulted anywhere, and `run status --harness` printed both in the `Mode env` column as if they were knobs. The registry no longer names them: `post_edit` names `MUSTARD_GUARD_GATE_MODE`, which its refusing half really reads and which the row above carries, and `session_knowledge_observer` names nothing, because an Observer returns no verdict and so has no level to set. If either name is still in your `settings.json` from an older release, it changes nothing — delete it.
 
 There is **no `skills_advisory` gate.** The row that used to sit here (`Task` · advisory · "skills >10") named a module with zero occurrences anywhere in the source — `skill_usage_observer` is the only thing listening on `PostToolUse(Skill)`, and it counts, it does not advise on a threshold.
 

@@ -2752,3 +2752,329 @@ fn every_project_learns_that_a_door_does_what_it_names() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The always-rewritten contract, and the set it is stated about
+// ---------------------------------------------------------------------------
+
+/// Where the always-rewrite contract is stated, and the sentences that state
+/// it: `(file, claims)`, with `claims[0]` the always-rewrite sentence itself.
+///
+/// Four surfaces describe what `/mustard:upsert` does to the instruction files
+/// the harness seeds — two doc comments, one door, one command reference, in
+/// two languages — and until now NOTHING read any of them. The regression they
+/// ratchet against is not hypothetical: a round of this work replaced the
+/// always-rewrite sentence with a merge-mode one and cost two turns of
+/// correction, with a green build both times, because every criterion pinned
+/// the BEHAVIOUR and none pinned the prose that describes it.
+///
+/// The file NAMES are not listed here. They come from the seed, so a new
+/// injectable makes every one of these surfaces owe it a mention rather than
+/// being discovered missing one surface at a time.
+const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
+    (
+        "MUSTARD-COMMANDS.md",
+        &["toda execução regrava o texto embarcado", "`updated`", "`preserved`"],
+    ),
+    (
+        "apps/rt/src/commands/maint/cli.rs",
+        &["ALWAYS rewritten", "`updated`", "`preserved`"],
+    ),
+    (
+        "apps/rt/src/commands/maint/upsert.rs",
+        &["ALWAYS rewritten", "`Updated`", "`Preserved`"],
+    ),
+    (
+        "plugin/commands/upsert.md",
+        &["every run lays the shipped text down again", "`updated`", "`preserved`"],
+    ),
+];
+
+/// The basenames the seed carries, asked of the seed.
+fn injectables() -> Vec<&'static str> {
+    let names = mustard_core::injectable_names();
+    assert!(!names.is_empty(), "the seed carries no injectable — every check below would measure nothing");
+    names
+}
+
+/// Every surface that describes the install states the contract, names every
+/// file it holds for, and never files them under what the operator owns.
+///
+/// Both halves, as everywhere in this file. The PROSE half is the four
+/// surfaces; the CODE half drives `seed_injectable_files` over a diverged copy
+/// and requires the outcome the prose promises — so the pair can only be broken
+/// together, deliberately.
+#[test]
+fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
+    let names = injectables();
+
+    for (rel, claims) in REWRITE_CONTRACT_SURFACES {
+        let body = read(rel);
+        for claim in *claims {
+            assert!(
+                body.contains(claim),
+                "{rel} no longer says `{claim}` — the always-rewrite contract is stated \
+                 nowhere a reader of this file arrives at, and the merge-mode regression \
+                 this ratchet exists for landed here twice",
+            );
+        }
+        for name in &names {
+            assert!(
+                body.contains(name),
+                "{rel} describes what an install does to the harness's own instruction \
+                 files and never names `{name}`, which the seed carries. A reader is told \
+                 the contract for some of them and left to guess for the rest",
+            );
+        }
+        // A line that names one of these files and talks about MERGING must be
+        // the line that also states the exception. This is the exact shape the
+        // regression took: the names kept, the verb swapped.
+        for (n, line) in body.lines().enumerate() {
+            if !names.iter().any(|name| line.contains(name)) {
+                continue;
+            }
+            if !line.to_ascii_lowercase().contains("merge") {
+                continue;
+            }
+            assert!(
+                line.contains(claims[0]),
+                "{rel}:{} files an injectable under MERGE without stating the exception \
+                 on the same line: {}",
+                n + 1,
+                line.trim(),
+            );
+        }
+    }
+
+    // The code half. A copy that diverged is REPLACED and reported as Updated;
+    // a copy already identical is Preserved because there was nothing to write.
+    let dir = tempfile::tempdir().unwrap();
+    let claude = dir.path().join(".claude");
+    let created = mustard_core::seed_injectable_files(&claude).unwrap();
+    assert_eq!(created.len(), names.len(), "the seeder wrote a different set than the seed carries");
+    for (name, outcome) in &created {
+        assert_eq!(*outcome, mustard_core::SeedOutcome::Created, "{name} on a fresh project");
+    }
+
+    for name in &names {
+        std::fs::write(claude.join("mustard").join(name), "AN OPERATOR EDIT").unwrap();
+    }
+    let rewritten = mustard_core::seed_injectable_files(&claude).unwrap();
+    for (name, outcome) in &rewritten {
+        assert_eq!(
+            *outcome,
+            mustard_core::SeedOutcome::Updated,
+            "{name} survived an install as the operator's edit — the prose above promises \
+             it is replaced, so a corrected rule now fails to reach installed projects",
+        );
+    }
+
+    let settled = mustard_core::seed_injectable_files(&claude).unwrap();
+    for (name, outcome) in &settled {
+        assert_eq!(
+            *outcome,
+            mustard_core::SeedOutcome::Preserved,
+            "{name} is reported as written when the shipped text was already on disk — \
+             the operation must converge after one run",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// No document names SOME of the injectables
+// ---------------------------------------------------------------------------
+
+/// Where a document that enumerates the injectables can live.
+///
+/// `.claude/spec/` is deliberately absent: a spec is a FROZEN record of a unit
+/// that shipped, and a record naming what existed then is not drift. Only the
+/// delivered copies under `.claude/mustard/` are read from that tree.
+const PROSE_SCAN_ROOTS: &[&str] = &[".claude/mustard", "apps", "packages", "plugin"];
+
+/// Blocks that name SOME injectables and not all, kept deliberately.
+///
+/// `(file, anchor, why)`. The bar is not "it is minor": it is that the block is
+/// a DATED MEASUREMENT of specific files, taken when the set was smaller.
+/// Adding a name a measurement never covered would falsify it, and a measured
+/// number is the one thing this project may not edit to keep a test green.
+/// The sibling assertion drops a row that stops being needed.
+const SUBSET_EXEMPT_BLOCKS: &[(&str, &str, &str)] = &[
+    (
+        "apps/cli/tests/template_budget.rs",
+        "held nothing but rules",
+        "the measurement that set INJECTABLE_CHAR_CAP, taken on the rewrite that \
+         introduced it and before the third channel was split off. It names the two \
+         files that were measured",
+    ),
+    (
+        "plugin/refs/mustard/router-rationale.md",
+        "with zero operational tokens lost",
+        "the 2026-08-20 character counts, file by file, from before the split — a \
+         record of what two specific documents measured then",
+    ),
+];
+
+/// Recursively collect `.rs` and `.md` files under `dir`, sorted.
+fn collect_documents(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            if matches!(name.to_str(), Some("target" | "node_modules" | "dist" | "build" | ".git")) {
+                continue;
+            }
+            collect_documents(&path, out);
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("rs" | "md")
+        ) {
+            out.push(path);
+        }
+    }
+}
+
+/// Every document the scan reads: the roots above, plus the repo-root markdown.
+fn scanned_documents() -> Vec<PathBuf> {
+    let root = repo_root();
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                out.push(path);
+            }
+        }
+    }
+    for rel in PROSE_SCAN_ROOTS {
+        collect_documents(&root.join(rel), &mut out);
+    }
+    out
+}
+
+/// The PROSE blocks of a document: runs of `//`-comment lines in Rust, runs of
+/// non-blank lines in markdown.
+///
+/// Code is not read. A fixture may legitimately model a project that declares
+/// two of three — that is the state the doctor exists to FIND — while a comment
+/// or a paragraph makes a claim about the harness, and a claim about some of
+/// the injectables is a claim that goes stale the day another is seeded.
+fn prose_blocks(path: &Path, body: &str) -> Vec<(usize, String)> {
+    let rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut start = 0usize;
+    let mut acc: Vec<&str> = Vec::new();
+    for (n, line) in body.lines().enumerate() {
+        let keep = if rust { line.trim_start().starts_with("//") } else { !line.trim().is_empty() };
+        if keep {
+            if acc.is_empty() {
+                start = n + 1;
+            }
+            acc.push(line);
+        } else if !acc.is_empty() {
+            out.push((start, acc.join("\n")));
+            acc.clear();
+        }
+    }
+    if !acc.is_empty() {
+        out.push((start, acc.join("\n")));
+    }
+    out
+}
+
+/// The injectables a block names, minus the document's own basename — a file
+/// that calls itself "this file" has named the whole set.
+fn named_in(block: &str, own: &str, names: &[&'static str]) -> Vec<&'static str> {
+    names
+        .iter()
+        .filter(|name| **name != own && block.contains(*name))
+        .copied()
+        .collect()
+}
+
+/// No prose block names SOME of the injectables the seed carries.
+///
+/// The class, not a list of files. Three places named two of three at once —
+/// two doc blocks in the seeding engine and the ratchet that proves each
+/// injectable rides its own hook — and each was found by a person reading, one
+/// at a time, months apart. Deriving the set from the seed means the fourth
+/// injectable reddens every place left behind on the day it is added, instead
+/// of being discovered the same way.
+#[test]
+fn no_prose_block_names_a_proper_subset_of_the_injectables() {
+    let names = injectables();
+    let root = repo_root();
+
+    let mut offenders = Vec::new();
+    for path in scanned_documents() {
+        let Ok(body) = std::fs::read_to_string(&path) else { continue };
+        let own = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+        let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+        let required = names.iter().filter(|n| **n != own).count();
+        for (line, block) in prose_blocks(&path, &body) {
+            let named = named_in(&block, own, &names);
+            if named.len() < 2 || named.len() == required {
+                continue;
+            }
+            if SUBSET_EXEMPT_BLOCKS
+                .iter()
+                .any(|(file, anchor, _)| rel.ends_with(file) && block.contains(anchor))
+            {
+                continue;
+            }
+            let missing: Vec<&str> = names
+                .iter()
+                .filter(|n| **n != own && !named.contains(n))
+                .copied()
+                .collect();
+            offenders.push(format!(
+                "{rel}:{line} names {named:?} and not {missing:?}. Every injectable the \
+                 seed carries takes the same rule, so a document that lists some of them \
+                 tells a reader the set is smaller than it is — say it about the SET, or \
+                 name them all"
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "prose that enumerates a proper subset of the injectables:\n{}",
+        offenders.join("\n"),
+    );
+}
+
+/// Every subset exemption is still there, still partial, and still sorted.
+#[test]
+fn subset_exemptions_stay_sorted_present_and_necessary() {
+    let names = injectables();
+    let root = repo_root();
+
+    for pair in SUBSET_EXEMPT_BLOCKS.windows(2) {
+        assert!(
+            (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1),
+            "SUBSET_EXEMPT_BLOCKS must stay sorted: {} before {}",
+            pair[0].0,
+            pair[1].0,
+        );
+    }
+    for (file, anchor, why) in SUBSET_EXEMPT_BLOCKS {
+        assert!(!why.trim().is_empty(), "SUBSET_EXEMPT_BLOCKS entry {file} carries no justification");
+        let path = root.join(file);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("exempted document {file} is unreadable: {e}"));
+        let own = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+        let required = names.iter().filter(|n| **n != own).count();
+        let still_partial = prose_blocks(&path, &body).into_iter().any(|(_, block)| {
+            let named = named_in(&block, own, &names);
+            block.contains(*anchor) && named.len() >= 2 && named.len() != required
+        });
+        assert!(
+            still_partial,
+            "SUBSET_EXEMPT_BLOCKS names {file} at `{anchor}`, and no block there names a \
+             proper subset any more — drop the row, there is nothing left to excuse",
+        );
+    }
+}

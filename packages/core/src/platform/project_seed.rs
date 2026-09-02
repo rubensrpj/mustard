@@ -555,9 +555,10 @@ impl UpsertReport {
 /// `.claude/.gitignore` and the project-root `mustard.json` survive when they
 /// exist, and only what is missing is created or backfilled.
 ///
-/// The two injectable instruction files under `.claude/mustard/` —
-/// `orchestrator.md` and `dispatch.md` — are the exception, and take no merge
-/// decision from anybody: they are the harness's own rules rather than project
+/// The injectable instruction files under `.claude/mustard/` — every entry
+/// [`INJECTABLE_SEEDS`] carries, named there and nowhere else so a new one is
+/// covered the day it lands — are the exception, and take no merge decision
+/// from anybody: they are the harness's own rules rather than project
 /// configuration, so every run writes the compiled-in body again. A copy that
 /// diverged (an operator's edit, or an older release's seed) is REPLACED, and
 /// the replacement is reported as [`SeedOutcome::Updated`], never
@@ -570,9 +571,9 @@ impl UpsertReport {
 /// 2. `.claude/settings.json` — seed when absent, backfill missing top-level
 ///    keys when present, always passing through
 ///    [`retire_planted_plugin_enablement`];
-/// 3. `.claude/mustard/orchestrator.md` AND `.claude/mustard/dispatch.md` —
-///    the compiled-in body is written every time; a user-customised copy does
-///    NOT survive, it is replaced and reported as [`SeedOutcome::Updated`]
+/// 3. `.claude/mustard/` — the compiled-in body of EVERY [`INJECTABLE_SEEDS`]
+///    entry is written every time; a user-customised copy does NOT survive, it
+///    is replaced and reported as [`SeedOutcome::Updated`]
 ///    (see [`seed_injectable_files`]);
 /// 4. `.claude/.gitignore` — created when absent, and when present the pattern
 ///    lines it lacks are appended, so a project installed before a rule existed
@@ -859,7 +860,7 @@ const INJECTABLE_SEEDS: &[(&str, &str)] = &[
 /// Seed the injectable instruction files into `.claude/mustard/`.
 ///
 /// **Always rewritten.** Unlike every other seeder here there is no
-/// overwrite/merge decision to take: `orchestrator.md` and `dispatch.md` are
+/// overwrite/merge decision to take: every file [`INJECTABLE_SEEDS`] carries is
 /// the harness's own rules, not project configuration, so each install and each
 /// update lays the compiled-in body down again. A copy that diverged — an
 /// operator's edit, or a seed from an older release — is replaced, and the
@@ -1036,35 +1037,45 @@ fn seed_static_file(dest: &Path, body: &str, overwrite: bool) -> Result<SeedOutc
 /// retires the stale entry from projects installed before the move.
 #[must_use]
 pub fn default_inject_entries() -> Vec<Injectable> {
-    vec![
-        Injectable {
+    injectable_declared_paths()
+        .into_iter()
+        .map(|file| Injectable {
             on: "userPromptSubmit".to_string(),
-            file: ORCHESTRATOR_INJECT_FILE.to_string(),
+            file,
             once: true,
-        },
-        Injectable {
-            on: "userPromptSubmit".to_string(),
-            file: DISPATCH_INJECT_FILE.to_string(),
-            once: true,
-        },
-        Injectable {
-            on: "userPromptSubmit".to_string(),
-            file: MATERIAL_INJECT_FILE.to_string(),
-            once: true,
-        },
-    ]
+        })
+        .collect()
 }
 
-/// Declared path of the router's first part (§ Intent Routing).
+/// The basename of every injectable instruction file the seed carries, in
+/// declaration order.
+///
+/// Public because the whole SET is a question more than one consumer has to
+/// ask, and every consumer that answers it by retyping the names is a place a
+/// new injectable is forgotten: the doctor's delivery check asks it, and so
+/// does the prose ratchet that forbids any document from naming a proper
+/// subset of them. Derived from [`INJECTABLE_SEEDS`], which stays the one
+/// declaration.
+#[must_use]
+pub fn injectable_names() -> Vec<&'static str> {
+    INJECTABLE_SEEDS.iter().map(|(name, _)| *name).collect()
+}
+
+/// The path each injectable is DECLARED and delivered under, in the same
+/// order — the one place the `.claude/mustard/` prefix is spelled for a
+/// declaration.
+#[must_use]
+pub fn injectable_declared_paths() -> Vec<String> {
+    injectable_names()
+        .into_iter()
+        .map(|name| format!(".claude/mustard/{name}"))
+        .collect()
+}
+
+/// Declared path of the router's first part (§ Intent Routing) — spelled on
+/// its own because [`backfill_dispatch_inject`] keys the pre-split migration on
+/// THAT entry specifically, not on the set.
 const ORCHESTRATOR_INJECT_FILE: &str = ".claude/mustard/orchestrator.md";
-
-/// Declared path of the router's second part (§ Dispatch).
-const DISPATCH_INJECT_FILE: &str = ".claude/mustard/dispatch.md";
-
-/// Declared path of the router's third part (§ Material) — the conversation
-/// channel, split off `dispatch.md` when that file reached ten characters of
-/// margin under the size alarm on a CRLF checkout.
-const MATERIAL_INJECT_FILE: &str = ".claude/mustard/material.md";
 
 /// Create or minimally update the project-root `mustard.json` through
 /// [`ProjectConfig`] (the single owner).
@@ -2210,7 +2221,7 @@ mod tests {
         let dispatch = config
             .inject
             .iter()
-            .find(|e| e.file == DISPATCH_INJECT_FILE)
+            .find(|e| e.file == ".claude/mustard/dispatch.md")
             .expect("the second half was not declared");
         assert_eq!(
             dispatch.on, "userPromptSubmit",
@@ -2707,7 +2718,7 @@ mod tests {
     #[test]
     fn the_router_rides_the_self_healing_event_and_neither_half_overflows() {
         let entries = default_inject_entries();
-        for file in [ORCHESTRATOR_INJECT_FILE, DISPATCH_INJECT_FILE, MATERIAL_INJECT_FILE] {
+        for file in injectable_declared_paths() {
             let entry = entries
                 .iter()
                 .find(|e| e.file == file)

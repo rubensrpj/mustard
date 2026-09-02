@@ -55,6 +55,16 @@ fn hook_description(name: &str) -> &'static str {
 }
 
 /// Env var name that controls a given hook's mode.
+///
+/// The `--harness` table renders this column as THE KNOB TO SET, so a name
+/// here that nothing reads is worse than an empty cell: setting it looks
+/// accepted and changes nothing. Two such names sat here — `MUSTARD_POST_EDIT_MODE`
+/// and `MUSTARD_KNOWLEDGE_MODE` — and neither was ever read by a hook.
+/// `post_edit` now names `MUSTARD_GUARD_GATE_MODE`, which is what its one
+/// refusing half really reads (`hooks/write/post_edit.rs`);
+/// `session_knowledge_observer` names nothing, because an Observer returns no
+/// verdict and so has no enforcement level to set. `gate_table_parity.rs` holds
+/// that line: an arm naming a var no env-reading call consults fails the build.
 fn hook_mode_env(name: &str) -> Option<&'static str> {
     match name {
         "bash_command_gate" => Some("MUSTARD_COMMIT_GATE_MODE"),
@@ -64,8 +74,8 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
         // `scan_gate` is always strict (no mode env var).
         "size_gate" => Some("MUSTARD_SPEC_SIZE_MODE"),
         "boundary_gate" => Some("MUSTARD_BOUNDARY_MODE"),
-        "post_edit" => Some("MUSTARD_POST_EDIT_MODE"),
-        "session_knowledge_observer" => Some("MUSTARD_KNOWLEDGE_MODE"),
+        "post_edit" => Some("MUSTARD_GUARD_GATE_MODE"),
+        // `session_knowledge_observer` is an Observer: no verdict, no mode.
         _ => None,
     }
 }
