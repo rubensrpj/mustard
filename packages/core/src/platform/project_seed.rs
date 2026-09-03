@@ -869,7 +869,15 @@ fn rename_dead_skill_validate_key(settings: &mut Map<String, Value>) {
     let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) else {
         return;
     };
-    let Some(value) = env.remove(SKILL_VALIDATE_DEAD_KEY) else {
+    // `shift_remove`, never `remove`. The workspace builds `serde_json` with
+    // `preserve_order` (enabled by `apps/scan`, and cargo features UNIFY across a
+    // workspace, so this crate gets it too), and there `Map::remove` is a
+    // `swap_remove`: it teleports the LAST key of `env` into the hole. Measured on
+    // the shipped binary 2026-09-03 — an operator `env` came back with its final
+    // key moved four slots up. JSON order carries no meaning, so nothing resolves
+    // wrong; it is churn WE cause in a file that is the operator's, and a diff
+    // nobody asked for is how a settings file stops being trusted.
+    let Some(value) = env.shift_remove(SKILL_VALIDATE_DEAD_KEY) else {
         return;
     };
     env.entry(SKILL_VALIDATE_LIVE_KEY.to_string()).or_insert(value);
@@ -2595,6 +2603,31 @@ mod tests {
         assert_eq!(env[SKILL_VALIDATE_LIVE_KEY], json!("warn"), "operator's value carried over");
         assert!(env.get(SKILL_VALIDATE_DEAD_KEY).is_none(), "dead name gone");
         assert_eq!(env["MY_OWN"], json!("1"), "the rest of their env survives");
+    }
+
+    /// The operator's OWN keys keep the order they were written in.
+    ///
+    /// `Map::remove` under `preserve_order` is a `swap_remove`: it teleports the
+    /// last key into the hole. Measured on the shipped binary 2026-09-03, an
+    /// operator's final env key moved four slots up — values intact, file
+    /// scrambled. Nothing resolves wrong, and that is exactly why no other test
+    /// would ever have caught it: a diff nobody asked for in a file that is theirs.
+    #[test]
+    fn the_migration_leaves_the_operators_other_keys_where_they_were() {
+        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
+            r#"{{"env":{{"A_FIRST":"1","{SKILL_VALIDATE_DEAD_KEY}":"warn","B_AFTER":"2","Z_LAST":"3"}}}}"#
+        ))
+        .unwrap();
+
+        rename_dead_skill_validate_key(&mut settings);
+
+        let env = settings["env"].as_object().expect("env survives as an object");
+        let order: Vec<&str> = env.keys().map(String::as_str).collect();
+        assert_eq!(
+            order,
+            vec!["A_FIRST", "B_AFTER", "Z_LAST", SKILL_VALIDATE_LIVE_KEY],
+            "the dead key is lifted OUT and the live one appended; nothing else moves",
+        );
     }
 
     #[test]

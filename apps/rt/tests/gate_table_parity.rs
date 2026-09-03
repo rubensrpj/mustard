@@ -1362,8 +1362,16 @@ fn retirement_exemption_paths_are_matched_without_a_platform_separator() {
     let windows = r"packages/core/src\platform\project_seed.rs".replace('\\', "/");
     let unix = "packages/core/src/platform/project_seed.rs".replace('\\', "/");
     assert_eq!(windows, unix, "normalisation must erase the platform separator");
+    // An EMPTY list is the destination the sibling test drives toward: when the
+    // migration has done its work everywhere, the row stops being needed and is
+    // dropped. Indexing `[0]` here made that success a panic — a test that breaks
+    // when the thing it guards is finally finished is a test that will be deleted
+    // rather than read.
+    let Some((spelled, _, _)) = RETIRING_MODE_ENV.first() else {
+        return;
+    };
     assert_eq!(
-        RETIRING_MODE_ENV[0].0, unix,
+        *spelled, unix,
         "the retirement table is written with `/`; a row spelled otherwise can never match",
     );
 }
