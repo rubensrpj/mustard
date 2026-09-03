@@ -1,7 +1,6 @@
 ---
 description: An internal flow — dispatched by the orchestrator router (CLAUDE.md § Intent Routing), not chosen directly by the user. Lean delegated code task (analyze, audit, compare, review, docs, refactor, implement) via separate Task contexts (L0 Universal Delegation). Weak fallback only: use when the router did not engage and the user asks for a delegated code task.
 user-invocable: false
-source: manual
 ---
 <!-- mustard:generated -->
 # /task — Delegated Task Execution
@@ -20,7 +19,7 @@ source: manual
 | `refactor` | `plan` → `impl` | `Plan` → `general-purpose` |
 | `implement` | `impl` | `general-purpose` |
 
-Roles are the render's canonical vocabulary (`explore`, `plan`, `impl`, `review`) — an unknown role falls through to the impl contract, so never pass the action name as `--role`.
+Roles are the render's canonical vocabulary: SIX named contracts — `explore`, `plan`, `review`, `qa`, `guards`, `patterns` — plus the `impl` default that every other value falls through to. The `--role` column above is what THIS flow dispatches; the other three exist and are reached from elsewhere (`qa` from the pipeline's QA step, `guards`/`patterns` from the `/scan` enrich). Nothing validates the value: an unknown role — the action name typed by mistake, `--role docs` — renders the implementer contract in silence, so a read-only action would be handed a writing brief.
 
 ## LOCATE → render → dispatch
 
@@ -36,6 +35,8 @@ mustard-rt run agent-prompt-render --role {role} \
 ```
 
 Pass the stdout **verbatim** as the Task `prompt` — never hand-assemble, never read the `.dispatch/` file; stub mechanics: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`. Swap `--mode granular|fix-loop` on a retry. When the digest's `concerns` show ≥2, render + dispatch ONE action per concern, each scoped to its own anchors.
+
+**`--emit` and `--mode` accept a wrong value SILENTLY — they fall back, they never refuse.** `--emit` recognises exactly one spelling, `ref`; anything else, `rf` included, is `inline`, and the whole rendered prompt comes back through your context — the exact cost `--emit ref` exists to avoid, paid without a word. `--mode` recognises `granular` and `fix-loop` (plus the `fix_loop` / `fixloop` spellings); anything else is `first`, so a mistyped retry silently re-renders the first-dispatch block. Neither fallback prints anything, so read the flag back off the command you are about to run — the only symptom is the wrong output.
 
 **Per-action:** `audit` folds its checklist (§ Audit checklists) into `--task-text`. `refactor` is two-phase — render `plan`, print verbatim, AskUserQuestion (Approve/Adjust/Cancel), then render `impl`. `compare` dispatches one `explore` per subproject in one parallel message → `Plan` merges. `implement` returns ≤30 lines + runs build/type-check; ON CONCERN → offer `/feature` Light.
 

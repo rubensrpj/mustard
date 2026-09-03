@@ -2,8 +2,8 @@
 //!
 //! ## Why these live in the core
 //!
-//! The four files Mustard lays down in a project (`.claude/settings.json`,
-//! the two injectable instruction files under `.claude/mustard/`, and the
+//! The files Mustard lays down in a project (`.claude/settings.json`, the
+//! injectable instruction files under `.claude/mustard/`, and the
 //! `.claude/.gitignore`) used to ship only as loose files under
 //! `apps/cli/templates/`, reachable solely by the `mustard` CLI through a
 //! `templates/` directory lookup. That made the CLI the only possible
@@ -27,25 +27,49 @@ pub const SETTINGS_SEED: &str = include_str!("../../templates/settings.json");
 
 /// The orchestrator-rules injectable (`.claude/mustard/orchestrator.md`) —
 /// spliced into the agent's window per `mustard.json#inject`, canonically on
-/// `userPromptSubmit` once per session. Carries the router's FIRST half:
+/// `userPromptSubmit` once per session. Carries the router's FIRST part:
 /// intent routing, delegation, phases, locating code, efficiency.
 pub const ORCHESTRATOR_MD: &str = include_str!("../../templates/mustard/orchestrator.md");
 
 /// The dispatch-rules injectable (`.claude/mustard/dispatch.md`) — the
-/// router's SECOND half: the question a unit opens with, the base gate, and
-/// the naming. Declared on `sessionStart`, deliberately a different event from
-/// [`ORCHESTRATOR_MD`].
+/// router's DISPATCH part: the question a unit opens with, the base gate, and
+/// the naming. Declared on `userPromptSubmit`, the same event as
+/// [`ORCHESTRATOR_MD`] and on a sibling hook of its own.
 ///
 /// The split is structural, not editorial. A hook's `additionalContext` is
 /// capped at 10,000 characters and the overflow is saved to a file the window
 /// only receives as a preview plus a path — so an over-budget router stops
-/// being IN FORCE, which is the one thing a router may not stop being. The
-/// composer folds every injectable of ONE event into a single
+/// being IN FORCE, which is the one thing a router may not stop being. The cap
+/// is per hook RESPONSE, not per event: sibling hooks on one event are separate
+/// invocations and every one of their `additionalContext` blocks is kept
+/// (measured 2026-08-25 — two siblings emitting 6,000 characters each both
+/// arrived intact). So each injectable gets its own hook registration and its
+/// own ceiling, and there is no composite budget between them. Mustard's own
+/// composer still folds the injectables of ONE invocation into a single
 /// `additionalContext` (`hooks::session::*_inject` — the dispatcher fold is
-/// last-writer-wins), so two entries on the same event share one ceiling and a
-/// second `Inject` would be dropped. Two events are two hook invocations, each
-/// with its own response and its own ceiling.
+/// last-writer-wins), which is why the split is a hook per file rather than two
+/// `Inject`s in one. Rationale in full:
+/// `plugin/refs/mustard/router-rationale.md`.
 pub const DISPATCH_MD: &str = include_str!("../../templates/mustard/dispatch.md");
+
+/// The material-channel injectable (`.claude/mustard/material.md`) — the three
+/// `material-add` calls, the rule that a decision is written when it is
+/// SETTLED, and the window (`▸6` on) in which the channel is open.
+///
+/// Split out of [`DISPATCH_MD`] rather than compressed into it. That document
+/// had ten characters of margin under the size alarm on a CRLF checkout, and
+/// the two prescriptions the code itself carries disagree about the remedy: the
+/// budget test's failure message says SPLIT, the cap's own doc says trim. Cutting
+/// a rule's justification is the one thing neither may buy — a rule shipped
+/// without the dated measurement behind it is a rule the next reader argues
+/// away. Splitting costs neither the rule nor its reason, and the material
+/// channel is a self-contained job (what the unit CARRIES), distinct from where
+/// a unit starts and what it is called.
+///
+/// Like every other part it rides its own sibling hook on `userPromptSubmit`, so
+/// it is measured alone against the 10,000-character response ceiling — see
+/// [`DISPATCH_MD`] for why sibling hooks share no budget.
+pub const MATERIAL_MD: &str = include_str!("../../templates/mustard/material.md");
 
 /// The `.claude/.gitignore` seed covering the ephemeral harness state
 /// (caches, pipeline states, per-spec event logs, worktrees).
@@ -54,6 +78,33 @@ pub const CLAUDE_GITIGNORE: &str = include_str!("../../templates/.gitignore");
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::project_seed::INJECTABLE_SEEDS;
+
+    /// The marker heading a part named `<stem>.md` owes: `# <Stem> Rules`.
+    ///
+    /// DERIVED, not listed. A per-constant assertion is an enumeration, and an
+    /// enumeration of the injectables is exactly what goes stale the day a
+    /// fourth is seeded — the same defect this file's siblings ratchet against
+    /// in prose.
+    fn marker_heading(name: &str) -> String {
+        let stem = name.strip_suffix(".md").unwrap_or(name);
+        let mut chars = stem.chars();
+        let head = chars.next().map(|c| c.to_ascii_uppercase()).unwrap_or('?');
+        format!("# {head}{} Rules", chars.as_str())
+    }
+
+    /// The `## …` heading a part OPENS with — its headline section, read out of
+    /// the part's own body.
+    ///
+    /// DERIVED, like [`marker_heading`], and for the same reason. This was a
+    /// hard-typed list of three headings sitting directly above a loop that
+    /// already iterates the seed: a fourth injectable would have been seeded,
+    /// delivered and injected while its headline section was checked by
+    /// nothing, and the list would have looked complete the whole time. Asking
+    /// each part for its own heading makes the fourth carry itself in.
+    fn headline_section(body: &str) -> Option<&str> {
+        body.lines().map(str::trim_end).find(|line| line.starts_with("## "))
+    }
 
     /// The embedded seeds must be non-empty and carry their identifying
     /// shapes — a broken `include_str!` path fails the build, but an emptied
@@ -64,25 +115,69 @@ mod tests {
             serde_json::from_str(SETTINGS_SEED).expect("settings seed is valid JSON");
         assert!(settings.get("permissions").is_some(), "settings seed has permissions");
         assert!(settings.get("statusLine").is_some(), "settings seed has statusLine");
+
         assert!(
-            ORCHESTRATOR_MD.starts_with("# Orchestrator Rules"),
-            "orchestrator seed keeps its marker heading"
+            !INJECTABLE_SEEDS.is_empty(),
+            "the seed carries no injectable — every check below would measure nothing"
         );
-        assert!(
-            DISPATCH_MD.starts_with("# Dispatch Rules"),
-            "dispatch seed keeps its marker heading"
+        for (name, body) in INJECTABLE_SEEDS {
+            let heading = marker_heading(name);
+            assert!(
+                body.starts_with(&heading),
+                "the `{name}` seed no longer opens with `{heading}` — an emptied or \
+                 mis-moved template seeds silence, and the hook that delivers it \
+                 cannot tell"
+            );
+        }
+
+        // The parts are ONE router split across one sibling hook each, so each
+        // part's headline section is that part's ALONE. A heading standing in
+        // two of them is the state where an edit corrects one copy while the
+        // window reads the other.
+        for (name, body) in INJECTABLE_SEEDS {
+            let section = headline_section(body).unwrap_or_else(|| {
+                panic!(
+                    "the `{name}` seed carries no `## ` section, so it has no headline \
+                     for this check to hold — a part with no section of its own is a \
+                     hook delivering a title"
+                )
+            });
+            let carriers: Vec<&str> = INJECTABLE_SEEDS
+                .iter()
+                .filter(|(_, other)| other.lines().any(|line| line.trim_end() == section))
+                .map(|(n, _)| *n)
+                .collect();
+            assert_eq!(
+                carriers,
+                vec![*name],
+                "`{section}` is the headline section of `{name}` and it stands in \
+                 {carriers:?}. Two carriers means an edit corrects one copy while the \
+                 window reads the other",
+            );
+        }
+
+        // The material channel MOVED; it did not get copied. A live
+        // `material-add` invocation standing in any OTHER part is the state
+        // where the rule is corrected in one file and read from the other.
+        // Matched on the INVOCATION, not the bare command name — the pointer
+        // `dispatch.md` keeps is allowed to say what it points at.
+        const MATERIAL_CALL: &str = "mustard-rt run material-add";
+        let callers: Vec<&str> = INJECTABLE_SEEDS
+            .iter()
+            .filter(|(_, body)| body.contains(MATERIAL_CALL))
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(
+            callers,
+            vec!["material.md"],
+            "the `material-add` calls must stand in the material part alone; found in \
+             {callers:?}",
         );
-        // The two halves are one router split across two events; each must
-        // still be the half it claims to be, or the split moved prose into a
-        // file nobody's event delivers.
+        // …and the part it left still POINTS at it: a reader of the unit's
+        // rules who is never told where the channel went stops using it.
         assert!(
-            DISPATCH_MD.contains("## Dispatch") && !ORCHESTRATOR_MD.contains("## Dispatch"),
-            "the dispatch section must live in exactly one of the two halves"
-        );
-        assert!(
-            ORCHESTRATOR_MD.contains("## Intent Routing")
-                && !DISPATCH_MD.contains("## Intent Routing"),
-            "intent routing must live in exactly one of the two halves"
+            DISPATCH_MD.contains("material.md"),
+            "dispatch.md drops the material channel without saying where it went"
         );
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
     }

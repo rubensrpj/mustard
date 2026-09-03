@@ -1,6 +1,6 @@
 ---
 name: core-kind-pattern
-description: Use when adding or refactoring a `*Kind` classification enum that tags a view row with the coarse category a UI renders it by.
+description: Use when adding or refactoring a coarse classification enum (`{Foo}Kind`) inside packages/core/src/domain/model/view/.
 paths:
   - packages/core/src/domain/model/view/**
 tags: [add, refactor]
@@ -17,29 +17,19 @@ metadata:
 
 ## Purpose
 
-A `*Kind` enum answers one question: *what class of thing is this row?* — so a renderer can pick an icon, a colour or a grouping key without re-parsing the raw string the row came from. In both exemplars the kind is a field on a neighbouring row struct (`TimelineNode.kind`, `WorkspaceAlert.kind`), never a standalone value. It is the read-only twin of the `status` role — a kind says *which family*, a status says *where in a lifecycle* — so keep the two enums separate even when they live in the same file.
-
-Which of two shapes you are writing decides everything else in this mold. `TimelineKind` **classifies an open input**: every event in the log has to become a timeline row, so `classify` is total — an unrecognised name lands on `Other`, and the original survives beside it (`TimelineNode.raw_event`, `payload_summary`), so nothing is lost. `WorkspaceAlertKind` **labels a condition its producer already recognised**: `view/projection/workspace.rs` names the variant at the site that detected it (`WorkspaceAlertKind::QaFail` inside the `"qa.result"` arm), an unrecognised event simply produces no alert, and the enum therefore has no `classify`, no catch-all variant and no mapping tests. Only the first shape earns an `Other`. The `status` enums that share this glob forbid a grey fallback outright, and `core-status-pattern` says so from its side — the two molds agree: a fallback variant is for the enum that must answer for input it does not know, and for nothing else.
+`{Foo}Kind` enums classify a raw event/string into a small closed set the dashboard renders (icon, colour, badge) without re-parsing the source string. `TimelineKind` (timeline.rs) classifies raw event names (`"pipeline.scope"`, `"qa.result"`, …) into ten variants plus an `Other` catch-all. `SegmentState`/`WorkspaceAlertKind` (workspace.rs) play the same role for phase-segment rendering and alert grouping. These enums live beside the struct(s) they classify, in the same file, not in a separate module.
 
 ## Convention
 
 Folder: packages/core/src/domain/model/view/** · Extension: .rs · Files of this role in this subproject: 2
 
-- Field-less enums, `pub`, declared next to the struct that carries them, with a serde rename attribute fixing the wire word: `#[serde(rename_all = "lowercase")]` on `TimelineKind`, `#[serde(rename_all = "kebab-case")]` on `WorkspaceAlertKind`.
-- Derive set of both exemplars: `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize`. `WorkspaceAlertKind` adds `PartialOrd, Ord` and its doc comment says why (it is half of a `BTreeMap` dedup key), so any extra derive is justified in prose.
-- Every variant carries a `///` naming the concrete input that puts a row in it — the raw event names for `TimelineKind` (`"pipeline.wave.complete" / "pipeline.wave.failed"`), the payload condition for `WorkspaceAlertKind` (`review.result.payload.verdict == "rejected"`).
-- A kind that classifies an open input gets an inherent `#[must_use] pub fn classify(event: &str) -> Self` returning `Self` (not `Option`), a `match` on exact event names, `_ => Self::Other`, and a `///` on `Other` naming the field the unclassified original still lives in. `TimelineKind` is the only exemplar of this shape.
-- A kind whose variants are chosen by its producer has none of that: `WorkspaceAlertKind` declares its five variants and stops — no inherent `impl`, no fallback — because `view/projection/workspace.rs` picks the variant inside the arm that detected the condition and never has an unknown to place.
-- Tests follow the same split: `timeline.rs` closes with `#[cfg(test)] mod tests { use super::*; }` holding one test for the known mappings and one for the unknown/empty fallback; `workspace.rs` has no mapping test and needs none — there is no mapping function to pin (its tests cover `WorkspaceSummary::empty` and `SegmentState` instead).
-- `domain/model/` stays pure: no `fs`, no logging, no panics in this folder.
+The two exemplars derive `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` and add `#[serde(rename_all = "lowercase")]` (`TimelineKind`) or `"kebab-case"` (`WorkspaceAlertKind`) depending on the wire convention the sibling struct already uses. Each variant carries a doc comment naming the concrete raw string(s) it maps from. `TimelineKind` closes with a catch-all `Other` variant so an unrecognised raw event still renders instead of failing; `WorkspaceAlertKind` is closed (no catch-all) because it enumerates a fixed, exhaustively-known alert taxonomy — pick whichever fits the domain: open-ended external strings need a catch-all, an internally-declared alert taxonomy does not.
 
 ## How to apply
 
-Add the enum to the existing `view/` module that owns the row struct it tags — `timeline.rs` for timeline rows, `workspace.rs` for workspace alerts. Create a new `.rs` only when the whole view is new; then declare it as a private `mod x;` in `packages/core/src/domain/model/view/mod.rs` and re-export the type explicitly in that file's `pub use` list (the module never exposes `pub mod`). Cross-cutting enums shared by several views (`Phase`, `Scope`) belong in `mod.rs` itself, not in a leaf module. Because these types are serde contracts other crates render against, a new variant must be additive: keep the existing wire words byte-identical and give the new one its own `///` explaining the distinction it buys. On a producer-chosen kind, ship the arm that emits it in the same change — `WorkspaceAlertKind::BuildBroken` is declared today and no arm of `view/projection/workspace.rs` constructs it, so it reaches no UI.
+A new classification enum for a view struct goes in the same file as that struct (or the file most tightly coupled to it), named `{Struct}Kind` or a domain-specific name (`SegmentState`) when "Kind" reads oddly. Add an inherent `classify(raw: &str) -> Self` (or `Self::parse`) associated function with a `match` over the known raw strings, doc-comment each variant with the literal string(s) it recognises, and add a `#[cfg(test)] mod tests` block asserting both known mappings and the fallback/unknown case.
 
 ## Examples
 
-- Ref: packages/core/src/domain/model/view/timeline.rs — `TimelineKind` + `classify`, `Other` as the total fallback, and the two mapping tests.
-- Ref: packages/core/src/domain/model/view/workspace.rs — `WorkspaceAlertKind`: kebab-case wire words, `Ord` derived with a documented reason, and no `classify`, no catch-all, no mapping test.
-- Ref: packages/core/src/view/projection/workspace.rs — the producer that names a `WorkspaceAlertKind` per detection arm, which is why that enum needs no fallback.
-- Ref: packages/core/src/domain/model/view/mod.rs — the private-`mod` + explicit `pub use` re-export list a new file must join.
+- Ref: packages/core/src/domain/model/view/timeline.rs
+- Ref: packages/core/src/domain/model/view/workspace.rs

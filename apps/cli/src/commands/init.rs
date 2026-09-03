@@ -19,15 +19,17 @@
 //!      plansDirectory …); plugin enablement is NOT planted (user-scope
 //!      choice) and the broken pair an older build wrote is retired
 //!      (`mustard_core::retire_planted_plugin_enablement`);
-//!    - `mustard/*.md` — the injectable instruction files: the router's two
-//!      halves, `orchestrator.md` (intent routing) on `userPromptSubmit` and
-//!      `dispatch.md` (the unit's question, the base gate, the naming) on
-//!      `sessionStart`. Two events because ONE hook response carries at most
-//!      10,000 characters of `additionalContext` and the session hooks fold
-//!      every injectable of one event into a single payload; the session hooks
-//!      splice them into the agent's window per `mustard.json#inject` — **no
-//!      `CLAUDE.md` is planted anymore** (a planted orchestrator drowned in
-//!      large root files; injection always lands);
+//!    - `mustard/*.md` — the injectable instruction files: the router's three
+//!      parts, all on `userPromptSubmit` — `orchestrator.md` (intent routing),
+//!      `dispatch.md` (the unit's question, the base gate, the naming) and
+//!      `material.md` (what the conversation settled, written when it is
+//!      settled). One SIBLING HOOK each, because ONE hook RESPONSE carries at
+//!      most 10,000 characters of `additionalContext`, and siblings on one
+//!      event are separate responses that share no budget (measured
+//!      2026-08-25); the session hooks splice them into the agent's window per
+//!      `mustard.json#inject` — **no `CLAUDE.md` is planted anymore** (a
+//!      planted orchestrator drowned in large root files; injection always
+//!      lands);
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!    - migration: a legacy Mustard-planted `.claude/CLAUDE.md` (identified by
 //!      its `# Orchestrator Rules` marker) is deleted, and the Mustard import
@@ -220,7 +222,7 @@ pub fn init_with_templates(
         }
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.json  — reduced seed (plugin enablement stays at user scope; a planted placeholder pair is retired)");
-        println!("    mustard/*.md   — injectable instruction files (orchestrator, response style); hooks inject them per mustard.json#inject");
+        println!("    mustard/*.md   — injectable instruction files (orchestrator, dispatch, material); hooks inject them per mustard.json#inject");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would migrate a legacy Mustard-planted .claude/CLAUDE.md away (and remove the Mustard import/breadcrumb lines from the root CLAUDE.md)");
         println!(
@@ -289,7 +291,13 @@ pub fn init_with_templates(
     // (b) injectable instruction files — the orchestrator is INJECTED by the
     // session hooks now (per `mustard.json#inject`), never planted as
     // `.claude/CLAUDE.md`.
-    for (name, outcome) in mustard_core::seed_injectable_files(&claude_path, overwrite)
+    //
+    // `overwrite` is deliberately NOT passed: every file the seed carries here
+    // is the harness's own rules, not project configuration, so the answer to "merge or
+    // overwrite?" is the same either way and the seeder takes no such argument.
+    // Merge mode still means what it says for everything else init seeds —
+    // `settings.json` above and `.gitignore` below keep the user's content.
+    for (name, outcome) in mustard_core::seed_injectable_files(&claude_path)
         .context("seeding .claude/mustard/ injectables")?
     {
         report_seed(&format!(".claude/mustard/{name}"), outcome);
@@ -1387,30 +1395,33 @@ mod tests {
         assert!(cfg.get("git").is_some(), "git-flow block written");
         assert_eq!(cfg.get("specLang").and_then(|v| v.as_str()), Some("pt-BR"));
         assert_eq!(cfg.get("tone").and_then(|v| v.as_str()), Some("didactic"));
-        // The default inject declarations are seeded: the router's two halves,
-        // on two DIFFERENT events. One hook response carries 10,000 characters
-        // of `additionalContext` and the composer folds every injectable of one
-        // event into a single payload — so a shared event would give the two
-        // halves one ceiling, which is the defect the split removed. The
-        // response style is a plugin output-style now, not a per-project
-        // injectable.
+        // The default inject declarations are seeded: the router's three parts,
+        // each on its OWN sibling hook. The cap is per hook RESPONSE, not per
+        // event, so siblings share no budget — a part that outgrows the ceiling
+        // is SPLIT and given another hook, never compressed until a rule drops
+        // out. The response style is a plugin output-style now, not a
+        // per-project injectable.
         let inject = cfg.get("inject").and_then(|v| v.as_array()).expect("inject seeded");
-        assert_eq!(inject.len(), 2, "the router's two halves: {inject:?}");
-        assert_eq!(
-            inject[0].get("file").and_then(|v| v.as_str()),
-            Some(".claude/mustard/orchestrator.md")
-        );
-        assert_eq!(inject[0].get("on").and_then(|v| v.as_str()), Some("userPromptSubmit"));
-        assert_eq!(inject[0].get("once").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(
-            inject[1].get("file").and_then(|v| v.as_str()),
-            Some(".claude/mustard/dispatch.md")
-        );
-        // Both halves ride `userPromptSubmit`, one sibling hook each: the cap is
-        // per hook RESPONSE, and that event self-heals (the `once` markers are
-        // per session_id, so a fork/resume re-delivers on the next prompt).
-        assert_eq!(inject[1].get("on").and_then(|v| v.as_str()), Some("userPromptSubmit"));
-        assert_eq!(inject[1].get("once").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(inject.len(), 3, "the router's three parts: {inject:?}");
+        for (i, file) in [
+            ".claude/mustard/orchestrator.md",
+            ".claude/mustard/dispatch.md",
+            ".claude/mustard/material.md",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(inject[i].get("file").and_then(|v| v.as_str()), Some(*file));
+            // Every part rides `userPromptSubmit`: that event self-heals (the
+            // `once` markers are per session_id, so a fork/resume re-delivers on
+            // the next prompt), which `sessionStart` cannot do.
+            assert_eq!(
+                inject[i].get("on").and_then(|v| v.as_str()),
+                Some("userPromptSubmit"),
+                "{file} must ride the self-healing event",
+            );
+            assert_eq!(inject[i].get("once").and_then(|v| v.as_bool()), Some(true));
+        }
         assert!(
             !claude.join("mustard.json").exists(),
             "no .claude/mustard.json — config lives only at the project root"
@@ -1614,12 +1625,12 @@ mod tests {
     }
 
     #[test]
-    fn init_merge_preserves_user_injectable() {
+    fn init_merge_rewrites_the_injectable_and_backfills() {
         let work = tempdir().unwrap();
         let templates = fake_templates(work.path());
         let project = work.path().join("project");
         let claude = project.join(".claude");
-        // A user-customised injectable already present in .claude/mustard/.
+        // A diverged injectable already present in .claude/mustard/.
         fs::create_dir_all(claude.join("mustard")).unwrap();
         fs::write(claude.join("mustard/orchestrator.md"), "USER EDIT").unwrap();
 
@@ -1631,11 +1642,12 @@ mod tests {
         )
         .unwrap();
 
-        // The user's customised injectable survives the merge untouched…
+        // The injectable is the harness's own rules, so merge mode does not
+        // reach it: the seed is laid down again whatever was there…
         assert_eq!(
             fs::read_to_string(claude.join("mustard/orchestrator.md")).unwrap(),
-            "USER EDIT",
-            "merge must not overwrite a user-customised injectable"
+            mustard_core::ORCHESTRATOR_MD,
+            "merge must still rewrite the injectable — it is not project configuration"
         );
         // …while a seed the user does not have is backfilled…
         assert!(

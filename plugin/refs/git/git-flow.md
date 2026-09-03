@@ -17,8 +17,10 @@
 Read `mustard.json` from the **project root** via the `Read` tool (not `cat`); missing → defaults.
 
 ```json
-{ "git": { "flow": { "*": "dev", "dev": "main" }, "submodules": true } }
+{ "git": { "flow": { "*": "dev", "dev": "main" }, "protected": ["main"] } }
 ```
+
+`GitConfig` carries exactly three keys — `flow`, `protected`, `provider` — and nothing else. **`submodules` is not one of them.** It lived here once, written by `init` and read by nobody, and was removed: whether a repository has submodules is read from `.gitmodules` on disk when it is needed, because a declaration written at install time goes stale the moment someone adds one. An unknown key in an existing `mustard.json` is ignored **in silence** on load, so an older file keeps working and a copied-in `"submodules": true` is never reported — which is why it is called out here instead of left to be discovered.
 
 **`git.flow` PRE-SELECTS, it does not permit.** Every non-`*` key ∪ every value (`{"*":"dev","dev":"main"}` → `dev`, `main`) is the set a base picker offers FIRST and the promotion map `/mustard:pr open` walks. **It refuses nothing, and the installer writes no flow at all** — a fresh install has an empty map on purpose, and everything below still works.
 
@@ -105,7 +107,9 @@ A work branch reaches its base ONLY through a PR — never a local push to the b
 **Base→base PRs (promotion & backport).** `/mustard:pr open` run while ON a bare base `B` is the sole write-op allowed on a base — it opens a PR, never pushes to `B`:
 
 - **Promotion** (up the flow): PR `B → flow[B]` (e.g. `dev → main`).
-- **Backport** (against the flow): `/git pr <target>` → PR `B → <target>` (e.g. `main → dev` after a hotfix).
+- **Backport** (against the flow): `/mustard:pr open <target>` → PR `B → <target>` (e.g. `main → dev` after a hotfix).
+
+**Both go through the PR door, and `/git pr` is not a second one.** Publishing a pull request touches the provider, so it belongs to the door that owns the provider; `/git pr` was moved to `/mustard:pr open` when the two doors were split, and typing it now prints that one redirect line and stops. Nothing here opens a PR from the `/git` side.
 
 Directions come from `git.flow` — no hardcoded pair. A terminal base (no `flow[B]`) needs an explicit `<target>`.
 
@@ -128,7 +132,9 @@ There is no "the kind implies the base" row any more, in either direction.
 
 ## Step 0b — branch protection
 
-Before any write op (commit, push, sync): if the current branch is one of the **protected** branches — `origin/HEAD` ∪ `mustard.json#git.protected`, the measured set from the top of this file — → **REFUSE** (`Cannot operate directly on protected branch '<branch>'. Create a work branch first.`). Anything else proceeds, including a branch `git.flow` happens to name: appearing in a promotion map is not a reason to be protected, and a project that promotes through `dev` may commit on it. **Exception:** `/mustard:pr open` on a base opens a base→base PR (above) and is allowed.
+Before any write op (commit, push, sync): if the current branch is one of the **protected** branches — `origin/HEAD` ∪ `mustard.json#git.protected`, the measured set from the top of this file — → **REFUSE**, naming the branch that was refused and saying a work branch has to be cut first. Anything else proceeds, including a branch `git.flow` happens to name: appearing in a promotion map is not a reason to be protected, and a project that promotes through `dev` may commit on it. **Exception:** `/mustard:pr open` on a base opens a base→base PR (above) and is allowed.
+
+**This file states the RULE; it does not quote the message.** It used to carry a refusal sentence in backticks, spelled as if the program emitted it verbatim. It does not — that string existed in exactly two places, this file and the test that read it back out of this file, which made the ratchet circular: no change to the binary could ever have failed it. The refusal is composed by whichever gate takes it (`work_branch_gate` on an edit; this step on a `/git` write op) and its wording is free to change. What may not change is the SET that is measured and the fact that the refusal names the branch it stopped. The choice recorded here is to drop the citation rather than teach the binary a sentence invented to justify one: a message that exists only to make a quotation true is a worse thing to own than a quotation removed.
 
 ## Commit scope policy — the `add -A` law
 

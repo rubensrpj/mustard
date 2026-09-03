@@ -1,12 +1,21 @@
 //! `mustard-rt run upsert` — install or update Mustard in the current project.
 //!
 //! The plugin's bootstrap door: everything the harness needs in a project —
-//! `.claude/settings.json`, the injectable instruction files under
+//! `.claude/settings.local.json`, the injectable instruction files under
 //! `.claude/mustard/`, `.claude/.gitignore`, and the project-root
-//! `mustard.json` — is seeded by `mustard_core::upsert_project`, idempotent
-//! and always merge-mode (an existing user file is preserved; only what is
-//! missing is created or backfilled). The legacy planted-orchestrator
-//! footprint is migrated away in the same pass.
+//! `mustard.json` — is seeded by `mustard_core::upsert_project`, idempotently.
+//! The settings file is the LOCAL one because the install is always
+//! private-mode (see [`run`]); the shared `.claude/settings.json` is never
+//! written here. What the OPERATOR owns is merge-only: an existing
+//! `.claude/settings.local.json`, `.claude/.gitignore` or `mustard.json` is
+//! preserved, and only what is missing is created or backfilled. The three
+//! injectable instruction files — `.claude/mustard/orchestrator.md`,
+//! `.claude/mustard/dispatch.md` and `.claude/mustard/material.md` — are
+//! ALWAYS rewritten: they are the harness's own rules, not project
+//! configuration, so a copy that diverged is replaced and reported as
+//! `Updated`, while a copy already byte-identical to the shipped text is
+//! reported as `Preserved` because there was nothing left to write. The
+//! legacy planted-orchestrator footprint is migrated away in the same pass.
 //!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
 //! `UpsertReport` flattened, with `pluginRefresh` appended — deterministic

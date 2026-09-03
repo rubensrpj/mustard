@@ -1,6 +1,6 @@
 ---
 name: core-id-pattern
-description: Use when adding or refactoring an `*Id` newtype in the economy layer so an identifier cannot be swapped for another at a call site.
+description: Use when adding or refactoring a newtype `{Foo}Id` identifier struct inside packages/core/src/domain/economy/.
 paths:
   - packages/core/src/domain/economy/**
 tags: [add, refactor]
@@ -17,25 +17,19 @@ metadata:
 
 ## Purpose
 
-The economy layer threads several identifiers through the same signatures — project root, spec slug, wave slug, agent role — and the newtypes exist so a spec id passed where a wave id was expected stops compiling. `scope.rs` is the single home for them: it declares `ProjectPath`, `SpecId`, `WaveId` and `AgentId` and the `EconomyScope` selector that composes them, while `model.rs` and `reader.rs` consume the newtypes and never a bare `String`. The wire format is unaffected because every newtype is `#[serde(transparent)]` — stronger types at the API boundary, an unchanged JSON payload.
+`{Foo}Id` newtypes wrap a bare `String` so the type system stops two different identifiers from being passed in the wrong argument position. `SpecId`, `WaveId`, and `AgentId` (scope.rs) are the three in this subproject; `ProjectPath` (also scope.rs, wrapping `PathBuf` rather than `String`) is the fourth newtype in the same family. `model.rs` and `reader.rs` are the consumers — every public function signature in `reader.rs` takes `SpecId`/`WaveId`/`AgentId` instead of three interchangeable `String` parameters, which is the entire reason the newtypes exist.
 
 ## Convention
 
 Folder: packages/core/src/domain/economy/** · Extension: .rs · Files of this role in this subproject: 3
 
-- One-field tuple structs with a public inner value: `pub struct SpecId(pub String);`, declared together in `scope.rs`.
-- `#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]` plus `#[serde(transparent)]`; `Hash`/`Eq` are there because the ids key the multi-project fan-out maps.
-- Two inherent methods and no more: `pub fn new(id: impl Into<String>) -> Self` and a borrowing accessor marked `#[must_use]` (`as_str` for the string ids, `as_path` for `ProjectPath`).
-- The doc comment states what the id *is* (with a concrete example value such as `"wave-1-core-economy"`) and why the newtype exists — "so it cannot be confused with a `WaveId` or `AgentId`".
-- Record and roll-up structs take the newtype directly (`AgentCost.agent_id: AgentId`, `SpecCost.spec_id: SpecId`) and use `#[serde(default)] Option<Id>` when the attribution is unknown, never an empty string.
-- A test in `scope.rs` pins the transparent representation (`SpecId::new("abc")` serialises to `"abc"` and round-trips).
+Every `{Foo}Id` is `pub struct {Foo}Id(pub String)`, deriving `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(transparent)]` so it round-trips on the wire as a bare JSON string. Each carries a `new(id: impl Into<String>) -> Self` constructor and an `as_str(&self) -> &str` borrow accessor — no other methods. The public field (`pub String`, not private) lets call sites struct-init directly (`SpecId(name.to_string())`) when the `new` constructor would be noisy, mirrored consistently across all four newtypes in the file.
 
 ## How to apply
 
-Declare the new id in `packages/core/src/domain/economy/scope.rs` alongside the existing four, then use it in `model.rs` record fields and in `reader.rs` signatures — do not accept a `String` at any economy entry point and convert inside. If the new id selects a slice of the cost universe, add the matching `EconomyScope` variant in the same file (the enum is `#[non_exhaustive]`, so consumers keep a wildcard arm) and thread it through `into_parts` rather than adding another parameter to every reader.
+A new identifier newtype goes in `economy/scope.rs` beside its siblings, named `{Domain}Id`, wrapping the smallest correct inner type (`String` for a slug, `PathBuf` for a filesystem path) with a public tuple field, deriving `Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize` + `#[serde(transparent)]`, and exposing `new(...)` + `as_str()`/`as_path()`. Update every reader/writer signature that currently takes the bare inner type to take the newtype instead — the whole point is that a caller cannot silently swap two ids.
 
 ## Examples
 
-- Ref: packages/core/src/domain/economy/scope.rs — `SpecId` / `WaveId` / `AgentId` / `ProjectPath` and the transparent-serialisation test.
-- Ref: packages/core/src/domain/economy/model.rs — `SavingsRecord` and `ContextCostFrame` carrying the newtypes, `Option<…>` for unknown attribution.
-- Ref: packages/core/src/domain/economy/reader.rs — reader signatures importing the ids from `super::scope`.
+- Ref: packages/core/src/domain/economy/scope.rs
+- Ref: packages/core/src/domain/economy/reader.rs

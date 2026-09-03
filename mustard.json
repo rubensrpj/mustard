@@ -22,6 +22,11 @@
       "on": "userPromptSubmit",
       "file": ".claude/mustard/dispatch.md",
       "once": true
+    },
+    {
+      "on": "userPromptSubmit",
+      "file": ".claude/mustard/material.md",
+      "once": true
     }
   ],
   "runtime": {
@@ -29,5 +34,5 @@
     "os": "linux",
     "arch": "x86_64"
   },
-  "version": "0.1.61"
+  "version": "0.1.62"
 }

@@ -1,9 +1,9 @@
 //! Per-role delivery contracts (`{role_block}`) and the matching
 //! tool-restricted `subagent_type`.
 //!
-//! Each known role (`guards`, `patterns`, `explore`, `review`, `qa`, and the
-//! `impl` default) gets an explicit contract: what to produce and how to
-//! deliver it. This is what makes the rendered prompt self-restricting. The
+//! Each known role (`guards`, `patterns`, `explore`, `plan`, `review`, `qa`,
+//! and the `impl` default) gets an explicit contract: what to produce and how
+//! to deliver it. This is what makes the rendered prompt self-restricting. The
 //! `patterns` role additionally materialises its mold worklist into `## TASK`
 //! via [`patterns_task_block`] (the same worklist `scan-patterns-list` computes).
 
@@ -25,10 +25,26 @@ pub const EPISTEMIC_FLOOR: &str = "Settle existence/duplication questions by Gre
      symptom the user observed at runtime — static reading cannot disprove it; say \
      \"not found in the files I read\" instead.";
 
+/// The intentional-`<MEMORY>` contract carried by the roles that PRODUCE
+/// knowledge — the `impl` default and `plan`. Read-only investigative roles
+/// (`explore`, `review`, `qa`, `guards`, `patterns`) do not carry it. One
+/// definition, two arms: `subagent_inject::extract_memory_block` captures the
+/// tag without filtering it, relying on this bar (a real choice AND
+/// transferable) to keep emission scarce — so the two arms must never state it
+/// differently.
+const MEMORY_CONTRACT: &str = "MEMORY: when you finish, emit ONE `<MEMORY>one-line \
+     decision/lesson + why in ≤2 sentences</MEMORY>` block ONLY if BOTH hold: (a) there was a \
+     REAL choice — alternatives existed and you could have gone the other way (not the only \
+     option, not the obvious default); AND (b) a future agent on this project would decide \
+     WORSE without knowing it. Obvious / a recap of what you did / only-true-for-this-task / \
+     context you read / guards / a file list / 'interrupted' → emit NO `<MEMORY>`. \
+     Good: `<MEMORY>Chose atomic_md write over direct fs::write — a mid-write crash corrupts \
+     the file</MEMORY>`. Bad: `<MEMORY>Fixed the bug in foo.rs</MEMORY>` (a recap).";
+
 /// Build the `{role_block}` — the role cue **plus a per-role delivery contract**.
-/// Each known role (`guards`, `explore`, `review`, `qa`, and the `impl` default)
-/// gets an explicit contract: what to produce and how to deliver it (return text
-/// vs. edit, the return-line cap, read-only vs. write). This is what makes the
+/// Each known role (`guards`, `explore`, `plan`, `review`, `qa`, and the `impl`
+/// default) gets an explicit contract: what to produce and how to deliver it
+/// (return text vs. edit, the return-line cap, read-only vs. write). This is what makes the
 /// rendered prompt self-restricting — the orchestrator no longer hand-appends the
 /// contract, and a read-only role is told (and, via its `subagent_type`, unable)
 /// to write. See [`recommended_subagent_type`] for the matching tool-restricted
@@ -53,6 +69,24 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
                  file dumps."
             )
         },
+        // `plan` dispatches to the built-in `Plan` subagent, which has no
+        // Edit/Write. It therefore CANNOT be handed the implementer default
+        // (which orders a sibling read "before the first Edit/Write" and caps
+        // the return at the impl budget); its contract is to design and return
+        // the plan. The stated cap is the one `context_budget_gate` measures
+        // for `Role::Plan`, pinned by `plan_role_gets_a_read_only_contract`.
+        "plan" => format!(
+            "ROLE: plan\n\
+             You design the change for {subproject} and return the plan — you do NOT implement \
+             it. Read-only: you have no Edit or Write tool, so write NOTHING; a step small \
+             enough to just do is still only described. Start from the anchors you were given \
+             and read what the plan depends on before naming a step — a step you cannot ground \
+             in a file you opened is a guess. Deliver: your final message is a ≤80-line plan — \
+             ordered steps, the files each step touches (path + what changes), how each step is \
+             verified, and the unknowns that would change the plan. Name the alternative you \
+             rejected wherever a real choice existed. Do NOT paste file contents.\n\
+             {MEMORY_CONTRACT}"
+        ),
         "review" => format!(
             "ROLE: review\n\
              You adversarially verify the implementer's work in {subproject}. You are NOT the \
@@ -88,14 +122,7 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
              Source code stays English; only spec prose follows the project locale. Max 3 build \
              attempts, then STOP and report. Deliver: your final message is a ≤40-line report — \
              files changed + non-obvious decisions + blockers. Do NOT paste file contents.\n\
-             MEMORY: when you finish, emit ONE `<MEMORY>one-line decision/lesson + why in ≤2 \
-             sentences</MEMORY>` block ONLY if BOTH hold: (a) there was a REAL choice — alternatives \
-             existed and you could have gone the other way (not the only option, not the obvious \
-             default); AND (b) a future agent on this project would decide WORSE without knowing it. \
-             Obvious / a recap of what you did / only-true-for-this-task / context you read / guards / \
-             a file list / 'interrupted' → emit NO `<MEMORY>`. \
-             Good: `<MEMORY>Chose atomic_md write over direct fs::write — a mid-write crash corrupts \
-             the file</MEMORY>`. Bad: `<MEMORY>Fixed the bug in foo.rs</MEMORY>` (a recap)."
+             {MEMORY_CONTRACT}"
         ),
     }
 }
@@ -366,9 +393,10 @@ mod tests {
         assert!(explore_block.contains("write NOTHING"), "explore write-restriction missing");
     }
 
-    /// Producing roles (impl/plan → the default arm) carry the intentional-
-    /// `<MEMORY>` instruction; read-only roles (explore/review/qa/guards) do NOT
-    /// — they are not knowledge producers, so the contract stays off their prompt.
+    /// Producing roles (impl and plan, which share [`MEMORY_CONTRACT`] from
+    /// their two arms) carry the intentional-`<MEMORY>` instruction; read-only
+    /// roles (explore/review/qa/guards) do NOT — they are not knowledge
+    /// producers, so the contract stays off their prompt.
     #[test]
     fn producing_roles_carry_memory_contract_readonly_do_not() {
         let dir = tempdir().unwrap();
@@ -380,7 +408,7 @@ mod tests {
             impl_block.contains("REAL choice") && impl_block.contains("decide WORSE"),
             "MEMORY contract must carry the operational (a)+(b) test: {impl_block}"
         );
-        // `plan` falls into the same default arm → also carries it.
+        // `plan` has its own arm now, and it carries the SAME const → also present.
         let plan_block = build_role_block("plan", dir.path(), "api", "en-US");
         assert!(plan_block.contains("<MEMORY>"), "plan must carry MEMORY contract: {plan_block}");
         // Read-only roles must NOT carry it.
@@ -391,6 +419,52 @@ mod tests {
                 "read-only role {role} must not carry the MEMORY contract: {block}"
             );
         }
+    }
+
+    /// `recommended_subagent_type("plan")` dispatches to the built-in `Plan`
+    /// agent, which has no Edit/Write. While `plan` fell into the implementer
+    /// default it was told to read a sibling file "before the first Edit/Write"
+    /// and to report changed files — an order the agent physically cannot
+    /// carry out. Its own arm states the planning contract instead, and the cap
+    /// it announces is the one `context_budget_gate` actually measures for
+    /// `Role::Plan`: both sides are read from the code (the block's text, the
+    /// budget function), never a literal repeated in two places.
+    #[test]
+    fn plan_role_gets_a_read_only_contract() {
+        use crate::hooks::task::context_budget_gate::{output_budget, Role};
+
+        let dir = tempdir().unwrap();
+        let block = build_role_block("plan", dir.path(), "apps/rt", "en-US");
+        assert!(block.starts_with("ROLE: plan"), "cue missing: {block}");
+
+        // The implementer's write instructions must not reach a read-only agent.
+        let impl_block = build_role_block("impl", dir.path(), "apps/rt", "en-US");
+        assert!(
+            impl_block.contains("Edit/Write"),
+            "the implementer contract must still carry the sibling-read rule: {impl_block}"
+        );
+        assert!(
+            !block.contains("Edit/Write"),
+            "plan must not carry the implementer's Edit/Write instruction: {block}"
+        );
+        assert!(
+            !block.contains("You implement inside"),
+            "plan must not be handed the implementer contract: {block}"
+        );
+
+        // The announced cap IS the gate's budget for this role — one number,
+        // two readers. The implementer's cap must not be the one announced.
+        let cap = output_budget(Role::Plan);
+        assert!(
+            block.contains(&format!("≤{cap}-line")),
+            "plan must announce the budget the gate measures (≤{cap}-line): {block}"
+        );
+        let impl_cap = output_budget(Role::General);
+        assert_ne!(cap, impl_cap, "the two budgets must stay distinct for this test to bite");
+        assert!(
+            !block.contains(&format!("≤{impl_cap}-line")),
+            "plan must not announce the implementer cap (≤{impl_cap}-line): {block}"
+        );
     }
 
     #[test]

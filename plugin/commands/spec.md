@@ -1,7 +1,6 @@
 ---
 description: Use when the user wants to approve a planned spec or continue an in-progress spec. Single picker — delegates to mustard-rt run active-specs and resume-bootstrap.
 argument-hint: [picker-letter | spec-name]
-source: manual
 ---
 <!-- mustard:generated -->
 # /mustard:spec — Unified Spec Picker
@@ -24,7 +23,7 @@ rtk mustard-rt run active-specs --format table
 
 Print stdout verbatim, then these two blocks literally:
 
-**Siglas** — `#` letter (a-z), `Esc` Scope (`lt` light / `fl` full / `-`), `Prog` waves done/total. Stage `PLAN` planejar / `EXEC` executar. Status `TF` tactical-fix, `TF→{alias}` TF parent, `W{N} em exec` wave N dispatched and running, `W{N} a iniciar` plan scaffolded, **nothing dispatched yet** — start it rather than resume it, `⚠ malformed` meta incompleta, `closed-followup` spec fechada com follow-up pendente, `-` none. `Onde` where the spec LIVES: `-` na árvore atual; `{branch}` = spec **em voo** — o diretório só existe nesse branch de trabalho, troque de branch antes de agir nessa linha. A closing line stating the branch scan could not run means the listing covers the checkout ONLY — print it too; it is a different claim from *"estas são todas"*.
+**Siglas** — `#` letter (a-z), `Esc` Scope: `lt` for light, `fl` for full, and `-` for **everything else** — the abbreviation recognises those two prefixes and nothing more, so a `touch`-scope spec renders exactly like a spec whose `meta.json` carries no scope at all. The dash is "not light and not full", never "no scope"; when the distinction matters, read `meta.json#scope`. `Prog` waves done/total. Stage `PLAN` planejar / `EXEC` executar. Status `TF` tactical-fix, `TF→{alias}` TF parent, `W{N} em exec` wave N dispatched and running, `W{N} a iniciar` plan scaffolded, **nothing dispatched yet** — start it rather than resume it, `⚠ malformed` meta incompleta, `closed-followup` spec fechada com follow-up pendente, `-` none. `Onde` where the spec LIVES: `-` na árvore atual; `{branch}` = spec **em voo** — o diretório só existe nesse branch de trabalho, troque de branch antes de agir nessa linha. A closing line stating the branch scan could not run means the listing covers the checkout ONLY — print it too; it is a different claim from *"estas são todas"*.
 
 **Modo de seleção** — `a-z` act on row (PLAN approve / EXEC continue). **Send the letter as the WHOLE prompt — `/mustard:spec a` — and that one gesture both approves and starts:** it mints `<spec>/.approved-by-user`, so nothing asks again. Inside the unit's own work branch the letter is not even needed: `/mustard:spec` on its own names the unit the branch names. The older `ar` spelling still works, as an alias. Typed in full because the observer matches the entire prompt: anything looser would let a message that merely quotes the form forge the marker — and the same characters answered INTO this open table never reach the observer at all, so they stay a plain row choice. A spec name jumps straight to it (no table). Anything else → error + re-render.
 

@@ -15,7 +15,7 @@
 
 use crate::shared::context::MarkerProvenance;
 use mustard_core::io::fs;
-use mustard_core::ClaudePaths;
+use mustard_core::{ClaudePaths, GateModes};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -55,6 +55,16 @@ fn hook_description(name: &str) -> &'static str {
 }
 
 /// Env var name that controls a given hook's mode.
+///
+/// The `--harness` table renders this column as THE KNOB TO SET, so a name
+/// here that nothing reads is worse than an empty cell: setting it looks
+/// accepted and changes nothing. Two such names sat here — `MUSTARD_POST_EDIT_MODE`
+/// and `MUSTARD_KNOWLEDGE_MODE` — and neither was ever read by a hook.
+/// `post_edit` now names `MUSTARD_GUARD_GATE_MODE`, which is what its one
+/// refusing half really reads (`hooks/write/post_edit.rs`);
+/// `session_knowledge_observer` names nothing, because an Observer returns no
+/// verdict and so has no enforcement level to set. `gate_table_parity.rs` holds
+/// that line: an arm naming a var no env-reading call consults fails the build.
 fn hook_mode_env(name: &str) -> Option<&'static str> {
     match name {
         "bash_command_gate" => Some("MUSTARD_COMMIT_GATE_MODE"),
@@ -64,9 +74,87 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
         // `scan_gate` is always strict (no mode env var).
         "size_gate" => Some("MUSTARD_SPEC_SIZE_MODE"),
         "boundary_gate" => Some("MUSTARD_BOUNDARY_MODE"),
-        "post_edit" => Some("MUSTARD_POST_EDIT_MODE"),
-        "session_knowledge_observer" => Some("MUSTARD_KNOWLEDGE_MODE"),
+        "post_edit" => Some("MUSTARD_GUARD_GATE_MODE"),
+        // `session_knowledge_observer` is an Observer: no verdict, no mode.
         _ => None,
+    }
+}
+
+/// The `mustard.json#gates` field a hook's mode ALSO resolves from, between the
+/// environment and the built-in default.
+///
+/// The THIRD layer of the cascade, and the one this table used to skip. Four of
+/// the seven gates read it — `boundary_gate` and `main_context_counter` through
+/// their own `or_else(|| config_override)`, `size_gate` and `close_gate`
+/// through `resolve_mode`'s second argument — so a project carrying
+/// `{"gates":{"boundary":"strict"}}` with the env var unset had the gate resolve
+/// `strict` while this table printed the built-in `warn`. The table named the
+/// right knob and the right default and still reported the wrong level, because
+/// it stopped one layer short of where the gate stops.
+///
+/// Keyed by HOOK, because that is what the row is: the reader is looking at a
+/// gate, and the question the cell answers is what happens to THAT gate on
+/// THIS project. `gate_table_parity.rs` reads the resolver of each mapped env
+/// var and fails the build when a gate consults a layer this map does not.
+fn hook_config_key(hook: &str) -> Option<&'static str> {
+    match hook {
+        "boundary_gate" => Some("boundary"),
+        "close_gate" => Some("checklist"),
+        "main_context_counter" => Some("main_budget"),
+        "size_gate" => Some("spec_size"),
+        // Every other gate resolves env → built-in default, with no
+        // `mustard.json#gates` field of its own.
+        _ => None,
+    }
+}
+
+/// The value one `mustard.json#gates` field carries, by the field name
+/// [`hook_config_key`] returns. `None` when the project states nothing there.
+///
+/// One arm per key [`hook_config_key`] can return, and no more: an arm for a
+/// field no row maps is a name nothing renders, and a MISSING arm is worse —
+/// the lookup answers `None`, the cell drops to the built-in default, and the
+/// layer is skipped without a word. `gate_table_parity.rs` holds both halves.
+fn gate_config_value<'a>(gates: &'a GateModes, key: &str) -> Option<&'a str> {
+    match key {
+        "boundary" => gates.boundary.as_deref(),
+        "checklist" => gates.checklist.as_deref(),
+        "main_budget" => gates.main_budget.as_deref(),
+        "spec_size" => gates.spec_size.as_deref(),
+        _ => None,
+    }
+}
+
+/// The level a gate falls back to when its variable is set NOWHERE — neither in
+/// `settings.json#env` nor in the process environment nor in
+/// `mustard.json#gates`.
+///
+/// This used to be the single word `strict`, for every row, and that was the
+/// second half of the same lie [`hook_mode_env`] carried: the column named the
+/// right knob and reported the wrong level. Four of the seven gates below
+/// default to `warn`, `post_edit` among them
+/// (`hooks/write/post_edit.rs::parse_guard_gate_mode`), so an operator reading
+/// `strict` there believed a Guard violation would be REFUSED when it is
+/// merely reported — the most expensive direction for a mistake about a gate
+/// to point.
+///
+/// `gate_table_parity.rs` holds this map to the resolvers themselves: it finds
+/// where the runtime reads each name and reads the fallback out of that code,
+/// so a resolver that changes its default and a table that does not fails the
+/// build.
+/// An unknown name answers `warn`, the UNDERSTATING direction: a reader who
+/// expects advice and meets a refusal loses one edit; a reader who expects a
+/// refusal and gets advice ships the thing the gate was there to stop.
+fn hook_default_mode(env_var: &str) -> &'static str {
+    match env_var {
+        "CONTEXT_BUDGET_MODE" => "strict",
+        "MUSTARD_BOUNDARY_MODE" => "warn",
+        "MUSTARD_CHECKLIST_GATE_MODE" => "strict",
+        "MUSTARD_COMMIT_GATE_MODE" => "warn",
+        "MUSTARD_GUARD_GATE_MODE" => "warn",
+        "MUSTARD_MAIN_BUDGET_MODE" => "warn",
+        "MUSTARD_SPEC_SIZE_MODE" => "strict",
+        _ => "warn",
     }
 }
 
@@ -95,6 +183,11 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
         Some(o) => o.clone(),
         None => return Vec::new(),
     };
+
+    // Layer three of the cascade, loaded once: the gates a gate consults when
+    // neither env layer answers. `ProjectConfig::load` fails open to defaults,
+    // so an absent or unparseable `mustard.json` simply states nothing.
+    let gates = mustard_core::ProjectConfig::load(root).gates;
 
     let mut entries: Vec<Value> = Vec::new();
 
@@ -126,7 +219,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
 
                 let description = hook_description(&hook_name);
                 let mode_env_name = hook_mode_env(&hook_name);
-                let mode_str = build_mode_str(&hook_name, mode_env_name, &env_map);
+                let mode_str = build_mode_str(&hook_name, mode_env_name, &env_map, &gates);
 
                 entries.push(json!({
                     "event": event,
@@ -183,24 +276,50 @@ fn extract_hook_name(command: &str, event: &str) -> String {
         .to_string()
 }
 
-/// Build a human-readable mode string, e.g. `"strict (env: MUSTARD_COMMIT_GATE_MODE)"`.
+/// Build a human-readable mode string, e.g. `"warn (env: MUSTARD_COMMIT_GATE_MODE)"`.
+///
+/// The SAME cascade the gate itself walks, in the same order and with the same
+/// arithmetic:
+///
+/// 1. `settings.json#env` — the harness exports that section into the hook's
+///    process, so it is this command's read of layer one rather than a layer of
+///    its own.
+/// 2. the process environment — layer one as the gate sees it.
+/// 3. `mustard.json#gates.<field>`, via [`hook_config_key`]. This is the layer
+///    the table used to skip, and skipping it printed `warn` at a project whose
+///    `boundary_gate` really resolved `strict`.
+/// 4. [`hook_default_mode`] — the level the gate's own resolver falls back to,
+///    never a blanket `strict`.
+///
+/// A value that is not one of the three levels falls through to the default
+/// WITHOUT consulting the next layer, which is exactly what `resolve_mode` and
+/// the two hand-rolled resolvers do: a set-but-unrecognised env var is a typo,
+/// and a typo must not silently promote the layer beneath it.
 fn build_mode_str(
-    _hook_name: &str,
+    hook_name: &str,
     env_var: Option<&str>,
     env_map: &serde_json::Map<String, Value>,
+    gates: &GateModes,
 ) -> String {
-    if let Some(var) = env_var {
-        // Check settings.json env section first, then OS env
-        let val = env_map
-            .get(var)
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| std::env::var(var).ok())
-            .unwrap_or_else(|| "strict".to_string());
-        format!("{val} (env: {var})")
-    } else {
-        "always-on".to_string()
-    }
+    let Some(var) = env_var else { return "always-on".to_string() };
+    let stated = env_map
+        .get(var)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| std::env::var(var).ok().filter(|v| !v.trim().is_empty()))
+        .or_else(|| {
+            hook_config_key(hook_name)
+                .and_then(|key| gate_config_value(gates, key))
+                .map(str::to_string)
+        });
+    let val = match stated.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "off" => "off".to_string(),
+        "warn" => "warn".to_string(),
+        "strict" => "strict".to_string(),
+        _ => hook_default_mode(var).to_string(),
+    };
+    format!("{val} (env: {var})")
 }
 
 // ---------------------------------------------------------------------------
@@ -630,21 +749,103 @@ mod tests {
             "MUSTARD_CHECKLIST_GATE_MODE".to_string(),
             Value::String("warn".to_string()),
         );
-        let result = build_mode_str("close_gate", Some("MUSTARD_CHECKLIST_GATE_MODE"), &env_map);
+        let result = build_mode_str(
+            "close_gate",
+            Some("MUSTARD_CHECKLIST_GATE_MODE"),
+            &env_map,
+            &GateModes::default(),
+        );
         assert!(result.contains("warn"), "got: {result}");
         assert!(result.contains("MUSTARD_CHECKLIST_GATE_MODE"), "got: {result}");
     }
 
+    /// The cell reports what `mustard.json#gates` states when neither env layer
+    /// answers — the third layer the gates read and this table used to skip.
+    ///
+    /// Both directions, so the assertion can fail: the same gate with the field
+    /// stated and with it absent must answer differently, and a gate that has
+    /// no `gates.*` field of its own must keep answering its built-in default
+    /// no matter what the config says.
     #[test]
-    fn build_mode_str_defaults_to_strict_when_absent() {
+    fn build_mode_str_reads_the_project_config_layer_the_gates_read() {
+        // The env var names here are deliberately ones NOTHING exports. Cargo
+        // runs this crate's tests as threads of one process and
+        // `hooks/write/boundary_gate.rs` really does `set_var` on the live
+        // name, so asserting through `MUSTARD_BOUNDARY_MODE` would measure that
+        // neighbour rather than this cascade. The layer under test is keyed by
+        // the HOOK, so the knob's name is free to be an unexported one.
+        const UNSET: &str = "MUSTARD_BOUNDARY_MODE_UNSET_TEST_ZZZ";
         let env_map = serde_json::Map::new();
-        // Use an env var that's unlikely to be set in CI
-        let result = build_mode_str(
+        let mut gates = GateModes::default();
+
+        // Absent: the built-in default (`hook_default_mode`'s catch-all `warn`,
+        // which is also what `boundary_mode` falls back to).
+        let silent = build_mode_str("boundary_gate", Some(UNSET), &env_map, &gates);
+        assert!(silent.contains("warn"), "got: {silent}");
+
+        // Stated: what `boundary_mode(gates.boundary.as_deref())` resolves.
+        gates.boundary = Some("strict".to_string());
+        let stated = build_mode_str("boundary_gate", Some(UNSET), &env_map, &gates);
+        assert!(
+            stated.contains("strict"),
+            "the project states `gates.boundary = strict` and the table still prints \
+             the built-in default: {stated}"
+        );
+
+        // An unrecognised value is a typo, not a level: the gate falls back to
+        // its default, and so must the cell.
+        gates.boundary = Some("banana".to_string());
+        let typo = build_mode_str("boundary_gate", Some(UNSET), &env_map, &gates);
+        assert!(typo.contains("warn"), "got: {typo}");
+
+        // A gate with no `gates.*` field ignores the whole layer.
+        gates.boundary = Some("strict".to_string());
+        let unmapped = build_mode_str("post_edit", Some(UNSET), &env_map, &gates);
+        assert!(unmapped.contains("warn"), "got: {unmapped}");
+
+        // …and a stated value only reaches the cell through the field the HOOK
+        // maps: `close_gate` reads `gates.checklist`, never `gates.boundary`.
+        let mut crossed = GateModes { boundary: Some("off".to_string()), ..GateModes::default() };
+        assert!(build_mode_str("close_gate", Some(UNSET), &env_map, &crossed).contains("warn"));
+        crossed.checklist = Some("off".to_string());
+        assert!(build_mode_str("close_gate", Some(UNSET), &env_map, &crossed).contains("off"));
+    }
+
+    /// An unset knob reports the level its OWN gate falls back to, not a
+    /// blanket `strict`.
+    ///
+    /// Both halves, so the assertion can fail: the same call shape on a gate
+    /// that really defaults to `warn` and on one that really defaults to
+    /// `strict` must answer differently. A single-word default passed this
+    /// test for as long as it existed while telling the operator that a Guard
+    /// violation would be REFUSED — `post_edit` reads
+    /// `MUSTARD_GUARD_GATE_MODE`, whose resolver falls back to `warn`.
+    #[test]
+    fn build_mode_str_reports_each_gates_own_default_when_absent() {
+        // The map is asked directly: `build_mode_str` consults the process
+        // environment too, and a machine that really exports one of these
+        // names would make an assertion about the DEFAULT measure something
+        // else.
+        assert_eq!(hook_default_mode("MUSTARD_GUARD_GATE_MODE"), "warn");
+        assert_eq!(hook_default_mode("MUSTARD_COMMIT_GATE_MODE"), "warn");
+        assert_eq!(hook_default_mode("MUSTARD_BOUNDARY_MODE"), "warn");
+        assert_eq!(hook_default_mode("MUSTARD_MAIN_BUDGET_MODE"), "warn");
+        assert_eq!(hook_default_mode("CONTEXT_BUDGET_MODE"), "strict");
+        assert_eq!(hook_default_mode("MUSTARD_CHECKLIST_GATE_MODE"), "strict");
+        assert_eq!(hook_default_mode("MUSTARD_SPEC_SIZE_MODE"), "strict");
+
+        // …and the rendered cell carries that default, not a blanket `strict`.
+        // A name nothing exports, so the process environment cannot answer for
+        // it: the fallback is the only thing left to measure.
+        let env_map = serde_json::Map::new();
+        let unknown = build_mode_str(
             "budget",
             Some("MUSTARD_BUDGET_MODE_UNSET_TEST_ZZZ"),
             &env_map,
+            &GateModes::default(),
         );
-        assert!(result.contains("strict"), "got: {result}");
+        assert!(unknown.contains("warn"), "got: {unknown}");
+        assert!(unknown.contains("MUSTARD_BUDGET_MODE_UNSET_TEST_ZZZ"), "got: {unknown}");
     }
 
     #[test]

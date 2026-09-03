@@ -66,8 +66,10 @@ pub enum MaintCmd {
     },
     /// Kill-switch: set `"disableAllHooks": true` in `.claude/settings.json`
     /// and wipe volatile harness state (`.agent-state/`,
-    /// `.cluster-cache.json`, `.worktrees/`). Everything else in the file —
-    /// `permissions.allow`/`deny`, `statusLine`, `env` — is preserved.
+    /// `.cluster-cache.json`). Everything else in the file —
+    /// `permissions.allow`/`deny`, `statusLine`, `env` — is preserved, and so
+    /// are worktrees: `.claude/worktrees/` holds uncommitted work and is only
+    /// ever removed by [`Self::WorktreeGc`], never by silencing the harness.
     /// Restore with [`Self::Rehook`].
     ///
     /// `--scope this` (default) acts on the current repo's `.claude/` only.
@@ -156,12 +158,19 @@ pub enum MaintCmd {
     /// Install or update Mustard in the current project (the plugin's
     /// bootstrap door).
     ///
-    /// Idempotent, always merge-mode: seeds `.claude/settings.json`, the
-    /// injectable instruction files under `.claude/mustard/`,
-    /// `.claude/.gitignore` and the project-root `mustard.json` — an existing
-    /// user file is preserved, only what is missing is created or backfilled;
-    /// the legacy planted-orchestrator footprint is migrated away. Emits the
-    /// `UpsertReport` as deterministic pretty JSON.
+    /// Idempotent. The settings file — `.claude/settings.local.json`, since
+    /// the install is always private-mode and never touches the shared
+    /// `.claude/settings.json` — plus `.claude/.gitignore` and the
+    /// project-root `mustard.json` are yours and are merged, never clobbered:
+    /// an existing file is preserved, only what is missing is created or
+    /// backfilled. The three injectable instruction files under
+    /// `.claude/mustard/` — `orchestrator.md`, `dispatch.md` and
+    /// `material.md` — are ALWAYS rewritten: they are the harness's own
+    /// rules, not project configuration, so a copy you edited is replaced and
+    /// listed under `updated`, while one that already matched the shipped
+    /// text comes back under `preserved` because there was nothing left to
+    /// write. The legacy planted-orchestrator footprint is migrated away.
+    /// Emits the `UpsertReport` as deterministic pretty JSON.
     #[command(display_order = 44)]
     Upsert {},
 }

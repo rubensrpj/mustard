@@ -282,7 +282,7 @@ mod tests {
         );
     }
 
-    /// Two injectables on ONE event, each claimed by its own sibling hook.
+    /// Sibling hooks on ONE event, each claiming one injectable of its own.
     ///
     /// The ceiling is per hook RESPONSE, so this is how each document gets its
     /// own: `--inject <file>` narrows the invocation to one entry, and the

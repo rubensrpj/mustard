@@ -1,6 +1,6 @@
 ---
 name: core-doc-pattern
-description: Use when adding or refactoring a `*Doc` type that models the top level of an on-disk TOML document the vocabulary layer reads.
+description: Use when adding or refactoring a top-level `{Foo}Doc` TOML-document wrapper struct inside packages/core/src/domain/vocabulary/.
 paths:
   - packages/core/src/domain/vocabulary/**
 tags: [add, refactor]
@@ -17,25 +17,19 @@ metadata:
 
 ## Purpose
 
-A `*Doc` is the deserialised top level of one runtime-editable TOML file: `VocabularyDoc` for `.claude/vocab/regression.toml`, `StackRegistryDoc` for a stack registry. Its whole job is parsing — the doc holds the raw table arrays and hands them to the type that owns behaviour (`VocabularyMatcher`, `StackRegistry`), which keeps the parser pure on `&str` and testable without touching the filesystem. Both exemplars are read-only shapes: Mustard consumes these files, never rewrites them, so neither derives `Serialize`. Absence of the file is kept distinct from a real read failure so callers can fail open on "no vocabulary" while still surfacing genuine I/O trouble.
+A `{Foo}Doc` struct is the top-level deserialisation target for a whole on-disk TOML file — the wrapper around a `Vec` of table-array entries plus any document-level options. `VocabularyDoc` (mod.rs) wraps `.claude/vocab/regression.toml`'s `[[layer]]` array plus the optional `[thresholds]` table; `StackRegistryDoc` (stacks.rs) wraps `[[stack]]` entries the same way. Both are pure parse targets — no IO inside the struct itself, the file read happens in a sibling `load_from_file`/`load` function.
 
 ## Convention
 
 Folder: packages/core/src/domain/vocabulary/** · Extension: .rs · Files of this role in this subproject: 2
 
-- `#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]` — `Deserialize` only, `Default` so a missing document degrades to the empty one.
-- The Rust field is plural, the TOML key singular, bridged by `#[serde(default, rename = "…")]`: `pub layers: Vec<VocabLayer>` for `[[layer]]`, `pub stacks: Vec<StackDef>` for `[[stack]]`. Optional sub-tables are their own `Default`-deriving struct with all-`Option` fields so partial overrides work.
-- `pub fn parse_str(raw: &str) -> Result<Self, VocabError>` is the pure entry point, one line of `toml::from_str::<Self>(raw).map_err(|e| VocabError::InvalidToml(e.to_string()))`, with a `# Errors` doc section.
-- `load_from_file` / `load` do the I/O and split the error surface three ways: `VocabError::FileNotFound` for `ErrorKind::NotFound`, `VocabError::Io` for other read failures, `VocabError::InvalidToml` for unparseable content. Both exemplars reuse `VocabError` — do not introduce a per-document error enum.
-- Read-only lookups on the doc are `#[must_use]` and return borrowed data (`layer`, `layer_terms`), documenting when an empty `Vec` means "absent" and pointing at the accessor that distinguishes it.
-- The module doc shows the on-disk schema as a fenced `toml` example and states the dedup/collision rule; tests sit at the bottom of the same file.
+Both exemplars derive `Debug, Clone, Default, PartialEq, Eq, Deserialize` (no `Serialize` — these are read-only config, never written back by this crate) and use `#[serde(default, rename = "...")]` on the table-array field so an empty/absent section still parses instead of erroring. Each carries its own `parse_str(raw: &str) -> Result<Self, VocabError>` inherent method (pure, testable without touching disk) and the file-reading half lives in a separate `load`/`load_from_file` function that distinguishes "file absent" (a typed not-found error, fail-open for callers) from a genuine IO error from a parse error.
 
 ## How to apply
 
-Add the doc type to the `domain/vocabulary/` module that owns the file it models (a new registry gets its own `.rs`, declared as `pub mod` in `vocabulary/mod.rs` next to `aho` and `stacks`). Keep the doc inert: validation that rejects an empty document belongs in the consuming type's constructor (`StackRegistry::from_doc` returns `VocabError::NoTerms`), not in the parser. Extend the schema additively with `#[serde(default)]` fields so an existing TOML on a user's disk keeps parsing.
+A new top-level TOML document struct is named `{Thing}Doc`, derives `Debug, Clone, Default, PartialEq, Eq, Deserialize`, uses `#[serde(default, rename = "...")]` on its table-array field so a minimal or empty file still parses, and exposes a pure `parse_str(&str) -> Result<Self, VocabError>` plus a separate disk-reading function that keeps "not found" distinct from "IO error" distinct from "malformed TOML" — mirroring `VocabError`'s three-way split.
 
 ## Examples
 
-- Ref: packages/core/src/domain/vocabulary/mod.rs — `VocabularyDoc`, `GateThresholds`, `parse_str` / `load_from_file`, `VocabError`.
-- Ref: packages/core/src/domain/vocabulary/stacks.rs — `StackRegistryDoc` and `StackRegistry::from_doc` / `load` resolving an override over the built-in.
-- Ref: packages/core/src/domain/vocabulary/aho.rs — the shared `KeyedAutomaton` a parsed document is handed to.
+- Ref: packages/core/src/domain/vocabulary/mod.rs
+- Ref: packages/core/src/domain/vocabulary/stacks.rs
