@@ -1238,7 +1238,14 @@ fn a_mode_env_name_is_live_only_where_something_reads_it() {
         if ENV_READERS.contains(&callee.as_str()) || live.contains(&name) {
             continue;
         }
-        let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+        // Forward slashes ALWAYS: `RETIRING_MODE_ENV` is written with them and the
+        // comparison below is exact, while `Display` for a path yields the PLATFORM
+        // separator — so on Windows the row matched nothing and the exemption
+        // silently stopped excusing its mention. Measured on CI 2026-09-03: green on
+        // ubuntu and macos, red on windows, one week after the same bug was fixed in
+        // `plugin_prose_matches_shipped_behaviour.rs`. That fix landed on the
+        // INSTANCE; this file grew a second comparison and did not inherit it.
+        let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string().replace('\\', "/");
         // The third case: a mention that IS the removal. A migration has to
         // spell the key it strips out of an installed file, and
         // `retirement_exemptions_stay_sorted_dead_and_still_migrating` re-measures
@@ -1339,4 +1346,24 @@ fn prose_exemptions_stay_sorted_live_and_not_redundant() {
              row is redundant, drop it"
         );
     }
+}
+
+/// `RETIRING_MODE_ENV` is written with `/` and matched by EXACT equality, so the
+/// lookup must reach it from a checkout that spells paths either way.
+///
+/// This is the second time the same bug shipped. The first was in
+/// `plugin_prose_matches_shipped_behaviour.rs`, fixed on 2026-09-02 after Windows
+/// CI caught it; that fix landed on the INSTANCE, and one day later this file grew
+/// a fresh path comparison that did not inherit it. A path comparison spelled with
+/// `Display` is green where it is written and red where nobody is looking — pin the
+/// normalisation, not the call site.
+#[test]
+fn retirement_exemption_paths_are_matched_without_a_platform_separator() {
+    let windows = r"packages/core/src\platform\project_seed.rs".replace('\\', "/");
+    let unix = "packages/core/src/platform/project_seed.rs".replace('\\', "/");
+    assert_eq!(windows, unix, "normalisation must erase the platform separator");
+    assert_eq!(
+        RETIRING_MODE_ENV[0].0, unix,
+        "the retirement table is written with `/`; a row spelled otherwise can never match",
+    );
 }
