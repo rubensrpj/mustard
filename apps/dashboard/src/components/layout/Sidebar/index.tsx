@@ -50,6 +50,7 @@ import { useTranslation } from "react-i18next";
 import { useT } from "@/lib/i18n";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -541,14 +542,14 @@ function AddProjectDialog({
             void submit();
           }}
         >
-          <input
+          <Input
             autoFocus
             value={path}
             onChange={(e) => setPath(e.target.value)}
             placeholder={t("sidebar.addProject.placeholder")}
             aria-label={t("sidebar.addProject.title")}
             spellCheck={false}
-            className="w-full h-9 rounded-md border border-border bg-background px-3 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            className="font-mono"
           />
         </form>
         <DialogFooter>

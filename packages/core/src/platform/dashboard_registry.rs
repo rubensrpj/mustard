@@ -38,6 +38,14 @@
 //! [`ProjectEntry::hidden`] ([`hide_at`]) and [`register_at`] leaves that mark
 //! alone, whether the path arrives from the scan, the session observer or
 //! `mustard init`.
+//!
+//! ## One spelling per folder
+//!
+//! A row is found by comparing its `path` string byte for byte, so the mark
+//! only holds while every writer spells a folder the same way. That is what
+//! [`identity`] is for, and why it is applied at the ONE point where a path
+//! becomes a row's identity rather than at each of the four call sites that
+//! would otherwise have to remember.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -86,6 +94,38 @@ pub fn registry_path() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())?;
     let paths = ClaudePaths::for_project(&home).ok()?;
     Some(paths.claude_dir().join("dashboard-projects.json"))
+}
+
+/// The one place a path becomes a registry IDENTITY.
+///
+/// Every row is found by comparing this string byte for byte, so two writers
+/// that spell the same folder differently write two rows — and worse, a
+/// `hide` spelled one way leaves a mark a `register` spelled the other way
+/// never sees, so the folder comes back on the next scan and can never be
+/// taken off the list. `/x/solo/` and `/x/solo` are the same folder and must
+/// produce the same string.
+///
+/// Two steps, in this order: RESOLVE (so a relative path, a `..`, or a
+/// symlinked parent lands on the one real location) and then TRIM the trailing
+/// separators `canonicalize` never adds but a hand-typed path often carries.
+/// A path that does not resolve — a folder already deleted, which is exactly
+/// what the stale rows are — keeps its own spelling and is still trimmed;
+/// refusing to normalize it would make those rows unhidable.
+///
+/// [`register`] and [`hide`]/[`unhide`] all funnel through here, which is why
+/// it is a function and not a habit each caller has to remember. The two
+/// programmatic writers (`mustard init`, the session observer) canonicalize
+/// before calling and are left byte-identical by this. It is `pub` for the one
+/// caller that compares an identity without going through a writer — the
+/// dashboard's `unregister`, which drops a row by path.
+#[must_use]
+pub fn identity(project_dir: &Path) -> String {
+    let resolved = fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    let spelled = resolved.to_string_lossy().to_string();
+    let trimmed = spelled.trim_end_matches(['/', '\\']);
+    // The filesystem root is all separator: trimming it away would leave the
+    // empty string as an identity, which names nothing.
+    if trimmed.is_empty() { spelled } else { trimmed.to_string() }
 }
 
 /// Extract the trailing path segment as a display name. Handles both forward
@@ -160,7 +200,7 @@ pub enum RegisterOutcome {
 /// # Errors
 /// Returns a message when the write fails.
 pub fn register_at(registry: &Path, project_dir: &Path) -> Result<RegisterOutcome, String> {
-    let path = project_dir.to_string_lossy().to_string();
+    let path = identity(project_dir);
     let mut entries = read_at(registry);
     // A path the registry already holds is left EXACTLY as it stands —
     // `hidden` included. This is where a removal holds: the dashboard folds
@@ -237,7 +277,7 @@ fn set_hidden_at(
     project_dir: &Path,
     hidden: bool,
 ) -> Result<VisibilityOutcome, String> {
-    let path = project_dir.to_string_lossy().to_string();
+    let path = identity(project_dir);
     let mut entries = read_at(registry);
     if let Some(entry) = entries.iter_mut().find(|e| e.path == path) {
         if entry.hidden == hidden {
@@ -454,6 +494,55 @@ mod tests {
         assert_eq!(
             unhide_at(&registry, &dir.path().join("absent")).expect("unhide absent"),
             VisibilityOutcome::Unchanged
+        );
+        assert_eq!(read_at(&registry).len(), 1);
+    }
+
+    /// The identity is a STRING compared byte for byte, so the two writers
+    /// have to spell a folder the same way. Hiding `/x/solo/` used to leave a
+    /// mark that the row for `/x/solo` never saw: a second row appeared, the
+    /// visible one stayed visible, and the scan brought it back forever.
+    #[test]
+    fn a_trailing_separator_names_the_row_it_already_holds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("registry.json");
+        let project = dir.path().join("solo");
+        std::fs::create_dir_all(&project).expect("project");
+        let with_slash = PathBuf::from(format!("{}/", project.display()));
+
+        register_at(&registry, &project).expect("register");
+        assert_eq!(
+            hide_at(&registry, &with_slash).expect("hide the same folder, spelled with a slash"),
+            VisibilityOutcome::Changed
+        );
+
+        let entries = read_at(&registry);
+        assert_eq!(entries.len(), 1, "one folder is one row, however it is spelled");
+        assert!(entries[0].hidden, "the mark lands on the row that exists");
+
+        // And the scan, arriving with the third spelling, still finds it.
+        assert_eq!(
+            register_at(&registry, &with_slash).expect("re-register"),
+            RegisterOutcome::AlreadyPresent
+        );
+        assert_eq!(read_at(&registry).len(), 1);
+    }
+
+    /// A relative path resolves to the same row an absolute one names —
+    /// otherwise the row a dashboard started elsewhere writes is a different
+    /// row from the one `mustard init` wrote.
+    #[test]
+    fn a_relative_path_resolves_to_the_row_the_absolute_one_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("registry.json");
+        let project = dir.path().join("app");
+        std::fs::create_dir_all(&project).expect("project");
+        let roundabout = project.join("..").join("app");
+
+        register_at(&registry, &project).expect("register");
+        assert_eq!(
+            register_at(&registry, &roundabout).expect("register the long way round"),
+            RegisterOutcome::AlreadyPresent
         );
         assert_eq!(read_at(&registry).len(), 1);
     }

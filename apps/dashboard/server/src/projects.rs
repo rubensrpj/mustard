@@ -116,7 +116,7 @@ use mustard_core::dashboard_registry as registry;
 /// `hidden` rides along so the frontend can render a folder the operator took
 /// off the list (and offer to put it back) instead of having to guess from an
 /// absence. `parent` is the disambiguating label — see [`to_rows`].
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectRow {
     /// Absolute filesystem path. Doubles as the entry's identity.
@@ -133,9 +133,47 @@ pub struct ProjectRow {
     pub parent: Option<String>,
 }
 
-/// The registered projects, oldest first, hidden ones included and marked.
-pub fn list_registered() -> Result<Vec<ProjectRow>, String> {
-    Ok(to_rows(registry::read()))
+/// The registered projects, oldest first, hidden ones included and marked —
+/// with the discovery scan of `root` folded in first.
+///
+/// **The fold lives here, on the server, and it used to live in the browser.**
+/// The frontend store re-registered everything the scan found on every page
+/// load, which is what made a removal last exactly until the next open. Simply
+/// deleting that loop would have cost the other half of the behaviour the
+/// spec's Non-Goals keep on purpose: the automatic registrations are "what
+/// makes a new project appear with no gesture at all". So the fold moved
+/// rather than died. The frontend now only READS, and the one writer is the
+/// server.
+///
+/// It respects the mark by construction: it folds through
+/// [`registry::register_at`], which leaves an entry it already holds exactly
+/// as it stands, `hidden` included. A folder the scan finds and the operator
+/// hid stays hidden; a folder the scan finds for the first time appears.
+///
+/// A scan failure is not an error here — the registry is the answer, the scan
+/// is an addition to it, and a root that cannot be walked must not empty the
+/// sidebar.
+pub fn list_registered(root: &Path) -> Result<Vec<ProjectRow>, String> {
+    let registry_file = registry_file()?;
+    fold_scan_into(&registry_file, root);
+    Ok(list_in(&registry_file))
+}
+
+/// Write everything the scan of `root` finds into the registry at
+/// `registry_file`, idempotently and without ever clearing a mark.
+///
+/// Fail-open at every step: neither an unwalkable root nor an unwritable
+/// registry may keep the list from being returned.
+fn fold_scan_into(registry_file: &Path, root: &Path) {
+    let Ok(found) = crate::discovery::discover(root) else {
+        return;
+    };
+    for project in found {
+        // The result is deliberately dropped, and `register_at` is the only
+        // door: it is the function that refuses to touch a row it already
+        // holds, which is where the operator's removal survives the scan.
+        let _ = registry::register_at(registry_file, Path::new(&project.path));
+    }
 }
 
 /// Where the machine registry lives, or the error the commands report when the
@@ -144,7 +182,8 @@ fn registry_file() -> Result<std::path::PathBuf, String> {
     registry::registry_path().ok_or_else(|| "cannot resolve the home directory".to_string())
 }
 
-/// [`list_registered`] against an explicit registry file.
+/// [`list_registered`] against an explicit registry file, without the scan
+/// fold — the projection every command returns once it has written.
 ///
 /// **The registry path is a PARAMETER, and that is the point.** With the home
 /// directory resolved inside, a test that drove these commands would write into
@@ -163,10 +202,25 @@ fn list_in(registry_file: &Path) -> Vec<ProjectRow> {
 /// A path the operator has hidden STAYS hidden: this is the command the
 /// dashboard funnels its discovery scan through, so clearing the mark here
 /// would undo every removal on the next load. A deliberate "show this again"
-/// is [`unhide`].
+/// is [`unhide`], and the sidebar's manual add sends both.
+///
+/// A path that is not a folder on this machine is REFUSED, with a message the
+/// UI can show. Accepted, it would become a row nothing can ever justify: the
+/// scan will not find it, so it just sits there, and the only thing the
+/// operator can do to it is hide it — a permanent row born from a typo. A
+/// refusal is the smaller failure.
 pub fn register(path: String) -> Result<Vec<ProjectRow>, String> {
-    registry::register(Path::new(&path))?;
-    list_registered()
+    register_in(&registry_file()?, &path)
+}
+
+/// [`register`] against an explicit registry file — see [`list_in`].
+fn register_in(registry_file: &Path, path: &str) -> Result<Vec<ProjectRow>, String> {
+    let dir = Path::new(path);
+    if !dir.is_dir() {
+        return Err(format!("not a folder on this machine: {path}"));
+    }
+    registry::register_at(registry_file, dir)?;
+    Ok(list_in(registry_file))
 }
 
 /// Take `path` off the list, returning the list as it now stands.
@@ -174,6 +228,11 @@ pub fn register(path: String) -> Result<Vec<ProjectRow>, String> {
 /// The row is marked, not dropped — the scan would write a dropped row back on
 /// the next load. Hiding a path the registry does not hold yet records the
 /// exclusion anyway, so it survives the scan that has not run.
+///
+/// Unlike [`register`], this does NOT require the folder to still exist. The
+/// rows an operator most wants gone are the ones whose folders are already
+/// deleted (135 of the 142 measured in the field were `cargo test` tempdirs);
+/// demanding a live directory here would leave exactly those unhidable.
 pub fn hide(path: String) -> Result<Vec<ProjectRow>, String> {
     hide_in(&registry_file()?, &path)
 }
@@ -202,6 +261,10 @@ fn unhide_in(registry_file: &Path, path: &str) -> Result<Vec<ProjectRow>, String
 /// sidebar removes a folder: without the mark, a path the scan still finds
 /// comes back on the next load. Use [`hide`] for that.
 pub fn unregister(path: String) -> Result<Vec<ProjectRow>, String> {
+    // Through `identity` for the same reason every writer goes through it: the
+    // row is found by comparing this string byte for byte, so `/x/solo/` has to
+    // name the row `/x/solo` holds rather than miss it.
+    let path = registry::identity(Path::new(&path));
     let mut entries = registry::read();
     let before = entries.len();
     entries.retain(|e| e.path != path);
@@ -258,15 +321,21 @@ fn parent_segment(path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{hide_in, list_in, to_rows, unhide_in, ProjectEntry};
+    use super::{fold_scan_into, hide_in, list_in, register_in, to_rows, unhide_in, ProjectEntry};
     use mustard_core::dashboard_registry::basename;
     use std::path::Path;
 
-    /// `register` against an explicit registry file — the tests need the same
-    /// seam the commands use, without touching the operator's `$HOME`.
-    fn register_in(registry: &Path, path: &str) -> Result<(), String> {
-        mustard_core::dashboard_registry::register_at(registry, Path::new(path))?;
-        Ok(())
+    /// Make `name` under `dir` and hand back the path as the commands take it
+    /// — a string, spelled the way the registry will store it. Registering
+    /// REFUSES a path that is not a folder, so a test that means to register
+    /// has to build one.
+    fn folder(dir: &Path, name: &str) -> String {
+        let path = dir.join(name);
+        std::fs::create_dir_all(&path).expect("create the folder");
+        path.canonicalize()
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string()
     }
 
     fn entry(path: &str) -> ProjectEntry {
@@ -314,10 +383,8 @@ mod tests {
     fn hide_marks_the_row_instead_of_dropping_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let registry = dir.path().join("dashboard-projects.json");
-        let gone = dir.path().join("gone");
-        let gone = gone.to_string_lossy().to_string();
-        let kept = dir.path().join("kept");
-        let kept = kept.to_string_lossy().to_string();
+        let gone = folder(dir.path(), "gone");
+        let kept = folder(dir.path(), "kept");
         register_in(&registry, &kept).expect("register kept");
         register_in(&registry, &gone).expect("register gone");
 
@@ -343,13 +410,67 @@ mod tests {
     fn unhide_puts_the_folder_back_on_the_list() {
         let dir = tempfile::tempdir().expect("tempdir");
         let registry = dir.path().join("dashboard-projects.json");
-        let project = dir.path().join("back");
-        let project = project.to_string_lossy().to_string();
+        let project = folder(dir.path(), "back");
         register_in(&registry, &project).expect("register");
         hide_in(&registry, &project).expect("hide");
 
         let rows = unhide_in(&registry, &project).expect("unhide");
         assert!(rows.iter().all(|r| !r.hidden));
+    }
+
+    /// A path that is not a folder on this machine is refused rather than
+    /// written: accepted, it would be a row the scan can never justify and the
+    /// operator can only hide.
+    #[test]
+    fn adding_a_path_that_is_not_a_folder_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("dashboard-projects.json");
+        let ghost = dir.path().join("typo").to_string_lossy().to_string();
+
+        let refused = register_in(&registry, &ghost).expect_err("a phantom path must be refused");
+        assert!(refused.contains("not a folder"), "the message says why: {refused}");
+        assert!(
+            list_in(&registry).is_empty(),
+            "and nothing was written for it"
+        );
+    }
+
+    /// The fold that moved out of the browser: a project the scan finds gets a
+    /// row with no gesture from the operator, and a second pass adds nothing.
+    #[test]
+    fn the_scan_fold_registers_what_it_finds_exactly_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("dashboard-projects.json");
+        let root = dir.path().join("tree");
+        let found = folder(&root, "discovered");
+        std::fs::write(Path::new(&found).join("mustard.json"), "{}").expect("mustard.json");
+
+        fold_scan_into(&registry, &root);
+        fold_scan_into(&registry, &root);
+
+        let rows = list_in(&registry);
+        assert_eq!(rows.len(), 1, "the fold is idempotent");
+        assert_eq!(rows[0].path, found);
+        assert!(!rows[0].hidden);
+    }
+
+    /// The other half, and the whole point of the mark: the scan still finds
+    /// the folder, and it stays off the list anyway.
+    #[test]
+    fn the_scan_fold_never_clears_the_operators_mark() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("dashboard-projects.json");
+        let root = dir.path().join("tree");
+        let unwanted = folder(&root, "unwanted");
+        std::fs::write(Path::new(&unwanted).join("mustard.json"), "{}").expect("mustard.json");
+
+        fold_scan_into(&registry, &root);
+        hide_in(&registry, &unwanted).expect("hide");
+        fold_scan_into(&registry, &root);
+
+        let rows = list_in(&registry);
+        assert_eq!(rows.len(), 1, "no second row for the same folder");
+        assert!(rows[0].hidden, "the scan must not put it back on the list");
     }
 
     #[test]

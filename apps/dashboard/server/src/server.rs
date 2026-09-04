@@ -829,7 +829,7 @@ static COMMANDS: &[(&str, Handler)] = &[
     // --- project registry & discovery ------------------------------------
     ("discover_projects", discover_projects_handler),
     ("dashboard_discovery_root", discovery_root_handler),
-    ("dashboard_projects_list", cmd!(crate::projects::list_registered)),
+    ("dashboard_projects_list", projects_list_handler),
     ("dashboard_projects_add", cmd!(crate::projects::register, "path")),
     ("dashboard_projects_hide", cmd!(crate::projects::hide, "path")),
     ("dashboard_projects_unhide", cmd!(crate::projects::unhide, "path")),
@@ -859,6 +859,18 @@ fn discover_projects_handler(ctx: &Arc<Ctx>, args: &Value) -> Result<Value, Stri
     let root: Option<String> = arg(args, "root")?;
     let root = root.map_or_else(|| ctx.root.clone(), PathBuf::from);
     encode(&crate::discovery::discover(&root)?)
+}
+
+/// The sidebar's list, with the discovery scan folded into it.
+///
+/// It needs the context for the same reason [`discover_projects_handler`] does:
+/// the scan root is the directory the server was started in, and only the
+/// context knows it. The fold used to run in the BROWSER, which re-registered
+/// everything the scan found on every page load and so undid every removal;
+/// moving it here keeps what the fold is for — a new project appearing with no
+/// gesture — while leaving the frontend a reader that cannot undo a choice.
+fn projects_list_handler(ctx: &Arc<Ctx>, _args: &Value) -> Result<Value, String> {
+    encode(&crate::projects::list_registered(&ctx.root)?)
 }
 
 /// Where [`discover_projects_handler`] scans by default, so the frontend can
