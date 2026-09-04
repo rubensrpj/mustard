@@ -996,7 +996,16 @@ mod tests {
             .split_once("stays English")
             .expect("guard 3 must still name an English-only side");
         // Every comment form sits on the locale side, none on the English side.
-        for form in ["`//`", "`#`", "`/* */`", "`///`", "`'''`", "doc-comments", "`<!-- -->`"] {
+        for form in [
+            "`//`",
+            "`#`",
+            "`/* */`",
+            "`///`",
+            "`'''`",
+            "`\"\"\"`",
+            "doc-comments",
+            "`<!-- -->`",
+        ] {
             assert!(
                 locale_side.contains(form),
                 "comment form {form} must sit on the project-language side: {guard}"

@@ -21,6 +21,10 @@
 //! reaches the threshold, mark the file as a hit. False positives are skipped
 //! via allow-list paths and per-file markers.
 //!
+//! The stripper is a scanner, not a per-language parser: the only axis that
+//! varies by extension is whether `'` opens a string (see [`CommentSyntax`]).
+//! It does in `.ts`/`.tsx`, it does not in `.rs`.
+//!
 //! ## Scan targets
 //!
 //! Recursive walk relative to the cwd:
@@ -179,10 +183,9 @@ fn audit(root: &Path) -> Report {
             }
             // Comentário segue o specLang do projeto: só o que está FORA
             // dele entra na contagem. Markdown não passa por aqui.
-            let scored: Cow<'_, str> = if has_c_style_comments(path) {
-                Cow::Owned(strip_comments(&text))
-            } else {
-                Cow::Borrowed(text.as_str())
+            let scored: Cow<'_, str> = match comment_syntax(path) {
+                Some(syntax) => Cow::Owned(strip_comments(&text, syntax)),
+                None => Cow::Borrowed(text.as_str()),
             };
             let (count, samples) = score_pt(&scored);
             if count >= HIT_THRESHOLD {
@@ -309,26 +312,55 @@ fn has_pt_marker(text: &str) -> bool {
         })
 }
 
+/// Como o removedor lê uma extensão que tem comentário em estilo C. O único
+/// eixo que varia entre as linguagens é o apóstrofo, e ele é um booleano por
+/// extensão — não um analisador de sintaxe por linguagem.
+#[derive(Clone, Copy)]
+struct CommentSyntax {
+    /// Se `'` abre um literal de string que precisa ser copiado inteiro.
+    ///
+    /// Em `.ts`/`.tsx` abre: uma string de aspas simples pode conter `//`, como
+    /// em `'https://exemplo'`, e ignorar o apóstrofo faria o removedor engolir
+    /// o resto da linha.
+    ///
+    /// Em `.rs` NÃO abre: um tempo de vida (`<'a>`) é um apóstrofo ÍMPAR, a
+    /// contagem nunca fecha, e o varredor ficaria em modo string até o fim do
+    /// arquivo — nenhum comentário dali em diante seria removido, que é
+    /// exatamente o defeito que este módulo existe para evitar. Ignorá-lo é
+    /// seguro porque um literal de caractere guarda EXATAMENTE UM caractere e
+    /// as duas aberturas de comentário (`//` e `/*`) têm DOIS: nenhum literal
+    /// de caractere consegue conter uma abertura de comentário.
+    apostrophe_opens_string: bool,
+}
+
 /// Extensões cujo comentário o removedor entende. Markdown fica de fora de
 /// propósito: lá a prosa é o próprio conteúdo, não um comentário.
-fn has_c_style_comments(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-        return false;
-    };
-    matches!(ext.to_ascii_lowercase().as_str(), "rs" | "ts" | "tsx")
+fn comment_syntax(path: &Path) -> Option<CommentSyntax> {
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    match ext.to_ascii_lowercase().as_str() {
+        "rs" => Some(CommentSyntax {
+            apostrophe_opens_string: false,
+        }),
+        "ts" | "tsx" => Some(CommentSyntax {
+            apostrophe_opens_string: true,
+        }),
+        _ => None,
+    }
 }
 
 /// Devolve `text` sem o conteúdo dos comentários — linha iniciada por `//`
 /// (portanto também `///` e `//!`) e blocos `/* ... */`. Literais de string
-/// (`"`, `'` e crase) são copiados na íntegra, para que uma URL como
-/// `"https://x"` não seja lida como início de comentário. As quebras de linha
-/// sobrevivem, de modo que os trechos do relatório continuem vindo da linha
-/// certa.
+/// (`"`, crase, e `'` conforme a [`CommentSyntax`] da extensão) são copiados na
+/// íntegra, para que uma URL como `"https://x"` não seja lida como início de
+/// comentário. As quebras de linha sobrevivem, de modo que os trechos do
+/// relatório continuem vindo da linha certa.
 ///
-/// Um `'` de lifetime pode deixar o varredor em modo string até a próxima
-/// aspa; nesse caso o comentário deixa de ser removido — ou seja, o auditor
-/// passa a ver MAIS texto, nunca menos.
-fn strip_comments(text: &str) -> String {
+/// O modo string é o lado perigoso: enquanto ele está aberto o texto é COPIADO,
+/// então uma aspa desemparelhada faz comentário sobreviver na contagem e o
+/// auditor reprova justamente o que a regra de idioma autoriza. Daí as duas
+/// precauções do lado Rust — o apóstrofo não abre string, e um literal de
+/// caractere é copiado inteiro para que a aspa dupla de `'"'` não fique solta.
+fn strip_comments(text: &str, syntax: CommentSyntax) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0usize;
@@ -353,24 +385,15 @@ fn strip_comments(text: &str) -> String {
                     i += 1;
                 }
             }
-            ('"' | '\'' | '`', _) => {
-                out.push(c);
-                i += 1;
-                while i < chars.len() {
-                    let d = chars[i];
-                    out.push(d);
-                    i += 1;
-                    if d == '\\' {
-                        if let Some(esc) = chars.get(i) {
-                            out.push(*esc);
-                            i += 1;
-                        }
-                        continue;
-                    }
-                    if d == c {
-                        break;
-                    }
+            ('\'', _) if !syntax.apostrophe_opens_string => {
+                let len = char_literal_len(&chars, i);
+                for ch in chars.iter().skip(i).take(len) {
+                    out.push(*ch);
                 }
+                i += len;
+            }
+            ('"' | '`' | '\'', _) => {
+                i = copy_string_literal(&chars, i, c, &mut out);
             }
             _ => {
                 out.push(c);
@@ -379,6 +402,66 @@ fn strip_comments(text: &str) -> String {
         }
     }
     out
+}
+
+/// Copia o literal de string que começa na aspa `quote` em `chars[start]`, até
+/// a aspa de fechamento, tratando `\` como escape. Devolve o índice logo depois
+/// do literal. A cópia é integral para que um `//` dentro de uma URL não seja
+/// lido como abertura de comentário.
+fn copy_string_literal(chars: &[char], start: usize, quote: char, out: &mut String) -> usize {
+    out.push(quote);
+    let mut i = start + 1;
+    while i < chars.len() {
+        let Some(d) = chars.get(i).copied() else {
+            break;
+        };
+        out.push(d);
+        i += 1;
+        if d == '\\' {
+            if let Some(esc) = chars.get(i) {
+                out.push(*esc);
+                i += 1;
+            }
+            continue;
+        }
+        if d == quote {
+            break;
+        }
+    }
+    i
+}
+
+/// Comprimento do literal de caractere que começa no `'` de `chars[start]`, ou
+/// `1` quando o que está ali é um tempo de vida (`'a`) e não um literal.
+///
+/// O literal é copiado inteiro não porque o `'` delimite string — em Rust ele
+/// não delimita —, mas por causa da OUTRA aspa: `'"'` guarda uma aspa dupla
+/// desemparelhada, e deixá-la solta abriria modo string até a próxima aspa
+/// dupla do arquivo, arrastando todo comentário do meio para dentro da
+/// contagem. Como o literal guarda um caractere só, andar por cima dele nunca
+/// pula uma abertura de comentário, que tem dois.
+fn char_literal_len(chars: &[char], start: usize) -> usize {
+    // `'x'` — um caractere simples entre apóstrofos.
+    if chars
+        .get(start + 1)
+        .is_some_and(|c| *c != '\\' && *c != '\'')
+        && chars.get(start + 2) == Some(&'\'')
+    {
+        return 3;
+    }
+    // `'\n'`, `'\''`, `'\u{7f}'` — escape. O fecho está a poucos caracteres;
+    // o raio curto evita que um apóstrofo solto vire uma varredura longa.
+    if chars.get(start + 1) == Some(&'\\') {
+        for end in start + 3..=start + 12 {
+            match chars.get(end) {
+                Some('\'') => return end - start + 1,
+                Some(_) => {}
+                None => break,
+            }
+        }
+    }
+    // Tempo de vida: o apóstrofo é só um apóstrofo.
+    1
 }
 
 /// Count distinct marker words present in `text` (case-insensitive on the
@@ -598,6 +681,107 @@ mod tests {
                 .all(|s| !s.trim_start().starts_with("//")),
             "sample came from a comment: {:?}",
             report.hits[0].samples
+        );
+    }
+
+    #[test]
+    fn a_lifetime_does_not_leave_the_scanner_inside_a_string() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Assinatura copiada de `hooks/bash/lex.rs`, que é onde o defeito foi
+        // reproduzido: TRÊS apóstrofos, contagem ÍMPAR. Tratado como abertura
+        // de string, o terceiro nunca fecha, o varredor fica em modo string até
+        // o fim do arquivo e TODO comentário abaixo sobrevive na contagem — era
+        // assim que um comentário em português reprovava o build em 1 arquivo
+        // `.rs` de cada 14. O número ímpar é o que faz o teste enxergar isso:
+        // com um lifetime a mais os apóstrofos se emparelham e o defeito some.
+        write(
+            root,
+            "apps/rt/src/lifetimes.rs",
+            "pub fn split_after<'a>(cmd: &'a str, anchor: &str) -> Vec<&'a str> {\n\
+             cmd.split(anchor).collect()\n\
+             }\n\
+             // Este comentário não está pronto, porém será corrigido.\n\
+             /// A função de configuração padrão.\n",
+        );
+        let report = audit(root);
+        assert!(
+            report.hits.is_empty(),
+            "a lifetime kept the scanner in string mode: {:?}",
+            report.hits
+        );
+    }
+
+    #[test]
+    fn char_literals_do_not_leave_the_scanner_inside_a_string() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // `'"'` guarda uma aspa DUPLA desemparelhada: solta, ela abre modo
+        // string e arrasta o comentário abaixo para dentro da contagem. Os
+        // escapes (`'\n'`, `'\''`, `'\\'`) entram junto porque é neles que um
+        // passo curto demais erraria o fecho.
+        write(
+            root,
+            "apps/rt/src/chars.rs",
+            "pub fn classify(c: char) -> u8 {\n\
+             if c == '\"' || c == '/' || c == '\\n' || c == '\\'' || c == '\\\\' {\n\
+             return 1;\n\
+             }\n\
+             0\n\
+             }\n\
+             // Este comentário não está pronto, porém será corrigido.\n\
+             /* Também cobre bloco assim, com código e execução. */\n",
+        );
+        let report = audit(root);
+        assert!(
+            report.hits.is_empty(),
+            "a char literal kept the scanner in string mode: {:?}",
+            report.hits
+        );
+    }
+
+    #[test]
+    fn code_after_a_lifetime_is_still_scored() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // A outra metade: ignorar o apóstrofo não pode virar ignorar o
+        // arquivo. O português FORA do comentário, depois do tempo de vida,
+        // continua sendo marcado.
+        write(
+            root,
+            "apps/rt/src/lifetimes.rs",
+            "pub fn split<'a>(cmd: &'a str) -> &'a str {\n\
+             // Este comentário fica de fora da contagem.\n\
+             eprintln!(\"execução não está disponível para o código padrão\");\n\
+             cmd\n\
+             }\n",
+        );
+        let report = audit(root);
+        assert_eq!(
+            report.hits.len(),
+            1,
+            "PT outside comments went unnoticed after a lifetime: {:?}",
+            report.hits
+        );
+    }
+
+    #[test]
+    fn a_single_quoted_ts_string_is_not_read_as_a_comment() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O apóstrofo continua delimitando string em `.ts`: sem isso o `//` de
+        // `https://` abriria comentário e engoliria o português da constante.
+        write(
+            root,
+            "apps/dashboard/src/links.ts",
+            "export const DOC = 'https://x/não-está-no-código-padrão';\n",
+        );
+        let report = audit(root);
+        assert_eq!(
+            report.hits.len(),
+            1,
+            "single-quoted TS string was swallowed as a comment: {:?}",
+            report.hits
         );
     }
 
