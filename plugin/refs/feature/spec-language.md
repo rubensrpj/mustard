@@ -8,7 +8,7 @@
 - Resolve the locale ONCE per pipeline, first hit wins: (1) `meta.json#lang` → (2) `mustard.json#specLang` → (3) ask once via AskUserQuestion, persist to `mustard.json#specLang`. No textual heuristic, ever.
 - `spec.md` carries no `### Lang:` (or any lifecycle) header — metadata lives only in the `meta.json` sidecar (`spec-draft` and the `wave-scaffold` renderer inside `plan-materialize` write it; later phases read it there).
 - Tone is a separate dimension: `mustard.json#tone` = `didactic` (default) | `technical` | `concise`; `spec-draft` wires it into the drafting prompt. Language never changes tone.
-- Everything that is code stays English regardless of locale: identifiers, file paths, shell + AC `Command:` lines, comments in EVERY form, log/error/exception strings, API string constants (unless replacing an already-localised one). Never translate pre-existing comments while editing; only new comments you write are English. `mustard-rt run language-audit` reports drift (`--strict` fails the build).
+- Everything that is code stays English regardless of locale: identifiers, file paths, shell + AC `Command:` lines, log/error/exception strings, API string constants (unless replacing an already-localised one). Comments are the one exception, and they fall on the other side: every comment you write — in any form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, `<!-- -->`) — follows the locale, exactly as the spec narrative does. Never translate pre-existing comments while editing; the locale rule governs only the new ones you write. `mustard-rt run language-audit` reports drift (`--strict` fails the build).
 - A `pt-BR` spec uses ALL PT `##` headings below; `en-US` keeps all EN. The `lang` value is a literal code, never translated. Banners are catalogued for `pt-BR` and `en-US`; other BCP-47 codes are accepted for the body and fall back to the default banner catalogue.
 
 ## Headings (EN ↔ PT)
@@ -47,7 +47,7 @@
 
 ## Dispatch
 
-Agent prompts receive `{spec_lang}` (from `meta.json#lang`): spec prose, labels and appended `## Concerns` use it; the code the agent writes stays English.
+Agent prompts receive `{spec_lang}` (from `meta.json#lang`): spec prose, labels, appended `## Concerns` and every comment the agent writes use it; the rest of the code the agent writes stays English.
 
 ## Component Contract (UI specs only)
 

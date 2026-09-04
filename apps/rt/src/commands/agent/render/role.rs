@@ -119,7 +119,10 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
             "ROLE: {role}\n\
              You implement inside {subproject} ONLY — never touch another subproject, the spec, or \
              .claude/. Before the first Edit/Write, read ONE sibling file to match conventions. \
-             Source code stays English; only spec prose follows the project locale. Max 3 build \
+             Every comment you write follows the project locale ({spec_lang}), as the spec prose \
+             does; the rest of the code stays English — identifiers, file paths, shell commands, \
+             log/error messages, API string constants. Never translate pre-existing comments. \
+             Max 3 build \
              attempts, then STOP and report. Deliver: your final message is a ≤40-line report — \
              files changed + non-obvious decisions + blockers. Do NOT paste file contents.\n\
              {MEMORY_CONTRACT}"
