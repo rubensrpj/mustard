@@ -25,6 +25,26 @@
 //! varies by extension is whether `'` opens a string (see [`CommentSyntax`]).
 //! It does in `.ts`/`.tsx`, it does not in `.rs`.
 //!
+//! ## What that costs, stated rather than discovered
+//!
+//! Being a scanner and not a parser has a KNOWN residue, and it is named here
+//! so the next reader meets it in the doc instead of in a confusing report.
+//! Any construct that carries an ODD number of a delimiter the scanner honours
+//! leaves it inside a string to end of file, and every comment below that point
+//! is counted rather than stripped.
+//!
+//! - `.ts`/`.tsx`: a regex literal whose character class holds an odd `'`
+//!   (`/['"`]/`). Measured over the 147 in-scope files: ONE is affected
+//!   (`apps/dashboard/src/lib/quality-link.ts`). Closing it means detecting
+//!   regex literals, which is the per-language parsing `## Não-Objetivos`
+//!   refuses; it is also not a regression, since that file was flagged before
+//!   this scanner existed.
+//! - `.rs`: a raw string with an odd `"` (`r#"a " b"#`). Measured over the 367
+//!   in-scope files: ZERO occurrences, so it is latent.
+//!
+//! Both fail CLOSED — a comment survives into the count and the file is
+//! flagged. Never open: no path lets real drift through unseen.
+//!
 //! ## Scan targets
 //!
 //! Recursive walk relative to the cwd:
