@@ -10,8 +10,11 @@
 // State model
 // -----------
 // - `projects` from `useProjectsStore` is the machine-level registry the
-//   server keeps (slice select). There is no folder picker: the server scans
-//   from where it was started, so the list is what that scan found.
+//   server keeps (slice select), minus the rows the operator took off the
+//   list; those arrive separately in `hiddenProjects` so the tree can offer
+//   them back. Folders reach the registry on their own (`mustard init`, the
+//   session observer, the discovery scan) — the "add folder" gesture is the
+//   manual way in, and the only way back for a folder that was removed.
 // - `projectsRoot` from `useStore` is the active workspace path; we expand
 //   that node by default and keep manual toggles in local state for the rest.
 // - Detection state per project comes from `useProjectDetections` (TanStack
@@ -38,12 +41,23 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Box,
+  FolderPlus,
+  Undo2,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { useT } from "@/lib/i18n";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -98,6 +112,19 @@ const leafItemClass = (active: boolean) =>
       ? "bg-primary/15 text-foreground font-medium"
       : "text-sidebar-foreground/70 hover:bg-muted/40 hover:text-foreground",
   );
+
+/** Shorten a folder name from the MIDDLE.
+ *
+ *  CSS `truncate` eats the END of the string, which is exactly the half that
+ *  carries the information: `atiz-suzano-backend` and `atiz-suzano-frontend`
+ *  differ only in their last word, and cutting there renders two different
+ *  projects as the same label. Cutting the middle keeps both edges. */
+function middleEllipsis(name: string, max = 24): string {
+  if (name.length <= max) return name;
+  const head = Math.ceil((max - 1) / 2);
+  const tail = max - 1 - head;
+  return `${name.slice(0, head)}…${name.slice(name.length - tail)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Detection → status dot variant
@@ -173,7 +200,7 @@ function ProjectTreeNode({
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const removeProject = useProjectsStore((s) => s.removeProject);
+  const hideProject = useProjectsStore((s) => s.hideProject);
   const activateProject = useProjectsStore((s) => s.activateProject);
   const isMustardRepo = useIsMustardRepo(project.path);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -224,6 +251,19 @@ function ProjectTreeNode({
 
   async function ensureActive() {
     if (!isActive) await activateProject(project.path);
+  }
+
+  // Takes the folder off the list without touching the disk — that is the
+  // separate "Remover Mustard" gesture above. The row is marked on the server
+  // so the automatic writers cannot put it back on the next load.
+  async function runHide() {
+    try {
+      await hideProject(project.path);
+      toast.success(t("sidebar.toastHidden", { name: project.name }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(t("projects.toastActionFailed", { msg }));
+    }
   }
 
   async function runUninstall() {
@@ -326,7 +366,7 @@ function ProjectTreeNode({
                     : "text-sidebar-foreground/80",
                 )}
               >
-                {project.name}
+                {middleEllipsis(project.name)}
               </span>
               {hasStale && (
                 <span
@@ -343,8 +383,19 @@ function ProjectTreeNode({
                 </span>
               )}
             </span>
-            <span className={cn("truncate text-[10px]", statusLineColor)}>
-              {statusLine}
+            <span className="flex items-center gap-1 min-w-0 text-[10px]">
+              {/* The parent segment only arrives when ANOTHER row ends in the
+                  same name — the server measures that across the whole list.
+                  It stays muted: it qualifies the name, it is not part of the
+                  install state the colour speaks about. */}
+              {project.parent && (
+                <span className="truncate text-muted-foreground">
+                  {project.parent} ·
+                </span>
+              )}
+              <span className={cn("truncate", statusLineColor)}>
+                {statusLine}
+              </span>
             </span>
           </span>
           <span className="sr-only">{statusLabel}</span>
@@ -398,10 +449,10 @@ function ProjectTreeNode({
               variant="destructive"
               onSelect={() => {
                 setMenuOpen(false);
-                void removeProject(project.path);
+                void runHide();
               }}
             >
-              {t("sidebar.projectMenu.removeFromRegistry")}
+              {t("sidebar.projectMenu.removeFromList")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -429,6 +480,166 @@ function ProjectTreeNode({
               </button>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add a folder by hand
+// ---------------------------------------------------------------------------
+
+/** Type-in dialog for tracking a folder the automatic writers did not bring.
+ *
+ *  There is no folder picker: the dashboard is a web page served by the local
+ *  server, and a browser cannot hand a page an absolute path. So the operator
+ *  pastes one. This is also the only way back for a folder they removed — the
+ *  store pairs the registration with an unhide for exactly that reason. */
+function AddProjectDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const addProject = useProjectsStore((s) => s.addProject);
+  const [path, setPath] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function submit() {
+    const target = path.trim();
+    if (!target || pending) return;
+    setPending(true);
+    try {
+      await addProject(target);
+      toast.success(t("sidebar.addProject.toastAdded", { path: target }));
+      setPath("");
+      onOpenChange(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(t("projects.toastActionFailed", { msg }));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t("sidebar.addProject.title")}</DialogTitle>
+          <DialogDescription>
+            {t("sidebar.addProject.description")}
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="py-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
+          <input
+            autoFocus
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder={t("sidebar.addProject.placeholder")}
+            aria-label={t("sidebar.addProject.title")}
+            spellCheck={false}
+            className="w-full h-9 rounded-md border border-border bg-background px-3 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          />
+        </form>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={pending}
+          >
+            {t("sidebar.addProject.cancel")}
+          </Button>
+          <Button
+            onClick={() => void submit()}
+            disabled={pending || path.trim().length === 0}
+          >
+            {pending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {t("sidebar.addProject.confirm")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Folders the operator took off the list
+// ---------------------------------------------------------------------------
+
+/** Collapsed disclosure listing the hidden rows, each with a way back.
+ *
+ *  Removal is remembered now, so without a visible undo it would be a one-way
+ *  door: the folder is still on disk, still found by the scan, and nothing in
+ *  the interface would say why it never appears. */
+function HiddenProjectsSection({ projects }: { projects: ProjectEntry[] }) {
+  const { t } = useTranslation();
+  const unhideProject = useProjectsStore((s) => s.unhideProject);
+  const [open, setOpen] = useState(false);
+
+  if (projects.length === 0) return null;
+
+  async function restore(project: ProjectEntry) {
+    try {
+      await unhideProject(project.path);
+      toast.success(t("sidebar.toastRestored", { name: project.name }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(t("projects.toastActionFailed", { msg }));
+    }
+  }
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-1 px-1 py-1 rounded-md text-[11px] text-muted-foreground hover:bg-muted/30 hover:text-foreground transition-colors"
+      >
+        {open ? (
+          <ChevronDown className="h-3 w-3 shrink-0" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0" />
+        )}
+        <span className="truncate">
+          {t("sidebar.hidden.title", { count: projects.length })}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-0.5 mt-0.5">
+          {projects.map((project) => (
+            <div
+              key={project.path}
+              className="group/hidden flex items-center gap-1 pl-5 pr-1 py-1 rounded-md hover:bg-muted/30"
+            >
+              <span
+                className="truncate flex-1 min-w-0 text-xs text-muted-foreground"
+                title={project.path}
+              >
+                {project.parent ? `${project.parent} · ` : ""}
+                {middleEllipsis(project.name)}
+              </span>
+              <button
+                type="button"
+                onClick={() => void restore(project)}
+                aria-label={t("sidebar.hidden.restore")}
+                title={t("sidebar.hidden.restore")}
+                className="h-5 w-5 shrink-0 inline-flex items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+                <Undo2 className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -509,6 +720,7 @@ export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const projects = useProjectsStore((s) => s.projects);
+  const hiddenProjects = useProjectsStore((s) => s.hiddenProjects);
   const activateProject = useProjectsStore((s) => s.activateProject);
   const activeProjectsRoot = useStore((s) => s.projectsRoot);
   const collapsed = useStore((s) => s.sidebarCollapsed);
@@ -524,6 +736,7 @@ export function Sidebar() {
     staleTime: Infinity,
   });
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [addOpen, setAddOpen] = useState(false);
 
   // Auto-expand the project whose path matches the active workspace root.
   // We only seed when the user has not manually toggled the node yet so a
@@ -608,6 +821,15 @@ export function Sidebar() {
         <div className="flex items-center justify-end gap-1">
           <button
             type="button"
+            onClick={() => setAddOpen(true)}
+            aria-label={t("sidebar.addProject.action")}
+            title={t("sidebar.addProject.action")}
+            className="h-7 w-7 shrink-0 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
             onClick={toggleSidebar}
             aria-label={tLib("sidebar.collapse", "Recolher")}
             title={tLib("sidebar.collapse", "Recolher")}
@@ -655,7 +877,10 @@ export function Sidebar() {
               );
             })
           )}
+          <HiddenProjectsSection projects={hiddenProjects} />
         </div>
+
+        <AddProjectDialog open={addOpen} onOpenChange={setAddOpen} />
 
         <Separator className="my-3" />
 
