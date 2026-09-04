@@ -977,6 +977,49 @@ mod tests {
         assert!(filled.contains("Review findings"), "filled body present: {filled}");
     }
 
+    /// Guard 3 of `## CONTEXT` splits the language rule in two, and the split is
+    /// what the whole rule means: a comment follows the project locale (like the
+    /// spec narrative), everything else in the code stays English. Asserted on
+    /// the two SIDES of the "stays English" sentence rather than on the phrasing,
+    /// so a reword keeps passing while moving a term across the divide fails.
+    #[test]
+    fn the_rendered_guard_puts_comments_under_the_project_language() {
+        let body = extract_block(TEMPLATE, "dispatch").expect("dispatch block present");
+        let rendered = body.replace("{spec_lang}", "pt-BR");
+        let guard = rendered
+            .lines()
+            .find(|l| l.starts_with("3. Spec language is"))
+            .expect("guard 3 present in the dispatch template");
+        assert!(guard.contains("pt-BR"), "guard 3 must name the rendered locale: {guard}");
+
+        let (locale_side, english_side) = guard
+            .split_once("stays English")
+            .expect("guard 3 must still name an English-only side");
+        // Every comment form sits on the locale side, none on the English side.
+        for form in ["`//`", "`#`", "`/* */`", "`///`", "`'''`", "doc-comments", "`<!-- -->`"] {
+            assert!(
+                locale_side.contains(form),
+                "comment form {form} must sit on the project-language side: {guard}"
+            );
+            assert!(
+                !english_side.contains(form),
+                "comment form {form} must not be listed as English-only: {guard}"
+            );
+        }
+        // What is code identity, not commentary, stays English.
+        for term in ["identifiers", "file paths", "shell commands", "`Command:`", "log"] {
+            assert!(
+                english_side.contains(term),
+                "{term} must stay on the English side: {guard}"
+            );
+        }
+        // The surgical clause survives the rewrite: no mass translation pass.
+        assert!(
+            guard.contains("never translate pre-existing comments"),
+            "the no-mass-translation clause must survive: {guard}"
+        );
+    }
+
     #[test]
     fn dispatch_render_fills_placeholders_and_leaves_no_unfilled() {
         // End-to-end: assemble the dispatch block, substitute the deterministic
