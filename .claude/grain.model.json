@@ -4,17 +4,17 @@
     {
       "language": "rust",
       "files": 491,
-      "loc": 224826
+      "loc": 225589
     },
     {
       "language": "tsx",
-      "files": 91,
-      "loc": 15198
+      "files": 92,
+      "loc": 15428
     },
     {
       "language": "typescript",
       "files": 67,
-      "loc": 5485
+      "loc": 5583
     },
     {
       "language": "php",
@@ -367,7 +367,7 @@
     {
       "dir": "apps/dashboard",
       "role": "L0",
-      "files": 166
+      "files": 167
     },
     {
       "dir": "packages/core",
@@ -8318,7 +8318,7 @@
     {
       "path": "apps/dashboard/src/lib/projects-store.ts",
       "language": "typescript",
-      "loc": 91,
+      "loc": 115,
       "imports": [
         "@/api/discovery",
         "@/lib/projects",
@@ -8330,43 +8330,79 @@
         {
           "kind": "interface",
           "name": "ProjectsState",
-          "line": 37,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "projects",
-          "line": 38,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "hydrated",
-          "line": 39,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "loadFromServer",
           "line": 43,
           "supertypes": []
         },
         {
           "kind": "property",
-          "name": "removeProject",
-          "line": 44,
+          "name": "projects",
+          "line": 45,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "hiddenProjects",
+          "line": 47,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "hydrated",
+          "line": 48,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "loadFromServer",
+          "line": 51,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "addProject",
+          "line": 57,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "hideProject",
+          "line": 59,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "unhideProject",
+          "line": 61,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "activateProject",
-          "line": 49,
+          "line": 66,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "partition",
+          "line": 70,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "projects",
+          "line": 71,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "hiddenProjects",
+          "line": 72,
           "supertypes": []
         },
         {
           "kind": "const",
           "name": "useProjectsStore",
-          "line": 52,
+          "line": 80,
           "supertypes": []
         }
       ]
@@ -8581,7 +8617,7 @@
     {
       "path": "apps/dashboard/src/lib/projects.ts",
       "language": "typescript",
-      "loc": 142,
+      "loc": 187,
       "imports": [
         "@/lib/api-client"
       ],
@@ -8806,73 +8842,109 @@
         {
           "kind": "interface",
           "name": "ProjectEntry",
-          "line": 128,
+          "line": 134,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "path",
-          "line": 130,
+          "line": 136,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "name",
-          "line": 132,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "addedAt",
-          "line": 134,
-          "supertypes": []
-        },
-        {
-          "kind": "interface",
-          "name": "RawProjectEntry",
-          "line": 137,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "path",
           "line": 138,
           "supertypes": []
         },
         {
           "kind": "property",
+          "name": "addedAt",
+          "line": 140,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "hidden",
+          "line": 144,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "parent",
+          "line": 149,
+          "supertypes": []
+        },
+        {
+          "kind": "interface",
+          "name": "RawProjectEntry",
+          "line": 152,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "path",
+          "line": 153,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
           "name": "name",
-          "line": 139,
+          "line": 154,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "added_at",
-          "line": 140,
+          "line": 155,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "hidden",
+          "line": 156,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "parent",
+          "line": 157,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "toProjectEntry",
-          "line": 143,
+          "line": 160,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "listRegisteredProjects",
-          "line": 147,
+          "line": 170,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "registerProject",
-          "line": 154,
+          "line": 182,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hideProject",
+          "line": 192,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unhideProject",
+          "line": 199,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unregisterProject",
-          "line": 160,
+          "line": 207,
           "supertypes": []
         }
       ]
@@ -12412,6 +12484,24 @@
       ]
     },
     {
+      "path": "apps/dashboard/src/components/ui/input/index.tsx",
+      "language": "tsx",
+      "loc": 16,
+      "imports": [
+        "@/lib/utils",
+        "react"
+      ],
+      "namespaces": [],
+      "declarations": [
+        {
+          "kind": "function",
+          "name": "Input",
+          "line": 5,
+          "supertypes": []
+        }
+      ]
+    },
+    {
       "path": "apps/dashboard/src/components/ui/tooltip/index.tsx",
       "language": "tsx",
       "loc": 50,
@@ -12667,11 +12757,14 @@
     {
       "path": "apps/dashboard/src/components/layout/Sidebar/index.tsx",
       "language": "tsx",
-      "loc": 639,
+      "loc": 853,
       "imports": [
         "@/api/discovery",
         "@/components/DoctorBadge",
+        "@/components/ui/button",
+        "@/components/ui/dialog",
         "@/components/ui/dropdown-menu",
+        "@/components/ui/input",
         "@/components/ui/separator",
         "@/components/ui/tooltip",
         "@/hooks/useArtifactDrift",
@@ -12693,199 +12786,253 @@
         {
           "kind": "property",
           "name": "isActive",
-          "line": 85,
+          "line": 100,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "middleEllipsis",
+          "line": 123,
           "supertypes": []
         },
         {
           "kind": "type",
           "name": "StatusKind",
-          "line": 106,
+          "line": 134,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "statusKind",
-          "line": 108,
+          "line": 136,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "StatusDotInline",
-          "line": 120,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "kind",
-          "line": 120,
-          "supertypes": []
-        },
-        {
-          "kind": "interface",
-          "name": "ProjectTreeNodeProps",
-          "line": 144,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "project",
-          "line": 145,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "detection",
-          "line": 146,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "isLoading",
-          "line": 147,
-          "supertypes": []
-        },
-        {
-          "kind": "property",
-          "name": "isActive",
           "line": 148,
           "supertypes": []
         },
         {
           "kind": "property",
+          "name": "kind",
+          "line": 148,
+          "supertypes": []
+        },
+        {
+          "kind": "interface",
+          "name": "ProjectTreeNodeProps",
+          "line": 172,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "project",
+          "line": 173,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "detection",
+          "line": 174,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "isLoading",
+          "line": 175,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "isActive",
+          "line": 176,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
           "name": "isExpanded",
-          "line": 149,
+          "line": 177,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "onToggleExpand",
-          "line": 150,
+          "line": 178,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "driftReport",
-          "line": 154,
+          "line": 182,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ProjectTreeNode",
-          "line": 157,
+          "line": 185,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ensureActive",
-          "line": 225,
+          "line": 253,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "runHide",
+          "line": 260,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "runUninstall",
-          "line": 229,
+          "line": 270,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "runArtifactUpdate",
-          "line": 250,
+          "line": 291,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "to",
-          "line": 274,
+          "line": 315,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "icon",
-          "line": 274,
+          "line": 315,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "label",
-          "line": 274,
+          "line": 315,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "end",
-          "line": 274,
+          "line": 315,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "AddProjectDialog",
+          "line": 500,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "open",
+          "line": 504,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "onOpenChange",
+          "line": 505,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "submit",
+          "line": 512,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "HiddenProjectsSection",
+          "line": 585,
+          "supertypes": []
+        },
+        {
+          "kind": "property",
+          "name": "projects",
+          "line": 585,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "restore",
+          "line": 592,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "RailButton",
-          "line": 444,
+          "line": 656,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "icon",
-          "line": 453,
+          "line": 665,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "label",
-          "line": 454,
+          "line": 666,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "active",
-          "line": 455,
+          "line": 667,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "disabled",
-          "line": 456,
+          "line": 668,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "spinning",
-          "line": 457,
+          "line": 669,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "onClick",
-          "line": 458,
+          "line": 670,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "dot",
-          "line": 460,
+          "line": 672,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "Sidebar",
-          "line": 503,
+          "line": 715,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "to",
-          "line": 542,
+          "line": 756,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "icon",
-          "line": 542,
+          "line": 756,
           "supertypes": []
         },
         {
           "kind": "property",
           "name": "label",
-          "line": 542,
+          "line": 756,
           "supertypes": []
         }
       ],
@@ -13600,7 +13747,7 @@
     {
       "path": "apps/dashboard/src/i18n.ts",
       "language": "typescript",
-      "loc": 452,
+      "loc": 481,
       "imports": [
         "i18next",
         "react-i18next"
@@ -13610,7 +13757,7 @@
         {
           "kind": "function",
           "name": "setLanguage",
-          "line": 437,
+          "line": 466,
           "supertypes": []
         }
       ],
@@ -17616,7 +17763,7 @@
     {
       "path": "apps/dashboard/server/src/projects.rs",
       "language": "rust",
-      "loc": 128,
+      "loc": 435,
       "imports": [
         "mustard_core::ProjectConfig",
         "mustard_core::dashboard_registry as registry",
@@ -17624,62 +17771,220 @@
         "mustard_core::dashboard_registry::basename",
         "mustard_core::io::fs",
         "serde::Serialize",
-        "std::path::Path"
+        "std::collections::HashMap",
+        "std::path::Path",
+        "super::{fold_scan_into, hide_in, list_in, register_in, to_rows, unhide_in, ProjectEntry}"
       ],
       "namespaces": [],
       "declarations": [
         {
           "kind": "struct",
           "name": "ProjectDetection",
-          "line": 42,
+          "line": 49,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "installed",
-          "line": 44,
+          "line": 51,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "version",
-          "line": 47,
+          "line": 54,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "detect_project_mustard",
-          "line": 58,
+          "line": 65,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "uninstall_mustard",
-          "line": 78,
+          "line": 85,
+          "supertypes": []
+        },
+        {
+          "kind": "struct",
+          "name": "ProjectRow",
+          "line": 121,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "path",
+          "line": 123,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "name",
+          "line": 125,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "added_at",
+          "line": 127,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "hidden",
+          "line": 129,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "parent",
+          "line": 133,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "list_registered",
-          "line": 107,
+          "line": 156,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "fold_scan_into",
+          "line": 167,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "registry_file",
+          "line": 181,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "list_in",
+          "line": 194,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "register",
-          "line": 114,
+          "line": 212,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "register_in",
+          "line": 217,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hide",
+          "line": 236,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hide_in",
+          "line": 241,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unhide",
+          "line": 248,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unhide_in",
+          "line": 253,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unregister",
-          "line": 122,
+          "line": 263,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "to_rows",
+          "line": 289,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "parent_segment",
+          "line": 315,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "folder",
+          "line": 332,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "entry",
+          "line": 341,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "basename_takes_the_trailing_segment_on_both_separators",
-          "line": 137,
+          "line": 351,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_unique_name_carries_no_qualifier",
+          "line": 359,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "same_folder_name_gets_the_parent_that_distinguishes",
+          "line": 367,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hide_marks_the_row_instead_of_dropping_it",
+          "line": 383,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unhide_puts_the_folder_back_on_the_list",
+          "line": 410,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "adding_a_path_that_is_not_a_folder_is_refused",
+          "line": 425,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_scan_fold_registers_what_it_finds_exactly_once",
+          "line": 441,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "the_scan_fold_never_clears_the_operators_mark",
+          "line": 460,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_path_with_nothing_above_it_has_no_parent_to_name",
+          "line": 477,
           "supertypes": []
         }
       ]
@@ -19912,7 +20217,7 @@
     {
       "path": "apps/dashboard/server/src/server.rs",
       "language": "rust",
-      "loc": 1082,
+      "loc": 1095,
       "imports": [
         "crate::watcher",
         "serde::Serialize",
@@ -20244,109 +20549,115 @@
         {
           "kind": "function",
           "name": "discover_projects_handler",
-          "line": 856,
+          "line": 858,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "projects_list_handler",
+          "line": 872,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "discovery_root_handler",
-          "line": 864,
+          "line": 878,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "watch_repos_handler",
-          "line": 871,
+          "line": 885,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "spawn",
-          "line": 896,
+          "line": 910,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "stop",
-          "line": 909,
+          "line": 923,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "http",
-          "line": 916,
+          "line": 930,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_hostile_origin_cannot_reach_the_command_dispatcher",
-          "line": 944,
+          "line": 958,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "explicit_exposure_accepts_an_address_and_refuses_a_name",
-          "line": 982,
+          "line": 996,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_dev_proxy_is_served_and_a_public_origin_still_is_not",
-          "line": 1006,
-          "supertypes": []
-        },
-        {
-          "kind": "function",
-          "name": "command_answers_with_the_same_json_invoke_returned",
           "line": 1020,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "command_answers_with_the_same_json_invoke_returned",
+          "line": 1034,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "snake_case_key_is_accepted_too",
-          "line": 1037,
+          "line": 1051,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "unknown_command_is_404_and_a_bad_argument_is_400",
-          "line": 1050,
+          "line": 1064,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "every_table_name_is_unique",
-          "line": 1072,
+          "line": 1086,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "assets_fall_back_to_index_html",
-          "line": 1081,
+          "line": 1095,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "traversal_out_of_dist_is_refused",
-          "line": 1102,
+          "line": 1116,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "events_stream_opens_and_carries_an_emitted_frame",
-          "line": 1119,
+          "line": 1133,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "bind_walks_past_a_taken_port",
-          "line": 1167,
+          "line": 1181,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "snake_case_maps_the_wire_keys",
-          "line": 1178,
+          "line": 1192,
           "supertypes": []
         }
       ],
@@ -20522,7 +20833,7 @@
     {
       "path": "apps/dashboard/server/tests/mustard_cli_test.rs",
       "language": "rust",
-      "loc": 62,
+      "loc": 89,
       "imports": [
         "mustard_cli::commands::init::{InitOptions, init_with_templates}",
         "std::fs"
@@ -22050,7 +22361,7 @@
     {
       "path": "apps/cli/tests/private_init.rs",
       "language": "rust",
-      "loc": 246,
+      "loc": 343,
       "imports": [
         "std::path::{Path, PathBuf}",
         "std::process::{Command, Output}",
@@ -22078,32 +22389,44 @@
         },
         {
           "kind": "function",
+          "name": "registry",
+          "line": 111,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "run_init",
-          "line": 110,
+          "line": 124,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "assert_ok",
-          "line": 130,
+          "line": 152,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "exclude_body",
-          "line": 142,
+          "line": 164,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "ac7_init_private_seeds_no_github_template",
-          "line": 158,
+          "line": 180,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "init_writes_only_into_the_isolated_home",
+          "line": 313,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "git_status",
-          "line": 254,
+          "line": 358,
           "supertypes": []
         }
       ]
@@ -22176,7 +22499,7 @@
     {
       "path": "apps/cli/tests/rtk_gate.rs",
       "language": "rust",
-      "loc": 346,
+      "loc": 378,
       "imports": [
         "std::fs",
         "std::io::Write as _",
@@ -22194,50 +22517,56 @@
         },
         {
           "kind": "function",
-          "name": "run_init",
-          "line": 89,
+          "name": "registry",
+          "line": 84,
           "supertypes": []
         },
         {
           "kind": "function",
-          "name": "fresh_repo",
+          "name": "run_init",
           "line": 100,
           "supertypes": []
         },
         {
           "kind": "function",
+          "name": "fresh_repo",
+          "line": 112,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
           "name": "a_missing_rtk_refuses_the_install_and_writes_nothing",
-          "line": 116,
+          "line": 128,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_binary_still_runs_the_tool_installers_after_a_successful_install",
-          "line": 142,
+          "line": 154,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_dry_run_changes_neither_the_project_nor_the_machine",
-          "line": 179,
+          "line": 206,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_library_half_of_init_calls_no_environment_installer",
-          "line": 227,
+          "line": 259,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "answering_cancel_leaves_the_machine_untouched",
-          "line": 284,
+          "line": 316,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "the_binary_still_writes_global_settings_when_the_operator_opted_in",
-          "line": 346,
+          "line": 379,
           "supertypes": []
         }
       ]
@@ -83409,7 +83738,7 @@
     {
       "path": "packages/core/src/platform/dashboard_registry.rs",
       "language": "rust",
-      "loc": 219,
+      "loc": 506,
       "imports": [
         "crate::ClaudePaths",
         "crate::io::fs",
@@ -83422,127 +83751,235 @@
         {
           "kind": "struct",
           "name": "ProjectEntry",
-          "line": 45,
+          "line": 63,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "path",
-          "line": 47,
+          "line": 65,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "name",
-          "line": 49,
+          "line": 67,
           "supertypes": []
         },
         {
           "kind": "field",
           "name": "added_at",
-          "line": 51,
+          "line": 69,
+          "supertypes": []
+        },
+        {
+          "kind": "field",
+          "name": "hidden",
+          "line": 81,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "registry_path",
-          "line": 60,
+          "line": 90,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "identity",
+          "line": 122,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "basename",
-          "line": 72,
+          "line": 134,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read_at",
-          "line": 83,
+          "line": 145,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "read",
-          "line": 92,
+          "line": 154,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write_at",
-          "line": 101,
+          "line": 163,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "write",
-          "line": 116,
+          "line": 178,
           "supertypes": []
         },
         {
           "kind": "enum",
           "name": "RegisterOutcome",
-          "line": 124,
+          "line": 186,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "Added",
-          "line": 126,
+          "line": 188,
           "supertypes": []
         },
         {
           "kind": "enum_member",
           "name": "AlreadyPresent",
-          "line": 128,
+          "line": 190,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "register_at",
-          "line": 140,
+          "line": 202,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "register",
-          "line": 161,
+          "line": 231,
+          "supertypes": []
+        },
+        {
+          "kind": "enum",
+          "name": "VisibilityOutcome",
+          "line": 239,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Changed",
+          "line": 242,
+          "supertypes": []
+        },
+        {
+          "kind": "enum_member",
+          "name": "Unchanged",
+          "line": 244,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hide_at",
+          "line": 256,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unhide_at",
+          "line": 268,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "set_hidden_at",
+          "line": 275,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hide",
+          "line": 307,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unhide",
+          "line": 317,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_missing_registry_reads_as_empty_never_an_error",
-          "line": 171,
+          "line": 327,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "a_malformed_registry_reads_as_empty_never_an_error",
-          "line": 177,
+          "line": 333,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "registering_adds_the_project_with_its_folder_name",
-          "line": 185,
+          "line": 341,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "registering_the_same_project_twice_is_a_no_op",
-          "line": 205,
+          "line": 361,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "registering_preserves_projects_already_there",
-          "line": 220,
+          "line": 376,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_registry_written_before_the_hidden_field_still_reads",
+          "line": 394,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hiding_marks_the_row_instead_of_dropping_it",
+          "line": 409,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "registering_a_hidden_path_leaves_it_hidden",
+          "line": 429,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "hiding_a_path_the_registry_does_not_hold_records_the_exclusion",
+          "line": 449,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "unhiding_puts_the_folder_back_on_the_list",
+          "line": 468,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "marking_what_already_carries_the_mark_writes_nothing",
+          "line": 483,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_trailing_separator_names_the_row_it_already_holds",
+          "line": 506,
+          "supertypes": []
+        },
+        {
+          "kind": "function",
+          "name": "a_relative_path_resolves_to_the_row_the_absolute_one_names",
+          "line": 535,
           "supertypes": []
         },
         {
           "kind": "function",
           "name": "basename_handles_both_separators_and_trailing_slashes",
-          "line": 236,
+          "line": 551,
           "supertypes": []
         }
       ],
@@ -99807,7 +100244,7 @@
     }
   ],
   "graph": {
-    "nodes": 677,
+    "nodes": 678,
     "edges": 537,
     "cyclic": true,
     "top_fan_in": [
@@ -100329,7 +100766,7 @@
     "layers": [
       {
         "name": "L0",
-        "modules": 423
+        "modules": 424
       },
       {
         "name": "L1",
@@ -101077,6 +101514,27 @@
       ]
     },
     {
+      "affix": "Outcome",
+      "kind": "suffix",
+      "count": 19,
+      "common_dir": "packages/core/src/platform",
+      "dirs": [
+        "packages/core/src/platform",
+        "apps/rt/src/commands/event",
+        "apps/dashboard/src/lib",
+        "apps/rt/src/commands/review/qa_run"
+      ],
+      "decl_kind": "enum",
+      "implements": null,
+      "collaborators": [
+        "std::path::{Path, PathBuf}",
+        "tempfile::tempdir",
+        "serde_json::json",
+        "crate::io::fs",
+        "std::process::Command"
+      ]
+    },
+    {
       "affix": "Observer",
       "kind": "suffix",
       "count": 18,
@@ -101095,26 +101553,6 @@
         "mustard_core::ClaudePaths",
         "std::path::{Path, PathBuf}",
         "serde_json::{json, Value}"
-      ]
-    },
-    {
-      "affix": "Outcome",
-      "kind": "suffix",
-      "count": 18,
-      "common_dir": "packages/core/src/platform",
-      "dirs": [
-        "packages/core/src/platform",
-        "apps/rt/src/commands/event",
-        "apps/dashboard/src/lib",
-        "apps/rt/src/commands/review/qa_run"
-      ],
-      "decl_kind": "enum",
-      "implements": null,
-      "collaborators": [
-        "tempfile::tempdir",
-        "std::path::{Path, PathBuf}",
-        "serde_json::json",
-        "std::process::Command"
       ]
     },
     {
@@ -101290,11 +101728,11 @@
     {
       "affix": "Row",
       "kind": "suffix",
-      "count": 10,
-      "common_dir": "apps/dashboard/src/lib",
+      "count": 11,
+      "common_dir": "apps/dashboard/server/src",
       "dirs": [
-        "apps/dashboard/src/lib",
         "apps/dashboard/server/src",
+        "apps/dashboard/src/lib",
         "apps/dashboard/src/hooks",
         "apps/rt/src/commands/economy/otel"
       ],
@@ -101303,10 +101741,9 @@
       "collaborators": [
         "react-query",
         "std::path::PathBuf",
-        "store",
-        "api-client",
-        "discovery",
-        "economy"
+        "serde::Serialize",
+        "std::collections::HashMap",
+        "store"
       ]
     },
     {
@@ -103046,17 +103483,17 @@
   ],
   "conventions": [
     {
-      "name": "tipo base+Kind slice",
+      "name": "tipo base+State slice",
       "roles": [
         "(core)",
-        "Kind"
+        "State"
       ],
       "optional_roles": [
         "Ac",
         "Function",
+        "Kind",
         "Mode",
         "Report",
-        "State",
         "Term",
         "View"
       ],
@@ -103085,12 +103522,12 @@
       "is_slice": true,
       "steps": [
         "Adicione o **tipo base** para `<Name>` em `packages/core/src/domain/ast/` (ex.: `signature.rs`, modelado em `packages/core/src/domain/ast/signature.rs`).",
-        "Adicione o **Kind** para `<Name>`.",
+        "Adicione o **State** para `<Name>`.",
         "Adicione o **Ac** para `<Name>` em `apps/rt/src/hooks/write/` (ex.: `size_gate.rs`, modelado em `apps/rt/src/hooks/write/size_gate.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Function** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
+        "Adicione o **Kind** para `<Name>` em `packages/core/src/domain/model/` (ex.: `event.rs`, modelado em `packages/core/src/domain/model/event.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Mode** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `mod.rs`, modelado em `packages/core/src/domain/regression_check/mod.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Report** para `<Name>` em `packages/core/src/domain/regression_check/` (ex.: `snapshot.rs`, modelado em `packages/core/src/domain/regression_check/snapshot.rs`) *(opcional — adicione quando necessário)*.",
-        "Adicione o **State** para `<Name>` em `apps/scan/tests/fixtures/flutter_app/lib/` (ex.: `main.dart`, modelado em `apps/scan/tests/fixtures/flutter_app/lib/main.dart`) *(opcional — adicione quando necessário)*.",
         "Adicione o **Term** para `<Name>` em `packages/core/src/domain/` (ex.: `scan.rs`, modelado em `packages/core/src/domain/scan.rs`) *(opcional — adicione quando necessário)*.",
         "Adicione o **View** para `<Name>` em `apps/dashboard/src/features/workspace/ProjectInfoCard/` (ex.: `index.tsx`, modelado em `apps/dashboard/src/features/workspace/ProjectInfoCard/index.tsx`) *(opcional — adicione quando necessário)*."
       ],
@@ -103162,7 +103599,7 @@
         }
       ],
       "exemplar": "Capture",
-      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, Kind. Optional roles: Ac, Function, Mode, Report, State, Term, View."
+      "summary": "Vertical slice recurring across 18 entities (Actor, Audit, Capture, CounterPage, Dep, Digest, +12 more). Core roles: tipo base, State. Optional roles: Ac, Function, Kind, Mode, Report, Term, View."
     },
     {
       "name": "tipo base+Entry slice",
@@ -103960,7 +104397,7 @@
     "top_dirs": [
       {
         "dir": "apps",
-        "code_files": 579,
+        "code_files": 580,
         "other_files": 219
       },
       {
@@ -104093,7 +104530,7 @@
         "count": 1
       }
     ],
-    "code_files_read": 677,
+    "code_files_read": 678,
     "non_utf8_skipped": 0
   },
   "projects": [
@@ -104131,7 +104568,7 @@
       "name": "dashboard",
       "dir": "apps/dashboard",
       "kind": "npm",
-      "code_files": 147,
+      "code_files": 148,
       "frameworks": [
         "@fontsource-variable/inter",
         "@fontsource/ibm-plex-mono",
