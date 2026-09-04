@@ -9,8 +9,9 @@
 //!   longer the install signal: the orchestrator redesign stopped planting it,
 //!   so `mustard.json` — which every install writes — is the marker, matching
 //!   `discovery::discover`.)
-//! - [`list_registered`] / [`register`] / [`unregister`] — the registry
-//!   itself, persisted at [`registry_path`].
+//! - [`list_registered`] / [`register`] / [`hide`] / [`unhide`] /
+//!   [`unregister`] — the registry itself, persisted by
+//!   `mustard_core::dashboard_registry`.
 //!
 //! The registry used to live in the desktop app's `projects.json`, written by a
 //! browser-side key/value store plugin. It is server state now,
@@ -23,6 +24,11 @@
 //! the disk looking for `mustard.json`): the registry records a choice, the
 //! scan finds candidates.
 //!
+//! Taking a folder off the list is [`hide`], not [`unregister`]: the dashboard
+//! folds the scan back into the registry on every load, so a dropped row for a
+//! folder inside the scanned root returns on the next open. [`unregister`]
+//! survives for the opposite case — forgetting a path entirely, mark included.
+//!
 //! In-place refresh is no longer a dashboard command. Template and plugin
 //! content now ships through the `mustard` plugin marketplace, and re-seeding
 //! the local harness (settings, version stamp, plugin-enable) is `mustard init`
@@ -34,6 +40,7 @@
 use mustard_core::ProjectConfig;
 use mustard_core::io::fs;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Result of inspecting a folder for a Mustard installation.
@@ -103,35 +110,173 @@ pub use mustard_core::dashboard_registry::ProjectEntry;
 
 use mustard_core::dashboard_registry as registry;
 
-/// The registered projects, oldest first.
-pub fn list_registered() -> Result<Vec<ProjectEntry>, String> {
-    Ok(registry::read())
+/// One row of the sidebar: a registry entry plus what only the WHOLE list can
+/// say about it.
+///
+/// `hidden` rides along so the frontend can render a folder the operator took
+/// off the list (and offer to put it back) instead of having to guess from an
+/// absence. `parent` is the disambiguating label — see [`to_rows`].
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectRow {
+    /// Absolute filesystem path. Doubles as the entry's identity.
+    pub path: String,
+    /// Display label — the trailing segment of `path`.
+    pub name: String,
+    /// ISO-8601 timestamp the entry was registered (UTC).
+    pub added_at: String,
+    /// `true` when the operator took this folder off the list.
+    pub hidden: bool,
+    /// The parent segment that tells this row apart from another one ending in
+    /// the same name (`suzano` vs `suzano.old`). `None` when the name is
+    /// unique across the list — an unambiguous folder needs no qualifier.
+    pub parent: Option<String>,
+}
+
+/// The registered projects, oldest first, hidden ones included and marked.
+pub fn list_registered() -> Result<Vec<ProjectRow>, String> {
+    Ok(to_rows(registry::read()))
+}
+
+/// Where the machine registry lives, or the error the commands report when the
+/// home directory does not resolve.
+fn registry_file() -> Result<std::path::PathBuf, String> {
+    registry::registry_path().ok_or_else(|| "cannot resolve the home directory".to_string())
+}
+
+/// [`list_registered`] against an explicit registry file.
+///
+/// **The registry path is a PARAMETER, and that is the point.** With the home
+/// directory resolved inside, a test that drove these commands would write into
+/// the operator's own `~/.claude/dashboard-projects.json`, and `$HOME` cannot be
+/// redirected in-process (`std::env::set_var` is `unsafe` and process-global,
+/// and this crate forbids `unsafe`). The seam already exists one layer down in
+/// `dashboard_registry::{read_at, hide_at, unhide_at}`; this mirrors it.
+fn list_in(registry_file: &Path) -> Vec<ProjectRow> {
+    to_rows(registry::read_at(registry_file))
 }
 
 /// Register `path`, returning the whole list so the caller re-renders from one
 /// answer. Registering an already-registered path is a no-op, not an error —
 /// the operator's intent ("track this folder") is already satisfied.
-pub fn register(path: String) -> Result<Vec<ProjectEntry>, String> {
-    registry::register(std::path::Path::new(&path))?;
-    Ok(registry::read())
+///
+/// A path the operator has hidden STAYS hidden: this is the command the
+/// dashboard funnels its discovery scan through, so clearing the mark here
+/// would undo every removal on the next load. A deliberate "show this again"
+/// is [`unhide`].
+pub fn register(path: String) -> Result<Vec<ProjectRow>, String> {
+    registry::register(Path::new(&path))?;
+    list_registered()
 }
 
-/// Drop `path` from the registry, returning the remaining list. Removing an
-/// absent path is a no-op. This does NOT touch the project on disk — that is
-/// [`uninstall_mustard`].
-pub fn unregister(path: String) -> Result<Vec<ProjectEntry>, String> {
+/// Take `path` off the list, returning the list as it now stands.
+///
+/// The row is marked, not dropped — the scan would write a dropped row back on
+/// the next load. Hiding a path the registry does not hold yet records the
+/// exclusion anyway, so it survives the scan that has not run.
+pub fn hide(path: String) -> Result<Vec<ProjectRow>, String> {
+    hide_in(&registry_file()?, &path)
+}
+
+/// [`hide`] against an explicit registry file — see [`list_in`].
+fn hide_in(registry_file: &Path, path: &str) -> Result<Vec<ProjectRow>, String> {
+    registry::hide_at(registry_file, Path::new(path))?;
+    Ok(list_in(registry_file))
+}
+
+/// Put `path` back on the list, returning the list as it now stands. Unhiding
+/// a path the registry does not hold is a no-op.
+pub fn unhide(path: String) -> Result<Vec<ProjectRow>, String> {
+    unhide_in(&registry_file()?, &path)
+}
+
+/// [`unhide`] against an explicit registry file — see [`list_in`].
+fn unhide_in(registry_file: &Path, path: &str) -> Result<Vec<ProjectRow>, String> {
+    registry::unhide_at(registry_file, Path::new(path))?;
+    Ok(list_in(registry_file))
+}
+
+/// Forget `path` entirely — row and `hidden` mark alike — returning what
+/// remains. Removing an absent path is a no-op. This does NOT touch the
+/// project on disk (that is [`uninstall_mustard`]), and it is NOT how the
+/// sidebar removes a folder: without the mark, a path the scan still finds
+/// comes back on the next load. Use [`hide`] for that.
+pub fn unregister(path: String) -> Result<Vec<ProjectRow>, String> {
     let mut entries = registry::read();
     let before = entries.len();
     entries.retain(|e| e.path != path);
     if entries.len() != before {
         registry::write(&entries)?;
     }
-    Ok(entries)
+    Ok(to_rows(entries))
+}
+
+/// Project the registry into sidebar rows, qualifying every name that more
+/// than one row shares.
+///
+/// The qualifier cannot be decided one row at a time — whether `backend` needs
+/// to say which project it belongs to depends on whether ANOTHER `backend` is
+/// on the list — so it is computed here, where the whole list is in hand,
+/// rather than in the frontend or in the registry writer.
+///
+/// Ambiguity is measured across the entire registry, hidden rows included: the
+/// frontend is free to show the hidden ones next to the visible ones, and a
+/// label that changes meaning depending on which section it lands in would be
+/// worse than a qualifier shown once too often.
+fn to_rows(entries: Vec<ProjectEntry>) -> Vec<ProjectRow> {
+    let mut occurrences: HashMap<String, usize> = HashMap::new();
+    for entry in &entries {
+        *occurrences.entry(entry.name.clone()).or_insert(0) += 1;
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let ambiguous = occurrences.get(&entry.name).copied().unwrap_or(0) > 1;
+            let parent = if ambiguous { parent_segment(&entry.path) } else { None };
+            ProjectRow {
+                path: entry.path,
+                name: entry.name,
+                added_at: entry.added_at,
+                hidden: entry.hidden,
+                parent,
+            }
+        })
+        .collect()
+}
+
+/// The segment ABOVE the trailing one — `/home/u/suzano/backend` → `suzano`.
+///
+/// `None` for a path with nothing above it (`/backend`, `backend`), where
+/// there is no parent to name. Both separators are handled for the same reason
+/// `basename` handles both.
+fn parent_segment(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let cut = trimmed.rfind(['/', '\\'])?;
+    let parent = registry::basename(&trimmed[..cut]);
+    if parent.is_empty() { None } else { Some(parent) }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{hide_in, list_in, to_rows, unhide_in, ProjectEntry};
     use mustard_core::dashboard_registry::basename;
+    use std::path::Path;
+
+    /// `register` against an explicit registry file — the tests need the same
+    /// seam the commands use, without touching the operator's `$HOME`.
+    fn register_in(registry: &Path, path: &str) -> Result<(), String> {
+        mustard_core::dashboard_registry::register_at(registry, Path::new(path))?;
+        Ok(())
+    }
+
+    fn entry(path: &str) -> ProjectEntry {
+        ProjectEntry {
+            name: basename(path),
+            path: path.to_string(),
+            added_at: "2026-01-01T00:00:00Z".to_string(),
+            hidden: false,
+        }
+    }
 
     #[test]
     fn basename_takes_the_trailing_segment_on_both_separators() {
@@ -139,5 +284,77 @@ mod tests {
         assert_eq!(basename("/home/u/projects/mustard/"), "mustard");
         assert_eq!(basename(r"C:\repos\mustard"), "mustard");
         assert_eq!(basename("mustard"), "mustard");
+    }
+
+    #[test]
+    fn a_unique_name_carries_no_qualifier() {
+        let rows = to_rows(vec![entry("/home/u/mustard"), entry("/home/u/atiz")]);
+        assert!(rows.iter().all(|r| r.parent.is_none()));
+    }
+
+    /// Two `backend`s are told apart by the project above them — the segment
+    /// that actually differs.
+    #[test]
+    fn same_folder_name_gets_the_parent_that_distinguishes() {
+        let rows = to_rows(vec![
+            entry("/home/u/suzano/backend"),
+            entry("/home/u/suzano.old/backend"),
+            entry("/home/u/mustard"),
+        ]);
+        assert_eq!(rows[0].parent.as_deref(), Some("suzano"));
+        assert_eq!(rows[1].parent.as_deref(), Some("suzano.old"));
+        assert_eq!(rows[2].parent, None, "an unshared name stays bare");
+    }
+
+    /// Hide then list: the folder comes back marked instead of vanishing from
+    /// the file. A row deleted here would be written again by the discovery
+    /// scan the dashboard folds in on its next load, which is what made
+    /// removing a folder inside the scanned root impossible.
+    #[test]
+    fn hide_marks_the_row_instead_of_dropping_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("dashboard-projects.json");
+        let gone = dir.path().join("gone");
+        let gone = gone.to_string_lossy().to_string();
+        let kept = dir.path().join("kept");
+        let kept = kept.to_string_lossy().to_string();
+        register_in(&registry, &kept).expect("register kept");
+        register_in(&registry, &gone).expect("register gone");
+
+        let rows = hide_in(&registry, &gone).expect("hide");
+
+        assert_eq!(rows.len(), 2, "the hidden folder is still listed");
+        let hidden_row = rows.iter().find(|r| r.path == gone).expect("row for the hidden folder");
+        assert!(hidden_row.hidden, "it comes back marked, not missing");
+        assert!(!rows.iter().any(|r| r.path == kept && r.hidden));
+
+        // And the mark is in the FILE, so the next scan cannot undo it.
+        let on_disk = mustard_core::dashboard_registry::read_at(&registry);
+        assert_eq!(on_disk.len(), 2, "hiding must not delete the row");
+        assert!(on_disk.iter().any(|e| e.path == gone && e.hidden));
+
+        // Listing again reads the same answer back off the file.
+        let listed = list_in(&registry);
+        assert!(listed.iter().any(|r| r.path == gone && r.hidden));
+    }
+
+    /// The mirror gesture: unhide puts it back on the list.
+    #[test]
+    fn unhide_puts_the_folder_back_on_the_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = dir.path().join("dashboard-projects.json");
+        let project = dir.path().join("back");
+        let project = project.to_string_lossy().to_string();
+        register_in(&registry, &project).expect("register");
+        hide_in(&registry, &project).expect("hide");
+
+        let rows = unhide_in(&registry, &project).expect("unhide");
+        assert!(rows.iter().all(|r| !r.hidden));
+    }
+
+    #[test]
+    fn a_path_with_nothing_above_it_has_no_parent_to_name() {
+        let rows = to_rows(vec![entry("/mustard"), entry("mustard")]);
+        assert!(rows.iter().all(|r| r.parent.is_none()));
     }
 }

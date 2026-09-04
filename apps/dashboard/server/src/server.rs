@@ -831,6 +831,8 @@ static COMMANDS: &[(&str, Handler)] = &[
     ("dashboard_discovery_root", discovery_root_handler),
     ("dashboard_projects_list", cmd!(crate::projects::list_registered)),
     ("dashboard_projects_add", cmd!(crate::projects::register, "path")),
+    ("dashboard_projects_hide", cmd!(crate::projects::hide, "path")),
+    ("dashboard_projects_unhide", cmd!(crate::projects::unhide, "path")),
     ("dashboard_projects_remove", cmd!(crate::projects::unregister, "path")),
     ("detect_project_mustard", cmd!(crate::projects::detect_project_mustard, "path")),
     ("uninstall_mustard", cmd!(crate::projects::uninstall_mustard, "path")),
