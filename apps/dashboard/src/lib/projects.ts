@@ -123,6 +123,12 @@ export function isMustardRepo(projectPath: string): Promise<boolean> {
 // Registration is distinct from DISCOVERY (`@/api/discovery`, which walks the
 // disk looking for `mustard.json`): the registry records a choice, the scan
 // finds candidates.
+//
+// Taking a folder off the list is `hideProject`, not `unregisterProject`: the
+// automatic writers (`mustard init`, the session observer, the scan) would put
+// a dropped row straight back, so removal is a MARK the row carries and every
+// writer respects. `unregisterProject` survives for the opposite case —
+// forgetting a path entirely, mark included.
 // ---------------------------------------------------------------------------
 
 export interface ProjectEntry {
@@ -132,16 +138,33 @@ export interface ProjectEntry {
   name: string;
   /** ISO-8601 timestamp the entry was registered (UTC). */
   addedAt: string;
+  /** `true` when the operator took this folder off the sidebar list. The row
+   *  still travels: an absence could not be told apart from a folder that was
+   *  never registered, and the sidebar has to be able to offer it back. */
+  hidden: boolean;
+  /** Parent segment that tells this row apart from another one ending in the
+   *  same name (`suzano` vs `suzano.old`). `null` when the name is unique.
+   *  The SERVER decides this, not the UI: ambiguity is a property of the whole
+   *  list, so it cannot be answered one row at a time. */
+  parent: string | null;
 }
 
 interface RawProjectEntry {
   path: string;
   name: string;
   added_at: string;
+  hidden: boolean;
+  parent: string | null;
 }
 
 function toProjectEntry(raw: RawProjectEntry): ProjectEntry {
-  return { path: raw.path, name: raw.name, addedAt: raw.added_at };
+  return {
+    path: raw.path,
+    name: raw.name,
+    addedAt: raw.added_at,
+    hidden: raw.hidden,
+    parent: raw.parent,
+  };
 }
 
 export async function listRegisteredProjects(): Promise<ProjectEntry[]> {
@@ -150,13 +173,37 @@ export async function listRegisteredProjects(): Promise<ProjectEntry[]> {
 }
 
 /** Register `path` and return the registry as it now stands. Registering an
- *  already-registered path is a no-op on the server, not an error. */
+ *  already-registered path is a no-op on the server, not an error.
+ *
+ *  A path the operator has hidden STAYS hidden through this call — the server
+ *  funnels every automatic writer (init, the session observer) through it, so
+ *  clearing the mark here would undo every removal. A deliberate "show this
+ *  again" is [`unhideProject`]; the sidebar's manual add pairs the two. */
 export async function registerProject(path: string): Promise<ProjectEntry[]> {
   const raw = await call<RawProjectEntry[]>("dashboard_projects_add", { path });
   return raw.map(toProjectEntry);
 }
 
-/** Drop `path` from the registry and return what remains. */
+/** Take `path` off the sidebar list and return the registry as it now stands.
+ *
+ *  The row is MARKED, not dropped: every automatic writer would put a dropped
+ *  row back, which is why removal used to only work for folders the operator
+ *  did not have. This is the sidebar's removal gesture. */
+export async function hideProject(path: string): Promise<ProjectEntry[]> {
+  const raw = await call<RawProjectEntry[]>("dashboard_projects_hide", { path });
+  return raw.map(toProjectEntry);
+}
+
+/** Clear the mark on `path` so it shows up on the list again. Unhiding a path
+ *  the registry does not hold is a no-op on the server, not an error. */
+export async function unhideProject(path: string): Promise<ProjectEntry[]> {
+  const raw = await call<RawProjectEntry[]>("dashboard_projects_unhide", { path });
+  return raw.map(toProjectEntry);
+}
+
+/** Forget `path` entirely — row and hidden mark alike — and return what
+ *  remains. This is NOT how the sidebar removes a folder (see [`hideProject`]):
+ *  without the mark, anything the discovery scan still finds comes back. */
 export async function unregisterProject(path: string): Promise<ProjectEntry[]> {
   const raw = await call<RawProjectEntry[]>("dashboard_projects_remove", { path });
   return raw.map(toProjectEntry);

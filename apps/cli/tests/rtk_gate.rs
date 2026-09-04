@@ -78,6 +78,13 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
     dir
 }
 
+/// The dashboard registry inside a home directory —
+/// `<home>/.claude/dashboard-projects.json`, the file a successful `init`
+/// appends the installed project to.
+fn registry(home: &Path) -> PathBuf {
+    home.join(".claude").join("dashboard-projects.json")
+}
+
 /// Run `mustard init --yes` in `project`, with `bin` as the whole PATH and
 /// `home` as `$HOME`.
 ///
@@ -86,6 +93,10 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
 /// global-settings opt-in and `cargo test` writes into the developer's real
 /// `~/.claude/`. A test that can damage the machine it runs on is worse than the
 /// regression it was watching for.
+///
+/// `USERPROFILE` rides along because the dashboard registry — the OTHER file a
+/// successful install writes under the home — reads that variable on Windows
+/// and `HOME` everywhere else. Isolating one spelling isolates one platform.
 fn run_init(project: &Path, bin: &Path, home: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_mustard"))
         .args(["init", "--yes"])
@@ -93,6 +104,7 @@ fn run_init(project: &Path, bin: &Path, home: &Path) -> std::process::Output {
         .env_clear()
         .env("PATH", bin)
         .env("HOME", home)
+        .env("USERPROFILE", home)
         .output()
         .expect("the mustard binary runs")
 }
@@ -164,6 +176,21 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
         spawned.lines().any(|l| l.starts_with("rtk init")),
         "the binary must still reach the RTK tooling; log was:\n{spawned}"
     );
+
+    // The POSITIVE half of the home isolation. A successful install registers
+    // the project with the dashboard, and the registry is resolved from the
+    // home — so the row proves two things at once: the act still happens, and
+    // it happened HERE rather than in the operator's own `~/.claude/`. Asserting
+    // only that the real file was left alone would also pass for an install
+    // that wrote nothing anywhere.
+    let canonical = project.canonicalize().unwrap_or_else(|_| project.clone());
+    let rows = mustard_core::dashboard_registry::read_at(&registry(&home));
+    assert!(
+        rows.iter().any(|e| Path::new(&e.path) == canonical),
+        "the install must have registered {} in the TEST's registry; rows were {:?}",
+        canonical.display(),
+        rows.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+    );
 }
 
 /// `--dry-run` prints a plan and changes nothing — including the machine.
@@ -190,6 +217,7 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
         .env_clear()
         .env("PATH", &bin)
         .env("HOME", &home)
+        .env("USERPROFILE", &home)
         // Armed on purpose: with the opt-in off this would pass even if the
         // dry run wrote global settings.
         .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
@@ -204,6 +232,10 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
     assert!(
         !home.join(".claude").join("settings.json").exists(),
         "a dry run wrote the operator's global settings"
+    );
+    assert!(
+        mustard_core::dashboard_registry::read_at(&registry(&home)).is_empty(),
+        "a dry run registered the project with the dashboard"
     );
     let spawned = fs::read_to_string(&log).unwrap_or_default();
     assert!(
@@ -297,9 +329,10 @@ fn answering_cancel_leaves_the_machine_untouched() {
     // Second run, interactive: one arrow-down moves from the Merge default to
     // Cancel, then Enter.
     let script = format!(
-        "cd {} && env -i PATH={} HOME={} MUSTARD_GLOBAL_PERMISSIONS=1 {} init",
+        "cd {} && env -i PATH={} HOME={} USERPROFILE={} MUSTARD_GLOBAL_PERMISSIONS=1 {} init",
         project.display(),
         bin.display(),
+        home.display(),
         home.display(),
         env!("CARGO_BIN_EXE_mustard"),
     );
@@ -357,6 +390,7 @@ fn the_binary_still_writes_global_settings_when_the_operator_opted_in() {
         .env_clear()
         .env("PATH", &bin)
         .env("HOME", &home)
+        .env("USERPROFILE", &home)
         .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
         .output()
         .expect("the mustard binary runs");

@@ -67,4 +67,32 @@ fn init_runs_non_interactively_and_is_idempotent() {
         claude.join("mustard").join("orchestrator.md").exists(),
         "core seed still present after the idempotent re-seed",
     );
+
+    // …and neither run may have registered this project with the dashboard.
+    //
+    // This is the ONE test in the four that drives `init` in-process, so it is
+    // the one that cannot redirect `$HOME`: `std::env::set_var` is `unsafe` in
+    // edition 2024 and process-global, which would corrupt whatever else the
+    // test binary is running in parallel. What it CAN do is look where the leak
+    // would land. `register_with_dashboard` is `pub(crate)` and lives in
+    // `cli::dispatch` precisely so a library caller never takes that act; if it
+    // ever moves back down, this call would append a row for a temporary
+    // directory to the developer's real `~/.claude/dashboard-projects.json`,
+    // and the tempdir's random path segment makes that row unmistakable.
+    //
+    // The matching POSITIVE assertion — that a real `mustard init` DOES write
+    // the row, into a home the test owns — belongs to the tests that drive the
+    // binary (`apps/cli/tests/private_init.rs`, `apps/cli/tests/rtk_gate.rs`),
+    // because dispatch is the only layer allowed to take the act at all.
+    let canonical = project.canonicalize().unwrap_or_else(|_| project.clone());
+    let leaked: Vec<String> = mustard_core::dashboard_registry::read()
+        .into_iter()
+        .map(|e| e.path)
+        .filter(|p| std::path::Path::new(p) == canonical)
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "a library `init` registered a temporary project on the real machine: {leaked:?} — \
+         registering is an environment act and belongs to cli::dispatch",
+    );
 }

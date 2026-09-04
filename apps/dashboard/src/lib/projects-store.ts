@@ -8,16 +8,21 @@
 // browser-held list would come back empty, and neither view would be the truth.
 // This store is the in-memory mirror the components render from.
 //
-// There is no folder picker any more, so nothing feeds the registry by hand:
-// `loadFromServer` folds the discovery scan into it, and the scan walks the
-// tree the server was started in. A project that appears on disk therefore
-// appears in the sidebar on the next load, with no gesture to perform — which
-// is the whole point, since there is no longer a button to add one.
+// `loadFromServer` READS, it does not write. It used to fold the discovery scan
+// back into the registry on every page load, re-registering everything the scan
+// found — which quietly undid every removal, since a removed folder inside the
+// scanned root simply came back on the next open. The scan still exists and the
+// automatic writers (`mustard init`, the session observer) still register what
+// they create; what changed is who wins when the operator and an automatic
+// writer disagree. The operator's choice rides ON the row now (`hidden`), so
+// the server can honour it against every writer, and the sidebar has one
+// answer to render instead of a read followed by a burst of writes.
 //
-// The consequence is deliberate: `removeProject` drops a registry entry, and a
-// project the scan still finds comes back on the next load. Removal is how you
-// clear an entry the scan can NOT re-derive — one outside the scan root, or one
-// whose `mustard.json` is gone.
+// Hidden rows are kept, not discarded: they are what the "put it back" gesture
+// works from, and an absent row could not be told apart from a folder that was
+// never registered. They are split off into `hiddenProjects` at load time
+// rather than filtered in render, so the fan-out hooks (`useProjectDetections`,
+// `useArtifactDrift`) keep selecting a stable array identity.
 //
 // Convention: select via slices (`useProjectsStore((s) => s.projects)`); the
 // dashboard guards forbid full-store destructure (re-renders on every change).
@@ -26,7 +31,8 @@ import { create } from "zustand";
 import {
   listRegisteredProjects,
   registerProject,
-  unregisterProject,
+  hideProject,
+  unhideProject,
   type ProjectEntry,
 } from "@/lib/projects";
 import { discoverProjects } from "@/api/discovery";
@@ -35,13 +41,24 @@ import { useStore } from "@/lib/store";
 export type { ProjectEntry };
 
 interface ProjectsState {
+  /** The rows the sidebar draws — everything the operator has NOT hidden. */
   projects: ProjectEntry[];
+  /** The rows the operator took off the list, so the UI can offer them back. */
+  hiddenProjects: ProjectEntry[];
   hydrated: boolean;
-  /** Pull the registry from the server with the discovery scan folded in.
-   *  Rejects when the server cannot be reached — the caller decides how to
-   *  report it. */
+  /** Pull the registry from the server. Rejects when the server cannot be
+   *  reached — the caller decides how to report it. */
   loadFromServer: () => Promise<void>;
-  removeProject: (path: string) => Promise<void>;
+  /** Track `path` and make sure it is visible. Registering is what the manual
+   *  "add folder" gesture asks for; unhiding is what it MEANS — the server
+   *  keeps a hidden path hidden through `register` (so the automatic writers
+   *  cannot undo a removal), so without the second call adding back a folder
+   *  the operator had removed would silently do nothing. */
+  addProject: (path: string) => Promise<void>;
+  /** Take `path` off the list. The row is marked on the server, not dropped. */
+  hideProject: (path: string) => Promise<void>;
+  /** Put a previously hidden `path` back on the list. */
+  unhideProject: (path: string) => Promise<void>;
   /** Mark the given registered project as the active workspace. Sets
    *  `projectsRoot=path` (the project folder doubles as discovery root so the
    *  legacy `useQuery(['discover', root])` flow returns exactly that project)
@@ -49,27 +66,37 @@ interface ProjectsState {
   activateProject: (path: string) => Promise<void>;
 }
 
+/** Split one server answer into the two slices the components select from. */
+function partition(rows: ProjectEntry[]): {
+  projects: ProjectEntry[];
+  hiddenProjects: ProjectEntry[];
+} {
+  return {
+    projects: rows.filter((row) => !row.hidden),
+    hiddenProjects: rows.filter((row) => row.hidden),
+  };
+}
+
 export const useProjectsStore = create<ProjectsState>()((set) => ({
   projects: [],
+  hiddenProjects: [],
   hydrated: false,
 
   loadFromServer: async () => {
-    let projects = await listRegisteredProjects();
-    // Fold in what is actually on the machine. The scan runs from where the
-    // server was started, so the projects it finds are the projects of the
-    // machine holding the `.claude/` trees. Registering a known path is a
-    // no-op on the server, so a settled registry costs reads, not writes.
-    const known = new Set(projects.map((p) => p.path));
-    const discovered = await discoverProjects();
-    for (const project of discovered) {
-      if (known.has(project.path)) continue;
-      projects = await registerProject(project.path);
-    }
-    set({ projects, hydrated: true });
+    set({ ...partition(await listRegisteredProjects()), hydrated: true });
   },
 
-  removeProject: async (path: string) => {
-    set({ projects: await unregisterProject(path) });
+  addProject: async (path: string) => {
+    await registerProject(path);
+    set(partition(await unhideProject(path)));
+  },
+
+  hideProject: async (path: string) => {
+    set(partition(await hideProject(path)));
+  },
+
+  unhideProject: async (path: string) => {
+    set(partition(await unhideProject(path)));
   },
 
   activateProject: async (path: string) => {
