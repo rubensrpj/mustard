@@ -1,5 +1,6 @@
-//! `pending_gate` — a cobrança de fim de turno: o turno em que uma unidade
-//! fechou não termina com uma mensagem que omite uma pendência aberta.
+//! `pending_gate` — a regra das pendências do fim da resposta ([`PendingRule`],
+//! uma das regras do `end_of_turn_check`): o turno em que uma unidade fechou
+//! não termina com uma mensagem que omite uma pendência aberta.
 //!
 //! ## O caso que a fez nascer
 //!
@@ -11,16 +12,18 @@
 //!
 //! ## Quando cobra — todos os fatos precisam valer
 //!
-//! 1. É o `Stop` da sessão principal (nunca o de um subagente).
+//! 1. É o `Stop` da sessão principal (nunca o de um subagente) — o
+//!    `end_of_turn_check` só chama as regras nele.
 //! 2. Uma unidade FECHOU e o fechamento ainda não se encerrou: a sessão carrega
 //!    a marca que o escritor de eventos grava ao registrar `pipeline.complete`
 //!    ou `pr.merged` ([`unit_closed_blocks`]).
 //! 3. O `Stop` trouxe `last_assistant_message` (o texto final do turno, campo
 //!    documentado do evento). Sem ele não há o que conferir.
-//! 4. Alguma pendência aberta não é citada nesse texto, pelo id (`P-3`) ou pelo
-//!    título, sem diferenciar maiúsculas. Id e título contam só inteiros: `P-1`
-//!    não cita dentro de `P-10`, e o título `um` não cita dentro de `algum`.
-//! 5. A trava ainda não bloqueou [`MAX_BLOCKS`] vezes por este fechamento.
+//! 4. Alguma pendência aberta não é citada nesse texto, pelo título ou pelo id
+//!    (`P-3`), sem diferenciar maiúsculas. Id e título contam só inteiros: `P-1`
+//!    não cita dentro de `P-10`, e o título `um` não cita dentro de `algum`. O
+//!    bloqueio pede o título: a regra de clareza barra o código na conversa.
+//! 5. A regra ainda não bloqueou [`MAX_BLOCKS`] vezes por este fechamento.
 //!
 //! Qualquer fato que falte libera o turno.
 //!
@@ -30,97 +33,89 @@
 //! resposta curta a recitar a lista — e um aviso que sempre dispara aprende-se a
 //! ignorar.
 //!
-//! ## A marca só some quando a trava LIBERA
+//! ## A marca só some quando a regra libera
 //!
-//! O dispatcher roda toda trava do `Stop`, e o primeiro bloqueio vence. Se esta
-//! trava consumisse a marca ao bloquear, um bloqueio do `stop_gate` ou do
-//! `crystallise_nudge` no mesmo `Stop` engoliria o dela — e a mensagem reescrita
-//! passaria sem conferência, com a marca já gasta. Por isso:
+//! O bloqueio pede uma reescrita, e é ela que precisa ser conferida: por isso
+//! a marca fica enquanto a regra bloqueia.
 //!
 //! - **Libera e consome** quando nada está aberto, quando a mensagem cita cada
 //!   pendência aberta, quando não há texto final, ou quando já bloqueou
 //!   [`MAX_BLOCKS`] vezes por este fechamento.
 //! - **Bloqueia e conta** nos demais casos: a marca fica, com `blocks: N+1`.
 //!
-//! Um turno só TERMINA num `Stop` que todas as travas liberaram — e nele esta
-//! consumiu a marca, então o próximo turno nunca herda o fechamento. Um bloqueio
-//! engolido por outra trava deixa a marca, e o `Stop` seguinte confere de novo.
+//! Um turno só TERMINA num `Stop` que a conferência liberou — e nele esta regra
+//! consumiu a marca, então o próximo turno nunca herda o fechamento. Antes, com
+//! um gancho por regra, um bloqueio de outro gancho engolia o desta; agora os
+//! achados dividem um bloqueio só, e o texto dela sempre chega.
 //!
 //! Bloquear sem conseguir gravar o contador bloquearia sem limite; nesse caso a
-//! trava consome a marca no lugar (um bloqueio só) e, sem conseguir nem isso,
+//! regra consome a marca no lugar (um bloqueio só) e, sem conseguir nem isso,
 //! libera.
 //!
 //! ## `stop_hook_active` não libera
 //!
-//! Ele não diz QUEM bloqueou. Se o `stop_gate` barra o primeiro `Stop` (QA
-//! vermelho) e a continuação fecha a unidade, o `Stop` seguinte chega com
-//! `stop_hook_active` e uma marca nova — e é a mensagem que encerra o
-//! fechamento. Liberá-lo pelo campo deixaria essa mensagem sem conferência (a
-//! perda original). O limite é o contador: no máximo [`MAX_BLOCKS`] bloqueios
-//! por fechamento, longe do teto de 8 bloqueios seguidos do Claude Code.
+//! Ele não diz QUEM bloqueou. Se a clareza barra o primeiro `Stop` e a
+//! reescrita fecha a unidade, o `Stop` seguinte chega com `stop_hook_active` e
+//! uma marca nova — e é a mensagem que encerra o fechamento. Liberá-lo pelo
+//! campo deixaria essa mensagem sem conferência (a perda original). O limite é
+//! o contador: no máximo [`MAX_BLOCKS`] bloqueios por fechamento, longe do teto
+//! de 8 bloqueios seguidos do Claude Code.
 //!
 //! ## Sem modo `MUSTARD_*_MODE`
 //!
-//! Como o `stop_gate` e o `crystallise_nudge`: a trava não ganha porta de
-//! configuração. Ela já se restringe sozinha ao turno do fechamento, e desligá-la
-//! devolveria exatamente a perda que ela existe para impedir.
+//! A regra não ganha porta de configuração. Ela já se restringe sozinha ao
+//! turno do fechamento, e desligá-la devolveria exatamente a perda que ela
+//! existe para impedir.
 
 use crate::commands::event::pending::{format_pending_items, open_pending, OpenPending};
+use crate::hooks::task::end_of_turn_check::{Finding, Turn, TurnRule};
 use crate::shared::context::{record_unit_closed_block, take_unit_closed, unit_closed_blocks};
-use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use std::path::Path;
 
-/// Quantas vezes, no máximo, a trava bloqueia por fechamento. Dois: um para o
-/// bloqueio que outra trava pode engolir, outro para a reescrita que ainda
-/// omite — e então libera, sem laço.
+/// Quantas vezes, no máximo, a regra bloqueia por fechamento. Dois: um para a
+/// primeira mensagem, outro para a reescrita que ainda omite — e então libera,
+/// sem laço.
 const MAX_BLOCKS: u32 = 2;
 
-/// A cobrança de pendências no `Stop`.
-pub struct PendingGate;
+/// A regra das pendências do fim da resposta.
+pub struct PendingRule;
 
-impl Check for PendingGate {
-    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        // Fato 1 — o `Stop` da sessão principal. `stop_hook_active` NÃO libera
-        // aqui (ver "`stop_hook_active` não libera"): o contador é o limite.
-        if ctx.trigger != Some(Trigger::Stop) || input.is_subagent() {
-            return Ok(Verdict::Allow);
-        }
-        let project_dir = ctx.project_dir_or_cwd(input);
-        let session = input.session_id.as_deref().unwrap_or_default();
+impl TurnRule for PendingRule {
+    fn check(&self, turn: &Turn<'_>) -> Option<Finding> {
+        // `stop_hook_active` NÃO libera aqui (ver "`stop_hook_active` não
+        // libera"): o contador é o limite.
+        let project_dir = turn.project_dir;
+        let session = turn.session.unwrap_or_default();
 
         // Fato 2 — uma unidade fechou e o fechamento não se encerrou. Só lê: a
-        // marca some apenas quando a trava libera (ver "A marca só some…").
-        let Some(blocks) = unit_closed_blocks(&project_dir, session) else {
-            return Ok(Verdict::Allow);
-        };
+        // marca some apenas quando a regra libera (ver "A marca só some…").
+        let blocks = unit_closed_blocks(project_dir, session)?;
 
         // Fatos 3, 4 e 5 — liberar encerra o fechamento: consome a marca.
-        let omitted = omitted_items(input, &project_dir);
+        let omitted = omitted_items(turn.message, project_dir);
         if omitted.is_empty() || blocks >= MAX_BLOCKS {
-            take_unit_closed(&project_dir, session);
-            return Ok(Verdict::Allow);
+            take_unit_closed(project_dir, session);
+            return None;
         }
 
         // Bloquear conta. Sem contador gravado, consome no lugar; sem nem isso,
         // libera — nunca um bloqueio sem limite.
-        if !record_unit_closed_block(&project_dir, session, blocks + 1)
-            && !take_unit_closed(&project_dir, session)
+        if !record_unit_closed_block(project_dir, session, blocks + 1)
+            && !take_unit_closed(project_dir, session)
         {
-            return Ok(Verdict::Allow);
+            return None;
         }
-        let lang = mustard_core::ProjectConfig::load(Path::new(&project_dir)).i18n().lang;
-        Ok(Verdict::Deny { reason: block_reason(&omitted, lang) })
+        Some(Finding::Block(block_reason(&omitted, turn.lang)))
     }
 }
 
 /// As pendências abertas que o texto final do turno não cita. Vazio quando o
-/// `Stop` não trouxe `last_assistant_message`: sem texto, nada a conferir.
-fn omitted_items(input: &HookInput, project_dir: &str) -> Vec<OpenPending> {
-    let Some(message) = input.last_assistant_message() else {
+/// `Stop` não trouxe texto final: sem texto, nada a conferir.
+fn omitted_items(message: &str, project_dir: &str) -> Vec<OpenPending> {
+    if message.trim().is_empty() {
         return Vec::new();
-    };
+    }
     open_pending(Path::new(project_dir))
         .into_iter()
         .filter(|item| !cites(message, item))
@@ -179,7 +174,9 @@ fn block_reason(omitted: &[OpenPending], lang: Locale) -> String {
 mod tests {
     use super::*;
     use crate::commands::event::pending::{pending_at, PendingOpts};
+    use crate::hooks::task::end_of_turn_check::run_rules;
     use crate::shared::context::mark_unit_closed;
+    use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -224,8 +221,10 @@ mod tests {
         project_with_open_items(&["Humanize", "HTML padrao da spec"])
     }
 
+    /// A regra das pendências sozinha, como a conferência do fim da resposta
+    /// a roda.
     fn verdict(root: &Path, input: &HookInput) -> Verdict {
-        PendingGate.evaluate(input, &ctx(root)).expect("no error")
+        run_rules(&[&PendingRule], input, &ctx(root))
     }
 
     /// AC-5 — o turno em que uma unidade fechou e cuja mensagem final omite uma
@@ -278,10 +277,10 @@ mod tests {
         );
     }
 
-    /// O dispatcher deixa o primeiro bloqueio vencer: um bloqueio desta trava
-    /// pode ser engolido pelo de um irmão. A marca fica no bloqueio, então o
-    /// `Stop` seguinte confere de novo — até [`MAX_BLOCKS`] vezes; depois libera
-    /// e consome, sem laço.
+    /// A marca fica no bloqueio, então o `Stop` seguinte — a reescrita, com
+    /// `stop_hook_active` — confere de novo, até [`MAX_BLOCKS`] vezes; depois
+    /// libera e consome, sem laço. O nome vem de quando um gancho irmão podia
+    /// engolir este bloqueio.
     #[test]
     fn a_pending_block_swallowed_by_another_gate_is_checked_again() {
         let dir = project_with_two_open_items();
@@ -375,8 +374,8 @@ mod tests {
         assert_eq!(verdict(root, &bare), Verdict::Allow, "no final text, nothing to check");
     }
 
-    /// O fechamento que acontece na continuação de um bloqueio de OUTRA trava
-    /// (o `stop_gate` barrou o primeiro `Stop`, a continuação fechou a unidade)
+    /// O fechamento que acontece na continuação de um bloqueio de OUTRA regra
+    /// (a clareza barrou o primeiro `Stop`, a reescrita fechou a unidade)
     /// chega com `stop_hook_active` e uma marca nova. Essa mensagem é conferida
     /// — é a que encerra o fechamento — e a marca some no `Stop` que libera: o
     /// próximo turno comum nunca herda o fechamento.

@@ -551,24 +551,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              automatically once `tree-sitter generate` finishes."
         }
 
-        // Stop gate (close-the-qa-verification-loop) — the text of the block
-        // returned to Claude when the active+approved spec's QA criteria do not
-        // pass. Config-language (it is user-facing feedback, not a machine log),
-        // so it lives here rather than embedded in the gate code. `{ac}` is the
-        // id of the first failing criterion, interpolated by the caller.
-        ("stopgate.block.reason", Locale::PtBr) => {
-            "Verificação de QA não passou: o critério {ac} ainda falha."
-        }
-        ("stopgate.block.reason", Locale::EnUs) => {
-            "QA verification did not pass: criterion {ac} still fails."
-        }
-        ("stopgate.block.guidance", Locale::PtBr) => {
-            "Corrija-o e finalize o turno — eu re-executo os critérios e só libero a parada quando todos passarem."
-        }
-        ("stopgate.block.guidance", Locale::EnUs) => {
-            "Fix it and end the turn — I re-run the criteria and only release the stop once all pass."
-        }
-
         // Work-branch gate — the dirty-tree note appended to a checkout-failure
         // verdict, and the reconciliation warning when the run continues on the
         // branch actually active. Config-language: both are user-facing hook
@@ -815,23 +797,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // runs), opposite remedy — so they must never share a label.
         ("statusline.harness.dormant", Locale::PtBr) => "harness dormente",
         ("statusline.harness.dormant", Locale::EnUs) => "harness dormant",
-        ("crystallise.nudge", Locale::PtBr) => {
-            "[Mustard] A unidade `{spec}` está aberta e o material da conversa não muda há \
-             várias rodadas. O que foi assentado aqui — termos definidos, decisões com a \
-             razão, achados com arquivo:linha — vive só nesta janela até ser gravado, e uma \
-             compactação o dilui. Grave agora em `.claude/.cache/spec-material.json` e siga. \
-             Se nada foi assentado desde a última gravação, diga isso ao operador em uma \
-             frase e prossiga — este aviso não se repete para o mesmo estado."
-        }
-        ("crystallise.nudge", Locale::EnUs) => {
-            "[Mustard] Unit `{spec}` is open and the conversation material has not changed \
-             for several turns. What was settled here — terms defined, decisions with their \
-             reason, findings with file:line — lives only in this window until it is written \
-             down, and a compaction dilutes it. Write it to \
-             `.claude/.cache/spec-material.json` now and carry on. If nothing has been \
-             settled since the last write, say so to the operator in one sentence and \
-             proceed — this notice does not repeat for the same state."
-        }
         ("prune.pending.notice", Locale::PtBr) => {
             "[Mustard] {count} unidade(s) de trabalho já mergeada(s) ainda têm branch viva: \
              {branches}. Diga ao usuário que o ritual de saída ficou pendente e ofereça \
@@ -1087,51 +1052,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              criteria proof and the pending list."
         }
 
-        // Entrega do resumo no fim da resposta
-        // (`apps/rt/src/hooks/task/spec_doc_present.rs`) — uma ordem ao
-        // assistente, que publica a página e entrega o link ao usuário. Segue o
-        // `specLang` e o tom, como a própria página. Sem parênteses no texto: o
-        // tom técnico os apaga. `{file}`, `{path}`, `{spec}`, `{url}` e
-        // `{command}` vêm do chamador; comandos e endereços não se traduzem.
-        ("deliver.head.awaiting", Locale::PtBr) => "Mustard · spec para aprovar: o {file} mudou.",
-        ("deliver.head.awaiting", Locale::EnUs) => "Mustard · spec awaiting approval: {file} changed.",
-        ("deliver.head.summary", Locale::PtBr) => "Mustard · resumo da spec: o {file} mudou.",
-        ("deliver.head.summary", Locale::EnUs) => "Mustard · spec summary: {file} changed.",
-        ("deliver.order", Locale::PtBr) => {
-            "Antes de encerrar, publique {path} no claude.ai como página, entregue o link ao \
-             usuário numa linha própria e grave o endereço com \
-             `mustard-rt run spec-doc --spec {spec} --published-url <endereço>`. Publicar faz \
-             parte da entrega e nunca é uma opção a oferecer ao usuário."
-        }
-        ("deliver.order", Locale::EnUs) => {
-            "Before you finish, publish {path} as a claude.ai page, hand the user its link on a \
-             line of its own, and record the address with \
-             `mustard-rt run spec-doc --spec {spec} --published-url <url>`. Publishing is part \
-             of the delivery and never an option to offer the user."
-        }
-        ("deliver.order.same", Locale::PtBr) => {
-            "Já há um endereço gravado: republique no MESMO endereço, {url}, e entregue esse link."
-        }
-        ("deliver.order.same", Locale::EnUs) => {
-            "An address is already recorded: republish at that SAME address, {url}, and hand \
-             over that link."
-        }
-        ("deliver.fallback", Locale::PtBr) => {
-            "Sem ferramenta de publicação, entregue ao usuário as formas de abrir:"
-        }
-        ("deliver.fallback", Locale::EnUs) => {
-            "With no publishing tool, hand the user the ways to open it:"
-        }
-        ("deliver.click", Locale::PtBr) => "- Clique: {url}",
-        ("deliver.click", Locale::EnUs) => "- Click: {url}",
-        ("deliver.windows", Locale::PtBr) => "- Windows, no PowerShell: {command}",
-        ("deliver.windows", Locale::EnUs) => "- Windows, in PowerShell: {command}",
-        ("deliver.macos", _) => "- macOS: {command}",
-        ("deliver.linux", _) => "- Linux: {command}",
-
         // Pendências abertas (`apps/rt/src/hooks/session/session_start_inject.rs`
-        // e `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
-        // do chamador; a lista usa a grafia de `format_pending_items`.
+        // e a regra das pendências do fim da resposta,
+        // `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
+        // do chamador; a lista usa a grafia de `format_pending_items`. O
+        // bloqueio pede o título, nunca o número: a regra de escrita barra o
+        // código interno ("P-3") na conversa.
         ("pending.notice", Locale::PtBr) => {
             "[Mustard] Trabalho combinado ainda aberto ({count}): {items}. Esses itens vivem \
              fora de toda unidade e sobrevivem à que os entrega: quando uma unidade fecha \
@@ -1151,15 +1077,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("pending.gate.block", Locale::PtBr) => {
             "[Mustard] Uma unidade fechou neste turno, e a mensagem final não cita {count} \
              pendência(s) aberta(s): {items}. O trabalho combinado sobrevive à unidade que \
-             fechou — reescreva a mensagem de fechamento citando cada uma pelo id ou pelo \
-             título. Uma pendência que não vale mais só sai da lista com um motivo: \
+             fechou — reescreva a mensagem de fechamento citando cada uma pelo título, sem o \
+             número. Uma pendência que não vale mais só sai da lista com um motivo: \
              `mustard-rt run pending --close <id> --reason \"…\"` (entregue) ou \
              `mustard-rt run pending --drop <id> --reason \"…\"` (desistência)."
         }
         ("pending.gate.block", Locale::EnUs) => {
             "[Mustard] A unit closed in this turn, and the final message does not name {count} \
              open pending item(s): {items}. Agreed work outlives the unit that closed — rewrite \
-             the closing message naming each one by id or title. An item that no longer stands \
+             the closing message naming each one by title, without the number. An item that no \
+             longer stands \
              leaves the list only with a reason: `mustard-rt run pending --close <id> --reason \
              \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up)."
         }
@@ -1177,20 +1104,31 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
 
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
-        // uma linha curta que o usuário lê e o assistente recebe para corrigir.
-        // Sem parênteses: o tom técnico os apagaria. `{words}`, `{opening}`,
-        // `{acronym}`, `{term}`, `{lines}`, `{limit}`, `{found}` e `{expected}`
-        // vêm do chamador.
+        // uma linha curta que o assistente recebe no bloqueio do fim da
+        // resposta, ou que o usuário lê no aviso. Sem parênteses: o tom técnico
+        // os apagaria. `{words}`, `{opening}`, `{acronym}`, `{term}`, `{code}`,
+        // `{lines}`, `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm
+        // do chamador.
         ("clarity.long_sentence", Locale::PtBr) => "frase com {words} palavras: \"{opening}…\"",
         ("clarity.long_sentence", Locale::EnUs) => "sentence with {words} words: \"{opening}…\"",
         ("clarity.unexpanded_acronym", Locale::PtBr) => "{acronym} sem as palavras por extenso",
         ("clarity.unexpanded_acronym", Locale::EnUs) => "{acronym} without its full words",
         ("clarity.unexplained_term", Locale::PtBr) => "{term} usado sem tradução",
         ("clarity.unexplained_term", Locale::EnUs) => "{term} used without a translation",
-        ("clarity.too_long", Locale::PtBr) => {
-            "resposta com {lines} linhas de texto; o limite é {limit}"
+        ("clarity.internal_code", Locale::PtBr) => {
+            "{code} é um código interno; diga o assunto pelo nome"
         }
-        ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines of prose; the limit is {limit}",
+        ("clarity.internal_code", Locale::EnUs) => "{code} is an internal code; name the subject instead",
+        ("clarity.too_long", Locale::PtBr) => "resposta com {lines} linhas; o limite é {limit}",
+        ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines; the limit is {limit}",
+        ("clarity.hard_to_read", Locale::PtBr) => {
+            "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}; use \
+             frases e palavras mais curtas"
+        }
+        ("clarity.hard_to_read", Locale::EnUs) => {
+            "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}; \
+             use shorter sentences and words"
+        }
         // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
         // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
         ("clarity.wrong_language", Locale::PtBr) => {
@@ -1199,21 +1137,23 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("clarity.wrong_language", Locale::EnUs) => {
             "reply in {found}; the language of the project and the user is {expected}"
         }
-        // A nota ao usuário quando a resposta reprova, e o aviso que a próxima
-        // mensagem leva ao assistente. Os defeitos vêm abaixo, um por linha.
+        // O fim da resposta (`apps/rt/src/hooks/task/end_of_turn_check.rs`):
+        // a primeira resposta que reprova é barrada, e o assistente recebe o
+        // bloqueio para reescrever; a reescrita que ainda reprova só gera o
+        // aviso ao usuário. Os defeitos vêm abaixo, um por linha.
+        ("clarity.block.head", Locale::PtBr) => {
+            "[Mustard] A resposta fugiu da regra de escrita. Reescreva-a em linguagem simples, \
+             corrigindo estes pontos:"
+        }
+        ("clarity.block.head", Locale::EnUs) => {
+            "[Mustard] The reply missed the writing rule. Rewrite it in plain language, fixing \
+             these points:"
+        }
         ("clarity.note.head", Locale::PtBr) => {
-            "Mustard · clareza: a resposta acima fugiu da regra de escrita. A próxima corrige:"
+            "Mustard · clareza: a resposta acima ainda foge da regra de escrita:"
         }
         ("clarity.note.head", Locale::EnUs) => {
-            "Mustard · clarity: the reply above missed the writing rule. The next one fixes:"
-        }
-        ("clarity.next.head", Locale::PtBr) => {
-            "[Mustard] A sua resposta anterior reprovou na medição da escrita. Corrija estes \
-             pontos nesta resposta:"
-        }
-        ("clarity.next.head", Locale::EnUs) => {
-            "[Mustard] Your previous reply failed the writing measurement. Fix these points in \
-             this reply:"
+            "Mustard · clarity: the reply above still misses the writing rule:"
         }
         // A última linha da lista quando há mais defeitos do que ela mostra.
         ("clarity.more", Locale::PtBr) => "e mais {count}",
@@ -1551,22 +1491,6 @@ mod tests {
         assert_eq!(translate("ac.label", Locale::EnUs), "AC");
     }
 
-    /// The Stop gate's block text is catalogue-driven (config-language), never
-    /// embedded in the gate code — both locales carry the `{ac}` slot the gate
-    /// interpolates with the failing criterion id.
-    #[test]
-    fn i18n_translates_stopgate_keys() {
-        assert!(translate("stopgate.block.reason", Locale::PtBr).contains("{ac}"));
-        assert!(translate("stopgate.block.reason", Locale::EnUs).contains("{ac}"));
-        assert_ne!(
-            translate("stopgate.block.reason", Locale::PtBr),
-            translate("stopgate.block.reason", Locale::EnUs),
-            "the block reason must differ per locale (proof it is catalogue-driven)"
-        );
-        assert_ne!(translate("stopgate.block.guidance", Locale::PtBr), "<missing-key>");
-        assert_ne!(translate("stopgate.block.guidance", Locale::EnUs), "<missing-key>");
-    }
-
     /// Work-unit surfacing copy is catalogue-driven in BOTH locales: the
     /// listing legend, the status-bar label and the session-start advisory
     /// carry no language literal at their surface.
@@ -1590,19 +1514,14 @@ mod tests {
         }
     }
 
-    /// A entrega do resumo e os avisos de pendência saem do catálogo nos dois
-    /// idiomas, e cada um carrega as vagas que o chamador preenche.
+    /// Os avisos de pendência saem do catálogo nos dois idiomas, e cada um
+    /// carrega as vagas que o chamador preenche. Os textos dos ganchos do fim
+    /// da resposta que saíram (a entrega do resumo, o QA no `Stop`, o lembrete
+    /// de gravar a conversa) e o aviso da mensagem seguinte saíram com eles.
     #[test]
-    fn i18n_translates_delivery_and_pending_keys() {
+    fn i18n_translates_doc_and_pending_keys() {
         for (key, slots) in [
             ("doc.section.flow", &[][..]),
-            ("deliver.head.awaiting", &["{file}"][..]),
-            ("deliver.head.summary", &["{file}"][..]),
-            ("deliver.order", &["{path}", "{spec}", "claude.ai", "--published-url"][..]),
-            ("deliver.order.same", &["{url}"][..]),
-            ("deliver.fallback", &[][..]),
-            ("deliver.click", &["{url}"][..]),
-            ("deliver.windows", &["{command}"][..]),
             ("pending.notice", &["{count}", "{items}"][..]),
             ("pending.gate.block", &["{count}", "{items}"][..]),
             ("pending.duplicate", &["{id}", "{title}"][..]),
@@ -1616,27 +1535,33 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        for key in ["deliver.macos", "deliver.linux"] {
-            assert!(translate(key, Locale::PtBr).contains("{command}"), "{key}");
+        for key in [
+            "deliver.order",
+            "deliver.publish",
+            "stopgate.block.reason",
+            "crystallise.nudge",
+            "clarity.next.head",
+        ] {
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                assert_eq!(translate(key, lang), "<missing-key>", "{key} left with its hook");
+            }
         }
-        // A publicação deixou de ser uma opção oferecida ao usuário: a linha
-        // que a oferecia saiu do catálogo.
-        assert_eq!(translate("deliver.publish", Locale::PtBr), "<missing-key>");
-        assert_eq!(translate("deliver.publish", Locale::EnUs), "<missing-key>");
     }
 
-    /// Os defeitos de clareza saem do catálogo nos dois idiomas, cada um com as
-    /// vagas que o medidor preenche.
+    /// Os defeitos de clareza, o bloqueio e o aviso do fim da resposta saem do
+    /// catálogo nos dois idiomas, cada um com as vagas que o medidor preenche.
     #[test]
     fn i18n_translates_clarity_defect_keys() {
         for (key, slots) in [
             ("clarity.long_sentence", &["{words}", "{opening}"][..]),
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
             ("clarity.unexplained_term", &["{term}"][..]),
+            ("clarity.internal_code", &["{code}"][..]),
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
+            ("clarity.hard_to_read", &["{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
+            ("clarity.block.head", &[][..]),
             ("clarity.note.head", &[][..]),
-            ("clarity.next.head", &[][..]),
             ("clarity.more", &["{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

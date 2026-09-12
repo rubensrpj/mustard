@@ -1,30 +1,33 @@
-//! `clarity` — mede uma resposta do assistente contra a regra de tom didático.
+//! `clarity` — mede uma resposta do assistente contra a regra de escrita.
 //!
-//! A regra que o assistente recebe em toda mensagem quando o projeto declara
-//! `tone: didactic` pede quatro coisas: uma ideia por frase; termo técnico e
-//! nome inventado traduzidos na primeira vez da conversa; nenhuma sigla sem as
-//! palavras por extenso; e nenhuma resposta maior do que o assunto pede. Este
-//! módulo confere essas quatro coisas por sinais objetivos — quantas palavras
-//! tem cada frase, quais siglas e termos aparecem sem explicação, quantas
-//! linhas de texto a resposta tem. Ele não tenta entender o sentido do texto.
+//! A regra pede uma escrita que se lê uma vez, por quem não escreveu o código:
+//! uma ideia por frase; nome inventado traduzido na primeira vez da conversa;
+//! nenhuma sigla sem as palavras por extenso; nenhum código interno ("R8",
+//! "C-15") no lugar do nome do assunto; e nenhuma resposta maior do que o
+//! assunto pede. Este módulo confere isso por sinais objetivos — quantas
+//! palavras tem cada frase, quais siglas, termos e códigos aparecem, quantas
+//! linhas a resposta tem e a nota de facilidade de leitura (o índice de Flesch
+//! adaptado ao português). Ele não tenta entender o sentido do texto.
 //!
 //! Função pura: sem disco, sem log, sem relógio. A lista de nomes inventados
-//! vem do chamador (lista do output style, Definições da spec ativa, glossário
-//! `CONTEXT.md`); aqui não existe lista de termos escrita à mão. A única lista
-//! fixa é a das poucas siglas que dispensam expansão.
+//! vem do chamador (a semente do output style); aqui não existe lista de
+//! termos escrita à mão. A única lista fixa é a das poucas siglas que
+//! dispensam expansão.
 //!
-//! Fica fora da medição tudo o que não é texto corrido: blocos de código,
-//! código inline, URLs, caminhos de arquivo, linhas de tabela e JSON. Cada
-//! linha de texto é medida sozinha: numa resposta de chat a quebra de linha
-//! separa ideias, e um item de lista conta como frase.
+//! Fica fora da medição do texto tudo o que não é texto corrido: blocos de
+//! código, código inline, URLs, caminhos de arquivo, linhas de tabela e JSON.
+//! Cada linha de texto é medida sozinha: numa resposta de chat a quebra de
+//! linha separa ideias, e um item de lista conta como frase. O tamanho é a
+//! exceção: conta todas as linhas não vazias ([`MAX_LINES`]), porque é o que o
+//! leitor tem de percorrer.
 //!
-//! Há ainda uma quinta medição: o idioma. A resposta sai no idioma do projeto,
-//! que é o do usuário. O idioma da prosa sai de uma contagem de palavras comuns
-//! do português e do inglês ([`COMMON_WORDS_PT`], [`COMMON_WORDS_EN`], que
-//! moram em `domain::text`). Não há modelo estatístico: a contagem é
-//! determinística e só julga com prosa bastante ([`MIN_LANGUAGE_WORDS`]). Ela
-//! vale para todo projeto, qualquer que seja o tom: [`measure_language`] a faz
-//! sozinha, e [`measure`] a inclui junto das quatro do tom didático.
+//! Há ainda a medição do idioma. A resposta sai no idioma do projeto, que é o
+//! do usuário. O idioma da prosa sai de uma contagem de palavras comuns do
+//! português e do inglês ([`COMMON_WORDS_PT`], [`COMMON_WORDS_EN`], que moram
+//! em `domain::text`). Não há modelo estatístico: a contagem é determinística
+//! e só julga com prosa bastante ([`MIN_LANGUAGE_WORDS`]). Ela vale para todo
+//! projeto, qualquer que seja o tom: [`measure_language`] a faz sozinha, e
+//! [`measure`] a inclui junto das medições da escrita.
 
 use crate::domain::text::{COMMON_WORDS_EN, COMMON_WORDS_PT};
 use crate::domain::vocabulary::aho::KeyedAutomaton;
@@ -34,8 +37,13 @@ use std::cmp::Reverse;
 /// Palavras acima das quais uma frase conta como longa.
 pub const MAX_SENTENCE_WORDS: usize = 25;
 
-/// Linhas de texto acima das quais a resposta conta como longa demais.
-pub const MAX_PROSE_LINES: usize = 20;
+/// Linhas não vazias acima das quais a resposta conta como longa demais. Conta
+/// a resposta inteira, com código e tabela: é o que o leitor tem de percorrer.
+pub const MAX_LINES: usize = 15;
+
+/// A nota mínima de facilidade de leitura, no índice de Flesch adaptado ao
+/// português (Martins et al., 1996). Abaixo de 25 a escala diz "muito difícil".
+pub const MIN_READING_EASE: i32 = 25;
 
 /// Quantas palavras do começo de uma frase longa vão para o relatório: o
 /// bastante para o leitor achar a frase, pouco para não repetir a resposta.
@@ -138,10 +146,21 @@ pub struct ClarityReport {
     pub unexpanded_acronyms: Vec<String>,
     /// Nomes inventados cujo primeiro uso na sessão veio sem tradução.
     pub unexplained_terms: Vec<String>,
+    /// Códigos internos ("R8", "C-15", "L-3.3") no texto corrido, cada um uma
+    /// vez, na ordem em que aparecem.
+    pub internal_codes: Vec<String>,
     /// Linhas de texto corrido, sem código, tabela nem JSON.
     pub prose_lines: usize,
-    /// A resposta passou de [`MAX_PROSE_LINES`] linhas de texto.
+    /// Linhas não vazias da resposta inteira, com código e tabela.
+    pub lines: usize,
+    /// A resposta passou de [`MAX_LINES`] linhas.
     pub too_long: bool,
+    /// A nota de facilidade de leitura do texto corrido (Flesch adaptado ao
+    /// português). `None` quando a prosa não está em português ou é curta
+    /// demais para uma média honesta.
+    pub reading_ease: Option<i32>,
+    /// A nota ficou abaixo de [`MIN_READING_EASE`].
+    pub hard_to_read: bool,
     /// A prosa saiu noutro idioma que não o do projeto.
     pub wrong_language: Option<WrongLanguage>,
     /// Nenhum defeito encontrado.
@@ -169,11 +188,21 @@ impl ClarityReport {
         for term in &self.unexplained_terms {
             out.push(translate("clarity.unexplained_term", lang).replace("{term}", term));
         }
+        for code in &self.internal_codes {
+            out.push(translate("clarity.internal_code", lang).replace("{code}", code));
+        }
         if self.too_long {
             out.push(
                 translate("clarity.too_long", lang)
-                    .replace("{lines}", &self.prose_lines.to_string())
-                    .replace("{limit}", &MAX_PROSE_LINES.to_string()),
+                    .replace("{lines}", &self.lines.to_string())
+                    .replace("{limit}", &MAX_LINES.to_string()),
+            );
+        }
+        if let (true, Some(score)) = (self.hard_to_read, self.reading_ease) {
+            out.push(
+                translate("clarity.hard_to_read", lang)
+                    .replace("{score}", &score.to_string())
+                    .replace("{min}", &MIN_READING_EASE.to_string()),
             );
         }
         if let Some(wrong) = self.wrong_language {
@@ -207,24 +236,147 @@ pub fn measure(
         unexpanded_acronyms(&sentences, known_terms, already_explained, &mut explained);
     let unexplained_terms =
         unexplained_terms(&sentences, known_terms, already_explained, &mut explained);
-    let too_long = lines.len() > MAX_PROSE_LINES;
+    let internal_codes = internal_codes(&sentences);
+    let total_lines = text.lines().filter(|line| !line.trim().is_empty()).count();
+    let too_long = total_lines > MAX_LINES;
+    let reading_ease = reading_ease(&lines, &sentences);
+    let hard_to_read = reading_ease.is_some_and(|score| score < MIN_READING_EASE);
     let wrong_language = expected.and_then(|lang| wrong_language(&lines, lang));
     let passed = long_sentences.is_empty()
         && unexpanded_acronyms.is_empty()
         && unexplained_terms.is_empty()
+        && internal_codes.is_empty()
         && !too_long
+        && !hard_to_read
         && wrong_language.is_none();
 
     ClarityReport {
         long_sentences,
         unexpanded_acronyms,
         unexplained_terms,
+        internal_codes,
         prose_lines: lines.len(),
+        lines: total_lines,
         too_long,
+        reading_ease,
+        hard_to_read,
         wrong_language,
         passed,
         explained,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Código interno
+// ---------------------------------------------------------------------------
+
+/// Os códigos internos do texto corrido, cada um uma vez, na ordem em que
+/// aparecem. Código inline já saiu da prosa: `R8` entre crases é código, não
+/// conversa.
+fn internal_codes(sentences: &[&str]) -> Vec<String> {
+    let mut codes = Vec::new();
+    for sentence in sentences {
+        for token in sentence.split_whitespace() {
+            let core = token.trim_start_matches(LEADERS).trim_end_matches(TRAILERS);
+            if is_internal_code(core) {
+                push_unique(&mut codes, core.to_string());
+            }
+        }
+    }
+    codes
+}
+
+/// Uma ou duas letras maiúsculas, um hífen opcional e um número que pode ter
+/// pontos: "R8", "C-15", "AC-5", "L-3.3". Fica de fora o que tem mais letras
+/// ("UTF-8"), letra minúscula ("v0.3", "x86") ou letra depois do número
+/// ("E2E").
+fn is_internal_code(core: &str) -> bool {
+    let letters = core.len() - core.trim_start_matches(|c: char| c.is_ascii_uppercase()).len();
+    if !(1..=2).contains(&letters) {
+        return false;
+    }
+    let number = &core[letters..];
+    let number = number.strip_prefix('-').unwrap_or(number);
+    !number.is_empty()
+        && number.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
+// ---------------------------------------------------------------------------
+// Facilidade de leitura
+// ---------------------------------------------------------------------------
+
+/// A nota de facilidade de leitura da prosa, pelo índice de Flesch adaptado ao
+/// português (Martins et al., 1996): 248,835 − 1,015 × palavras por frase −
+/// 84,6 × sílabas por palavra. Quanto maior, mais fácil. `None` quando a prosa
+/// não está em português (a fórmula é do português) ou tem menos de
+/// [`MIN_LANGUAGE_WORDS`] palavras.
+fn reading_ease(lines: &[String], sentences: &[&str]) -> Option<i32> {
+    let (total, pt, en) = language_counts(lines);
+    if total < MIN_LANGUAGE_WORDS || dominant_language(pt, en) != Some(Locale::PtBr) {
+        return None;
+    }
+    let (mut word_count, mut syllable_count) = (0_usize, 0_usize);
+    for word in sentences.iter().flat_map(|sentence| words(sentence)) {
+        let letters: String = word.chars().filter(|c| c.is_alphabetic()).flat_map(char::to_lowercase).collect();
+        if !letters.is_empty() {
+            word_count += 1;
+            syllable_count += syllables_pt(&letters);
+        }
+    }
+    if word_count == 0 || sentences.is_empty() {
+        return None;
+    }
+    let per_sentence = word_count as f64 / sentences.len() as f64;
+    let per_word = syllable_count as f64 / word_count as f64;
+    Some((248.835 - 1.015 * per_sentence - 84.6 * per_word).round() as i32)
+}
+
+/// As sílabas de uma palavra em português, já em minúsculas. Cada grupo de
+/// vogais é uma sílaba, e o grupo se parte quando uma vogal com acento agudo
+/// ou circunflexo vem depois de outra ("sa-ú-de") ou quando duas vogais fortes
+/// se encontram ("po-e-ta", "le-ão"); depois de "ã" e "õ" a vogal fecha o
+/// ditongo ("ão", "õe"). O "u" de "que", "qui", "gue" e "gui" é mudo. É uma
+/// aproximação: o hiato que só a pronúncia separa ("di-a") conta como uma.
+fn syllables_pt(word: &str) -> usize {
+    let chars: Vec<char> = word.chars().collect();
+    let mut count = 0;
+    let mut previous: Option<char> = None;
+    for (at, &c) in chars.iter().enumerate() {
+        let mute_u = c == 'u'
+            && at > 0
+            && matches!(chars[at - 1], 'q' | 'g')
+            && chars.get(at + 1).is_some_and(|&next| is_vowel(next));
+        if !is_vowel(c) || mute_u {
+            previous = None;
+            continue;
+        }
+        let starts = match previous {
+            None => true,
+            Some(before) => {
+                !matches!(before, 'ã' | 'õ')
+                    && (is_stressed(c) || (is_strong_vowel(before) && is_strong_vowel(c)))
+            }
+        };
+        if starts {
+            count += 1;
+        }
+        previous = Some(c);
+    }
+    count.max(1)
+}
+
+fn is_vowel(c: char) -> bool {
+    "aeiouyáàâãéêíóôõúü".contains(c)
+}
+
+/// A, E e O, com ou sem acento: duas delas juntas são hiato.
+fn is_strong_vowel(c: char) -> bool {
+    "aeoáàâãéêóôõ".contains(c)
+}
+
+/// Vogal com acento agudo ou circunflexo: abre sílaba própria.
+fn is_stressed(c: char) -> bool {
+    "áéíóúâêô".contains(c)
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +395,17 @@ pub fn measure_language(text: &str, lang: Locale) -> Option<WrongLanguage> {
 /// de [`MIN_LANGUAGE_WORDS`] palavras de texto corrido, sem idioma dominante ou
 /// com a prosa no idioma certo. As linhas já vêm sem código, tabela nem JSON.
 fn wrong_language(lines: &[String], expected: Locale) -> Option<WrongLanguage> {
+    let (total, pt, en) = language_counts(lines);
+    if total < MIN_LANGUAGE_WORDS {
+        return None;
+    }
+    let found = dominant_language(pt, en)?;
+    (found != expected).then_some(WrongLanguage { found, expected })
+}
+
+/// Quantas palavras a prosa tem, e quantas delas são palavras comuns do
+/// português e do inglês: `(total, pt, en)`.
+fn language_counts(lines: &[String]) -> (usize, usize, usize) {
     let (mut total, mut pt, mut en) = (0, 0, 0);
     for word in lines.iter().flat_map(|line| words(line)) {
         total += 1;
@@ -253,11 +416,7 @@ fn wrong_language(lines: &[String], expected: Locale) -> Option<WrongLanguage> {
             en += 1;
         }
     }
-    if total < MIN_LANGUAGE_WORDS {
-        return None;
-    }
-    let found = dominant_language(pt, en)?;
-    (found != expected).then_some(WrongLanguage { found, expected })
+    (total, pt, en)
 }
 
 /// O idioma cujas palavras comuns somam ao menos [`MIN_LANGUAGE_MARKERS`] e
@@ -535,7 +694,9 @@ fn is_acronym(word: &str) -> bool {
 /// - ênfase: faz parte de uma sequência de palavras em maiúsculas ("IN THIS
 ///   CONVERSATION") ou é uma palavra comprida com vogais ("NUNCA", "RESUMO");
 /// - a região de um código de idioma ("pt-BR", "en-US");
-/// - um numeral romano ("Fase II", "onda IV").
+/// - um numeral romano ("Fase II", "onda IV");
+/// - as letras de um código interno ("AC" em "AC-5"), que a medição dos
+///   códigos já aponta inteiro.
 ///
 /// Limite aceito: ênfase curta e com poucas vogais, sozinha ("MUST"), continua
 /// contando como sigla — não há como separá-la de "SSH" só pela forma.
@@ -544,6 +705,13 @@ fn mimics_acronym(sentence: &str, runs: &[(usize, usize)], idx: usize, core: &st
         || is_shouted_word(core)
         || in_shouted_sequence(sentence, runs, idx)
         || is_locale_region(sentence, runs[idx].0, core)
+        || opens_internal_code(sentence, runs[idx].1)
+}
+
+/// A palavra que termina em `end` é seguida de hífen e número: são as letras
+/// de um código interno ("AC-5").
+fn opens_internal_code(sentence: &str, end: usize) -> bool {
+    sentence[end..].strip_prefix('-').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// Só I, V e X: "II", "IV", "IX". O I sozinho nem chega a ser candidato.
@@ -976,19 +1144,104 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert!(report.passed);
     }
 
-    /// Mais de vinte linhas de texto reprovam a resposta pelo tamanho.
+    /// Mais de quinze linhas reprovam a resposta pelo tamanho, e o tamanho
+    /// conta a resposta inteira: linhas de código também são lidas.
     #[test]
-    fn clarity_reply_over_twenty_prose_lines_is_too_long() {
-        let fits = vec!["Uma linha curta."; MAX_PROSE_LINES].join("\n");
-        assert!(measure(&fits, &[], &[], Some(Locale::PtBr)).passed);
+    fn clarity_reply_over_fifteen_lines_is_too_long() {
+        let fits = vec!["Uma linha curta."; MAX_LINES].join("\n\n");
+        assert!(measure(&fits, &[], &[], Some(Locale::PtBr)).passed, "blank lines do not count");
 
-        let over = vec!["Uma linha curta."; MAX_PROSE_LINES + 1].join("\n");
+        let over = vec!["Uma linha curta."; MAX_LINES + 1].join("\n");
         let report = measure(&over, &[], &[], Some(Locale::PtBr));
         assert!(report.too_long && !report.passed);
-        assert_eq!(
-            report.defects(Locale::EnUs),
-            vec!["reply with 21 lines of prose; the limit is 20"]
+        assert_eq!(report.defects(Locale::EnUs), vec!["reply with 16 lines; the limit is 15"]);
+        assert_eq!(report.defects(Locale::PtBr), vec!["resposta com 16 linhas; o limite é 15"]);
+
+        let code = format!("Rode isto:\n```text\n{}\n```", vec!["linha"; MAX_LINES].join("\n"));
+        let report = measure(&code, &[], &[], Some(Locale::PtBr));
+        assert_eq!((report.prose_lines, report.lines), (1, MAX_LINES + 3), "{report:?}");
+        assert!(report.too_long, "{report:?}");
+    }
+
+    /// Código interno no texto corrido é apontado, cada um uma vez, e pede o
+    /// nome do assunto. Código entre crases, versão, sigla com número depois
+    /// de três letras e palavra comum não são código.
+    #[test]
+    fn clarity_flags_internal_codes() {
+        let report = measure(
+            "A regra R8 vale. Veja o C-15, o L-3.3 e de novo (R8), com o AC-5.",
+            &[],
+            &[],
+            Some(Locale::PtBr),
         );
+        assert_eq!(report.internal_codes, vec!["R8", "C-15", "L-3.3", "AC-5"], "{report:?}");
+        assert!(report.unexpanded_acronyms.is_empty(), "AC in AC-5 is the code, not an acronym: {report:?}");
+        assert!(!report.passed);
+        assert_eq!(report.defects(Locale::PtBr)[0], "R8 é um código interno; diga o assunto pelo nome");
+        assert_eq!(report.defects(Locale::EnUs)[0], "R8 is an internal code; name the subject instead");
+
+        for clean in [
+            "Rode `R8` e o `C-15` no terminal.",
+            "Instalei a versão v0.3 e o UTF-8 num x86.",
+            "O teste E2E passou em 2026.",
+            "A regra ficou pronta.",
+        ] {
+            let report = measure(clean, &[], &[], Some(Locale::PtBr));
+            assert!(report.internal_codes.is_empty(), "{clean}: {report:?}");
+        }
+    }
+
+    /// As sílabas em português seguem a separação escolar nos casos comuns:
+    /// ditongo nasal, hiato com acento, duas vogais fortes e o "u" mudo.
+    #[test]
+    fn portuguese_syllables_follow_the_common_cases() {
+        for (word, want) in [
+            ("configuração", 5),
+            ("saúde", 3),
+            ("leão", 2),
+            ("poeta", 3),
+            ("queijo", 2),
+            ("água", 2),
+            ("coordenação", 5),
+            ("automação", 4),
+            ("é", 1),
+            ("psst", 1),
+        ] {
+            assert_eq!(syllables_pt(word), want, "{word}");
+        }
+    }
+
+    /// A nota de Flesch só sai para prosa em português com palavras bastantes;
+    /// frases curtas de palavras curtas passam, e frases compridas de palavras
+    /// compridas reprovam pela nota.
+    #[test]
+    fn clarity_scores_reading_ease_in_portuguese() {
+        let plain = measure(PORTUGUESE_REPLY, &[], &[], Some(Locale::PtBr));
+        let score = plain.reading_ease.unwrap_or_else(|| panic!("Portuguese prose is scored: {plain:?}"));
+        assert!(score >= MIN_READING_EASE && !plain.hard_to_read && plain.passed, "{plain:?}");
+
+        let dense = "A implementação da configuração automatizada da infraestrutura \
+                     organizacional exige documentação complementar significativamente \
+                     detalhada. A coordenação interdepartamental das especificações \
+                     técnicas necessárias demanda comunicação institucionalizada e \
+                     planejamento estratégico permanentemente atualizado. A parametrização \
+                     das integrações corporativas depende da homologação das funcionalidades \
+                     disponibilizadas pela arquitetura.";
+        let report = measure(dense, &[], &[], Some(Locale::PtBr));
+        let score = report.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {report:?}"));
+        assert!(score < MIN_READING_EASE && report.hard_to_read && !report.passed, "{report:?}");
+        let defect = report.defects(Locale::PtBr).pop().unwrap_or_default();
+        assert_eq!(
+            defect,
+            format!(
+                "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é 25; use \
+                 frases e palavras mais curtas"
+            )
+        );
+
+        // Inglês e prosa curta não recebem nota.
+        assert_eq!(measure(ENGLISH_REPLY, &[], &[], Some(Locale::EnUs)).reading_ease, None);
+        assert_eq!(measure("Frase curta.", &[], &[], Some(Locale::PtBr)).reading_ease, None);
     }
 
     /// Ênfase em maiúsculas não é sigla: nem a palavra comprida com vogais,

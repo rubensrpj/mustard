@@ -6,9 +6,15 @@
 # when `mustard-rt` is missing — or was downloaded for a different plugin
 # version — it fetches `mustard-bins-<version>-<os>` from the GitHub Release
 # matching plugin.json's version, extracts it here, then delegates to the
-# binary. Every failure path is silent-allow: a hook must NEVER wedge the
-# session, so on any error this script exits 0 and the harness stays dormant
-# for the session (next SessionStart retries).
+# binary. No failure path may wedge the session: this script never exits 2,
+# the code that would block a tool call or a prompt.
+#
+# BUT A MISSING BINARY IS SAID OUT LOUD. When the tail finds no binary to hand
+# over to, it prints a clear message on stderr, in the project's language, and
+# exits 1 — a non-blocking hook error the harness shows the user. It used to
+# exit 0 in silence, and in the field 790 hook events ran with no binary and
+# nobody was told. `mustard-rt run doctor` names the same finding
+# (`binary-missing`).
 #
 # Dev machines are exempt from re-downloads: a locally built bin/ has no
 # `.version` stamp, and a missing stamp is treated as "hands off".
@@ -27,9 +33,9 @@
 # whose whole job is preparing the session, and any NON-hook caller — the
 # installer warms the plugin up with `mustard-boot --version`, and wraps that in
 # a `timeout` of its own. Every other trigger stays dormant for the session
-# instead of being cut, which is the promise the paragraph above already makes.
-# `--max-time` on the fetch is the second half of the same rule: even a caller
-# that may pay cannot pay forever.
+# instead of being cut, and says so at the tail. `--max-time` on the fetch is
+# the second half of the same rule: even a caller that may pay cannot pay
+# forever.
 set -u
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
@@ -76,22 +82,21 @@ fi
 # warm-up — and keeps the right to fetch.
 #
 # Dropping `need_fetch` here rather than skipping the block below is what makes
-# the short-budget path silent AND cheap: no `uname`, no notice, and a binary
-# that is merely stamped for another version still gets `exec`'d at the tail —
-# an old harness beats a dormant one.
+# the short-budget path cheap: no `uname`, no fetch notice, and a binary that is
+# merely stamped for another version still gets `exec`'d at the tail — an old
+# harness beats a dormant one. A binary that is not there at all is still named
+# at the tail.
 if [ "${1-}" = "on" ] && [ "${2-}" != "SessionStart" ]; then
   need_fetch=0
 fi
 
-# A manifest this script cannot read a version out of is the one failure that is
-# BOTH silent and total. `need_fetch` says the binaries have to come down, `$VER`
-# names no release to fetch them from, and every branch below is guarded on
-# `-n "$VER"` — so nothing happens, nothing is printed, and on a machine whose
-# `bin/` was never populated the harness is dormant forever with no line on
-# screen saying why. There is still nothing to download (there is no URL to
-# build), but the operator is told, and told WHICH file to look at. Only a caller
-# that was actually going to fetch says anything, so the short-budget path above
-# stays as quiet as its own paragraph promises.
+# A manifest this script cannot read a version out of is the one failure that
+# names no release to fetch from. `need_fetch` says the binaries have to come
+# down, `$VER` names no release to fetch them from, and every branch below is
+# guarded on `-n "$VER"` — so nothing downloads. There is still nothing to
+# download (there is no URL to build), but the operator is told, and told WHICH
+# file to look at. Only a caller that was actually going to fetch says this; the
+# tail says the rest.
 if [ "$need_fetch" = "1" ] && [ -z "$VER" ]; then
   echo "[mustard-boot] no \"version\" readable in $MANIFEST — mustard hooks stay dormant this session" >&2
 fi
@@ -117,8 +122,7 @@ if [ "$need_fetch" = "1" ] && [ -n "$VER" ]; then
 fi
 
 # An unnamed system named no bundle above, so there is nothing to fetch and the
-# `exec` below simply does not happen — dormant, which is this script's one
-# promise on every failure path.
+# `exec` below simply does not happen — the tail says so.
 if [ "$need_fetch" = "1" ] && [ -n "$VER" ] && [ -n "$os" ]; then
   url="https://github.com/rubensrpj/mustard/releases/download/v${VER}/mustard-bins-${VER}-${os}.tar.gz"
   tmp="$DIR/.boot-tmp"
@@ -150,4 +154,15 @@ fi
 if [ -x "$RT" ]; then
   exec "$RT" "$@"
 fi
-exit 0
+
+# THE BINARY IS MISSING, and that is said out loud (see the header). The
+# message follows the project's language: English when `mustard.json` names
+# en-US (`lang`/`specLang` today, `language.text` from the language wave on —
+# all of them carry the dialect), Portuguese otherwise, the same default the
+# configuration has. Keep both texts in step with the `.cmd` twin.
+if grep -q 'en-US' "${CLAUDE_PROJECT_DIR:-.}/mustard.json" 2>/dev/null; then
+  echo "[mustard-boot] mustard-rt is missing from $DIR: Mustard hooks do not run in this session. To download it, run: \"$DIR/mustard-boot\" --version" >&2
+else
+  echo "[mustard-boot] o mustard-rt não está em $DIR: os ganchos do Mustard não rodam nesta sessão. Para baixá-lo, rode: \"$DIR/mustard-boot\" --version" >&2
+fi
+exit 1

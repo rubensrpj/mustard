@@ -2662,14 +2662,93 @@ fn ask_a_real_cmd(tmp: &Path) {
         );
     }
 
+    // The copy has no mustard-rt.exe beside it, so a script that parsed all the
+    // way to `:run` says the binary is missing and exits 1 — the loud failure
+    // (C-44). A parse abort exits 255 and never reaches that line, so the
+    // message is the proof the whole file was read.
     let out = ask_cmd(&script);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        out.status.success(),
+        out.status.code() == Some(1) && stderr.contains("[mustard-boot]") && stderr.contains("mustard-rt"),
         "cmd.exe refused mustard-boot.cmd (exit {:?}) — the script aborts, so \
-         every Mustard hook on every Windows machine does nothing, in silence.\n{}",
+         every Mustard hook on every Windows machine does nothing, in silence.\n{stderr}",
         out.status.code(),
-        String::from_utf8_lossy(&out.stderr),
     );
+}
+
+/// C-44 — with the binary missing, the launcher fails LOUDLY: exit 1 (a
+/// non-blocking hook error the harness shows; never 2, which would block the
+/// tool call) and one clear line on stderr, in the project's language, naming
+/// the command that downloads the binary. It used to exit 0 in silence.
+#[test]
+fn boot_fails_loudly_when_the_binary_is_missing() {
+    if cfg!(windows) {
+        return;
+    }
+    let plugin = tempfile::tempdir().expect("tempdir");
+    let bin = plugin.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    std::fs::create_dir_all(plugin.path().join(".claude-plugin")).expect("manifest dir");
+    std::fs::copy(repo_root().join("plugin/bin/mustard-boot"), bin.join("mustard-boot")).expect("copy boot");
+    std::fs::copy(
+        repo_root().join("plugin/.claude-plugin/plugin.json"),
+        plugin.path().join(".claude-plugin").join("plugin.json"),
+    )
+    .expect("copy manifest");
+
+    for (config, message) in [
+        (
+            r#"{"specLang":"pt-BR"}"#,
+            ": os ganchos do Mustard não rodam nesta sessão. Para baixá-lo, rode: ",
+        ),
+        (
+            r#"{"specLang":"en-US"}"#,
+            ": Mustard hooks do not run in this session. To download it, run: ",
+        ),
+    ] {
+        let project = tempfile::tempdir().expect("tempdir");
+        std::fs::write(project.path().join("mustard.json"), config).expect("config");
+        // `on PreToolUse`, never `on SessionStart`: only the session start may
+        // download, and this test must not reach the network.
+        let out = std::process::Command::new("sh")
+            .arg(bin.join("mustard-boot"))
+            .args(["on", "PreToolUse"])
+            .env("CLAUDE_PROJECT_DIR", project.path())
+            .output()
+            .expect("spawn sh");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{config}: a missing binary fails, loudly: {stderr}");
+        assert!(stderr.starts_with("[mustard-boot] "), "{config}: {stderr}");
+        assert!(stderr.contains(message), "{config}: {stderr}");
+        assert!(stderr.trim_end().ends_with("mustard-boot\" --version"), "{config}: {stderr}");
+    }
+}
+
+/// Both twins say the missing binary with the same words, in both languages.
+#[test]
+fn both_boot_twins_name_the_missing_binary_the_same_way() {
+    let posix = read("plugin/bin/mustard-boot");
+    let windows = read("plugin/bin/mustard-boot.cmd");
+    for fragment in [
+        "[mustard-boot] o mustard-rt não está em ",
+        ": os ganchos do Mustard não rodam nesta sessão. Para baixá-lo, rode: ",
+        "[mustard-boot] mustard-rt is missing from ",
+        ": Mustard hooks do not run in this session. To download it, run: ",
+        "en-US",
+    ] {
+        assert!(posix.contains(fragment), "plugin/bin/mustard-boot lost {fragment:?}");
+        assert!(windows.contains(fragment), "plugin/bin/mustard-boot.cmd lost {fragment:?}");
+    }
+    // A COMMAND that exits 2, not the digits in prose: the `.cmd` explains the
+    // parse abort's `exit 255` in a comment.
+    for (file, body) in [("mustard-boot", &posix), ("mustard-boot.cmd", &windows)] {
+        let blocks = body.lines().map(str::trim).any(|line| {
+            ["exit 2", "exit /b 2"]
+                .iter()
+                .any(|code| line.strip_prefix(code).is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit())))
+        });
+        assert!(!blocks, "{file} must never block a hook");
+    }
 }
 
 /// Both twins cap the download at the SAME number of seconds.

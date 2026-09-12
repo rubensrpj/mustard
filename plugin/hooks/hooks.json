@@ -135,7 +135,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on Stop",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       }

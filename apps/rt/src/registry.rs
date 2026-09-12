@@ -37,17 +37,12 @@ use crate::hooks::session::dashboard_register_observer::DashboardRegisterObserve
 use crate::hooks::session::statusline_heal_observer::StatuslineHealObserver;
 use crate::hooks::write::size_gate::SizeGate;
 use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
-use crate::hooks::observe::session_stop_observer::SessionStopObserver;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::metrics_observer::MetricsObserver;
 use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
-use crate::hooks::task::spec_doc_present::SpecDocPresent;
-use crate::hooks::task::clarity_check::ClarityCheck;
-use crate::hooks::task::crystallise_nudge::CrystalliseNudge;
-use crate::hooks::task::pending_gate::PendingGate;
-use crate::hooks::task::stop_gate::StopGate;
+use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 use crate::hooks::task::subagent_observer::SubagentObserver;
 use crate::hooks::task::tool_use_counter::ToolUseCounter;
 use crate::hooks::observe::wikilink_footer_observer::WikilinkFooterObserver;
@@ -527,88 +522,17 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(PlanApprovalObserver)),
             },
-            // ── W9 deep-refactor: Stop trigger ───────────────────────────────
+            // `end_of_turn_check` — a conferência do fim da resposta, o único
+            // gancho do `Stop`. No `Stop` da sessão principal, passa o texto
+            // final do turno pelas regras (`TurnRule`): as pendências
+            // (`pending_gate.rs`) e a clareza (`clarity_check.rs`). O que elas
+            // acham sai num bloqueio só; na reescrita que o bloqueio pediu
+            // (`stop_hook_active`), a clareza só avisa o usuário. O `hooks.json`
+            // dá 30 segundos ao `Stop`.
             Module {
-                id: "session_stop_observer",
-                // `Stop` lifecycle observer — touches the 5-minute anti-spam
-                // marker the Stop-adjacent bookkeeping relies on. Main session
-                // only — never SubagentStop.
+                id: "end_of_turn_check",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(SessionStopObserver)),
-            },
-            // `stop_gate` — the QA verification loop (close-the-qa-verification-loop
-            // W1). On the main session's `Stop`, when there is an active+approved
-            // spec with an executable AC, it runs the criteria through the qa-run
-            // executor and BLOCKS the stop (Deny) on a red criterion, re-dispatching
-            // until they pass. Self-restricts (never a subagent stop, never without
-            // an approved+executable spec) and is bounded by its own per-spec
-            // consecutive-block counter. The FIRST `Check` on `Stop` (until now the
-            // trigger carried only the `session_stop_observer` side effect).
-            Module {
-                id: "stop_gate",
-                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
-                check: Some(Box::new(StopGate)),
-                observer: None,
-            },
-            // `crystallise_nudge` — the conversation-to-disk reminder. On the
-            // main session's `Stop`, an open unit whose `spec-material.json` has
-            // not moved for a run of turns blocks the stop ONCE, asking for what
-            // the conversation settled to be written down while it is still in
-            // the window. Nudges at most once per standing drift (the marker
-            // holds the state it fired on), so unlike `stop_gate` there is no
-            // retry loop to bound.
-            Module {
-                id: "crystallise_nudge",
-                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
-                check: Some(Box::new(CrystalliseNudge)),
-                observer: None,
-            },
-            // `pending_gate` — a cobrança de pendências. No `Stop` da sessão
-            // principal depois que uma unidade fechou (a marca que o escritor
-            // de eventos grava em `pipeline.complete` / `pr.merged`), bloqueia
-            // a mensagem final que não cita cada pendência aberta do ledger —
-            // no máximo duas vezes por fechamento. A marca só é consumida
-            // quando a trava LIBERA: o primeiro bloqueio vence, então um
-            // bloqueio dela engolido por um irmão acima deixa a marca, e o
-            // `Stop` seguinte confere de novo. Registrada depois dos irmãos: no
-            // turno do fechamento a spec já está concluída, e os dois acima se
-            // calam.
-            Module {
-                id: "pending_gate",
-                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
-                check: Some(Box::new(PendingGate)),
-                observer: None,
-            },
-            // `spec_doc_present` — a entrega do resumo da spec. No `Stop` da
-            // sessão principal, com uma unidade aberta, remonta o `resumo.html`
-            // e, só quando ele mudou desde a última entrega, barra o fim com
-            // uma ordem ao assistente: publicar a página no claude.ai, entregar
-            // o link e gravar o endereço. Solta na continuação que o bloqueio
-            // pediu (`stop_hook_active`). Na espera de aprovação, com tela
-            // local e fora de SSH, abre o navegador uma vez por versão
-            // (`MUSTARD_DOC_OPEN=off` desliga). Registrado depois das três
-            // travas do `Stop`, sem reordená-las: um bloqueio delas vence o
-            // `fold` e esta ordem espera a próxima mudança.
-            Module {
-                id: "spec_doc_present",
-                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
-                check: Some(Box::new(SpecDocPresent)),
-                observer: None,
-            },
-            // `clarity_check` — a medição de clareza. No `Stop` da sessão
-            // principal de um projeto que declarou `tone: didactic`, mede a
-            // resposta contra a regra de tom, guarda os defeitos para a mensagem
-            // seguinte levar ao assistente e registra `assistant.clarity` só com
-            // as contagens. Quando reprova, devolve a nota ao usuário (`Inject`,
-            // que no `Stop` vira `systemMessage`); o `fold` junta os `Inject`.
-            // Num fim barrado pela ordem de publicar do `spec_doc_present`, a
-            // nota não sai. Nunca bloqueia.
-            // Registrado por último no `Stop`, sem reordenar os irmãos.
-            Module {
-                id: "clarity_check",
-                applies_to: &[(Trigger::Stop, ToolMatch::Any)],
-                check: Some(Box::new(ClarityCheck)),
+                check: Some(Box::new(EndOfTurnCheck)),
                 observer: None,
             },
             Module {
@@ -872,50 +796,26 @@ mod tests {
         assert!(module.check.is_none(), "a pure Observer never carries a verdict");
     }
 
+    /// O fim da resposta é uma conferência só: o `end_of_turn_check` é o único
+    /// módulo do `Stop`, um `Check` puro, e nunca roda no `Stop` de um
+    /// subagente. Os ganchos que derrubavam os outros saíram.
     #[test]
-    fn stop_gate_is_the_check_on_the_stop_trigger() {
+    fn end_of_turn_check_is_the_only_module_on_stop() {
         let registry = Registry::new();
-        // `stop_gate` rides `Stop` (any tool / none) alongside the observer.
-        let ids = applicable_ids(&registry, Trigger::Stop, None);
-        assert!(ids.contains(&"stop_gate"), "stop_gate must apply on Stop");
-        assert!(ids.contains(&"session_stop_observer"));
-        // It is a `Check` (the FIRST on Stop), not merely an observer.
-        let module = registry.by_id("stop_gate").expect("stop_gate registered");
-        assert!(module.check.is_some(), "stop_gate carries a Check verdict");
-        assert!(module.observer.is_none(), "stop_gate is a pure Check");
-        // It never rides an unrelated trigger.
-        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
-            .contains(&"stop_gate"));
-        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"stop_gate"));
-    }
-
-    #[test]
-    fn spec_doc_present_rides_stop_after_the_three_gates() {
-        let registry = Registry::new();
-        let ids = applicable_ids(&registry, Trigger::Stop, None);
-        let at = |id: &str| ids.iter().position(|x| *x == id).unwrap_or_else(|| panic!("{id} on Stop"));
-        // Depois das travas, na ordem delas, que não muda.
-        assert!(at("stop_gate") < at("crystallise_nudge"));
-        assert!(at("crystallise_nudge") < at("pending_gate"));
-        assert!(at("pending_gate") < at("spec_doc_present"));
-        // Nunca no `Stop` de um subagente.
-        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"spec_doc_present"));
-        let module = registry.by_id("spec_doc_present").expect("registered");
+        assert_eq!(applicable_ids(&registry, Trigger::Stop, None), vec!["end_of_turn_check"]);
+        let module = registry.by_id("end_of_turn_check").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
-    }
-
-    #[test]
-    fn clarity_check_rides_stop_last() {
-        let registry = Registry::new();
-        let ids = applicable_ids(&registry, Trigger::Stop, None);
-        // Depois de todos os irmãos do `Stop`, que seguem na ordem de antes.
-        assert_eq!(ids.last(), Some(&"clarity_check"), "{ids:?}");
-        let at = |id: &str| ids.iter().position(|x| *x == id).unwrap_or_else(|| panic!("{id} on Stop"));
-        assert!(at("pending_gate") < at("spec_doc_present"));
-        assert!(at("spec_doc_present") < at("clarity_check"));
-        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"clarity_check"));
-        let module = registry.by_id("clarity_check").expect("registered");
-        assert!(module.check.is_some() && module.observer.is_none());
+        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"end_of_turn_check"));
+        for gone in [
+            "stop_gate",
+            "crystallise_nudge",
+            "spec_doc_present",
+            "session_stop_observer",
+            "pending_gate",
+            "clarity_check",
+        ] {
+            assert!(registry.by_id(gone).is_none(), "{gone} left the registry");
+        }
     }
 
     #[test]
@@ -955,10 +855,7 @@ mod tests {
             "rewave_observer",
             "wave_start_observer",
             "wave_complete_observer",
-            "stop_gate",
-            "pending_gate",
-            "spec_doc_present",
-            "clarity_check",
+            "end_of_turn_check",
         ] {
             assert!(registry.by_id(id).is_some(), "by_id missing {id}");
         }

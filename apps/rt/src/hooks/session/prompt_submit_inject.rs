@@ -34,8 +34,9 @@
 //!   regra de escrita e, como ela, também chega a um comando com barra.
 //!
 //! The three injecting concerns compose into a SINGLE [`Verdict::Inject`]:
-//! injectables first, banner next, the writing and language rules last
-//! (followed by the previous reply's clarity defects, when it failed). The
+//! injectables first, banner next, the writing and language rules last (the
+//! previous reply's clarity defects no longer ride here: the end-of-turn check
+//! hands them over in its own block). The
 //! dispatcher fold would join separate Injects too, but in registry order;
 //! this is the only `Check` that
 //! injects on this event, so composing here keeps the order stated in one
@@ -67,7 +68,6 @@
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::events::economy;
 use crate::hooks::observe::amend_window_inject::close_amend_windows_for_session;
-use crate::hooks::task::clarity_check::take_feedback;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::ProjectConfig;
@@ -309,28 +309,16 @@ pub(crate) fn declares_didactic(root: &Path) -> bool {
         == Some(mustard_core::Tone::Didactic)
 }
 
-/// As regras de escrita — a do tom, quando declarado, e a do idioma — e, logo
-/// depois delas, os defeitos da resposta anterior quando ela reprovou na
-/// medição de clareza. Os defeitos só andam com uma regra: sem `mustard.json`
-/// nada foi medido. Só o irmão que carrega os blocos do evento lê o registro,
-/// porque ler o apaga — um irmão que não entrega não pode consumi-lo. `None`
-/// sem regra ou fora desse irmão.
-fn writing_blocks(
-    tone: Option<String>,
-    language: Option<String>,
-    carries: bool,
-    cwd: &str,
-    session: Option<&str>,
-) -> Option<String> {
+/// As regras de escrita — a do tom, quando declarado, e a do idioma. Só o
+/// irmão que carrega os blocos do evento as leva. `None` sem regra ou fora
+/// desse irmão. Os defeitos da resposta anterior não andam mais aqui: a
+/// conferência do fim da resposta os entrega no próprio bloqueio.
+fn writing_blocks(tone: Option<String>, language: Option<String>, carries: bool) -> Option<String> {
     if !carries {
         return None;
     }
-    let mut blocks: Vec<String> = [tone, language].into_iter().flatten().collect();
-    if blocks.is_empty() {
-        return None;
-    }
-    blocks.extend(take_feedback(cwd, session));
-    Some(blocks.join("\n\n"))
+    let blocks: Vec<String> = [tone, language].into_iter().flatten().collect();
+    (!blocks.is_empty()).then(|| blocks.join("\n\n"))
 }
 
 /// The installation-gate refusal (didactic, short, technical EN).
@@ -397,11 +385,9 @@ impl Check for PromptSubmitInject {
         // Em que idioma responder: vale para todo projeto instalado, qualquer
         // que seja o tom.
         let language = language_rule(Path::new(&cwd));
-        // As regras seguidas dos defeitos da resposta anterior, quando ela
-        // reprovou na medição de clareza — entregues uma vez, e só por este
-        // irmão quando é ele quem carrega os blocos do evento.
-        let writing =
-            writing_blocks(tone, language, carries_shared_blocks, &cwd, input.session_id.as_deref());
+        // As regras de escrita, só por este irmão quando é ele quem carrega os
+        // blocos do evento.
+        let writing = writing_blocks(tone, language, carries_shared_blocks);
         // ANY slash command — Mustard's or a third party's — receives neither
         // injectables nor the banner: the flow that expanded owns the turn, and
         // a router that reclassifies an interview's answers opens a work unit
@@ -596,7 +582,7 @@ mod tests {
     /// fora do tom didático, nem nele. Com pt-BR declarado, o defeito continua.
     #[test]
     fn undeclared_language_is_never_assumed() {
-        use crate::hooks::task::clarity_check::ClarityCheck;
+        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 
         let english = "The wave is done and the tests pass.\n\
             The check now compares the language of the reply with the language of the project.\n\
@@ -614,8 +600,11 @@ mod tests {
             let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
             (dir, c)
         };
+        // O texto do veredito: a regra que o prompt leva, ou o bloqueio e o
+        // aviso do fim da resposta.
         let context_of = |verdict: Verdict| match verdict {
             Verdict::Inject { context } => context,
+            Verdict::Deny { reason } => reason,
             _ => String::new(),
         };
 
@@ -632,22 +621,15 @@ mod tests {
             }
 
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            let note = context_of(ClarityCheck.evaluate(&stop, &on_stop).expect("the check never errors"));
-            let next = context_of(
-                PromptSubmitInject
-                    .evaluate(&prompt_input_with_session("e agora?", "s1"), &c)
-                    .expect("the gate never errors"),
-            );
-            for text in [&note, &next] {
-                assert!(!text.contains("resposta em"), "{config}: no language verdict: {text}");
-            }
+            let block = context_of(EndOfTurnCheck.evaluate(&stop, &on_stop).expect("the check never errors"));
+            assert!(!block.contains("resposta em"), "{config}: no language verdict: {block}");
         }
 
-        // Com pt-BR declarado, a mesma resposta continua apontada.
+        // Com pt-BR declarado, a mesma resposta continua barrada pelo idioma.
         let (_dir, c) = project(r#"{"specLang":"pt-BR"}"#);
         let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
-        let note = context_of(ClarityCheck.evaluate(&stop, &on_stop).expect("the check never errors"));
-        assert!(note.contains("resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{note}");
+        let block = context_of(EndOfTurnCheck.evaluate(&stop, &on_stop).expect("the check never errors"));
+        assert!(block.contains("resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{block}");
     }
 
     /// O veredito de um prompt que não recebe injetável nem aviso num projeto
@@ -660,11 +642,12 @@ mod tests {
     /// AC-12 — a regra de idioma e a medição de idioma valem para todo projeto
     /// com `mustard.json`, qualquer que seja o tom. Sem tom declarado e com tom
     /// técnico, o prompt leva a regra (e não a do tom didático), e uma resposta
-    /// em inglês num projeto em pt-BR volta com o defeito de idioma, na nota e
-    /// na mensagem seguinte. Sem `mustard.json`, nada.
+    /// em inglês num projeto em pt-BR é barrada no fim da resposta com o
+    /// defeito de idioma; a mensagem seguinte não o repete. Sem `mustard.json`,
+    /// nada.
     #[test]
     fn language_rule_reaches_every_mustard_project() {
-        use crate::hooks::task::clarity_check::ClarityCheck;
+        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 
         let english = "The wave is done and the tests pass.\n\
             The check now compares the language of the reply with the language of the project.\n\
@@ -694,20 +677,20 @@ mod tests {
             assert!(!context.contains("ONE idea per sentence"), "{config}: the tone rule stays gated: {context}");
 
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            let Verdict::Inject { context: note } =
-                ClarityCheck.evaluate(&stop, &on_stop).expect("the check never errors")
+            let Verdict::Deny { reason } =
+                EndOfTurnCheck.evaluate(&stop, &on_stop).expect("the check never errors")
             else {
-                panic!("{config}: an English reply in a pt-BR project speaks");
+                panic!("{config}: an English reply in a pt-BR project is blocked");
             };
-            assert!(note.contains(defect), "{config}: {note}");
+            assert!(reason.contains(defect), "{config}: {reason}");
 
             let next = PromptSubmitInject
                 .evaluate(&prompt_input_with_session("e agora?", "s1"), &c)
                 .expect("the gate never errors");
             let Verdict::Inject { context: next } = next else {
-                panic!("{config}: the next prompt carries the defect, got {next:?}");
+                panic!("{config}: the next prompt still carries the rule, got {next:?}");
             };
-            assert!(next.contains(defect), "{config}: {next}");
+            assert!(!next.contains(defect), "{config}: the defect rode the block, not the next prompt: {next}");
         }
 
         // Sem `mustard.json` os ganchos ficam calados: nem regra, nem medição.
@@ -721,7 +704,7 @@ mod tests {
             "an uninstalled project gets no rule: {verdict:?}",
         );
         let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
-        assert_eq!(ClarityCheck.evaluate(&stop, &on_stop).expect("the check never errors"), Verdict::Allow);
+        assert_eq!(EndOfTurnCheck.evaluate(&stop, &on_stop).expect("the check never errors"), Verdict::Allow);
     }
 
     /// The accented spelling a Brazilian operator actually writes is accepted.
@@ -1105,13 +1088,13 @@ mod tests {
 
     /// AC-12 — o pior caso da primeira mensagem da sessão cabe numa resposta de
     /// gancho: o arquivo de regras injetado (`orchestrator.md`, o que a
-    /// instalação semeia), o aviso de pipeline em curso, a regra de tom e os
-    /// defeitos da resposta anterior no limite. Tudo sai numa só resposta, sob
-    /// um só teto de 10.000 caracteres — medido na resposta inteira, já em JSON.
+    /// instalação semeia), o aviso de pipeline em curso, a regra de tom e a de
+    /// idioma. Tudo sai numa só resposta, sob um só teto de 10.000 caracteres —
+    /// medido na resposta inteira, já em JSON. Os defeitos da resposta
+    /// anterior não entram mais aqui: vão no bloqueio do fim da resposta.
     #[test]
     fn prompt_submit_inject_stays_under_hook_ceiling() {
         use crate::hook_output::hook_specific_output;
-        use crate::hooks::task::clarity_check::ClarityCheck;
         use mustard_core::domain::model::contract::Outcome;
 
         let (dir, c) = ctx();
@@ -1128,19 +1111,6 @@ mod tests {
         std::fs::create_dir_all(paths.pipeline_states_dir()).unwrap();
         std::fs::write(paths.pipeline_state_file("uma-unidade-com-um-nome-bem-comprido"), "{}").unwrap();
 
-        // A resposta anterior reprova com defeitos no limite: mais do que a
-        // lista mostra, cada um mais longo do que o corte.
-        let long = vec!["palavraextraordinariamentecomprida"; 40].join(" ");
-        let stop = HookInput {
-            hook_event_name: Some("Stop".to_string()),
-            session_id: Some("s1".to_string()),
-            raw: serde_json::json!({ "last_assistant_message": format!("{long}.\n").repeat(60) }),
-            ..HookInput::default()
-        };
-        let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-        let note = ClarityCheck.evaluate(&stop, &on_stop).unwrap();
-        assert!(matches!(note, Verdict::Inject { .. }), "the reply failed: {note:?}");
-
         let verdict =
             PromptSubmitInject.evaluate(&prompt_input_with_session("como eu faço X?", "s1"), &c).unwrap();
         let mut outcome = Outcome::allow();
@@ -1156,13 +1126,55 @@ mod tests {
             ("the injected rules", rules),
             ("the banner", PIPELINE_IN_FLIGHT_BANNER),
             ("the tone rule", "ONE idea per sentence"),
-            ("the defects", "A sua resposta anterior reprovou"),
-            ("the capped rest", "- e mais "),
+            ("the language rule", "in the language they write in"),
         ] {
             assert!(context.contains(needle), "{what} missing: {context}");
         }
         let size = json.chars().count();
         assert!(size < 10_000, "{size} characters in one hook response");
+    }
+
+    /// O `fold` junta os `Inject` de uma invocação, e no `UserPromptSubmit` e
+    /// no `SessionStart` um só `Check` injeta: a regra de escrita chega uma
+    /// vez, na ordem de quem a compõe. Morava no `clarity_check`, quando ele
+    /// guardava os defeitos para esta mensagem levar.
+    #[test]
+    fn prompt_and_session_start_have_one_injecting_check() {
+        use crate::registry::Registry;
+        use mustard_core::domain::model::contract::Outcome;
+
+        let (dir, c) = ctx();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"specLang":"pt-BR","tone":"didactic"}"#).unwrap();
+        let registry = Registry::new();
+        let on_prompt = prompt_input_with_session("e agora?", "s1");
+        let on_start = HookInput {
+            hook_event_name: Some("SessionStart".to_string()),
+            session_id: Some("s1".to_string()),
+            ..HookInput::default()
+        };
+        for (name, trigger, input) in [
+            ("UserPromptSubmit", Trigger::UserPromptSubmit, &on_prompt),
+            ("SessionStart", Trigger::SessionStart, &on_start),
+        ] {
+            let at = Ctx { trigger: Some(trigger), ..c.clone() };
+            let mut outcome = Outcome::allow();
+            let mut injecting = Vec::new();
+            for module in registry.applicable(trigger, None) {
+                let Some(check) = &module.check else { continue };
+                let verdict = check.evaluate(input, &at).unwrap_or(Verdict::Allow);
+                if matches!(verdict, Verdict::Inject { .. }) {
+                    injecting.push(module.id);
+                }
+                outcome.fold(verdict);
+            }
+            assert!(injecting.len() <= 1, "{name}: {injecting:?} would share one response");
+            if name == "UserPromptSubmit" {
+                let Verdict::Inject { context } = &outcome.verdict else {
+                    panic!("the prompt carries the rule: {:?}", outcome.verdict);
+                };
+                assert_eq!(context.matches("ONE idea per sentence").count(), 1, "{context}");
+            }
+        }
     }
 
     #[test]

@@ -78,12 +78,12 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     }
 
     // `Stop` blocks the same way: a top-level `{"decision":"block", …}` (the
-    // `stop_gate` QA-verification gate), NOT the `PreToolUse` permissionDecision
+    // `end_of_turn_check` end-of-reply check), NOT the `PreToolUse` permissionDecision
     // member — that member does not exist for Stop, so the harness would reject
     // the whole response and the gate would silently never fire. We carry the
     // reason on BOTH channels: the top-level `reason` and a
     // `hookSpecificOutput.additionalContext` mirror (the feedback member the
-    // current Stop contract reads), so the failing-AC guidance reaches Claude
+    // current Stop contract reads), so the text of the block reaches Claude
     // regardless of which member the running harness honours. Exit stays 0 —
     // the whole binary expresses blocking through JSON, never a non-zero exit
     // (rt `## Guards`), so the exit-2 blocking path never applies here.
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn stop_deny_emits_top_level_block_with_additional_context() {
-        // A Stop deny (the `stop_gate`) speaks the Stop blocking shape: a
+        // A Stop deny (the `end_of_turn_check`) speaks the Stop blocking shape: a
         // top-level `decision: "block"` + `reason`, mirrored into
         // `hookSpecificOutput.additionalContext` — never the PreToolUse
         // permissionDecision member (rejected wholesale for Stop). Exit stays 0.

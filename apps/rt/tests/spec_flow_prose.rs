@@ -692,10 +692,10 @@ const SUPERSEDED: &[(&str, &str)] = &[
 ///
 /// Numa sessão por SSH o `file://` aponta para o disco do servidor, e o
 /// navegador de lá nunca chega ao usuário: foi assim que ele ficou sem ler a
-/// spec em 10/09/2026. As duas metades são lidas: a prosa (o parágrafo do §3,
-/// entre a chamada do `spec-doc` e o roteamento, e o inviolável) e o gancho que
-/// reconhece a sessão remota pelas MESMAS variáveis — uma prosa que nomeasse
-/// outra ensinaria um critério que o motor não usa.
+/// spec em 10/09/2026. A prosa é lida: o parágrafo do §3, entre a chamada do
+/// `spec-doc` e o roteamento, e o inviolável. O gancho do fim da resposta que
+/// também reconhecia a sessão remota (`spec_doc_present`) saiu na onda 2 do
+/// Mustard enxuto; a regra fica só na prosa.
 #[test]
 fn spec_door_teaches_remote_publishing() {
     // O checkout do Windows entrega a prosa com CRLF, e o recorte por
@@ -722,13 +722,6 @@ fn spec_door_teaches_remote_publishing() {
     assert!(
         rule.contains("claude.ai") && rule.contains("SSH"),
         "the inviolable never says what counts as the page in a remote session: {rule}",
-    );
-
-    // A metade do motor: o gancho de entrega reconhece a mesma sessão remota.
-    let hook = read("apps/rt/src/hooks/task/spec_doc_present.rs");
-    assert!(
-        hook.contains("\"SSH_CONNECTION\"") && hook.contains("\"SSH_CLIENT\""),
-        "the delivery hook no longer detects SSH by the variables the prose names",
     );
 }
 

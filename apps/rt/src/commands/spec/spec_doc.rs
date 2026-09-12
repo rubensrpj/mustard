@@ -399,13 +399,6 @@ fn short_title(spec_text: &str, heading: &str) -> (String, Option<String>) {
     }
 }
 
-/// O idioma e o tom de uma spec já montados, para quem fala da página ao
-/// usuário fora dela — a mensagem de entrega do fim de resposta.
-#[must_use]
-pub(crate) fn spec_i18n(root: &Path, spec_dir: &Path) -> I18n {
-    i18n_for(root, &read_meta(spec_dir))
-}
-
 /// O idioma da spec (`meta.json#lang`, que nasce do `specLang`) e o tom do
 /// projeto. Sem idioma na spec, vale o do projeto.
 fn i18n_for(root: &Path, meta: &Meta) -> I18n {

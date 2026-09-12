@@ -10,7 +10,7 @@
 //!   `.claude/.harness/` exists, prunes legacy archived sessions older than
 //!   30 days, and emits a `session.start` event. Events live in per-spec /
 //!   per-session NDJSON logs under `.claude/` (the `mustard.db` SQLite store
-//!   was retired — see `session_stop_observer`).
+//!   was retired).
 //! - terrain census — projects `grain.model.json` into a once-per-session
 //!   terrain map injected as `additionalContext` (the only injection; the
 //!   legacy persistent-memory block was retired — durable prose knowledge is
@@ -616,12 +616,10 @@ const PRUNE_NOTICE_NAMES: usize = 4;
 /// does not nag it) and whenever nothing is owed. Fail-open throughout: a git
 /// that cannot answer yields no advisory.
 ///
-/// **Shared with the `Stop` gate, deliberately.** Session start is the wrong
-/// moment on its own: the debt is BORN mid-session, at the merge, and the agent
-/// that created it is the only party this notice never reached — the statusline
-/// shows the same count live, but only to the human. `stop_gate` calls this at
-/// the end of every turn, which is the first moment the party responsible is
-/// still present. One builder, one wording, two moments.
+/// **Session start only, since the `stop_gate` left.** It also called this at
+/// the end of every turn, because the debt is BORN mid-session, at the merge;
+/// that end-of-turn copy left with it (Mustard enxuto, wave 2), and mid-session
+/// the statusline still shows the same count live to the human.
 pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
