@@ -19,11 +19,14 @@
 //! --exact`, and libtest matches `--exact` against the FULL test path — which
 //! equals the bare function name only at the root of an integration-test binary.
 
-use mustard_rt::commands::spec::spec_draft::{run, SpecDraftOpts};
+use mustard_rt::commands::spec::spec_draft::{run_at, SpecDraftOpts};
 use std::path::{Path, PathBuf};
 
-/// Draft options with an explicit `--output`, so the run never depends on the
-/// process working directory or on the near-duplicate sibling scan.
+/// Draft options with an explicit `--output`, so the draft lands in the test's
+/// folder and never depends on the near-duplicate sibling scan. The draft runs
+/// through `run_at`, with the same temporary folder as the project: the process
+/// working directory is the real checkout, where the spec name would come from
+/// the current branch and the draft's phase event would land in the real spec.
 fn opts(output: &Path) -> SpecDraftOpts {
     SpecDraftOpts {
         intent: "Record the harness safety instruments".into(),
@@ -64,7 +67,7 @@ fn spec_draft_accepts_an_events_only_directory() {
     let out = tmp.path().join("harness-safety-instruments");
     let seeded = seed_event_log(&out);
 
-    run(opts(&out));
+    assert_eq!(run_at(tmp.path(), opts(&out)), 0);
 
     assert!(
         out.join("spec.md").exists(),
@@ -83,7 +86,7 @@ fn spec_draft_accepts_an_events_only_directory() {
     std::fs::create_dir_all(&occupied).unwrap();
     std::fs::write(occupied.join("spec.md"), b"# Hand-written spec\n").unwrap();
 
-    run(opts(&occupied));
+    assert_eq!(run_at(tmp.path(), opts(&occupied)), 0);
 
     let body = std::fs::read_to_string(occupied.join("spec.md")).unwrap();
     assert_eq!(

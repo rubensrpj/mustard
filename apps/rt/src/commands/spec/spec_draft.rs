@@ -1009,7 +1009,8 @@ pub fn run(opts: SpecDraftOpts) {
 ///
 /// Returns the exit code [`run`] applies: `2` when the fused materialisation
 /// refused, `0` otherwise.
-pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
+#[must_use]
+pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     let Some(scope) = Scope::parse(&opts.scope) else {
         emit_error("invalid --scope (expected `light` or `full`)", &opts.scope);
         return 0;

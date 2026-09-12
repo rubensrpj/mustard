@@ -24,7 +24,7 @@
 //! function name only at the root of an integration-test binary.
 
 use mustard_rt::commands::review::analyze_validation::validate;
-use mustard_rt::commands::spec::spec_draft::{run, SpecDraftOpts};
+use mustard_rt::commands::spec::spec_draft::{run_at, SpecDraftOpts};
 use serde_json::{json, Value};
 
 /// The `context-not-prose` issue in a validation result, if any.
@@ -39,7 +39,9 @@ fn drafted_context_is_prose_only() {
     // --- 1. A freshly drafted skeleton is clean ---------------------------
     for (scope, lang, waves) in [("light", "en-US", 0), ("full", "pt-BR", 2)] {
         let out = tmp.path().join(format!("draft-{scope}-{lang}"));
-        run(SpecDraftOpts {
+        // O projeto é a pasta temporária: a pasta do processo é o checkout de
+        // verdade, e a fase gravada no fim do rascunho iria parar na spec real.
+        let code = run_at(tmp.path(), SpecDraftOpts {
             intent: "Keep the harness honest about what it measured".into(),
             slug: None,
             scope: scope.into(),
@@ -55,6 +57,7 @@ fn drafted_context_is_prose_only() {
             query_terms: None,
             force_scope: false,
         });
+        assert_eq!(code, 0, "{scope}/{lang}: the draft exits clean");
 
         let spec_md = out.join("spec.md");
         let body = std::fs::read_to_string(&spec_md)
