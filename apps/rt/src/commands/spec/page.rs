@@ -4,8 +4,9 @@
 //! do Google Fonts:
 //!
 //! - `page --body <arquivo.md> --out <página.html> [--title <t>]
-//!   [--subtitle <s>] [--kind <rótulo>] [--lang <bcp47>]` gera uma página
-//!   avulsa (análise, relatório, plano) a partir de markdown. O assistente
+//!   [--subtitle <s>] [--kind <rótulo>]` gera uma página avulsa (análise,
+//!   relatório, plano) a partir de markdown, no idioma do texto do projeto,
+//!   sem opção para escolher outro. O assistente
 //!   escreve markdown, nunca HTML: HTML dentro do markdown sai escapado. Sem
 //!   `--title`, o título é a primeira linha `# Título` do markdown, que sai
 //!   do corpo.
@@ -43,8 +44,6 @@ pub struct PageOpts {
     pub subtitle: Option<String>,
     /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
     pub kind: Option<String>,
-    /// Idioma BCP-47 do atributo `lang`; sem ele, o idioma do projeto.
-    pub lang: Option<String>,
 }
 
 /// Por que uma página avulsa não foi gerada.
@@ -107,7 +106,7 @@ pub(crate) fn build(opts: &PageOpts) -> Value {
         },
     };
     let doc = Document {
-        lang: non_blank(opts.lang.as_deref()).unwrap_or(lang.as_str()).to_string(),
+        lang: lang.as_str().to_string(),
         kind: non_blank(opts.kind.as_deref()).map(str::to_string),
         title,
         meta: non_blank(opts.subtitle.as_deref()).map(|s| Meta::Note(s.to_string())).into_iter().collect(),
@@ -155,7 +154,6 @@ mod tests {
             title: title.map(str::to_string),
             subtitle: Some("onda 4".to_string()),
             kind: Some("plano".to_string()),
-            lang: Some("pt-BR".to_string()),
         }
     }
 
@@ -196,6 +194,23 @@ mod tests {
         assert_eq!(build(&opts(root, Some("Relatório")))["ok"], json!(true));
         let html = fs::read_to_string(root.join("paginas/plano.html")).unwrap();
         assert!(html.contains("<h1>Relatório</h1>") && html.contains("<p>Só um parágrafo.</p>"), "{html}");
+    }
+
+    /// A página sai no idioma do texto do projeto: sem idioma declarado, em
+    /// português do Brasil; num projeto em inglês, em inglês.
+    #[test]
+    fn a_page_comes_out_in_the_project_text_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("corpo.md"), "# Plan\n\nOne paragraph.").unwrap();
+        assert_eq!(build(&opts(root, None))["ok"], json!(true));
+        let html = fs::read_to_string(root.join("paginas/plano.html")).unwrap();
+        assert!(html.contains("<html lang=\"pt-BR\">"), "{html}");
+
+        fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        assert_eq!(build(&opts(root, None))["ok"], json!(true));
+        let html = fs::read_to_string(root.join("paginas/plano.html")).unwrap();
+        assert!(html.contains("<html lang=\"en-US\">"), "{html}");
     }
 
     /// Sem título, sem corpo legível ou sem nada pedido: recusa com a razão e

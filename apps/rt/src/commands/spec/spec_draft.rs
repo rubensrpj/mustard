@@ -11,7 +11,6 @@
 //! mustard-rt run spec-draft \
 //!     --intent "<free-text intent>" \
 //!     --scope  light|full \
-//!     --lang   pt-BR|en-US \
 //!     [--slug  <the name the base gate minted>] \
 //!     [--signals layers,files,...] \
 //!     [--output PATH] \

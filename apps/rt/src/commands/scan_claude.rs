@@ -128,11 +128,11 @@ fn find_sentinel_span(content: &str) -> Option<(usize, usize)> {
 /// whole FILE is machine-owned, so no sentinels are needed; ends in exactly
 /// one newline (byte-stable).
 ///
-/// Language follows `mustard.json#lang` (`lang`): the map is DISPLAYED to the
-/// developer and injected as orientation, so it is user-facing text, not an
-/// internal index (finding #1 of the 2026-07 SOLID audit). A project with no
-/// declared locale defaults to `pt-BR` via [`mustard_core::ProjectConfig::i18n`],
-/// so existing installs are unchanged.
+/// Language follows the project's text language (`language.text` in
+/// `mustard.json`): the map is DISPLAYED to the developer and injected as
+/// orientation, so it is user-facing text, not an internal index. A project
+/// with no declared language gets `pt-BR`
+/// ([`mustard_core::Language::text_or_default`]).
 pub(crate) fn render_map(
     kind: &str,
     code_files: usize,
@@ -458,10 +458,9 @@ fn run_full(
     let mut regenerated: Vec<String> = Vec::new();
     let mut over_cap: Vec<OversizedEntry> = Vec::new();
 
-    // The scan-map language follows the project's declared locale
-    // (`mustard.json#lang`) — resolved once at the scan root, applied to every
-    // unit. Fail-open: no/unreadable config ⇒ `i18n()`'s `pt-BR` default, so
-    // existing installs render exactly as before (finding #1, SOLID audit).
+    // The scan-map language follows the project's text language — resolved
+    // once at the scan root, applied to every unit. Fail-open: no or
+    // unreadable config gives the `pt-BR` default.
     let lang = crate::shared::context::project_config_cached(root).language().text_or_default();
 
     // A PRIVATE install keeps its footprint out of the host repository's git, so
@@ -937,7 +936,7 @@ Keep me.
 
     #[test]
     fn map_follows_declared_locale_en() {
-        // finding #1 (SOLID audit): an `en-US` project gets an English map;
+        // An `en-US` project gets an English map;
         // a project with no declared locale keeps the pt-BR default (asserted
         // by the sibling tests). The header + pointer both route through i18n.
         let out = render_map("rust", 12, &no_commands(), SupportedLocale::EnUs);

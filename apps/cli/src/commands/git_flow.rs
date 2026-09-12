@@ -1,8 +1,9 @@
 //! Git-flow + language configuration for the project-root `mustard.json`.
 //!
 //! Probes the repository (default branch, current branch, submodules),
-//! collects the user's choices (the **text language** and the **code
-//! language**), detects the build/test/lint/type-check command set
+//! collects the user's choice of **text language** (names in the code are
+//! always English, so there is no code language to ask for), detects the
+//! build/test/lint/type-check command set
 //! agnostically (no hardcoded `npm`), and folds all of it into the single
 //! [`ProjectConfig`] written at the project root. There is no private config
 //! struct here any more — the one schema lives in `mustard_core`.
@@ -48,8 +49,6 @@ pub struct Choices {
     provider: String,
     /// The text language the operator picked; `None` when nothing was asked.
     text_language: Option<String>,
-    /// The code language the operator picked; `None` when nothing was asked.
-    code_language: Option<String>,
 }
 
 /// Run a `git` subcommand in `cwd`, returning trimmed stdout on success.
@@ -137,7 +136,6 @@ pub fn collect_choices(
             dev_branch: existing_dev.unwrap_or_default(),
             provider: existing_provider,
             text_language: None,
-            code_language: None,
         });
     }
 
@@ -176,9 +174,10 @@ pub fn collect_choices(
     // EXISTING declaration is carried forward untouched here.
     let provider = existing_provider;
 
-    // The two languages, each on its own key: the one people read and the one
-    // the names in the code are written in. A language the project already
-    // declared pre-selects its row.
+    // Only the language people read is asked. Names in the code are always
+    // English, so a question about them would have one right answer and could
+    // only record a wrong one. A language the project already declared
+    // pre-selects its row.
     let declared = existing.language();
     let texts = ["pt-BR", "en-US"];
     let text_idx = Select::with_theme(&theme)
@@ -188,20 +187,11 @@ pub fn collect_choices(
         .interact()
         .context("reading the text language")?;
 
-    let codes = ["en", "pt"];
-    let code_idx = Select::with_theme(&theme)
-        .with_prompt("Code language (names of variables, functions, files, commands)")
-        .items(codes)
-        .default(declared.code.as_deref().and_then(|c| codes.iter().position(|x| *x == c)).unwrap_or(0))
-        .interact()
-        .context("reading the code language")?;
-
     Ok(Choices {
         production,
         dev_branch,
         provider,
         text_language: Some(texts[text_idx].to_string()),
-        code_language: Some(codes[code_idx].to_string()),
     })
 }
 
@@ -250,12 +240,10 @@ pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path)
     // Only a language the operator chose is written, in the catalogue
     // spelling. Nothing is asked outside the interactive mode, and then the
     // project keeps what it declared — or stays without a language, which is
-    // never supposed for it.
+    // never supposed for it. The code language is never written: it is not
+    // asked, because names in the code are always English.
     if let Some(text) = choices.text_language.as_deref().and_then(|t| t.parse::<SupportedLocale>().ok()) {
         config.language.text = Some(text.as_str().to_string());
-    }
-    if let Some(code) = choices.code_language.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-        config.language.code = Some(code.to_string());
     }
 }
 
@@ -400,7 +388,6 @@ mod tests {
             dev_branch: "dev".into(),
             provider: "gitlab".into(),
             text_language: Some("en-US".into()),
-            code_language: Some("en".into()),
         };
         apply_choices(&mut config, &choices, dir.path());
 
@@ -409,9 +396,11 @@ mod tests {
         // Cargo project → cargo build, never npm.
         assert_eq!(config.build_command.as_deref(), Some("cargo build"));
         assert_eq!(config.language().text, Some(SupportedLocale::EnUs));
-        assert_eq!(config.language().code.as_deref(), Some("en"));
+        // Names in the code are always English: the install never asks for a
+        // code language, so it never writes one.
+        assert_eq!(config.language().code, None);
         let written = serde_json::to_string(&config).expect("serialises");
-        assert!(written.contains(r#""language":{"text":"en-US","code":"en"}"#), "{written}");
+        assert!(written.contains(r#""language":{"text":"en-US"}"#), "{written}");
         assert!(!written.contains("specLang") && !written.contains("tone"), "{written}");
     }
 
@@ -428,7 +417,7 @@ mod tests {
         std::fs::write(old.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#).unwrap();
         let mut config = ProjectConfig::load(old.path());
         let choices = collect_choices(&probed, &config, false).expect("nothing is asked");
-        assert!(choices.text_language.is_none() && choices.code_language.is_none());
+        assert!(choices.text_language.is_none());
         apply_choices(&mut config, &choices, old.path());
         config.write(old.path()).unwrap();
         let raw = std::fs::read_to_string(old.path().join("mustard.json")).unwrap();
@@ -474,7 +463,6 @@ mod tests {
             dev_branch: String::new(),
             provider: "github".into(),
             text_language: None,
-            code_language: None,
         };
         apply_choices(&mut config, &choices, dir.path());
         // User's command survives; detection does not clobber it.

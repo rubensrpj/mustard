@@ -131,7 +131,7 @@ fn dag_wave_to_entry(w: &Value, primary_role_for: &dyn Fn(i64) -> String) -> Wav
 /// now delegated wholesale to
 /// [`crate::commands::wave::wave_scaffold`], so a decomposed-at-EXECUTE
 /// plan is byte-identical in form to a scaffolded-at-PLAN one.
-fn dag_to_plan(waves: &[Value], lang: &str) -> Plan {
+fn dag_to_plan(waves: &[Value]) -> Plan {
     // Resolve each wave number to its primary role first, so a dependency
     // wikilink can name the dependee's canonical `wave-{m}-{role}` folder.
     let primary_by_num: std::collections::BTreeMap<i64, String> = waves
@@ -160,7 +160,6 @@ fn dag_to_plan(waves: &[Value], lang: &str) -> Plan {
     Plan {
         waves: entries,
         total_waves: Some(total),
-        lang: Some(lang.to_string()),
     }
 }
 
@@ -309,18 +308,11 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    `wave-plan.md` + each `wave-N/spec.md` with the same i18n /
         //    wikilink / heading machinery `/feature` uses at PLAN. No freeform
         //    renderer here — the output is byte-identical in form.
-        // The waves are written in the project's text language, as the parent
-        // spec is.
-        let lang = mustard_core::ProjectConfig::load(&project_root)
-            .language()
-            .text_or_default()
-            .as_str()
-            .to_string();
-        let mut plan = dag_to_plan(&waves, &lang);
+        let mut plan = dag_to_plan(&waves);
         carry_parent_criteria(&mut plan, &spec_text);
         // Wave headings are ENGLISH-FIXED machine artefacts, so a decomposed-at-
-        // EXECUTE spec stays form-identical to a scaffolded-at-PLAN one regardless
-        // of the parent spec's recorded `lang`.
+        // EXECUTE spec stays form-identical to a scaffolded-at-PLAN one whatever
+        // the project's text language.
         //
         // O conjunto DESTA porta traz a nota que declara a régua como união do
         // pai — ver [`carry_parent_criteria`]. O `wave-plan.md` não a lê, então
@@ -454,9 +446,8 @@ mod tests {
             json!({ "wave": 1, "files": ["src/domain/user.rs"], "roles": ["domain"], "dependsOn": [] }),
             json!({ "wave": 2, "files": ["src/api/handler.rs"], "roles": ["api"], "dependsOn": [1] }),
         ];
-        let plan = dag_to_plan(&waves, "en-US");
+        let plan = dag_to_plan(&waves);
         assert_eq!(plan.total_waves, Some(2));
-        assert_eq!(plan.lang.as_deref(), Some("en-US"));
         assert_eq!(plan.waves[0].n, 1);
         assert_eq!(plan.waves[0].role, "domain");
         assert!(plan.waves[0].depends_on.is_empty());
@@ -489,7 +480,7 @@ mod tests {
                       - **AC-1** — alpha holds. Command: `cargo test alpha`\n\
                       - **AC-2** — beta holds. Command: `cargo test beta`\n";
 
-        let mut plan = dag_to_plan(&waves, "pt-BR");
+        let mut plan = dag_to_plan(&waves);
         assert!(plan.waves[0].satisfies.is_empty(), "precondição: o DAG não declara nada");
         carry_parent_criteria(&mut plan, parent);
         assert_eq!(plan.waves[0].satisfies, vec!["AC-1".to_string(), "AC-2".to_string()]);
@@ -535,7 +526,7 @@ mod tests {
         );
 
         // Um pai sem critério nenhum deixa o plano exatamente como estava.
-        let mut untouched = dag_to_plan(&waves, "pt-BR");
+        let mut untouched = dag_to_plan(&waves);
         carry_parent_criteria(&mut untouched, "# Epic\n\nsem critérios\n");
         assert!(untouched.waves.iter().all(|w| w.satisfies.is_empty()));
     }
@@ -551,12 +542,11 @@ mod tests {
             json!({ "wave": 1, "files": ["src/a.ts"], "roles": ["general"], "dependsOn": [] }),
             json!({ "wave": 2, "files": ["src/b.ts"], "roles": ["frontend"], "dependsOn": [1] }),
         ];
-        let lang = "pt-BR";
         // Both paths render through the SAME ENGLISH-FIXED heading set (machine
-        // artefact), so the byte-equality holds regardless of the plan's `lang`.
+        // artefact), so the byte-equality holds whatever the project's language.
         let hd = crate::commands::wave::wave_scaffold::headings();
         // Path A: the re-wave converter + canonical renderer.
-        let plan_a = dag_to_plan(&waves, lang);
+        let plan_a = dag_to_plan(&waves);
         let rendered_a = render_wave_plan(&plan_a, &hd, None, "epic-x");
         // Path B: a Plan built directly with the same canonical fields (what a
         // PLAN-time scaffold of the same shape would feed the renderer).
@@ -586,7 +576,6 @@ mod tests {
                 },
             ],
             total_waves: Some(2),
-            lang: Some(lang.to_string()),
         };
         let rendered_b = render_wave_plan(&plan_b, &hd, None, "epic-x");
         assert_eq!(rendered_a, rendered_b, "re-wave must render the canonical wave-plan.md byte-for-byte");

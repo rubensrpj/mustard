@@ -54,10 +54,6 @@ pub struct SpecSummaryDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
 
-    /// `didactic` or `technical`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tone: Option<String>,
-
     /// `light`, `medium`, or `full`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,

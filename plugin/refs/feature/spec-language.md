@@ -4,12 +4,12 @@
 
 ## Law
 
-- Spec narrative locale is BCP-47 only (`pt-BR`, `en-US`, …); short codes (`pt`, `en`) are rejected. Never mix languages inside one spec.
-- The narrative locale is the project's text language, `mustard.json` `language.text`; the spec takes no other, and `spec-draft` reads it itself. When the project declares none, ask once via AskUserQuestion and persist the answer to `language.text` (the language of names in the code is a separate key, `language.code`). No textual heuristic, ever.
+- Spec narrative locale is one of two values, `pt-BR` or `en-US`; short codes (`pt`, `en`) and any other value are rejected, and the project then counts as having declared no language. Never mix languages inside one spec.
+- The narrative locale is the project's text language, `mustard.json` `language.text`; the spec takes no other, and `spec-draft` reads it itself. When the project declares none, ask once via AskUserQuestion and persist the answer to `language.text` (names in the code are always English, whatever the text language). No textual heuristic, ever.
 - `spec.md` carries no `### Lang:` (or any lifecycle) header — metadata lives only in the `meta.json` sidecar (`spec-draft` and the `wave-scaffold` renderer inside `plan-materialize` write it; later phases read it there).
 - The voice is one, plain and didactic, in every project: there is no tone to configure.
 - Everything that is code stays English regardless of locale: identifiers, file paths, shell + AC `Command:` lines, log/error/exception strings, API string constants (unless replacing an already-localised one). Comments are the one exception, and they fall on the other side: every comment you write — in any form (`//`, `#`, `/* */`, `///`, `'''`, `"""`, doc-comments, `<!-- -->`) — follows the locale, exactly as the spec narrative does. Never translate pre-existing comments while editing; the locale rule governs only the new ones you write. `mustard-rt run language-audit` reports drift (`--strict` fails the build).
-- A `pt-BR` spec uses ALL PT `##` headings below; `en-US` keeps all EN. The `lang` value is a literal code, never translated. Banners are catalogued for `pt-BR` and `en-US`; other BCP-47 codes are accepted for the body and fall back to the default banner catalogue.
+- A `pt-BR` spec uses ALL PT `##` headings below; `en-US` keeps all EN. The `lang` value is a literal code, never translated. Banners and headings exist for `pt-BR` and `en-US` only.
 
 ## Headings (EN ↔ PT)
 

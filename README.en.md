@@ -292,12 +292,12 @@ pnpm test                          # same
   "typeCheckCommand": "cargo check",
   "language": {             // the two languages, each on its own key
     "text": "en-US",        // conversation, specs, pages, comments and commits
-    "code": "en"            // names in the code: variables, functions, files
+    "code": "en"            // names in the code: always English
   }
 }
 ```
 
-Mustard is language- and architecture-**agnostic**: generated text follows `language.text`, and names in the code follow `language.code`; the install writes only the language you choose. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
+Mustard is language- and architecture-**agnostic**: generated text follows `language.text`; names in the code (variables, functions, files, commands) are always English, so the install does not ask for a code language. The install asks only for the text language and writes only what you choose. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
 
 ---
 

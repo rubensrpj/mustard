@@ -261,7 +261,8 @@ pub struct LanguageConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// The language of the names in the code: variables, functions, files and
-    /// commands (`en`).
+    /// commands. Always `en`: code is written in English, so the installer
+    /// never asks for it and never writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 }

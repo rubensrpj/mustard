@@ -30,8 +30,7 @@
 //!     },
 //!     { "n": 2, "role": "general", "summary": "…", "depends_on": ["wave-1-general"] }
 //!   ],
-//!   "total_waves": 2,
-//!   "lang": "pt-BR"
+//!   "total_waves": 2
 //! }
 //! ```
 //!
@@ -67,13 +66,11 @@
 //! file block (the empty-tasks case emits a visible stderr WARN — see
 //! [`scaffold`]).
 //!
-//! `lang` accepts BCP-47 (`pt-BR` / `en-US`); the legacy short forms
-//! (`pt` / `en`) are tolerated on read for back-compat with old plan JSON
-//! and normalised to BCP-47 in the rendered headings. The *effective* heading
-//! language follows the project's `mustard.json` `language.text` (root wins) when the
-//! scaffold runs inside a workspace; the plan's `lang` is the fallback for a
-//! standalone scaffold. Every generated artefact (headings, placeholders) is
-//! rendered in that effective language per the i18n rule.
+//! The plan carries no language. The language every `meta.json` records is the
+//! project's text language, read through `ProjectConfig::language()` at the
+//! project the spec lives in (`pt-BR` when the project declares none); a `lang`
+//! key left in an old plan is ignored. The headings are English whatever the
+//! language: the layout is read back by machines, not by people.
 //!
 //! Idempotent, in both write modes (see [`WriteMode`]): re-running an UNCHANGED
 //! plan creates, refreshes and removes nothing. Before the user approves the
@@ -98,7 +95,7 @@ use std::path::Path;
 /// `pub(crate)` so the EXECUTE-entry re-wave path
 /// ([`crate::commands::wave::exec_rewave_check`]) can build the *same* entry
 /// shape from its DAG output and render through the canonical renderers here —
-/// rather than maintaining a second, divergent freeform renderer (F4-d item 2).
+/// rather than maintaining a second, divergent freeform renderer.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct WavePlanEntry {
     /// Wave number (1-based).
@@ -171,8 +168,6 @@ pub(crate) struct Plan {
     pub(crate) waves: Vec<WavePlanEntry>,
     #[serde(default, alias = "totalWaves")]
     pub(crate) total_waves: Option<u32>,
-    #[serde(default)]
-    pub(crate) lang: Option<String>,
 }
 
 /// Heading strings for the wave layout.
@@ -181,12 +176,12 @@ pub(crate) struct Plan {
 /// the `## Acceptance Criteria` union) and the per-wave `spec.md` skeletons
 /// (with their materialised `## Tasks` / `## Files` bodies and a `satisfies:`
 /// frontmatter line). They are ENGLISH-FIXED regardless of the
-/// project's configured language (only the user-facing spec narrative follows
-/// config-lang). The struct is retained (rather than inlining the literals) so
-/// the re-wave path renders through the same canonical renderers (F4-d item 2).
+/// project's text language (only the spec narrative people read follows
+/// it). The struct is retained (rather than inlining the literals) so
+/// the re-wave path renders through the same canonical renderers.
 ///
 /// `pub(crate)` so the re-wave path can render through the same canonical
-/// renderers (F4-d item 2).
+/// renderers.
 pub(crate) struct Headings<'a> {
     wave_plan_title: &'a str,
     table_header: &'a str,
@@ -229,10 +224,9 @@ pub(crate) struct Headings<'a> {
 /// Build the heading set. These render MACHINE artefacts — the operational
 /// `wave-plan.md` index (with the `## Acceptance Criteria` union) and the
 /// per-wave `spec.md` skeletons (with their `## Tasks` / `## Files` bodies) — so
-/// the headings are ENGLISH-FIXED regardless of the project's configured
-/// language (the reverted "generated artefacts follow config-lang" rule for
-/// machine artefacts; only the user-facing spec narrative still follows
-/// config-lang). The display names are the EN spellings
+/// the headings are ENGLISH-FIXED regardless of the project's text language
+/// (only the spec narrative people read follows it). The display names are
+/// the EN spellings
 /// `spec_sections::is_heading` recognises, so `agent-prompt-render` and the QA
 /// gate keep consuming the materialised body.
 pub(crate) fn headings() -> Headings<'static> {
@@ -1412,7 +1406,7 @@ const PLAN_SCHEMA_HINT: &str = concat!(
     "      \"acceptance\": [\"**AC-1** - handler returns 200. Command: `curl -sf ...`\"],\n",
     "      \"satisfies\": [\"AC-1\"] }\n",
     "  ],\n",
-    "  \"total_waves\": 1, \"lang\": \"en-US\"\n",
+    "  \"total_waves\": 1\n",
     "}\n",
     "[wave-scaffold] full schema: the /feature reference full-plan.md, \
      section `Plan JSON schema`",
@@ -1552,11 +1546,13 @@ pub(crate) fn scaffold_warning_to(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    // `lang` is recorded verbatim in meta.json (the spec-facing locale the plan
-    // declared — the user-facing narrative still follows config-lang). The
-    // headings, by contrast, render MACHINE artefacts, so they are ENGLISH-FIXED
-    // regardless of the configured language.
-    let lang = plan.lang.as_deref().unwrap_or("pt-BR");
+    // Every `meta.json` records the project's text language, the one the spec
+    // narrative is written in; the plan has no say. The headings, by contrast,
+    // render MACHINE artefacts, so they are ENGLISH-FIXED whatever it is.
+    let lang = mustard_core::ProjectConfig::load(&mustard_core::io::spec_events::spec_root(spec_dir))
+        .language()
+        .text_or_default()
+        .as_str();
     let hd = headings();
 
     let _ = fs::create_dir_all(spec_dir);
@@ -1618,7 +1614,7 @@ pub(crate) fn scaffold_warning_to(
         );
     }
 
-    // AC↔wave traceability (F6): TRÊS sinais são escaláveis, ENFORCED pelo
+    // AC↔wave traceability: TRÊS sinais são escaláveis, ENFORCED pelo
     // `plan-materialize` (a entrada do pipeline) — sem knob de ambiente — e o
     // quarto (onda sem régua) é aviso: sai aqui na stderr e viaja no relatório.
     // O spec monolítico do pai já foi lido acima (`parent_ac_md`); um pai
@@ -1674,7 +1670,7 @@ pub(crate) fn scaffold_warning_to(
             outcome: Some("Active".into()),
             phase: None,
             scope: Some("full (wave plan)".into()),
-            lang: Some(mustard_core::normalise_lang(lang)),
+            lang: Some(lang.to_string()),
             checkpoint: None,
             parent: None,
             // Only the CUT knows which base the unit came from; a scaffold
@@ -1702,7 +1698,7 @@ pub(crate) fn scaffold_warning_to(
                 outcome: Some("Active".into()),
                 phase: None,
                 scope: None,
-                lang: Some(mustard_core::normalise_lang(lang)),
+                lang: Some(lang.to_string()),
                 checkpoint: None,
                 parent: Some(parent_name.clone()),
                 // A wave is not a unit — its base is the parent unit's.
@@ -1858,7 +1854,6 @@ mod tests {
                 },
             ],
             total_waves: Some(2),
-            lang: Some("pt".to_string()),
         }
     }
 
@@ -1888,8 +1883,7 @@ mod tests {
     #[test]
     fn renders_wave_plan_table_with_wikilinks() {
         // The wave-plan is a MACHINE artefact, so its headings are ENGLISH-FIXED
-        // regardless of the plan's declared `lang` (`sample_plan` declares
-        // `lang: "pt"`).
+        // whatever the project's language.
         let hd = headings();
         let md = render_wave_plan(&sample_plan(), &hd, None, "epic-x");
         // `spec.`/`wave.`-prefixed — matches the `id:` each target actually
@@ -1900,7 +1894,7 @@ mod tests {
         // The wave-plan carries its rename-proof identity handle as leading
         // `id:` frontmatter (parent slug + `.plan`).
         assert!(md.starts_with("---\nid: wave.epic-x.plan\n---\n\n"), "{md}");
-        // English-fixed headings even for a pt-declared plan.
+        // English-fixed headings, never the Portuguese ones.
         assert!(md.contains("# Wave Plan"));
         assert!(md.contains("Depends on"));
         assert!(!md.contains("# Plano de Waves"));
@@ -1908,7 +1902,7 @@ mod tests {
 
     #[test]
     fn renders_wave_spec_with_parent_link_and_no_header() {
-        // Machine artefact → ENGLISH-FIXED headings (sample_plan declares `lang: "pt"`).
+        // Machine artefact → ENGLISH-FIXED headings.
         let hd = headings();
         let plan = sample_plan();
         let s1 = render_wave_spec("epic-x", &plan.waves[0], &hd, "");
@@ -1950,7 +1944,6 @@ mod tests {
                     { "n": 2, "role": "frontend", "summary": "ui", "depends_on": ["wave-1-general"] }
                 ],
                 "total_waves": 2,
-                "lang": "pt"
             }))
             .unwrap(),
         )
@@ -1968,8 +1961,7 @@ mod tests {
 
         // Validate wave-1 spec content has the expected headings & wikilinks,
         // and that no lifecycle header leaked into the markdown. The wave spec is
-        // a MACHINE artefact, so its headings are ENGLISH-FIXED even though the
-        // plan declares `lang: "pt"`.
+        // a MACHINE artefact, so its headings are ENGLISH-FIXED.
         let s1 =
             std::fs::read_to_string(spec_dir.join("wave-1-general").join("spec.md")).unwrap();
         assert!(!s1.contains("### Stage:"));
@@ -2043,7 +2035,6 @@ mod tests {
                     { "n": 1, "role": "general", "summary": "the only wave", "depends_on": [] }
                 ],
                 "total_waves": 1,
-                "lang": "pt-BR"
             }))
             .unwrap(),
         )
@@ -2107,7 +2098,6 @@ mod tests {
                     { "n": 4, "role": "client", "summary": "d", "depends_on": ["wave-3-core"] }
                 ],
                 "total_waves": 4,
-                "lang": "pt-BR"
             }))
             .unwrap(),
         )
@@ -2155,7 +2145,6 @@ mod tests {
                     { "n": 2, "role": "backend", "summary": "b", "depends_on": ["wave-1-backend"] }
                 ],
                 "total_waves": 2,
-                "lang": "en-US"
             }))
             .unwrap(),
         )
@@ -2220,7 +2209,6 @@ mod tests {
                 { "n": 1, "role": "general", "summary": "foundations", "depends_on": [] }
             ],
             "total_waves": 1,
-            "lang": "en-US"
         }))
         .unwrap();
         let plan: Plan = serde_json::from_str(&raw).expect("summary-only plan deserialises");
@@ -2356,7 +2344,6 @@ mod tests {
                 },
             ],
             total_waves: Some(2),
-            lang: Some("en-US".to_string()),
         };
         let hd = headings();
         let ac_block = build_ac_block(&plan, &hd);
@@ -2377,9 +2364,9 @@ mod tests {
         assert!(spec_sections::section_block(&bare, "acceptanceCriteria").is_none());
     }
 
-    /// Validation 5: the wave headings are ENGLISH-FIXED machine artefacts — a
-    /// plan's declared `lang` no longer changes them. A pt-declared wave still
-    /// renders `## Tasks`, never `## Tarefas`.
+    /// The wave headings are ENGLISH-FIXED machine artefacts: a wave whose
+    /// tasks are written in Portuguese still renders `## Tasks`, never
+    /// `## Tarefas`.
     #[test]
     fn wave_headings_are_english_fixed_regardless_of_lang() {
         let entry = |tasks: Vec<String>| WavePlanEntry {
@@ -2400,10 +2387,53 @@ mod tests {
             "",
         );
         assert!(spec.contains("## Tasks"), "machine artefact → ## Tasks: {spec}");
-        assert!(!spec.contains("## Tarefas"), "no PT heading even for a pt plan: {spec}");
+        assert!(!spec.contains("## Tarefas"), "no PT heading even for Portuguese tasks: {spec}");
     }
 
-    /// Onda-1 fio pendente: a plan whose `tasks` already carry the checkbox
+    /// Todo `meta.json` que o materializador grava leva o idioma do texto do
+    /// projeto, e o plano não tem voz nisso: um `lang` esquecido num plano
+    /// antigo é ignorado. Sem idioma declarado, fica o português do Brasil.
+    #[test]
+    fn scaffold_records_the_project_text_language_in_every_meta() {
+        let old_plan = |dir: &Path| {
+            let plan_path = dir.join("plan.json");
+            std::fs::write(
+                &plan_path,
+                serde_json::to_string(&json!({
+                    "waves": [
+                        { "n": 1, "role": "general", "summary": "a", "depends_on": [] },
+                        { "n": 2, "role": "general", "summary": "b", "depends_on": ["wave-1-general"] }
+                    ],
+                    "total_waves": 2,
+                    "lang": "pt"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            plan_path
+        };
+        let langs = |spec_dir: &Path| -> Vec<Option<String>> {
+            ["meta.json", "wave-1-general/meta.json", "wave-2-general/meta.json"]
+                .iter()
+                .map(|file| mustard_core::read_meta(&spec_dir.join(file)).unwrap().lang)
+                .collect()
+        };
+
+        let english = tempdir().unwrap();
+        std::fs::write(english.path().join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        let spec_dir = english.path().join(".claude/spec/epic-lang");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let _ = scaffold(&spec_dir, &old_plan(english.path()));
+        assert_eq!(langs(&spec_dir), vec![Some("en-US".to_string()); 3], "the project's language, not the plan's");
+
+        let bare = tempdir().unwrap();
+        let spec_dir = bare.path().join(".claude/spec/epic-lang");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let _ = scaffold(&spec_dir, &old_plan(bare.path()));
+        assert_eq!(langs(&spec_dir), vec![Some("pt-BR".to_string()); 3], "no declared language gives pt-BR");
+    }
+
+    /// A plan whose `tasks` already carry the checkbox
     /// prefix (`- [ ] foo` / `- [x] bar` / `- baz`) must render a SINGLE
     /// `- [ ]` per line in the wave spec — never the doubled `- [ ] - [ ]`
     /// form (measured in 3 real specs). The label is routed through the
@@ -2453,7 +2483,6 @@ mod tests {
                       "tasks": ["- [ ] do the thing", "clean label"] }
                 ],
                 "total_waves": 1,
-                "lang": "en-US"
             }))
             .unwrap(),
         )
@@ -2489,7 +2518,6 @@ mod tests {
                       "files": ["src/api/handler.rs", "  ", "src/api/mod.rs"] }
                 ],
                 "total_waves": 1,
-                "lang": "en-US"
             }))
             .unwrap(),
         )
@@ -3175,7 +3203,7 @@ mod tests {
 
     fn claim_plan(waves: Vec<WavePlanEntry>) -> Plan {
         let total = waves.len() as u32;
-        Plan { waves, total_waves: Some(total), lang: None }
+        Plan { waves, total_waves: Some(total) }
     }
 
     /// Materializa um plano com as ondas numeradas `ns` e devolve o que o
@@ -3206,7 +3234,6 @@ mod tests {
                 // Igual ao número de ondas: o WARN de total divergente é outro
                 // sinal e não pode entrar no lugar do que se mede aqui.
                 "total_waves": ns.len(),
-                "lang": "en-US"
             }))
             .unwrap(),
         )
@@ -3508,7 +3535,7 @@ mod tests {
             satisfies: satisfies.into_iter().map(String::from).collect(),
             reality_obligations: Vec::new(),
         };
-        let plan = |w: WavePlanEntry| Plan { waves: vec![w], total_waves: Some(1), lang: None };
+        let plan = |w: WavePlanEntry| Plan { waves: vec![w], total_waves: Some(1) };
 
         // (a) tasks but no AC, num plano que TEM critérios → untraced-wave gap
         // naming the wave (Gap 1).
@@ -3592,7 +3619,6 @@ mod tests {
                 reality_obligations: Vec::new(),
             }],
             total_waves: Some(1),
-            lang: None,
         };
         let gaps = traceability_gaps(&plan, Some(parent));
         // AC-2 is defined by the parent but claimed by no wave → uncovered.
@@ -3630,7 +3656,6 @@ mod tests {
                 reality_obligations: Vec::new(),
             }],
             total_waves: Some(1),
-            lang: None,
         };
         let gaps = traceability_gaps(&plan, Some(parent));
         assert!(
@@ -3666,7 +3691,6 @@ mod tests {
                     { "n": 1, "role": "backend", "summary": "s", "tasks": ["do it"], "satisfies": ["AC-1"] }
                 ],
                 "total_waves": 1,
-                "lang": "en-US"
             }))
             .unwrap(),
         )
@@ -3721,7 +3745,6 @@ mod tests {
                         "files": declared, "satisfies": ["AC-1", "AC-2"],
                     }],
                     "total_waves": 1,
-                    "lang": "en-US",
                 }))
                 .unwrap(),
             )
@@ -3762,7 +3785,6 @@ mod tests {
             serde_json::to_string(&json!({
                 "waves": waves,
                 "total_waves": total,
-                "lang": "en-US",
             }))
             .unwrap(),
         )

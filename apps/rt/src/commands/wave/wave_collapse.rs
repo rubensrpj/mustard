@@ -449,7 +449,6 @@ fn patch_wave_plan_single(spec_dir: &Path, wave1: &WaveDir) {
             reality_obligations: Vec::new(),
         }],
         total_waves: Some(1),
-        lang: None,
     };
     // The collapsed `wave-plan.md` is a MACHINE artefact — ENGLISH-FIXED headings
     // regardless of the project's configured language.

@@ -554,7 +554,7 @@ pub enum SpecCmd {
     #[command(display_order = 101)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
-        #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind", "lang"])]
+        #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
         spec: Option<String>,
         /// O arquivo markdown da página avulsa.
         #[arg(long)]
@@ -572,9 +572,6 @@ pub enum SpecCmd {
         /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
         #[arg(long)]
         kind: Option<String>,
-        /// Idioma BCP-47 do atributo `lang`; sem ele, o idioma do projeto.
-        #[arg(long)]
-        lang: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -733,7 +730,7 @@ pub fn dispatch(cmd: SpecCmd) {
         SpecCmd::SpecDoc { spec: slug, published_url } => {
             spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug, published_url });
         }
-        SpecCmd::Page { spec: slug, body, out, title, subtitle, kind, lang, root } => {
+        SpecCmd::Page { spec: slug, body, out, title, subtitle, kind, root } => {
             spec::page::run(&spec::page::PageOpts {
                 root,
                 spec: slug,
@@ -742,7 +739,6 @@ pub fn dispatch(cmd: SpecCmd) {
                 title,
                 subtitle,
                 kind,
-                lang,
             });
         }
     }

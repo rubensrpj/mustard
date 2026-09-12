@@ -55,7 +55,7 @@ Spec layout — canonical section keys (EN, language-agnostic; heading localises
       "acceptance": ["AC-2 — page renders. Command: `...`"],
       "reality_obligations": ["read the provider's official webhook doc for the retry semantics"] }
   ],
-  "total_waves": 2, "lang": "pt-BR"
+  "total_waves": 2
 }
 ```
 **`role` is not a free label — five names are RESERVED and pick a tool-restricted agent.** `plan` and `explore` resolve to read-only agents (no Edit/Write); `review`/`qa`, `guards` and `patterns` resolve to the plugin's read-only agents. Naming a WRITING wave `plan` hands it an agent that physically cannot write, while its rendered prompt still says "you implement" — the two halves disagree and the wave is spent producing nothing. Any other name (`backend`, `proof`, `discovery`, `bootstrap`, …) is a writing role. The canonical map is `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`.

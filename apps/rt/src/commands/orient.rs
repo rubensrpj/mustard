@@ -164,12 +164,12 @@ pub fn compute_orientation(root: &Path) -> Orientation {
 /// Render the terrain block (header + one line per subproject), or `None`
 /// when there is no terrain (fail-open / empty model).
 ///
-/// Language follows `mustard.json#lang` (`lang`): the terrain is injected as
-/// orientation and displayed to the developer, so it is user-facing text
-/// routed through the i18n catalogue, not an internal index (finding #1 of the
-/// 2026-07 SOLID audit). A project with no declared locale defaults to `pt-BR`
-/// via [`mustard_core::ProjectConfig::i18n`], so existing installs are
-/// unchanged. Output stays deterministic and byte-stable for a given locale.
+/// Language follows the project's text language (`language.text` in
+/// `mustard.json`): the terrain is injected as orientation and displayed to the
+/// developer, so it is user-facing text routed through the i18n catalogue, not
+/// an internal index. A project with no declared language gets `pt-BR`
+/// ([`mustard_core::Language::text_or_default`]). Output stays deterministic
+/// and byte-stable for a given locale.
 /// How many subproject rows the injected census may carry.
 ///
 /// **The census is the one part of a hook's payload that grows without a bound,
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn terrain_follows_declared_locale_en() {
-        // finding #1 (SOLID audit): an `en-US` project gets an English terrain
+        // An `en-US` project gets an English terrain
         // banner + `files` suffix; the pt-BR default is asserted above.
         let (_d, root) = seed(FIXTURE);
         let o = compute_orientation(&root);

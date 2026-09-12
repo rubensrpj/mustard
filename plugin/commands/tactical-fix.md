@@ -20,7 +20,7 @@ user-invocable: false
 mustard-rt run tactical-fix-create --parent <parent> --description "<descrição>" --scope <scope>
 ```
 
-The binary derives the slug (`YYYY-MM-DD-<kebab>`), creates the directory (aborts if it exists), generates `spec.md` as **pure narrative** (Contexto with a `[[<parent>]]` link, Critérios de Aceitação + Arquivos placeholders), writes the `meta.json` sidecar (`parent` + inherited `lang` + `stage: Analyze` / `outcome: Active`), and emits `spec.link`. The `parent` lives in `meta.json` — never a `### Parent:` header.
+The binary derives the slug (`YYYY-MM-DD-<kebab>`), creates the directory (aborts if it exists), generates `spec.md` as **pure narrative** (Contexto with a `[[<parent>]]` link, Critérios de Aceitação + Arquivos placeholders), writes the `meta.json` sidecar (`parent` + `lang`, the project's text language + `stage: Analyze` / `outcome: Active`), and emits `spec.link`. The `parent` lives in `meta.json` — never a `### Parent:` header.
 
 **The sidecar records `base: null`, and that is deliberate:** a tactical fix has no base of its own because it never cuts a branch of its own — it rides the PARENT's work branch, where the parent's spec, waves and code already live. A sub-spec that recorded a base would be claiming an integration path it does not have.
 
