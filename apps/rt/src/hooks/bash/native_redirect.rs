@@ -41,7 +41,7 @@ fn redirect_for(token: &str) -> Option<(&'static str, &'static str)> {
 /// bare binary, which may be absent (e.g. `rg` on Windows → exit 127). These
 /// are redirected to the native Grep tool *even when prefixed with `rtk`*,
 /// unlike `rtk grep` / `rtk cat` (which `rtk` filters and which exist on this
-/// platform — those keep passing through). User decision 2026-05-21.
+/// platform — those keep passing through). Decided by the user on 2026-05-21.
 const RTK_TRANSPARENT_REDIRECT: &[&str] = &["rg", "egrep", "fgrep"];
 
 /// Shell operator that marks a composed command: `[|&;]`, `$(`, backtick, `<<`, `>>`.

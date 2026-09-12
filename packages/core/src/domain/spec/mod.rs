@@ -12,7 +12,7 @@
 //!
 //! ## Why this module exists
 //!
-//! `spec-lifecycle-unification` migrated 166 spec headers from the
+//! A migration moved 166 spec headers from the
 //! legacy `### Status:` + `### Phase:` shape to the new three-line canonical
 //! form. Before this module, ~17 `mustard-rt` subcommands each carried their
 //! *own* inline `### Status:` parser (and several their own header *writers*),

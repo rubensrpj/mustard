@@ -36,9 +36,9 @@ struct Wave {
 
 /// Read the lifecycle status word from a spec file, defaulting to `"queued"`.
 ///
-/// Resolution order (since the `meta-sidecar` migration):
+/// Resolution order (since the move to the `meta.json` sidecar):
 /// 1. `meta.json` sidecar in the same directory — the authoritative source
-///    after the `meta-sidecar` migration removed `### Stage:` /
+///    since the move that took `### Stage:` /
 ///    `### Outcome:` headers from the markdown. Delegates the read +
 ///    `stage`+`outcome` → label mapping to [`mustard_core::domain::meta`] (single
 ///    source of truth — never re-implement the table here).

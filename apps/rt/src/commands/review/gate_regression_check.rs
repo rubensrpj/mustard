@@ -1294,7 +1294,7 @@ mod tests {
 
         assert!(
             triggered >= 3,
-            "AC-A-1 requires ≥3 of the 4 gate moments to fire against the W6 \
+            "≥3 of the 4 gate moments must fire against the regression \
              fixture; got {triggered}/4 \
              (m1={m1_fired}, m2={m2_fired}, m3={m3_fired}, span={span_blocked}). \
              Vocabulary signals: {m1_evidence:?}. Snapshot signals: {m3_evidence:?}."

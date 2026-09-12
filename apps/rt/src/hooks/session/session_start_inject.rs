@@ -407,7 +407,7 @@ fn session_start_core(
     // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
     // the single canonical catalog. Fail-open — never blocks.
     crate::commands::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
-    // orient-census Level 1 (Terrain): project `grain.model.json` into a
+    // Terrain: project `grain.model.json` into a
     // once-per-session terrain map so the AI opens the session already
     // knowing the subprojects instead of grepping to orient. Fail-open: a
     // missing / unreadable model yields no terrain.

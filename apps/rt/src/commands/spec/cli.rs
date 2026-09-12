@@ -52,7 +52,7 @@ pub enum SpecCmd {
     },
     /// Project a parent spec's waves + acceptance criteria + sub-specs into a
     /// single JSON document. Consumed by the dashboard's `spec_children_tree`
-    /// command (introduced by `spec-lifecycle-unification`). Fail-open: a missing
+    /// command. Fail-open: a missing
     /// spec or store degrades to empty arrays.
     #[command(display_order = 15)]
     SpecChildrenTree {
@@ -108,7 +108,7 @@ pub enum SpecCmd {
         slice_match_count: i64,
     },
     /// Rematerialise the denormalised `specs` + `metrics_projection` tables
-    /// from the event stream. Closes the gap the eliminate-bun migration
+    /// from the event stream. Closes the gap the move off Bun
     /// opened: pre-2026-05-20 nothing populated those tables since the JS
     /// harness writer was removed, which is why every dashboard spec card
     /// fell back to `"unknown"`.

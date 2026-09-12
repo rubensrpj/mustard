@@ -490,7 +490,7 @@ fn render_memory_file(dest: &Path, spec: &str, lesson: &Lesson) -> String {
 /// are unit-testable without mutating the process working directory.
 fn cache_wave_diff(cwd: &Path, spec: &str, wave: u64) -> Option<String> {
     let wave_dir = emit_pipeline::wave_spec_path(cwd, spec, wave)?;
-    // Pilar 3c: a deterministic SIGNATURE digest (added/removed declarations per
+    // A deterministic SIGNATURE digest (added/removed declarations per
     // changed file) instead of the old `git diff --stat` line-count — higher
     // signal for the next wave's implementer/reviewer, "never a file dump". Same
     // fail-open contract: any git error degrades to an empty digest, so `diff.md`
@@ -860,7 +860,7 @@ mod tests {
     /// What the run's own event log shows: five `decision` rows were captured by
     /// `subagent_inject` for that spec, and four memory files exist. The fifth is
     /// the sentence below, verbatim from
-    /// `.claude/spec/make-harness-stop-asserting-what/.events/` — the wave-4
+    /// that spec's own event log — the wave-4
     /// lesson the operator later re-entered by hand.
     ///
     /// It was not dropped by the writer. It never reached the writer: the VALUE

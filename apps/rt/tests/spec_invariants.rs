@@ -1,6 +1,6 @@
 //! Repo-wide spec-metadata invariant test.
 //!
-//! Since the meta-sidecar migration, **`meta.json` is the single source of
+//! Since the move to the sidecar, **`meta.json` is the single source of
 //! truth** for every machine-parseable lifecycle field and `spec.md` carries no
 //! lifecycle header at all. This test scans every `.claude/spec/**/spec.md` (and
 //! `wave-plan.md`) in the real Mustard repo and asserts:

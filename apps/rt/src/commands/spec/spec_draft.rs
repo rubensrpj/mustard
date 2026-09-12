@@ -2422,9 +2422,9 @@ mod tests {
         assert!(render_scan_anchors(&none, Locale::PtBr).is_none());
     }
 
-    /// Roundtrip (robustez-ancoras fase 2) — a `strong` answer keeps the plain
+    /// Roundtrip — a `strong` answer keeps the plain
     /// anchor label and annotates each anchor with the matched terms from
-    /// `files_detail` (lote 1's audit trail). The checklist is no longer seeded
+    /// `files_detail` (the trail of which files matched). The checklist is no longer seeded
     /// from anchors — see [`build_checklist`].
     #[test]
     fn roundtrip_strong_digest_annotates_anchor_terms() {

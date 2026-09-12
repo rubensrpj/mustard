@@ -271,7 +271,7 @@ fn every_declared_command_keeps_its_help_slot() {
 /// Every `mustard-rt run <name>` a SHIPPED instruction surface tells the reader
 /// (or an agent) to type must be a name the CLI actually publishes.
 ///
-/// Field defect (btw-plan-rework-fixes): `wave-scaffold` was absorbed into
+/// Field defect: `wave-scaffold` was absorbed into
 /// `plan-materialize`, but the dashboard's `wave-integrity` hint still told the
 /// reader to run it. Nothing broke at build time — the command simply does not
 /// exist, so an obedient agent burns a call on a clap error. `template_parity`

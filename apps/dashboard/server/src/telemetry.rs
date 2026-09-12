@@ -1732,8 +1732,7 @@ struct FileChunk {
     events: Vec<Value>,
 }
 
-/// Per-repo incremental parsed-events cache (spec
-/// `performance-dashboard-rotas-lentas-cache`).
+/// Per-repo incremental parsed-events cache.
 ///
 /// The previous cache held one flat `Arc<Vec<Value>>` per repo and the watcher
 /// dropped the WHOLE entry on any change — every event write re-walked and

@@ -259,12 +259,12 @@ fn header_from_meta_text(text: &str) -> Option<SpecHeader> {
 }
 
 /// Parse the header fields, preferring the `meta.json` sidecar (the source
-/// since the `meta-sidecar` migration),
+/// since the move to the `meta.json` sidecar),
 /// with fall-back to the legacy `### Key:` markdown header.
 ///
 /// Resolution order:
-/// 1. `meta.json` next to `spec_file` — authoritative after the
-///    `meta-sidecar` migration removed header lines from the `.md`.
+/// 1. `meta.json` next to `spec_file` — authoritative since
+///    the header lines moved out of the `.md`.
 /// 2. Legacy header lines in the first 2 KiB of the `.md` — kept so a
 ///    teammate's un-migrated spec (e.g. pulled from a feature branch)
 ///    still shows up in the picker.

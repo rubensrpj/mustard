@@ -319,7 +319,7 @@ fn read_wave_rows(spec_dir: &Path) -> Vec<WaveRow> {
 /// parsed via the shared `[[…]]` scanner and normalised to wave numbers.
 fn parse_wave_plan_table(text: &str) -> Vec<WaveRow> {
     let mut header: Option<Vec<String>> = None;
-    // Phase 1: collect `(wave, role, raw deps cell)`. A dependency cell can name
+    // First pass: collect `(wave, role, raw deps cell)`. A dependency cell can name
     // a wave by role (`[[backend]]`), and resolving that needs the full
     // role→wave map — which is not known until every row has been read.
     let mut raw: Vec<(u32, String, String)> = Vec::new();
@@ -373,7 +373,7 @@ fn parse_wave_plan_table(text: &str) -> Vec<WaveRow> {
         role_to_wave.entry(role.clone()).or_insert(*wave);
     }
 
-    // Phase 2: resolve each deps cell now that the role→wave map is complete.
+    // Second pass: resolve each deps cell now that the role→wave map is complete.
     raw.into_iter()
         .map(|(wave, role, cell)| WaveRow {
             wave,
@@ -473,7 +473,7 @@ fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String
 /// Resolve a dependency `[[…]]` token to a wave number. `[[1]]` → 1;
 /// `[[wave-1-general]]` → 1 (hyphen dir form); `[[wave.<slug>.<N>-<role>]]` → N
 /// (the DOTTED wikilink `wave-scaffold` writes, e.g.
-/// `[[wave.field-report-fix-package-sialia.2-agents]]`); a bare role token
+/// `[[wave.my-spec.2-agents]]`); a bare role token
 /// `[[backend]]` → the wave that carries that role (via `role_to_wave`);
 /// anything else → `None`.
 ///
@@ -485,8 +485,8 @@ fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String
 /// parallelism between truly independent waves. The dotted branch exists for the
 /// same failure: `wave-scaffold` writes `wave.<slug>.<N>-<role>`, on which
 /// `strip_prefix("wave-")` fails (the head is `wave.`, not `wave-`), so every
-/// dotted-dep DAG likewise flattened to level 0 — proven live 2026-07-18 on the
-/// field-report-fix-package-sialia pipeline (every wave dispatched in one round).
+/// dotted-dep DAG likewise flattened to level 0 — proven live on 2026-07-18 on a
+/// real pipeline (every wave dispatched in one round).
 fn wave_number_from_link(link: &str, role_to_wave: &BTreeMap<String, u32>) -> Option<u32> {
     let inner = link.trim();
     if let Ok(n) = inner.parse::<u32>() {
@@ -1055,7 +1055,7 @@ mod tests {
         assert!(levels[&2] >= 1, "dependent wave must not be flattened to level 0");
     }
 
-    /// Regression for the sialia wave-plan: the Plan agent authored deps as bare
+    /// Regression for a real wave-plan: the Plan agent authored deps as bare
     /// role names (`[[backend]]`/`[[core]]`) instead of the `wave-N-role` form.
     /// They must resolve to wave numbers so the level DAG keeps its real depth —
     /// otherwise every wave flattens to level 0 (all dispatch-parallel).
@@ -1076,7 +1076,7 @@ mod tests {
         assert_eq!(rows[2].depends_on, vec![2]); // app-form ← core (wave 2)
         assert!(rows[3].depends_on.is_empty()); // app-table independent
         // The reconstructed DAG: waves 1 and 4 share level 0 (parallel round 1),
-        // wave 2 is level 1, wave 3 is level 2 — exactly the sialia plan's intent.
+        // wave 2 is level 1, wave 3 is level 2 — exactly the plan's intent.
         let levels = assign_levels(&rows).level;
         assert_eq!(levels[&1], 0);
         assert_eq!(levels[&4], 0);

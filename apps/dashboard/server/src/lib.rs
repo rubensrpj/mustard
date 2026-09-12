@@ -88,7 +88,7 @@ pub struct KnowledgeRow {
     pub ts: String,
 }
 
-// ── Consumption / cost summary (Phase 2 spans) ──────────────────────────────
+// ── Consumption / cost summary (from the spans) ──────────────────────────────
 
 #[derive(Serialize, Default, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -593,8 +593,8 @@ fn dashboard_specs_impl(repo_path: String) -> Result<Vec<SpecRow>, String> {
     Ok(rows)
 }
 
-/// Process-global, per-repo cache of the [`specs_from_fs`] walk (spec
-/// `performance-dashboard-rotas-lentas-cache`). spec.md is tiny
+/// Process-global, per-repo cache of the [`specs_from_fs`] walk.
+/// spec.md is tiny
 /// markdown, but the walk opens every `spec.md` / `wave-plan.md` under
 /// `.claude/spec/` — on the list route that is pure latency when nothing
 /// changed. The watcher invalidates the entry on any `spec`-kind fs-change
@@ -631,8 +631,8 @@ pub(crate) fn invalidate_specs_cache(repo: &str) {
     }
 }
 
-/// Aggregated push payload for the `dashboard:specs-snapshot` event (spec
-/// `performance-dashboard-rotas-lentas-cache`): the spec list plus the
+/// Aggregated push payload for the `dashboard:specs-snapshot` event:
+/// the spec list plus the
 /// active-pipeline projections, rebuilt on a background thread by the watcher
 /// and shipped ready to render. The frontend applies it via `setQueryData`
 /// instead of refetching after a mass invalidation. `Clone` because the

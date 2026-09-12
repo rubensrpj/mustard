@@ -24,11 +24,11 @@
 //! port of the JS decision logic. Parity tests mirror
 //! `__tests__/checklist-mark.test.js`.
 //!
-//! ## Migration note (dashboard-phase-from-sqlite)
+//! ## Migration note
 //!
 //! `pipeline-phase.js` used to live here as a fourth side effect: it parsed
 //! `phaseName` out of a pipeline-state Write and emitted a `pipeline.phase`
-//! event. The dashboard-phase-from-sqlite migration removed the
+//! event. The move of the dashboard phase off SQLite removed the
 //! `phaseName` writer from SKILL.md, so that trigger no longer fires. The
 //! `pipeline.phase` producer now lives entirely in `mustard-rt run emit-phase`
 //! (`apps/rt/src/run/emit_phase.rs`), driven explicitly by the pipeline
@@ -124,7 +124,7 @@ fn is_word_byte(b: u8) -> bool {
 /// The scan now filters out non-active specs —
 /// previously the first spec dir (alphabetically) with a `## Boundaries`
 /// section always won, so a stale `Close + Active + followup_open` spec
-/// (e.g. `dashboard-i18n-migration`) would warn on every unrelated edit. The
+/// would warn on every unrelated edit. The
 /// fix consults the canonical `### Stage:` / `### Outcome:` header via
 /// `spec::parse_state`: only specs whose outcome is `Active` AND whose stage
 /// is one of {`Analyze`, `Plan`, `Execute`} participate. Specs without a
@@ -1474,8 +1474,8 @@ mod tests {
         PostEdit.observe(&input, &ctx(cwd_str));
     }
 
-    // pipeline-phase tests removed — the emitter was deleted (in
-    // the dashboard-phase-from-sqlite migration). `mustard-rt run emit-phase`
+    // pipeline-phase tests removed — the emitter was deleted when
+    // the dashboard phase moved off SQLite. `mustard-rt run emit-phase`
     // is the sole producer of `pipeline.phase` events; its tests live in
     // `apps/rt/src/run/emit_phase.rs`.
 
