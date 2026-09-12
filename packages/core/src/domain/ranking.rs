@@ -2,9 +2,11 @@
 //!
 //! The single home for the Okapi BM25 score shape, shared by every consumer
 //! that ranks documents by a query without re-implementing the math:
-//! - the scan crate's `digest` (per-term sample ranking over the repo model), and
-//! - the rt crate's persistent-memory recall (knowledge/decision bodies vs the
-//!   prompt).
+//! - the scan crate's `digest` (per-term sample ranking over the repo model),
+//! - the rt crate's capability ranking (`commands/agent/render/capabilities.rs`),
+//!   and
+//! - the memory search (`domain::search`), which ranks the lessons and the
+//!   spec events by their `search` field against a request.
 //!
 //! Fixed-point integer arithmetic (scores ×1024): floats never enter a
 //! comparison, so every ranking is byte-stable across runs and platforms. The
