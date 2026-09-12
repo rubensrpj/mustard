@@ -1513,10 +1513,10 @@ pub fn run(opts: DoctorOpts) {
     let cp_report = crate::commands::doctor::doctor_claude_paths::run(&cwd);
     let wl_report = crate::commands::doctor::doctor_workspace_leaks::run(&cwd);
     let i1_report = crate::commands::doctor::doctor_i1::run(&cwd);
-    // Roadmap #6 — prune/accumulation linter. Read-only; never blocks (WARN at
+    // Prune/accumulation linter. Read-only; never blocks (WARN at
     // most) — its job is to surface archivable / likely-superseded specs.
     let sup_report = crate::commands::doctor::superseded_check::run(&cwd);
-    // Roadmap #6 — capability/grain drift advisory. ADVISORY ONLY (WARN at
+    // Capability/grain drift advisory. ADVISORY ONLY (WARN at
     // most, never blocks): surfaces capabilities that cover code no longer in
     // the grain model + emits `capability.drift` events. `None` when there is
     // no grain model (cannot judge drift → silent no-op).
@@ -1705,10 +1705,10 @@ fn render_combined_json(
         "claude_paths": cp,
         "workspace_leaks": wl,
         "i1": i1,
-        // Roadmap #6 — prune/accumulation linter, keyed verbatim.
+        // Prune/accumulation linter, keyed verbatim.
         "superseded": sup,
     });
-    // Roadmap #6 — capability/grain drift advisory, keyed verbatim. Only
+    // Capability/grain drift advisory, keyed verbatim. Only
     // present when a grain model exists (otherwise the check is a no-op and
     // the key is omitted so consumers can tell "no model" from "no drift").
     if let Some(d) = drift
@@ -1800,7 +1800,7 @@ fn superseded_to_check_result(
 }
 
 /// Project a `CapabilityDriftReport` onto the legacy `CheckResult` envelope.
-/// Roadmap #6 capability-drift is ADVISORY: drifted covers become WARN, never
+/// Capability drift is ADVISORY: drifted covers become WARN, never
 /// FAIL. OK when nothing drifted.
 fn capability_drift_to_check_result(
     report: &crate::commands::doctor::capability_drift_check::CapabilityDriftReport,
