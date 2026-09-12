@@ -436,8 +436,8 @@ pub(crate) fn settle(
     //      nobody established cannot be refreshed; offline, nothing can be
     //      measured and the local base is taken as before.
     let mut set_aside: Vec<String> = Vec::new();
-    if let Some(base) = base {
-        if fetch_origin(&vcs, &root_s) {
+    if let Some(base) = base
+        && fetch_origin(&vcs, &root_s) {
             let mut aside = CensusSetAside::none();
             // 4. SET ASIDE — only on the base, only the paths the advance
             //    overwrites, and only when the advance IS a fast-forward (a
@@ -504,7 +504,6 @@ pub(crate) fn settle(
                 }
             }
         }
-    }
 
     // 6. RE-MINE, at the door that owns it, reading the tree measured at step 1.
     //    Whether the miner RAN is read: it decides below whether the recorder

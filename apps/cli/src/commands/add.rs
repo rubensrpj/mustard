@@ -204,11 +204,10 @@ fn npm_tarball_url(package: &str) -> Result<String> {
 /// the known `.claude/` subdirectories present.
 fn load_manifest(fetched: &Path, name: &str) -> TemplateManifest {
     let manifest_path = fetched.join("mustard-template.json");
-    if let Ok(raw) = mfs::read_to_string(&manifest_path) {
-        if let Ok(manifest) = serde_json::from_str::<TemplateManifest>(&raw) {
+    if let Ok(raw) = mfs::read_to_string(&manifest_path)
+        && let Ok(manifest) = serde_json::from_str::<TemplateManifest>(&raw) {
             return manifest;
         }
-    }
     TemplateManifest {
         name: name.to_string(),
         version: default_version(),

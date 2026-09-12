@@ -55,8 +55,8 @@ pub struct ReviewPrefetchOpts {
 fn normalise_pr_ref(pr_ref: &str) -> String {
     let trimmed = pr_ref.trim();
     // If it looks like a URL, take the last path segment
-    if trimmed.contains("github.com") && trimmed.contains("/pull/") {
-        if let Some(after_pull) = trimmed.rsplit("/pull/").next() {
+    if trimmed.contains("github.com") && trimmed.contains("/pull/")
+        && let Some(after_pull) = trimmed.rsplit("/pull/").next() {
             // Remove query strings / fragments
             let num: String = after_pull
                 .chars()
@@ -66,7 +66,6 @@ fn normalise_pr_ref(pr_ref: &str) -> String {
                 return num;
             }
         }
-    }
     trimmed.to_string()
 }
 
@@ -447,8 +446,8 @@ fn render_table(pr: &Value) -> String {
     ));
 
     // Top 5 changed files
-    if let Some(files) = pr["files"].as_array() {
-        if !files.is_empty() {
+    if let Some(files) = pr["files"].as_array()
+        && !files.is_empty() {
             lines.push(String::new());
             lines.push("Top changed files:".to_string());
             for f in files.iter().take(5) {
@@ -458,7 +457,6 @@ fn render_table(pr: &Value) -> String {
                 lines.push(format!("  {path}  (+{add}/-{del})"));
             }
         }
-    }
 
     lines.join("\n")
 }

@@ -3,7 +3,7 @@ name = "mustard-dashboard"
 version.workspace = true
 description = "HTTP server backing the Mustard dashboard"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [lib]
 name = "mustard_dashboard"

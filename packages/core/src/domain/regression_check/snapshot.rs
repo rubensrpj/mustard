@@ -437,12 +437,12 @@ fn capture_via_text(source: &str, final_name: &str) -> Option<(String, TextSpan)
             // Capture body. Distinguish brace-style from indentation-style
             // by inspecting the suffix of the declaration line.
             let trimmed = line.trim_end();
-            if trimmed.ends_with('{') || source[line_start..].find('{').is_some_and(|off| {
+            if (trimmed.ends_with('{') || source[line_start..].find('{').is_some_and(|off| {
                 // The opening brace is on this line or the next non-empty line.
                 let cand_offset = line_start + off;
                 cand_offset < line_end + 256
-            }) {
-                if let Some(end) = capture_brace_balanced_body(source, line_start) {
+            }))
+                && let Some(end) = capture_brace_balanced_body(source, line_start) {
                     let body = source[line_start..end].to_string();
                     return Some((
                         body,
@@ -452,7 +452,6 @@ fn capture_via_text(source: &str, final_name: &str) -> Option<(String, TextSpan)
                         },
                     ));
                 }
-            }
             // Indentation-style fallback (Python-like).
             if let Some(end) = capture_indentation_balanced_body(source, line_start) {
                 let body = source[line_start..end].to_string();

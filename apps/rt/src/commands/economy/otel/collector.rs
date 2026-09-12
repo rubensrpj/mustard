@@ -210,11 +210,10 @@ fn transcript_cwd(transcript: &Path) -> Option<String> {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if let Some(cwd) = value.get("cwd").and_then(Value::as_str) {
-            if !cwd.is_empty() {
+        if let Some(cwd) = value.get("cwd").and_then(Value::as_str)
+            && !cwd.is_empty() {
                 return Some(cwd.to_string());
             }
-        }
     }
     None
 }

@@ -185,11 +185,10 @@ pub(crate) fn arquivos_paths(text: &str) -> Vec<String> {
             continue;
         }
         let lead = line.trim_start();
-        if lead.starts_with("- ") || lead.starts_with("* ") {
-            if let Some(tok) = lead[2..].split_whitespace().find(|t| t.contains('/')) {
+        if (lead.starts_with("- ") || lead.starts_with("* "))
+            && let Some(tok) = lead[2..].split_whitespace().find(|t| t.contains('/')) {
                 out.push(tok.trim_matches(|c: char| !c.is_ascii_graphic()).to_string());
             }
-        }
     }
     out.sort();
     out.dedup();

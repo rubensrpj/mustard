@@ -353,8 +353,8 @@ pub fn dispatch(cmd: ReviewCmd) {
             // Exits 0 when consolidation is allowed (no red rows) and 2 when
             // blocked. This is the close-gate path; ledger lives on disk so
             // we don't need diff + snapshots in argv.
-            if moment == 3 {
-                if let Some(wd) = wave_dir {
+            if moment == 3
+                && let Some(wd) = wave_dir {
                     use crate::commands::review::review_spans::{check_consolidation, ConsolidationCheck};
                     let path = std::path::PathBuf::from(wd);
                     match check_consolidation(&path) {
@@ -362,7 +362,6 @@ pub fn dispatch(cmd: ReviewCmd) {
                         ConsolidationCheck::Blocked { .. } => std::process::exit(2),
                     }
                 }
-            }
             let spec_path = std::path::PathBuf::from(".claude/spec").join(&spec).join("spec.md");
             let plan_text = std::fs::read_to_string(&spec_path).unwrap_or_default();
             let moment_enum = match moment {

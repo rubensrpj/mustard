@@ -189,11 +189,10 @@ fn is_pipeline_complete_bash(cmd: &str) -> bool {
 fn extract_spec_arg(cmd: &str) -> Option<String> {
     let mut parts = cmd.split_whitespace().peekable();
     while let Some(part) = parts.next() {
-        if part == "--spec" {
-            if let Some(value) = parts.next() {
+        if part == "--spec"
+            && let Some(value) = parts.next() {
                 return Some(value.to_string());
             }
-        }
     }
     None
 }
@@ -221,12 +220,11 @@ fn derive_subprojects(paths: &[String]) -> Vec<String> {
     for p in paths {
         let normalized = p.replace('\\', "/");
         for prefix in ["apps/", "packages/"] {
-            if let Some(rest) = normalized.strip_prefix(prefix) {
-                if let Some(end) = rest.find('/') {
+            if let Some(rest) = normalized.strip_prefix(prefix)
+                && let Some(end) = rest.find('/') {
                     let sub = format!("{}{}/", prefix, &rest[..end]);
                     seen.insert(sub);
                 }
-            }
         }
     }
     seen.into_iter().collect()
@@ -295,24 +293,22 @@ impl Observer for AmendWindowInject {
                     "Bash" => {
                         if let Some(cmd) = tool_command(input) {
                             // Arm 1: pipeline.complete detection → open window.
-                            if is_pipeline_complete_bash(cmd) && exit_code(input) == 0 {
-                                if let Some(spec_id) = extract_spec_arg(cmd) {
+                            if is_pipeline_complete_bash(cmd) && exit_code(input) == 0
+                                && let Some(spec_id) = extract_spec_arg(cmd) {
                                     observe_pipeline_complete(
                                         &pdir,
                                         &session_id,
                                         &spec_id,
                                     );
                                 }
-                            }
                             // Arm 2: build/test success → stamp build_verde_at.
                             if is_build_success(cmd) && exit_code(input) == 0 {
                                 let now = now_iso8601();
-                                if let Some((spec_id, mut win)) = active_window(&pdir) {
-                                    if win.build_verde_at.is_none() {
+                                if let Some((spec_id, mut win)) = active_window(&pdir)
+                                    && win.build_verde_at.is_none() {
                                         win.build_verde_at = Some(now);
                                         let _ = write_window(&pdir, &spec_id, &win);
                                     }
-                                }
                             }
                         }
                     }
@@ -393,14 +389,13 @@ fn gather_pipeline_file_set(project_dir: &str, spec_id: &str) -> Vec<String> {
             continue;
         }
         for ev in EventReader::stream(&p) {
-            if ev.kind == "pipeline.complete" {
-                if let Some(files) = ev.payload.get("affected_files").and_then(|v| v.as_array()) {
+            if ev.kind == "pipeline.complete"
+                && let Some(files) = ev.payload.get("affected_files").and_then(|v| v.as_array()) {
                     file_set = files
                         .iter()
                         .filter_map(|f| f.as_str().map(str::to_string))
                         .collect();
                 }
-            }
         }
     }
     file_set
@@ -569,11 +564,10 @@ fn derive_spec_lang_from_header(project_dir: &str, spec_id: &str) -> Option<Stri
     let paths = ClaudePaths::for_project(project_dir).ok()?;
     let sp = paths.for_spec(spec_id).ok()?;
     let spec_md = sp.spec_md_path();
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md) {
-        if let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md)
+        && let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
             return Some(lang);
         }
-    }
     // Legacy fallback: the `### Lang:` header in the markdown.
     let text = std::fs::read_to_string(&spec_md).ok()?;
     for line in text.lines() {

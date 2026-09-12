@@ -122,11 +122,10 @@ fn newest_events_mtime_ms(project: &Path) -> Option<u64> {
             if shard.path.extension().and_then(|s| s.to_str()) != Some("ndjson") {
                 continue;
             }
-            if let Some(ms) = mtime_ms(&shard.path) {
-                if newest.is_none_or(|cur| ms > cur) {
+            if let Some(ms) = mtime_ms(&shard.path)
+                && newest.is_none_or(|cur| ms > cur) {
                     newest = Some(ms);
                 }
-            }
         }
     }
     newest

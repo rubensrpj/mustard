@@ -147,11 +147,10 @@ fn block_term(line: &str) -> Option<String> {
     }
     // `[-*]? **Term** …` definition line.
     let mut s = line.trim_start();
-    if let Some(first) = s.chars().next() {
-        if (first == '-' || first == '*') && s[1..].starts_with(char::is_whitespace) {
+    if let Some(first) = s.chars().next()
+        && (first == '-' || first == '*') && s[1..].starts_with(char::is_whitespace) {
             s = s[1..].trim_start();
         }
-    }
     let after_open = s.strip_prefix("**")?;
     let end = after_open.find("**")?;
     let term = after_open[..end].trim();

@@ -1030,13 +1030,12 @@ fn blocks_html(body: &str) -> String {
             let _ = write!(html, "<p class=\"label\">{}</p>", inline(trimmed.trim_start_matches('#').trim()));
             continue;
         }
-        if line.starts_with([' ', '\t']) {
-            if let Some(last) = items.last_mut() {
+        if line.starts_with([' ', '\t'])
+            && let Some(last) = items.last_mut() {
                 last.push(' ');
                 last.push_str(trimmed);
                 continue;
             }
-        }
         flush_list(&mut html, &mut items);
         paragraph.push(trimmed);
     }

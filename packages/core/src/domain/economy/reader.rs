@@ -1076,11 +1076,10 @@ pub fn per_wave_costs(project_root: &Path, scope: EconomyScope) -> Result<Vec<Wa
         else {
             continue;
         };
-        if let Some(want) = wave_f {
-            if wave != want {
+        if let Some(want) = wave_f
+            && wave != want {
                 continue;
             }
-        }
         let cost = ev
             .payload
             .get("cost_usd_micros")

@@ -437,21 +437,18 @@ impl MustardMemory {
             .into_iter()
             .filter_map(|ev| {
                 let out = event_to_out(ev)?;
-                if let Some(s) = args.spec.as_deref() {
-                    if out.spec.as_deref() != Some(s) {
+                if let Some(s) = args.spec.as_deref()
+                    && out.spec.as_deref() != Some(s) {
                         return None;
                     }
-                }
-                if let Some(e) = args.event.as_deref() {
-                    if out.event != e {
+                if let Some(e) = args.event.as_deref()
+                    && out.event != e {
                         return None;
                     }
-                }
-                if let Some(since) = args.since.as_deref() {
-                    if out.ts.as_str() < since {
+                if let Some(since) = args.since.as_deref()
+                    && out.ts.as_str() < since {
                         return None;
                     }
-                }
                 Some(out)
             })
             .take(limit)

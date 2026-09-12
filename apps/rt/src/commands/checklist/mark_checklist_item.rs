@@ -52,14 +52,13 @@ fn resolve_spec_path(spec: &str, cwd: &Path) -> Option<PathBuf> {
             return Some(as_dir);
         }
     }
-    if let Ok(paths) = ClaudePaths::for_project(cwd) {
-        if let Ok(spec_paths) = paths.for_spec(spec) {
+    if let Ok(paths) = ClaudePaths::for_project(cwd)
+        && let Ok(spec_paths) = paths.for_spec(spec) {
             let flat = spec_paths.spec_md_path();
             if flat.exists() {
                 return Some(flat);
             }
         }
-    }
     // Relative directory — against the resolved cwd first, then the process cwd
     // (the historical behaviour).
     let from_cwd = cwd.join(spec).join("spec.md");
@@ -706,12 +705,11 @@ pub fn run(
         let item = item.unwrap_or("");
         let mut found: Option<usize> = None;
         for (i, line) in lines.iter().enumerate().take(end).skip(start) {
-            if let Some(cb) = parse_checkbox(line) {
-                if cb.state == ' ' && cb.text.contains(item) {
+            if let Some(cb) = parse_checkbox(line)
+                && cb.state == ' ' && cb.text.contains(item) {
                     found = Some(i);
                     break;
                 }
-            }
         }
         match found {
             Some(i) => i,
@@ -831,11 +829,10 @@ mod tests {
         let (start, end) = find_checklist_section(&refs).unwrap();
         let mut idx = None;
         for i in start..end {
-            if let Some(cb) = parse_checkbox(&lines[i]) {
-                if cb.state == ' ' && cb.text.contains("beta") {
+            if let Some(cb) = parse_checkbox(&lines[i])
+                && cb.state == ' ' && cb.text.contains("beta") {
                     idx = Some(i);
                 }
-            }
         }
         let i = idx.unwrap();
         let cb = parse_checkbox(&lines[i]).unwrap();

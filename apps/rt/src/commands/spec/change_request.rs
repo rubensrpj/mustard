@@ -91,11 +91,10 @@ fn resolve_spec(project_dir: &str, explicit: Option<&str>) -> Option<String> {
         return Some(s.to_string());
     }
     let sid = session_id();
-    if !sid.is_empty() && sid != "unknown" {
-        if let Some(spec) = spec_for_session(project_dir, &sid) {
+    if !sid.is_empty() && sid != "unknown"
+        && let Some(spec) = spec_for_session(project_dir, &sid) {
             return Some(spec);
         }
-    }
     current_spec(project_dir)
 }
 
@@ -150,12 +149,10 @@ fn record(project: &Path, opts: &ChangeRequestOpts) -> ChangeRequestReport {
         .and_then(|m| m.outcome)
         .as_deref()
         .and_then(mustard_core::Outcome::parse)
-    {
-        if outcome != mustard_core::Outcome::Active {
+        && outcome != mustard_core::Outcome::Active {
             report.error = Some("spec_not_active".to_string());
             return report;
         }
-    }
     let log_path = spec_dir.join(CHANGE_LOG_MD);
     // Count the bullets BEFORE writing. The landed-proof used to be substring
     // containment, which cannot tell "appended" from "was already there": the

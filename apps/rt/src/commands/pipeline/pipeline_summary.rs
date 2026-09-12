@@ -45,13 +45,11 @@ fn parse_header(text: &str) -> Header {
             } else {
                 "en-US".to_string()
             };
-        } else if name == "spec" {
-            if let Some(v) = t.strip_prefix("# ") {
-                if !v.starts_with('#') {
+        } else if name == "spec"
+            && let Some(v) = t.strip_prefix("# ")
+                && !v.starts_with('#') {
                     name = v.trim().to_string();
                 }
-            }
-        }
     }
     Header { status, name, lang }
 }
@@ -173,16 +171,14 @@ fn parse_checklist(section: &str) -> (usize, usize) {
     let (mut total, mut done) = (0, 0);
     for raw in section.split('\n') {
         let t = raw.trim_start();
-        if let Some(rest) = t.strip_prefix("- [") {
-            if let Some(mark) = rest.chars().next() {
-                if matches!(mark, ' ' | 'x' | 'X') {
+        if let Some(rest) = t.strip_prefix("- [")
+            && let Some(mark) = rest.chars().next()
+                && matches!(mark, ' ' | 'x' | 'X') {
                     total += 1;
                     if mark == 'x' || mark == 'X' {
                         done += 1;
                     }
                 }
-            }
-        }
     }
     (total, done)
 }
@@ -506,11 +502,10 @@ pub(crate) fn build_for_dir(spec_dir: &Path) -> Result<(Model, Header), String> 
     let state_file = ClaudePaths::for_project(&cwd)
         .map(|p| p.pipeline_state_file(&spec_base))
         .unwrap_or_else(|_| cwd.join(format!("{spec_base}.json")));
-    if let Ok(t) = fs::read_to_string(&state_file) {
-        if let Ok(v) = serde_json::from_str::<Value>(&t) {
+    if let Ok(t) = fs::read_to_string(&state_file)
+        && let Ok(v) = serde_json::from_str::<Value>(&t) {
             state = v;
         }
-    }
 
     let model = build_model(&header, &text, &state);
     Ok((model, header))

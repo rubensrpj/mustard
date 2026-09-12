@@ -436,13 +436,11 @@ pub fn pipeline_state_from_events(
         .map_or(1, |w| w + 1);
 
     // FS fallback for is_wave_plan — takes priority only if not already set by event.
-    if view.is_wave_plan.is_none() {
-        if let Some(dir) = spec_dir {
-            if dir.join("wave-plan.md").exists() {
+    if view.is_wave_plan.is_none()
+        && let Some(dir) = spec_dir
+            && dir.join("wave-plan.md").exists() {
                 view.is_wave_plan = Some(true);
             }
-        }
-    }
 
     // closed_at fallback: if status is "closed-followup" but no pipeline.complete
     // event was recorded (e.g. legacy or partially-migrated spec), use the

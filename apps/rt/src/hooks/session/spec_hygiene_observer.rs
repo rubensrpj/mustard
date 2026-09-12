@@ -215,11 +215,10 @@ fn is_active_spec(spec_md: &str) -> bool {
 /// 2. Legacy fallback: the `.md` header via [`is_active_spec`] for un-migrated
 ///    specs (or specs whose sidecar carries no outcome).
 fn is_active_spec_at(spec_md_path: &Path, spec_md: &str) -> bool {
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_md_path) {
-        if let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_md_path)
+        && let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
             return outcome == mustard_core::Outcome::Active;
         }
-    }
     is_active_spec(spec_md)
 }
 

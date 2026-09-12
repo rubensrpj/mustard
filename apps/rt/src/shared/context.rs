@@ -59,11 +59,10 @@ fn config_cache() -> &'static Mutex<HashMap<FingerprintKey, ProjectConfig>> {
 #[must_use]
 pub fn project_config_cached(root: &Path) -> ProjectConfig {
     let key = (root.to_path_buf(), mustard_json_fingerprint(root));
-    if let Ok(cache) = config_cache().lock() {
-        if let Some(hit) = cache.get(&key) {
+    if let Ok(cache) = config_cache().lock()
+        && let Some(hit) = cache.get(&key) {
             return hit.clone();
         }
-    }
     let config = ProjectConfig::load(root);
     if let Ok(mut cache) = config_cache().lock() {
         cache.insert(key, config.clone());
@@ -148,11 +147,10 @@ pub fn install_mode(root: &Path) -> InstallMode {
         return InstallMode::Shared;
     };
     let key = (path.clone(), file_fingerprint(&path));
-    if let Ok(cache) = install_mode_cache().lock() {
-        if let Some(hit) = cache.get(&key) {
+    if let Ok(cache) = install_mode_cache().lock()
+        && let Some(hit) = cache.get(&key) {
             return *hit;
         }
-    }
     let mode = match fs::read_to_string(&path) {
         Ok(body) if mustard_core::carries_private_marks(&body) => InstallMode::Private,
         _ => InstallMode::Shared,
@@ -166,11 +164,10 @@ pub fn install_mode(root: &Path) -> InstallMode {
 /// The clone-local exclude file for `root` through [`exclude_path_cache`].
 fn exclude_path_cached(root: &Path) -> Option<PathBuf> {
     let key = root.to_path_buf();
-    if let Ok(cache) = exclude_path_cache().lock() {
-        if let Some(hit) = cache.get(&key) {
+    if let Ok(cache) = exclude_path_cache().lock()
+        && let Some(hit) = cache.get(&key) {
             return hit.clone();
         }
-    }
     let resolved = mustard_core::exclude_file(root);
     if let Ok(mut cache) = exclude_path_cache().lock() {
         cache.insert(key, resolved.clone());
@@ -325,11 +322,10 @@ pub fn project_dir() -> String {
     if let Ok(root) = workspace_root_strict() {
         return root.to_string_lossy().into_owned();
     }
-    if let Ok(dir) = std::env::var("CLAUDE_PROJECT_DIR") {
-        if !dir.is_empty() {
+    if let Ok(dir) = std::env::var("CLAUDE_PROJECT_DIR")
+        && !dir.is_empty() {
             return dir;
         }
-    }
     std::env::current_dir()
         .ok()
         .and_then(|p| p.to_str().map(str::to_string))
@@ -444,11 +440,10 @@ fn newest_session_dir(session_dir: &Path) -> Option<String> {
 pub fn current_spec(project_dir_path: &str) -> Option<String> {
     // Per-dispatch memo (process-wide == one hook invocation): the env override
     // and legacy scan cannot change mid-process, so a cache hit is authoritative.
-    if let Ok(cache) = active_spec_cache().lock() {
-        if let Some(hit) = cache.get(project_dir_path) {
+    if let Ok(cache) = active_spec_cache().lock()
+        && let Some(hit) = cache.get(project_dir_path) {
             return hit.clone();
         }
-    }
     let resolved = current_spec_uncached(project_dir_path);
     if let Ok(mut cache) = active_spec_cache().lock() {
         cache.insert(project_dir_path.to_string(), resolved.clone());
@@ -460,11 +455,10 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 /// env-then-`.pipeline-states/` resolution described on the wrapper above.
 fn current_spec_uncached(project_dir_path: &str) -> Option<String> {
     // 1. Explicit env override.
-    if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC") {
-        if !s.is_empty() {
+    if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC")
+        && !s.is_empty() {
             return Some(s);
         }
-    }
 
     // 2. The unit the CHECKOUT is standing on. See
     //    [`spec_of_checkout_branch`] — the branch is the isolation, so it is
@@ -551,11 +545,10 @@ pub fn spec_for_session(project_dir_path: &str, session_id: &str) -> Option<Stri
     // Per-dispatch memo of the marker read; evicted on any binding change via
     // `invalidate_session_spec` (see `bind_session_spec` / `unbind_session_spec`).
     let cache_key = (project_dir_path.to_string(), session_id.to_string());
-    if let Ok(cache) = session_spec_cache().lock() {
-        if let Some(hit) = cache.get(&cache_key) {
+    if let Ok(cache) = session_spec_cache().lock()
+        && let Some(hit) = cache.get(&cache_key) {
             return hit.clone();
         }
-    }
     let resolved = spec_for_session_uncached(project_dir_path, session_id);
     if let Ok(mut cache) = session_spec_cache().lock() {
         cache.insert(cache_key, resolved.clone());
@@ -1164,11 +1157,10 @@ pub fn normalise_spec_dir(project: &Path, raw: &str) -> PathBuf {
             || candidate
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("md"));
-        if names_file {
-            if let Some(parent) = candidate.parent().filter(|p| p.is_dir()) {
+        if names_file
+            && let Some(parent) = candidate.parent().filter(|p| p.is_dir()) {
                 return parent.to_path_buf();
             }
-        }
     }
     // 3. A bare slug under `.claude/spec/`. `for_spec` rejects any name
     //    carrying a separator or a traversal, so a real path never lands here

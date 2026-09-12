@@ -543,14 +543,13 @@ fn parse_requirements(body: &str) -> Vec<Requirement> {
             if let Some(sc) = current_scenario(&mut reqs) {
                 sc.then = rest.trim().to_string();
             }
-        } else if let Some(rest) = line.strip_prefix(COMMAND_PREFIX) {
-            if let Some(sc) = current_scenario(&mut reqs) {
+        } else if let Some(rest) = line.strip_prefix(COMMAND_PREFIX)
+            && let Some(sc) = current_scenario(&mut reqs) {
                 let cmd = strip_inline_code(rest.trim());
                 if !cmd.is_empty() {
                     sc.command = Some(cmd);
                 }
             }
-        }
     }
     reqs
 }

@@ -174,11 +174,10 @@ fn claimed_injectables(project_dir: &str, trigger_on: &str) -> Vec<String> {
             let Some(cmd) = hook.get("command").and_then(serde_json::Value::as_str) else {
                 continue;
             };
-            if let Some(rest) = cmd.split("--inject").nth(1) {
-                if let Some(path) = rest.split_whitespace().next() {
+            if let Some(rest) = cmd.split("--inject").nth(1)
+                && let Some(path) = rest.split_whitespace().next() {
                     out.push(path.trim_matches('"').to_string());
                 }
-            }
         }
     }
     out

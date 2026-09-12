@@ -364,11 +364,10 @@ fn role_from_stop_input(input: &HookInput) -> String {
         return t.to_string();
     }
     for key in ["agent_type", "subagent_type"] {
-        if let Some(v) = input.raw.get(key).and_then(serde_json::Value::as_str) {
-            if !v.is_empty() {
+        if let Some(v) = input.raw.get(key).and_then(serde_json::Value::as_str)
+            && !v.is_empty() {
                 return v.to_string();
             }
-        }
     }
     "general-purpose".to_string()
 }
@@ -434,11 +433,10 @@ fn active_wave_dir(project: &Path) -> Option<PathBuf> {
     // The wave env var carries either the bare wave number (e.g. "5") or the
     // full slug (e.g. "wave-5-rt"). Try the slug as-is first, then probe
     // `wave-{n}` + the first `wave-{n}-*` directory.
-    if let Ok(wp) = spec_paths.for_wave(&wave) {
-        if wp.dir().is_dir() {
+    if let Ok(wp) = spec_paths.for_wave(&wave)
+        && wp.dir().is_dir() {
             return Some(wp.dir().to_path_buf());
         }
-    }
     // Numeric form — scan the spec dir for matching `wave-N(-role)?`.
     let prefix_exact = format!("wave-{wave}");
     let prefix_role = format!("wave-{wave}-");
@@ -462,16 +460,14 @@ fn active_wave_dir(project: &Path) -> Option<PathBuf> {
 /// `agent_type` → `"unknown"`. Locale-agnostic (stays in ASCII).
 fn child_id_from_input(input: &HookInput) -> String {
     for key in ["subagent_id", "agent_id", "subagent_type", "agent_type", "task_id"] {
-        if let Some(v) = input.tool_input.get(key).and_then(|x| x.as_str()) {
-            if !v.is_empty() {
+        if let Some(v) = input.tool_input.get(key).and_then(|x| x.as_str())
+            && !v.is_empty() {
                 return v.to_string();
             }
-        }
-        if let Some(v) = input.raw.get(key).and_then(|x| x.as_str()) {
-            if !v.is_empty() {
+        if let Some(v) = input.raw.get(key).and_then(|x| x.as_str())
+            && !v.is_empty() {
                 return v.to_string();
             }
-        }
     }
     "unknown".to_string()
 }
@@ -491,23 +487,19 @@ fn final_output_text(input: &HookInput) -> String {
         .raw
         .get("last_assistant_message")
         .and_then(|v| v.as_str())
-    {
-        if !s.is_empty() {
+        && !s.is_empty() {
             return s.to_string();
         }
-    }
     for key in ["result", "final_output", "output", "tool_response", "tool_result"] {
         if let Some(v) = input.raw.get(key) {
-            if let Some(s) = v.as_str() {
-                if !s.is_empty() {
+            if let Some(s) = v.as_str()
+                && !s.is_empty() {
                     return s.to_string();
                 }
-            }
-            if let Some(s) = v.get("text").and_then(|x| x.as_str()) {
-                if !s.is_empty() {
+            if let Some(s) = v.get("text").and_then(|x| x.as_str())
+                && !s.is_empty() {
                     return s.to_string();
                 }
-            }
         }
     }
     String::new()
@@ -966,11 +958,10 @@ impl Check for SubagentInject {
         // so truncating it by size would contradict the gate — relevance, not
         // size, decides what enters.
         let mut memory = String::new();
-        if let Some(spec) = crate::shared::context::current_spec(&cwd) {
-            if !spec.is_empty() {
+        if let Some(spec) = crate::shared::context::current_spec(&cwd)
+            && !spec.is_empty() {
                 memory = spec_memory_block(&project, &spec, &prompt, &role);
             }
-        }
         // W5.T5.1 — Pre-arm the child with the regression vocabulary the
         // gate will check. This is an INTERNAL subagent prompt, so the
         // vocabulary is rendered in EN/technical regardless of the project's

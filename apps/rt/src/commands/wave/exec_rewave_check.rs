@@ -418,11 +418,10 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         // Tell a direct caller (and the observer path, which reads this to warn
         // the user) what happened to the original spec. Present only when the
         // archive actually happened, so the field never lies about disk state.
-        if renamed {
-            if let Some(obj) = decomposed.as_object_mut() {
+        if renamed
+            && let Some(obj) = decomposed.as_object_mut() {
                 obj.insert("renamedTo".to_string(), json!("spec.original.md"));
             }
-        }
         decomposed
     })()
 }

@@ -32,16 +32,14 @@ pub(super) fn build_agent_visibility(events: &[HarnessEvent], wave: Option<u32>)
 /// Truncate an `agent.stop` event's `payload.summary`, leaving others as-is.
 fn truncate_summary(ev: &HarnessEvent) -> Value {
     let mut value = serde_json::to_value(ev).unwrap_or(Value::Null);
-    if ev.event == "agent.stop" {
-        if let Some(summary) = ev.payload.get("summary").and_then(Value::as_str) {
-            if summary.chars().count() > AGENT_SUMMARY_CHARS {
+    if ev.event == "agent.stop"
+        && let Some(summary) = ev.payload.get("summary").and_then(Value::as_str)
+            && summary.chars().count() > AGENT_SUMMARY_CHARS {
                 let cut: String = summary.chars().take(AGENT_SUMMARY_CHARS).collect();
                 if let Some(p) = value.get_mut("payload").and_then(Value::as_object_mut) {
                     p.insert("summary".to_string(), json!(format!("{cut}…")));
                 }
             }
-        }
-    }
     value
 }
 

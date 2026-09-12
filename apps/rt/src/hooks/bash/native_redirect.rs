@@ -93,11 +93,10 @@ fn first_token(cmd: &str) -> Option<&str> {
 /// `\bsed\s+(-\w*i\w*|-i\b)` — a `sed` invocation with an in-place flag.
 fn is_sed_in_place(cmd: &str) -> bool {
     for word in split_after(cmd, "sed") {
-        if let Some(flag) = word.strip_prefix('-') {
-            if !flag.starts_with('-') && flag.contains('i') {
+        if let Some(flag) = word.strip_prefix('-')
+            && !flag.starts_with('-') && flag.contains('i') {
                 return true;
             }
-        }
     }
     false
 }
@@ -220,8 +219,8 @@ pub(super) fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
             let advisable = effective != "rtk"
                 && (seg_token != "rtk"
                     || RTK_TRANSPARENT_REDIRECT.contains(&effective_lc.as_str()));
-            if advisable {
-                if let Some((tool, tip)) = redirect_for(&effective_lc) {
+            if advisable
+                && let Some((tool, tip)) = redirect_for(&effective_lc) {
                     return Some(Verdict::Inject {
                         context: format!(
                             "[Native Tool Redirect] The `{effective}` part of this piped \
@@ -230,7 +229,6 @@ pub(super) fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
                         ),
                     });
                 }
-            }
         }
         return None;
     }
@@ -244,8 +242,8 @@ pub(super) fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
     if token == "rtk" {
         let inner = first_token(strip_leading_rtk(&cmd)).unwrap_or("");
         let inner_lc = inner.to_ascii_lowercase();
-        if RTK_TRANSPARENT_REDIRECT.contains(&inner_lc.as_str()) {
-            if let Some((tool, tip)) = redirect_for(&inner_lc) {
+        if RTK_TRANSPARENT_REDIRECT.contains(&inner_lc.as_str())
+            && let Some((tool, tip)) = redirect_for(&inner_lc) {
                 return Some(Verdict::Deny {
                     reason: format!(
                         "[Native Tool Redirect] Use the {tool} tool instead of `rtk {inner_lc}` \
@@ -253,7 +251,6 @@ pub(super) fn bash_native_redirect(raw_cmd: &str) -> Option<Verdict> {
                     ),
                 });
             }
-        }
         return None;
     }
 

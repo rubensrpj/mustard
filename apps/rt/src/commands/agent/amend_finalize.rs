@@ -107,16 +107,14 @@ impl RunReport {
 
 /// Resolve the project root.
 pub fn project_root() -> PathBuf {
-    if let Ok(v) = std::env::var(PROJECT_ROOT_ENV) {
-        if !v.is_empty() {
+    if let Ok(v) = std::env::var(PROJECT_ROOT_ENV)
+        && !v.is_empty() {
             return PathBuf::from(v);
         }
-    }
-    if let Ok(v) = std::env::var("CLAUDE_PROJECT_DIR") {
-        if !v.is_empty() {
+    if let Ok(v) = std::env::var("CLAUDE_PROJECT_DIR")
+        && !v.is_empty() {
             return PathBuf::from(v);
         }
-    }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 

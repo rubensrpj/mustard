@@ -108,11 +108,10 @@ fn secret_hits(content: &str) -> Vec<(&'static str, usize, String)> {
         }
     }
     // Private key header.
-    if let Some(i) = content.find("-----BEGIN ") {
-        if content[i..].starts_with("-----BEGIN ") && content[i..].contains("PRIVATE KEY-----") {
+    if let Some(i) = content.find("-----BEGIN ")
+        && content[i..].starts_with("-----BEGIN ") && content[i..].contains("PRIVATE KEY-----") {
             out.push(("Private Key", i, snippet(content, i, 8)));
         }
-    }
     // JWT — eyJ + base64url . base64url . base64url.
     if let Some(i) = lower.find("eyj") {
         let tail = &content[i..];
@@ -262,14 +261,13 @@ fn check_hook_permissions(cwd: &Path, results: &mut Results) {
         .cloned()
         .unwrap_or_default();
     for rule in allows {
-        if let Some(s) = rule.as_str() {
-            if s.contains("rm -rf") || s.contains("--force") || s.contains("chmod 777") {
+        if let Some(s) = rule.as_str()
+            && (s.contains("rm -rf") || s.contains("--force") || s.contains("chmod 777")) {
                 results.permissions.push((
                     s.to_string(),
                     "Dangerous command pattern allowed in permissions".to_string(),
                 ));
             }
-        }
     }
 }
 

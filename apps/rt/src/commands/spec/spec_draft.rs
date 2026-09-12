@@ -470,11 +470,10 @@ fn load_material(path: &Path) -> Result<ConversationMaterial, String> {
             ));
         }
     }
-    if let Some(flow) = &material.flow {
-        if flow.title.trim().is_empty() || flow.diagram.trim().is_empty() {
+    if let Some(flow) = &material.flow
+        && (flow.title.trim().is_empty() || flow.diagram.trim().is_empty()) {
             return Err("flow: a flow needs its title and the before/after diagram".to_string());
         }
-    }
     Ok(material)
 }
 
@@ -1125,17 +1124,15 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     // beside the first. Block on a high hyphen-token overlap with an existing
     // sibling; --force or an explicit --output overrides. Same language is
     // implicit — token overlap is near-zero across languages.
-    if auto_output && !opts.force {
-        if let Some(parent) = output.parent() {
-            if let Some(dup) = find_near_duplicate(parent, &slug) {
+    if auto_output && !opts.force
+        && let Some(parent) = output.parent()
+            && let Some(dup) = find_near_duplicate(parent, &slug) {
                 emit_error(
                     "a near-duplicate spec already exists; pass --force or --output to override",
                     &dup,
                 );
                 return 0;
             }
-        }
-    }
     if let Err(e) = mfs::create_dir_all(&output) {
         emit_error("could not create output directory", &e.to_string());
         return 0;
@@ -1205,12 +1202,11 @@ pub(crate) fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
 
     // The plan's own acceptance criteria supersede the skeleton the draft seeds
     // — see [`adopt_plan_acceptance_criteria`]. A no-op without `--plan`.
-    if let Some(plan) = opts.plan.as_deref() {
-        if let Err(e) = adopt_plan_acceptance_criteria(&output, plan) {
+    if let Some(plan) = opts.plan.as_deref()
+        && let Err(e) = adopt_plan_acceptance_criteria(&output, plan) {
             emit_error("adopt plan acceptance criteria", &e);
             return 0;
         }
-    }
 
     // The conversation channel — each kind in a section of its own. A no-op
     // when nothing was carried.

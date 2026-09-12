@@ -62,11 +62,10 @@ fn windows_path_redirect_target(cmd: &str) -> Option<String> {
             _ => None,
         };
         if let Some(start) = end {
-            if let Some(target) = next_token_after(cmd, start) {
-                if looks_like_windows_path(&target) {
+            if let Some(target) = next_token_after(cmd, start)
+                && looks_like_windows_path(&target) {
                     return Some(target);
                 }
-            }
             i = start;
             continue;
         }

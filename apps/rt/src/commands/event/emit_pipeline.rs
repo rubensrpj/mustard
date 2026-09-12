@@ -289,11 +289,10 @@ fn parse_payload_tolerant(raw: &str) -> Result<Value, serde_json::Error> {
     match serde_json::from_str::<Value>(raw) {
         Ok(v) => Ok(v),
         Err(first_err) => {
-            if raw.contains("\\\"") {
-                if let Ok(v) = serde_json::from_str::<Value>(&raw.replace("\\\"", "\"")) {
+            if raw.contains("\\\"")
+                && let Ok(v) = serde_json::from_str::<Value>(&raw.replace("\\\"", "\"")) {
                     return Ok(v);
                 }
-            }
             Err(first_err)
         }
     }
@@ -911,11 +910,10 @@ fn sync_status_transition(cwd: &Path, spec: &str, payload: &Value, ts: &str, sid
             .ok()
             .map(|sp| sp.dir().to_path_buf())
     };
-    if let Some(path) = spec_path {
-        if let Err(e) = crate::commands::spec::spec_scaffold::sync_status(state, &path) {
+    if let Some(path) = spec_path
+        && let Err(e) = crate::commands::spec::spec_scaffold::sync_status(state, &path) {
             eprintln!("emit-pipeline: WARN: sync_status failed ({e}); headers may be stale");
         }
-    }
 }
 
 /// `pipeline.wave.complete` effect: sync the wave's spec.md + meta.json to
@@ -1099,11 +1097,10 @@ pub(crate) fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
         if ev.event != "qa.result" {
             continue;
         }
-        if let Some(ev_spec) = ev.payload.get("spec").and_then(Value::as_str) {
-            if ev_spec != spec {
+        if let Some(ev_spec) = ev.payload.get("spec").and_then(Value::as_str)
+            && ev_spec != spec {
                 continue;
             }
-        }
         last_overall = ev
             .payload
             .get("overall")
@@ -1323,11 +1320,10 @@ fn state_from_status_word(to: &str) -> SpecState {
     let lower = to.trim().to_ascii_lowercase();
 
     // Terminal outcomes pin the stage to Close.
-    if let Some(outcome) = Outcome::parse(&lower) {
-        if outcome != Outcome::Active {
+    if let Some(outcome) = Outcome::parse(&lower)
+        && outcome != Outcome::Active {
             return SpecState::new(Stage::Close, outcome, Flags::default()).unwrap_or(fallback);
         }
-    }
     // Qualifier words map to Close+Active+followup / a flag.
     if matches!(lower.as_str(), "closed-followup" | "closed_followup") {
         return SpecState::new(
@@ -1623,21 +1619,19 @@ fn reconcile_wave_checklist(cwd: &Path, wave_dir: &Path) {
         if item.done {
             continue;
         }
-        if let Some(p) = item.path.as_deref() {
-            if !p.trim().is_empty() && cwd.join(p).exists() {
+        if let Some(p) = item.path.as_deref()
+            && !p.trim().is_empty() && cwd.join(p).exists() {
                 item.done = true;
                 changed = true;
             }
-        }
     }
-    if changed {
-        if let Err(e) = write_meta(&path, &meta) {
+    if changed
+        && let Err(e) = write_meta(&path, &meta) {
             eprintln!(
                 "emit-pipeline: WARN: could not write {} ({e}); checklist reconcile lost",
                 path.display()
             );
         }
-    }
 }
 
 /// Path-explicit `pipeline.wave.start` emit: routes the event under `project`

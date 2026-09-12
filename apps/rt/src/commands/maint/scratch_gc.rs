@@ -650,14 +650,13 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
         }
     }
 
-    if let (Some(shared), Some(dir)) = (report.shared_target.as_mut(), roots.shared_target.as_deref()) {
-        if shared.over_cap {
+    if let (Some(shared), Some(dir)) = (report.shared_target.as_mut(), roots.shared_target.as_deref())
+        && shared.over_cap {
             match empty_dir(dir) {
                 Ok(()) => shared.emptied = true,
                 Err(error) => report.errors.push(ErrorRecord { path: shared.path.clone(), error }),
             }
         }
-    }
 
     (report, false)
 }

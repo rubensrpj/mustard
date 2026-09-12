@@ -461,11 +461,10 @@ fn parse_wave_label(cell: &str) -> Option<u32> {
 fn parse_depends_cell(cell: &str, self_wave: u32, role_to_wave: &BTreeMap<String, u32>) -> Vec<u32> {
     let mut out: Vec<u32> = Vec::new();
     for token in crate::commands::wave::wave_lib::depends_on_tokens(cell) {
-        if let Some(n) = wave_number_from_link(&token, role_to_wave) {
-            if n != self_wave && !out.contains(&n) {
+        if let Some(n) = wave_number_from_link(&token, role_to_wave)
+            && n != self_wave && !out.contains(&n) {
                 out.push(n);
             }
-        }
     }
     out.sort_unstable();
     out

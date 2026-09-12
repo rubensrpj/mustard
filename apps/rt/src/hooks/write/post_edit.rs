@@ -263,8 +263,8 @@ fn boundary_warn_once(cwd: &str, spec: &str, session: &str) -> bool {
 /// **`meta.json`-first**. The sidecar beside `spec_file` is authoritative; the
 /// already-read `.md` `content` is the legacy fallback for un-migrated specs.
 fn spec_state_meta_first(spec_file: &Path, content: &str) -> Option<mustard_core::SpecState> {
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_file) {
-        if let Some(stage) = m.stage.as_deref().and_then(mustard_core::Stage::parse) {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_file)
+        && let Some(stage) = m.stage.as_deref().and_then(mustard_core::Stage::parse) {
             let outcome = m
                 .outcome
                 .as_deref()
@@ -279,7 +279,6 @@ fn spec_state_meta_first(spec_file: &Path, content: &str) -> Option<mustard_core
                 })
                 .ok();
         }
-    }
     spec::parse_state(content)
 }
 
@@ -291,11 +290,10 @@ fn spec_state_meta_first(spec_file: &Path, content: &str) -> Option<mustard_core
 /// `String` is meaningful only against other keys produced by this same fn.
 fn recency_key_for_spec(spec_dir: &Path, content: &str, dir_name: &str) -> String {
     // meta.json wins.
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_dir.join("spec.md")) {
-        if let Some(cp) = m.checkpoint.filter(|s| !s.trim().is_empty()) {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_dir.join("spec.md"))
+        && let Some(cp) = m.checkpoint.filter(|s| !s.trim().is_empty()) {
             return cp.trim().to_string();
         }
-    }
     // Legacy fallback: the `### Checkpoint:` header.
     for line in content.lines().take(50) {
         let trimmed = line.trim();
@@ -1099,9 +1097,9 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
                 best = Some((mtime, entry.path));
             }
         }
-        if let Some((_, path)) = best {
-            if let Ok(text) = fs::read_to_string(&path) {
-                if let Ok(obj) = serde_json::from_str::<Value>(&text) {
+        if let Some((_, path)) = best
+            && let Ok(text) = fs::read_to_string(&path)
+                && let Ok(obj) = serde_json::from_str::<Value>(&text) {
                     let name = obj
                         .get("spec")
                         .or_else(|| obj.get("specName"))
@@ -1119,8 +1117,6 @@ fn find_active_spec(cwd: &str) -> Option<(String, String)> {
                         }
                     }
                 }
-            }
-        }
     }
     // Strategy 2: newest spec dir (flat layout — scan spec/ directly).
     let active = paths.spec_dir();

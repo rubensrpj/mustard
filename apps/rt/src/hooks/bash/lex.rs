@@ -94,11 +94,10 @@ pub(super) fn is_cmd_separator(c: char) -> bool {
 /// is not `rtk`-prefixed it is returned unchanged.
 pub(super) fn strip_leading_rtk(cmd: &str) -> &str {
     let trimmed = cmd.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("rtk") {
-        if rest.starts_with(char::is_whitespace) {
+    if let Some(rest) = trimmed.strip_prefix("rtk")
+        && rest.starts_with(char::is_whitespace) {
             return rest.trim_start();
         }
-    }
     cmd
 }
 

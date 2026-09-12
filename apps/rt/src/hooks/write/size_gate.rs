@@ -170,24 +170,21 @@ fn is_spec_path(file_path: &str) -> bool {
     // between the prefix and `.md` (mirrors the JS regex).
     if p.contains(".claude/spec/") && std::path::Path::new(&p)
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
-        if let Some(rest) = p.split(".claude/spec/").nth(1) {
-            if rest.len() > ".md".len() {
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        && let Some(rest) = p.split(".claude/spec/").nth(1)
+            && rest.len() > ".md".len() {
                 return true;
             }
-        }
-    }
     // Generic: any `/spec/` segment followed by a non-empty `.md` file.
     if std::path::Path::new(&p)
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
-        if let Some(idx) = p.find("/spec/") {
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        && let Some(idx) = p.find("/spec/") {
             let rest = &p[idx + "/spec/".len()..];
             if rest.len() > ".md".len() {
                 return true;
             }
         }
-    }
     false
 }
 
@@ -309,12 +306,11 @@ fn audit_ac(ac_text: &str) -> AcAudit {
                 items.push(c);
             }
             curr = Some(line.to_string());
-        } else if curr.is_some() && line.starts_with(char::is_whitespace) {
-            if let Some(c) = curr.as_mut() {
+        } else if curr.is_some() && line.starts_with(char::is_whitespace)
+            && let Some(c) = curr.as_mut() {
                 c.push('\n');
                 c.push_str(line);
             }
-        }
     }
     if let Some(c) = curr {
         items.push(c);
@@ -637,14 +633,13 @@ fn extract_frontmatter(normalized: &str) -> Option<String> {
 /// Read a single-line `^key:\s*(.+)$` field from a YAML body.
 fn yaml_field(body: &str, key: &str) -> Option<String> {
     for line in body.split('\n') {
-        if let Some(rest) = line.strip_prefix(key) {
-            if let Some(value) = rest.strip_prefix(':') {
+        if let Some(rest) = line.strip_prefix(key)
+            && let Some(value) = rest.strip_prefix(':') {
                 let value = value.trim();
                 if !value.is_empty() {
                     return Some(value.to_string());
                 }
             }
-        }
     }
     None
 }
@@ -806,14 +801,13 @@ impl Check for SizeGate {
                 GateMode::Strict,
             );
             let ac_mode = resolve_mode("MUSTARD_AC_QUALITY_MODE", None, GateMode::Warn);
-            if spec_mode != GateMode::Off || ac_mode != GateMode::Off {
-                if let Some(content) = resolve_content(input) {
+            if (spec_mode != GateMode::Off || ac_mode != GateMode::Off)
+                && let Some(content) = resolve_content(input) {
                     // AC audit first (advisory only — never a Deny).
-                    if ac_mode != GateMode::Off {
-                        if let Some(advisory) = ac_quality_advisory(&content) {
+                    if ac_mode != GateMode::Off
+                        && let Some(advisory) = ac_quality_advisory(&content) {
                             warnings.push(advisory);
                         }
-                    }
                     if spec_mode != GateMode::Off {
                         match spec_size_verdict(count_lines(&content), spec_mode) {
                             Verdict::Deny { reason } => return Ok(Verdict::Deny { reason }),
@@ -822,7 +816,6 @@ impl Check for SizeGate {
                         }
                     }
                 }
-            }
         }
 
         // ── skill-size-gate + skill-validate-gate ─────────────────────────
@@ -836,8 +829,8 @@ impl Check for SizeGate {
             );
             let validate_mode =
                 resolve_mode("MUSTARD_SKILL_VALIDATE_GATE_MODE", None, GateMode::Strict);
-            if size_mode != GateMode::Off || validate_mode != GateMode::Off {
-                if let Some(content) = resolve_content(input) {
+            if (size_mode != GateMode::Off || validate_mode != GateMode::Off)
+                && let Some(content) = resolve_content(input) {
                     if size_mode != GateMode::Off {
                         match skill_size_verdict(&content, count_lines(&content), size_mode) {
                             Verdict::Deny { reason } => return Ok(Verdict::Deny { reason }),
@@ -853,7 +846,6 @@ impl Check for SizeGate {
                         }
                     }
                 }
-            }
         }
 
         if warnings.is_empty() {

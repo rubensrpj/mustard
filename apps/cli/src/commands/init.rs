@@ -629,11 +629,10 @@ fn resolve_templates_dir() -> Result<PathBuf> {
         // Safety net: the pre-canonical path is still probed, so a canonical
         // form that points somewhere unhelpful can never resolve LESS than the
         // previous behaviour did.
-        if real.as_path() != exe {
-            if let Some(found) = templates_beside_exe(exe) {
+        if real.as_path() != exe
+            && let Some(found) = templates_beside_exe(exe) {
                 return Ok(found);
             }
-        }
     }
 
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
@@ -876,12 +875,11 @@ fn ensure_global_permissions() -> Result<()> {
     // env.CLAUDE_CODE_NO_FLICKER = "1"
     let env = settings.entry("env").or_insert_with(|| json!({}));
     let mut env_added = false;
-    if let Some(env) = env.as_object_mut() {
-        if env.get("CLAUDE_CODE_NO_FLICKER").and_then(|v| v.as_str()) != Some("1") {
+    if let Some(env) = env.as_object_mut()
+        && env.get("CLAUDE_CODE_NO_FLICKER").and_then(|v| v.as_str()) != Some("1") {
             env.insert("CLAUDE_CODE_NO_FLICKER".to_string(), json!("1"));
             env_added = true;
         }
-    }
 
     if added.is_empty() && !env_added {
         println!("  Global settings: permissions and env already configured");

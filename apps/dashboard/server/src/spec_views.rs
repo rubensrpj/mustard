@@ -770,11 +770,10 @@ pub fn spec_quality_v2(repo_path: &str, spec: &str) -> Result<Vec<SpecQualityIte
             // an event-supplied label always wins.
             let is_bare_id = item.ac_label.as_deref() == Some(item.ac_id.as_str())
                 || item.ac_label.is_none();
-            if is_bare_id {
-                if let Some(text) = descriptions.get(&item.ac_id) {
+            if is_bare_id
+                && let Some(text) = descriptions.get(&item.ac_id) {
                     item.ac_label = Some(text.clone());
                 }
-            }
             item
         })
         .collect())

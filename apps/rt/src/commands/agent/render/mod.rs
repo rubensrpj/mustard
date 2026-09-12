@@ -923,13 +923,11 @@ fn read_prior_wave_diff(project: &Path, spec: &str, wave_num: u32) -> String {
         if !matches {
             continue;
         }
-        if let Ok(wp) = sp.for_wave(name_str) {
-            if let Ok(text) = mfs::read_to_string(wp.diff_md_path()) {
-                if !text.is_empty() {
+        if let Ok(wp) = sp.for_wave(name_str)
+            && let Ok(text) = mfs::read_to_string(wp.diff_md_path())
+                && !text.is_empty() {
                     return text;
                 }
-            }
-        }
     }
     String::new()
 }

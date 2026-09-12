@@ -86,11 +86,10 @@ pub fn project_spec_view_with_header(
         .filter(|e| e.spec.as_deref() == Some(spec_name))
         .count();
     if scoped_count == 0 {
-        if let Some(path) = spec_md_path {
-            if let Some(view) = view_from_header(spec_name, path) {
+        if let Some(path) = spec_md_path
+            && let Some(view) = view_from_header(spec_name, path) {
                 return view;
             }
-        }
         return SpecView::empty(spec_name);
     }
     project_from_events(spec_name, events)
@@ -404,25 +403,22 @@ fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
     // (rewrite is Wave 7).
     if let Some(state) = state_from_new_header(&header) {
         view.state = state;
-        if let Some(phase_raw) = header.get("phase") {
-            if let Some(phase) = Phase::parse(phase_raw) {
+        if let Some(phase_raw) = header.get("phase")
+            && let Some(phase) = Phase::parse(phase_raw) {
                 view.phase = Some(phase);
             }
-        }
         seed_header_metadata(&mut view, &header);
         return Some(view);
     }
 
-    if let Some(status_raw) = header.get("status") {
-        if let Some(state) = state_from_status_word(status_raw) {
+    if let Some(status_raw) = header.get("status")
+        && let Some(state) = state_from_status_word(status_raw) {
             view.state = state;
         }
-    }
-    if let Some(phase_raw) = header.get("phase") {
-        if let Some(phase) = Phase::parse(phase_raw) {
+    if let Some(phase_raw) = header.get("phase")
+        && let Some(phase) = Phase::parse(phase_raw) {
             view.phase = Some(phase);
         }
-    }
     seed_header_metadata(&mut view, &header);
 
     Some(view)
@@ -434,11 +430,10 @@ fn seed_header_metadata(
     view: &mut SpecView,
     header: &std::collections::BTreeMap<String, String>,
 ) {
-    if let Some(scope_raw) = header.get("scope") {
-        if let Some(scope) = Scope::parse(scope_raw) {
+    if let Some(scope_raw) = header.get("scope")
+        && let Some(scope) = Scope::parse(scope_raw) {
             view.scope = Some(scope);
         }
-    }
     if let Some(lang_raw) = header.get("lang") {
         let trimmed = lang_raw.trim();
         if !trimmed.is_empty() {

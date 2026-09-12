@@ -828,23 +828,21 @@ pub fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
         .and_then(|e| e.pointer("/source/url"))
         .and_then(Value::as_str)
         == Some(MARKETPLACE_REPO_URL);
-    if planted_marketplace {
-        if let Some(obj) = settings
+    if planted_marketplace
+        && let Some(obj) = settings
             .get_mut("extraKnownMarketplaces")
             .and_then(Value::as_object_mut)
         {
             obj.remove(PLUGIN_MARKETPLACE);
         }
-    }
     let marketplace_present = settings
         .get("extraKnownMarketplaces")
         .and_then(|m| m.get(PLUGIN_MARKETPLACE))
         .is_some();
-    if !marketplace_present {
-        if let Some(obj) = settings.get_mut("enabledPlugins").and_then(Value::as_object_mut) {
+    if !marketplace_present
+        && let Some(obj) = settings.get_mut("enabledPlugins").and_then(Value::as_object_mut) {
             obj.remove(PLUGIN_ID);
         }
-    }
     for container in ["extraKnownMarketplaces", "enabledPlugins"] {
         let emptied = settings
             .get(container)
@@ -1245,12 +1243,11 @@ fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome
     }
 
     let mut changed = false;
-    if let Some(version) = version {
-        if config.version.as_deref() != Some(version) {
+    if let Some(version) = version
+        && config.version.as_deref() != Some(version) {
             config.version = Some(version.to_string());
             changed = true;
         }
-    }
     if config.inject.is_empty() {
         config.inject = default_inject_entries();
         changed = true;

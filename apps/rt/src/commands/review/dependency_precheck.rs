@@ -457,12 +457,11 @@ pub fn detect_subproject(files: &[String], repo_root: &Path) -> Option<PathBuf> 
         let mut found: Option<(String, String)> = None;
         let bases = ["apps", "packages"];
         for (i, seg) in segments.iter().enumerate() {
-            if bases.contains(seg) {
-                if let Some(name) = segments.get(i + 1) {
+            if bases.contains(seg)
+                && let Some(name) = segments.get(i + 1) {
                     found = Some(((*seg).to_string(), (*name).to_string()));
                     break;
                 }
-            }
         }
         match (&chosen, &found) {
             (None, Some(f)) => chosen = Some(f.clone()),
@@ -925,11 +924,10 @@ fn parse_wave_plan_deps(plan_text: &str, current_wave: WaveNumber) -> Vec<WaveNu
                         break;
                     }
                     let cells = split_table_row(row);
-                    if let (Some(wcell), Some(dcell)) = (cells.get(wcol), cells.get(dcol)) {
-                        if parse_wave_number_from_token(wcell) == Some(current_wave) {
+                    if let (Some(wcell), Some(dcell)) = (cells.get(wcol), cells.get(dcol))
+                        && parse_wave_number_from_token(wcell) == Some(current_wave) {
                             return parse_deps_cell(dcell);
                         }
-                    }
                     j += 1;
                 }
                 return Vec::new();
@@ -953,11 +951,10 @@ fn parse_wave_plan_deps(plan_text: &str, current_wave: WaveNumber) -> Vec<WaveNu
 fn parse_deps_cell(cell: &str) -> Vec<WaveNumber> {
     let mut out: Vec<WaveNumber> = Vec::new();
     for token in crate::commands::wave::wave_lib::depends_on_tokens(cell) {
-        if let Some(n) = parse_wave_number_from_token(&token) {
-            if !out.contains(&n) {
+        if let Some(n) = parse_wave_number_from_token(&token)
+            && !out.contains(&n) {
                 out.push(n);
             }
-        }
     }
     out
 }
@@ -1205,13 +1202,12 @@ pub(crate) fn check(spec_arg: &str, subproject_override: Option<&str>) -> Value 
         }
         missing.push(Value::Object(entry));
 
-        if let Some(sub) = subproject_path.as_ref() {
-            if let Some(suggestion) =
+        if let Some(sub) = subproject_path.as_ref()
+            && let Some(suggestion) =
                 suggest_tactical_fix_path(sub, symbol, dep.import_path.as_deref(), &repo_root)
             {
                 suggested.insert(suggestion);
             }
-        }
     }
 
     let effective_ok = if mode == "off" { true } else { missing.is_empty() };

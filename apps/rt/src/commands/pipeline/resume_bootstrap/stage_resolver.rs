@@ -73,11 +73,10 @@ pub(super) fn detect_stage(
     if let Some(stage) = parse_header_value(head, "stage") {
         return Some(normalise_stage(&stage));
     }
-    if let Some(v) = view {
-        if let Some(s) = v.status.as_deref() {
+    if let Some(v) = view
+        && let Some(s) = v.status.as_deref() {
             return Some(normalise_stage(s));
         }
-    }
     None
 }
 

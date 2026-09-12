@@ -494,11 +494,10 @@ fn score_pt(text: &str) -> (usize, Vec<String>) {
     for word in PT_MARKER_WORDS {
         if lower.contains(word) {
             hits.push(word);
-            if samples.len() < 5 {
-                if let Some(sample) = grab_sample(text, word) {
+            if samples.len() < 5
+                && let Some(sample) = grab_sample(text, word) {
                     samples.push(sample);
                 }
-            }
         }
     }
     (hits.len(), samples)

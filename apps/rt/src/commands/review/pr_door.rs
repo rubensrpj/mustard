@@ -937,12 +937,11 @@ pub fn run_list(root: &Path) {
 
 /// Dispatch `mustard-rt run pr-review`.
 pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical: i64) {
-    if let Some(v) = verdict {
-        if v != "approved" && v != "rejected" {
+    if let Some(v) = verdict
+        && v != "approved" && v != "rejected" {
             eprintln!("[pr-review] Invalid --verdict \"{v}\" — expected approved|rejected");
             return;
         }
-    }
     let repo = project_root(root);
     match resolve_pr(&repo, pr) {
         Ok(facts) => {

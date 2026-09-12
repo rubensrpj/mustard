@@ -195,8 +195,8 @@ pub fn render_footer(body: &str, search_dirs: &[&Path]) -> String {
 /// Strip the `<!-- wikilinks-footer-start -->…<!-- wikilinks-footer-end -->`
 /// block (and the two blank lines before it) from `body`.
 fn strip_footer(body: &str) -> String {
-    if let (Some(start), Some(end)) = (body.find(FOOTER_START), body.find(FOOTER_END)) {
-        if start < end {
+    if let (Some(start), Some(end)) = (body.find(FOOTER_START), body.find(FOOTER_END))
+        && start < end {
             let before = &body[..start];
             let after_end = end + FOOTER_END.len();
             let after = body.get(after_end..).unwrap_or("");
@@ -207,7 +207,6 @@ fn strip_footer(body: &str) -> String {
             }
             return format!("{before_trimmed}\n{}", after.trim_start());
         }
-    }
     body.to_string()
 }
 
@@ -241,13 +240,11 @@ fn resolve_walk(
         }
         let name = path.file_name().and_then(|n| n.to_str());
         // Only `.md` files can carry a frontmatter id.
-        if name.is_some_and(|n| n.ends_with(".md")) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if frontmatter_id_matches(&content, token) {
+        if name.is_some_and(|n| n.ends_with(".md"))
+            && let Ok(content) = std::fs::read_to_string(&path)
+                && frontmatter_id_matches(&content, token) {
                     return Some(path);
                 }
-            }
-        }
         if filename_hit.is_none() && name == Some(filename) {
             *filename_hit = Some(path);
         }

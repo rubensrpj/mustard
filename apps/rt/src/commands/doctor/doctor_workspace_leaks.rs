@@ -97,14 +97,13 @@ fn walk_for_claude_dirs(
         return;
     }
     // Skip directories whose name implies vendored/build content.
-    if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
-        if matches!(
+    if let Some(name) = dir.file_name().and_then(|s| s.to_str())
+        && matches!(
             name,
             "node_modules" | "target" | ".git" | "dist" | "build" | "bin" | "obj"
         ) {
             return;
         }
-    }
 
     let Ok(entries) = fs::read_dir(dir) else {
         return;

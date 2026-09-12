@@ -71,11 +71,10 @@ fn scan(events: &[HarnessEvent], args: &Args, now_ms: i64) -> VerifyOutcome {
         if ev.event != args.event {
             continue;
         }
-        if let Some(spec) = &args.spec {
-            if ev.spec.as_deref() != Some(spec.as_str()) {
+        if let Some(spec) = &args.spec
+            && ev.spec.as_deref() != Some(spec.as_str()) {
                 continue;
             }
-        }
         if ev.ts.is_empty() {
             continue;
         }

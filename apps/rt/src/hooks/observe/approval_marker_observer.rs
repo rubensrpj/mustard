@@ -272,8 +272,8 @@ fn offered_labels(input: &HookInput) -> Vec<String> {
         match node {
             Value::Object(map) => {
                 for (key, value) in map {
-                    if key == "options" {
-                        if let Some(items) = value.as_array() {
+                    if key == "options"
+                        && let Some(items) = value.as_array() {
                             for item in items {
                                 let label = match item {
                                     Value::String(s) => Some(s.as_str()),
@@ -284,7 +284,6 @@ fn offered_labels(input: &HookInput) -> Vec<String> {
                                 }
                             }
                         }
-                    }
                     walk(value, out);
                 }
             }
@@ -469,11 +468,10 @@ impl Observer for ApprovalMarkerObserver {
             // selected, affirmative — is worth a word here; on anything else
             // this is one of the session's ordinary questions and silence is
             // the correct answer.
-            if approved {
-                if let Some(notice) = missing_plan_notice(&pending) {
+            if approved
+                && let Some(notice) = missing_plan_notice(&pending) {
                     eprintln!("{notice}");
                 }
-            }
             return;
         };
 

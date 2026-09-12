@@ -316,12 +316,11 @@ fn scan_md_files_for_dead_refs(claude_dir: &Path, hits: &mut Vec<String>) {
     let walker = collect_files_recursive(claude_dir, 4);
     for path in walker {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.ends_with(".md") {
-            if let Ok(text) = fs::read_to_string(&path) {
+        if name.ends_with(".md")
+            && let Ok(text) = fs::read_to_string(&path) {
                 let source = path.to_string_lossy().into_owned();
                 scan_for_dead_js_refs(&text, claude_dir, &source, hits);
             }
-        }
     }
 }
 
@@ -913,14 +912,13 @@ fn check_nerd_font() -> CheckResult {
     // Linux: fontconfig is authoritative if the binary is on PATH.
     #[cfg(target_os = "linux")]
     {
-        if let Ok(output) = std::process::Command::new("fc-list").output() {
-            if output.status.success() {
+        if let Ok(output) = std::process::Command::new("fc-list").output()
+            && output.status.success() {
                 let listing = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
                 if listing.contains("nerd") {
                     return CheckResult::ok("nerd-font");
                 }
             }
-        }
     }
     CheckResult::warn(
         "nerd-font",
@@ -977,8 +975,8 @@ fn scan_for_any_nerd_font(dir: &Path) -> bool {
         if name.contains("nerd") || name.contains("nf-") {
             return true;
         }
-        if entry.is_dir {
-            if let Ok(sub) = fs::read_dir(&entry.path) {
+        if entry.is_dir
+            && let Ok(sub) = fs::read_dir(&entry.path) {
                 for s in sub {
                     let sn = s.file_name.to_ascii_lowercase();
                     if sn.contains("nerd") || sn.contains("nf-") {
@@ -986,7 +984,6 @@ fn scan_for_any_nerd_font(dir: &Path) -> bool {
                     }
                 }
             }
-        }
     }
     false
 }
@@ -1651,25 +1648,23 @@ fn render_combined_json(
     // Roadmap #6 — capability/grain drift advisory, keyed verbatim. Only
     // present when a grain model exists (otherwise the check is a no-op and
     // the key is omitted so consumers can tell "no model" from "no drift").
-    if let Some(d) = drift {
-        if let serde_json::Value::Object(ref mut map) = body {
+    if let Some(d) = drift
+        && let serde_json::Value::Object(ref mut map) = body {
             map.insert(
                 "capability_drift".to_string(),
                 serde_json::to_value(d).unwrap_or(serde_json::Value::Null),
             );
         }
-    }
     // Uncurated-rules advisory, keyed verbatim. Same rule: present only when
     // there is a scan census, so consumers can tell "no census" from "no
     // uncurated scaffold".
-    if let Some(s) = scaffold {
-        if let serde_json::Value::Object(ref mut map) = body {
+    if let Some(s) = scaffold
+        && let serde_json::Value::Object(ref mut map) = body {
             map.insert(
                 "guards_scaffold".to_string(),
                 serde_json::to_value(s).unwrap_or(serde_json::Value::Null),
             );
         }
-    }
     println!(
         "{}",
         serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())

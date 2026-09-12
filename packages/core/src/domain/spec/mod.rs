@@ -259,18 +259,16 @@ fn resolve(status: Option<&str>, phase: Option<&str>) -> Option<SpecState> {
     let phase_stage = phase.and_then(parse_stage_tolerant);
 
     // 0. `queued` sub-plan sentinel: not-yet-started Plan item.
-    if let Some(status) = status {
-        if value_token(status).eq_ignore_ascii_case("queued") {
+    if let Some(status) = status
+        && value_token(status).eq_ignore_ascii_case("queued") {
             return Some(state_or_fallback(Stage::Plan, Outcome::Active, Flags::default()));
         }
-    }
 
     // 1. Terminal status wins outright — only legal at Close.
-    if let Some(status) = status {
-        if let Some(outcome) = terminal_outcome(status) {
+    if let Some(status) = status
+        && let Some(outcome) = terminal_outcome(status) {
             return Some(state_or_fallback(Stage::Close, outcome, Flags::default()));
         }
-    }
 
     // 2. closed-followup: Close + Active + followup_open.
     if let Some(status) = status {

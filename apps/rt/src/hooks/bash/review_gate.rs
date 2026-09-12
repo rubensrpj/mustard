@@ -412,8 +412,8 @@ pub(super) fn review_gate(cmd: &str, ctx: &Ctx, mode: Mode) -> Option<Verdict> {
 
     // Check 5: build integrity — strict mode only.
     let mut build_ok: Option<bool> = None;
-    if mode == Mode::Strict {
-        if let Some(build_cmd) = read_build_command(project_dir) {
+    if mode == Mode::Strict
+        && let Some(build_cmd) = read_build_command(project_dir) {
             let result = run_build(&build_cmd, project_dir);
             if !result.ok && !result.env_error {
                 build_ok = Some(false);
@@ -427,7 +427,6 @@ pub(super) fn review_gate(cmd: &str, ctx: &Ctx, mode: Mode) -> Option<Verdict> {
             }
             // env_error → fail-open: leave `build_ok` as `None`, no warning.
         }
-    }
 
     // Check 6: active pipeline advisory.
     let pipelines = active_pipelines(project_dir);

@@ -150,8 +150,8 @@ fn parse_wave_plan(wave_plan_file: &Path, spec_dir: &Path) -> Vec<Wave> {
     waves
         .into_iter()
         .map(|(label, mut folder)| {
-            if !entries.iter().any(|e| e == &folder) {
-                if let Some(num) = first_number(&folder).or_else(|| first_number(&label)) {
+            if !entries.iter().any(|e| e == &folder)
+                && let Some(num) = first_number(&folder).or_else(|| first_number(&label)) {
                     let prefix = format!("wave-{num}");
                     if let Some(m) = entries.iter().find(|e| {
                         let el = e.to_lowercase();
@@ -163,7 +163,6 @@ fn parse_wave_plan(wave_plan_file: &Path, spec_dir: &Path) -> Vec<Wave> {
                         folder.clone_from(m);
                     }
                 }
-            }
             let spec_file = spec_dir.join(&folder).join("spec.md");
             let status = read_status(&spec_file);
             let icon = icon_for(&status).to_string();

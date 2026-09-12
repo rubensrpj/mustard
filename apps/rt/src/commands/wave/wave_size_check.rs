@@ -260,25 +260,21 @@ fn audit_wave(
     let mut source: Option<&str> = None;
     let mut task_count = 0usize;
     let wave_spec_path = spec_dir.join(folder).join("spec.md");
-    if wave_spec_path.exists() {
-        if let Ok(text) = fs::read_to_string(&wave_spec_path) {
+    if wave_spec_path.exists()
+        && let Ok(text) = fs::read_to_string(&wave_spec_path) {
             task_count = count_task_items(&text);
-            if let Some(parsed) = parse_files_section(&text) {
-                if !parsed.is_empty() {
+            if let Some(parsed) = parse_files_section(&text)
+                && !parsed.is_empty() {
                     files = Some(parsed);
                     source = Some("wave-spec");
                 }
-            }
         }
-    }
-    if files.is_none() {
-        if let Some(plan_files) = files_from_wave_plan(spec_dir, wave_num) {
-            if !plan_files.is_empty() {
+    if files.is_none()
+        && let Some(plan_files) = files_from_wave_plan(spec_dir, wave_num)
+            && !plan_files.is_empty() {
                 files = Some(plan_files);
                 source = Some("wave-plan");
             }
-        }
-    }
 
     let Some(files) = files else {
         let status = if wave_spec_path.exists() {
@@ -321,11 +317,10 @@ fn audit_wave(
             "newEntityCount": 0,
             "knowledgeMatches": [],
         }));
-        if decision.get("decompose").and_then(Value::as_bool) == Some(true) {
-            if let Some(reason) = decision.get("reason").and_then(Value::as_str) {
+        if decision.get("decompose").and_then(Value::as_bool) == Some(true)
+            && let Some(reason) = decision.get("reason").and_then(Value::as_str) {
                 reasons.push(reason.to_string());
             }
-        }
     }
     if file_count > limit {
         reasons.push(format!("file-count:{file_count}>{limit}"));

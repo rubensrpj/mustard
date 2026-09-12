@@ -478,11 +478,10 @@ fn pending_prune_count(cwd: &Path) -> usize {
     let cache = ClaudePaths::for_project(cwd)
         .ok()
         .map(|paths| paths.harness_dir().join(PRUNE_CACHE_FILE));
-    if let Some(path) = cache.as_deref() {
-        if let Some(fresh) = cached_count(path) {
+    if let Some(path) = cache.as_deref()
+        && let Some(fresh) = cached_count(path) {
             return fresh;
         }
-    }
     let measured = measure_pending_prune(cwd);
     if let Some(path) = cache.as_deref() {
         store_count(path, measured);

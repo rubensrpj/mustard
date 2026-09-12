@@ -155,15 +155,14 @@ fn inflection_keys(term: &str) -> BTreeSet<String> {
     let lower = term.to_lowercase();
     let mut keys: BTreeSet<String> = std::iter::once(lower.clone()).collect();
     for suffix in INFLECTION_SUFFIXES {
-        if let Some(base) = lower.strip_suffix(suffix) {
-            if base.len() >= MIN_STEM_LEN {
+        if let Some(base) = lower.strip_suffix(suffix)
+            && base.len() >= MIN_STEM_LEN {
                 keys.insert(base.to_string());
                 // `ies` → `y` reconstruction (`policies` → `policy`).
                 if *suffix == "ies" {
                     keys.insert(format!("{base}y"));
                 }
             }
-        }
     }
     keys
 }

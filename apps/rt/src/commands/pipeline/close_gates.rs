@@ -328,11 +328,10 @@ pub(crate) fn find_unmarked_checklist(cwd: &str, spec: Option<&str>) -> (bool, V
     let spec_path = sp.spec_md_path();
 
     // First, the parent's own checklist (owning Light / non-decomposed Full).
-    if let Ok(raw) = fs::read_to_string(&spec_path) {
-        if let Some(unmarked) = checklist_unmarked_in(&raw) {
+    if let Ok(raw) = fs::read_to_string(&spec_path)
+        && let Some(unmarked) = checklist_unmarked_in(&raw) {
             return (true, unmarked);
         }
-    }
 
     // No parent checklist. If this is a wave-plan parent, consolidate the wave
     // checklists so the gate has something to enforce (the orphan-gate fix).
@@ -433,11 +432,10 @@ fn checklist_unmarked_in(raw: &str) -> Option<Vec<String>> {
 /// `wave-N-*` subdir exists. Fail-open: an unreadable sidecar falls back to the
 /// directory probe.
 fn is_wave_plan_parent(spec_dir: &Path) -> bool {
-    if let Some(meta) = mustard_core::read_meta(&spec_dir.join("meta.json")) {
-        if meta.is_wave_plan == Some(true) || meta.total_waves.unwrap_or(0) >= 1 {
+    if let Some(meta) = mustard_core::read_meta(&spec_dir.join("meta.json"))
+        && (meta.is_wave_plan == Some(true) || meta.total_waves.unwrap_or(0) >= 1) {
             return true;
         }
-    }
     !wave_dirs(spec_dir).is_empty()
 }
 
@@ -618,13 +616,11 @@ fn find_last_qa_result(
             continue;
         }
         // Filter by spec when one is known and the event carries one.
-        if let Some(spec) = spec {
-            if let Some(ev_spec) = ev.payload.get("spec").and_then(|v| v.as_str()) {
-                if ev_spec != spec {
+        if let Some(spec) = spec
+            && let Some(ev_spec) = ev.payload.get("spec").and_then(|v| v.as_str())
+                && ev_spec != spec {
                     continue;
                 }
-            }
-        }
         last = Some(ev);
     }
     let Some(last) = last else {
@@ -716,11 +712,10 @@ fn spec_edited_after(
     let sp = ClaudePaths::for_project(Path::new(cwd)).ok()?.for_spec(spec).ok()?;
     let dir = sp.dir();
     for name in ["spec.md", "wave-plan.md"] {
-        if let Some(mtime_iso) = file_mtime_iso(&dir.join(name)) {
-            if mtime_iso.as_str() > qa_ts {
+        if let Some(mtime_iso) = file_mtime_iso(&dir.join(name))
+            && mtime_iso.as_str() > qa_ts {
                 return Some(name.to_string());
             }
-        }
     }
     // Only ask when the record actually carries a fingerprint — see above on why
     // an old record must not be invalidated merely for predating the field.

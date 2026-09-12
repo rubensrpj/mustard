@@ -276,16 +276,13 @@ fn nested_default_base(vcs: &str, root: &str) -> Option<String> {
         .args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
         .current_dir(root)
         .output()
-    {
-        if out.status.success() {
-            if let Ok(s) = String::from_utf8(out.stdout) {
+        && out.status.success()
+            && let Ok(s) = String::from_utf8(out.stdout) {
                 let b = s.trim().trim_start_matches("origin/").trim();
                 if !b.is_empty() {
                     return Some(b.to_string());
                 }
             }
-        }
-    }
     current_branch(vcs, root).filter(|b| b != "HEAD")
 }
 

@@ -299,8 +299,8 @@ fn parse_header_md(text: &str) -> SpecHeader {
             last_header_line = true;
             past_header = false;
             // Parse the key/value
-            if let Some(rest) = trimmed.strip_prefix("### ") {
-                if let Some(colon_pos) = rest.find(':') {
+            if let Some(rest) = trimmed.strip_prefix("### ")
+                && let Some(colon_pos) = rest.find(':') {
                     let key = rest[..colon_pos].trim();
                     let val = rest[colon_pos + 1..].trim().to_string();
                     match key.to_ascii_lowercase().as_str() {
@@ -327,7 +327,6 @@ fn parse_header_md(text: &str) -> SpecHeader {
                         _ => {}
                     }
                 }
-            }
         } else if last_header_line && !trimmed.is_empty() && !trimmed.starts_with('#') {
             // Non-header content after seeing header lines: header block has ended.
             past_header = true;
@@ -777,13 +776,12 @@ fn strip_markdown(s: &str) -> String {
     let mut rest = s;
     while let Some(ch) = rest.chars().next() {
         // Strip [[wikilink]]
-        if let Some(after) = rest.strip_prefix("[[") {
-            if let Some(end) = after.find("]]") {
+        if let Some(after) = rest.strip_prefix("[[")
+            && let Some(end) = after.find("]]") {
                 out.push_str(after[..end].trim());
                 rest = &after[end + "]]".len()..];
                 continue;
             }
-        }
         // Strip ** or __
         if let Some(after) = rest.strip_prefix("**").or_else(|| rest.strip_prefix("__")) {
             rest = after;
@@ -1011,26 +1009,24 @@ fn derive_status(
         SpecKind::Active => {}
     }
     // Tactical fix: has a parent → TF→{alias}
-    if let Some(parent) = &spec.header.parent {
-        if !parent.is_empty() {
+    if let Some(parent) = &spec.header.parent
+        && !parent.is_empty() {
             let alias = parent_aliases
                 .get(parent)
                 .cloned()
                 .unwrap_or_else(|| parent.chars().take(2).collect());
             return format!("TF→{alias}");
         }
-    }
     // Wave plan with active waves: "W{N} em exec" once something was actually
     // dispatched, "W{N} a iniciar" while the plan is only scaffolded.
-    if spec.is_wave_plan {
-        if let Some(wave) = first_active_wave {
+    if spec.is_wave_plan
+        && let Some(wave) = first_active_wave {
             return if dispatched {
                 format!("W{wave} em exec")
             } else {
                 format!("W{wave} a iniciar")
             };
         }
-    }
     "-".to_string()
 }
 

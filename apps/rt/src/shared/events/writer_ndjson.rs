@@ -311,11 +311,9 @@ pub fn write_event_with_ts(
     if written.is_some()
         && !project_is_own_crate(project)
         && crate::shared::context::UNIT_CLOSURE_EVENTS.contains(&event_name)
-    {
-        if let Some(sid) = session_id {
+        && let Some(sid) = session_id {
             crate::shared::context::mark_unit_closed(&project.to_string_lossy(), sid);
         }
-    }
     written
 }
 

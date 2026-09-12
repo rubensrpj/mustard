@@ -105,11 +105,10 @@ pub(super) fn load_pruned_prior_summaries(
     for (n, dir_name, path) in by_wave {
         // T6.4 — when the operational spec declared its inheritance via wikilinks,
         // skip summaries that are not referenced.
-        if let Some(filter) = allowed {
-            if !filter.contains(&dir_name) {
+        if let Some(filter) = allowed
+            && !filter.contains(&dir_name) {
                 continue;
             }
-        }
         let Ok(body) = mfs::read_to_string(&path) else {
             continue;
         };

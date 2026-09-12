@@ -58,11 +58,10 @@ pub struct ChangeRequestLog;
 /// ([`current_spec`]). `None` when no spec is in scope (a chat with no active
 /// pipeline has nothing to attribute a request to).
 fn resolve_spec(project_dir: &str, session_id: Option<&str>) -> Option<String> {
-    if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown") {
-        if let Some(spec) = spec_for_session(project_dir, sid) {
+    if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown")
+        && let Some(spec) = spec_for_session(project_dir, sid) {
             return Some(spec);
         }
-    }
     current_spec(project_dir)
 }
 

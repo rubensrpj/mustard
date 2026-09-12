@@ -167,11 +167,10 @@ pub fn write_spec_md(
             let _ = writeln!(body, "{}", render_checklist_item(item));
         }
     }
-    if let Some(sigs) = signals {
-        if !sigs.trim().is_empty() {
+    if let Some(sigs) = signals
+        && !sigs.trim().is_empty() {
             let _ = write!(body, "\n<!-- signals: {} -->\n", sigs.trim());
         }
-    }
     let path = output.join("spec.md");
     mfs::write_atomic(&path, body.as_bytes()).map_err(|e| e.to_string())
 }

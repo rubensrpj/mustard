@@ -77,13 +77,11 @@ pub fn extract_function_signatures(
     // AST path: language + query present.
     if let Some(language) = loader.language(lang_id) {
         let set = QuerySet::load_for(lang_id, loader.project_root(), Some(&language));
-        if let Some(query) = set.function_signature() {
-            if let Ok(mut parser) = TreeSitterParser::for_language(loader, lang_id) {
-                if let Ok(tree) = parser.parse(source) {
+        if let Some(query) = set.function_signature()
+            && let Ok(mut parser) = TreeSitterParser::for_language(loader, lang_id)
+                && let Ok(tree) = parser.parse(source) {
                     return extract_via_query(query, tree.as_tree_sitter(), source);
                 }
-            }
-        }
     }
     extract_via_fallback_regex(source)
 }

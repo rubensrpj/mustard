@@ -259,11 +259,10 @@ fn event_to_module(event: &str) -> &'static str {
 /// Extract a hook name from the command string and event name.
 fn extract_hook_name(command: &str, event: &str) -> String {
     // `mustard-rt check <name>` → use the last token
-    if command.contains("check ") {
-        if let Some(name) = command.split_whitespace().last() {
+    if command.contains("check ")
+        && let Some(name) = command.split_whitespace().last() {
             return name.to_string();
         }
-    }
     // `mustard-rt on <Event>` → use a descriptive module-list name
     if command.contains(" on ") {
         return event_to_module(event).to_string();

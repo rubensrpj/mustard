@@ -104,15 +104,14 @@ fn parse_header_window(window: &str) -> Option<(String, Option<String>)> {
 ///
 /// Returns `None` when neither source declares a parent (a top-level spec).
 fn parent_and_status(spec_md: &Path, window: &str) -> Option<(String, Option<String>)> {
-    if let Some(m) = meta::read_meta_beside(spec_md) {
-        if let Some(parent) = m.parent.as_deref().map(strip_wikilink).filter(|s| !s.is_empty()) {
+    if let Some(m) = meta::read_meta_beside(spec_md)
+        && let Some(parent) = m.parent.as_deref().map(strip_wikilink).filter(|s| !s.is_empty()) {
             // A non-empty meta.json#parent wins outright. Status comes from the
             // canonical meta projection (empty string when no stage/outcome).
             let word = meta::status_word(&m);
             let status = (!word.is_empty()).then(|| word.to_string());
             return Some((parent, status));
         }
-    }
     // Legacy fallback: read the parent + status from the `.md` header window.
     parse_header_window(window)
 }

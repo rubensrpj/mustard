@@ -109,11 +109,9 @@ pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
             .get("target")
             .and_then(|t| t.get("file"))
             .and_then(Value::as_str)
-        {
-            if !f.is_empty() {
+            && !f.is_empty() {
                 files.insert(f.to_string());
             }
-        }
     }
 
     // 2. VCS diff against the parent branch — only when a VCS is configured
@@ -489,11 +487,10 @@ fn spec_dir_of(cwd: &Path, spec: &str) -> Option<PathBuf> {
 fn read_spec_acs_markdown(cwd: &Path, spec: &str) -> Option<String> {
     let dir = spec_dir_of(cwd, spec)?;
     for name in ["spec.md", "wave-plan.md"] {
-        if let Ok(md) = fs::read_to_string(dir.join(name)) {
-            if crate::commands::review::qa_run::extract_ac_section(&md).is_some() {
+        if let Ok(md) = fs::read_to_string(dir.join(name))
+            && crate::commands::review::qa_run::extract_ac_section(&md).is_some() {
                 return Some(md);
             }
-        }
     }
     None
 }

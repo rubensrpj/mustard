@@ -595,11 +595,10 @@ pub fn glob_matches(pattern: &str, haystack: &str) -> bool {
         }
         cursor = abs + seg.len();
     }
-    if anchored_end {
-        if let Some(last) = segments.iter().rev().find(|s| !s.is_empty()) {
+    if anchored_end
+        && let Some(last) = segments.iter().rev().find(|s| !s.is_empty()) {
             return haystack.ends_with(last);
         }
-    }
     true
 }
 

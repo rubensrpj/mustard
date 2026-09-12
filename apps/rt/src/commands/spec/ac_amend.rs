@@ -879,8 +879,8 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
     // predates it. Everything else (reading the spec, rewriting the artefacts,
     // appending to the ledger) stays here.
     let proof_root: &Path = opts.proof_tree.as_deref().unwrap_or(root);
-    if let Some(tree) = opts.proof_tree.as_deref() {
-        if !tree.is_dir() {
+    if let Some(tree) = opts.proof_tree.as_deref()
+        && !tree.is_dir() {
             // `error` is a CODE — a closed vocabulary a caller can match on,
             // and the field the crate's byte-stable-output guard covers. The
             // path is volatile (an absolute `/tmp/…` differs on every machine),
@@ -897,7 +897,6 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
                 ),
             );
         }
-    }
     // WHERE the red was taken, resolved ONCE and written to every reader: the
     // criterion's own record (which the approval gate reads), the amendment
     // history, and the report on stdout.

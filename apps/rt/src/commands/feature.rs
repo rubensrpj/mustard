@@ -251,11 +251,10 @@ fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::V
     // The non-strong fallback path (scan unavailable) has no catalogue, so it
     // passes an empty slice → an empty `vocabulary`, honestly signalling "no
     // vocabulary to offer".
-    if non_strong(q.report.reason.as_str(), q.miss) {
-        if let Some(obj) = out.as_object_mut() {
+    if non_strong(q.report.reason.as_str(), q.miss)
+        && let Some(obj) = out.as_object_mut() {
             obj.insert("vocabulary".to_string(), json!(vocabulary_from_index(index)));
         }
-    }
     // Multi-concern split: when scan partitioned the query's concepts into ≥2
     // disconnected groups (no shared module, no import bridge), it returns one
     // `ConcernHit` per group, each with its OWN ranked anchors restricted to
@@ -267,11 +266,10 @@ fn payload(intent: &str, q: &DigestQuery, index: &[DigestTerm]) -> serde_json::V
     // the existing stdout shape is unchanged byte-for-byte for current consumers.
     // The per-concern audit mirrors the top-level projection (`scoreX1024` +
     // carrying terms) so a consumer reads concerns and flat anchors identically.
-    if !q.concerns.is_empty() {
-        if let Some(obj) = out.as_object_mut() {
+    if !q.concerns.is_empty()
+        && let Some(obj) = out.as_object_mut() {
             obj.insert("concerns".to_string(), json!(concerns_payload(&q.concerns)));
         }
-    }
     out
 }
 
@@ -751,13 +749,11 @@ pub fn run(intent: &str, root: &Path) {
     // bridged to. Measured on a Portuguese-identifier fixture: `invoice ledger`
     // scored `weak 1/3` and was withheld, when the one term that could match
     // had matched.
-    if bridge_fired {
-        if let Some(declared) = declared_vocabulary(&model) {
-            if !declared.is_empty() {
+    if bridge_fired
+        && let Some(declared) = declared_vocabulary(&model)
+            && !declared.is_empty() {
                 terms.retain(|t| declared.contains(t));
             }
-        }
-    }
 
     let payload = match Scan::locate().feature_bundle(&model, &dict, &terms, &rank_query, feature_retrieval::POOL_MAX, RANK_DIRECT_BASE) {
         Ok(bundle) => {
@@ -841,11 +837,10 @@ fn compact_digest(full: &Value) -> Value {
     let mut c = full.clone();
     if let Some(obj) = c.as_object_mut() {
         obj.remove("vocabulary");
-        if let Some(rep) = obj.get_mut("report").and_then(Value::as_object_mut) {
-            if let Some(terms) = rep.remove("terms") {
+        if let Some(rep) = obj.get_mut("report").and_then(Value::as_object_mut)
+            && let Some(terms) = rep.remove("terms") {
                 rep.insert("termCount".to_string(), json!(terms.as_array().map_or(0, Vec::len)));
             }
-        }
         obj.insert("detail".to_string(), json!(".claude/feature-digest.json"));
     }
     c

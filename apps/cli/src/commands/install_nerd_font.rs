@@ -133,14 +133,13 @@ fn is_installed(family: &str) -> bool {
     // Linux: fontconfig is the authoritative source if available.
     #[cfg(target_os = "linux")]
     {
-        if let Ok(output) = Command::new("fc-list").output() {
-            if output.status.success() {
+        if let Ok(output) = Command::new("fc-list").output()
+            && output.status.success() {
                 let listing = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
                 if listing.contains(&needle) && listing.contains("nerd") {
                     return true;
                 }
             }
-        }
     }
     false
 }

@@ -64,11 +64,10 @@ fn extract_imports(content: &str) -> Vec<String> {
     }
     for (idx, _) in content.match_indices("require") {
         let after = content[idx + 7..].trim_start();
-        if let Some(after) = after.strip_prefix('(') {
-            if let Some(spec) = leading_quoted(after.trim_start()) {
+        if let Some(after) = after.strip_prefix('(')
+            && let Some(spec) = leading_quoted(after.trim_start()) {
                 imports.insert(spec);
             }
-        }
     }
 
     imports.into_iter().collect()
@@ -107,8 +106,8 @@ fn resolve_import(
         }
     }
     // Strip an existing extension and retry.
-    if let Some(stem) = abs_target.file_stem() {
-        if abs_target.extension().is_some() {
+    if let Some(stem) = abs_target.file_stem()
+        && abs_target.extension().is_some() {
             let stripped = abs_target.with_file_name(stem);
             if candidate_set.contains(&stripped) {
                 return Some(stripped);
@@ -120,7 +119,6 @@ fn resolve_import(
                 }
             }
         }
-    }
     for basename in INDEX_BASENAMES {
         let index_path = abs_target.join(basename);
         if candidate_set.contains(&index_path) {
@@ -170,11 +168,10 @@ fn build_graph(
             continue;
         };
         for imp in extract_imports(&content) {
-            if let Some(resolved) = resolve_import(&imp, abs_file, &candidate_set) {
-                if &resolved != abs_file {
+            if let Some(resolved) = resolve_import(&imp, abs_file, &candidate_set)
+                && &resolved != abs_file {
                     deps.insert(resolved);
                 }
-            }
         }
     }
     graph

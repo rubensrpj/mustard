@@ -85,11 +85,10 @@ pub fn read_guards_block(root: &Path, subproject_dir: &Path) -> String {
 /// verbatim — `mustard_core::SupportedLocale::from_str` is the canonical parser
 /// for downstream consumers.
 pub(crate) fn read_spec_lang(spec_path: &Path) -> String {
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_path) {
-        if let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_path)
+        && let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
             return lang;
         }
-    }
     // Legacy fallback: the `### Lang:` header in the markdown.
     let text = mfs::read_to_string(spec_path).unwrap_or_default();
     for line in text.lines().take(30) {

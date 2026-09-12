@@ -480,11 +480,10 @@ fn age_signal(repo: &Path, worktree: &Path) -> Option<SystemTime> {
         .join("worktrees")
         .join(basename)
         .join("HEAD");
-    if let Ok(meta) = std::fs::metadata(&head) {
-        if let Ok(modified) = meta.modified() {
+    if let Ok(meta) = std::fs::metadata(&head)
+        && let Ok(modified) = meta.modified() {
             return Some(modified);
         }
-    }
     std::fs::metadata(worktree)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -528,11 +527,10 @@ fn remove_worktree(repo: &Path, worktree: &Path) -> Result<(), String> {
         .output();
     let git_ok = matches!(remove_out, Ok(ref o) if o.status.success());
 
-    if worktree.exists() {
-        if let Err(e) = std::fs::remove_dir_all(worktree) {
+    if worktree.exists()
+        && let Err(e) = std::fs::remove_dir_all(worktree) {
             return Err(format!("remove_dir_all failed: {e}"));
         }
-    }
 
     if !git_ok {
         // Best-effort cleanup of the administrative entry left behind when

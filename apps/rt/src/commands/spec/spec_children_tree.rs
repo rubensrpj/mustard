@@ -136,13 +136,12 @@ pub struct ChildrenTree {
 fn state_from_kebab(status: &str) -> SpecState {
     // A terminal outcome (`completed`/`cancelled`/`abandoned`) pins the stage
     // to CLOSE; otherwise the token is a stage spelling and the spec is active.
-    if let Some(outcome) = Outcome::parse(status) {
-        if outcome != Outcome::Active {
+    if let Some(outcome) = Outcome::parse(status)
+        && outcome != Outcome::Active {
             // SpecState::new enforces terminal-outcome ⇒ Stage::Close.
             return SpecState::new(Stage::Close, outcome, Default::default())
                 .unwrap_or_else(|_| fallback_state());
         }
-    }
     let stage = Stage::parse(status).unwrap_or(Stage::Plan);
     SpecState::new(stage, Outcome::Active, Default::default())
         .unwrap_or_else(|_| fallback_state())

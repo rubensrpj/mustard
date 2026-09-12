@@ -85,8 +85,8 @@ pub fn detect_stub_patterns(
 
         // AST path: needs a resolved id AND a registered grammar AND a
         // shipped query. Any missing piece falls through to textual.
-        if let Some(ref lang_id) = lang_id_opt {
-            if let Some(language) = loader.language(lang_id) {
+        if let Some(ref lang_id) = lang_id_opt
+            && let Some(language) = loader.language(lang_id) {
                 let set = QuerySet::load_for(lang_id, loader.project_root(), Some(&language));
                 if let Some(query) = set.stub_detect() {
                     match detect_via_ast(loader, lang_id, &file.source, declared_fns, query) {
@@ -102,7 +102,6 @@ pub fn detect_stub_patterns(
                     }
                 }
             }
-        }
 
         // Textual fallback. Empty `lang_id` string degrades the inner
         // `extract_function_signatures` straight to its agnostic regex —
@@ -446,14 +445,13 @@ pub fn pattern_todo() -> u32 {
             path: PathBuf::from("synthetic.rs"),
             source: synthetic.to_string(),
         });
-        if fixture.exists() {
-            if let Ok(src) = std::fs::read_to_string(&fixture) {
+        if fixture.exists()
+            && let Ok(src) = std::fs::read_to_string(&fixture) {
                 diff.push(DiffFile {
                     path: PathBuf::from("fixtures/w6-post/telemetry.rs"),
                     source: src,
                 });
             }
-        }
 
         let declared = declared_for_synthetic();
 

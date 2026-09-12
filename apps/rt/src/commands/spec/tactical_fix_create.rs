@@ -69,13 +69,11 @@ fn build_slug(description: &str, lang: Locale, today: &str) -> String {
 /// Read the parent's locale to inherit the body headings. Falls back to PT-BR.
 fn parent_lang(cwd: &Path, parent: &str) -> Locale {
     let dir = ClaudePaths::spec_dir_or_unchecked(cwd, parent);
-    if let Some(meta) = read_meta(&dir.join("meta.json")) {
-        if let Some(raw) = meta.lang {
-            if let Ok(l) = raw.parse::<Locale>() {
+    if let Some(meta) = read_meta(&dir.join("meta.json"))
+        && let Some(raw) = meta.lang
+            && let Ok(l) = raw.parse::<Locale>() {
                 return l;
             }
-        }
-    }
     Locale::default()
 }
 

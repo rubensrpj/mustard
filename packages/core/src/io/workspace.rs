@@ -177,8 +177,8 @@ pub fn resolve_with_override(
     // Fast path — already cached. Re-validate the `.claude/.claude/` guard against the
     // cached value so a stale `.claude/.claude/` answer can never sneak
     // through.
-    if let Ok(guard) = cache().lock() {
-        if let Some(hit) = guard.get(&key) {
+    if let Ok(guard) = cache().lock()
+        && let Some(hit) = guard.get(&key) {
             if violates_dot_claude_guard(hit) {
                 return Err(WorkspaceError::ForbiddenDotClaudeDotClaude {
                     resolved: hit.clone(),
@@ -186,7 +186,6 @@ pub fn resolve_with_override(
             }
             return Ok(hit.clone());
         }
-    }
 
     // Slow path — resolve, validate, memoise.
     let resolved = resolve_uncached(start_dir, override_value)?;

@@ -639,12 +639,11 @@ pub fn run(input: GateInput, moment: Moment) -> Result<RegressionVerdict, GateEr
             &i18n,
         ));
     }
-    if matches!(moment, Moment::Three) {
-        if let (Some(before), Some(after)) = (&input.before_snapshot, &input.after_snapshot) {
+    if matches!(moment, Moment::Three)
+        && let (Some(before), Some(after)) = (&input.before_snapshot, &input.after_snapshot) {
             let threshold = load_line_change_threshold(&project_root);
             signals.extend(moment_three_signals(before, after, &i18n, threshold));
         }
-    }
 
     let verdict = classify_verdict(&signals);
     match &verdict {

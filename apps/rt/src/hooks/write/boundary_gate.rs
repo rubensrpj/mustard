@@ -148,16 +148,14 @@ fn resolve_boundary_spec(cwd: &str, session_id: Option<&str>) -> Option<String> 
     if let Some(spec) = crate::shared::context::spec_of_checkout_branch(cwd) {
         return Some(spec);
     }
-    if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown") {
-        if let Some(spec) = crate::shared::context::spec_for_session(cwd, sid) {
+    if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown")
+        && let Some(spec) = crate::shared::context::spec_for_session(cwd, sid) {
             return Some(spec);
         }
-    }
-    if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC") {
-        if !s.is_empty() {
+    if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC")
+        && !s.is_empty() {
             return Some(s);
         }
-    }
     read_newest_fresh_state(cwd)
         .and_then(|s| s.get("specName").and_then(|v| v.as_str()).map(str::to_string))
 }
@@ -214,11 +212,10 @@ fn resolve_boundary_files(
     }
     let is_wave_plan = view.and_then(|v| v.is_wave_plan).unwrap_or(false);
     if is_wave_plan {
-        if let Some(wave) = crate::hooks::task::subagent_inject::wave_from_child_transcript(input) {
-            if let Some(file) = wave_boundary_file(&base, wave) {
+        if let Some(wave) = crate::hooks::task::subagent_inject::wave_from_child_transcript(input)
+            && let Some(file) = wave_boundary_file(&base, wave) {
                 return vec![file];
             }
-        }
         let round: Vec<std::path::PathBuf> = waves_in_flight(cwd, spec_name, view)
             .into_iter()
             .filter_map(|wave| wave_boundary_file(&base, wave))
@@ -349,11 +346,10 @@ fn extract_allowed_patterns(spec_text: &str) -> Vec<String> {
         // Bare tokens: whitespace-split so bullets (`- src/a.ts — why`) and
         // table rows (`| src/a.ts | why |`) both contribute their path.
         for token in line.split_whitespace() {
-            if let Some(candidate) = bare_path_pattern(token) {
-                if candidate.len() <= 200 {
+            if let Some(candidate) = bare_path_pattern(token)
+                && candidate.len() <= 200 {
                     push_unique(&mut patterns, &candidate);
                 }
-            }
         }
     }
     patterns
@@ -536,11 +532,10 @@ fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
     };
     let spec_md = sp.spec_md_path();
     // meta.json wins: a non-`Active` outcome is terminal.
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md) {
-        if let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md)
+        && let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
             return outcome != mustard_core::Outcome::Active;
         }
-    }
     // Legacy fallback: read the lifecycle header from the markdown.
     let Ok(text) = std::fs::read_to_string(&spec_md) else {
         return false;

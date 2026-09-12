@@ -67,15 +67,14 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     // the PreToolUse shape here would be rejected wholesale and the gate would
     // silently never fire. Non-deny verdicts keep the shared path below
     // (`additionalContext` is a valid member for this event).
-    if event_name == "UserPromptSubmit" {
-        if let Verdict::Deny { reason } = &outcome.verdict {
+    if event_name == "UserPromptSubmit"
+        && let Verdict::Deny { reason } = &outcome.verdict {
             let root = serde_json::json!({
                 "decision": "block",
                 "reason": reason,
             });
             return Some(root.to_string());
         }
-    }
 
     // `Stop` blocks the same way: a top-level `{"decision":"block", …}` (the
     // `end_of_turn_check` end-of-reply check), NOT the `PreToolUse` permissionDecision
@@ -87,8 +86,8 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     // regardless of which member the running harness honours. Exit stays 0 —
     // the whole binary expresses blocking through JSON, never a non-zero exit
     // (rt `## Guards`), so the exit-2 blocking path never applies here.
-    if event_name == "Stop" {
-        if let Verdict::Deny { reason } = &outcome.verdict {
+    if event_name == "Stop"
+        && let Verdict::Deny { reason } = &outcome.verdict {
             let root = serde_json::json!({
                 "decision": "block",
                 "reason": reason,
@@ -99,7 +98,6 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
             });
             return Some(root.to_string());
         }
-    }
 
     // `Stop` fala com o USUÁRIO por `systemMessage` — campo universal, "Warning
     // message shown to the user", e a seção do `Stop` não o descarta (conferido
@@ -109,8 +107,8 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
     // `systemMessage` — sem `decision`, sem `additionalContext` próprio. Avisos
     // (`Warn`) que venham junto saem no formato de sempre, montados pelo mesmo
     // caminho abaixo, e a mensagem entra ao lado deles.
-    if event_name == "Stop" {
-        if let Verdict::Inject { context } = &outcome.verdict {
+    if event_name == "Stop"
+        && let Verdict::Inject { context } = &outcome.verdict {
             let advisory = Outcome {
                 verdict: Verdict::Allow,
                 warnings: outcome.warnings.clone(),
@@ -126,7 +124,6 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
             );
             return Some(serde_json::Value::Object(root).to_string());
         }
-    }
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),

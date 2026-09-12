@@ -566,11 +566,10 @@ fn cargo_workspace_root(start: &Path) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let manifest = d.join("Cargo.toml");
-        if let Ok(text) = fs::read_to_string(&manifest) {
-            if text.contains("[workspace]") {
+        if let Ok(text) = fs::read_to_string(&manifest)
+            && text.contains("[workspace]") {
                 return Some(d.to_path_buf());
             }
-        }
         dir = d.parent();
     }
     None

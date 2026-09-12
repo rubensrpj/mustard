@@ -106,11 +106,10 @@ fn load_audits(path: &Path, errors: &mut Vec<String>, only: Option<&str>) -> Vec
         if from_spec.is_empty() {
             continue;
         }
-        if let Some(filter) = only {
-            if from_spec != filter {
+        if let Some(filter) = only
+            && from_spec != filter {
                 continue;
             }
-        }
         let obsolete_terms: Vec<String> = entry
             .get("obsolete_terms")
             .and_then(Value::as_array)
@@ -214,17 +213,15 @@ fn is_target(path: &Path) -> bool {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        if ancestor_name == "refs" || ancestor_name == "commands" {
-            if let Some(parent) = ancestor.parent() {
-                if parent
+        if (ancestor_name == "refs" || ancestor_name == "commands")
+            && let Some(parent) = ancestor.parent()
+                && parent
                     .file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n == ".claude")
                 {
                     return true;
                 }
-            }
-        }
     }
     false
 }

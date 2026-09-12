@@ -95,33 +95,28 @@ fn aggregate_metrics(
             let Some(event) = v.get("event").and_then(Value::as_str) else {
                 continue;
             };
-            if let Some(f) = event_filter {
-                if event != f {
+            if let Some(f) = event_filter
+                && event != f {
                     continue;
                 }
-            }
-            if let Some(s) = since {
-                if let Some(ts) = v.get("ts").and_then(Value::as_str) {
-                    if ts < s {
+            if let Some(s) = since
+                && let Some(ts) = v.get("ts").and_then(Value::as_str)
+                    && ts < s {
                         continue;
                     }
-                }
-            }
             let bucket = agg.entry(event.to_string()).or_default();
             bucket.count += 1;
             if let Some(n) = v.get("tokens_affected").and_then(Value::as_i64) {
                 bucket.tokens_affected += n;
             }
-            if event != "rtk-rewrite" {
-                if let Some(n) = v.get("tokens_saved").and_then(Value::as_i64) {
+            if event != "rtk-rewrite"
+                && let Some(n) = v.get("tokens_saved").and_then(Value::as_i64) {
                     bucket.tokens_saved += n;
                 }
-            }
-            if let Some(note) = v.get("note").and_then(Value::as_str) {
-                if !note.is_empty() {
+            if let Some(note) = v.get("note").and_then(Value::as_str)
+                && !note.is_empty() {
                     *bucket.notes.entry(note.to_string()).or_insert(0) += 1;
                 }
-            }
         }
     }
     agg
@@ -376,11 +371,10 @@ fn aggregate_window(
             let Some(event) = v.get("event").and_then(Value::as_str) else {
                 continue;
             };
-            if let Some(f) = event_filter {
-                if event != f {
+            if let Some(f) = event_filter
+                && event != f {
                     continue;
                 }
-            }
             let Some(ts) = v.get("ts").and_then(Value::as_str) else {
                 continue;
             };
@@ -395,11 +389,10 @@ fn aggregate_window(
             if let Some(n) = v.get("tokens_affected").and_then(Value::as_i64) {
                 bucket.tokens_affected += n;
             }
-            if event != "rtk-rewrite" {
-                if let Some(n) = v.get("tokens_saved").and_then(Value::as_i64) {
+            if event != "rtk-rewrite"
+                && let Some(n) = v.get("tokens_saved").and_then(Value::as_i64) {
                     bucket.tokens_saved += n;
                 }
-            }
         }
     }
     agg

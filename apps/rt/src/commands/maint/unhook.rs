@@ -137,8 +137,8 @@ pub(crate) fn collect_claude_dirs(
         }
     }
 
-    if scope == "all" {
-        if let Some(home) = home_dir() {
+    if scope == "all"
+        && let Some(home) = home_dir() {
             // `$HOME` is not a Mustard workspace anchor (no `mustard.json`),
             // but `ClaudePaths::for_project` only rejects re-nested `.claude/`
             // paths — a flat home directory is accepted and the guard still
@@ -152,7 +152,6 @@ pub(crate) fn collect_claude_dirs(
                 }
             }
         }
-    }
 
     dirs
 }

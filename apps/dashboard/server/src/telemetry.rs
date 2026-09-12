@@ -304,11 +304,10 @@ pub fn lookup_attribution_extra(
         );
 
         // Tier 1: exact (session_id, tool_use_id) match.
-        if let (Some(needle), Some(haystack)) = (tool_use_id, extra_tool) {
-            if needle == haystack {
+        if let (Some(needle), Some(haystack)) = (tool_use_id, extra_tool)
+            && needle == haystack {
                 return Some(extract_attribution(record, span_session));
             }
-        }
 
         // Tier 2: last span in session strictly before started_at_ms.
         let span_started = first_i64(record, &[&["started_at"], &["payload", "started_at"]])
@@ -390,11 +389,10 @@ impl SessionSpecTimeline {
     #[must_use]
     pub fn attributed_spec<'r>(&'r self, record: &'r Value) -> Option<&'r str> {
         // 1. Honour an explicit, non-empty spec on the record.
-        if let Some(spec) = record.get("spec").and_then(Value::as_str) {
-            if !spec.is_empty() {
+        if let Some(spec) = record.get("spec").and_then(Value::as_str)
+            && !spec.is_empty() {
                 return Some(spec);
             }
-        }
         // 2. Fall back to the time-ordered session binding.
         let session = record.get("session_id").and_then(Value::as_str)?;
         if session.is_empty() {
@@ -554,15 +552,14 @@ pub(crate) fn attributed_spec_counts_from(
         let counts = &mut entry.0;
         counts.events = counts.events.saturating_add(1);
         // Latest timestamp wins (ISO-8601 sorts lexicographically).
-        if let Some(ts) = record.get("ts").and_then(Value::as_str) {
-            if counts
+        if let Some(ts) = record.get("ts").and_then(Value::as_str)
+            && counts
                 .last_event_at
                 .as_deref()
                 .is_none_or(|cur| ts > cur)
             {
                 counts.last_event_at = Some(ts.to_string());
             }
-        }
         if event_name(record) == "tool.use" {
             counts.tools_used = counts.tools_used.saturating_add(1);
             if let Some(file) = record
@@ -751,8 +748,8 @@ pub fn transcript_motivations(path: &Path) -> HashMap<String, String> {
         for block in content {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
-                    if let Some(txt) = block.get("text").and_then(Value::as_str) {
-                        if !txt.trim().is_empty() {
+                    if let Some(txt) = block.get("text").and_then(Value::as_str)
+                        && !txt.trim().is_empty() {
                             // A text block after a tool consumed the narration
                             // opens a new rationale — replace, don't append.
                             if consumed {
@@ -766,17 +763,15 @@ pub fn transcript_motivations(path: &Path) -> HashMap<String, String> {
                                 last_text.push_str(txt);
                             }
                         }
-                    }
                 }
                 Some("tool_use") => {
                     if last_text.is_empty() {
                         continue;
                     }
-                    if let Some(id) = block.get("id").and_then(Value::as_str) {
-                        if !id.is_empty() {
+                    if let Some(id) = block.get("id").and_then(Value::as_str)
+                        && !id.is_empty() {
                             map.insert(id.to_string(), last_text.clone());
                         }
-                    }
                     // Keep `last_text` for an immediately-following tool (shared
                     // rationale) but mark it consumed so new text starts fresh.
                     consumed = true;
@@ -1092,11 +1087,9 @@ fn extract_routing_key(v: &Value) -> String {
         .get("payload")
         .and_then(|p| p.get("intent"))
         .and_then(Value::as_str)
-    {
-        if !s.is_empty() {
+        && !s.is_empty() {
             return s.to_string();
         }
-    }
     "outros".to_string()
 }
 
@@ -1151,11 +1144,10 @@ pub fn agent_activity(repo_path: &Path) -> AgentActivityBlock {
             durations_ms: vec![],
             last_ts: None,
         });
-        if let Some(ref t) = ts {
-            if entry.last_ts.as_ref().is_none_or(|cur| t > cur) {
+        if let Some(ref t) = ts
+            && entry.last_ts.as_ref().is_none_or(|cur| t > cur) {
                 entry.last_ts = Some(t.clone());
             }
-        }
         if event == "agent.start" {
             entry.starts += 1;
             if let Some(t) = ts {
@@ -1171,13 +1163,11 @@ pub fn agent_activity(repo_path: &Path) -> AgentActivityBlock {
             if is_error {
                 entry.errors += 1;
             }
-            if let (Some(t1_str), Some(t0_str)) = (ts.as_ref(), pending.remove(&pair_key)) {
-                if let (Some(t0), Some(t1)) = (iso_to_ms(&t0_str), iso_to_ms(t1_str)) {
-                    if t1 >= t0 {
+            if let (Some(t1_str), Some(t0_str)) = (ts.as_ref(), pending.remove(&pair_key))
+                && let (Some(t0), Some(t1)) = (iso_to_ms(&t0_str), iso_to_ms(t1_str))
+                    && t1 >= t0 {
                         entry.durations_ms.push((t1 - t0) as u64);
                     }
-                }
-            }
         }
     });
 
@@ -1325,8 +1315,8 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                         earliest_any_skill_args = Some((ts.to_string(), args.clone()));
                     }
                     // The mustard skill wins category + the primary title source.
-                    if let Some(suffix) = skill.strip_prefix("mustard:") {
-                        if !suffix.is_empty()
+                    if let Some(suffix) = skill.strip_prefix("mustard:")
+                        && !suffix.is_empty()
                             && earliest_mustard_skill
                                 .as_ref()
                                 .is_none_or(|(p, _, _)| ts < p.as_str())
@@ -1334,7 +1324,6 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                             earliest_mustard_skill =
                                 Some((ts.to_string(), suffix.to_string(), args));
                         }
-                    }
                 }
             }
             if event_name(record) == "user.prompt" {
@@ -1403,26 +1392,22 @@ pub fn dashboard_sessions(repo_path: String, limit: Option<usize>) -> Vec<Sessio
                     latest = Some(ts.to_string());
                 }
                 // Track the spec of the latest event that carried one.
-                if let Some(spec) = record.get("spec").and_then(Value::as_str) {
-                    if !spec.is_empty()
+                if let Some(spec) = record.get("spec").and_then(Value::as_str)
+                    && !spec.is_empty()
                         && last_spec.as_ref().is_none_or(|(prev, _)| ts >= prev.as_str())
                     {
                         last_spec = Some((ts.to_string(), spec.to_string()));
                     }
-                }
             }
             // `cwd` lives in the `session.start` payload; take the first seen.
-            if cwd.is_none() {
-                if let Some(c) = record
+            if cwd.is_none()
+                && let Some(c) = record
                     .get("payload")
                     .and_then(|p| p.get("cwd"))
                     .and_then(Value::as_str)
-                {
-                    if !c.is_empty() {
+                    && !c.is_empty() {
                         cwd = Some(c.to_string());
                     }
-                }
-            }
         }
 
         // Skip directories with no parseable events entirely — an empty dir is
@@ -1931,11 +1916,10 @@ impl RepoEventsCache {
             Ok(md) => {
                 let len = md.len();
                 let modified = md.modified().ok();
-                if let Some(chunk) = self.files.get(path) {
-                    if modified.is_some() && chunk.modified == modified && chunk.len == len {
+                if let Some(chunk) = self.files.get(path)
+                    && modified.is_some() && chunk.modified == modified && chunk.len == len {
                         return; // fingerprint unchanged — keep the parsed shard
                     }
-                }
                 let events = parse_ndjson_file(path);
                 self.parsed_files = self.parsed_files.saturating_add(1);
                 self.files
@@ -2048,11 +2032,10 @@ pub(crate) fn cached_session_digest(repo: &Path) -> Vec<(String, Option<String>,
         let slot = by_id.entry(id.to_string()).or_insert((None, 0));
         for record in &chunk.events {
             slot.1 += 1;
-            if let Some(ts) = record.get("ts").and_then(Value::as_str) {
-                if slot.0.as_deref().is_none_or(|cur| ts > cur) {
+            if let Some(ts) = record.get("ts").and_then(Value::as_str)
+                && slot.0.as_deref().is_none_or(|cur| ts > cur) {
                     slot.0 = Some(ts.to_string());
                 }
-            }
         }
     }
     by_id
@@ -2147,11 +2130,10 @@ pub fn invalidate_events_cache(repo: &str) {
         Ok(guard) => guard.get(repo).cloned(),
         Err(_) => None,
     };
-    if let Some(entry) = entry {
-        if let Ok(mut cache) = entry.lock() {
+    if let Some(entry) = entry
+        && let Ok(mut cache) = entry.lock() {
             cache.sweep = true;
         }
-    }
 }
 
 /// Mark ONE shard dirty so the next read re-parses only that file — the
@@ -2167,11 +2149,10 @@ pub fn invalidate_events_cache_path(repo: &str, path: &Path) {
         Ok(guard) => guard.get(repo).cloned(),
         Err(_) => None,
     };
-    if let Some(entry) = entry {
-        if let Ok(mut cache) = entry.lock() {
+    if let Some(entry) = entry
+        && let Ok(mut cache) = entry.lock() {
             cache.dirty.insert(path.to_path_buf());
         }
-    }
 }
 
 /// Test-visible: how many shard parses `repo`'s cache has performed so far.
@@ -2366,11 +2347,10 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
         } else if metric == "claude_code.active_time" {
             active_seconds += sum;
         }
-        if let Some(ts) = ev.get("ts").and_then(Value::as_str) {
-            if last_metric_ts.as_deref().is_none_or(|cur| ts > cur) {
+        if let Some(ts) = ev.get("ts").and_then(Value::as_str)
+            && last_metric_ts.as_deref().is_none_or(|cur| ts > cur) {
                 last_metric_ts = Some(ts.to_string());
             }
-        }
     }
 
     // ── subtractions block ──
@@ -2401,11 +2381,10 @@ pub fn dashboard_prompt_economy(scope: EconomyScopeDto) -> Value {
         let entry = subtractions_by_wave.entry(wave).or_insert((0, 0));
         entry.0 += tokens;
         entry.1 += 1;
-        if let Some(ts) = ev.get("ts").and_then(Value::as_str) {
-            if last_subtraction_ts.as_deref().is_none_or(|cur| ts > cur) {
+        if let Some(ts) = ev.get("ts").and_then(Value::as_str)
+            && last_subtraction_ts.as_deref().is_none_or(|cur| ts > cur) {
                 last_subtraction_ts = Some(ts.to_string());
             }
-        }
     }
 
     let mut by_model_arr: Vec<Value> = by_model
@@ -2639,15 +2618,11 @@ impl ResultPairing {
             .and_then(|p| p.get("tool_use_id"))
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-        {
-            if let Some(&idx) = self.id_index.get(id) {
-                if let Some(slot) = self.chrono.get_mut(idx) {
-                    if let Some(result) = slot.take() {
+            && let Some(&idx) = self.id_index.get(id)
+                && let Some(slot) = self.chrono.get_mut(idx)
+                    && let Some(result) = slot.take() {
                         return Some(result.payload);
                     }
-                }
-            }
-        }
         // Tier 2 — chronological fallback. Claim the earliest unconsumed result
         // at-or-after this use's timestamp whose tool name agrees (an empty name
         // on either side is a wildcard so older / unlabelled events still pair).
@@ -2777,11 +2752,10 @@ fn parse_wave(description: &str) -> Option<u32> {
                 if rest.len() != trimmed.len() || rest.is_empty() {
                     let digits: String =
                         trimmed.chars().take_while(char::is_ascii_digit).collect();
-                    if !digits.is_empty() {
-                        if let Ok(n) = digits.parse::<u32>() {
+                    if !digits.is_empty()
+                        && let Ok(n) = digits.parse::<u32>() {
                             return Some(n);
                         }
-                    }
                 }
             }
             from = at + kw.len();
@@ -3445,11 +3419,10 @@ fn build_trace_tree(
         // identical commands never share a single result. Done before `label`
         // (which moves `tool_name`) so the borrow is still valid.
         let mut payload = payload;
-        if let Some(result) = pairing.pair_for(ev, &tool_name) {
-            if let Value::Object(map) = &mut payload {
+        if let Some(result) = pairing.pair_for(ev, &tool_name)
+            && let Value::Object(map) = &mut payload {
                 map.insert("result".to_string(), result);
             }
-        }
         // Splice the assistant narration that motivated this tool onto
         // `payload.motivation` (sibling of `result`), matched by the event's
         // `payload.tool_use_id` against the transcript's `tool_use.id`. Absent
@@ -3458,16 +3431,13 @@ fn build_trace_tree(
             .get("tool_use_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-        {
-            if let Some(motivation) = motivations.get(&tool_use_id) {
-                if let Value::Object(map) = &mut payload {
+            && let Some(motivation) = motivations.get(&tool_use_id)
+                && let Value::Object(map) = &mut payload {
                     map.insert(
                         "motivation".to_string(),
                         Value::String(motivation.clone()),
                     );
                 }
-            }
-        }
         let label = if target_label.is_empty() {
             tool_name
         } else {

@@ -423,9 +423,9 @@ fn classify(
             "declared consumer in apps/{{rt,cli,dashboard}} for '{name}'"
         )];
         // Apply staleness check on KEEP dirs.
-        if is_dir {
-            if let Some(days) = newest_mtime_days(path) {
-                if days > KEEP_STALE_DAYS {
+        if is_dir
+            && let Some(days) = newest_mtime_days(path)
+                && days > KEEP_STALE_DAYS {
                     return (
                         Classification::Stale,
                         vec![format!(
@@ -433,8 +433,6 @@ fn classify(
                         )],
                     );
                 }
-            }
-        }
         return (Classification::Keep, evidence);
     }
 

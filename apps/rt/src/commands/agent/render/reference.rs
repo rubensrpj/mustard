@@ -90,11 +90,10 @@ pub(crate) fn files_section_paths(spec_text: &str) -> Vec<String> {
     let end = section_end(&lines, start);
     let mut out: Vec<String> = Vec::new();
     for line in &lines[start + 1..end] {
-        if let Some(path) = first_path_token(line) {
-            if !out.contains(&path) {
+        if let Some(path) = first_path_token(line)
+            && !out.contains(&path) {
                 out.push(path);
             }
-        }
     }
     out
 }
@@ -103,14 +102,13 @@ pub(crate) fn files_section_paths(spec_text: &str) -> Vec<String> {
 /// backtick pair when present, else the first whitespace-delimited token that
 /// looks like a path (contains `/` or a dotted extension).
 fn first_path_token(line: &str) -> Option<String> {
-    if let Some(open) = line.find('`') {
-        if let Some(close_rel) = line[open + 1..].find('`') {
+    if let Some(open) = line.find('`')
+        && let Some(close_rel) = line[open + 1..].find('`') {
             let inner = line[open + 1..open + 1 + close_rel].trim();
             if !inner.is_empty() {
                 return Some(inner.replace('\\', "/"));
             }
         }
-    }
     let stripped = line
         .trim_start()
         .trim_start_matches(['-', '*', ' '])

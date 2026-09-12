@@ -121,11 +121,10 @@ pub(crate) fn apply_one(path: &Path, body: &str, root: &Path) -> Applied {
         return Applied::Refused(defects);
     }
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent) {
             return Applied::IoError(format!("cannot create {}: {e}", parent.display()));
         }
-    }
 
     // Normalised body + injected origin notice: byte-stable regardless of how
     // the agent's block was trimmed, and swept fresh on the next scan. The

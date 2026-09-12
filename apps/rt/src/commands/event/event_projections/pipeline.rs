@@ -38,11 +38,10 @@ pub(crate) fn build_pipeline_state(events: &[HarnessEvent], spec: Option<&str>) 
     let mut retry_attempts = 0i64;
 
     for ev in events {
-        if let Some(s) = spec {
-            if ev.spec.as_deref() != Some(s) {
+        if let Some(s) = spec
+            && ev.spec.as_deref() != Some(s) {
                 continue;
             }
-        }
         if !ev.ts.is_empty() {
             if started_at.is_none() {
                 started_at = Some(ev.ts.clone());
@@ -154,11 +153,10 @@ pub(super) fn build_active_pipelines(events: &[HarnessEvent], cwd: &Path) -> Val
                 let raw = ev.payload.get("to")
                     .or_else(|| ev.payload.get("from"))
                     .and_then(Value::as_str);
-                if let Some(r) = raw {
-                    if let Some(p) = Phase::parse(r) {
+                if let Some(r) = raw
+                    && let Some(p) = Phase::parse(r) {
                         entry.1 = Some(format!("{p:?}"));
                     }
-                }
             }
             _ => {}
         }

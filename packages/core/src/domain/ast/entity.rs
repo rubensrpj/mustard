@@ -138,9 +138,9 @@ pub fn extract_entities(
     // AST path: language + entity_definitions query present.
     if let Some(language) = loader.language(lang_id) {
         let set = QuerySet::load_for(lang_id, loader.project_root(), Some(&language));
-        if let Some(query) = set.entity_definitions() {
-            if let Ok(mut parser) = TreeSitterParser::for_language(loader, lang_id) {
-                if let Ok(tree) = parser.parse(source) {
+        if let Some(query) = set.entity_definitions()
+            && let Ok(mut parser) = TreeSitterParser::for_language(loader, lang_id)
+                && let Ok(tree) = parser.parse(source) {
                     let ts_tree = tree.as_tree_sitter();
                     // Imports are a file-level fact attached to every entity.
                     let refs = set
@@ -149,8 +149,6 @@ pub fn extract_entities(
                         .unwrap_or_default();
                     return extract_entities_via_query(query, ts_tree, source, &refs);
                 }
-            }
-        }
     }
     extract_entities_via_floor(source)
 }

@@ -193,7 +193,7 @@ impl Check for MainContextCounter {
 
         // Warn at WARN_AT, then every 4 calls past it.
         if count == MAIN_WARN_AT
-            || (count > MAIN_WARN_AT && (count - MAIN_WARN_AT) % 4 == 0)
+            || (count > MAIN_WARN_AT && (count - MAIN_WARN_AT).is_multiple_of(4))
         {
             return Ok(Verdict::Warn {
                 message: format!(

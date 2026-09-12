@@ -164,11 +164,10 @@ fn claims_in(manifest: &Path, event: &str) -> Vec<String> {
             let Some(cmd) = hook.get("command").and_then(serde_json::Value::as_str) else {
                 continue;
             };
-            if let Some(rest) = cmd.split("--inject").nth(1) {
-                if let Some(path) = rest.split_whitespace().next() {
+            if let Some(rest) = cmd.split("--inject").nth(1)
+                && let Some(path) = rest.split_whitespace().next() {
                     out.push(path.trim_matches('"').to_string());
                 }
-            }
         }
     }
     out
@@ -269,8 +268,8 @@ fn build_report(
             }
         }
         // (5) Riding an event nothing is registered for.
-        if let Some(events) = events.as_ref() {
-            if !events.contains(&entry.on.to_ascii_lowercase()) {
+        if let Some(events) = events.as_ref()
+            && !events.contains(&entry.on.to_ascii_lowercase()) {
                 findings.push(DeliveryFinding::warn(
                     "event-unregistered",
                     format!(
@@ -281,7 +280,6 @@ fn build_report(
                     "declare it on a registered event, or register a hook for that one",
                 ));
             }
-        }
     }
 
     // (6) Declared on an event whose hooks each claim ONE file — and claimed

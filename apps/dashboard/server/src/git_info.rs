@@ -198,11 +198,10 @@ fn git_info_impl(repo_path: &str) -> GitInfo {
     }
 
     // Current branch. `HEAD` on a detached checkout is treated as no branch.
-    if let Some(branch) = git_capture(base, &["rev-parse", "--abbrev-ref", "HEAD"]) {
-        if branch != "HEAD" {
+    if let Some(branch) = git_capture(base, &["rev-parse", "--abbrev-ref", "HEAD"])
+        && branch != "HEAD" {
             info.branch = branch;
         }
-    }
 
     // Ahead/behind vs the upstream. `@{upstream}` resolves only when one is
     // configured; the whole probe is skipped (counts stay 0) otherwise. Output

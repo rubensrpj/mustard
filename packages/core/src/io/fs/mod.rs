@@ -42,10 +42,6 @@
 //!   convenience, UTF-8 strings). CRLF / UTF-8 normalisation belongs to the
 //!   string-handling caller, not to `fs`.
 
-// A `File::lock` chegou no Rust 1.89. O núcleo declara 1.85 como piso, e o
-// arquivo do compilador fixa o 1.98 em toda máquina e na verificação; só o
-// módulo das travas precisa do 1.89, então o piso do Clippy sobe só nele.
-#[clippy::msrv = "1.89"]
 pub mod lock;
 pub mod real;
 

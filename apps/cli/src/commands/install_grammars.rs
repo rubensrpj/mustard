@@ -115,8 +115,8 @@ impl GrammarsCatalog {
     fn load(project_root: &Path) -> Self {
         let mut merged = Self::from_embedded();
         let override_path = project_root.join(".claude").join(OVERRIDE_FILENAME);
-        if let Ok(text) = std::fs::read_to_string(&override_path) {
-            if let Ok(over) = serde_json::from_str::<Self>(&text) {
+        if let Ok(text) = std::fs::read_to_string(&override_path)
+            && let Ok(over) = serde_json::from_str::<Self>(&text) {
                 for entry in over.grammars {
                     if let Some(slot) = merged
                         .grammars
@@ -129,7 +129,6 @@ impl GrammarsCatalog {
                     }
                 }
             }
-        }
         merged
     }
 

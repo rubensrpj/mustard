@@ -171,11 +171,10 @@ fn is_force_push(cmd: &str) -> bool {
             // Explicitly the safe form — not a force-push for this rule.
             continue;
         }
-        if let Some(flag) = word.strip_prefix('-') {
-            if !flag.starts_with('-') && flag.contains('f') {
+        if let Some(flag) = word.strip_prefix('-')
+            && !flag.starts_with('-') && flag.contains('f') {
                 return true;
             }
-        }
     }
     false
 }

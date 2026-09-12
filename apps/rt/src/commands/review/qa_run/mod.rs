@@ -438,7 +438,7 @@ fn extract_marker(fragment: &str, marker: &str) -> Option<String> {
 fn last_marker_outside_code(fragment: &str, marker: &str) -> Option<usize> {
     // Closed backtick spans only: pair them up, ignore a trailing lone one.
     let ticks: Vec<usize> = fragment.match_indices('`').map(|(i, _)| i).collect();
-    let spans: Vec<(usize, usize)> = ticks.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+    let spans: Vec<(usize, usize)> = ticks.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect();
     let quoted = |i: usize| spans.iter().any(|&(a, b)| i > a && i < b);
 
     let mut found = None;
@@ -535,15 +535,14 @@ pub(crate) fn is_skeleton(text: &str) -> bool {
                     let rest = &text[i + 1..];
                     let close = rest.find('>');
                     let next_open = rest.find('<');
-                    if let Some(close) = close {
-                        if next_open.is_none_or(|open| close < open) {
+                    if let Some(close) = close
+                        && next_open.is_none_or(|open| close < open) {
                             let inner = &rest[..close];
                             // Rule 3: a non-empty, non-padded span.
                             if !inner.is_empty() && inner.trim() == inner {
                                 return true;
                             }
                         }
-                    }
                 }
                 prev_is_boundary = b.is_ascii_whitespace();
                 i += 1;

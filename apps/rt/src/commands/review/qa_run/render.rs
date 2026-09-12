@@ -19,11 +19,10 @@ pub(super) fn write_sidecar(cwd: &Path, spec: &str, payload: &Value) {
         return;
     };
     let target = sp.qa_report_json_path();
-    if let Some(parent) = target.parent() {
-        if fs::create_dir_all(parent).is_err() {
+    if let Some(parent) = target.parent()
+        && fs::create_dir_all(parent).is_err() {
             return;
         }
-    }
     if let Ok(text) = serde_json::to_string_pretty(payload) {
         let _ = fs::write_atomic(&target, text.as_bytes());
     }

@@ -222,13 +222,12 @@ impl GrammarLoader {
             if let Some(scope) = scope {
                 // `source.rust` → `rust`; `source.cpp.embedded.macro` → `macro`.
                 // Index the tail so callers can look up by the short id too.
-                if let Some(tail) = scope.rsplit('.').next() {
-                    if !tail.is_empty() {
+                if let Some(tail) = scope.rsplit('.').next()
+                    && !tail.is_empty() {
                         languages
                             .entry(tail.to_string())
                             .or_insert_with(|| language.clone());
                     }
-                }
             }
 
             for ext in file_types {

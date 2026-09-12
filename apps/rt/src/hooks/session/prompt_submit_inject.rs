@@ -374,11 +374,10 @@ impl Check for PromptSubmitInject {
         if is_pipeline_prompt(prompt) {
             // Close any open amendment windows for this session — the user is
             // starting a new pipeline, so the window's context is done.
-            if let Some(session_id) = input.session_id.as_deref() {
-                if !session_id.is_empty() {
+            if let Some(session_id) = input.session_id.as_deref()
+                && !session_id.is_empty() {
                     close_amend_windows_for_session(&cwd, session_id);
                 }
-            }
         }
         // How to WRITE for this operator, from `mustard.json#tone`.
         let tone = tone_rule(Path::new(&cwd));

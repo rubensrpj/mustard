@@ -134,13 +134,11 @@ pub fn read_workspace_events(project_root: &Path) -> Vec<HarnessEvent> {
 
     // Fast path - a prior view in this process already parsed this exact shard
     // set; reuse its slice instead of re-walking + re-parsing every NDJSON file.
-    if let Ok(cache) = workspace_events_cache().lock() {
-        if let Some((cached, events)) = cache.get(&key) {
-            if *cached == freshness {
+    if let Ok(cache) = workspace_events_cache().lock()
+        && let Some((cached, events)) = cache.get(&key)
+            && *cached == freshness {
                 return events.clone();
             }
-        }
-    }
 
     let events = walk_workspace_events(&spec_root);
 
@@ -209,11 +207,10 @@ fn workspace_events_freshness(spec_root: &Path) -> WorkspaceEventsFreshness {
                 continue;
             };
             total_len = total_len.saturating_add(meta.len());
-            if let Ok(m) = meta.modified() {
-                if newest.is_none_or(|n| m > n) {
+            if let Ok(m) = meta.modified()
+                && newest.is_none_or(|n| m > n) {
                     newest = Some(m);
                 }
-            }
         }
     }
     (newest, total_len)

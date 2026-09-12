@@ -440,8 +440,8 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
     // `AcAddOpts::proof_tree`. Everything else (reading the spec, rewriting the
     // artefacts, appending to the ledger) stays in THIS tree.
     let proof_root: &Path = opts.proof_tree.as_deref().unwrap_or(root);
-    if let Some(tree) = opts.proof_tree.as_deref() {
-        if !tree.is_dir() {
+    if let Some(tree) = opts.proof_tree.as_deref()
+        && !tree.is_dir() {
             // `error` is a CODE — a closed vocabulary a caller can match on.
             // The path is volatile, so it belongs in `remedy`, which is prose.
             return AcAddReport::refused(
@@ -456,7 +456,6 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
                 ),
             );
         }
-    }
     let proof_tree_record =
         crate::commands::spec::ac_amend::proof_tree_record(opts.proof_tree.as_deref(), root);
     let mut proof = ac_negative_check::prove_one(

@@ -162,8 +162,8 @@ fn nearest_shelf(start: &Path, project: &Path) -> Option<PathBuf> {
 /// when present, else the last `-`-token of the folder name minus the
 /// `-pattern` suffix (`dataaccess-log-pattern` → `log`).
 fn mold_label(folder: &str, skill_md: &str) -> String {
-    if let Ok(fm) = mustard_core::domain::skill::frontmatter::parse(skill_md) {
-        if let Some(first) = fm.applies_to.first() {
+    if let Ok(fm) = mustard_core::domain::skill::frontmatter::parse(skill_md)
+        && let Some(first) = fm.applies_to.first() {
             let label = first.trim().to_ascii_lowercase();
             // Only a bare cluster label works as a token; a glob/path-style
             // appliesTo (hand-authored molds) falls back to the folder name.
@@ -171,7 +171,6 @@ fn mold_label(folder: &str, skill_md: &str) -> String {
                 return label;
             }
         }
-    }
     folder
         .strip_suffix("-pattern")
         .unwrap_or(folder)

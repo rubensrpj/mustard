@@ -58,11 +58,10 @@ fn has_header(spec_md: &str, key: &str) -> bool {
         };
         let rest = rest.trim_start();
         let lower = rest.to_ascii_lowercase();
-        if let Some(after_key) = lower.strip_prefix(&want) {
-            if after_key.trim_start().starts_with(':') {
+        if let Some(after_key) = lower.strip_prefix(&want)
+            && after_key.trim_start().starts_with(':') {
                 return true;
             }
-        }
     }
     false
 }

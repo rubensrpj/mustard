@@ -1209,9 +1209,9 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
     // Validation 4: extended-light scope requires the entity to already exist in
     // the repo model (grain.model.json declaration names, read via the scan tool —
     // this crate never parses the model's schema itself).
-    if let Some(scope) = extract_kv(content, "scope") {
-        if scope.eq_ignore_ascii_case("extended-light") {
-            if let Some(entity) = extract_kv(content, "entity") {
+    if let Some(scope) = extract_kv(content, "scope")
+        && scope.eq_ignore_ascii_case("extended-light")
+            && let Some(entity) = extract_kv(content, "entity") {
                 // The SAME model path as validation 2 — one project root, one
                 // model, no second notion of "here".
                 let known = mustard_core::read_entity_names(&model);
@@ -1224,8 +1224,6 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                     issues.push(json!({ "severity": "WARN", "type": "scope-mismatch", "message": message }));
                 }
             }
-        }
-    }
 
     // Validation 5: AC format parseability. The AC section heading resolves
     // (EN `## Acceptance Criteria` / PT `## Critérios de Aceitação`, via the

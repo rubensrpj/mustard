@@ -608,11 +608,10 @@ static SPECS_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Arc<Vec<SpecRow>>>
 #[must_use]
 fn specs_from_fs_cached(base: &std::path::Path) -> Arc<Vec<SpecRow>> {
     let key = base.to_string_lossy().into_owned();
-    if let Ok(guard) = SPECS_CACHE.lock() {
-        if let Some(hit) = guard.get(&key) {
+    if let Ok(guard) = SPECS_CACHE.lock()
+        && let Some(hit) = guard.get(&key) {
             return Arc::clone(hit);
         }
-    }
     // Cold miss: walk OUTSIDE the lock so parallel projects never serialise.
     let rows = Arc::new(specs_from_fs(base));
     if let Ok(mut guard) = SPECS_CACHE.lock() {
@@ -723,8 +722,8 @@ fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
         // SpecRow with parent set to the wave plan's name. The dashboard
         // groups them visually.
         let wave_plan = path.join("wave-plan.md");
-        if wave_plan.exists() {
-            if let Ok(child_rd) = fs::read_dir(path) {
+        if wave_plan.exists()
+            && let Ok(child_rd) = fs::read_dir(path) {
                 for child in child_rd {
                     let cpath = &child.path;
                     if !child.is_dir {
@@ -754,7 +753,6 @@ fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
                     rows.push((child_row, cmtime));
                 }
             }
-        }
     }
 
     rows.sort_by(|a, b| match (a.1, b.1) {
@@ -786,11 +784,10 @@ fn parse_spec_md(path: &PathBuf) -> (Option<String>, Option<String>) {
                 if phase.is_none() {
                     phase = Some(v);
                 }
-            } else if let Some(v) = strip_yaml_label(trimmed, "status") {
-                if status.is_none() {
+            } else if let Some(v) = strip_yaml_label(trimmed, "status")
+                && status.is_none() {
                     status = Some(v);
                 }
-            }
             if phase.is_some() && status.is_some() {
                 break;
             }
@@ -812,11 +809,10 @@ fn parse_spec_md(path: &PathBuf) -> (Option<String>, Option<String>) {
                     if status.is_none() {
                         status = Some(v);
                     }
-                } else if let Some(v) = strip_label(part, "Phase") {
-                    if phase.is_none() {
+                } else if let Some(v) = strip_label(part, "Phase")
+                    && phase.is_none() {
                         phase = Some(v);
                     }
-                }
             }
         } else if let Some(rest) = line.strip_prefix('-') {
             let rest = rest.trim();
@@ -824,11 +820,10 @@ fn parse_spec_md(path: &PathBuf) -> (Option<String>, Option<String>) {
                 if status.is_none() {
                     status = Some(v);
                 }
-            } else if let Some(v) = strip_bold_label(rest, "Phase") {
-                if phase.is_none() {
+            } else if let Some(v) = strip_bold_label(rest, "Phase")
+                && phase.is_none() {
                     phase = Some(v);
                 }
-            }
         }
         if phase.is_some() && status.is_some() {
             break;
@@ -1613,12 +1608,11 @@ fn workspace_health_impl(repo_path: String) -> spec_views::WorkspaceHealth {
         if row.parent.is_some() {
             continue;
         }
-        if let Ok(Some(card)) = spec_views::spec_card_v2(&repo_path, &row.name) {
-            if !is_terminal_pipeline_status(&card.status) {
+        if let Ok(Some(card)) = spec_views::spec_card_v2(&repo_path, &row.name)
+            && !is_terminal_pipeline_status(&card.status) {
                 active += 1;
                 active_names.insert(row.name.clone());
             }
-        }
     }
 
     // Hygiene signals from the NDJSON stream.
@@ -1642,13 +1636,11 @@ fn workspace_health_impl(repo_path: String) -> spec_views::WorkspaceHealth {
         let age = telemetry::iso_to_ms_crate(ts).map(|ms| now_ms - ms);
         match name {
             "hygiene.detected" => {
-                if age.is_some_and(|a| a <= 7 * DAY_MS) {
-                    if let Some(spec) = v.get("spec").and_then(|s| s.as_str()).filter(|s| !s.is_empty()) {
-                        if active_names.contains(spec) {
+                if age.is_some_and(|a| a <= 7 * DAY_MS)
+                    && let Some(spec) = v.get("spec").and_then(|s| s.as_str()).filter(|s| !s.is_empty())
+                        && active_names.contains(spec) {
                             suspect_specs.insert(spec.to_string());
                         }
-                    }
-                }
             }
             "hygiene.autoclose"
                 if age.is_some_and(|a| a <= DAY_MS) => {

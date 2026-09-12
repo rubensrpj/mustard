@@ -283,8 +283,8 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                     return json!({ "ok": false, "reason": "no-base-prefix", "branch": b })
                 }
                 UnitBase::Known(prefix) => {
-                    if let Some(req) = requested {
-                        if req != prefix {
+                    if let Some(req) = requested
+                        && req != prefix {
                             return json!({
                                 "ok": false,
                                 "reason": "base-mismatch",
@@ -293,7 +293,6 @@ pub(crate) fn open_at(opts: &WorkUnitOpenOpts) -> Value {
                                 "base": req,
                             });
                         }
-                    }
                     (b.to_string(), prefix)
                 }
                 // The name IS a unit's, but nothing ever established which base

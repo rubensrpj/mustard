@@ -226,14 +226,13 @@ fn rtk_rewrite_emission() {
                 continue;
             }
             found_event = true;
-            if command_head_seen.is_none() {
-                if let Some(head) = record
+            if command_head_seen.is_none()
+                && let Some(head) = record
                     .pointer("/payload/command_head")
                     .and_then(Value::as_str)
                 {
                     command_head_seen = Some(head.to_string());
                 }
-            }
         }
     });
 
@@ -259,11 +258,9 @@ fn walk_ndjson(root: &std::path::Path, cb: &mut dyn FnMut(&str)) {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("ndjson"))
-        {
-            if let Ok(body) = std::fs::read_to_string(&path) {
+            && let Ok(body) = std::fs::read_to_string(&path) {
                 cb(&body);
             }
-        }
     }
 }
 

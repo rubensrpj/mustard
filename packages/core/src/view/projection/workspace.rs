@@ -61,8 +61,8 @@ pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSumma
 
         // Today-only roll-ups.
         if ts_ms >= today_start {
-            if ev.event == "tool.use" {
-                if let Some(path) = ev
+            if ev.event == "tool.use"
+                && let Some(path) = ev
                     .payload
                     .get("file_path")
                     .or_else(|| ev.payload.get("tool_input").and_then(|t| t.get("file_path")))
@@ -71,15 +71,14 @@ pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSumma
                 {
                     *files_today.entry(path.to_string()).or_insert(0) += 1;
                 }
-            }
             if matches!(
                 ev.event.as_str(),
                 "rtk.savings"
                     | "prompt.economy.saved"
                     | "hook.savings"
                     | "routing.savings"
-            ) {
-                if let Some(n) = ev
+            )
+                && let Some(n) = ev
                     .payload
                     .get("saved")
                     .or_else(|| ev.payload.get("tokens_saved"))
@@ -87,7 +86,6 @@ pub fn project_workspace(events: &[HarnessEvent], now_ms: i64) -> WorkspaceSumma
                 {
                     tokens_saved_today = Some(tokens_saved_today.unwrap_or(0) + n);
                 }
-            }
         }
 
         // Alerts — collected across all time, deduplicated at the end.

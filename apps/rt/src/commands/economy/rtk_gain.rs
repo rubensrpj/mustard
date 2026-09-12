@@ -27,11 +27,10 @@ fn num(obj: &Value, keys: &[&str]) -> f64 {
             if let Some(n) = v.as_f64() {
                 return n;
             }
-            if let Some(s) = v.as_str() {
-                if let Ok(n) = s.parse::<f64>() {
+            if let Some(s) = v.as_str()
+                && let Ok(n) = s.parse::<f64>() {
                     return n;
                 }
-            }
         }
     }
     0.0

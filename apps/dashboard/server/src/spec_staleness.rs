@@ -117,11 +117,10 @@ fn plan_staleness_impl(repo_path: &str, spec: &str, started_at: Option<&str>) ->
         }
         // Only flag "changed" when we have a plan date to compare against.
         let Some(plan_e) = plan_epoch else { continue };
-        if let Some(mod_e) = file_modified_epoch(&base, rel, &abs) {
-            if mod_e > plan_e {
+        if let Some(mod_e) = file_modified_epoch(&base, rel, &abs)
+            && mod_e > plan_e {
                 changed.push(rel.clone());
             }
-        }
     }
 
     let now = system_time_epoch(SystemTime::now());
@@ -237,11 +236,10 @@ fn parse_census_paths(text: &str) -> Vec<String> {
         let rest = trimmed_start
             .strip_prefix("- ")
             .or_else(|| trimmed_start.strip_prefix("* "));
-        if let Some(rest) = rest {
-            if let Some(p) = extract_path_from_bullet(rest) {
+        if let Some(rest) = rest
+            && let Some(p) = extract_path_from_bullet(rest) {
                 out.push(p);
             }
-        }
     }
     out
 }
@@ -281,11 +279,10 @@ fn normalise_candidate(token: &str) -> Option<String> {
 /// when git is unavailable / the file is untracked. `None` when neither is
 /// resolvable.
 fn file_modified_epoch(base: &Path, rel: &str, abs: &Path) -> Option<i64> {
-    if let Some(iso) = git_last_commit_iso(base, rel) {
-        if let Some(e) = parse_iso_to_epoch(&iso) {
+    if let Some(iso) = git_last_commit_iso(base, rel)
+        && let Some(e) = parse_iso_to_epoch(&iso) {
             return Some(e);
         }
-    }
     let meta = std::fs::metadata(abs).ok()?;
     let mtime = meta.modified().ok()?;
     Some(system_time_epoch(mtime))

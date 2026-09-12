@@ -243,8 +243,8 @@ fn description_stems(text: &str) -> Vec<String> {
             in_fm = true;
             continue;
         }
-        if in_fm {
-            if let Some(rest) = t.strip_prefix("description:") {
+        if in_fm
+            && let Some(rest) = t.strip_prefix("description:") {
                 let mut out: Vec<String> = Vec::new();
                 for tok in rest
                     .to_ascii_lowercase()
@@ -256,7 +256,6 @@ fn description_stems(text: &str) -> Vec<String> {
                 }
                 return out;
             }
-        }
     }
     Vec::new()
 }
@@ -387,8 +386,8 @@ pub(crate) fn name_stems(name: &str) -> Vec<String> {
         // form. Each branch keeps the longest sensible stem so the term still
         // anchors on a meaningful boundary.
         for suffix in ["ing", "tion", "sion", "ies", "es", "ed", "s"] {
-            if let Some(base) = token.strip_suffix(suffix) {
-                if base.len() >= 3 {
+            if let Some(base) = token.strip_suffix(suffix)
+                && base.len() >= 3 {
                     // `ies` → `y` reconstruction (`policies` → `policy`).
                     if suffix == "ies" {
                         push(format!("{base}y"), &mut stems);
@@ -396,7 +395,6 @@ pub(crate) fn name_stems(name: &str) -> Vec<String> {
                     push(base.to_string(), &mut stems);
                     break;
                 }
-            }
         }
     }
     stems

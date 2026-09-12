@@ -117,13 +117,11 @@ pub fn current_branch(root: &Path) -> Option<String> {
 /// answered correctly by both probes and would be answered wrongly by any list.
 #[must_use]
 pub fn default_branch(root: &Path) -> Option<String> {
-    if let Some(local) = git_out(root, &["symbolic-ref", "refs/remotes/origin/HEAD"]) {
-        if let Some(name) = local.strip_prefix("refs/remotes/origin/") {
-            if !name.is_empty() {
+    if let Some(local) = git_out(root, &["symbolic-ref", "refs/remotes/origin/HEAD"])
+        && let Some(name) = local.strip_prefix("refs/remotes/origin/")
+            && !name.is_empty() {
                 return Some(name.to_string());
             }
-        }
-    }
     let remote = git_out(root, &["ls-remote", "--symref", "origin", "HEAD"])?;
     remote.lines().find_map(|line| {
         let rest = line.strip_prefix("ref:")?;

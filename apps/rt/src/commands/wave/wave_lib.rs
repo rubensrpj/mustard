@@ -152,13 +152,11 @@ fn parse_bullet(trimmed: &str) -> Option<&str> {
     // collapsed every downstream layer signal (field case: a 3-layer census
     // classified as `layerCount: 1` because all ten "files" were the letter
     // M). Tolerate the marker; never let it eat the path.
-    if token.len() <= 2 && token.chars().all(|c| c.is_ascii_uppercase()) {
-        if let Some((second, _)) = bullet_token(after.trim_start()) {
-            if second.contains(['/', '\\', '.']) {
+    if token.len() <= 2 && token.chars().all(|c| c.is_ascii_uppercase())
+        && let Some((second, _)) = bullet_token(after.trim_start())
+            && second.contains(['/', '\\', '.']) {
                 return Some(second);
             }
-        }
-    }
     Some(token)
 }
 

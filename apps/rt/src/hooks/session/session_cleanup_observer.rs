@@ -116,11 +116,10 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
         return true;
     }
     // meta.json wins: a terminal `Completed` outcome marks the spec done.
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_root.join("spec.md")) {
-        if let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_root.join("spec.md"))
+        && let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
             return outcome == mustard_core::Outcome::Completed;
         }
-    }
     // Legacy fallback: read the lifecycle header from wave-plan.md / spec.md.
     let wave_plan = spec_root.join("wave-plan.md");
     if fs::exists(&wave_plan) {
@@ -164,17 +163,15 @@ fn clean_pipeline_states(claude_dir: &Path) {
                 continue;
             }
             let path = &entry.path;
-            if let Some(status) = state_status(path) {
-                if TERMINAL_STATUSES.contains(&status.as_str()) {
+            if let Some(status) = state_status(path)
+                && TERMINAL_STATUSES.contains(&status.as_str()) {
                     let _ = fs::remove_file(path);
                     continue;
                 }
-            }
-            if let Some(spec) = state_spec_name(path) {
-                if is_spec_done(claude_dir, &spec) {
+            if let Some(spec) = state_spec_name(path)
+                && is_spec_done(claude_dir, &spec) {
                     let _ = fs::remove_file(path);
                 }
-            }
         }
         // Remove the directory when empty.
         let is_empty = fs::read_dir(&states_dir)
@@ -186,11 +183,10 @@ fn clean_pipeline_states(claude_dir: &Path) {
     }
     // Legacy single-file state.
     let legacy = claude_dir.join(".pipeline-state.json");
-    if let Some(status) = state_status(&legacy) {
-        if TERMINAL_STATUSES.contains(&status.as_str()) {
+    if let Some(status) = state_status(&legacy)
+        && TERMINAL_STATUSES.contains(&status.as_str()) {
             let _ = fs::remove_file(&legacy);
         }
-    }
 }
 
 /// Remove `.compact-state` files older than 24h; remove the dir when empty.
@@ -765,7 +761,7 @@ mod tests {
         );
 
         // Cutoff between the two mtimes — old must be pruned, new must survive.
-        let cutoff = (old_mtime + new_mtime) / 2;
+        let cutoff = i64::midpoint(old_mtime, new_mtime);
         prune_telemetry_with_cutoff(project.to_str().unwrap(), cutoff);
 
         assert!(!old_path.exists(), "old.ndjson should have been pruned");

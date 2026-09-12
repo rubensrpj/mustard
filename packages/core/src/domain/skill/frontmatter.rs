@@ -608,11 +608,10 @@ fn read_metadata_block(
                         if !l.starts_with("    ") && !l.starts_with("\t\t") {
                             break;
                         }
-                        if let Some((kk, vv)) = l_trim.split_once(':') {
-                            if kk.trim() == "label" {
+                        if let Some((kk, vv)) = l_trim.split_once(':')
+                            && kk.trim() == "label" {
                                 cluster.label = unquote(vv.trim()).to_string();
                             }
-                        }
                         k2 += 1;
                     }
                     meta.cluster = Some(cluster);

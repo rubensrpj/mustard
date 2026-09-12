@@ -158,11 +158,10 @@ fn detect_js_package_manager(dir: &Path) -> Option<String> {
     if dir.join("bun.lockb").is_file() {
         return Some("bun".into());
     }
-    if dir.join("package.json").is_file() {
-        if let Some(pm) = package_manager_field(dir) {
+    if dir.join("package.json").is_file()
+        && let Some(pm) = package_manager_field(dir) {
             return Some(pm);
         }
-    }
     if dir.join("pnpm-workspace.yaml").is_file() {
         return Some("pnpm".into());
     }

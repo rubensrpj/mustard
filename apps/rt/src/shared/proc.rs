@@ -544,11 +544,10 @@ fn parse_netstat_pids(text: &str, port: u16) -> Vec<u32> {
         if !cols[1].ends_with(&suffix) {
             continue;
         }
-        if let Ok(pid) = cols[cols.len() - 1].parse::<u32>() {
-            if !pids.contains(&pid) {
+        if let Ok(pid) = cols[cols.len() - 1].parse::<u32>()
+            && !pids.contains(&pid) {
                 pids.push(pid);
             }
-        }
     }
     pids
 }
@@ -578,11 +577,10 @@ fn lsof_listener_query(port: u16) -> String {
 fn parse_lsof_pids(text: &str) -> Vec<u32> {
     let mut pids = Vec::new();
     for line in text.lines() {
-        if let Ok(pid) = line.trim().parse::<u32>() {
-            if !pids.contains(&pid) {
+        if let Ok(pid) = line.trim().parse::<u32>()
+            && !pids.contains(&pid) {
                 pids.push(pid);
             }
-        }
     }
     pids
 }

@@ -316,11 +316,10 @@ fn check_subtractions(claude_root: &Path) -> Value {
 /// (ISO-8601) and then at `payload.ts_bucket`. Returns `None` when neither is
 /// usable.
 fn event_ts_ms(e: &Event) -> Option<i64> {
-    if let Some(iso) = e.raw.get("ts").and_then(Value::as_str) {
-        if let Some(ms) = mustard_core::time::parse_iso_millis(iso) {
+    if let Some(iso) = e.raw.get("ts").and_then(Value::as_str)
+        && let Some(ms) = mustard_core::time::parse_iso_millis(iso) {
             return Some(ms);
         }
-    }
     e.payload.get("ts_bucket").and_then(Value::as_i64)
 }
 
@@ -339,11 +338,10 @@ fn render_human(report: &Value) -> String {
     let _ = write!(out, "  pid: {}\n  alive: {}\n",
         report["collector"]["pid"].as_u64().map_or_else(|| "(none)".to_string(), |p| p.to_string()),
         report["collector"]["ok"].as_bool().unwrap_or(false));
-    if report["collector"]["ok"].as_bool() != Some(true) {
-        if let Some(r) = report["collector"]["reason"].as_str() {
+    if report["collector"]["ok"].as_bool() != Some(true)
+        && let Some(r) = report["collector"]["reason"].as_str() {
             let _ = writeln!(out, "  reason: {r}");
         }
-    }
     out.push_str("\n[health]\n");
     let _ = write!(out, "  status: {}\n  ok: {}\n",
         report["health"]["status"].as_u64().map_or_else(|| "(unreachable)".to_string(), |s| s.to_string()),
@@ -355,8 +353,8 @@ fn render_human(report: &Value) -> String {
             .as_i64()
             .map_or_else(|| "(none)".to_string(), mustard_core::time::millis_to_iso);
         let _ = writeln!(out, "  last bucket: {last}");
-        if let Some(sample) = report["data"]["sample"].as_array() {
-            if !sample.is_empty() {
+        if let Some(sample) = report["data"]["sample"].as_array()
+            && !sample.is_empty() {
                 out.push_str("  sample (latest 5):\n");
                 for r in sample {
                     let _ = writeln!(out, "    - {} {} session={} model={} sum={}",
@@ -367,7 +365,6 @@ fn render_human(report: &Value) -> String {
                         r["sum"].as_f64().unwrap_or(0.0));
                 }
             }
-        }
     } else if let Some(r) = report["data"]["reason"].as_str() {
         let _ = writeln!(out, "  reason: {r}");
     }
@@ -406,11 +403,10 @@ pub fn run(json_flag: bool, expect_rows_after: Option<&str>) {
         Some(count)
     };
 
-    if let Some(ms) = opts.expect_rows_after_ms {
-        if ms > 0 {
+    if let Some(ms) = opts.expect_rows_after_ms
+        && ms > 0 {
             std::thread::sleep(Duration::from_millis(ms));
         }
-    }
 
     let data = check_data(&root);
     // Collector + health drive the env verdict: dual-emit with a live, healthy

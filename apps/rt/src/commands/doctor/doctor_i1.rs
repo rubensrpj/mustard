@@ -49,11 +49,10 @@ fn walk(dir: &Path, out: &mut Vec<String>, depth: usize, max_depth: usize) {
     if depth > max_depth {
         return;
     }
-    if let Some(name) = dir.file_name().and_then(|s| s.to_str()) {
-        if fs::PRUNE_DIRS.contains(&name) {
+    if let Some(name) = dir.file_name().and_then(|s| s.to_str())
+        && fs::PRUNE_DIRS.contains(&name) {
             return;
         }
-    }
 
     let Ok(entries) = fs::read_dir(dir) else {
         return;

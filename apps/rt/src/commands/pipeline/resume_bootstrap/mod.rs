@@ -372,11 +372,10 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
 
     // --- agentRoles: derive from the wave subdir name (`wave-N-{role}`) when
     //     wave-plan; otherwise empty. ---
-    if out.is_wave_plan {
-        if let Some(role) = derive_role_from_wave_path(&op_path) {
+    if out.is_wave_plan
+        && let Some(role) = derive_role_from_wave_path(&op_path) {
             out.agent_roles.push(role);
         }
-    }
 
     // --- lastDispatchFailure (already TTL-filtered by `pipeline_state_from_events`). ---
     let dispatch_failure = view.as_ref().and_then(|v| v.last_dispatch_failure.clone());
@@ -546,11 +545,10 @@ fn print_table(out: &ResumeBootstrap) {
 /// the same file without re-deriving it.
 #[must_use]
 pub fn resolve_operational_spec_path(spec_dir: &Path, wave: Option<u32>) -> PathBuf {
-    if let Some(w) = wave {
-        if let Some(p) = find_wave_spec_path(spec_dir, w) {
+    if let Some(w) = wave
+        && let Some(p) = find_wave_spec_path(spec_dir, w) {
             return p;
         }
-    }
     spec_dir.join("spec.md")
 }
 

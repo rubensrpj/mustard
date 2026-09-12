@@ -74,14 +74,13 @@ fn heading_term(line: &str) -> Option<String> {
 fn def_term(line: &str) -> Option<String> {
     let mut s = line.trim_start();
     // Optional `-` / `*` bullet followed by whitespace.
-    if let Some(first) = s.chars().next() {
-        if first == '-' || first == '*' {
+    if let Some(first) = s.chars().next()
+        && (first == '-' || first == '*') {
             let rest = &s[1..];
             if rest.starts_with(char::is_whitespace) {
                 s = rest.trim_start();
             }
         }
-    }
     let after_open = s.strip_prefix("**")?;
     let end = after_open.find("**")?;
     let term = after_open[..end].trim();
@@ -99,8 +98,8 @@ fn extract_section(text: &str, names: &[&str]) -> String {
     for name in names {
         let target = name.to_lowercase();
         for (i, line) in lines.iter().enumerate() {
-            if let Some(term) = heading_term(line) {
-                if term.to_lowercase() == target {
+            if let Some(term) = heading_term(line)
+                && term.to_lowercase() == target {
                     // Collect until the next depth-2/3 heading.
                     let mut out = vec![*line];
                     for next in &lines[i + 1..] {
@@ -111,7 +110,6 @@ fn extract_section(text: &str, names: &[&str]) -> String {
                     }
                     return out.join("\n");
                 }
-            }
         }
     }
     String::new()
@@ -215,11 +213,10 @@ fn path_tokens(text: &str) -> Vec<String> {
             }
             let tok: String = chars[start..i].iter().collect();
             // Must contain `.<alnum+>` extension.
-            if let Some((_, ext)) = tok.rsplit_once('.') {
-                if !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+            if let Some((_, ext)) = tok.rsplit_once('.')
+                && !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
                     out.push(tok);
                 }
-            }
         } else {
             i += 1;
         }

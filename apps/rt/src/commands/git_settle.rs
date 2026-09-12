@@ -180,15 +180,14 @@ pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
     // Emit one entry per block, once its ref line is seen — `branch` for an
     // attached checkout, `detached` for one standing on a bare commit.
     let push = |path: &Option<String>, branch: &str, head: &str, out: &mut Vec<WorktreeEntry>| {
-        if let Some(p) = path {
-            if p.contains("/.claude/worktrees/") {
+        if let Some(p) = path
+            && p.contains("/.claude/worktrees/") {
                 out.push(WorktreeEntry {
                     path: p.clone(),
                     branch: branch.to_string(),
                     head: head.to_string(),
                 });
             }
-        }
     };
     for line in porcelain.lines().chain(std::iter::once("")) {
         if let Some(p) = line.strip_prefix("worktree ") {
@@ -726,11 +725,10 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     //
     // Only an UNAMBIGUOUS answer counts: several containing branches, or none,
     // leave the question genuinely open and the refusal below stands.
-    if answer.is_unit() && answer.known().is_none() {
-        if let Some(measured) = sole_branch_containing(&main, &unit_branch, &flow) {
+    if answer.is_unit() && answer.known().is_none()
+        && let Some(measured) = sole_branch_containing(&main, &unit_branch, &flow) {
             answer = crate::shared::work_kind::UnitBase::Known(measured);
         }
-    }
     if answer.is_unit() && answer.known().is_none() {
         return json!({
             "ok": false,
@@ -956,11 +954,10 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // its own children would answer `complete: true` there while the parent
     // still holds the unit. That is the same half-settled "done" this command
     // was changed to stop printing, reached from the other end.
-    if let Some(parent) = superproject.as_deref() {
-        if let Some(entry) = repo_settlement(parent, "..", &unit_branch) {
+    if let Some(parent) = superproject.as_deref()
+        && let Some(entry) = repo_settlement(parent, "..", &unit_branch) {
             repos.push(entry);
         }
-    }
     let complete = repos.iter().all(|r| r["settled"] == json!(true));
 
     // Other merged units — informative only (settle acts on ONE unit; the user

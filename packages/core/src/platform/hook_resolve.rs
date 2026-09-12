@@ -109,12 +109,11 @@ pub fn rewrite_hooks_value(root: &mut Value, mustard_rt_abs: &str) -> usize {
                 let Some(command) = entry.get("command").and_then(Value::as_str) else {
                     continue;
                 };
-                if let Some(next) = rewrite_command(command, mustard_rt_abs) {
-                    if next != command {
+                if let Some(next) = rewrite_command(command, mustard_rt_abs)
+                    && next != command {
                         entry["command"] = Value::String(next);
                         count += 1;
                     }
-                }
             }
         }
     }

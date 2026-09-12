@@ -235,8 +235,8 @@ fn spawn_otel_collector(cwd: &str) {
     // newer than the PID file, a rebuild has happened since the spawn — kill
     // the stale daemon and respawn fresh. Otherwise the existing daemon is
     // current; honour the idempotence contract and skip.
-    if let Some(existing) = read_pid(&pid_path) {
-        if crate::shared::proc::is_process_alive(existing) {
+    if let Some(existing) = read_pid(&pid_path)
+        && crate::shared::proc::is_process_alive(existing) {
             if exe_rebuilt_since_pid_file(&pid_path) {
                 eprintln!(
                     "session_start: OTEL collector PID {existing} predates current exe; killing stale daemon and respawning"
@@ -246,7 +246,6 @@ fn spawn_otel_collector(cwd: &str) {
                 return;
             }
         }
-    }
 
     // Cross-project takeover: a previous project collector may still be
     // holding the OTLP port (its SessionEnd may not have fired, or a kill may

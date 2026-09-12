@@ -598,13 +598,11 @@ fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
     }
 
     let before = sentence[..start].trim_end_matches(is_decoration);
-    if next.starts_with(')') {
-        if let Some(words_before) = before.strip_suffix('(') {
-            if words_before.chars().any(char::is_alphabetic) {
+    if next.starts_with(')')
+        && let Some(words_before) = before.strip_suffix('(')
+            && words_before.chars().any(char::is_alphabetic) {
                 return true;
             }
-        }
-    }
 
     let glued = after.trim_start_matches(TERM_CLOSERS);
     if APPOSITION_MARKS.iter().any(|mark| glued.starts_with(mark)) {

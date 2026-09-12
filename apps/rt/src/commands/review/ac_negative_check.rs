@@ -1752,11 +1752,9 @@ pub(crate) fn default_removal_from(root: &Path) -> String {
     for candidate in [format!("origin/{base}"), base] {
         if let Some(merge_base) =
             crate::commands::git_settle::git_out(root, &["merge-base", "HEAD", &candidate])
-        {
-            if !merge_base.is_empty() {
+            && !merge_base.is_empty() {
                 return merge_base;
             }
-        }
     }
     // Nothing resolved: the previous commit is the smallest honest guess, and
     // `unknown-revision` reports it when even that does not exist.
