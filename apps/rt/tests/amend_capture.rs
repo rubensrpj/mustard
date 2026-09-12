@@ -8,31 +8,37 @@
     clippy::uninlined_format_args
 )]
 
-//! Integration smoke test for the `amend_capture` hook module.
+//! O gancho de `PostToolUse` roda como processo à parte e sai com código 0
+//! diante de uma gravação que não tem nada a ver com a spec: ele está ligado
+//! ao despachante e nunca derruba a sessão.
 //!
-//! AC-3 … AC-10 are tested as unit tests inside
-//! `apps/rt/src/hooks/amend_capture.rs` (the `#[cfg(test)]` block), where
-//! `crate::run` and `crate::util` resolve correctly. This file provides a
-//! complementary external round-trip: it drives `mustard-rt on PostToolUse`
-//! as a subprocess and asserts the exit code is 0 (fail-open / no crash),
-//! confirming the module is wired into the dispatcher and the binary builds.
+//! O gancho roda numa pasta temporária, que é também o `cwd` que ele recebe.
+//! Na pasta do cargo, que fica dentro do checkout, ele gravaria eventos na spec
+//! ativa do projeto de verdade e deixaria lá a pasta da sessão de teste, que
+//! outros comandos passariam a tomar como a sessão atual.
 
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// `mustard-rt on PostToolUse` with amend-neutral input must exit 0.
+const SESSION: &str = "test-session-ext";
+
 #[test]
-fn amend_capture_dispatcher_exits_zero() {
+fn amend_capture_dispatcher_exits_zero_inside_a_temp_folder() {
     let bin = env!("CARGO_BIN_EXE_mustard-rt");
+    let dir = tempfile::tempdir().expect("tempdir");
     let input = serde_json::json!({
         "hook_event_name": "PostToolUse",
         "tool_name": "Write",
-        "tool_input": { "file_path": "/tmp/unrelated.md" },
-        "session_id": "test-session-ext",
-        "cwd": "."
+        "tool_input": { "file_path": dir.path().join("unrelated.md") },
+        "session_id": SESSION,
+        "cwd": dir.path()
     });
     let mut child = Command::new(bin)
         .args(["on", "PostToolUse"])
+        .current_dir(dir.path())
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("MUSTARD_PROJECT_ROOT")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -44,4 +50,11 @@ fn amend_capture_dispatcher_exits_zero() {
     }
     let status = child.wait().expect("wait");
     assert_eq!(status.code(), Some(0), "mustard-rt must exit 0 (fail-open)");
+
+    let checkout_session = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/.session").join(SESSION);
+    assert!(
+        !checkout_session.exists(),
+        "the hook wrote the test session into the real checkout: {}",
+        checkout_session.display()
+    );
 }

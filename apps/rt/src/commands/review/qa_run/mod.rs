@@ -426,7 +426,7 @@ fn extract_marker(fragment: &str, marker: &str) -> Option<String> {
 /// contain one. The reader used to search the raw line, find that occurrence,
 /// and take the rest of the COMMAND as the evidence regex; the real `Expect:`
 /// on the following line was then never read, and the criterion came back
-/// `skip` for an invalid regex. Measured while authoring this unit's own AC-6.
+/// `skip` for an invalid regex. Measured while authoring one of this unit's own criteria.
 /// This is the same confusion as the writer defect it proves, seen from the
 /// other side: there the writer accepted two `Expect:`, here the reader could
 /// not tell which one was its own.
@@ -591,7 +591,7 @@ pub(crate) struct QaResult {
     pub(crate) criteria: Vec<AcResult>,
 }
 
-/// Public outcome type returned by [`run_for_spec_with_options`].
+/// Public outcome type returned by [`run_for_spec_at`].
 ///
 /// Callers that do not want process::exit (e.g. `complete_spec`)
 /// use this instead of the stdout-emitting [`run`] entry point.
@@ -602,7 +602,7 @@ pub struct QaSpecOutcome {
     pub total: u32,
 }
 
-/// Options for [`run_for_spec_with_options`].
+/// Options for [`run_for_spec_at`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QaRunOptions {
     /// `true` when invoked from a process that **could be** the binary some AC
@@ -623,19 +623,17 @@ pub struct QaRunOptions {
     pub self_invoked: bool,
 }
 
-/// Run QA for `spec` under the current working directory, emit `qa.result`,
-/// and return a typed outcome — no stdout, no `process::exit`.
+/// Roda o QA da spec `spec` no projeto de `cwd`, grava o `qa.result` e devolve
+/// o resultado contado, sem imprimir e sem encerrar o processo.
 ///
-/// Designed for callers that need the result (e.g. `complete_spec`) without
-/// taking over the process. Errors are fail-open: a missing spec returns an
-/// outcome with `overall = "skip"`. `opts` lets the caller flip
-/// [`QaRunOptions::self_invoked`] to enable the cargo-self-build rewrite.
-pub fn run_for_spec_with_options(spec: &str, opts: QaRunOptions) -> QaSpecOutcome {
-    let cwd = std::env::current_dir()
-        .ok()
-        .or_else(|| Some(std::path::PathBuf::from(crate::shared::context::project_dir())))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let result = run_qa_with_options(&cwd, spec, opts);
+/// Serve a quem precisa do resultado sem entregar o processo (o
+/// `complete-spec`). O projeto é sempre o de `cwd`, nunca a pasta do processo:
+/// o QA roda, e grava a métrica, no mesmo projeto que quem chamou vai admitir.
+/// Falha sem travar: uma spec que não existe volta com `overall` sem aprovação.
+/// `opts` liga o [`QaRunOptions::self_invoked`], que troca a compilação do
+/// próprio binário.
+pub(crate) fn run_for_spec_at(cwd: &Path, spec: &str, opts: QaRunOptions) -> QaSpecOutcome {
+    let result = run_qa_with_options(cwd, spec, opts);
     let (mut passed, mut failed, mut skipped) = (0u32, 0u32, 0u32);
     for c in &result.criteria {
         match c.status.as_str() {
@@ -656,7 +654,7 @@ pub fn run_for_spec_with_options(spec: &str, opts: QaRunOptions) -> QaSpecOutcom
 /// Cwd-aware QA run returning the full per-criterion [`QaResult`] (not the
 /// count-only outcome). The `close-pipeline` composite uses this so its report
 /// can name the failed ACs. Sets/resets the thread-local [`QaRunOptions`]
-/// around the run exactly like [`run_for_spec_with_options`].
+/// around the run exactly like [`run_for_spec_at`].
 pub(crate) fn run_qa_with_options(cwd: &Path, spec: &str, opts: QaRunOptions) -> QaResult {
     runner::QA_OPTIONS.with(|cell| cell.set(opts));
     let result = run_qa(cwd, spec);
@@ -1132,7 +1130,7 @@ mod tests {
     /// A marker INSIDE a criterion's backtick-quoted command is data, not a
     /// marker.
     ///
-    /// Measured while authoring this unit's own AC-6: the criterion that proves
+    /// Measured while authoring one of this unit's own criteria: the one that proves
     /// `ac-amend` refuses an embedded `Expect:` must itself contain one. The
     /// reader searched the raw line, found that occurrence, and took the tail of
     /// the COMMAND as the evidence regex — so the real `Expect:` on the next

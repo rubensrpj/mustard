@@ -627,13 +627,9 @@ fn close_admission(cwd: &Path, spec: &str) -> Result<(), String> {
 /// the admission then reads, so admitting first would refuse a spec that is
 /// about to pass.
 ///
-/// `cwd` caveat, stated because the signature suggests otherwise:
-/// [`close_admission`] honours this `cwd`, while [`run_qa_fail_open`] resolves
-/// the project through the PROCESS working directory (`qa_run` reads it
-/// internally). The only production caller is [`run`], which passes
-/// `std::env::current_dir()` — so the two agree there. A caller that passes some
-/// OTHER root would verify one tree and admit against another; do not add one
-/// without fixing `qa_run`'s resolution first.
+/// O QA e a admissão olham o mesmo projeto, o de `cwd`: o QA não cai na pasta
+/// do processo, então verificar e admitir nunca acontecem em árvores
+/// diferentes.
 fn verify_then_admit(cwd: &Path, spec: &str) -> Result<(), String> {
     run_qa_fail_open(cwd, spec);
     close_admission(cwd, spec)
@@ -744,8 +740,9 @@ fn rebuild_one_fail_open(cwd: &Path, spec: &str) {
     let _ = crate::commands::spec::rebuild_specs::rebuild_one(&project_dir, spec);
 }
 
-fn run_qa_fail_open(_cwd: &Path, spec: &str) {
-    let outcome = crate::commands::review::qa_run::run_for_spec_with_options(
+fn run_qa_fail_open(cwd: &Path, spec: &str) {
+    let outcome = crate::commands::review::qa_run::run_for_spec_at(
+        cwd,
         spec,
         crate::commands::review::qa_run::QaRunOptions { self_invoked: true },
     );
@@ -1324,7 +1321,7 @@ mod tests {
             .any(|e| e.event == EVENT_PIPELINE_COMPLETE)
     }
 
-    /// AC-1 — a terminal close with NO recorded passing verdict is refused, and
+    /// A terminal close with NO recorded passing verdict is refused, and
     /// nothing is written. The reproduced defect: this command wrote
     /// `pipeline.complete` straight through the writer while the shipped ritual
     /// promised another command's gate would stop it.
@@ -1338,7 +1335,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let spec = "no-verdict-spec";
-        seed_spec_md(cwd, spec, "# S\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `true`\n");
+        // O critério falha: a entrada roda o QA nesta mesma pasta, e a recusa
+        // do fim só vale se o QA de verdade não aprovar.
+        seed_spec_md(cwd, spec, "# S\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `false`\n");
 
         // Nothing recorded at all.
         // Only the FACT is pinned — the refusal names which spec it is about, so
@@ -1366,9 +1365,15 @@ mod tests {
             "the entry point must propagate the refusal"
         );
         assert!(!completed(cwd, spec), "still nothing written after the refusal");
+
+        // O QA rodou nesta pasta: a métrica dele fica aqui, e não na pasta do
+        // processo, que no teste é o checkout de verdade.
+        let metric = std::fs::read_to_string(cwd.join(".claude").join(".metrics").join("qa.jsonl"))
+            .unwrap_or_default();
+        assert!(metric.contains(spec), "the QA metric lands in the project it ran on: {metric}");
     }
 
-    /// AC-2 — the two admitted ways in, so the gate cannot pass by refusing
+    /// The two admitted ways in, so the gate cannot pass by refusing
     /// everything.
     ///
     /// (a) an ALREADY-finished spec is admitted with no verdict at all: its close
@@ -1409,7 +1414,7 @@ mod tests {
         assert!(completed(cwd, proven), "the admitted close must actually complete");
     }
 
-    /// AC-3 — the shipped ritual must not credit this refusal to a command this
+    /// The shipped ritual must not credit this refusal to a command this
     /// one never passes through.
     ///
     /// Asserted by the FACT, not the wording: no line may pair `complete-spec`

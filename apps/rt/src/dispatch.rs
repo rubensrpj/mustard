@@ -211,7 +211,7 @@ pub fn run_check(id: &str, input: &HookInput) -> Outcome {
 /// `workspace_root` is `None` and a structured warning is logged to stderr.
 /// Hooks must NOT block users on a resolution failure.
 ///
-/// AC-G2 guard: when `cwd` is `"."`, empty, or another relative placeholder,
+/// Guard: when `cwd` is `"."`, empty, or another relative placeholder,
 /// the dispatcher resolves it to an absolute path via `std::env::current_dir()`
 /// before walking for the workspace root. Without this step `walk_ancestors`
 /// only sees `"."` as its own parent (no absolute ancestor walk), so
@@ -294,11 +294,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn bash_input(command: &str, event: &str) -> HookInput {
+    /// A entrada de Bash traz uma pasta temporária como `cwd`: sem ela, o
+    /// despachante usaria a pasta do processo, que fica dentro do checkout, e
+    /// os ganchos gravariam o estado deles no projeto de verdade.
+    fn bash_input(dir: &std::path::Path, command: &str, event: &str) -> HookInput {
         HookInput {
             tool_name: Some("Bash".to_string()),
             tool_input: json!({ "command": command }),
             hook_event_name: Some(event.to_string()),
+            cwd: Some(dir.to_string_lossy().into_owned()),
             ..HookInput::default()
         }
     }
@@ -317,14 +321,16 @@ mod tests {
 
     #[test]
     fn dispatch_runs_bash_guard_for_bash_pretooluse() {
-        let input = bash_input("rm -rf /", "PreToolUse");
+        let dir = tempfile::tempdir().unwrap();
+        let input = bash_input(dir.path(), "rm -rf /", "PreToolUse");
         let outcome = run_event(Some(Trigger::PreToolUse), &input, None);
         assert!(outcome.is_blocking());
     }
 
     #[test]
     fn dispatch_denies_bare_ls_for_bash_pretooluse() {
-        let input = bash_input("ls", "PreToolUse");
+        let dir = tempfile::tempdir().unwrap();
+        let input = bash_input(dir.path(), "ls", "PreToolUse");
         let outcome = run_event(Some(Trigger::PreToolUse), &input, None);
         assert!(
             outcome.is_blocking(),
