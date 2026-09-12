@@ -1,6 +1,6 @@
 //! `wave_complete_observer` — auto-emit `pipeline.wave.complete`.
 //!
-//! ## Decision 6 — auto-abertura por tipo (wave advance is *structural* → automatic)
+//! ## Automatic by kind — wave advance is *structural*, so it runs on its own
 //!
 //! When the subagent that executed a wave returns (`SubagentStop`) and the wave
 //! is **deterministically complete**, this observer auto-emits the

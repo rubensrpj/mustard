@@ -606,8 +606,8 @@ impl Registry {
             },
             // ── auto-abertura por tipo (structural → automatic) ──────────────
             // Both are pure Observers — they emit/restructure as a side effect
-            // and are structurally incapable of denying a write (decision 6:
-            // re-wave / wave-advance are advisory restructuring, never gates).
+            // and are structurally incapable of denying a write: re-wave and
+            // wave-advance only restructure the plan, and are never gates.
             Module {
                 id: "rewave_observer",
                 // On the first EXECUTE write of a not-yet-decomposed

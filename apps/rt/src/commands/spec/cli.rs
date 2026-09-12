@@ -282,7 +282,7 @@ pub enum SpecCmd {
     /// Propose (do NOT create) tactical fixes from structured
     /// `tactical_fix_candidates[]` in a spec's `review.result` / `qa.result`
     /// events. Emits one `tactical_fix.proposed` event per new candidate;
-    /// never scaffolds a sub-spec (decision 6 — "não auto-aprovar").
+    /// never scaffolds a sub-spec, so nothing is approved without the user.
     #[command(name = "tactical-fix-detect")]
     #[command(display_order = 69)]
     TacticalFixDetect {

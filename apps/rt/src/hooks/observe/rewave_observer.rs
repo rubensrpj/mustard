@@ -1,6 +1,6 @@
 //! `rewave_observer` — auto re-wave on the first EXECUTE write.
 //!
-//! ## Decision 6 — auto-abertura por tipo (re-wave is *structural* → automatic)
+//! ## Automatic by kind — re-wave is *structural*, so it runs on its own
 //!
 //! The re-wave signal has always been Rust
 //! ([`crate::commands::wave::exec_rewave_check`] decides decomposition by
