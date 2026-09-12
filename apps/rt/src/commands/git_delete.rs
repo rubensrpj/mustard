@@ -36,8 +36,9 @@
 //!
 //! Two more refusals guard the same edge from the other side: a name that is
 //! nobody's work unit — a bare base, a hand-cut branch, anything
-//! `protected_branches` measures — is never deleted (the `BG07` rule of the
-//! destructive-ops law, restated where this command can enforce it), and a unit
+//! `protected_branches` measures — is never deleted (the command guard refuses
+//! the same for the branches `git.flow` names; this command restates it where
+//! it can enforce it), and a unit
 //! no ref carries anywhere is reported as `no-such-unit` rather than answered
 //! with a cheerful "deleted" over a typo.
 //!

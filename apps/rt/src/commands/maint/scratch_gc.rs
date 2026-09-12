@@ -5,7 +5,7 @@
 //!
 //! Cada experimento de revisor roda numa pasta descartável com uma cópia do
 //! projeto, e cada cópia compila tudo do zero: de 2 a 5 GB de `target/` por
-//! cópia. A trava de comandos (BG01) nega a exclusão recursiva solta, então a
+//! cópia. A trava de comandos barra apagar pasta à força pelo terminal, então a
 //! pasta ficava para sempre. Esta porta é o caminho de limpeza: a exclusão é
 //! feita pelo próprio binário (`std::fs::remove_dir_all`), nunca por comando de
 //! shell, e só depois de conferir que o alvo é mesmo uma pasta descartável.

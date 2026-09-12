@@ -1,469 +1,488 @@
-//! `safety` — the Rust layer of the destructive-ops law (`BG01`–`BG13`).
+//! `safety` — the command guard: a command that destroys work with no way
+//! back is refused.
 //!
-//! The law lives in TWO layers, intentionally redundant (see
-//! `pipeline-config.md § Destructive-ops Law`):
+//! It reads the commands [`super::lex::segments`] found, never the raw text,
+//! and looks only at the program and its options. A commit message, a title
+//! or any other quoted text that merely names a dangerous command passes; what
+//! the terminal would really run is judged, including the command inside
+//! `$(…)` and the line handed to `bash -c "…"`.
 //!
-//! 1. **`settings.json permissions.deny`** — the config-level FIRST line.
-//!    Every rule keeps its canonical spelling there (`Bash(git reset
-//!    --hard:*)`, `Bash(mkfs*)`, `Bash(rm -rf:*)`, …). Native prefix matching
-//!    (`:*` / trailing ` *`) enforces a word boundary — `git push
-//!    --force-with-lease` is NOT caught by `Bash(git push --force:*)` — and
-//!    this layer survives `/unhook`. But a deny glob is START-ANCHORED: any
-//!    wrapper prefix (`rtk git reset --hard`, `sudo shutdown -h now`) slides
-//!    the canonical spelling off the anchor and the glob no longer sees it —
-//!    and this harness's own golden rule prefixes every Bash command with
-//!    `rtk`, making the wrapped spelling the common case, not a corner case.
-//! 2. **This table** — the full rule set with the historical substring /
-//!    word-pair semantics (`text::has_word_sequence` with the `lex` shell
-//!    boundaries matches anywhere in the string), wrapper-prefix insensitive
-//!    by construction; it
-//!    also expresses what a glob structurally cannot (flag clusters, flag
-//!    reordering, character classes). IDs keep their historical `BGnn` names
-//!    so deny reasons stay greppable.
+//! Seven dangers, all of them work lost for good: deleting a folder by force,
+//! four ways of discarding changes (`git reset --hard`, `git clean -f`,
+//! `git checkout -- .`, `git restore .`), deleting an integration branch and
+//! force-pushing. The same danger spelled another way is the same danger
+//! (`git -C dir reset --hard`, `rm -r -f`, `git push origin +main`, deleting
+//! the branch on the server). Commands that harm the machine rather than the
+//! work (`chmod 777`, `mkfs`, `dd`, `shutdown`, `reboot`) are not judged here:
+//! the permission list of the Claude Code settings refuses them.
+//!
+//! The integration branches are the ones the project's `git.flow` names, read
+//! from the hook context. A project that declares no flow has none, and no
+//! branch name is written in this file.
 
 use std::collections::BTreeSet;
 
-use mustard_core::domain::model::contract::Verdict;
+use mustard_core::domain::model::contract::{Ctx, Verdict};
+use mustard_core::{translate, SupportedLocale};
 
-use mustard_core::domain::text::has_word_sequence;
+use super::lex::{truncate, Segment, Word};
 
-use super::lex::{ends_with_token_seq, split_after, truncate, SHELL_WORDS, SHELL_WORD_START};
-
-/// One dangerous-command rule: a substring/structural test plus the user
-/// message.
-struct DangerRule {
-    /// Stable identifier (`BG01`–`BG13`).
-    id: &'static str,
-    /// `true` when `cmd` (already lowercased) matches this rule. The second
-    /// argument is the project's PROTECTED branches
-    /// ([`mustard_core::protected_branches`]); only BG07 (branch-delete)
-    /// consults it — every other rule ignores it, so its test takes the form
-    /// `|c, _| …`.
-    test: fn(&str, &BTreeSet<String>) -> bool,
-    /// The user-facing reason fragment.
-    msg: &'static str,
+/// What a command would destroy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Danger {
+    RecursiveForceDelete,
+    ForcePush,
+    ResetHard,
+    CleanForce,
+    CheckoutAll,
+    RestoreAll,
+    /// Deleting an integration branch, locally or on the server.
+    DeleteBase(String),
 }
 
-/// The dangerous-command rules, in historical `bash-safety.js` order.
-const DANGER_RULES: &[DangerRule] = &[
-    // `-\w*r\w*f` flag CLUSTERS (`rm -rvf`, `-fR`) and flag order cannot be
-    // covered by a finite set of word-boundary glob prefixes.
-    DangerRule {
-        id: "BG01",
-        test: |c, _| is_rm_recursive_force(c),
-        msg: "Recursive force delete blocked",
-    },
-    // The deny layer start-anchors, so reordered (`git push origin -f`) and
-    // clustered (`-uf`) spellings escape it; the token scan here catches them
-    // while keeping `--force-with-lease` allowed.
-    DangerRule {
-        id: "BG02",
-        test: |c, _| is_force_push(c),
-        msg: "Force push blocked (use --force-with-lease for safer overwrite)",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG03",
-        test: |c, _| has_word_sequence(c, &["git", "reset"], SHELL_WORDS) && c.contains("--hard"),
-        msg: "git reset --hard blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG04",
-        test: |c, _| is_git_clean_force(c),
-        msg: "git clean -f blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG05",
-        test: |c, _| ends_with_token_seq(c, &["git", "checkout", "--", "."]),
-        msg: "git checkout -- . blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG06",
-        test: |c, _| ends_with_token_seq(c, &["git", "restore", "."]),
-        msg: "git restore . blocked",
-    },
-    // The protected branches are what `mustard_core::protected_branches`
-    // MEASURES — the remote's own default (`origin/HEAD`) plus whatever
-    // `git.protected` declares — never a hardcoded main/master: a repository
-    // whose default is `develop` protects `develop`, and one whose default is
-    // `main` leaves `master` deletable. main/master survive only as that
-    // function's UNMEASURED fallback, not as a literal here. Wrapper-prefix
-    // insensitivity is still structural (glob is start-anchored).
-    DangerRule {
-        id: "BG07",
-        test: is_branch_delete_protected,
-        msg: "Deleting a protected integration base blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG08",
-        test: |c, _| has_word_sequence(c, &["chmod", "777"], SHELL_WORDS),
-        msg: "chmod 777 blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG09",
-        test: |c, _| has_word_sequence(c, &["mkfs"], SHELL_WORD_START),
-        msg: "mkfs blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG10",
-        test: |c, _| has_word_sequence(c, &["dd", "if="], SHELL_WORDS),
-        msg: "dd if= blocked",
-    },
-    // The drive-letter character class (`[a-z]:`) has no native-pattern
-    // equivalent (a glob cannot say "any single letter").
-    DangerRule {
-        id: "BG11",
-        test: |c, _| is_format_drive(c),
-        msg: "format drive blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG12",
-        test: |c, _| has_word_sequence(c, &["shutdown"], SHELL_WORD_START),
-        msg: "shutdown blocked",
-    },
-    // Wrapper-prefix insensitivity is structural (glob is start-anchored).
-    DangerRule {
-        id: "BG13",
-        test: |c, _| has_word_sequence(c, &["reboot"], SHELL_WORD_START),
-        msg: "reboot blocked",
-    },
+impl Danger {
+    /// The catalogue key of the reason.
+    fn key(&self) -> &'static str {
+        match self {
+            Self::RecursiveForceDelete => "command_guard.rm_recursive_force",
+            Self::ForcePush => "command_guard.force_push",
+            Self::ResetHard => "command_guard.reset_hard",
+            Self::CleanForce => "command_guard.clean_force",
+            Self::CheckoutAll => "command_guard.checkout_all",
+            Self::RestoreAll => "command_guard.restore_all",
+            Self::DeleteBase(_) => "command_guard.delete_base",
+        }
+    }
+
+    /// The branch an integration-branch deletion names.
+    fn detail(&self) -> Option<&str> {
+        match self {
+            Self::DeleteBase(branch) => Some(branch),
+            _ => None,
+        }
+    }
+
+    fn reason(&self, lang: SupportedLocale) -> String {
+        let text = translate(self.key(), lang);
+        match self.detail() {
+            Some(branch) => text.replace("{branch}", branch),
+            None => text.to_string(),
+        }
+    }
+}
+
+/// One danger check over one command, given the integration branches.
+type Rule = fn(&Segment, &BTreeSet<String>) -> Option<Danger>;
+
+/// The checks, in order; the first one to answer wins. A new danger is one
+/// more function here.
+const RULES: &[Rule] = &[
+    recursive_force_delete,
+    force_push,
+    reset_hard,
+    clean_force,
+    checkout_all,
+    restore_all,
+    delete_base,
 ];
 
-/// `\brm\s+(-\w*r\w*f|--no-preserve-root|-rf|-fr)\b` — `rm` followed
-/// by a flag token that means recursive+force.
-fn is_rm_recursive_force(cmd: &str) -> bool {
-    for word in split_after(cmd, "rm") {
-        if word == "--no-preserve-root" {
-            return true;
-        }
-        if let Some(flag) = word.strip_prefix('-') {
-            if flag.starts_with("--") {
-                continue;
+/// `rm` with recursion and force, in any spelling: `-rf`, `-fr`, `-Rf`,
+/// `-rvf`, `-r -f`, `--recursive --force`, or `--no-preserve-root`.
+fn recursive_force_delete(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
+    if seg.name() != "rm" {
+        return None;
+    }
+    let (mut recursive, mut force) = (false, false);
+    for option in options(&seg.args) {
+        match option {
+            "--no-preserve-root" => return Some(Danger::RecursiveForceDelete),
+            "--recursive" => recursive = true,
+            "--force" => force = true,
+            _ => {
+                if let Some(flags) = short_flags(option) {
+                    recursive |= flags.contains(['r', 'R']);
+                    force |= flags.contains('f');
+                }
             }
-            // -rf / -fr / -Rf / a flag cluster containing both r and f.
-            let has_r = flag.contains('r') || flag.contains('R');
-            let has_f = flag.contains('f');
-            if has_r && has_f {
-                return true;
+        }
+    }
+    (recursive && force).then_some(Danger::RecursiveForceDelete)
+}
+
+/// `git push` with `--force`, a short group holding `f` (`-f`, `-uf`) or a
+/// branch forced with `+` (`+main`). `--force-with-lease` and
+/// `--force-if-includes` pass.
+fn force_push(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
+    let args = git_subcommand(seg, "push")?;
+    let forced_option = options(args).any(|o| o == "--force" || short_flags(o).is_some_and(|f| f.contains('f')));
+    let forced_branch = operands(args).any(|p| p.len() > 1 && p.starts_with('+'));
+    (forced_option || forced_branch).then_some(Danger::ForcePush)
+}
+
+/// `git reset --hard`.
+fn reset_hard(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
+    let args = git_subcommand(seg, "reset")?;
+    options(args).any(|o| o == "--hard").then_some(Danger::ResetHard)
+}
+
+/// `git clean` with `--force` or a short group holding `f`; `git clean -n`
+/// only lists, and passes.
+fn clean_force(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
+    let args = git_subcommand(seg, "clean")?;
+    options(args)
+        .any(|o| o == "--force" || short_flags(o).is_some_and(|f| f.contains('f')))
+        .then_some(Danger::CleanForce)
+}
+
+/// `git checkout` over the whole tree: the path `.`, after `--` or alone.
+fn checkout_all(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
+    let args = git_subcommand(seg, "checkout")?;
+    operands(args).any(|p| p == ".").then_some(Danger::CheckoutAll)
+}
+
+/// `git restore` of the path `.` that touches the files: `--staged` alone
+/// only takes the changes out of the index, and passes; with `--worktree` it
+/// discards them.
+fn restore_all(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
+    let args = git_subcommand(seg, "restore")?;
+    if !operands(args).any(|p| p == ".") {
+        return None;
+    }
+    let (mut staged, mut worktree) = (false, false);
+    for option in options(args) {
+        match option {
+            "--staged" => staged = true,
+            "--worktree" => worktree = true,
+            _ => {
+                if let Some(flags) = short_flags(option) {
+                    staged |= flags.contains('S');
+                    worktree |= flags.contains('W');
+                }
             }
         }
     }
-    false
+    (!staged || worktree).then_some(Danger::RestoreAll)
 }
 
-/// `\bgit\s+push\s+(-\w*f\b|--force(?!-with-lease))\b`.
-fn is_force_push(cmd: &str) -> bool {
-    if !has_word_sequence(cmd, &["git", "push"], SHELL_WORDS) {
-        return false;
+/// Deleting a branch the project's `git.flow` names: `git branch` with `-d`,
+/// `-D` or `--delete`, or on the server, `git push --delete <branch>` and
+/// `git push origin :<branch>`. Names are compared ignoring case.
+fn delete_base(seg: &Segment, bases: &BTreeSet<String>) -> Option<Danger> {
+    if bases.is_empty() {
+        return None;
     }
-    for word in cmd.split_whitespace() {
-        if word == "--force" {
-            return true;
+    let base_named = |name: &str| {
+        let name = name.strip_prefix("refs/heads/").unwrap_or(name);
+        bases.iter().find(|b| b.eq_ignore_ascii_case(name)).cloned()
+    };
+    if let Some(args) = git_subcommand(seg, "branch") {
+        let deletes = options(args).any(|o| o == "--delete" || short_flags(o).is_some_and(|f| f.contains(['d', 'D'])));
+        if !deletes {
+            return None;
         }
-        if word.starts_with("--force-with-lease") {
-            // Explicitly the safe form — not a force-push for this rule.
-            continue;
-        }
-        if let Some(flag) = word.strip_prefix('-')
-            && !flag.starts_with('-') && flag.contains('f') {
-                return true;
-            }
+        return operands(args).find_map(base_named).map(Danger::DeleteBase);
     }
-    false
+    let args = git_subcommand(seg, "push")?;
+    let deletes = options(args).any(|o| o == "--delete" || short_flags(o).is_some_and(|f| f.contains('d')));
+    operands(args)
+        .find_map(|p| match p.strip_prefix(':') {
+            Some(branch) => base_named(branch),
+            None if deletes => base_named(p),
+            None => None,
+        })
+        .map(Danger::DeleteBase)
 }
 
-/// `\bgit\s+clean\s+-f` — `git clean` with a flag token containing `f`.
-fn is_git_clean_force(cmd: &str) -> bool {
-    if !has_word_sequence(cmd, &["git", "clean"], SHELL_WORDS) {
-        return false;
+/// The arguments after the git subcommand `name`, past git's own options
+/// (`-C <dir>`, `-c <key=value>`, `--git-dir`, `--work-tree`, `--no-pager`,
+/// …), so `git -C dir reset --hard` is a reset.
+fn git_subcommand<'a>(seg: &'a Segment, name: &str) -> Option<&'a [Word]> {
+    if seg.name() != "git" {
+        return None;
     }
-    cmd.split_whitespace().any(|w| {
-        w.strip_prefix('-')
-            .is_some_and(|f| !f.starts_with('-') && f.contains('f'))
-    })
-}
-
-/// `git branch -d/-D <base>` where `<base>` is one of the project's PROTECTED
-/// branches, NOT a hardcoded `main|master`. The set comes from
-/// [`mustard_core::protected_branches`] — the remote's own default branch plus
-/// whatever `git.protected` declares — whose documented fallback is
-/// `{main, master}` when `origin/HEAD` could not be measured, so main/master
-/// stay protected (via that fallback) while a repository defaulting to
-/// `develop` protects `develop` and one defaulting to `main` leaves `master`
-/// deletable. `cmd` is already lowercased; branches are matched
-/// case-insensitively so a mixed-case declaration still guards.
-fn is_branch_delete_protected(cmd: &str, bases: &BTreeSet<String>) -> bool {
-    if !has_word_sequence(cmd, &["git", "branch"], SHELL_WORDS) {
-        return false;
-    }
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
-    tokens.windows(2).any(|w| {
-        (w[0] == "-d" || w[0] == "-D") && bases.iter().any(|b| b.eq_ignore_ascii_case(w[1]))
-    })
-}
-
-/// `\bformat\s+[A-Z]:` — `format` followed by a drive letter and `:`.
-/// The JS regex was case-insensitive on `format` but matched the drive class
-/// `[A-Z]` against the *original* command; this port lowercases the command
-/// first, so the drive letter is matched lowercased — `format c:` still
-/// matches, which is the intended behaviour.
-fn is_format_drive(cmd: &str) -> bool {
-    for word in split_after(cmd, "format") {
-        let bytes = word.as_bytes();
-        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-            return true;
-        }
-    }
-    false
-}
-
-/// The project's PROTECTED branches for the BG07 branch-delete guard, resolved
-/// fail-open.
-///
-/// `bash_safety` receives only the command string, so the root is resolved the
-/// same self-contained way any hook does off a bare command:
-/// [`crate::shared::context::project_dir`] (honours `CLAUDE_PROJECT_DIR`, then
-/// the workspace-anchor walk), then the process-cached config. This is the ONE
-/// spot in the module that reads project state; it is fully fail-open —
-/// [`mustard_core::protected_branches`] returns its documented `{main, master}`
-/// fallback when git cannot be asked, so main/master stay protected and this
-/// module hardcodes no branch name.
-///
-/// It reads PROTECTION and not the promotion map, which is the same swap the
-/// write gate took: a branch `git.flow` merely mentions is not one you may not
-/// delete, and the branch the remote calls default is — whether or not any
-/// configuration names it.
-fn guard_protected_branches() -> BTreeSet<String> {
-    let root = crate::shared::context::project_dir();
-    let path = std::path::Path::new(&root);
-    let config = crate::shared::context::project_config_cached(path);
-    mustard_core::protected_branches(path, &config.git)
-}
-
-/// The `bash-safety` gate: deny when any rule matches. Resolves the project's
-/// integration bases once (for BG07) and delegates to [`bash_safety_with_bases`]
-/// — the deterministic, IO-free core the unit tests drive with an explicit base
-/// set.
-pub(super) fn bash_safety(cmd: &str) -> Option<Verdict> {
-    bash_safety_with_bases(cmd, &guard_protected_branches())
-}
-
-/// The rule engine over an explicit integration-base set. Pure and
-/// deterministic (no IO) so tests can pin BG07 against a chosen `git.flow`.
-fn bash_safety_with_bases(cmd: &str, bases: &BTreeSet<String>) -> Option<Verdict> {
-    let lower = cmd.to_ascii_lowercase();
-    for rule in DANGER_RULES {
-        if (rule.test)(&lower, bases) {
-            return Some(Verdict::Deny {
-                reason: format!(
-                    "[bash-safety {}] {}.\nCommand: {}",
-                    rule.id,
-                    rule.msg,
-                    truncate(cmd, 120)
-                ),
-            });
+    let mut i = 0;
+    while let Some(arg) = seg.args.get(i) {
+        match arg.text.as_str() {
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env" | "--super-prefix" => i += 2,
+            option if option.starts_with('-') => i += 1,
+            sub => return if sub == name { seg.args.get(i + 1..) } else { None },
         }
     }
     None
 }
 
+/// The options of a command: the words before `--` that start with `-`.
+fn options(args: &[Word]) -> impl Iterator<Item = &str> {
+    args.iter().map(|w| w.text.as_str()).take_while(|t| *t != "--").filter(|t| t.starts_with('-'))
+}
+
+/// The operands of a command: the words that are not options, and every
+/// word after `--`.
+fn operands(args: &[Word]) -> impl Iterator<Item = &str> {
+    let mut after_dashes = false;
+    args.iter().map(|w| w.text.as_str()).filter(move |t| {
+        if after_dashes {
+            return true;
+        }
+        if *t == "--" {
+            after_dashes = true;
+            return false;
+        }
+        !t.starts_with('-')
+    })
+}
+
+/// The letters of a short option group: `-rvf` is `rvf`. `None` for a long
+/// option, a lone `-` or a word that is not an option.
+fn short_flags(arg: &str) -> Option<&str> {
+    let flags = arg.strip_prefix('-')?;
+    (!flags.is_empty() && !flags.starts_with('-')).then_some(flags)
+}
+
+/// The first danger among the commands. Pure: the tests drive it with an
+/// explicit set of integration branches.
+fn find_danger(segments: &[Segment], bases: &BTreeSet<String>) -> Option<Danger> {
+    segments.iter().find_map(|seg| RULES.iter().find_map(|rule| rule(seg, bases)))
+}
+
+/// The command guard: deny when one of the commands would destroy work. The
+/// integration branches come from the project's `git.flow`, and the refusal
+/// is written in the project's language.
+pub(super) fn bash_safety(segments: &[Segment], cmd: &str, ctx: &Ctx) -> Option<Verdict> {
+    let danger = find_danger(segments, &ctx.config.git.declared_bases())?;
+    let lang = ctx.config.language().text_or_default();
+    Some(Verdict::Deny { reason: refusal(&danger, cmd, lang) })
+}
+
+fn refusal(danger: &Danger, cmd: &str, lang: SupportedLocale) -> String {
+    translate("command_guard.deny", lang)
+        .replace("{reason}", &danger.reason(lang))
+        .replace("{command}", truncate(cmd, 120))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::lex::segments;
     use super::*;
 
-    /// Assert `cmd` is denied and the reason carries the rule id.
-    fn assert_denied(cmd: &str, id: &str) {
-        match bash_safety(cmd) {
-            Some(Verdict::Deny { reason }) => {
-                assert!(reason.contains(id), "{cmd:?}: reason missing {id}: {reason}");
-            }
-            other => panic!("{cmd:?}: expected Deny({id}), got {other:?}"),
-        }
-    }
-
-    /// Like [`assert_denied`] but drives the deterministic core with an explicit
-    /// integration-base set — BG07 depends on `git.flow`, so its tests pin the
-    /// bases rather than reading the ambient project config.
-    fn assert_denied_with_bases(cmd: &str, id: &str, bases: &BTreeSet<String>) {
-        match bash_safety_with_bases(cmd, bases) {
-            Some(Verdict::Deny { reason }) => {
-                assert!(reason.contains(id), "{cmd:?}: reason missing {id}: {reason}");
-            }
-            other => panic!("{cmd:?}: expected Deny({id}), got {other:?}"),
-        }
-    }
-
-    /// A base set standing in for an explicit `git.flow`.
     fn bases(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|s| (*s).to_string()).collect()
     }
 
-    // --- BG01: rm recursive+force — clusters and order -----------------------
+    fn danger_with(cmd: &str, flow: &BTreeSet<String>) -> Option<Danger> {
+        find_danger(&segments(cmd), flow)
+    }
 
+    fn danger(cmd: &str) -> Option<Danger> {
+        danger_with(cmd, &BTreeSet::new())
+    }
+
+    fn assert_blocked(cmds: &[&str], expected: &Danger) {
+        for cmd in cmds {
+            assert_eq!(danger(cmd).as_ref(), Some(expected), "{cmd:?} must be blocked");
+        }
+    }
+
+    fn assert_passes(cmds: &[&str]) {
+        for cmd in cmds {
+            assert_eq!(danger(cmd), None, "{cmd:?} must pass");
+        }
+    }
+
+    /// The three cases of the guard: text that only names a dangerous
+    /// command passes, and the real command is blocked.
     #[test]
-    fn bg01_blocks_rm_recursive_force_in_every_spelling() {
-        assert_denied("rm -rf /", "BG01");
-        assert_denied("rm -fr /tmp/work", "BG01");
-        assert_denied("rm -Rf src", "BG01");
-        // The flag CLUSTER — the spelling the deny globs cannot express.
-        assert_denied("rm -rvf build/", "BG01");
-        assert_denied("rm --no-preserve-root /", "BG01");
+    fn quoted_text_passes_and_a_real_delete_is_blocked() {
+        assert_passes(&[
+            r#"git commit -m "limpa: rm -rf build antigo""#,
+            r#"mustard-rt run pending --add --title "rodar rm -rf target antes do build""#,
+            r#"echo "git push --force""#,
+            r#"gh pr create --body "git reset --hard""#,
+            "git commit -m \"$(cat <<'EOF'\ntira o rm -rf da pasta\nEOF\n)\"",
+        ]);
+        assert_blocked(&["rm -rf pasta"], &Danger::RecursiveForceDelete);
+    }
+
+    /// What the terminal runs counts: the command inside `$(…)` and the line
+    /// handed to a shell with `-c`.
+    #[test]
+    fn a_command_the_terminal_runs_inside_another_is_judged() {
+        assert_blocked(
+            &[
+                r#"bash -c "rm -rf pasta""#,
+                "sh -c 'rm -rf pasta'",
+                "echo $(rm -rf pasta)",
+                r#"git commit -m "$(rm -rf pasta)""#,
+                r#"sudo bash -lc "cd x && rm -rf pasta""#,
+            ],
+            &Danger::RecursiveForceDelete,
+        );
+        assert_blocked(&[r#"bash -c "git reset --hard""#], &Danger::ResetHard);
+        assert_passes(&[r#"git commit -m "tira o rm -rf""#, "echo '$(rm -rf pasta)'"]);
     }
 
     #[test]
-    fn bg01_allows_plain_rm() {
-        assert!(bash_safety("rm file.txt").is_none());
-        assert!(
-            bash_safety("rm -r dir/").is_none(),
-            "recursive without force passes the table"
+    fn recursive_force_delete_is_blocked_in_every_spelling() {
+        assert_blocked(
+            &[
+                "rm -rf /",
+                "rm -fr /tmp/work",
+                "rm -Rf src",
+                "rm -rvf build/",
+                "rm --no-preserve-root /",
+                "rtk rm -rf x",
+                "sudo rm -rf x",
+                "rm -r -f x",
+                "rm --recursive --force x",
+                "rm x -rf",
+                "/bin/rm -rf x",
+                "cd a && rm -rf b",
+                "find . -name x | xargs rm -rf",
+            ],
+            &Danger::RecursiveForceDelete,
         );
     }
 
-    // --- BG02: force push — reordering, clusters, lease carve-out ------------
-
     #[test]
-    fn bg02_blocks_force_push_variants() {
-        // Canonical (also covered config-level by permissions.deny).
-        assert_denied("git push --force origin main", "BG02");
-        // Reordered flag — the spelling only the token scan catches.
-        assert_denied("git push origin main --force", "BG02");
-        assert_denied("git push origin -f", "BG02");
-        // Short-flag cluster.
-        assert_denied("git push -uf origin dev", "BG02");
-        assert_denied("git push -f", "BG02");
+    fn a_delete_without_force_or_recursion_passes() {
+        assert_passes(&["rm file.txt", "rm -r dir/", "rm -f file.txt", "rm -- -rf"]);
     }
 
-    /// PROOF item: `--force-with-lease` (and `--force-if-includes`) pass —
-    /// the product allows the safe overwrite forms.
     #[test]
-    fn bg02_allows_force_with_lease_and_safe_push() {
-        assert!(bash_safety("git push --force-with-lease origin dev").is_none());
-        assert!(bash_safety("git push --force-with-lease=origin/dev origin dev").is_none());
-        assert!(bash_safety("git push --force-if-includes --force-with-lease origin dev").is_none());
-        assert!(bash_safety("git push origin dev").is_none());
-    }
-
-    // --- BG11: format drive — character class --------------------------------
-
-    #[test]
-    fn bg11_blocks_format_drive_letter() {
-        assert_denied("format c:", "BG11");
-        assert_denied("format D: /q", "BG11");
-        assert!(bash_safety("format").is_none());
-        assert!(bash_safety("npm run format src/").is_none());
-    }
-
-    // --- restored rules: BG03–BG10, BG12, BG13 -------------------------------
-
-    /// Every restored rule denies its canonical spelling (adapted from the
-    /// pre-split `safety_regression_all_bg_rules`).
-    #[test]
-    fn restored_rules_deny_canonical_spellings() {
-        for (id, cmd) in [
-            ("BG03", "git reset --hard HEAD~1"),
-            ("BG04", "git clean -fd"),
-            ("BG05", "git checkout -- ."),
-            ("BG06", "git restore ."),
-            // BG07 depends on `git.flow` — covered deterministically in the
-            // dedicated `bg07_*` tests, not through the ambient-config path.
-            ("BG08", "chmod 777 /etc/passwd"),
-            ("BG09", "mkfs.ext4 /dev/sda1"),
-            ("BG10", "dd if=/dev/zero of=/dev/sda"),
-            ("BG12", "shutdown -h now"),
-            ("BG13", "reboot"),
-        ] {
-            assert_denied(cmd, id);
-        }
-    }
-
-    /// THE reason the ten rules are back in Rust: a deny glob is
-    /// start-anchored, so a wrapper prefix (`rtk …` — this harness's own
-    /// golden rule — or `sudo …`) slides the canonical spelling off the
-    /// anchor and the config layer no longer sees it. The substring scan here
-    /// must deny the wrapped spellings.
-    #[test]
-    fn restored_rules_deny_wrapped_spellings() {
-        for (id, cmd) in [
-            ("BG03", "rtk git reset --hard HEAD~1"),
-            ("BG04", "rtk git clean -fd"),
-            ("BG05", "rtk git checkout -- ."),
-            ("BG06", "rtk git restore ."),
-            // BG07's wrapped-spelling proof lives in `bg07_protects_custom_flow_bases_including_wrapped`
-            // (it needs an explicit base set, not the ambient project config).
-            ("BG08", "sudo chmod 777 /etc/passwd"),
-            ("BG09", "sudo mkfs.ext4 /dev/sda1"),
-            ("BG10", "sudo dd if=/dev/zero of=/dev/sda"),
-            ("BG12", "sudo shutdown -h now"),
-            ("BG13", "sudo reboot"),
-        ] {
-            assert_denied(cmd, id);
-        }
-    }
-
-    /// The carve-outs the substring semantics preserve: near-miss spellings
-    /// that are NOT destructive stay allowed.
-    #[test]
-    fn restored_rules_allow_safe_variants() {
-        for safe in [
-            "git reset --soft HEAD~1",  // BG03 is --hard only
-            "git clean -n",             // BG04 needs an -f flag
-            "git checkout -- src/a.rs", // BG05 is the bare `.` wipe only
-            "git restore src/a.rs",     // BG06 is the bare `.` wipe only
-            "chmod 755 script.sh",      // BG08 is 777 only
-        ] {
-            assert!(
-                bash_safety(safe).is_none(),
-                "{safe:?} must pass the safety table"
-            );
-        }
-    }
-
-    // --- BG07: branch delete protects the project's integration bases --------
-
-    /// THE fix: BG07 protects whatever `git.flow` declares. A `develop`/`master`
-    /// project protects BOTH — including the custom `develop` base a hardcoded
-    /// `main|master` guard let through (a violation an audit found). The
-    /// wrapper-prefix (`rtk` — our golden rule — or `sudo`) is still caught.
-    #[test]
-    fn bg07_protects_custom_flow_bases_including_wrapped() {
-        let flow = bases(&["develop", "master"]);
-        assert_denied_with_bases("git branch -D develop", "BG07", &flow);
-        assert_denied_with_bases("git branch -D master", "BG07", &flow);
-        assert_denied_with_bases("rtk git branch -D develop", "BG07", &flow);
-        // -d (safe delete) is guarded the same as -D.
-        assert_denied_with_bases("git branch -d develop", "BG07", &flow);
-    }
-
-    /// main/master stay protected through the `protected_branches` fallback set
-    /// (the ONLY place those names are hardcoded — and it lives in core, not
-    /// here). This is what an empty / unreadable `git.flow` degrades to.
-    #[test]
-    fn bg07_main_master_protected_via_fallback_set() {
-        let fallback = bases(&["main", "master"]);
-        assert_denied_with_bases("git branch -D main", "BG07", &fallback);
-        assert_denied_with_bases("git branch -D master", "BG07", &fallback);
-        assert_denied_with_bases("rtk git branch -D main", "BG07", &fallback);
-    }
-
-    /// Agnosticism, the other direction: a `{base}_slug` work branch is never a
-    /// base, and in a `develop`/`master` project `main` is NOT an integration
-    /// base — both stay deletable. (The mirror of the bug: a non-base branch
-    /// must pass free.)
-    #[test]
-    fn bg07_allows_non_base_branches() {
-        let flow = bases(&["develop", "master"]);
-        assert!(bash_safety_with_bases("git branch -D develop_rubens", &flow).is_none());
-        assert!(bash_safety_with_bases("git branch -D feature-x", &flow).is_none());
-        assert!(
-            bash_safety_with_bases("git branch -D main", &flow).is_none(),
-            "main is not an integration base when the flow is develop/master"
+    fn force_push_is_blocked_and_lease_passes() {
+        assert_blocked(
+            &[
+                "git push --force origin main",
+                "git push origin main --force",
+                "git push origin -f",
+                "git push -uf origin dev",
+                "git push -f",
+                "rtk git push --force",
+                "git push origin +main",
+            ],
+            &Danger::ForcePush,
         );
+        assert_passes(&[
+            "git push --force-with-lease origin dev",
+            "git push --force-with-lease=origin/dev origin dev",
+            "git push --force-if-includes --force-with-lease origin dev",
+            "git push origin dev",
+            "git push -u origin feature/x",
+        ]);
+    }
+
+    #[test]
+    fn discarding_changes_is_blocked() {
+        assert_blocked(&["git reset --hard HEAD~1", "rtk git reset --hard", "git -C pasta reset --hard"], &Danger::ResetHard);
+        assert_blocked(&["git clean -fd", "git clean --force", "git -c core.x=y clean -xdf"], &Danger::CleanForce);
+        assert_blocked(
+            &["git checkout -- .", "git checkout -- . && echo ok", "git checkout .", "rtk git checkout -- ."],
+            &Danger::CheckoutAll,
+        );
+        assert_blocked(
+            &["git restore .", "git restore -- .", "git restore --staged --worktree .", "git restore -SW ."],
+            &Danger::RestoreAll,
+        );
+    }
+
+    #[test]
+    fn near_miss_git_commands_pass() {
+        assert_passes(&[
+            "git reset --soft HEAD~1",
+            "git reset HEAD file",
+            "git clean -n",
+            "git checkout -- src/a.rs",
+            "git checkout -b feature/x",
+            "git restore src/a.rs",
+            "git restore --staged .",
+            "git log --oneline -- .",
+        ]);
+    }
+
+    #[test]
+    fn deleting_a_flow_base_is_blocked() {
+        let flow = bases(&["develop", "master"]);
+        for (cmd, branch) in [
+            ("git branch -D develop", "develop"),
+            ("git branch -d master", "master"),
+            ("git branch --delete develop", "develop"),
+            ("rtk git branch -D develop", "develop"),
+            ("git branch -D Develop", "develop"),
+            ("git push origin --delete develop", "develop"),
+            ("git push -d origin master", "master"),
+            ("git push origin :develop", "develop"),
+            ("git push origin :refs/heads/master", "master"),
+        ] {
+            assert_eq!(danger_with(cmd, &flow), Some(Danger::DeleteBase(branch.to_string())), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn deleting_a_branch_the_flow_does_not_name_passes() {
+        let flow = bases(&["develop", "master"]);
+        for cmd in [
+            "git branch -D develop_rubens",
+            "git branch -D feature-x",
+            "git branch -D main",
+            "git push origin --delete feature/x",
+            "git push origin develop",
+            "git branch develop",
+        ] {
+            assert_eq!(danger_with(cmd, &flow), None, "{cmd}");
+        }
+    }
+
+    /// Without a declared flow the project names no integration branch, and
+    /// no branch name is assumed in its place.
+    #[test]
+    fn with_no_declared_flow_no_branch_is_a_base() {
+        assert_passes(&["git branch -D main", "git branch -D master", "git push origin --delete main"]);
+    }
+
+    #[test]
+    fn machine_commands_are_left_to_the_permission_list() {
+        assert_passes(&[
+            "chmod 777 /etc/passwd",
+            "mkfs.ext4 /dev/sda1",
+            "dd if=/dev/zero of=/dev/sda",
+            "format c:",
+            "shutdown -h now",
+            "sudo reboot",
+        ]);
+    }
+
+    /// The refusal comes from the catalogue, in the language `language.text`
+    /// declares, with the branch filled in for an integration branch.
+    #[test]
+    fn the_refusal_is_written_in_the_project_language() {
+        let cmd = "rm -rf pasta";
+        let mut ctx = Ctx::for_test(String::new(), None);
+        let Some(Verdict::Deny { reason }) = bash_safety(&segments(cmd), cmd, &ctx) else {
+            panic!("{cmd} must be denied");
+        };
+        assert_eq!(
+            reason,
+            "Comando barrado: apagar pasta à força (`rm` com `-r` e `-f`). Isso apaga trabalho sem \
+             volta.\nComando: rm -rf pasta\nSe for isso mesmo, peça ao usuário para rodar o comando no \
+             terminal dele."
+        );
+
+        ctx.config.language.text = Some("en-US".to_string());
+        let Some(Verdict::Deny { reason }) = bash_safety(&segments(cmd), cmd, &ctx) else {
+            panic!("{cmd} must be denied");
+        };
+        assert_eq!(
+            reason,
+            "Command blocked: deleting a folder by force (`rm` with `-r` and `-f`). This destroys \
+             work with no way back.\nCommand: rm -rf pasta\nIf this is really what you want, ask the \
+             user to run the command in their own terminal."
+        );
+
+        ctx.config.git.flow.insert("*".to_string(), "develop".to_string());
+        let branch = "git branch -D develop";
+        let Some(Verdict::Deny { reason }) = bash_safety(&segments(branch), branch, &ctx) else {
+            panic!("{branch} must be denied");
+        };
+        assert!(reason.contains("deleting the integration branch `develop`"), "{reason}");
     }
 }

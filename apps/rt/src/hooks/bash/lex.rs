@@ -613,10 +613,6 @@ fn base_name(text: &str) -> &str {
 pub(super) const SHELL_WORDS: Boundaries =
     Boundaries { word_chars: WordChars::Alphanumeric, left: true, right: true };
 
-/// Only the left boundary — the `\bneedle` shape of the standalone-word rules
-/// (`mkfs`, `shutdown`, …).
-pub(super) const SHELL_WORD_START: Boundaries = Boundaries { right: false, ..SHELL_WORDS };
-
 /// Truncate a string to `max` bytes (char-boundary safe).
 pub(super) fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
@@ -627,14 +623,6 @@ pub(super) fn truncate(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
-}
-
-/// `true` if the command's token sequence *ends with* `seq` (trailing
-/// whitespace already removed by `split_whitespace`). Mirrors the `…\s*$`
-/// anchored regexes for `git checkout -- .` and `git restore .`.
-pub(super) fn ends_with_token_seq(cmd: &str, seq: &[&str]) -> bool {
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
-    tokens.len() >= seq.len() && &tokens[tokens.len() - seq.len()..] == seq
 }
 
 /// The whitespace-separated tokens that appear *after* the first occurrence of

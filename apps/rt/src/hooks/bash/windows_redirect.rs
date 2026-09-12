@@ -15,6 +15,7 @@
 //! spelling, because the shell eats the backslashes of an unquoted word.
 
 use mustard_core::domain::model::contract::Verdict;
+use mustard_core::{translate, SupportedLocale};
 
 use super::lex::{truncate, Segment};
 
@@ -54,23 +55,13 @@ fn looks_like_windows_path(tok: &str) -> bool {
 
 /// The `windows-path-redirect` gate. Returns `Deny` when the command pipes
 /// output to a Windows-style absolute path; the POSIX shell mangles it into
-/// a junk filename in the CWD.
-pub(super) fn bash_windows_redirect(segments: &[Segment], cmd: &str) -> Option<Verdict> {
+/// a junk filename in the CWD. The refusal is written in `lang`.
+pub(super) fn bash_windows_redirect(segments: &[Segment], cmd: &str, lang: SupportedLocale) -> Option<Verdict> {
     let target = windows_path_target(segments)?;
-    Some(Verdict::Deny {
-        reason: format!(
-            "[bash-windows-redirect] Refusing to redirect to Windows-style path `{target}`.\n\
-             The Bash tool runs a POSIX shell on every platform (git-bash on Windows, \
-             bash/zsh on Linux/macOS). A `C:\\…` / `C:/…` redirect target is either \
-             mangled (Windows: the `:` breaks redirect parsing and the `\\` is consumed \
-             as an escape, producing junk filenames like `CAtizscan-out.json` in the \
-             current directory) or taken literally (Linux/macOS: a file named `C:\\Atiz\\…`).\n\
-             Fix: on Windows use a POSIX path (e.g. `/c/Atiz/...`) or run from PowerShell; \
-             on Linux/macOS use a real POSIX absolute path. Relative paths work everywhere.\n\
-             Command: {}",
-            truncate(cmd, 160)
-        ),
-    })
+    let reason = translate("command_guard.windows_path", lang)
+        .replace("{target}", &target)
+        .replace("{command}", truncate(cmd, 160));
+    Some(Verdict::Deny { reason })
 }
 
 #[cfg(test)]
@@ -79,7 +70,7 @@ mod tests {
     use super::*;
 
     fn bash_windows_redirect(cmd: &str) -> Option<Verdict> {
-        super::bash_windows_redirect(&segments(cmd), cmd)
+        super::bash_windows_redirect(&segments(cmd), cmd, SupportedLocale::PtBr)
     }
 
     // The POSIX shell that powers the Bash tool mangles redirects to `C:\...`
@@ -88,13 +79,17 @@ mod tests {
 
     #[test]
     fn windows_redirect_denies_backslash_drive() {
-        let v = bash_windows_redirect("mustard-rt run scan > C:\\Atiz\\scan-out.json");
-        match v {
-            Some(Verdict::Deny { reason }) => {
-                assert!(reason.contains("bash-windows-redirect"), "reason: {reason}");
-                assert!(reason.contains("C:\\Atiz\\scan-out.json"), "reason: {reason}");
+        let cmd = "mustard-rt run scan > C:\\Atiz\\scan-out.json";
+        for lang in [SupportedLocale::PtBr, SupportedLocale::EnUs] {
+            match super::bash_windows_redirect(&segments(cmd), cmd, lang) {
+                Some(Verdict::Deny { reason }) => {
+                    let expected = translate("command_guard.windows_path", lang)
+                        .replace("{target}", "C:\\Atiz\\scan-out.json")
+                        .replace("{command}", cmd);
+                    assert_eq!(reason, expected);
+                }
+                other => panic!("expected Deny, got {other:?}"),
             }
-            other => panic!("expected Deny, got {other:?}"),
         }
     }
 

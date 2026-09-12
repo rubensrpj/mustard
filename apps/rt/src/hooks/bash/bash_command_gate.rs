@@ -73,15 +73,19 @@ impl Check for BashCommandGate {
             return Ok(Verdict::Allow);
         };
 
-        // `bash-safety` is checked first: a dangerous command must be denied
-        // regardless of any redirect/rewrite advice.
-        if let Some(verdict) = safety::bash_safety(&cmd) {
+        // The command is read once, the way the terminal splits it; the
+        // command guard and the Windows-path check both look at those
+        // commands, never at the raw text.
+        let segments = lex::segments(&cmd);
+        // The command guard is checked first: a command that destroys work
+        // is denied regardless of any redirect advice.
+        if let Some(verdict) = safety::bash_safety(&segments, &cmd, ctx) {
             return Ok(verdict);
         }
-        // `bash-windows-redirect`: catch `> C:\...` style redirects before the
-        // POSIX shell mangles them into junk filenames in the CWD.
-        let segments = lex::segments(&cmd);
-        if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd) {
+        // Catch `> C:\...` style redirects before the POSIX shell mangles them
+        // into junk filenames in the CWD.
+        let lang = ctx.config.language().text_or_default();
+        if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, lang) {
             return Ok(verdict);
         }
         if let Some(verdict) = native_redirect::bash_native_redirect(&cmd) {
@@ -210,6 +214,7 @@ impl Observer for BashCommandGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::SupportedLocale;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -235,12 +240,13 @@ mod tests {
 
     // --- dispatch order ------------------------------------------------------
 
-    /// The safety residue is the FIRST gate: its deny wins over every
-    /// downstream advice, and the reason carries the rule id.
+    /// The command guard is the FIRST gate: its refusal wins over every
+    /// downstream advice, and names the danger it found.
     #[test]
-    fn safety_deny_wins_first_in_chain() {
+    fn the_command_guard_refusal_comes_first_in_the_chain() {
+        let danger = mustard_core::translate("command_guard.rm_recursive_force", SupportedLocale::PtBr);
         match verdict_for("rm -rvf /tmp/work") {
-            Verdict::Deny { reason } => assert!(reason.contains("BG01"), "reason: {reason}"),
+            Verdict::Deny { reason } => assert!(reason.contains(danger), "reason: {reason}"),
             other => panic!("expected Deny, got {other:?}"),
         }
     }
@@ -259,12 +265,12 @@ mod tests {
     /// Windows-path gate wins with its more specific reason.
     #[test]
     fn windows_redirect_gate_wins_over_native_redirect() {
-        let v = verdict_for("cat src/main.rs > C:\\Atiz\\dump.txt");
-        match v {
-            Verdict::Deny { reason } => assert!(
-                reason.contains("bash-windows-redirect"),
-                "expected windows-redirect reason first, got: {reason}"
-            ),
+        let cmd = "cat src/main.rs > C:\\Atiz\\dump.txt";
+        let expected = mustard_core::translate("command_guard.windows_path", SupportedLocale::PtBr)
+            .replace("{target}", "C:\\Atiz\\dump.txt")
+            .replace("{command}", cmd);
+        match verdict_for(cmd) {
+            Verdict::Deny { reason } => assert_eq!(reason, expected, "expected windows-redirect reason first"),
             other => panic!("expected Deny, got {other:?}"),
         }
     }

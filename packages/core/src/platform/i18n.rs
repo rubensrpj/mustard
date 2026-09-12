@@ -1054,6 +1054,56 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              {id} --reason \"…\"` or pick another title."
         }
 
+        // Recusas da trava de comandos (`apps/rt/src/hooks/bash/safety.rs` e
+        // `windows_redirect.rs`). A recusa geral recebe o motivo de uma das
+        // chaves seguintes; as vagas vêm do chamador.
+        ("command_guard.deny", Locale::PtBr) => {
+            "Comando barrado: {reason}. Isso apaga trabalho sem volta.\nComando: {command}\nSe for \
+             isso mesmo, peça ao usuário para rodar o comando no terminal dele."
+        }
+        ("command_guard.deny", Locale::EnUs) => {
+            "Command blocked: {reason}. This destroys work with no way back.\nCommand: {command}\nIf \
+             this is really what you want, ask the user to run the command in their own terminal."
+        }
+        ("command_guard.rm_recursive_force", Locale::PtBr) => "apagar pasta à força (`rm` com `-r` e `-f`)",
+        ("command_guard.rm_recursive_force", Locale::EnUs) => {
+            "deleting a folder by force (`rm` with `-r` and `-f`)"
+        }
+        ("command_guard.force_push", Locale::PtBr) => {
+            "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"
+        }
+        ("command_guard.force_push", Locale::EnUs) => {
+            "force-pushing to the server (`git push --force`); `--force-with-lease` is still allowed"
+        }
+        ("command_guard.reset_hard", Locale::PtBr) => "descartar as mudanças com `git reset --hard`",
+        ("command_guard.reset_hard", Locale::EnUs) => "discarding changes with `git reset --hard`",
+        ("command_guard.clean_force", Locale::PtBr) => {
+            "apagar os arquivos que estão fora do git com `git clean -f`"
+        }
+        ("command_guard.clean_force", Locale::EnUs) => "deleting untracked files with `git clean -f`",
+        ("command_guard.checkout_all", Locale::PtBr) => {
+            "descartar todas as mudanças com `git checkout -- .`"
+        }
+        ("command_guard.checkout_all", Locale::EnUs) => "discarding every change with `git checkout -- .`",
+        ("command_guard.restore_all", Locale::PtBr) => "descartar todas as mudanças com `git restore .`",
+        ("command_guard.restore_all", Locale::EnUs) => "discarding every change with `git restore .`",
+        ("command_guard.delete_base", Locale::PtBr) => "apagar a branch de integração `{branch}`",
+        ("command_guard.delete_base", Locale::EnUs) => "deleting the integration branch `{branch}`",
+        ("command_guard.windows_path", Locale::PtBr) => {
+            "Comando barrado: o destino `{target}` é um caminho do Windows, e o terminal do Bash não \
+             entende esse formato (no Windows vira um arquivo de nome estranho na pasta atual; no \
+             Linux e no macOS, um arquivo chamado `{target}`).\nNo Windows, use a forma \
+             `/c/pasta/arquivo`; no Linux e no macOS, um caminho absoluto de verdade. Caminho \
+             relativo funciona em todos.\nComando: {command}"
+        }
+        ("command_guard.windows_path", Locale::EnUs) => {
+            "Command blocked: the target `{target}` is a Windows path, and the Bash terminal does not \
+             understand that form (on Windows it becomes an oddly named file in the current folder; \
+             on Linux and macOS, a file named `{target}`).\nOn Windows, use the `/c/folder/file` \
+             form; on Linux and macOS, a real absolute path. A relative path works everywhere.\n\
+             Command: {command}"
+        }
+
         // Recusas e avisos do arquivo de eventos da spec (`domain::spec_events`,
         // comandos `run write` e `run read`). As vagas vêm do chamador.
         ("spec_events.not_an_object", Locale::PtBr) => {
@@ -2127,6 +2177,31 @@ mod tests {
         ] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(key, lang), "<missing-key>", "{key} left with its hook");
+            }
+        }
+    }
+
+    /// As recusas da trava de comandos saem do catálogo nos dois idiomas, cada
+    /// uma com as vagas que o chamador preenche.
+    #[test]
+    fn i18n_translates_command_guard_keys() {
+        for (key, slots) in [
+            ("command_guard.deny", &["{reason}", "{command}"][..]),
+            ("command_guard.rm_recursive_force", &[][..]),
+            ("command_guard.force_push", &[][..]),
+            ("command_guard.reset_hard", &[][..]),
+            ("command_guard.clean_force", &[][..]),
+            ("command_guard.checkout_all", &[][..]),
+            ("command_guard.restore_all", &[][..]),
+            ("command_guard.delete_base", &["{branch}"][..]),
+            ("command_guard.windows_path", &["{target}", "{command}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
     }
