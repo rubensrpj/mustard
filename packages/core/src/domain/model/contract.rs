@@ -465,10 +465,11 @@ impl Outcome {
 
 /// Ambient context handed to a [`Check`] alongside the [`HookInput`].
 ///
-/// **Minimal placeholder.** It carries only what a check needs to
-/// resolve "where am I": the project directory and the [`Trigger`]. Later work
-/// grows this with enforcement config, the event sink, and pipeline-state
-/// access; the hook dispatcher may extend it further. New fields are additive.
+/// It carries what a check needs to know about the invocation: where the
+/// project is, which event fired, and the project's `mustard.json`, loaded
+/// once by the dispatcher so a check reads its choices (the declared bases,
+/// the language) without touching the disk. This type only holds the values;
+/// the loading lives with the dispatcher. New fields are additive.
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
     /// Absolute path to the project root for this invocation.
@@ -490,6 +491,9 @@ pub struct Ctx {
     /// share one (measured 2026-08-25). `None` means the legacy behaviour:
     /// deliver every entry declared on the trigger, folded into one payload.
     pub inject_only: Option<String>,
+    /// The project's `mustard.json`. A missing or broken file is the default
+    /// configuration, the same answer every reader of the file gets.
+    pub config: crate::domain::config::ProjectConfig,
 }
 
 impl Ctx {

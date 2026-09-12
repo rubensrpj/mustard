@@ -238,11 +238,13 @@ fn build_ctx(trigger: Trigger, input: &HookInput) -> Ctx {
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or(resolved_cwd);
+    let config = crate::shared::context::project_config_cached(std::path::Path::new(&project_dir));
     Ctx {
         project_dir,
         trigger: Some(trigger),
         workspace_root,
         inject_only: None,
+        config,
     }
 }
 
@@ -325,6 +327,25 @@ mod tests {
         let input = bash_input(dir.path(), "rm -rf /", "PreToolUse");
         let outcome = run_event(Some(Trigger::PreToolUse), &input, None);
         assert!(outcome.is_blocking());
+    }
+
+    /// O contexto dos ganchos traz o `mustard.json` do projeto; sem o
+    /// arquivo, traz a configuração padrão.
+    #[test]
+    fn the_context_carries_the_project_config() {
+        let with_flow = tempfile::tempdir().unwrap();
+        std::fs::write(
+            with_flow.path().join("mustard.json"),
+            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        )
+        .unwrap();
+        let ctx = build_ctx(Trigger::PreToolUse, &bash_input(with_flow.path(), "ls", "PreToolUse"));
+        let bases: Vec<String> = ctx.config.git.declared_bases().into_iter().collect();
+        assert_eq!(bases, ["dev", "main"]);
+
+        let without = tempfile::tempdir().unwrap();
+        let ctx = build_ctx(Trigger::PreToolUse, &bash_input(without.path(), "ls", "PreToolUse"));
+        assert!(ctx.config.git.flow.is_empty(), "{:?}", ctx.config.git);
     }
 
     #[test]
