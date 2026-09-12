@@ -34,7 +34,7 @@ use mustard_core::time::now_iso8601;
 use serde_json::json;
 
 use super::{
-    native_redirect, pr_body_gate, pr_detect, pr_qa_gate, review_gate, rtk_rewrite, safety,
+    lex, native_redirect, pr_body_gate, pr_detect, pr_qa_gate, review_gate, rtk_rewrite, safety,
     windows_redirect,
 };
 
@@ -80,7 +80,8 @@ impl Check for BashCommandGate {
         }
         // `bash-windows-redirect`: catch `> C:\...` style redirects before the
         // POSIX shell mangles them into junk filenames in the CWD.
-        if let Some(verdict) = windows_redirect::bash_windows_redirect(&cmd) {
+        let segments = lex::segments(&cmd);
+        if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd) {
             return Ok(verdict);
         }
         if let Some(verdict) = native_redirect::bash_native_redirect(&cmd) {

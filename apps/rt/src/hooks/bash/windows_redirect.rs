@@ -9,111 +9,34 @@
 //! which is also never what the caller wanted). Either way the author meant
 //! an absolute path and the redirect will not produce one. This gate makes
 //! that failure mode loud instead of silent on every platform.
+//!
+//! It reads the commands [`super::lex::segments`] found: the output redirects
+//! of each one, and the file a `tee` writes. A path is judged by its raw
+//! spelling, because the shell eats the backslashes of an unquoted word.
 
 use mustard_core::domain::model::contract::Verdict;
 
-use super::lex::truncate;
+use super::lex::{truncate, Segment};
 
-/// Scan `cmd` for a shell redirect (`>`, `>>`, `2>`, `&>`, `|&`, `| tee`)
-/// whose immediate target looks like a Windows path (`X:\…` or `X:/…`).
-/// Returns the offending target so the deny message can quote it.
-fn windows_path_redirect_target(cmd: &str) -> Option<String> {
-    let bytes = cmd.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let b = bytes[i];
-        // Skip quoted spans — redirects are shell-level, not inside quotes.
-        if b == b'"' || b == b'\'' {
-            let quote = b;
-            i += 1;
-            while i < bytes.len() && bytes[i] != quote {
-                i += 1;
+/// The first output redirect (`>`, `>>`, `2>`, `&>`, `>|`) or `tee` file whose
+/// target looks like a Windows path (`X:\…` or `X:/…`).
+fn windows_path_target(segments: &[Segment]) -> Option<String> {
+    for seg in segments {
+        for redirect in &seg.redirects {
+            let writes = redirect.op.contains('>') && !redirect.op.ends_with('&');
+            let target = redirect.target.raw_unquoted();
+            if writes && looks_like_windows_path(target) {
+                return Some(target.to_string());
             }
-            i += 1;
-            continue;
         }
-        // Detect a redirect operator. We collapse all variants to "operator
-        // ended at position `end`" then sniff the next non-space token.
-        let end = match (b, bytes.get(i + 1).copied(), bytes.get(i + 2).copied()) {
-            // `&>` and `&>>`
-            (b'&', Some(b'>'), Some(b'>')) => Some(i + 3),
-            (b'&', Some(b'>'), _) => Some(i + 2),
-            // `>>`
-            (b'>', Some(b'>'), _) => Some(i + 2),
-            // `2>` (and `1>`); not preceded by `<` or `>`.
-            (d, Some(b'>'), next) if d.is_ascii_digit() => {
-                if next == Some(b'>') {
-                    Some(i + 3)
-                } else if next != Some(b'&') {
-                    Some(i + 2)
-                } else {
-                    None
-                }
-            }
-            // Bare `>`. Skip `>>` (handled above) and `>&` (fd dup).
-            (b'>', next, _) => {
-                let prev = i.checked_sub(1).map(|p| bytes[p]);
-                if prev == Some(b'<') || prev == Some(b'>') || next == Some(b'&') {
-                    None
-                } else {
-                    Some(i + 1)
-                }
-            }
-            _ => None,
-        };
-        if let Some(start) = end {
-            if let Some(target) = next_token_after(cmd, start)
-                && looks_like_windows_path(&target) {
-                    return Some(target);
-                }
-            i = start;
-            continue;
-        }
-        i += 1;
-    }
-    // Also catch `| tee <winpath>` / `| tee -a <winpath>` — tee writes a file.
-    for seg in cmd.split('|') {
-        let seg = seg.trim_start();
-        let mut tokens = seg.split_whitespace();
-        if tokens.next() != Some("tee") {
-            continue;
-        }
-        for tok in tokens {
-            if tok.starts_with('-') {
-                continue;
-            }
-            if looks_like_windows_path(tok) {
-                return Some(tok.to_string());
-            }
-            break;
+        if seg.name() == "tee"
+            && let Some(file) = seg.args.iter().find(|a| !a.text.starts_with('-'))
+            && looks_like_windows_path(file.raw_unquoted())
+        {
+            return Some(file.raw_unquoted().to_string());
         }
     }
     None
-}
-
-/// Extract the next whitespace-delimited token starting at or after `start`,
-/// stripping a single layer of surrounding quotes if present.
-fn next_token_after(cmd: &str, start: usize) -> Option<String> {
-    let rest = cmd.get(start..)?;
-    let trimmed = rest.trim_start();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let bytes = trimmed.as_bytes();
-    let raw = if bytes[0] == b'"' || bytes[0] == b'\'' {
-        let quote = bytes[0];
-        let mut end = 1;
-        while end < bytes.len() && bytes[end] != quote {
-            end += 1;
-        }
-        &trimmed[1..end.min(bytes.len())]
-    } else {
-        let end = trimmed
-            .find(|c: char| c.is_whitespace() || c == '|' || c == '&' || c == ';')
-            .unwrap_or(trimmed.len());
-        &trimmed[..end]
-    };
-    Some(raw.to_string())
 }
 
 /// True for tokens that begin with a Windows-style drive letter prefix.
@@ -132,8 +55,8 @@ fn looks_like_windows_path(tok: &str) -> bool {
 /// The `windows-path-redirect` gate. Returns `Deny` when the command pipes
 /// output to a Windows-style absolute path; the POSIX shell mangles it into
 /// a junk filename in the CWD.
-pub(super) fn bash_windows_redirect(cmd: &str) -> Option<Verdict> {
-    let target = windows_path_redirect_target(cmd)?;
+pub(super) fn bash_windows_redirect(segments: &[Segment], cmd: &str) -> Option<Verdict> {
+    let target = windows_path_target(segments)?;
     Some(Verdict::Deny {
         reason: format!(
             "[bash-windows-redirect] Refusing to redirect to Windows-style path `{target}`.\n\
@@ -152,12 +75,16 @@ pub(super) fn bash_windows_redirect(cmd: &str) -> Option<Verdict> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::lex::segments;
     use super::*;
 
-    // Regression: the POSIX shell that powers the Bash tool mangles redirects
-    // to `C:\...` style paths, producing junk filenames like
-    // `CAtizscan-out.json` in the CWD. The gate must catch this before the
-    // shell ever sees the command.
+    fn bash_windows_redirect(cmd: &str) -> Option<Verdict> {
+        super::bash_windows_redirect(&segments(cmd), cmd)
+    }
+
+    // The POSIX shell that powers the Bash tool mangles redirects to `C:\...`
+    // style paths, producing junk filenames like `CAtizscan-out.json` in the
+    // CWD. The gate must catch this before the shell ever sees the command.
 
     #[test]
     fn windows_redirect_denies_backslash_drive() {
@@ -241,5 +168,16 @@ mod tests {
         // The `>` is inside a quoted string, so the shell does not treat it
         // as a redirect operator. Must not trigger.
         assert!(bash_windows_redirect("echo 'wrote > C:\\Atiz\\x.json'").is_none());
+    }
+
+    #[test]
+    fn a_redirect_after_a_separator_is_still_checked() {
+        let v = bash_windows_redirect("cd x && cmd > C:\\a.txt");
+        assert!(matches!(v, Some(Verdict::Deny { .. })));
+    }
+
+    #[test]
+    fn a_windows_path_inside_a_heredoc_is_not_a_redirect() {
+        assert!(bash_windows_redirect("cat <<'EOF'\nwrote > C:\\a.txt\nEOF").is_none());
     }
 }
