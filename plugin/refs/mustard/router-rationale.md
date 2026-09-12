@@ -129,5 +129,5 @@ of margin and passed locally while failing CI on Windows only.
 
 ## Language
 
-Templates, refs, code and comments are EN-only; specs follow `mustard.json#specLang`.
+Templates, refs, code and comments are EN-only; specs follow `mustard.json` `language.text`.
 `mustard-rt run language-audit` enforces it with a diacritic-seed heuristic.

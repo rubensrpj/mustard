@@ -211,19 +211,6 @@ fn carry_parent_criteria(plan: &mut Plan, parent_spec_text: &str) {
     }
 }
 
-/// Resolve the parent spec's language for re-wave rendering.
-///
-/// Prefers the `lang` recorded in the spec's `meta.json` sidecar (the same
-/// field `wave-scaffold` writes); falls back to `pt-BR` — the identical default
-/// `wave-scaffold` uses when a plan omits `lang` — so the EXECUTE-entry output
-/// matches the PLAN-time output for the common (unset) case.
-fn parent_lang(spec_file: &Path) -> String {
-    mustard_core::domain::meta::read_meta_beside(spec_file)
-        .and_then(|m| m.lang)
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "pt-BR".to_string())
-}
-
 /// Re-evaluate `spec_file` for wave decomposition and, when the signal mandates
 /// it (`layerCount >= 2` etc.) **and** it is not already decomposed, write the
 /// wave structure. Returns the same JSON `action` shape [`run`] prints.
@@ -322,7 +309,13 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         //    `wave-plan.md` + each `wave-N/spec.md` with the same i18n /
         //    wikilink / heading machinery `/feature` uses at PLAN. No freeform
         //    renderer here — the output is byte-identical in form.
-        let lang = parent_lang(spec_file);
+        // The waves are written in the project's text language, as the parent
+        // spec is.
+        let lang = mustard_core::ProjectConfig::load(&project_root)
+            .language()
+            .text_or_default()
+            .as_str()
+            .to_string();
         let mut plan = dag_to_plan(&waves, &lang);
         carry_parent_criteria(&mut plan, &spec_text);
         // Wave headings are ENGLISH-FIXED machine artefacts, so a decomposed-at-

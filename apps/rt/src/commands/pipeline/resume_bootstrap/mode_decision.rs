@@ -220,7 +220,7 @@ mod tests {
         git(root, &["commit", "-m", "init"]);
     }
 
-    /// AC-3 — a resume asked for from inside the unit's own branch is
+    /// A resume asked for from inside the unit's own branch is
     /// RECOGNISED as such, which is what lets the picker drop the ceremony.
     ///
     /// The spec, its waves and its code all live on `{kind}/{slug}`, so a caller
@@ -271,7 +271,7 @@ mod tests {
         assert!(!inside_own_work_branch(root, "  "), "an empty spec names no branch");
     }
 
-    /// AC-3 — the unit is recognised however its slug had to be SPELLED as a
+    /// The unit is recognised however its slug had to be SPELLED as a
     /// git ref.
     ///
     /// The two sides of the equality do not arrive by the same road. The branch
@@ -320,7 +320,7 @@ mod tests {
         );
     }
 
-    /// AC-3 — the case that FAILED before the unit had one name, driven through
+    /// The case that FAILED before the unit had one name, driven through
     /// the real minting call rather than a hand-written slug.
     ///
     /// The gate names the unit from `--intent`; the branch is cut from THAT
@@ -385,7 +385,6 @@ mod tests {
                 intent: other_intent.to_string(),
                 slug: None,
                 scope: "light".into(),
-                lang: "en-US".into(),
                 signals: None,
                 output: None,
                 material: None,

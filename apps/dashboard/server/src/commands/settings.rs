@@ -1,17 +1,15 @@
 //! Project-scoped settings commands.
 //!
-//! Wave 4 of `mustard-unification` — `mustard.json` gains `lang` (BCP-47) and
-//! `tone` (didactic / technical / concise). The dashboard Settings page lets
-//! the user pick both; the writes are routed through this module so the
-//! validation + telemetry contract is shared with every future caller.
+//! The dashboard Settings page lets the user pick the project's text language
+//! (`mustard.json` `language.text`); the write is routed through this module
+//! so the validation + telemetry contract is shared with every future caller.
+//! There is no tone to pick: the voice is one, plain and didactic.
 //!
 //! ## Layout
 //!
 //! - [`set_language`] — validate against [`mustard_core::SupportedLocale`], write
-//!   `mustard.json#specLang` via [`ProjectConfig`], emit telemetry.
-//! - [`set_tone`] — validate against [`mustard_core::Tone`], write
-//!   `mustard.json#tone` via [`ProjectConfig`], emit telemetry.
-//! - [`read_settings`] — read both fields back for the form initial state.
+//!   `mustard.json` `language.text` via [`ProjectConfig`], emit telemetry.
+//! - [`read_settings`] — read it back for the form initial state.
 //!
 //! ## Fail-open contract
 //!
@@ -21,22 +19,21 @@
 //! - Path traversal is rejected up front (`repo_path` must be a real dir).
 
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::{ProjectConfig, SupportedLocale, Tone};
+use mustard_core::{ProjectConfig, SupportedLocale};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Instant;
 
-/// The two settings the dashboard reads / writes.
+/// The setting the dashboard reads / writes.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectSettings {
-    /// BCP-47 locale code (`pt-BR` / `en-US`). `None` when unset.
+    /// The declared text language, BCP-47 (`pt-BR` / `en-US`). `None` when
+    /// the project declared none.
     pub lang: Option<String>,
-    /// Tone string (`didactic` / `technical` / `concise`). `None` when unset.
-    pub tone: Option<String>,
 }
 
-/// Write `mustard.json#specLang` after validating against
+/// Write `mustard.json` `language.text` after validating against
 /// [`SupportedLocale::from_str`].
 ///
 /// Rejects the legacy short forms (`pt`/`en`) with a typed error so the
@@ -48,37 +45,19 @@ pub fn set_language(repo_path: String, lang: String) -> Result<(), String> {
     let locale = SupportedLocale::from_str(&lang).map_err(|e| e.to_string())?;
     let root = repo_root(&repo_path)?;
     let mut config = ProjectConfig::load(&root);
-    config.spec_lang = Some(locale.as_str().to_string());
+    config.language.text = Some(locale.as_str().to_string());
     config.write(&root).map_err(|e| e.to_string())?;
     emit_i18n_op(&repo_path, "i18n-set-language", started.elapsed().as_millis());
     Ok(())
 }
 
-/// Write `mustard.json#tone` after validating against [`Tone::parse`].
-pub fn set_tone(repo_path: String, tone: String) -> Result<(), String> {
-    let started = Instant::now();
-    let parsed = Tone::parse(&tone).ok_or_else(|| {
-        format!("unknown tone {tone:?}; expected didactic / technical / concise")
-    })?;
-    let root = repo_root(&repo_path)?;
-    let mut config = ProjectConfig::load(&root);
-    config.tone = Some(parsed.as_str().to_string());
-    config.write(&root).map_err(|e| e.to_string())?;
-    emit_i18n_op(&repo_path, "i18n-set-tone", started.elapsed().as_millis());
-    Ok(())
-}
-
-/// Read `lang` + `tone` back from `mustard.json` so the Settings page can
-/// hydrate its form. Fail-open: a missing or malformed file returns both
-/// fields as `None` rather than an error.
+/// Read the declared text language back from `mustard.json`, through
+/// [`ProjectConfig::language`], so the Settings page can hydrate its form.
+/// Fail-open: a missing or malformed file returns `None` rather than an error.
 pub fn read_settings(repo_path: String) -> Result<ProjectSettings, String> {
     let root = repo_root(&repo_path)?;
     let config = ProjectConfig::load(&root);
-    Ok(ProjectSettings {
-        // `specLang` is canonical; fall back to the legacy `lang` key on read.
-        lang: config.spec_lang.clone().or_else(|| config.lang.clone()),
-        tone: config.tone.clone(),
-    })
+    Ok(ProjectSettings { lang: config.language().text.map(|lang| lang.as_str().to_string()) })
 }
 
 /// Resolve the project root from a dashboard `repo_path`. Rejects empty inputs.
@@ -97,7 +76,7 @@ fn repo_root(repo_path: &str) -> Result<PathBuf, String> {
 /// The legacy SQLite event-store append route is gone. Settings events land
 /// in a project-scoped NDJSON channel at
 /// `.claude/.events/dashboard-settings.ndjson` — same atomic-append shape used
-/// by every other dashboard emitter post-W6A. Any IO failure is swallowed so
+/// by every other dashboard emitter. Any IO failure is swallowed so
 /// the settings write itself never gets blocked.
 fn emit_i18n_op(repo_path: &str, operation: &str, duration_ms: u128) {
     let event = HarnessEvent {

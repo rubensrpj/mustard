@@ -541,8 +541,8 @@ const CONSEQUENCE_MARKERS: &[&str] = &[
 /// the same value, qualified in English and was dropped in Portuguese — silently,
 /// which is the worst way to lose knowledge.
 ///
-/// This project already declares its language: `mustard.json#specLang`, resolved
-/// through `ProjectConfig::i18n`. That is what makes the fix small, because it
+/// This project already declares its language: `mustard.json` `language.text`, read
+/// through `ProjectConfig::language`. That is what makes the fix small, because it
 /// also fixes the SIZE of the problem: Mustard supports exactly two locales
 /// (`pt-BR`, `en-US`) — [`mustard_core::platform::i18n::Locale`] has two
 /// variants and rejects anything else — so "every language" is two lists, not an

@@ -282,7 +282,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             if let Some(open) =
                 ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key)
             {
-                let lang = mustard_core::ProjectConfig::load(&project).i18n().lang;
+                let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
                 let hint = mustard_core::translate("pending.duplicate", lang)
                     .replace("{id}", &open.id)
                     .replace("{title}", &open.title);

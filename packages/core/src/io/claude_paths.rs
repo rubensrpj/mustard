@@ -406,7 +406,7 @@ impl ClaudePaths {
     }
 
     /// `<root>/mustard.json` — Mustard project config (git flow, build/test
-    /// commands, `specLang`, `tone`, runtime/version stamp).
+    /// commands, `language`, runtime/version stamp).
     ///
     /// Lives at the **project root**, not under `.claude/`: it is the workspace
     /// anchor [`crate::io::workspace::workspace_root`] keys on, and it is

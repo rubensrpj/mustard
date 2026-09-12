@@ -89,7 +89,7 @@ use retry::compose_retry_context;
 use role::{build_role_block, patterns_task_block};
 use sections::{
     build_conversation_material, build_why_block, collapse_empty_sections, filter_task_lines,
-    read_guards_block, read_reality_obligations, read_spec_lang, read_wave_acceptance,
+    read_guards_block, read_reality_obligations, read_wave_acceptance,
     scan_unfilled, strip_unfilled_template_tokens, MaterialCensus,
 };
 use skills::{build_mold_pointer, build_skills_list};
@@ -537,18 +537,14 @@ pub(crate) fn render_prompt_with_census(
     // shared install, leaving the cached prefix byte-identical to today's.
     let guards_file = crate::shared::context::guards_file_name(&project).to_string();
     let guards_summary = read_guards_block(&project, &project.join(&subproject_str));
-    // With a spec, `meta.json`/`### Lang:` is the source of truth. Without one,
-    // there is no spec to read — derive the narrative locale from the canonical
-    // `mustard.json#specLang` accessor (`ProjectConfig::load(..).i18n()`), the
-    // same accessor `build_role_block` already uses for tone. No ad-hoc parse.
-    let spec_lang = match spec {
-        Some(_) => read_spec_lang(&op_spec_path),
-        None => mustard_core::ProjectConfig::load(&project)
-            .i18n()
-            .lang
-            .as_str()
-            .to_string(),
-    };
+    // The narrative locale is the project's text language, with or without a
+    // spec: a spec is written in the project's language, so there is no second
+    // one to read beside it.
+    let spec_lang = mustard_core::ProjectConfig::load(&project)
+        .language()
+        .text_or_default()
+        .as_str()
+        .to_string();
     let role_block = build_role_block(role, &project, &subproject_str, &spec_lang);
     // The RULER this wave is measured by — the criteria QA will EXECUTE,
     // verbatim, `Command:` and all, cut by the `satisfies:` line the wave's own

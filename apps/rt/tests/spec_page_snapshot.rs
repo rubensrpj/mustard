@@ -20,7 +20,7 @@ fn fixture(name: &str) -> PathBuf {
 /// Um projeto novo com a spec `demo` do retrato; devolve o `.md` e o `.html`
 /// que o `page --spec` gerou, duas vezes seguidas.
 fn generate(root: &Path) -> [(String, String); 2] {
-    fs::write(root.join("mustard.json"), r#"{"specLang":"pt-BR"}"#).expect("config");
+    fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
     let spec = root.join(".claude").join("spec").join("demo");
     fs::create_dir_all(&spec).expect("spec dir");
     fs::copy(fixture("spec.ndjson"), spec.join("spec.ndjson")).expect("events");

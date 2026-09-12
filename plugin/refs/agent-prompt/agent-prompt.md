@@ -27,7 +27,7 @@ The placeholders the renderer substitutes — `TEMPLATE_PLACEHOLDERS` in `apps/r
 | `{guards_file}` | `shared::context::guards_file_name` | The instruction file THIS install owns — `CLAUDE.md` normally, `CLAUDE.local.md` under a private install, where the scan writes beside the host repository's own file instead of into it. The prompt names it rather than spelling `CLAUDE.md`, so a dispatched agent is never sent to open the client's file. |
 | `{guards_summary}` | `## Guards` of `{subproject}/{guards_file}` | Extracted via regex; empty when the file has no `## Guards`. |
 | `{role_block}` | `--role` (`build_role_block` / `build_guards_role_block`) | The role cue **plus** a per-role delivery contract (what to produce, return-cap, read-only vs write). |
-| `{spec_lang}` | spec `meta.json#lang` | Defaults to `en`; affects only the narrative — code stays EN. |
+| `{spec_lang}` | `mustard.json` `language.text` | `pt-BR` when the project declares none; affects only the narrative — code stays EN. |
 | `{task_steps}` | `## Tasks` of the wave, or `--task-text` when spec-less (`/scan` guards, `/task`) | VARIABLE — per wave; `--task-text` fills `## TASK` so the prompt stays self-contained (never hand-append the task). |
 | `{context_md}` | `mustard-rt run context-slice` (cached, refreshed per wave) | Stable across a wave. Empty when no `CONTEXT.md` glossary exists (opt-in via `grill-with-docs`) — blank by design, not a failure. |
 | `{prior_wave_diff}` | per-wave `diff.md` (`git diff HEAD~1 HEAD --stat`, cached by `wave-done`) | VARIABLE — empty on wave 1 or when the diff is empty. |

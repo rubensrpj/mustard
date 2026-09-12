@@ -411,7 +411,7 @@ fn session_start_core(
     // once-per-session terrain map so the AI opens the session already
     // knowing the subprojects instead of grepping to orient. Fail-open: a
     // missing / unreadable model yields no terrain.
-    let i18n = crate::shared::context::project_config_cached(Path::new(&cwd)).i18n();
+    let i18n = I18n::new(crate::shared::context::project_config_cached(Path::new(&cwd)).language().text_or_default());
     let terrain_lang = i18n.lang;
     let terrain = crate::commands::orient::render_terrain(
         &crate::commands::orient::compute_orientation(Path::new(&cwd)),

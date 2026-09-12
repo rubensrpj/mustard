@@ -11,7 +11,7 @@ use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::io::fs;
 use mustard_core::domain::spec;
 use mustard_core::view::summary::SpecSummaryDoc;
-use mustard_core::ClaudePaths;
+use mustard_core::{ClaudePaths, SupportedLocale};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -25,39 +25,33 @@ pub(crate) struct Header {
 
 /// Parse the spec header. The lifecycle status is resolved through the
 /// canonical [`mustard_core::domain::spec`] parser (so the new `### Stage:` header
-/// and every legacy shape both work); `Lang` and the `# Title` are read inline
-/// since they are not part of the lifecycle header domain. An absent lifecycle
-/// header yields an empty status (rendered as `unknown` downstream, unchanged).
-fn parse_header(text: &str) -> Header {
+/// and every legacy shape both work); the `# Title` is read inline since it is
+/// not part of the lifecycle header domain. An absent lifecycle header yields
+/// an empty status (rendered as `unknown` downstream, unchanged).
+///
+/// The language is the project's text language, handed in by the caller: the
+/// spec is written in it, and a `### Lang:` line left in an old spec is not
+/// read.
+fn parse_header(text: &str, lang: SupportedLocale) -> Header {
     let status = spec::parse_state(text)
         .map(|s| spec::status_word(&s).to_string())
         .unwrap_or_default();
-    let mut lang = "en-US".to_string();
     let mut name = "spec".to_string();
     for line in text.split('\n') {
         let t = line.trim_end();
-        if let Some(v) = t.strip_prefix("### Lang:") {
-            let first = v.trim().to_lowercase();
-            let tok = first.split([' ', '|', '\t']).next().unwrap_or("en-US");
-            // Tolerant read: accept legacy short forms and BCP-47.
-            lang = if tok == "pt" || tok == "pt-br" {
-                "pt-BR".to_string()
-            } else {
-                "en-US".to_string()
-            };
-        } else if name == "spec"
+        if name == "spec"
             && let Some(v) = t.strip_prefix("# ")
                 && !v.starts_with('#') {
                     name = v.trim().to_string();
                 }
     }
-    Header { status, name, lang }
+    Header { status, name, lang: lang.as_str().to_string() }
 }
 
-/// Override the `status` + `lang` of a `Header` from the `meta.json` sidecar
-/// beside `spec_file` — the single source of truth. Fields the sidecar does not
-/// declare keep the legacy `.md`-header value `parse_header` produced. The
-/// `name` (`# Title`) is always read from the markdown (it is narrative, not
+/// Override the `status` of a `Header` from the `meta.json` sidecar beside
+/// `spec_file` — the single source of truth. When the sidecar does not declare
+/// it, the legacy `.md`-header value `parse_header` produced stays. The `name`
+/// (`# Title`) is always read from the markdown (it is narrative, not
 /// metadata).
 fn apply_meta_override(mut header: Header, spec_file: &Path) -> Header {
     let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_file) else {
@@ -69,15 +63,6 @@ fn apply_meta_override(mut header: Header, spec_file: &Path) -> Header {
         if !word.is_empty() {
             header.status = word.to_string();
         }
-    }
-    // lang: normalise the same way the legacy path does (short forms tolerated).
-    if let Some(raw) = m.lang.as_deref().filter(|s| !s.trim().is_empty()) {
-        let tok = raw.trim().to_lowercase();
-        header.lang = if tok == "pt" || tok == "pt-br" {
-            "pt-BR".to_string()
-        } else {
-            "en-US".to_string()
-        };
     }
     header
 }
@@ -482,9 +467,12 @@ pub(crate) fn build_for_dir(spec_dir: &Path) -> Result<(Model, Header), String> 
     let text = fs::read_to_string(&spec_file).map_err(|err| {
         format!("pipeline-summary: cannot read {}: {err}", spec_file.display())
     })?;
-    // `meta.json` is the single source of truth for `status` + `lang`; the
-    // `.md` header parsed by `parse_header` is the legacy fallback.
-    let header = apply_meta_override(parse_header(&text), &spec_file);
+    // The summary speaks the text language of the project the spec lives in.
+    let root = mustard_core::io::workspace::workspace_root_or_self(spec_dir);
+    let lang = mustard_core::ProjectConfig::load(&root).language().text_or_default();
+    // `meta.json` is the single source of truth for `status`; the `.md` header
+    // parsed by `parse_header` is the legacy fallback.
+    let header = apply_meta_override(parse_header(&text, lang), &spec_file);
 
     // pipeline-state (fail-open).
     let mut state = json!({});
@@ -527,10 +515,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_header_name_status_lang() {
+    fn parses_header_name_and_status() {
         // New canonical header: status word is projected from the SpecState.
-        // Legacy short form `pt` is tolerated on read and normalised to BCP-47.
-        let h = parse_header("# My Spec\n\n### Stage: Close\n### Outcome: Completed\n### Lang: pt\n");
+        // A `### Lang:` line left in the spec is not read: the language is the
+        // one the caller hands in, the project's.
+        let h = parse_header(
+            "# My Spec\n\n### Stage: Close\n### Outcome: Completed\n### Lang: en-US\n",
+            SupportedLocale::PtBr,
+        );
         assert_eq!(h.name, "My Spec");
         assert_eq!(h.status, "completed");
         assert_eq!(h.lang, "pt-BR");
@@ -540,7 +532,7 @@ mod tests {
     fn parses_legacy_status_phase_header() {
         // Legacy header still resolves (tolerant core parser); a terminal
         // `### Status: completed` projects to the `completed` word.
-        let h = parse_header("# My Spec\n\n### Status: completed | Phase: CLOSE\n### Lang: en-US\n");
+        let h = parse_header("# My Spec\n\n### Status: completed | Phase: CLOSE\n", SupportedLocale::EnUs);
         assert_eq!(h.name, "My Spec");
         assert_eq!(h.status, "completed");
         assert_eq!(h.lang, "en-US");
@@ -548,8 +540,8 @@ mod tests {
 
     #[test]
     fn happy_path_yields_git_next_steps() {
-        let text = "# Spec\n\n### Status: Done\n### Lang: en-US\n\n## Acceptance Criteria\n- [x] AC-1: x — Command: `true`\n";
-        let header = parse_header(text);
+        let text = "# Spec\n\n### Status: Done\n\n## Acceptance Criteria\n- [x] AC-1: x — Command: `true`\n";
+        let header = parse_header(text, SupportedLocale::EnUs);
         let model = build_model(&header, text, &json!({}));
         assert!(model.left.is_empty());
         assert!(model.next_steps.iter().any(|s| s.contains("git add")));
@@ -557,8 +549,8 @@ mod tests {
 
     #[test]
     fn failing_ac_lands_in_left() {
-        let text = "# Spec\n\n### Lang: en-US\n\n## Acceptance Criteria\n- [ ] AC-2: broken — Command: `false`\n";
-        let header = parse_header(text);
+        let text = "# Spec\n\n## Acceptance Criteria\n- [ ] AC-2: broken — Command: `false`\n";
+        let header = parse_header(text, SupportedLocale::EnUs);
         let model = build_model(&header, text, &json!({}));
         assert!(model.left.iter().any(|l| l.contains("AC-2")));
     }

@@ -20,7 +20,7 @@ use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs::write_atomic;
 use mustard_core::platform::i18n::{slugify, Locale};
-use mustard_core::{read_meta, Meta};
+use mustard_core::Meta;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -66,17 +66,6 @@ fn build_slug(description: &str, lang: Locale, today: &str) -> String {
     }
 }
 
-/// Read the parent's locale to inherit the body headings. Falls back to PT-BR.
-fn parent_lang(cwd: &Path, parent: &str) -> Locale {
-    let dir = ClaudePaths::spec_dir_or_unchecked(cwd, parent);
-    if let Some(meta) = read_meta(&dir.join("meta.json"))
-        && let Some(raw) = meta.lang
-            && let Ok(l) = raw.parse::<Locale>() {
-                return l;
-            }
-    Locale::default()
-}
-
 /// Today as YYYY-MM-DD (UTC — tests run in any timezone).
 fn today_utc() -> String {
     let now = now_iso8601();
@@ -109,7 +98,8 @@ fn build_body(description: &str, parent: &str, lang: Locale) -> String {
 
 /// Core routine — pure-ish (writes files), returns a report.
 fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
-    let lang = parent_lang(cwd, &opts.parent);
+    // The body headings follow the project's text language, as the parent's do.
+    let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
     let today = today_utc();
     let slug = build_slug(&opts.description, lang, &today);
     let spec_dir = ClaudePaths::spec_dir_or_unchecked(cwd, &slug);

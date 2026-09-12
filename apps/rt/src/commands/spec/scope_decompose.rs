@@ -45,13 +45,12 @@
 use crate::commands::spec::spec_sections::is_heading;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use mustard_core::platform::i18n::{
-    line_has_file_marker, translate, FileMarker, LocaleError, SupportedLocale,
+    line_has_file_marker, translate, FileMarker, SupportedLocale,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 /// Roadmap-signal detection across spec text.
 struct RoadmapSignal {
@@ -751,20 +750,14 @@ fn is_files_placeholder(line: &str) -> bool {
         .any(|lang| line == translate("placeholder.fill_files", *lang))
 }
 
-/// The spec's own narrative locale, for rendering the zero-path warning:
-/// `meta.json#lang` → legacy `### Lang:` header → `en-US` default (the
-/// resolution [`crate::commands::agent::render::sections::read_spec_lang`]
-/// owns). Lenient on the legacy short forms (`pt` ⇒ pt-BR, `en` ⇒ en-US);
-/// anything else unparsable falls to the catalogue default — fail-open, the
-/// warning always renders in SOME language.
+/// The language of the zero-path warning: the text language of the project
+/// the spec lives in (`language.text`), in which the spec is written.
+/// Fail-open: outside a workspace, or with no declared language, the warning
+/// renders in the catalogue default.
 fn spec_locale(spec_file: &Path) -> SupportedLocale {
-    let raw = crate::commands::agent::render::sections::read_spec_lang(spec_file);
-    match SupportedLocale::from_str(&raw) {
-        Ok(loc) => loc,
-        Err(LocaleError::ShortForm(s)) if s.eq_ignore_ascii_case("pt") => SupportedLocale::PtBr,
-        Err(LocaleError::ShortForm(_)) => SupportedLocale::EnUs,
-        Err(_) => SupportedLocale::default(),
-    }
+    let start = spec_file.parent().unwrap_or(spec_file);
+    let root = mustard_core::io::workspace::workspace_root_or_self(start);
+    mustard_core::ProjectConfig::load(&root).language().text_or_default()
 }
 
 /// Stamp the zero-path downgrade onto an emitted verdict object: `scope` →
@@ -1242,7 +1235,7 @@ mod tests {
         assert_eq!(from_spec_decision["reason"], json!("multi-layer"));
     }
 
-    /// AC3 (T3): the `layerCount >= 2` → multi-layer promotion now requires a
+    /// The `layerCount >= 2` → multi-layer promotion now requires a
     /// file-mass floor ([`MULTI_LAYER_FILE_FLOOR`]). Two files the role
     /// classifier happens to split into two roles (`handler.rs` + `model.rs`) is
     /// single-pass growth, not a genuine multi-layer feature — decomposing it
@@ -1597,14 +1590,15 @@ mod tests {
         assert!(df.get("warning").is_none(), "≥1 real path ⇒ no warning");
     }
 
-    /// AC-7 (diagnostic half): a table census is READ (no abstain), and when a
-    /// full section carries no recognisable path the message says exactly
-    /// that — never "empty" — in the spec's own language. The table-parsing
-    /// half lives beside the parser in `wave_lib`.
+    /// A table census is READ (no abstain), and when a full section carries no
+    /// recognisable path the message says exactly that — never "empty" — in
+    /// the project's text language. The table-parsing half lives beside the
+    /// parser in `wave_lib`.
     #[test]
     fn files_section_reads_a_table_and_names_an_unreadable_one() {
         let dir = tempfile::tempdir().unwrap();
         plant_project(dir.path());
+        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
 
         // (i) A census authored as a markdown table parses: fileCount > 0, no
         // downgrade — the reader that called this section empty was the false
@@ -1632,13 +1626,15 @@ mod tests {
         let warning = dp["warning"].as_str().unwrap_or_default();
         assert!(
             warning.contains("no path was recognised"),
-            "the message names the real cause (en-US default): {warning}"
+            "the message names the real cause, in the project's language: {warning}"
         );
         assert!(!warning.contains("empty"), "never asserts empty about a full section: {warning}");
 
-        // (iii) The diagnostic follows the SPEC's own language (`### Lang:`),
-        // not a hardcoded one.
-        let pt = "# Spec\n\n### Lang: pt-BR\n\n## Arquivos\n\nmódulo de tratadores\n";
+        // (iii) The diagnostic follows the project's text language
+        // (`language.text`), not a hardcoded one — and not a `### Lang:` line
+        // left in an old spec.
+        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+        let pt = "# Spec\n\n### Lang: en-US\n\n## Arquivos\n\nmódulo de tratadores\n";
         let pt_path = dir.path().join("pt.md");
         std::fs::write(&pt_path, pt).unwrap();
         let dpt = classify_from_spec(&pt_path, 0);
@@ -1646,7 +1642,7 @@ mod tests {
         let pt_warning = dpt["warning"].as_str().unwrap_or_default();
         assert!(
             pt_warning.contains("nenhum caminho foi reconhecido"),
-            "pt-BR spec ⇒ pt-BR diagnostic: {pt_warning}"
+            "pt-BR project ⇒ pt-BR diagnostic: {pt_warning}"
         );
 
         // (iv) A genuinely empty section still reads as empty/placeholder.
@@ -1657,7 +1653,7 @@ mod tests {
         assert_eq!(de["filesSectionState"], json!("empty"));
     }
 
-    /// AC8 (T7): an unreadable spec (wrong path / wrong cwd in a worktree) must
+    /// An unreadable spec (wrong path / wrong cwd in a worktree) must
     /// be DIAGNOSABLE, not a silent `full` with zeroed signals. Routing stays
     /// safe (conservative `full`), but the `reason` names the failing path AND
     /// the cwd so the caller sees it was a read error, not a real verdict.

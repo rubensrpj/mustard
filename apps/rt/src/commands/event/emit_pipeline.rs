@@ -679,7 +679,7 @@ pub(super) fn enforce_base_gate_at(
                 super::census_settlement::CensusDoor::ExplicitOpen,
             ) {
                 super::census_settlement::CensusSettlement::Refuse(busy) => {
-                    eprintln!("BLOCKED: {}", busy.reason(config.i18n().lang));
+                    eprintln!("BLOCKED: {}", busy.reason(config.language().text_or_default()));
                     std::process::exit(2);
                 }
                 super::census_settlement::CensusSettlement::Recorded(_)

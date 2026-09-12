@@ -50,7 +50,7 @@ pub enum AgentCmd {
     AgentPromptRender {
         /// Spec slug under `.claude/spec/`. Optional: spec-less callers (the
         /// `/scan` Guards enrich step, `/task` with no scope) omit it — the
-        /// renderer then derives the locale from `mustard.json#specLang` and
+        /// renderer then derives the locale from `mustard.json` `language.text` and
         /// fail-opens every spec-keyed lookup to an empty value.
         #[arg(long)]
         spec: Option<String>,

@@ -1547,7 +1547,7 @@ mod tests {
 
     use crate::shared::work_kind::{BaseFlow, WorkKind, CUT_BASE_FILE};
 
-    /// AC-2 — protection follows the REPOSITORY, not the promotion map.
+    /// Protection follows the REPOSITORY, not the promotion map.
     ///
     /// The distinction this pins is the whole reason the cut point could open:
     /// `dev` appears in `git.flow` and is NOT protected by that alone, while
@@ -1612,7 +1612,7 @@ mod tests {
         std::path::Path::new("/no/project")
     }
 
-    /// AC-1 — the branch is named by what the unit IS, never by the base it was
+    /// The branch is named by what the unit IS, never by the base it was
     /// cut from.
     ///
     /// The name an operator reads in `git branch` is the assertion: a feature
@@ -1682,7 +1682,7 @@ mod tests {
         assert!(!b.starts_with('-'), "no leading dash");
     }
 
-    /// AC-2 — with the base gone from the name, it is recovered from the
+    /// With the base gone from the name, it is recovered from the
     /// DECLARED FLOW and from nothing else.
     ///
     /// The proof that the branch string is not consulted is the second project:
@@ -1768,7 +1768,7 @@ mod tests {
         );
     }
 
-    /// AC-4 — a branch in the `{base}_{slug}` shape is still this unit's branch,
+    /// A branch in the `{base}_{slug}` shape is still this unit's branch,
     /// and still resolves to its base.
     ///
     /// Units in flight would be orphaned otherwise: the pull-request target, the
@@ -1866,7 +1866,7 @@ mod tests {
     }
 
 
-    /// AC-5, the half the sibling above could not reach — *"and the operator
+    /// The half the sibling above could not reach — *"and the operator
     /// chooses when more than one candidate exists"*.
     ///
     /// Choosing is only half of it: the choice has to SURVIVE. With three bases
@@ -2288,7 +2288,6 @@ mod tests {
                 intent: "Corrigir a emergência no login".to_string(),
                 slug: Some("emergencia-no-login".to_string()),
                 scope: "light".into(),
-                lang: "en-US".into(),
                 signals: None,
                 output: None,
                 material: None,
@@ -2495,7 +2494,7 @@ mod tests {
         std::fs::write(spec.join("spec.md"), "# first unit\n\nuncommitted\n").expect("dirty");
     }
 
-    /// AC-11 — the CUT itself refuses a busy checkout.
+    /// The CUT itself refuses a busy checkout.
     ///
     /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
     /// `WorkBranchGate::evaluate`: the previous round's tests all went through
@@ -2561,7 +2560,7 @@ mod tests {
         );
     }
 
-    /// AC-11, the other half of the same decision: a checkout the probe could
+    /// The other half of the same decision: a checkout the probe could
     /// NOT measure is refused too.
     ///
     /// "I could not measure" is not "there is nothing here". This caller's

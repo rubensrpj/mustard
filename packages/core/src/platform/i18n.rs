@@ -1,4 +1,4 @@
-//! `i18n` — central language + tone module for Mustard banners.
+//! `i18n` — central language module for Mustard banners.
 //!
 //! ## Why
 //!
@@ -9,21 +9,20 @@
 //!
 //! - declare the canonical locale codes (BCP-47, never short forms);
 //! - translate a banner key into the user's language;
-//! - apply a tone (didactic / technical / concise) on top of a translation;
 //! - slugify free-form text in a way that respects PT-vs-EN accent rules.
 //!
 //! This module is now that single place, a boundary-typed module exported
 //! from `mustard_core`.
 //!
-//! ## Locale + tone vocabulary
+//! ## Locale vocabulary
 //!
 //! - [`Locale`] — BCP-47 typed locale. Only `pt-BR` and `en-US` are accepted;
 //!   the legacy short forms `pt` / `en` are rejected with
 //!   [`LocaleError::ShortForm`] (see memory `project_locale_codes`).
-//! - [`Tone`] — `didactic` (expand abbreviations, prefer plain words),
-//!   `technical` (keep abbreviations + jargon), `concise` (strip filler).
-//! - [`I18n`] — the pair `{ lang, tone }` callers thread through banner
-//!   rendering.
+//! - [`I18n`] — the locale callers thread through banner rendering.
+//!
+//! The catalogue is written in one voice only, plain and didactic: there is
+//! no tone to choose, so nothing here rewrites a translation after lookup.
 //!
 //! ## Canonical banner keys
 //!
@@ -134,53 +133,7 @@ impl FromStr for Locale {
     }
 }
 
-/// Banner tone selector.
-///
-/// `Didactic` expands abbreviations on first use and prefers common words —
-/// the default for user-facing chat output. `Technical` keeps jargon and
-/// abbreviations as written. `Concise` strips parenthetical clarifications.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Tone {
-    /// Expand abbreviations, prefer plain words. The Mustard default.
-    #[default]
-    Didactic,
-    /// Keep jargon + abbreviations as written.
-    Technical,
-    /// Strip filler / parentheticals.
-    Concise,
-}
-
-impl Tone {
-    /// Canonical lowercase string for `mustard.json#tone`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Didactic => "didactic",
-            Self::Technical => "technical",
-            Self::Concise => "concise",
-        }
-    }
-
-    /// Parse a free-form tone string. Returns `None` for unknown values so
-    /// callers fail open to [`Tone::Didactic`].
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "didactic" | "didatico" | "didático" => Some(Self::Didactic),
-            "technical" | "tecnico" | "técnico" => Some(Self::Technical),
-            "concise" | "conciso" => Some(Self::Concise),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Tone {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Banner-rendering context: locale + tone.
+/// Banner-rendering context: the locale.
 ///
 /// Threaded through hook / CLI banner code so a single struct call replaces
 /// the bilingual lookup tables that used to sit in each module.
@@ -188,21 +141,19 @@ impl fmt::Display for Tone {
 pub struct I18n {
     /// User locale (drives [`translate`]).
     pub lang: Locale,
-    /// User tone (drives [`apply_tone`]).
-    pub tone: Tone,
 }
 
 impl I18n {
-    /// Build an `I18n` from typed values.
+    /// Build an `I18n` for `lang`.
     #[must_use]
-    pub fn new(lang: Locale, tone: Tone) -> Self {
-        Self { lang, tone }
+    pub fn new(lang: Locale) -> Self {
+        Self { lang }
     }
 
-    /// Translate `key` and immediately apply the configured tone.
+    /// Translate `key` into this locale.
     #[must_use]
     pub fn render(&self, key: &str) -> String {
-        apply_tone(translate(key, self.lang), self.tone)
+        translate(key, self.lang).to_string()
     }
 }
 
@@ -857,7 +808,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
 
         // Resumo da spec em HTML (`apps/rt/src/commands/spec/spec_doc.rs`) — o
         // documento que o usuário lê ANTES de aprovar. Texto de usuário, então
-        // segue o `specLang` e mora aqui, não embutido no comando. `{wave}` e
+        // segue o `language.text` e mora aqui, não embutido no comando. `{wave}` e
         // `{term}` são preenchidos pelo chamador.
         ("doc.kind.approval", Locale::PtBr) => "spec para aprovar",
         ("doc.kind.approval", Locale::EnUs) => "spec awaiting approval",
@@ -1789,52 +1740,6 @@ fn key_as_static(_key: &str) -> &'static str {
     "<missing-key>"
 }
 
-/// Apply `tone` to `text`. `Didactic` is the identity (the catalog is already
-/// authored in didactic tone); `Technical` strips parenthetical clarifications
-/// of the shape `(meaning ...)`; `Concise` additionally collapses double
-/// spaces and trims.
-#[must_use]
-pub fn apply_tone(text: &str, tone: Tone) -> String {
-    match tone {
-        Tone::Didactic => text.to_string(),
-        Tone::Technical => strip_parentheticals(text),
-        Tone::Concise => {
-            let stripped = strip_parentheticals(text);
-            // Collapse runs of whitespace into a single space and trim.
-            let mut out = String::with_capacity(stripped.len());
-            let mut prev_ws = false;
-            for ch in stripped.chars() {
-                if ch.is_whitespace() {
-                    if !prev_ws {
-                        out.push(' ');
-                        prev_ws = true;
-                    }
-                } else {
-                    out.push(ch);
-                    prev_ws = false;
-                }
-            }
-            out.trim().to_string()
-        }
-    }
-}
-
-/// Drop `( ... )` segments. Naïve but bounded — no nested parens; we treat the
-/// first `)` after a `(` as the close. Keeps the cost predictable.
-fn strip_parentheticals(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_paren = false;
-    for ch in text.chars() {
-        match ch {
-            '(' => in_paren = true,
-            ')' => in_paren = false,
-            _ if !in_paren => out.push(ch),
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Slugify `text` to a kebab-case identifier, lang-aware.
 ///
 /// PT locale strips Latin diacritics (`ç → c`, `ã → a`, …) before kebab-casing
@@ -1903,7 +1808,7 @@ pub fn slugify(text: &str, lang: Locale) -> String {
 /// callsite could move to the new name without breaking every consumer at once.
 pub type SupportedLocale = Locale;
 
-/// User-declared BCP-47 locale from `mustard.json#specLang` or `### Lang:`.
+/// User-declared BCP-47 locale, as a spec records it.
 ///
 /// Unlike [`SupportedLocale`] (closed, two variants), `UserLocale` accepts any
 /// syntactically valid BCP-47 code so users can write specs in `fr-FR`, `de-DE`,
@@ -2271,28 +2176,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_tone_didactic_is_identity() {
-        let input = "Hello (world, expanded).";
-        assert_eq!(apply_tone(input, Tone::Didactic), input);
-    }
-
-    #[test]
-    fn apply_tone_technical_strips_parens() {
-        assert_eq!(
-            apply_tone("Hello (world, expanded).", Tone::Technical),
-            "Hello ."
-        );
-    }
-
-    #[test]
-    fn apply_tone_concise_collapses_whitespace() {
-        assert_eq!(
-            apply_tone("Hello   (extra)   world.", Tone::Concise),
-            "Hello world."
-        );
-    }
-
-    #[test]
     fn slugify_pt_strips_accents() {
         assert_eq!(slugify("Configuração do Idioma", Locale::PtBr), "configuracao-idioma");
         assert_eq!(slugify("São Paulo é grande", Locale::PtBr), "sao-paulo-grande");
@@ -2327,17 +2210,8 @@ mod tests {
     }
 
     #[test]
-    fn tone_parse_accepts_pt_and_en_spellings() {
-        assert_eq!(Tone::parse("didactic"), Some(Tone::Didactic));
-        assert_eq!(Tone::parse("didatico"), Some(Tone::Didactic));
-        assert_eq!(Tone::parse("Técnico"), Some(Tone::Technical));
-        assert_eq!(Tone::parse("conciso"), Some(Tone::Concise));
-        assert_eq!(Tone::parse("loud"), None);
-    }
-
-    #[test]
-    fn i18n_render_pipes_translate_through_tone() {
-        let i = I18n::new(Locale::EnUs, Tone::Didactic);
+    fn i18n_render_is_the_translation() {
+        let i = I18n::new(Locale::EnUs);
         assert_eq!(i.render("banner.close.success"), "Pipeline closed successfully.");
     }
 

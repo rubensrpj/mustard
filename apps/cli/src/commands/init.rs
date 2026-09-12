@@ -38,7 +38,7 @@
 //! 4. copy `templates/.github/` → project-root `.github/` when a GitHub remote
 //!    is detected (project-level scaffolding, not part of the plugin);
 //! 5. write the single project-root `mustard.json`: git-flow + agnostically
-//!    detected build/test/lint/type-check commands + spec language + tone +
+//!    detected build/test/lint/type-check commands + the chosen languages +
 //!    the `runtime`/`version` stamp + the default `inject` declarations
 //!    (seeded only when the user has none — a curated list is preserved);
 //! 6. settle that stamp (`mustard_core::record_version_stamp`): where the host
@@ -356,7 +356,7 @@ pub fn init_with_templates(
     // Re-measure this file with a SHIMMED PATH, never an empty one.
 
     // Write the single project-root mustard.json: git-flow + detected commands
-    // + language/tone + runtime/version stamp. One file, one write. A re-run
+    // + the chosen languages + runtime/version stamp. One file, one write. A re-run
     // re-stamps `version` — the idempotent replacement for `mustard update`.
     write_project_config(&project_path, &runtime, !options.yes)?;
 
@@ -734,7 +734,7 @@ fn has_github_remote(project_path: &Path) -> bool {
 /// Build and write the single project-root `mustard.json`.
 ///
 /// Loads any existing config (so a re-run preserves user edits), folds in the
-/// git-flow + locale choices and agnostically-detected commands — only when
+/// git-flow + language choices and agnostically-detected commands — only when
 /// interactive or on a fresh project; otherwise the existing git-flow is left
 /// untouched — then stamps `runtime` + `version` and writes **once**. There is
 /// no `.claude/mustard.json`: the file lives at the project root (the workspace
@@ -1381,7 +1381,8 @@ mod tests {
         );
 
         // The SINGLE project-root mustard.json carries git-flow, the version
-        // stamp, runtime, and the language/tone defaults — and there is NO
+        // stamp and runtime, and NO language: the install ran without asking,
+        // so none was chosen and none is written. There is NO
         // .claude/mustard.json.
         let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
         assert_eq!(
@@ -1391,8 +1392,9 @@ mod tests {
         );
         assert!(cfg.get("runtime").is_some(), "runtime block written");
         assert!(cfg.get("git").is_some(), "git-flow block written");
-        assert_eq!(cfg.get("specLang").and_then(|v| v.as_str()), Some("pt-BR"));
-        assert_eq!(cfg.get("tone").and_then(|v| v.as_str()), Some("didactic"));
+        for key in ["language", "specLang", "tone"] {
+            assert!(cfg.get(key).is_none(), "a non-interactive install writes no {key}: {cfg:?}");
+        }
         // The default inject declarations are seeded: the router's three parts,
         // each on its OWN sibling hook. The cap is per hook RESPONSE, not per
         // event, so siblings share no budget — a part that outgrows the ceiling

@@ -130,13 +130,12 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
     }
 }
 
-/// Build the `guards` role block — the Wave-2 enrich instruction. Carries the
-/// grounded 3-6 line cap, the project locale + tone (from `mustard.json` via the
-/// canonical [`mustard_core::ProjectConfig`] accessor — no ad-hoc parse), the
+/// Build the `guards` role block — the enrich instruction. Carries the
+/// grounded 3-6 line cap, the project locale (the caller reads it from
+/// `mustard.json` through [`mustard_core::ProjectConfig::language`]), the
 /// pending block's deterministic facts, and the delivery contract (return the
 /// lines as text; never write a file — the caller pipes to `scan-guards-apply`).
 fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) -> String {
-    let tone = mustard_core::ProjectConfig::load(project).i18n().tone.as_str().to_string();
     let facts = read_guards_facts(project, &project.join(subproject));
     let facts_line = if facts.is_empty() {
         String::new()
@@ -151,7 +150,7 @@ fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) ->
          RULE it implies: a `scripts=` codegen step ⇒ \"its output is generated — \
          regenerate via that script, never hand-edit it\"; a detected stack ⇒ the \
          convention that stack enforces here. Write in the project locale \
-         ({spec_lang}) and tone ({tone}). Be concise; never generic prose. Deliver \
+         ({spec_lang}), in plain words. Be concise; never generic prose. Deliver \
          ONLY the lines as your final message; do NOT write any file — the caller \
          pipes your text to scan-guards-apply.{facts_line}"
     )
@@ -316,7 +315,7 @@ fn render_patterns_worklist(
 }
 
 /// Read the `<!-- facts: ... -->` payload from a subproject's pending `## Guards`
-/// block (Wave 1's grounding context: `kind=...; frameworks=...`). Empty when
+/// block (the scan's grounding context: `kind=...; frameworks=...`). Empty when
 /// the file or the facts line is absent. Shape-mirrors [`super::sections::read_guards_block`]
 /// down to resolving its source through [`crate::shared::context::guards_file`],
 /// so the enrich pass keeps its grounding under a private install.
@@ -497,7 +496,7 @@ mod tests {
 
     #[test]
     fn review_role_block_carries_verdict_contract() {
-        // W1 of structured-review-verdict-capture: the rendered review block must
+        // The rendered review block must
         // instruct the agent to end with a machine-readable `<VERDICT>` line so the
         // SubagentStop hook records the gate result without a human reading prose.
         // It must name the JSON shape (verdict approved|rejected, critical N,
@@ -558,16 +557,15 @@ mod tests {
     }
 
     #[test]
-    fn guards_prompt_lang_carries_locale_tone_and_facts() {
-        // The `guards` role drives the Wave-2 enrich step: its block must name
-        // the project locale + tone (from mustard.json) and surface the pending
-        // block's deterministic facts so the agent stays grounded.
+    fn guards_prompt_lang_carries_locale_and_facts() {
+        // The `guards` role drives the enrich step: its block must name the
+        // project locale and surface the pending block's deterministic facts
+        // so the agent stays grounded. An old `tone` key changes nothing.
         let dir = tempdir().unwrap();
         anchor(dir.path());
-        // mustard.json declares a non-default tone — the block must echo it.
         std::fs::write(
             dir.path().join("mustard.json"),
-            br#"{"specLang":"pt-BR","tone":"technical"}"#,
+            br#"{"language":{"text":"pt-BR"},"tone":"technical"}"#,
         )
         .unwrap();
         // A subproject CLAUDE.md with a pending Guards block carrying facts.
@@ -582,9 +580,9 @@ mod tests {
 
         let block = build_role_block("guards", dir.path(), "apps/rt", "pt-BR");
         assert!(block.starts_with("ROLE: guards"), "role marker missing: {block}");
-        // Locale + tone from mustard.json are surfaced.
+        // The locale is surfaced; the old tone key is not read.
         assert!(block.contains("pt-BR"), "locale missing: {block}");
-        assert!(block.contains("technical"), "tone missing: {block}");
+        assert!(!block.contains("technical"), "the tone key is read by nobody: {block}");
         // Grounding facts from the pending block are surfaced.
         assert!(block.contains("kind=rust"), "kind fact missing: {block}");
         assert!(block.contains("serde, clap"), "framework facts missing: {block}");
@@ -600,19 +598,13 @@ mod tests {
     #[test]
     fn guards_prompt_lang_specless_derives_locale_from_mustard_json() {
         // The `/scan` enrich path runs spec-less: `run` is invoked with no
-        // `--spec`, so there is no spec.md to read `### Lang:` from. The locale
-        // must instead come from `mustard.json#specLang` via the canonical
-        // `ProjectConfig::load(..).i18n()` accessor — the SAME accessor the
-        // guards role already uses for tone — never an ad-hoc parse. This test
-        // pins the spec-less branch's locale source feeding into the guards
-        // block (locale + tone + the grounded 3-6 line instruction).
+        // `--spec`. The locale comes from `mustard.json` `language.text` through
+        // `ProjectConfig::language`, the one reader of the language — never an
+        // ad-hoc parse. This test pins that source feeding into the guards
+        // block (locale + the grounded 3-6 line instruction).
         let dir = tempdir().unwrap();
         anchor(dir.path());
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            br#"{"specLang":"pt-BR","tone":"technical"}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), br#"{"language":{"text":"pt-BR"}}"#).unwrap();
         let sub = dir.path().join("apps").join("rt");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(
@@ -622,34 +614,33 @@ mod tests {
         )
         .unwrap();
 
-        // Mirror the spec-less locale derivation in `run`: with `spec == None`
-        // the narrative locale is `ProjectConfig::load(..).i18n().lang`.
+        // Mirror the locale derivation in `run`: the narrative locale is
+        // `ProjectConfig::load(..).language().text_or_default()`.
         let spec_lang = mustard_core::ProjectConfig::load(dir.path())
-            .i18n()
-            .lang
+            .language()
+            .text_or_default()
             .as_str()
             .to_string();
-        assert_eq!(spec_lang, "pt-BR", "spec-less locale must come from mustard.json#specLang");
+        assert_eq!(spec_lang, "pt-BR", "the locale must come from mustard.json language.text");
 
-        // That derived locale flows into the guards block exactly as the spec
-        // path would: locale + tone + the capped, grounded instruction.
+        // That derived locale flows into the guards block: locale + the
+        // capped, grounded instruction.
         let block = build_role_block("guards", dir.path(), "apps/rt", &spec_lang);
         assert!(block.starts_with("ROLE: guards"), "role marker missing: {block}");
         assert!(block.contains("pt-BR"), "locale missing: {block}");
-        assert!(block.contains("technical"), "tone missing: {block}");
         assert!(block.contains("kind=rust"), "kind fact missing: {block}");
         assert!(block.contains("3-6"), "line cap not stated: {block}");
 
-        // A project with no specLang declared falls back to the i18n default
-        // locale (never a panic / parse error on the spec-less path).
+        // A project with no language declared falls back to the default
+        // locale of Mustard's messages (never a panic on the spec-less path).
         let bare = tempdir().unwrap();
         anchor(bare.path()); // anchor writes `{}` mustard.json.
         let default_lang = mustard_core::ProjectConfig::load(bare.path())
-            .i18n()
-            .lang
+            .language()
+            .text_or_default()
             .as_str()
             .to_string();
-        assert!(!default_lang.is_empty(), "default locale must be non-empty");
+        assert_eq!(default_lang, "pt-BR", "the default locale is the messages' pt-BR");
     }
 
     /// The resolver qualifies plugin-owned agents with [`PLUGIN_NAMESPACE`]
@@ -773,7 +764,7 @@ mod tests {
         assert_eq!(printed, ["paths:", "- apps/api/services/**"], "block shape: {task}");
     }
 
-    /// AC-3 — o contrato pedia caminho, e caminho era o que voltava: dezesseis
+    /// O contrato pedia caminho, e caminho era o que voltava: dezesseis
     /// moldes cuja seção `## Examples` é só uma lista de arquivos. Mudar o apply
     /// sozinho não bastaria (o agente seria recusado por obedecer ao contrato),
     /// e mudar só o contrato não bastaria (prosa que ninguém mede volta sozinha

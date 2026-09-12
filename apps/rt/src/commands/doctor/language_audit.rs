@@ -3,7 +3,7 @@
 //! contain PT-BR text where they should be EN.
 //!
 //! Policy: specs follow
-//! `mustard.json#specLang`, and so does every comment written in the source —
+//! `mustard.json` `language.text`, and so does every comment written in the source —
 //! `//`, `///`, `//!`, `/* */`. The audit therefore looks only at what sits
 //! OUTSIDE a comment. Everything else stays EN-only: identifiers, file paths,
 //! shell commands, log/error messages, API string constants, plus the prose of
@@ -201,7 +201,7 @@ fn audit(root: &Path) -> Report {
             if has_pt_marker(&text) {
                 return;
             }
-            // Comentário segue o specLang do projeto: só o que está FORA
+            // Comentário segue o `language.text` do projeto: só o que está FORA
             // dele entra na contagem. Markdown não passa por aqui.
             let scored: Cow<'_, str> = match comment_syntax(path) {
                 Some(syntax) => Cow::Owned(strip_comments(&text, syntax)),
@@ -631,7 +631,7 @@ mod tests {
     fn pt_only_inside_comments_is_not_a_hit() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // O comentário segue o specLang; o código ao lado é inglês puro.
+        // O comentário segue o `language.text`; o código ao lado é inglês puro.
         write(
             root,
             "apps/rt/src/greeter.rs",

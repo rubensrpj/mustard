@@ -161,23 +161,14 @@ fn read_windows_for_session(project_root: &Path, session_id: &str) -> Vec<(Strin
     out
 }
 
-/// Derive `lang` from the latest `pipeline.scope` event for `spec_id`. Defaults
-/// to `"en-US"` (BCP-47).
-fn resolve_lang(cwd: &Path, spec_id: &str) -> String {
-    let events = read_events_for_spec(cwd, spec_id);
-    let raw = events
-        .iter()
-        .rfind(|e| e.event == "pipeline.scope")
-        .and_then(|e| e.payload.get("lang"))
-        .and_then(Value::as_str)
-        .unwrap_or("en-US")
-        .to_string();
-    let lc = raw.trim().to_ascii_lowercase();
-    if lc == "pt" || lc == "pt-br" {
-        "pt-BR".to_string()
-    } else {
-        "en-US".to_string()
-    }
+/// The language of the amendments block: the project's text language
+/// (`language.text`), in which the spec itself is written.
+fn resolve_lang(project_root: &Path) -> String {
+    mustard_core::ProjectConfig::load(project_root)
+        .language()
+        .text_or_default()
+        .as_str()
+        .to_string()
 }
 
 fn read_events_for_spec(cwd: &Path, spec_id: &str) -> Vec<HarnessEvent> {
@@ -380,7 +371,7 @@ fn finalize_window(
         .collect();
     window_events.sort_by(|a, b| a.ts.cmp(&b.ts));
 
-    let lang = resolve_lang(project_root, spec_id);
+    let lang = resolve_lang(project_root);
     let now = now_iso8601();
     let block = build_amendments_block(window, &window_events, status, &lang, &now);
 

@@ -86,34 +86,20 @@ use mustard_core::domain::spec::contract::{
 };
 use mustard_core::{
     domain::model::view::Phase,
-    platform::i18n::{translate, Locale, Tone},
+    platform::i18n::{translate, Locale},
     Outcome, Scan, Scope, Stage,
 };
 use serde::Deserialize;
 use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
-/// Human-readable instruction inserted into the drafter prompt for `tone`.
-/// Mirrors the Tone semantics in `mustard_core::platform::i18n::apply_tone`.
-#[must_use]
-pub fn tone_prompt_instruction(tone: Tone) -> &'static str {
-    match tone {
-        Tone::Didactic => {
-            "Write this spec narrative in didactic tone — expand abbreviations on first use \
-             (AC = Acceptance Criteria, wave = onda) and prefer plain words over jargon."
-        }
-        Tone::Technical => {
-            "Write this spec narrative in technical tone — direct, jargon and abbreviations \
-             welcome, no parenthetical glossing."
-        }
-        Tone::Concise => {
-            "Write this spec narrative in concise tone — minimal prose, drop parentheticals \
-             and filler, collapse whitespace."
-        }
-    }
-}
+/// The instruction the drafter leaves in `spec.md` for whoever fleshes out the
+/// section bodies. The voice is one, plain and didactic: there is no tone to
+/// choose.
+pub const DRAFTING_INSTRUCTION: &str = "Write this spec narrative in plain words — expand \
+     abbreviations on first use (AC = Acceptance Criteria, wave = onda) and prefer plain words \
+     over jargon.";
 
 /// Options for `mustard-rt run spec-draft`.
 pub struct SpecDraftOpts {
@@ -127,8 +113,6 @@ pub struct SpecDraftOpts {
     pub slug: Option<String>,
     /// `light` or `full`.
     pub scope: String,
-    /// `pt-BR` / `en-US` (BCP-47 only — short forms rejected).
-    pub lang: String,
     /// Optional comma-separated signals (e.g. `layers,files,registry`).
     pub signals: Option<String>,
     /// Optional output directory. Defaults to `.claude/spec/{slug}/`.
@@ -672,9 +656,8 @@ fn material_only_result(
         return None;
     };
     let mut out = strip_material_sections(&body);
-    // O `run_at` já validou o `--lang` antes de chegar aqui; o recuo só existe
-    // para quem chama esta função direto.
-    let lang = Locale::from_str(&opts.lang).unwrap_or(Locale::PtBr);
+    // A spec é escrita no idioma do texto do projeto (`language.text`).
+    let lang = mustard_core::ProjectConfig::load(project_root).language().text_or_default();
     if let Some(block) = render_material_sections(material, lang) {
         if !out.ends_with('\n') {
             out.push('\n');
@@ -1015,10 +998,9 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         emit_error("invalid --scope (expected `light` or `full`)", &opts.scope);
         return 0;
     };
-    let Ok(lang_locale) = Locale::from_str(&opts.lang) else {
-        emit_error("invalid --lang (expected BCP-47 `pt-BR` or `en-US`)", &opts.lang);
-        return 0;
-    };
+    // The spec is written in the project's text language (`language.text`),
+    // and in no other: every reader of the spec assumes that one.
+    let lang_locale = mustard_core::ProjectConfig::load(project_root).language().text_or_default();
     // The channel is read and checked BEFORE anything is written: a malformed
     // material file must not leave a half-drafted spec behind.
     let material = match opts.material.as_deref() {
@@ -1166,7 +1148,6 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         &slug,
         &opts.intent,
         scope,
-        &opts.lang,
         opts.waves,
         lang_locale,
         &build_command,
@@ -1181,9 +1162,6 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         return 0;
     }
 
-    // ---- Resolve tone from mustard.json (wired into the drafter prompt). ----
-    let tone = mustard_core::ProjectConfig::load(project_root).i18n().tone;
-
     // ---- Materialise files. ----
     // Capture the prose a human already wrote, BEFORE the overwrite. See
     // [`carry_authored_prose`] — a re-draft must not cost the operator the
@@ -1191,7 +1169,7 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     let authored = read_authored_prose(&output.join("spec.md"), lang_locale);
 
     let mut written: Vec<String> = Vec::new();
-    if let Err(e) = spec_scaffold::write_spec_md(&output, &input, &opts.signals, lang_locale, tone) {
+    if let Err(e) = spec_scaffold::write_spec_md(&output, &input, &opts.signals, lang_locale) {
         emit_error("write spec.md", &e);
         return 0;
     }
@@ -1289,9 +1267,7 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         "ok": !refused,
         "spec": slug,
         "scope": effective_scope,
-        "lang": opts.lang,
-        "tone": tone.as_str(),
-        "tone_instruction": tone_prompt_instruction(tone),
+        "lang": lang_locale.as_str(),
         "output": output.display().to_string(),
         "files": written,
     });
@@ -1378,12 +1354,12 @@ fn cut_work_branch(project_root: &Path) -> Result<Option<String>, String> {
         CutOutcome::NoPending => Ok(None),
         CutOutcome::AlreadyThere(branch) | CutOutcome::Cut(branch) => Ok(Some(branch)),
         CutOutcome::Refused(busy) => {
-            let lang = mustard_core::ProjectConfig::load(project_root).i18n().lang;
+            let lang = mustard_core::ProjectConfig::load(project_root).language().text_or_default();
             Err(busy.reason(lang))
         }
         CutOutcome::BaseUnknown { target, current, candidates } => {
             let config = mustard_core::ProjectConfig::load(project_root);
-            let said = translate("workbranch.base.unknown", config.i18n().lang)
+            let said = translate("workbranch.base.unknown", config.language().text_or_default())
                 .replace("{target}", &target)
                 .replace("{candidates}", &candidates.join(", "));
             if current.as_deref().is_some_and(|b| is_protected(project_root, b, &config)) {
@@ -1721,7 +1697,6 @@ fn build_input(
     slug: &str,
     intent: &str,
     scope: Scope,
-    lang: &str,
     waves: u32,
     lang_locale: Locale,
     build_command: &str,
@@ -1733,7 +1708,7 @@ fn build_input(
         outcome: Some(Outcome::Active),
         phase: Some(Phase::Plan),
         scope: Some(scope),
-        lang: Some(lang.to_string()),
+        lang: Some(lang_locale.as_str().to_string()),
         // Invariant: a Full spec floors at ≥1
         // wave. The floor is named by [`scope_decompose::wave_floor_for_full`]
         // (single source of the "Full ⇒ ≥1 wave" rule); a caller asking for >1
@@ -2170,7 +2145,6 @@ mod tests {
                 intent: intent.to_string(),
                 slug: Some(given.to_string()),
                 scope: "light".into(),
-                lang: "en-US".into(),
                 signals: None,
                 output: None,
                 material: None,
@@ -2269,7 +2243,6 @@ mod tests {
                 intent: intent.to_string(),
                 slug: None,
                 scope: "light".into(),
-                lang: "en-US".into(),
                 signals: None,
                 output: None,
                 material: None,
@@ -2461,7 +2434,7 @@ mod tests {
 
     #[test]
     fn build_input_validates() {
-        let input = build_input("demo", "Demo", Scope::Full, "pt-BR", 2, Locale::PtBr, "rtk cargo build");
+        let input = build_input("demo", "Demo", Scope::Full, 2, Locale::PtBr, "rtk cargo build");
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
@@ -2475,7 +2448,7 @@ mod tests {
     fn full_draft_never_zero_waves_or_non_wave_plan() {
         for waves in [0u32, 1, 2, 7] {
             let input = build_input(
-                "demo", "Demo", Scope::Full, "pt-BR", waves, Locale::PtBr, "rtk cargo build",
+                "demo", "Demo", Scope::Full, waves, Locale::PtBr, "rtk cargo build",
             );
             // total_waves is floored to ≥ 1 for Full.
             assert_eq!(
@@ -2499,7 +2472,7 @@ mod tests {
         }
         // Light: no waves, no wave-plan flag (invariant is Full-only).
         let light = build_input(
-            "demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "rtk cargo build",
+            "demo", "Demo", Scope::Light, 0, Locale::EnUs, "rtk cargo build",
         );
         assert_eq!(light.total_waves, None, "Light carries no waves");
         let light_meta = build_meta_from_input(&light);
@@ -2510,7 +2483,7 @@ mod tests {
     #[test]
     fn build_input_validates_in_en_us() {
         // Section *keys* are canonical EN identifiers; bodies are localised.
-        let input = build_input("demo", "Demo", Scope::Full, "en-US", 2, Locale::EnUs, "rtk cargo build");
+        let input = build_input("demo", "Demo", Scope::Full, 2, Locale::EnUs, "rtk cargo build");
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
         // Body strings should be EN, not PT.
         let users = input
@@ -2526,7 +2499,7 @@ mod tests {
         // The build command flows into the trailing build-green SAFETY AC (the
         // LAST criterion), not `rtk cargo build` as the only AC; the leading ACs
         // are EARS behaviour skeletons, never a lone build tautology.
-        let input = build_input("demo", "Demo", Scope::Light, "en-US", 0, Locale::EnUs, "pnpm build");
+        let input = build_input("demo", "Demo", Scope::Light, 0, Locale::EnUs, "pnpm build");
         let acs = &input.acceptance_criteria;
         assert!(acs.len() >= 2, "seed carries behaviour ACs + a safety AC, got {}", acs.len());
         assert_eq!(acs.last().unwrap().command, "pnpm build", "build command is the trailing safety AC");
@@ -2548,7 +2521,6 @@ mod tests {
             "demo",
             "Demo",
             Scope::Light,
-            "en-US",
             0,
             Locale::EnUs,
             mustard_core::BUILD_COMMAND_FALLBACK,
@@ -2585,7 +2557,6 @@ mod tests {
             intent: "Demo intent".into(),
             slug: None,
             scope: "light".into(),
-            lang: "pt-BR".into(),
             signals: None,
             output: Some(out.clone()),
             material: None,
@@ -2629,7 +2600,6 @@ mod tests {
             intent: "Demo intent".into(),
             slug: None,
             scope: "full".into(),
-            lang: "pt-BR".into(),
             signals: None,
             output: Some(out.clone()),
             material: None,
@@ -2685,11 +2655,15 @@ mod tests {
         ] {
             let dir = tempdir().unwrap();
             let out = dir.path().join("specs").join("rt");
+            std::fs::write(
+                dir.path().join("mustard.json"),
+                format!(r#"{{"language":{{"text":"{lang}"}}}}"#),
+            )
+            .unwrap();
             draft_in(dir.path(), SpecDraftOpts {
                 intent: "Demo roundtrip intent".into(),
                 slug: None,
                 scope: scope.into(),
-                lang: lang.into(),
                 signals: None,
                 output: Some(out.clone()),
                 material: None,
@@ -2729,7 +2703,6 @@ mod tests {
             intent: "Demo intent".into(),
             slug: None,
             scope: "full".into(),
-            lang: "pt-BR".into(),
             signals: None,
             output: Some(dir.path().join("specs").join("demo")),
             material: None,
@@ -2752,28 +2725,42 @@ mod tests {
         assert!(!root.join("wave-1-mixed").exists());
     }
 
+    /// O rascunho sai no idioma do texto do projeto, e em nenhum outro: sem
+    /// idioma declarado, no pt-BR das mensagens; com `language.text`, nele. A
+    /// chave antiga de idioma não é mais lida.
     #[test]
-    fn rejects_light_scope_short_lang() {
-        let dir = tempdir().unwrap();
-        let opts = SpecDraftOpts {
-            intent: "Demo".into(),
-            slug: None,
-            scope: "light".into(),
-            lang: "pt".into(),
-            signals: None,
-            output: Some(dir.path().join("out")),
-            material: None,
-            material_only: false,
-            no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
-            waves: 0,
-            plan: None,
-            force: false,
-            query_terms: None,
-            force_scope: false,
-        };
-        draft_in(dir.path(), opts);
-        // Output dir should not have been populated.
-        assert!(!dir.path().join("out").join("spec.md").exists());
+    fn the_draft_is_written_in_the_project_text_language() {
+        for (config, lang) in [
+            (None, Locale::PtBr),
+            (Some(r#"{"language":{"text":"en-US"}}"#), Locale::EnUs),
+            (Some(r#"{"specLang":"en-US"}"#), Locale::PtBr),
+        ] {
+            let dir = tempdir().unwrap();
+            if let Some(config) = config {
+                std::fs::write(dir.path().join("mustard.json"), config).unwrap();
+            }
+            let out = dir.path().join("out");
+            draft_in(dir.path(), SpecDraftOpts {
+                intent: "Demo".into(),
+                slug: None,
+                scope: "light".into(),
+                signals: None,
+                output: Some(out.clone()),
+                material: None,
+                material_only: false,
+                no_material_reason: Some("fixture: this test exercises another part of the draft".into()),
+                waves: 0,
+                plan: None,
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            });
+            let body = std::fs::read_to_string(out.join("spec.md")).unwrap();
+            let heading = format!("## {}\n", translate("heading.spec.context", lang));
+            assert!(body.contains(&heading), "{config:?}: expected {heading:?} in\n{body}");
+            let meta = std::fs::read_to_string(out.join("meta.json")).unwrap();
+            assert!(meta.contains(&format!("\"lang\": \"{}\"", lang.as_str())), "{config:?}: {meta}");
+        }
     }
 
     /// Roda o rascunho com a pasta temporária do teste como o projeto. O `run`
@@ -2802,7 +2789,6 @@ mod tests {
             intent: "Demo intent".into(),
             slug: None,
             scope: "light".into(),
-            lang: "en-US".into(),
             signals: None,
             output: Some(out.to_path_buf()),
             material,
@@ -2835,7 +2821,6 @@ mod tests {
             intent: "Uma unidade".into(),
             slug: None,
             scope: "light".into(),
-            lang: "pt-BR".into(),
             signals: None,
             output: Some(out.clone()),
             material: None,
@@ -3035,7 +3020,6 @@ mod tests {
             intent: "Demo intent".into(),
             slug: None,
             scope: "light".into(),
-            lang: "pt-BR".into(),
             signals: None,
             output: Some(out.clone()),
             material: Some(material_path.clone()),
@@ -3067,7 +3051,8 @@ mod tests {
             Some("risks")
         );
 
-        // Numa spec em inglês, o mesmo risco sai sob o título inglês.
+        // Num projeto em inglês, o mesmo risco sai sob o título inglês.
+        std::fs::write(project.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
         let raw = std::fs::read_to_string(&material_path).unwrap();
         let en = draft_with_material(project, &project.join("en"), Some(&raw));
         assert!(en.contains("\n## Risks\n"), "en-US risks heading:\n{en}");
@@ -3127,7 +3112,6 @@ mod tests {
                 intent: "Demo intent".into(),
                 slug: None,
                 scope: "light".into(),
-                lang: "en-US".into(),
                 signals: None,
                 output: Some(out.clone()),
                 material: Some(path),
@@ -3193,7 +3177,6 @@ mod tests {
             intent: intent.to_string(),
             slug: None,
             scope: "full".into(),
-            lang: "en-US".into(),
             signals: None,
             output: None,
             material: None,
@@ -3453,9 +3436,11 @@ mod tests {
     /// `workspace_root` accepts the project root and a `## Files` census parses
     /// against a real (if model-less) project — mirrors scope_decompose's
     /// `plant_project`.
+    /// A project that declared English as its text language: the drafts these
+    /// tests inspect, and the names they derive, are the English ones.
     fn plant_project(root: &std::path::Path) {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"language":{"text":"en-US"}}"#).unwrap();
     }
 
     /// Write a synthetic `spec.md` + a Full `meta.json` under
@@ -3466,7 +3451,7 @@ mod tests {
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("spec.md"), spec_body).unwrap();
         let full_input = build_input(
-            slug, "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build",
+            slug, "Demo", Scope::Full, 1, Locale::EnUs, "build",
         );
         let meta = build_meta_from_input(&full_input);
         spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();
@@ -3629,7 +3614,7 @@ mod tests {
         let spec_dir = dir.path().join(".claude").join("spec").join("ghost");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let full_input = build_input(
-            "ghost", "Demo", Scope::Full, "en-US", 1, Locale::EnUs, "build",
+            "ghost", "Demo", Scope::Full, 1, Locale::EnUs, "build",
         );
         let meta = build_meta_from_input(&full_input);
         spec_scaffold::write_meta_json(&spec_dir, &meta).unwrap();
@@ -3715,7 +3700,6 @@ mod tests {
             intent: "Unidade com ondas".into(),
             slug: Some(slug.to_string()),
             scope: "full".into(),
-            lang: "pt-BR".into(),
             signals: None,
             output: None,
             material: Some(material_path.clone()),

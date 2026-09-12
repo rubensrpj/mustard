@@ -4,22 +4,21 @@
 //!
 //! ## Por que existe
 //!
-//! Com `tone: didactic`, o assistente recebe a regra de escrita em toda
-//! mensagem (`prompt_submit_inject::tone_rule`). Nada conferia se ela foi
-//! cumprida: em 09/09/2026 o usuário reclamou duas vezes de respostas difíceis
-//! de entender, com a regra ativa, e nenhum gancho percebeu.
+//! O assistente recebe a regra de escrita em toda mensagem
+//! (`prompt_submit_inject::writing_rule`). Nada conferia se ela foi cumprida:
+//! em 09/09/2026 o usuário reclamou duas vezes de respostas difíceis de
+//! entender, com a regra ativa, e nenhum gancho percebeu.
 //!
 //! ## Quando mede
 //!
 //! O `end_of_turn_check` só chama as regras no `Stop` da sessão principal.
 //! Aqui, dois fatos a mais:
 //!
-//! 1. O projeto tem `mustard.json`. Nele o idioma da resposta é medido sempre
-//!    que o projeto DECLAROU um (`lang`/`specLang`), qualquer que seja o tom;
-//!    sem idioma declarado não há veredito de idioma. As medições da escrita só
-//!    rodam quando o projeto DECLAROU `tone: didactic` — o campo cru, pela
-//!    mesma leitura da regra ([`declares_didactic`]); o padrão resolvido não é
-//!    uma escolha.
+//! 1. O projeto tem `mustard.json`. Nele todas as medições da escrita rodam
+//!    sempre: o tom é um só, didático, e não há chave que o desligue. O idioma
+//!    da resposta só é julgado quando o projeto DECLAROU o idioma do texto
+//!    (`language.text`); sem ele não há veredito de idioma, porque o padrão
+//!    resolvido não é uma escolha.
 //! 2. O `Stop` trouxe texto final.
 //!
 //! ## O que faz
@@ -46,7 +45,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::clarity::{measure, measure_language, ClarityReport};
+use mustard_core::domain::clarity::{measure, ClarityReport};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::io::fs;
 use mustard_core::platform::i18n::Locale;
@@ -55,7 +54,6 @@ use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::hooks::session::prompt_submit_inject::declares_didactic;
 use crate::hooks::task::end_of_turn_check::{Finding, Turn, TurnRule};
 
 /// O arquivo da sessão onde a medição guarda o que precisa lembrar.
@@ -89,15 +87,12 @@ impl TurnRule for ClarityRule {
         if !mustard_core::ProjectConfig::exists(root) || turn.message.trim().is_empty() {
             return None;
         }
-        // O idioma que a prosa precisa ter é só o DECLARADO. O padrão resolvido
-        // é pt-BR, e um projeto em inglês que nunca declarou idioma teria toda
-        // resposta apontada. Os defeitos saem no idioma resolvido (`turn.lang`).
-        let expected = mustard_core::ProjectConfig::load(root).declared_locale();
-        let defects = if declares_didactic(root) {
-            writing_defects(root, turn, expected)
-        } else {
-            language_defects(turn.message, expected, turn.lang)
-        };
+        // O idioma que a prosa precisa ter é só o DECLARADO em `language.text`.
+        // O padrão resolvido é pt-BR, e um projeto em inglês que nunca declarou
+        // idioma teria toda resposta apontada. Os defeitos saem no idioma
+        // resolvido (`turn.lang`).
+        let expected = mustard_core::ProjectConfig::load(root).language().text;
+        let defects = writing_defects(root, turn, expected);
         if defects.is_empty() {
             return None;
         }
@@ -109,8 +104,9 @@ impl TurnRule for ClarityRule {
     }
 }
 
-/// Todas as medições do tom didático, com a memória da sessão: o que esta
-/// resposta explicou fica guardado, e o evento de métricas é registrado.
+/// Todas as medições da escrita, com a memória da sessão: o que esta resposta
+/// explicou fica guardado, e o evento de métricas é registrado. Sem idioma
+/// declarado (`expected` vazio), a medição do idioma não dá veredito.
 fn writing_defects(root: &Path, turn: &Turn<'_>, expected: Option<Locale>) -> Vec<String> {
     let record_path = record_path(root, turn.session);
     let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
@@ -125,17 +121,6 @@ fn writing_defects(root: &Path, turn: &Turn<'_>, expected: Option<Locale>) -> Ve
     }
     emit_metrics(turn.project_dir, turn.session, &report);
     report.defects(turn.lang)
-}
-
-/// Fora do tom didático só o idioma é medido, e nada é gravado nem
-/// registrado: `assistant.clarity` traz as contagens da medição inteira, que
-/// aqui não rodou. Sem idioma declarado (`expected` vazio) não há veredito.
-fn language_defects(message: &str, expected: Option<Locale>, lang: Locale) -> Vec<String> {
-    expected
-        .and_then(|expected| measure_language(message, expected))
-        .map(|wrong| wrong.defect(lang))
-        .into_iter()
-        .collect()
 }
 
 /// Quantos defeitos o bloqueio e o aviso listam; o resto vira uma contagem.
@@ -264,13 +249,14 @@ mod tests {
     /// Passa: frase curta, sem sigla nem nome inventado.
     const CLEAR: &str = "A resposta ficou curta e clara.";
 
-    /// Um projeto que declara `tone` (ou nenhum tom, com `None`).
-    fn project(tone: Option<&str>) -> tempfile::TempDir {
+    /// Um projeto que declarou o português do Brasil como idioma do texto.
+    fn project() -> tempfile::TempDir {
+        project_with(r#"{"language":{"text":"pt-BR"}}"#)
+    }
+
+    /// Um projeto com este `mustard.json`.
+    fn project_with(config: &str) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
-        let config = match tone {
-            Some(tone) => format!(r#"{{"specLang":"pt-BR","tone":"{tone}"}}"#),
-            None => r#"{"specLang":"pt-BR"}"#.to_string(),
-        };
         std::fs::write(dir.path().join("mustard.json"), config).unwrap();
         dir
     }
@@ -342,7 +328,7 @@ mod tests {
     /// defeitos não andam mais na mensagem seguinte.
     #[test]
     fn a_failing_reply_blocks_and_its_rewrite_only_warns() {
-        let dir = project(Some("didactic"));
+        let dir = project();
         let root = dir.path();
         match check(root, &stop("s1", FAILING)) {
             Verdict::Deny { reason } => {
@@ -377,7 +363,7 @@ mod tests {
     /// A resposta que passa não barra nem avisa.
     #[test]
     fn a_clear_reply_passes() {
-        let dir = project(Some("didactic"));
+        let dir = project();
         assert_eq!(check(dir.path(), &stop("s1", CLEAR)), Verdict::Allow);
         assert_eq!(check(dir.path(), &rewrite("s1", CLEAR)), Verdict::Allow);
     }
@@ -385,7 +371,7 @@ mod tests {
     /// Uma resposta em inglês num projeto em português reprova pelo idioma.
     #[test]
     fn a_reply_in_another_language_blocks() {
-        let dir = project(Some("didactic"));
+        let dir = project();
         let reply = "The wave is done and the tests pass.\n\
             The check now compares the language of the reply with the language of the project.\n\
             It counts the common words of each language.\n\
@@ -396,28 +382,23 @@ mod tests {
         assert!(reason.contains("- resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{reason}");
     }
 
-    /// Só um projeto que declarou o tom didático tem a escrita medida; nos
-    /// outros nada é gravado nem registrado. Um subagente e outro evento nunca
+    /// A escrita é medida em todo projeto com `mustard.json`, declare ou não o
+    /// idioma, e a antiga chave do tom não desliga nada: ela não é mais lida.
+    /// Sem `mustard.json` nada é medido. Um subagente e outro evento nunca
     /// são medidos.
     #[test]
-    fn writing_is_only_measured_for_didactic_tone() {
-        for tone in [Some("technical"), Some("concise"), None] {
-            let dir = project(tone);
+    fn writing_is_measured_in_every_project() {
+        for config in [r#"{"language":{"text":"pt-BR"}}"#, "{}", r#"{"tone":"technical"}"#] {
+            let dir = project_with(config);
             let root = dir.path();
-            assert_eq!(check(root, &stop("s1", FAILING)), Verdict::Allow, "{tone:?} asked for no measurement");
-            assert!(!record_file(root, "s1").exists(), "{tone:?}: nothing recorded");
-            assert!(clarity_rows(root).is_empty(), "{tone:?}: no event");
+            assert!(matches!(check(root, &stop("s1", FAILING)), Verdict::Deny { .. }), "{config}");
+            assert!(record_file(root, "s1").is_file(), "{config}: recorded");
+            assert_eq!(clarity_rows(root).len(), 1, "{config}: one event");
         }
         let bare = tempdir().unwrap();
         assert_eq!(check(bare.path(), &stop("s1", FAILING)), Verdict::Allow, "no mustard.json, no measurement");
 
-        for tone in ["didactic", "didático"] {
-            let dir = project(Some(tone));
-            assert!(matches!(check(dir.path(), &stop("s1", FAILING)), Verdict::Deny { .. }), "{tone}");
-            assert!(record_file(dir.path(), "s1").is_file(), "{tone}: recorded");
-        }
-
-        let dir = project(Some("didactic"));
+        let dir = project();
         let mut sub = stop("s1", FAILING);
         sub.agent_id = Some("child".to_string());
         assert_eq!(check(dir.path(), &sub), Verdict::Allow);
@@ -428,7 +409,7 @@ mod tests {
     /// O evento traz as contagens e o resultado, e nada do texto.
     #[test]
     fn clarity_event_records_metrics_not_text() {
-        let dir = project(Some("didactic"));
+        let dir = project();
         let root = dir.path();
         let reply = "O CI falhou com a senha zebra-quartzo-sete no log.";
         let _ = check(root, &stop("s1", reply));
@@ -455,7 +436,7 @@ mod tests {
     /// ficam abaixo de 1.500 caracteres, qualquer que seja a resposta.
     #[test]
     fn clarity_defects_are_capped() {
-        let dir = project(Some("didactic"));
+        let dir = project();
         let root = dir.path();
         // Sessenta frases longas de palavras compridas: cada defeito passa do
         // corte de [`MAX_DEFECT_CHARS`], e os que sobram viram uma contagem.
@@ -483,7 +464,7 @@ mod tests {
     /// da sessão guarda o que já foi explicado.
     #[test]
     fn explained_acronym_carries_across_replies() {
-        let dir = project(Some("didactic"));
+        let dir = project();
         let root = dir.path();
         assert_eq!(check(root, &stop("s1", "O CI (integração contínua) falhou.")), Verdict::Allow);
         assert_eq!(check(root, &stop("s1", FAILING)), Verdict::Allow);
@@ -500,7 +481,7 @@ mod tests {
             style_seed(),
             ["gate", "wave", "slug", "upsert", "strict", "warn", "boundary"].map(String::from)
         );
-        let dir = project(Some("didactic"));
+        let dir = project();
         let root = dir.path();
         std::fs::write(root.join("CONTEXT.md"), "# Glossário\n\n**Unidade**: um trabalho aberto.\n").unwrap();
         let Verdict::Deny { reason } = check(root, &stop("s1", "Troquei o slug da spec.")) else {

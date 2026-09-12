@@ -622,9 +622,9 @@ fn signal_to_json(s: &Signal) -> serde_json::Value {
 /// return `Ok(...)` so the orchestrator can decide downstream behaviour.
 pub fn run(input: GateInput, moment: Moment) -> Result<RegressionVerdict, GateError> {
     let project_root = resolve_project_root(&input.spec_path);
-    // Resolve locale + tone once; thread the whole `I18n` so user-facing prose
-    // (signal templates, AskUser labels, verdict messages) honours both.
-    let i18n = mustard_core::ProjectConfig::load(&project_root).i18n();
+    // Resolve the locale once; thread the whole `I18n` so user-facing prose
+    // (signal templates, AskUser labels, verdict messages) speaks it.
+    let i18n = I18n::new(mustard_core::ProjectConfig::load(&project_root).language().text_or_default());
     // Build the grammar loader once — passed by reference to every layer.
     let loader = GrammarLoader::from_project(&project_root)
         .unwrap_or_else(|_| GrammarLoader::empty(&project_root));
@@ -745,7 +745,7 @@ mod tests {
         let signals = moment_one_signals(
             "vou fazer fail-open dessa wave",
             &project_root,
-            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+            &I18n::new(Locale::PtBr),
         );
         assert!(
             !signals.is_empty(),
@@ -779,7 +779,7 @@ mod tests {
                 // Red path — but we want the signals; rebuild the verdict
                 // through classify_verdict on a fresh scan to inspect them.
                 let project_root = resolve_project_root(spec_path_for_test(project.path()));
-                let i18n = I18n::new(Locale::EnUs, i18n::Tone::default());
+                let i18n = I18n::new(Locale::EnUs);
                 moment_one_signals("we will fail-open this wave", &project_root, &i18n)
             }
             other => panic!("expected verdict with signals, got {other:?}"),
@@ -827,7 +827,7 @@ mod tests {
             &diff,
             &declared,
             &project_root,
-            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+            &I18n::new(Locale::PtBr),
         );
 
         if signals.is_empty() {
@@ -896,7 +896,7 @@ mod tests {
 
         // Call the real `amber_askuser_json` builder and validate
         // the contract surface that the orchestrator interprets.
-        let i18n = I18n::new(Locale::PtBr, i18n::Tone::default());
+        let i18n = I18n::new(Locale::PtBr);
         let serialised = amber_askuser_json(&signals, &i18n);
         assert!(
             serialised.contains("\"verdict\":\"amber\""),
@@ -924,7 +924,7 @@ mod tests {
         );
         // en-US locale renders the English labels through the same builder.
         let serialised_en =
-            amber_askuser_json(&signals, &I18n::new(Locale::EnUs, i18n::Tone::default()));
+            amber_askuser_json(&signals, &I18n::new(Locale::EnUs));
         assert!(
             serialised_en.contains("Authorize") && serialised_en.contains("Block"),
             "en-US labels missing: {serialised_en}"
@@ -1005,7 +1005,7 @@ mod tests {
         let signals = moment_three_signals(
             &before,
             &after,
-            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+            &I18n::new(Locale::PtBr),
             LINE_CHANGE_THRESHOLD,
         );
         assert!(
@@ -1190,7 +1190,7 @@ mod tests {
         copy_real_vocab(project.path());
         let spec_path = project.path().join("spec.md");
         let project_root = resolve_project_root(&spec_path);
-        let i18n = mustard_core::ProjectConfig::load(&project_root).i18n();
+        let i18n = I18n::new(mustard_core::ProjectConfig::load(&project_root).language().text_or_default());
 
         // --- Moment 1: vocabulary over stub-deferral plan text ------------
         //

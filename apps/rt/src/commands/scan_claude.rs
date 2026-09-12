@@ -69,7 +69,7 @@ pub const GUARDS_PENDING_OPEN: &str = "<!-- mustard:guards pending -->";
 /// (idempotence). Defined here, beside its sibling, as the single source.
 pub const GUARDS_DONE_OPEN: &str = "<!-- mustard:guards -->";
 /// Closing marker of the enrichable `## Guards` block (pairs with
-/// [`GUARDS_PENDING_OPEN`]). Wave 2 rewrites the span between the two markers.
+/// [`GUARDS_PENDING_OPEN`]). The enrich step rewrites the span between the two markers.
 /// `pub` so `scan_guards` reuses it (single source of the literal).
 pub const GUARDS_CLOSE: &str = "<!-- /mustard:guards -->";
 
@@ -179,10 +179,10 @@ fn render_commands(commands: &mustard_core::domain::config::Commands) -> String 
 
 /// Build the enrichable `## Guards` section for a SUBPROJECT: a `pending`
 /// sentinel block ([`GUARDS_PENDING_OPEN`] … [`GUARDS_CLOSE`]) whose body carries
-/// the deterministic facts (kind, frameworks, detected stacks) the Wave-2 enrich
+/// the deterministic facts (kind, frameworks, detected stacks) the enrich
 /// agent needs as context, tucked inside an HTML comment so they never render as
 /// prose. The returned string is a complete section (`## Guards\n\n` + block)
-/// ending in a newline. The block stays empty of guards on purpose — Wave 2
+/// ending in a newline. The block stays empty of guards on purpose — the enrich step
 /// fills it; the `pending` marker is the contract that it has not been enriched
 /// yet.
 ///
@@ -221,7 +221,7 @@ pub(crate) fn build_guards_block(
     let mut out = String::from("## Guards\n\n");
     let _ = writeln!(out, "{GUARDS_PENDING_OPEN}");
     // Facts for the enrich agent — kept in a comment so they are context, not
-    // content. Wave 2 (`scan-guards-apply`) reads these to ground the guards.
+    // content. The enrich step (`scan-guards-apply`) reads these to ground the guards.
     let _ = writeln!(out, "<!-- facts: {facts} -->");
     out.push_str(GUARDS_CLOSE);
     out.push('\n');
@@ -462,7 +462,7 @@ fn run_full(
     // (`mustard.json#lang`) — resolved once at the scan root, applied to every
     // unit. Fail-open: no/unreadable config ⇒ `i18n()`'s `pt-BR` default, so
     // existing installs render exactly as before (finding #1, SOLID audit).
-    let lang = crate::shared::context::project_config_cached(root).i18n().lang;
+    let lang = crate::shared::context::project_config_cached(root).language().text_or_default();
 
     // A PRIVATE install keeps its footprint out of the host repository's git, so
     // a subproject's Guards go to the untracked local layer BESIDE `CLAUDE.md`
@@ -631,14 +631,14 @@ mod tests {
     fn guards_pending() {
         // A fresh SUBPROJECT (is_root=false) gets the enrichable `## Guards`
         // block: a `pending` sentinel carrying the deterministic facts (kind,
-        // frameworks) in a comment for the Wave-2 enrich agent.
+        // frameworks) in a comment for the enrich agent.
         let frameworks = vec!["serde".to_string(), "clap".to_string()];
         let out = render_claude_md("rt", "rust", &frameworks, &[], &[], None);
         assert!(out.contains(GUARDS_PENDING_OPEN), "pending open marker missing: {out}");
         assert!(out.contains(GUARDS_CLOSE), "guards close marker missing: {out}");
         // Facts live in a comment inside the block — context, not content.
         assert!(out.contains("<!-- facts: kind=rust; frameworks=serde, clap -->"), "facts comment missing: {out}");
-        // The marker carries the literal `pending` token Wave 2 matches on.
+        // The marker carries the literal `pending` token the enrich step matches on.
         assert!(GUARDS_PENDING_OPEN.contains("pending"), "open marker lost its pending token");
         // No frameworks → facts still render with an explicit (none).
         let bare = render_claude_md("lib", "rust", &[], &[], &[], None);

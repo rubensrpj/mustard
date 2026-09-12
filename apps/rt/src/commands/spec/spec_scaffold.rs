@@ -20,7 +20,7 @@ use mustard_core::domain::spec::contract::{
 };
 use mustard_core::domain::spec;
 use mustard_core::{read_meta, Scope, SpecState};
-use mustard_core::platform::i18n::{translate, Locale, Tone};
+use mustard_core::platform::i18n::{translate, Locale};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -50,7 +50,6 @@ pub fn write_spec_md(
     input: &SpecInput,
     signals: &Option<String>,
     lang: Locale,
-    tone: Tone,
 ) -> Result<(), String> {
     let mut body = String::new();
     // Leading YAML frontmatter carrying ONLY a stable `id:` — the rename-proof
@@ -70,13 +69,12 @@ pub fn write_spec_md(
         let _ = write!(body, "---\nid: spec.{slug}\n---\n\n");
     }
     let _ = write!(body, "# {}\n\n", input.title);
-    // Drafter tone hint — picked up by the LLM that fleshes out section bodies.
+    // Drafter hint — picked up by the LLM that fleshes out section bodies.
     // Hidden in an HTML comment so it never renders in rendered markdown.
     let _ = writeln!(
         body,
-        "<!-- drafter:tone={tone} — {instruction} -->",
-        tone = tone.as_str(),
-        instruction = crate::commands::spec::spec_draft::tone_prompt_instruction(tone),
+        "<!-- drafter: {instruction} -->",
+        instruction = crate::commands::spec::spec_draft::DRAFTING_INSTRUCTION,
     );
     // No lifecycle header block — `meta.json` is the single source of every
     // machine-parseable field (stage/outcome/flags/scope/lang/...). `spec.md`
@@ -469,7 +467,7 @@ mod tests {
             title: "My Feature".to_string(),
             ..SpecInput::default()
         };
-        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs)
             .expect("write spec.md");
         let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
         // Frontmatter is the very first bytes (the resolver requires `---\n`).
@@ -523,7 +521,7 @@ mod tests {
             ],
             ..SpecInput::default()
         };
-        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs)
             .expect("write spec.md");
         let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
 
@@ -583,7 +581,7 @@ mod tests {
             ],
             ..SpecInput::default()
         };
-        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs)
             .expect("write spec.md");
         let body = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
 
@@ -621,7 +619,7 @@ mod tests {
             title: "Resolvable Spec".to_string(),
             ..SpecInput::default()
         };
-        write_spec_md(&spec_dir, &input, &None, Locale::EnUs, Tone::default())
+        write_spec_md(&spec_dir, &input, &None, Locale::EnUs)
             .expect("write spec.md");
 
         // `[[spec.my-slug]]` resolves to the spec.md by frontmatter id, even

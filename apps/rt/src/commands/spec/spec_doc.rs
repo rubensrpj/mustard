@@ -251,8 +251,6 @@ struct Meta {
     #[serde(default)]
     outcome: Option<String>,
     #[serde(default)]
-    lang: Option<String>,
-    #[serde(default)]
     checkpoint: Option<String>,
     #[serde(default)]
     base: Option<String>,
@@ -399,16 +397,10 @@ fn short_title(spec_text: &str, heading: &str) -> (String, Option<String>) {
     }
 }
 
-/// O idioma da spec (`meta.json#lang`, que nasce do `specLang`) e o tom do
-/// projeto. Sem idioma na spec, vale o do projeto.
-fn i18n_for(root: &Path, meta: &Meta) -> I18n {
-    let project = mustard_core::ProjectConfig::load(root).i18n();
-    let lang = meta
-        .lang
-        .as_deref()
-        .and_then(|l| l.parse::<Locale>().ok())
-        .unwrap_or(project.lang);
-    I18n::new(lang, project.tone)
+/// O idioma da página: o do texto do projeto (`language.text`), em que a spec
+/// é escrita. A spec não guarda um idioma próprio para concorrer com ele.
+fn i18n_for(root: &Path) -> I18n {
+    I18n::new(mustard_core::ProjectConfig::load(root).language().text_or_default())
 }
 
 /// O branch da unidade, quando o checkout está nele. Fora dele a página não
@@ -513,7 +505,7 @@ impl Position {
 
 fn render(root: &Path, slug: &str, dir: &Path) -> String {
     let meta = read_meta(dir);
-    let i18n = i18n_for(root, &meta);
+    let i18n = i18n_for(root);
     let t = |key: &str| i18n.render(key);
     let approved =
         approval_marker_path(&root.to_string_lossy(), slug).is_some_and(|p| p.is_file());
@@ -1106,7 +1098,7 @@ mod tests {
     /// Uma unidade com tudo o que a página lê: spec, meta, material, marcador
     /// de esclarecimento, prova, uma onda, um molde e a lista de pendências.
     fn seed(root: &Path) {
-        fs::write(root.join("mustard.json"), r#"{"specLang":"pt-BR"}"#).unwrap();
+        fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
         let dir = root.join(".claude/spec/demo");
         fs::create_dir_all(dir.join("wave-1-doc")).unwrap();
         fs::write(dir.join("spec.md"), SPEC).unwrap();
@@ -1372,7 +1364,9 @@ mod tests {
         let root = tmp.path();
         let dir = root.join(".claude/spec/bare");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("meta.json"), r#"{"stage":"Execute","lang":"en-US"}"#).unwrap();
+        fs::write(dir.join("meta.json"), r#"{"stage":"Execute"}"#).unwrap();
+        // A página fala o idioma do texto do projeto.
+        fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
         let report = generate(root, "bare");
         assert!(report.ok, "{report:?}");
         let html = fs::read_to_string(dir.join(DOC_FILE)).unwrap();

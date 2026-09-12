@@ -228,7 +228,7 @@ pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> 
 /// nothing and exits 0 — fail-open, byte-stable.
 pub fn run(root: &Path) {
     let orientation = compute_orientation(root);
-    let lang = crate::shared::context::project_config_cached(root).i18n().lang;
+    let lang = crate::shared::context::project_config_cached(root).language().text_or_default();
     if let Some(t) = render_terrain(&orientation, lang) {
         println!("{t}");
     }
@@ -237,7 +237,7 @@ pub fn run(root: &Path) {
 #[cfg(test)]
 mod tests {
 
-    /// AC-2 — the SessionStart payload stays IN FORCE for a monorepo-sized
+    /// The SessionStart payload stays IN FORCE for a monorepo-sized
     /// census.
     ///
     /// The hook folds the census, every injectable declared on that event and

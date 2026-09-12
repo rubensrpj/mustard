@@ -70,7 +70,7 @@
 //! `lang` accepts BCP-47 (`pt-BR` / `en-US`); the legacy short forms
 //! (`pt` / `en`) are tolerated on read for back-compat with old plan JSON
 //! and normalised to BCP-47 in the rendered headings. The *effective* heading
-//! language follows the project's `mustard.json#specLang` (root wins) when the
+//! language follows the project's `mustard.json` `language.text` (root wins) when the
 //! scaffold runs inside a workspace; the plan's `lang` is the fallback for a
 //! standalone scaffold. Every generated artefact (headings, placeholders) is
 //! rendered in that effective language per the i18n rule.
@@ -1460,7 +1460,7 @@ pub(crate) enum ScaffoldOutcome {
         /// sujeito é a onda, e a linha a editar é a dela.
         untraced_waves: Vec<String>,
     },
-    /// `plan.waves` was empty — operator error (W10.T10.3 hard gate).
+    /// `plan.waves` was empty — operator error (a hard gate).
     EmptyPlan,
     /// The plan file could not be read or parsed; carries the stderr message
     /// (which teaches [`PLAN_SCHEMA_HINT`]).
@@ -1528,7 +1528,7 @@ pub(crate) fn scaffold_warning_to(
     if plan.waves.is_empty() {
         return ScaffoldOutcome::EmptyPlan;
     }
-    // W10.T10.3 — mismatch is operator typo, not fatal: warn and continue
+    // A mismatch is an operator typo, not fatal: warn and continue
     // using the actual length so the table matches the directories on disk.
     if let Some(declared) = plan.total_waves {
         let actual = plan.waves.len() as u32;
@@ -1657,7 +1657,7 @@ pub(crate) fn scaffold_warning_to(
     // reason the other two do — see `ScaffoldOutcome::Created`.
     let criteria_outside_claimants = gaps.criteria_outside_claimants;
 
-    // Wave 3 of mustard-unification: emit `meta.json` alongside every spec.md
+    // Emit `meta.json` alongside every spec.md
     // we just wrote so consumers can read lifecycle metadata as structured
     // JSON instead of regexing the markdown. Fail-open per file.
     // `total_waves` is the count we ACTUALLY scaffold — one wave dir + one
@@ -2467,7 +2467,7 @@ mod tests {
         assert!(s1.contains("- [ ] clean label"), "{s1}");
     }
 
-    /// Task 1 (checklist-progresso-por-onda W2): the scaffold seeds each
+    /// The scaffold seeds each
     /// wave's `meta.json#checklist` with one `{label, path, done:false}` item
     /// per target file; the PARENT root meta carries NO checklist (explicit
     /// OUT). The sidecar follows the write mode: reconciled back onto the plan
@@ -3216,7 +3216,7 @@ mod tests {
         String::from_utf8_lossy(&sink).into_owned()
     }
 
-    /// AC-5 — um buraco na numeração das ondas vira aviso NOMINAL: o
+    /// Um buraco na numeração das ondas vira aviso NOMINAL: o
     /// MATERIALIZADOR escreve o WARN, e o WARN diz quais números faltam.
     ///
     /// A contagem gravada no sidecar é `plan.waves.len()` e cada diretório é
@@ -3256,7 +3256,7 @@ mod tests {
         );
     }
 
-    /// AC-1 — a claim the plan's own contents refute: the wave says it covers
+    /// A claim the plan's own contents refute: the wave says it covers
     /// the criterion and, in the same document, declares nowhere to do the work.
     ///
     /// It joins the ESCALATABLE list (the one `plan-materialize` refuses on)
@@ -3291,7 +3291,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — a criterion whose command inspects a path none of its claimants
+    /// A criterion whose command inspects a path none of its claimants
     /// declares is reported on its OWN channel, apart from the coverage and
     /// contradiction lists.
     ///
@@ -3441,7 +3441,7 @@ mod tests {
         );
     }
 
-    /// AC-3 — silence where the plan is consistent, AND silence where the check
+    /// Silence where the plan is consistent, AND silence where the check
     /// cannot judge.
     ///
     /// The second half is the load-bearing one: most criteria here run a NAMED
@@ -3552,7 +3552,7 @@ mod tests {
         supported.files = vec!["src/lib.rs".to_string()];
         let clean = traceability_gaps(&plan(supported), None);
         assert!(clean.untraced_waves.is_empty() && clean.uncovered_acs.is_empty(), "well-traced wave is clean");
-        // (c) defines AC-1 but satisfies only AC-2 → AC-1 is an uncovered gap (Gap 2).
+        // (c) defines AC-1 but satisfies only AC-2 → AC-1 is an uncovered gap.
         let orphan = traceability_gaps(
             &plan(wave(
                 vec!["do it"],
@@ -3780,7 +3780,7 @@ mod tests {
         }
     }
 
-    /// AC-1 — a spec that carries NO `.approved-by-user` marker is still the
+    /// A spec that carries NO `.approved-by-user` marker is still the
     /// Plan agent's draft, so re-running the scaffold after editing `plan.json`
     /// REWRITES what differs and reports it under `refreshed`. This is the
     /// repair path the field report asked for: fix the plan, re-run, done — no
@@ -3834,7 +3834,7 @@ mod tests {
         assert_eq!(wave_meta.checklist[0].path.as_deref(), Some("src/b.rs"));
     }
 
-    /// AC-2 — once `.approved-by-user` exists the layout is FROZEN: a plan that
+    /// Once `.approved-by-user` exists the layout is FROZEN: a plan that
     /// renders something else leaves every file byte-identical, reports nothing
     /// refreshed or removed, and raises the single stderr WARN that names the
     /// change-request route.
@@ -3899,7 +3899,7 @@ mod tests {
         assert!(warn.contains(APPROVED_BY_USER_MARKER), "the WARN must name the marker: {warn}");
     }
 
-    /// AC-2 (the half the freeze first missed) — an APPROVED spec must not grow
+    /// The half the freeze first missed: an APPROVED spec must not grow
     /// a wave. A later plan that adds one still materialises the missing dir
     /// (the dashboard's broken-link repair depends on absent artefacts being
     /// restored), but the root sidecar every consumer reads — `wave-advance`,
@@ -3991,7 +3991,7 @@ mod tests {
         );
     }
 
-    /// AC-3 — before approval, a wave dropped from `plan.json` has its
+    /// Before approval, a wave dropped from `plan.json` has its
     /// directory deleted and listed under `removed`. The root `spec.md` /
     /// `meta.json` and the `.events/`, `qa/` and `review/` phase folders are
     /// never touched — only `wave-N-*` directories are in scope.
@@ -4037,7 +4037,7 @@ mod tests {
         }
     }
 
-    /// AC-8 — a plan that cannot be read OR cannot be parsed answers with a
+    /// A plan that cannot be read OR cannot be parsed answers with a
     /// stderr message that carries a minimal valid plan and points at the
     /// authoritative schema, so the operator does not have to go find it after
     /// failing.

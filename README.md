@@ -290,12 +290,14 @@ O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
   "testCommand":  "cargo test",
   "lintCommand":  "cargo clippy",
   "typeCheckCommand": "cargo check",
-  "specLang": "pt-BR",      // idioma dos artefatos gerados
-  "tone":     "didactic"    // tom da prosa gerada
+  "language": {             // os dois idiomas, cada um na sua chave
+    "text": "pt-BR",        // conversa, specs, páginas, comentários e commits
+    "code": "en"            // nomes no código: variáveis, funções, arquivos
+  }
 }
 ```
 
-O Mustard é **agnóstico** de linguagem e de arquitetura: o que é gerado segue `specLang` + `tone`; os comandos de build/test/lint são lidos daqui. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
+O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`, e os nomes no código, `language.code`; a instalação só grava o idioma que você escolher. Os comandos de build/test/lint são lidos daqui. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
 
 ---
 

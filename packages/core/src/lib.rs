@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 // `clippy::unwrap_used` is `deny` workspace-wide so no hook-path code can
-// panic (b2 spec § Preocupações — fail-open). Clippy does *not* exempt
+// panic (fail-open). Clippy does *not* exempt
 // `#[cfg(test)]` code from that lint, so the spec's "exceto em módulos de
 // teste" carve-out is applied explicitly here: under `cfg(test)`, `.unwrap()`
 // / `.expect()` are allowed — a panicking assertion *is* a test failure.
@@ -8,7 +8,7 @@
 //! `mustard-core` — shared foundation crate for the Mustard Rust migration.
 //!
 //! This crate concentrates the logic that hooks, scripts, and the CLI all
-//! depend on, so the port from JavaScript (epics B3/B4/B5) stays lean instead
+//! depend on, so the port from JavaScript stays lean instead
 //! of re-implementing the same primitives dozens of times.
 //!
 //! Layers:
@@ -22,7 +22,7 @@
 //!   `std::fs` call in the workspace migrates onto this.
 //! - [`events`] — NDJSON event primitives ([`Event`] / [`EventReader`]) plus
 //!   the per-spec workspace walker; the canonical event store for the
-//!   no-sqlite migration (W2-W8). Layered on [`fs`].
+//!   no-sqlite migration. Layered on [`fs`].
 //! - [`projection`] — pure folds over `&[HarnessEvent]`: one function per
 //!   `ViewModel`. No IO, no side effects — deterministic and testable in
 //!   isolation. Production callers in `apps/rt` and `apps/dashboard` feed the
@@ -31,7 +31,7 @@
 //! - cross-cutting foundation — [`config`] (enforcement modes), [`env`] (the
 //!   `hook-env.js` port), and [`metrics`] (the `metrics-emit.js` port).
 
-// Snapshot-and-compare primitive consumed by the Wave 4 regression gate.
+// Snapshot-and-compare primitive consumed by the regression gate.
 // Reuses `ast::GrammarLoader` / `ast::TreeSitterParser` for the precise path
 // and falls back to a textual diff (via `similar = "2"`) when no grammar is
 // installed for the file's language.
@@ -114,8 +114,8 @@ pub use domain::economy::{EconomyScope, EconomySummary, SavingsSource};
 // (`mustard_config`, `git_flow::MustardConfig`, `read_mustard_tone`, …). See
 // `domain/config.rs`.
 pub use domain::config::{
-    glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, ProjectConfig, RolePattern,
-    Runtime, Subprojects, BUILD_COMMAND_FALLBACK,
+    glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, Language, LanguageConfig,
+    ProjectConfig, RolePattern, Runtime, Subprojects, BUILD_COMMAND_FALLBACK,
 };
 // Agnostic build/test/lint/type-check command detection (`detect_commands` for
 // `init`, `detect_commands_for_unit` for the per-subproject `scan` pass). See
@@ -141,23 +141,22 @@ pub use domain::source_lang::{resolve_target_languages, target_understood};
 // headers under `.claude/spec/**`.
 pub use domain::meta::{normalise_lang, read_meta, write_meta, Meta, MetaFlags};
 
-// i18n — central language + tone module for Mustard banners. See `i18n.rs`.
+// i18n — central language module for Mustard banners. See `i18n.rs`.
 //
 // Two locale types live here, doing two different jobs:
 // - `SupportedLocale` — the closed catalogue Mustard ships translations for
-//   (`pt-BR` / `en-US`). Drives `translate` / `apply_tone` / `I18n`. Short
-//   forms (`pt` / `en`) are rejected with `LocaleError::ShortForm` per
+//   (`pt-BR` / `en-US`). Drives `translate` / `I18n`. Short forms (`pt` /
+//   `en`) are rejected with `LocaleError::ShortForm` per
 //   `project_locale_codes`.
-// - `UserLocale` — the open user-declared locale parsed out of
-//   `mustard.json#specLang` and `### Lang:` headers. Accepts any
-//   BCP-47-shaped code (`fr-FR`, `de-DE`, `en-GB`, ...). Parsed into a
-//   `SupportedLocale` when a banner needs to render.
+// - `UserLocale` — the open locale a spec records. Accepts any BCP-47-shaped
+//   code (`fr-FR`, `de-DE`, `en-GB`, ...). Parsed into a `SupportedLocale`
+//   when a banner needs to render.
 //
-// W7 — every callsite now uses `SupportedLocale` (catalogue) or `UserLocale`
-// (user-declared). The deprecated `Locale` alias was removed.
+// The project's own language is not read here: `ProjectConfig::language` is
+// its one reader.
 pub use platform::i18n::{
-    apply_tone, slugify, translate, wave_label, I18n, LocaleError, SupportedLocale, Tone,
-    UserLocale, UserLocaleError,
+    slugify, translate, wave_label, I18n, LocaleError, SupportedLocale, UserLocale,
+    UserLocaleError,
 };
 
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a
@@ -178,13 +177,13 @@ pub use io::atomic_md::{MarkdownDoc, MarkdownStore};
 // `mustard_core::SpecSummaryDoc` without knowing the sub-module path.
 pub use view::summary::SpecSummaryDoc;
 
-// NDJSON event primitives — shared by all no-sqlite sub-specs (W2-W7).
+// NDJSON event primitives — shared by all no-sqlite sub-specs.
 // `Event` is the single row unit; `EventReader` provides streaming, cached,
 // and filtered access without loading full files into memory.
 pub use io::events::{Event, EventReader};
 
 // Vocabulary matcher — the four-layer term scanner used by the regression
-// gate (Spec A / Wave 1). Layers are EN identifiers per the wave-0 hard rule
+// gate. Layers are EN identifiers per the hard rule
 // (`Semantic`, `Pattern`, `Keyword`, `Noise`); the on-disk TOML keys are
 // lowercased copies of the same names.
 pub use domain::vocabulary::{

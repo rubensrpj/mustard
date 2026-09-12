@@ -31,7 +31,7 @@ pub(crate) struct Project {
 
 pub(crate) fn project(start: &Path) -> Project {
     let root = mustard_core::io::spec_events::spec_root(start);
-    let lang = mustard_core::ProjectConfig::load(&root).i18n().lang;
+    let lang = mustard_core::ProjectConfig::load(&root).language().text_or_default();
     Project { root, lang }
 }
 

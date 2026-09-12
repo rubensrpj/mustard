@@ -824,7 +824,6 @@ static COMMANDS: &[(&str, Handler)] = &[
     ("collector_health", cmd_ok!(crate::telemetry::collector_health, "repoPath")),
     // --- settings ---------------------------------------------------------
     ("set_language", cmd!(crate::commands::settings::set_language, "repoPath", "lang")),
-    ("set_tone", cmd!(crate::commands::settings::set_tone, "repoPath", "tone")),
     ("read_settings", cmd!(crate::commands::settings::read_settings, "repoPath")),
     // --- project registry & discovery ------------------------------------
     ("discover_projects", discover_projects_handler),

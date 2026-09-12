@@ -21,17 +21,18 @@
 //!   into the window via [`crate::hooks::session::injectables::collect`] —
 //!   once per session when `once: true`. A `/mustard:*` prompt gets NO
 //!   injectables (the slash command is already inside the flow).
-//! - **writing rule** (`mustard.json#tone`): a project that DECLARED
-//!   `tone: didactic` carries a one-paragraph rule for how the answer is
-//!   written. It is the one concern a `/mustard:*` prompt still receives, and
-//!   deliberately so: it governs how the ANSWER is written, and the answer to a
-//!   slash command is read by the same person as any other. Delivered on EVERY
-//!   prompt rather than once per session — the thing it governs is always the
-//!   newest message, so a rule delivered once only drifts further from it.
-//! - **regra de idioma** (`mustard.json` `lang`/`specLang`): todo projeto
-//!   instalado, qualquer que seja o tom e mesmo sem tom declarado, recebe em
-//!   todo prompt a ordem de responder no idioma do usuário. Anda logo depois da
-//!   regra de escrita e, como ela, também chega a um comando com barra.
+//! - **writing rule**: every installed project carries a one-paragraph rule
+//!   for how the answer is written — the tone is one, plain and didactic, with
+//!   no key to turn it off. It is the one concern a `/mustard:*` prompt still
+//!   receives, and deliberately so: it governs how the ANSWER is written, and
+//!   the answer to a slash command is read by the same person as any other.
+//!   Delivered on EVERY prompt rather than once per session — the thing it
+//!   governs is always the newest message, so a rule delivered once only
+//!   drifts further from it.
+//! - **regra de idioma** (`mustard.json` `language.text`): todo projeto
+//!   instalado recebe em todo prompt a ordem de responder no idioma do
+//!   usuário. Anda logo depois da regra de escrita e, como ela, também chega a
+//!   um comando com barra.
 //!
 //! The three injecting concerns compose into a SINGLE [`Verdict::Inject`]:
 //! injectables first, banner next, the writing and language rules last (the
@@ -230,17 +231,17 @@ fn is_upsert_prompt(prompt: &str) -> bool {
 }
 
 // ===========================================================================
-// writing rule — `mustard.json#tone`, carried with every prompt
+// writing rule — carried with every prompt of every installed project
 // ===========================================================================
 
-/// The writing rule this project declares, carried with EVERY prompt.
+/// How to write the answer, carried with EVERY prompt of every project with a
+/// `mustard.json`.
 ///
-/// `mustard.json#tone` already existed and already meant this — it was read in
-/// exactly one place, `agent-prompt-render`, which shapes the prompts of the
-/// agents that WRITE FILES. Nothing carried it into the conversation, so a
-/// project that had asked for plain language got it only when the model
-/// remembered to. The operator found this the honest way: by not understanding
-/// an explanation, twice, in a project whose config said `didactic` all along.
+/// The tone is one, plain and didactic, and no key turns it off: the end of
+/// the answer measures the same rule in every project (`clarity_check`), so
+/// the rule and its measure answer to the same condition. It used to ride only
+/// the projects that declared a tone, and the operator found the gap the
+/// honest way: by not understanding an explanation, twice.
 ///
 /// **Every prompt, not once per session.** Delivered once, the rule drifts
 /// further away with each exchange while the thing it governs — the next
@@ -248,28 +249,26 @@ fn is_upsert_prompt(prompt: &str) -> bool {
 /// tokens, about 0.04% of a long session, against the thousand-plus a single
 /// misunderstanding costs in a wrong answer, a correction and a rewrite.
 ///
-/// `None` for any other tone, and for a project with no `mustard.json`.
-fn tone_rule(root: &Path) -> Option<String> {
-    declares_didactic(root).then(|| {
-            "[Mustard] This project declares `tone: didactic`. Write every user-facing answer so \
-             it can be read once, by someone who did not write this code: ONE idea per sentence; \
-             every technical term translated the first time it appears IN THIS CONVERSATION — \
-             including names this project invented; no acronym without its full words; and no \
-             path of reasoning longer than the point needs. Prefer the short true sentence to \
-             the complete one. This governs what you SAY, never what you write into code, \
-             commits or specs."
-                .to_string()
-        })
+/// `None` for a project with no `mustard.json`: there the hooks stay silent.
+fn writing_rule(root: &Path) -> Option<String> {
+    ProjectConfig::exists(root).then(|| {
+        "[Mustard] Write every user-facing answer so it can be read once, by someone who did \
+         not write this code: ONE idea per sentence; every technical term translated the first \
+         time it appears IN THIS CONVERSATION — including names this project invented; no \
+         acronym without its full words; and no path of reasoning longer than the point needs. \
+         Prefer the short true sentence to the complete one. This governs what you SAY, never \
+         what you write into code, commits or specs."
+            .to_string()
+    })
 }
 
 /// Em que idioma responder, levado em TODO prompt de todo projeto com
-/// `mustard.json`, qualquer que seja o tom e mesmo sem tom declarado: o idioma
-/// do usuário, que é o do projeto (`mustard.json` `lang`/`specLang`). Em
-/// 10/09/2026 o assistente respondeu em inglês por vários turnos a quem escreve
-/// em português: tinha acabado de ler skills e relatórios em inglês, e nada na
-/// regra falava de idioma. O usuário pediu que valesse para todo projeto,
-/// não só para quem declarou o tom didático. `None` sem `mustard.json`: num
-/// projeto sem o Mustard os ganchos ficam calados.
+/// `mustard.json`: o idioma do usuário, que é o do projeto (`mustard.json`
+/// `language.text`). Em 10/09/2026 o assistente respondeu em inglês por vários
+/// turnos a quem escreve em português: tinha acabado de ler skills e
+/// relatórios em inglês, e nada na regra falava de idioma. O usuário pediu que
+/// valesse para todo projeto. `None` sem `mustard.json`: num projeto sem o
+/// Mustard os ganchos ficam calados.
 ///
 /// O idioma só é nomeado quando o projeto o DECLAROU: o padrão resolvido é
 /// pt-BR, e dizer "o deste projeto é pt-BR" a um projeto em inglês que nunca
@@ -277,8 +276,8 @@ fn tone_rule(root: &Path) -> Option<String> {
 /// manda seguir o idioma do usuário sem nomear nenhum.
 fn language_rule(root: &Path) -> Option<String> {
     ProjectConfig::exists(root).then(|| {
-        let named = match ProjectConfig::load(root).declared_locale() {
-            Some(lang) => format!(" — this project's is {lang} (`mustard.json` `lang`/`specLang`) —"),
+        let named = match ProjectConfig::load(root).language().text {
+            Some(lang) => format!(" — this project's is {lang} (`mustard.json` `language.text`) —"),
             None => ",".to_string(),
         };
         format!(
@@ -289,35 +288,15 @@ fn language_rule(root: &Path) -> Option<String> {
     })
 }
 
-/// `true` quando o `mustard.json` DECLAROU `tone: didactic`. A regra de escrita
-/// e a medição de clareza (`clarity_check`) respondem à mesma pergunta por esta
-/// leitura única — duas leituras poderiam discordar sobre o mesmo projeto.
-pub(crate) fn declares_didactic(root: &Path) -> bool {
-    // The RAW field, never the resolved one. `ProjectConfig::load` fails open to
-    // a default when the file is absent, and that default IS `didactic` — a
-    // resolved read would put this paragraph in front of every project that
-    // merely has a `mustard.json`, including the ones that never asked. A
-    // default is the absence of a choice; this rule only answers a written one.
-    //
-    // Parsed by the CANONICAL parser, never by a hand-rolled match. `Tone::parse`
-    // accepts `didactic`, `didatico` AND `didático` — and the accented spelling
-    // is the one a Brazilian operator writes. A local `eq_ignore_ascii_case`
-    // pair silently rejected it, so a project declaring the word in its own
-    // language was treated as never having declared: the very defect this
-    // function exists to remove, reintroduced one line below the fix.
-    ProjectConfig::load(root).tone.as_deref().and_then(mustard_core::Tone::parse)
-        == Some(mustard_core::Tone::Didactic)
-}
-
-/// As regras de escrita — a do tom, quando declarado, e a do idioma. Só o
-/// irmão que carrega os blocos do evento as leva. `None` sem regra ou fora
-/// desse irmão. Os defeitos da resposta anterior não andam mais aqui: a
-/// conferência do fim da resposta os entrega no próprio bloqueio.
-fn writing_blocks(tone: Option<String>, language: Option<String>, carries: bool) -> Option<String> {
+/// As regras de escrita — a da escrita e a do idioma. Só o irmão que carrega
+/// os blocos do evento as leva. `None` sem regra ou fora desse irmão. Os
+/// defeitos da resposta anterior não andam mais aqui: a conferência do fim da
+/// resposta os entrega no próprio bloqueio.
+fn writing_blocks(writing: Option<String>, language: Option<String>, carries: bool) -> Option<String> {
     if !carries {
         return None;
     }
-    let blocks: Vec<String> = [tone, language].into_iter().flatten().collect();
+    let blocks: Vec<String> = [writing, language].into_iter().flatten().collect();
     (!blocks.is_empty()).then(|| blocks.join("\n\n"))
 }
 
@@ -332,8 +311,8 @@ impl Check for PromptSubmitInject {
     /// when the prompt starts a new pipeline. For a non-`/mustard:*` prompt
     /// the verdict composes the declared injectables (`mustard.json#inject`,
     /// `on: userPromptSubmit`) and the pipeline-in-flight banner into
-    /// ONE `Inject` — injectables first, banner after, the writing rule
-    /// (`mustard.json#tone`) last; any one alone also injects. A `/mustard:*`
+    /// ONE `Inject` — injectables first, banner after, the writing and
+    /// language rules last; any one alone also injects. A `/mustard:*`
     /// prompt receives neither injectables nor banner (it is already inside the
     /// flow) but DOES carry the writing rule, which governs how the ANSWER is
     /// written rather than the work. Any non-`UserPromptSubmit` trigger
@@ -379,14 +358,13 @@ impl Check for PromptSubmitInject {
                     close_amend_windows_for_session(&cwd, session_id);
                 }
         }
-        // How to WRITE for this operator, from `mustard.json#tone`.
-        let tone = tone_rule(Path::new(&cwd));
-        // Em que idioma responder: vale para todo projeto instalado, qualquer
-        // que seja o tom.
+        // How to WRITE for this operator: every installed project.
+        let writing = writing_rule(Path::new(&cwd));
+        // Em que idioma responder: vale para todo projeto instalado.
         let language = language_rule(Path::new(&cwd));
         // As regras de escrita, só por este irmão quando é ele quem carrega os
         // blocos do evento.
-        let writing = writing_blocks(tone, language, carries_shared_blocks);
+        let writing = writing_blocks(writing, language, carries_shared_blocks);
         // ANY slash command — Mustard's or a third party's — receives neither
         // injectables nor the banner: the flow that expanded owns the turn, and
         // a router that reclassifies an interview's answers opens a work unit
@@ -398,8 +376,7 @@ impl Check for PromptSubmitInject {
         // `carries_shared_blocks` was resolved above, before the installation
         // gate, because a slash-command prompt still delivers the writing rule
         // and would otherwise deliver it once per sibling (found in review:
-        // this repo declares `tone: didactic`, so every `/mustard:*` prompt got
-        // the paragraph twice).
+        // every `/mustard:*` prompt of this repo got the paragraph twice).
         if is_slash_command(prompt) {
             return Ok(match writing {
                 Some(context) => Verdict::Inject { context },
@@ -495,29 +472,28 @@ mod tests {
         assert!(!is_pipeline_prompt("text /mustard:feature mid-line"));
     }
 
-    // --- writing rule from `tone` -------------------------------------------
+    // --- writing rule ---------------------------------------------------------
 
-    /// Seed a project whose `mustard.json` declares `tone`, and return its dir.
-    fn project_declaring_tone(tone: &str) -> tempfile::TempDir {
+    /// Um projeto que declarou o português do Brasil como idioma do texto.
+    const PT_PROJECT: &str = r#"{"language":{"text":"pt-BR"}}"#;
+
+    /// Seed a project with this `mustard.json`, and return its dir.
+    fn project_with(config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            format!(r#"{{"specLang":"pt-BR","tone":"{tone}"}}"#),
-        )
-        .expect("write config");
+        std::fs::write(dir.path().join("mustard.json"), config).expect("write config");
         dir
     }
 
-    /// The verdict for one prompt in a project declaring `tone`, through the
-    /// REAL gate — never the private helper.
+    /// The verdict for one prompt in a project with this `mustard.json`,
+    /// through the REAL gate — never the private helper.
     ///
-    /// A test that called `tone_rule` directly is what shipped an unprovable
-    /// criterion: a review removed `tone` from the ordinary-prompt composition
-    /// and the test stayed green, because it never asked the gate anything.
-    /// Everything below goes through `evaluate`, so deleting the wiring fails
-    /// the criterion that claims to guard it.
-    fn verdict_for(tone: &str, prompt: &str) -> (tempfile::TempDir, Verdict) {
-        let dir = project_declaring_tone(tone);
+    /// A test that called the rule's helper directly is what shipped an
+    /// unprovable criterion: a review removed the rule from the ordinary-prompt
+    /// composition and the test stayed green, because it never asked the gate
+    /// anything. Everything below goes through `evaluate`, so deleting the
+    /// wiring fails the criterion that claims to guard it.
+    fn verdict_for(config: &str, prompt: &str) -> (tempfile::TempDir, Verdict) {
+        let dir = project_with(config);
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict =
             PromptSubmitInject.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
@@ -531,11 +507,10 @@ mod tests {
     /// newest.
     #[test]
     fn the_writing_rule_rides_every_prompt() {
-        let (_dir, verdict) = verdict_for("didactic", "uma mensagem comum");
+        let (_dir, verdict) = verdict_for(PT_PROJECT, "uma mensagem comum");
 
         match verdict {
             Verdict::Inject { context } => {
-                assert!(context.contains("tone: didactic"), "names its source: {context}");
                 assert!(
                     context.contains("ONE idea per sentence"),
                     "and carries the rule: {context}",
@@ -554,7 +529,7 @@ mod tests {
     /// idioma nomeado sai do `mustard.json`, nunca de um valor fixo.
     #[test]
     fn the_writing_rule_demands_the_user_language() {
-        let (_dir, verdict) = verdict_for("didactic", "uma mensagem comum");
+        let (_dir, verdict) = verdict_for(PT_PROJECT, "uma mensagem comum");
         let Verdict::Inject { context } = verdict else {
             panic!("an ordinary prompt must carry the rule, got {verdict:?}");
         };
@@ -564,7 +539,7 @@ mod tests {
         assert!(context.contains("subagent prompts keep their own conventions"), "{context}");
 
         let dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(dir.path().join("mustard.json"), r#"{"lang":"en-US","tone":"didactic"}"#)
+        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"en-US"}}"#)
             .expect("write config");
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict =
@@ -575,10 +550,11 @@ mod tests {
         assert!(context.contains("this project's is en-US"), "{context}");
     }
 
-    /// Sem `lang` nem `specLang` no `mustard.json`, o idioma nunca é
-    /// suposto: a regra manda seguir o idioma do usuário sem nomear idioma de
-    /// projeto, e uma resposta em inglês não ganha defeito de idioma — nem
-    /// fora do tom didático, nem nele. Com pt-BR declarado, o defeito continua.
+    /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
+    /// chaves antigas de idioma não contam como declaração: a regra manda
+    /// seguir o idioma do usuário sem nomear idioma de projeto, e uma resposta
+    /// em inglês não ganha defeito de idioma. Com pt-BR declarado, o defeito
+    /// continua.
     #[test]
     fn undeclared_language_is_never_assumed() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
@@ -607,7 +583,7 @@ mod tests {
             _ => String::new(),
         };
 
-        for config in ["{}", r#"{"tone":"didactic"}"#] {
+        for config in ["{}", r#"{"specLang":"pt-BR","lang":"pt-BR"}"#] {
             let (_dir, c) = project(config);
             let rule = context_of(
                 PromptSubmitInject
@@ -625,25 +601,27 @@ mod tests {
         }
 
         // Com pt-BR declarado, a mesma resposta continua barrada pelo idioma.
-        let (_dir, c) = project(r#"{"specLang":"pt-BR"}"#);
+        let (_dir, c) = project(PT_PROJECT);
         let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
         let block = context_of(EndOfTurnCheck.evaluate(&stop, &on_stop).expect("the check never errors"));
         assert!(block.contains("resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{block}");
     }
 
     /// O veredito de um prompt que não recebe injetável nem aviso num projeto
-    /// instalado: só a regra de idioma, que vale para todo projeto e rege a
-    /// resposta, não o trabalho.
-    fn language_rule_only(root: &Path) -> Verdict {
-        Verdict::Inject { context: language_rule(root).expect("an installed project has the rule") }
+    /// instalado: só as regras de escrita e de idioma, que valem para todo
+    /// projeto e regem a resposta, não o trabalho.
+    fn writing_rules_only(root: &Path) -> Verdict {
+        Verdict::Inject {
+            context: writing_blocks(writing_rule(root), language_rule(root), true)
+                .expect("an installed project has the rules"),
+        }
     }
 
-    /// A regra de idioma e a medição de idioma valem para todo projeto
-    /// com `mustard.json`, qualquer que seja o tom. Sem tom declarado e com tom
-    /// técnico, o prompt leva a regra (e não a do tom didático), e uma resposta
-    /// em inglês num projeto em pt-BR é barrada no fim da resposta com o
-    /// defeito de idioma; a mensagem seguinte não o repete. Sem `mustard.json`,
-    /// nada.
+    /// A regra de idioma e a medição de idioma valem para todo projeto com
+    /// `mustard.json`. Com ou sem a antiga chave do tom, o prompt leva a regra
+    /// de idioma e a de escrita, e uma resposta em inglês num projeto em pt-BR
+    /// é barrada no fim da resposta com o defeito de idioma; a mensagem
+    /// seguinte não o repete. Sem `mustard.json`, nada.
     #[test]
     fn language_rule_reaches_every_mustard_project() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
@@ -660,7 +638,7 @@ mod tests {
             ..HookInput::default()
         };
 
-        for config in [r#"{"specLang":"pt-BR"}"#, r#"{"specLang":"pt-BR","tone":"technical"}"#] {
+        for config in [PT_PROJECT, r#"{"language":{"text":"pt-BR"},"tone":"technical"}"#] {
             let dir = tempfile::tempdir().expect("temp dir");
             std::fs::write(dir.path().join("mustard.json"), config).expect("write config");
             let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
@@ -673,7 +651,7 @@ mod tests {
             };
             assert!(context.contains("in the language they write in"), "{config}: {context}");
             assert!(context.contains("this project's is pt-BR"), "{config}: {context}");
-            assert!(!context.contains("ONE idea per sentence"), "{config}: the tone rule stays gated: {context}");
+            assert!(context.contains("ONE idea per sentence"), "{config}: the writing rule rides too: {context}");
 
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
             let Verdict::Deny { reason } =
@@ -706,51 +684,20 @@ mod tests {
         assert_eq!(EndOfTurnCheck.evaluate(&stop, &on_stop).expect("the check never errors"), Verdict::Allow);
     }
 
-    /// The accented spelling a Brazilian operator actually writes is accepted.
-    /// A hand-rolled `didactic`/`didatico` match rejected it, so a project
-    /// declaring the word in its own language was read as never having
-    /// declared — the very defect this unit exists to remove.
+    /// Todo projeto com `mustard.json` leva a regra de escrita, declare ou não
+    /// o idioma; a antiga chave do tom não a desliga, porque não é mais lida.
     #[test]
-    fn the_accented_spelling_counts_as_declared() {
-        let (_dir, verdict) = verdict_for("didático", "uma mensagem comum");
-        assert!(
-            matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
-            "`didático` is the canonical parser's own spelling: {verdict:?}",
-        );
-    }
+    fn the_writing_rule_rides_every_installed_project() {
+        for config in ["{}", r#"{"tone":"technical"}"#, PT_PROJECT] {
+            let (_dir, verdict) = verdict_for(config, "uma mensagem comum");
+            assert!(
+                matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
+                "{config}: every installed project carries the rule: {verdict:?}",
+            );
+        }
 
-    /// A project that declared nothing gets nothing. The RESOLVED tone
-    /// defaults to `didactic`, so reading it would put this paragraph in front
-    /// of every project that merely has a `mustard.json`.
-    #[test]
-    fn an_undeclared_tone_injects_nothing() {
-        // A project that chose a DIFFERENT tone, asked through the gate.
-        let (_dir, verdict) = verdict_for("technical", "uma mensagem comum");
-        assert!(
-            !matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
-            "a technical project asked for nothing: {verdict:?}",
-        );
-
-        // A config with NO `tone` key never chose one. The resolved value
-        // defaults to `didactic`, so this is the case a resolved read would
-        // get wrong — and the one that would put the rule in front of every
-        // project that merely has a `mustard.json`.
-        let bare = tempfile::tempdir().expect("temp dir");
-        std::fs::write(bare.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#)
-            .expect("write config");
-        let c = Ctx::for_test(bare.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
-        let verdict = PromptSubmitInject
-            .evaluate(&prompt_input("uma mensagem comum"), &c)
-            .expect("the gate never errors");
-        assert!(
-            !matches!(verdict, Verdict::Inject { ref context } if context.contains("ONE idea per sentence")),
-            "the default is not a choice: {verdict:?}",
-        );
-
-        // …and a project with NO `mustard.json` at all. The criterion names
-        // three cases and this is the third; asserting two of them left the
-        // uninstalled project — where the hooks are supposed to stay silent —
-        // proved only by hand.
+        // …and a project with NO `mustard.json` at all gets nothing: there
+        // the hooks stay silent.
         let none = tempfile::tempdir().expect("temp dir");
         let c = Ctx::for_test(none.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict = PromptSubmitInject
@@ -768,7 +715,7 @@ mod tests {
     /// the ANSWER is written and that answer is read by the same person.
     #[test]
     fn the_writing_rule_rides_a_slash_command_too() {
-        let dir = project_declaring_tone("didactic");
+        let dir = project_with(PT_PROJECT);
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input("/mustard:pr merge"), &c)
@@ -797,9 +744,9 @@ mod tests {
             .evaluate(&prompt_input("/mustard:feature x"), &c)
             .unwrap();
         // Num comando `/mustard:*` nunca há injetável nem aviso, qualquer que
-        // seja o estado da spec — só a regra de idioma, que todo projeto
-        // instalado recebe.
-        assert_eq!(v, language_rule_only(dir.path()), "unexpected verdict: {v:?}");
+        // seja o estado da spec — só as regras de escrita e de idioma, que todo
+        // projeto instalado recebe.
+        assert_eq!(v, writing_rules_only(dir.path()), "unexpected verdict: {v:?}");
     }
 
     // --- installation gate --------------------------------------------------
@@ -992,7 +939,7 @@ mod tests {
         let v = PromptSubmitInject
             .evaluate(&prompt_input_with_session("/mustard:git", "sess-1"), &c)
             .unwrap();
-        assert_eq!(v, language_rule_only(dir.path()), "slash command must not receive injectables");
+        assert_eq!(v, writing_rules_only(dir.path()), "slash command must not receive injectables");
         assert!(
             !dir.path()
                 .join(".claude/.session/sess-1/injected-orchestrator.md")
@@ -1015,7 +962,7 @@ mod tests {
             let v = PromptSubmitInject
                 .evaluate(&prompt_input_with_session(prompt, "sess-1"), &c)
                 .unwrap();
-            assert_eq!(v, language_rule_only(dir.path()), "`{prompt}` must not receive injectables");
+            assert_eq!(v, writing_rules_only(dir.path()), "`{prompt}` must not receive injectables");
         }
         assert!(
             !dir.path().join(".claude/.session/sess-1/injected-orchestrator.md").exists(),
@@ -1087,7 +1034,7 @@ mod tests {
 
     /// O pior caso da primeira mensagem da sessão cabe numa resposta de
     /// gancho: o arquivo de regras injetado (`orchestrator.md`, o que a
-    /// instalação semeia), o aviso de pipeline em curso, a regra de tom e a de
+    /// instalação semeia), o aviso de pipeline em curso, a regra de escrita e a de
     /// idioma. Tudo sai numa só resposta, sob um só teto de 10.000 caracteres —
     /// medido na resposta inteira, já em JSON. Os defeitos da resposta
     /// anterior não entram mais aqui: vão no bloqueio do fim da resposta.
@@ -1100,7 +1047,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(
             root.join("mustard.json"),
-            r#"{"specLang":"pt-BR","tone":"didactic","inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}]}"#,
+            r#"{"language":{"text":"pt-BR"},"inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}]}"#,
         )
         .unwrap();
         let mustard_dir = root.join(".claude").join("mustard");
@@ -1124,7 +1071,7 @@ mod tests {
         for (what, needle) in [
             ("the injected rules", rules),
             ("the banner", PIPELINE_IN_FLIGHT_BANNER),
-            ("the tone rule", "ONE idea per sentence"),
+            ("the writing rule", "ONE idea per sentence"),
             ("the language rule", "in the language they write in"),
         ] {
             assert!(context.contains(needle), "{what} missing: {context}");
@@ -1143,7 +1090,7 @@ mod tests {
         use mustard_core::domain::model::contract::Outcome;
 
         let (dir, c) = ctx();
-        std::fs::write(dir.path().join("mustard.json"), r#"{"specLang":"pt-BR","tone":"didactic"}"#).unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
         let registry = Registry::new();
         let on_prompt = prompt_input_with_session("e agora?", "s1");
         let on_start = HookInput {

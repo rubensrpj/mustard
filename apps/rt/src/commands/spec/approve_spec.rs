@@ -534,20 +534,13 @@ fn scaffold_residue(root: &Path, spec: &str) -> Vec<String> {
     ) else {
         return Vec::new();
     };
-    // The SPEC's language, not the project's. `spec-draft` writes the body in
-    // `--lang` and records it in `meta.json#lang`; the documented cascade is
-    // that value first, `mustard.json#specLang` only as the fallback. Reading
-    // the project's alone looked for `## Contexto` in a file written with
-    // `## Context`, found no section at all, and reported zero residue — so a
-    // spec that was 100% untouched scaffold passed this gate whenever the two
-    // languages differed (found in review, reproduced end to end).
-    let lang = std::fs::read_to_string(
-        root.join(".claude").join("spec").join(spec).join("meta.json"),
-    )
-    .ok()
-    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-    .and_then(|m| m.get("lang")?.as_str()?.parse::<mustard_core::platform::i18n::Locale>().ok())
-    .unwrap_or_else(|| mustard_core::ProjectConfig::load(root).i18n().lang);
+    // The project's text language is the spec's: `spec-draft` writes the body
+    // in `language.text` and takes no other. When a spec could carry a
+    // language of its own, reading the project's looked for `## Contexto` in a
+    // file written with `## Context`, found no section at all, and reported
+    // zero residue — so an untouched scaffold passed this gate whenever the two
+    // languages differed. With one language there is no second one to differ.
+    let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
     // Each section the draft seeds with a placeholder, by the heading key that
     // titles it and the placeholder key that fills it. `context` is the one
     // composite: the draft writes `{intent}.\n\n{fill_why_now}`, so the trailing
@@ -989,7 +982,7 @@ mod tests {
     // Sequence shape (unit — no I/O)
     // -----------------------------------------------------------------------
 
-    /// AC-11 — a spec whose narrative is still the seeded placeholder is
+    /// A spec whose narrative is still the seeded placeholder is
     /// refused, and the refusal names the sections.
     ///
     /// The oracle is exact: it compares each section against the very string
@@ -999,7 +992,7 @@ mod tests {
     fn approval_refuses_scaffold_residue() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","specLang":"pt-BR"}"#)
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#)
             .unwrap();
         let spec_dir = root.join(".claude/spec/uma-unidade");
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -1100,13 +1093,14 @@ mod tests {
             "the real `## Arquivos` section is still placeholder and must be caught, \
              not shadowed by the bullet that quotes its name: {residue:?}",
         );
-        // The SPEC's language decides the headings, not the project's. A spec
-        // drafted in English inside a pt-BR project made every lookup miss, so
-        // a file that was 100% untouched scaffold reported zero residue and
-        // sailed through approval (found in review, reproduced end to end).
-        let en = root.join(".claude/spec/em-ingles");
+        // The project's text language decides the headings, because the spec
+        // is written in it: an English project's all-scaffold spec is caught
+        // under its English headings.
+        let en_project = tempfile::tempdir().unwrap();
+        std::fs::write(en_project.path().join("mustard.json"), r#"{"language":{"text":"en-US"}}"#)
+            .unwrap();
+        let en = en_project.path().join(".claude/spec/em-ingles");
         std::fs::create_dir_all(&en).unwrap();
-        std::fs::write(en.join("meta.json"), r#"{"lang":"en-US","scope":"full"}"#).unwrap();
         std::fs::write(
             en.join("spec.md"),
             concat!(
@@ -1118,11 +1112,11 @@ mod tests {
             ),
         )
         .unwrap();
-        let en_residue = scaffold_residue(root, "em-ingles");
+        let en_residue = scaffold_residue(en_project.path(), "em-ingles");
         assert_eq!(
             en_residue.len(),
             5,
-            "an all-scaffold English spec in a pt-BR project must still be caught: {en_residue:?}",
+            "an all-scaffold spec of an English project must be caught: {en_residue:?}",
         );
 
         assert!(
@@ -1253,7 +1247,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // T5 — the approval gate (AC6)
+    // The approval gate
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1270,7 +1264,7 @@ mod tests {
 
     #[test]
     fn approval_gate_blocks_strict_without_marker_and_proceeds_with_it() {
-        // AC6 core: SEM marcador → strict FALHA (Block ⇒ exit≠0); COM marcador → procede.
+        // O centro do teste: SEM marcador → strict FALHA (Block ⇒ exit≠0); COM marcador → procede.
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
         // Warn surfaces a nudge but never blocks; off restores pre-T5 behaviour.
@@ -1284,7 +1278,7 @@ mod tests {
     fn background_job_without_user_stops_at_plan() {
         // A background job poses no AskUserQuestion, so the observer records no
         // marker; strict `approve-spec` then refuses (Block), and the Full spec
-        // cannot leave PLAN without a human. This is AC6's bg-job scenario.
+        // cannot leave PLAN without a human. This is the background-job scenario.
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
     }
 
@@ -1676,7 +1670,7 @@ mod tests {
         assert_eq!(json["approvedThisSession"], true, "the marker names s-1: {json}");
     }
 
-    /// AC-8 — the report must not answer "how did the CURRENT approval happen?"
+    /// The report must not answer "how did the CURRENT approval happen?"
     /// with a gesture some EARLIER session performed. The marker's provenance is
     /// published under keys that name the marker, and the separated
     /// `approvedThisSession` says plainly that this run performed nothing.
@@ -1835,7 +1829,7 @@ mod tests {
         .unwrap();
     }
 
-    /// AC-4 — a criterion whose current command has no PROVEN record refuses,
+    /// A criterion whose current command has no PROVEN record refuses,
     /// and the refusal names that criterion inside the SAME aggregated message
     /// (never a second refusal path). Driven through the hand edit this gate
     /// exists to close: the ledger proves the OLD command, the spec now carries

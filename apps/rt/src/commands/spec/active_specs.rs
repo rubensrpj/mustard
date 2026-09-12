@@ -1420,7 +1420,7 @@ pub fn run(opts: ActiveSpecsOpts) {
         }
         _ => {
             // table (default)
-            let lang = mustard_core::ProjectConfig::load(&opts.root).i18n().lang;
+            let lang = mustard_core::ProjectConfig::load(&opts.root).language().text_or_default();
             println!("{}", render_table(&output.specs, &output.branch_scan, lang));
             if extra > 0 {
                 println!("\n({extra} specs adicionais)");

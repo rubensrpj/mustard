@@ -32,7 +32,6 @@ fn opts(output: &Path) -> SpecDraftOpts {
         intent: "Record the harness safety instruments".into(),
         slug: None,
         scope: "light".into(),
-        lang: "en-US".into(),
         signals: None,
         output: Some(output.to_path_buf()),
         material: None,

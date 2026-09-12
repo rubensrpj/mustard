@@ -38,7 +38,7 @@ use serde_json::{Map, Value};
 
 use crate::io::fs;
 use crate::platform::error::Result;
-use crate::platform::i18n::{I18n, SupportedLocale, Tone};
+use crate::platform::i18n::SupportedLocale;
 use crate::ClaudePaths;
 
 /// Neutral placeholder returned when `buildCommand` is absent. Human-readable,
@@ -246,6 +246,57 @@ impl GateModes {
     }
 }
 
+/// The `language` block of `mustard.json`: the two languages a project writes
+/// in, each declared on its own key.
+///
+/// Both are optional, and an install writes only the one the operator chose.
+/// A language nobody chose is never written for them: a written default reads
+/// the same as a choice, and the checks that judge the conversation by its
+/// language would then judge a project by a language it never picked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LanguageConfig {
+    /// The language of everything a person reads: the conversation, specs,
+    /// pages, comments in the code and commit messages. BCP-47 with the
+    /// dialect (`pt-BR`, `en-US`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The language of the names in the code: variables, functions, files and
+    /// commands (`en`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+impl LanguageConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none() && self.code.is_none()
+    }
+}
+
+/// The languages a project declared, as [`ProjectConfig::language`] reads them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Language {
+    /// The declared text language; `None` when absent, blank or not one of the
+    /// locales Mustard ships messages for.
+    pub text: Option<SupportedLocale>,
+    /// The declared code language, trimmed; `None` when absent or blank.
+    pub code: Option<String>,
+}
+
+impl Language {
+    /// The language Mustard writes its own messages in: the declared text
+    /// language, or `pt-BR` when none was declared.
+    ///
+    /// Only for Mustard's OWN words. A check that judges what the user or the
+    /// assistant wrote reads [`Language::text`] instead, because a default is
+    /// the absence of a choice: an English project that never declared a
+    /// language must not be judged as Portuguese.
+    #[must_use]
+    pub fn text_or_default(&self) -> SupportedLocale {
+        self.text.unwrap_or_default()
+    }
+}
+
 /// Host runtime metadata stamped into `mustard.json` by `init`/`update`.
 ///
 /// `kind` is the literal `"native"` (the CLI is a compiled binary, not a JS
@@ -313,10 +364,15 @@ pub struct Commands {
 /// The full `mustard.json` document — the project config, at the project root.
 ///
 /// `#[serde(rename_all = "camelCase")]` applies to the **top-level** keys only
-/// (`buildCommand`, `specLang`, `maxActiveSpecs`, …). The nested structs keep
+/// (`buildCommand`, `maxActiveSpecs`, …). The nested structs keep
 /// snake/lowercase naming (`amend.drift_threshold`, `git.provider`,
-/// `subprojects.exclude`) to match the on-disk shape. Legacy snake_case command
-/// keys are still accepted on read via `alias`.
+/// `language.text`, `subprojects.exclude`) to match the on-disk shape. Legacy
+/// snake_case command keys are still accepted on read via `alias`.
+///
+/// The language keys that came before `language` (`specLang`, `lang`) and the
+/// `tone` key are no longer part of the schema. A file that still carries them
+/// keeps loading: they land in [`ProjectConfig::extra`] like any unknown key,
+/// preserved on write and read by nobody.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectConfig {
@@ -336,16 +392,10 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcs: Option<String>,
 
-    /// Spec language (BCP-47). Canonical key on write.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec_lang: Option<String>,
-    /// Legacy alias of `spec_lang`, still read for back-compat (precedence below
-    /// `spec_lang` is via `lang.or(spec_lang)` in [`ProjectConfig::i18n`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lang: Option<String>,
-    /// Banner / drafter tone (`didactic` | `technical` | `concise`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tone: Option<String>,
+    /// The text and code languages — see [`LanguageConfig`]. Read only through
+    /// [`ProjectConfig::language`].
+    #[serde(skip_serializing_if = "LanguageConfig::is_empty")]
+    pub language: LanguageConfig,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_extensions: Vec<String>,
@@ -534,29 +584,25 @@ impl ProjectConfig {
             .collect()
     }
 
-    /// O idioma que o projeto DECLAROU (`lang`, depois `spec_lang`), ou `None`
-    /// quando nenhum dos dois está escrito ou se lê. Ao contrário de
-    /// [`ProjectConfig::i18n`], nunca cai no padrão: o padrão é a ausência de
-    /// uma escolha. Quem julga a resposta pelo idioma lê este, porque um
-    /// projeto em inglês sem idioma declarado não pode ser tratado como pt-BR.
-    #[must_use]
-    pub fn declared_locale(&self) -> Option<SupportedLocale> {
-        self.lang
-            .as_deref()
-            .or(self.spec_lang.as_deref())
-            .and_then(|s| s.parse::<SupportedLocale>().ok())
-    }
-
-    /// Resolve the banner/drafter [`I18n`] (locale + tone) for this project.
+    /// The languages this project declared — the one reader of the
+    /// `language` block, and so the one place any part of Mustard learns a
+    /// project's language.
     ///
-    /// Locale precedence: `lang` then `spec_lang`; unparseable / absent ⇒
-    /// [`SupportedLocale::default`] (`pt-BR`). Tone: `tone` or
-    /// [`Tone::default`] (`didactic`). Reuses the `platform::i18n` primitives.
+    /// Nothing is inferred: an absent, blank or unsupported `language.text`
+    /// is `None`, and the keys that came before it (`specLang`, `lang`) are not
+    /// consulted. Mustard's own messages fall back through
+    /// [`Language::text_or_default`]; a check that judges text reads
+    /// [`Language::text`] and has no verdict without it.
     #[must_use]
-    pub fn i18n(&self) -> I18n {
-        let lang = self.declared_locale().unwrap_or_default();
-        let tone = self.tone.as_deref().and_then(Tone::parse).unwrap_or_default();
-        I18n::new(lang, tone)
+    pub fn language(&self) -> Language {
+        Language {
+            text: self
+                .language
+                .text
+                .as_deref()
+                .and_then(|raw| raw.parse::<SupportedLocale>().ok()),
+            code: non_blank(self.language.code.as_deref()),
+        }
     }
 }
 
@@ -624,19 +670,31 @@ mod tests {
         let dir = tempdir().unwrap();
         let cfg = ProjectConfig {
             build_command: Some("cargo build".into()),
-            spec_lang: Some("pt-BR".into()),
-            tone: Some("technical".into()),
+            language: LanguageConfig { text: Some("pt-BR".into()), code: Some("en".into()) },
             ..Default::default()
         };
         cfg.write(dir.path()).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
         assert!(raw.contains("\"buildCommand\""), "top-level key is camelCase");
-        assert!(raw.contains("\"specLang\""));
         assert!(!raw.contains("build_command"), "no snake_case on write");
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["language"], serde_json::json!({"text": "pt-BR", "code": "en"}));
 
         let back = ProjectConfig::load(dir.path());
         assert_eq!(back.build_command(), Some("cargo build".to_string()));
+        assert_eq!(back.language().text, Some(SupportedLocale::PtBr));
+        assert_eq!(back.language().code.as_deref(), Some("en"));
+    }
+
+    /// Um projeto que não declarou idioma não ganha a chave: nada é gravado
+    /// por padrão.
+    #[test]
+    fn an_undeclared_language_writes_no_key() {
+        let dir = tempdir().unwrap();
+        ProjectConfig::default().write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("\"language\""), "no language was chosen: {raw}");
     }
 
     #[test]
@@ -687,17 +745,56 @@ mod tests {
         assert_eq!(cfg.max_active_specs(), Some(5));
     }
 
+    /// O idioma vem só do bloco `language`: o texto e o código, cada um na
+    /// sua chave. Sem declaração não há idioma, e as mensagens do Mustard
+    /// caem no pt-BR.
     #[test]
-    fn i18n_precedence_lang_over_spec_lang_and_tone() {
-        let mut cfg = ProjectConfig::default();
-        // default → pt-BR / didactic
-        assert_eq!(cfg.i18n(), I18n::new(SupportedLocale::PtBr, Tone::Didactic));
-        cfg.spec_lang = Some("en-US".into());
-        assert_eq!(cfg.i18n().lang, SupportedLocale::EnUs);
-        cfg.lang = Some("pt-BR".into()); // lang wins over spec_lang
-        assert_eq!(cfg.i18n().lang, SupportedLocale::PtBr);
-        cfg.tone = Some("concise".into());
-        assert_eq!(cfg.i18n().tone, Tone::Concise);
+    fn language_reads_the_text_and_code_keys() {
+        let cfg = ProjectConfig::default();
+        assert_eq!(cfg.language(), Language::default());
+        assert_eq!(cfg.language().text_or_default(), SupportedLocale::PtBr);
+
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"language":{"text":"en-US","code":" en "}}"#,
+        )
+        .unwrap();
+        let language = ProjectConfig::load(dir.path()).language();
+        assert_eq!(language.text, Some(SupportedLocale::EnUs));
+        assert_eq!(language.text_or_default(), SupportedLocale::EnUs);
+        assert_eq!(language.code.as_deref(), Some("en"), "the code language is trimmed");
+
+        // A short form or an unknown locale is not a declared text language.
+        for text in ["pt", "fr-FR", "  "] {
+            std::fs::write(
+                dir.path().join("mustard.json"),
+                format!(r#"{{"language":{{"text":"{text}"}}}}"#),
+            )
+            .unwrap();
+            assert_eq!(ProjectConfig::load(dir.path()).language().text, None, "{text:?}");
+        }
+    }
+
+    /// As chaves antigas de idioma e a do tom não são mais lidas: um projeto
+    /// que só as tem não declarou idioma nenhum. Elas continuam no arquivo,
+    /// como qualquer chave desconhecida.
+    #[test]
+    fn the_old_language_keys_and_the_tone_are_kept_but_never_read() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"specLang":"en-US","lang":"en-US","tone":"technical"}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.language(), Language::default(), "nothing is read from the old keys");
+        for key in ["specLang", "lang", "tone"] {
+            assert!(cfg.extra.contains_key(key), "{key} survives as an unknown key");
+        }
+        cfg.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"specLang\"") && !raw.contains("\"language\""), "{raw}");
     }
 
     #[test]

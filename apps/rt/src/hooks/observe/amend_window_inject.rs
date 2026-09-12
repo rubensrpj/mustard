@@ -527,17 +527,13 @@ impl Check for AmendWindowInject {
             return Ok(Verdict::Allow);
         }
 
-        // Derive lang from spec header (best-effort); tone from project config.
-        // The locale is spec-scoped (the spec may differ from the project lang),
-        // but the tone is a project-wide preference — combine them so the banner
-        // both speaks the spec's language and honours the user's tone.
-        let lang = derive_spec_lang_from_fs(&pdir, &spec_id);
-        let tone = mustard_core::ProjectConfig::load(std::path::Path::new(&pdir))
-            .i18n()
-            .tone;
-        let i18n = mustard_core::I18n::new(lang, tone);
+        // The warning speaks the project's text language: a spec is written in
+        // the project's language, so there is no second one to look up.
+        let lang = mustard_core::ProjectConfig::load(std::path::Path::new(&pdir))
+            .language()
+            .text_or_default();
         let n = forecast_len;
-        let body = i18n.render("banner.amend.drift");
+        let body = mustard_core::translate("banner.amend.drift", lang);
         let lead = match lang {
             mustard_core::SupportedLocale::PtBr => format!(
                 "Você está editando `{file_path}` em outro escopo da spec ativa \
@@ -548,52 +544,8 @@ impl Check for AmendWindowInject {
                  (post-CLOSE). {n} files outside declared scope so far. ",
             ),
         };
-        let warning = format!("{}{body}", mustard_core::apply_tone(&lead, tone));
+        let warning = format!("{lead}{body}");
         Ok(Verdict::Inject { context: warning })
-    }
-}
-
-/// Retrieve the spec's `lang` from the filesystem.
-///
-/// Resolution — **`meta.json` is the single source of truth**:
-/// 1. `meta.json#lang` beside the spec.
-/// 2. Legacy fallback: the `### Lang:` header in `spec.md` for un-migrated specs.
-///
-/// Fail-open: returns `None` when neither source declares a non-empty `lang`.
-fn derive_spec_lang_from_header(project_dir: &str, spec_id: &str) -> Option<String> {
-    let paths = ClaudePaths::for_project(project_dir).ok()?;
-    let sp = paths.for_spec(spec_id).ok()?;
-    let spec_md = sp.spec_md_path();
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md)
-        && let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
-            return Some(lang);
-        }
-    // Legacy fallback: the `### Lang:` header in the markdown.
-    let text = std::fs::read_to_string(&spec_md).ok()?;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("### Lang:") {
-            return Some(rest.trim().to_string());
-        }
-    }
-    None
-}
-
-/// `derive_spec_lang_from_header` + BCP-47 normalisation. Fail-open: defaults
-/// to [`mustard_core::SupportedLocale`] default (`PtBr`) when absent.
-fn derive_spec_lang_from_fs(project_dir: &str, spec_id: &str) -> mustard_core::SupportedLocale {
-    use std::str::FromStr;
-    let raw = derive_spec_lang_from_header(project_dir, spec_id).unwrap_or_default();
-    match mustard_core::SupportedLocale::from_str(&raw) {
-        Ok(loc) => loc,
-        Err(mustard_core::LocaleError::ShortForm(s)) => {
-            if s.eq_ignore_ascii_case("pt-br") || s.eq_ignore_ascii_case("pt") {
-                mustard_core::SupportedLocale::PtBr
-            } else {
-                mustard_core::SupportedLocale::EnUs
-            }
-        }
-        Err(_) => mustard_core::SupportedLocale::default(),
     }
 }
 

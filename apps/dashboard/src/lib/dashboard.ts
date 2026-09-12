@@ -64,7 +64,7 @@ export function fetchRecentEvents(repoPath: string, limit?: number): Promise<Rec
   return call<RecentEvent[]>("dashboard_recent_events", { repoPath, limit });
 }
 
-// W5 (`2026-05-24-mustard-unification`, T5.4) — recent sessions from the
+// Recent sessions from the
 // `sessions` table (mirrors Rust `SessionRow`). The page lists open sessions
 // first (status === "open") and re-renders on watcher `events` ticks so it
 // tails live (`subscribeFsChange` already invalidates `["sessions", repoPath]`).
@@ -75,7 +75,7 @@ export interface SessionRow {
   last_activity_at: string | null;
   last_spec: string | null;
   cwd: string | null;
-  /** `"open" | "closed"` (per the W5 schema default). */
+  /** `"open" | "closed"` (per the schema default). */
   status: string;
   /** Number of parseable NDJSON event lines aggregated for this session. */
   event_count: number;
@@ -197,7 +197,7 @@ export function fetchActivePipelines(repoPath: string): Promise<ActivePipeline[]
   return call<ActivePipeline[]>("dashboard_active_pipelines", { repoPath });
 }
 
-// --- Specs snapshot push (spec performance-dashboard-rotas-lentas-cache, W3) ---
+// --- Specs snapshot push ---
 
 /**
  * Aggregated payload of the `dashboard:specs-snapshot` server-sent event —
@@ -283,9 +283,9 @@ export function fetchConsumption(repoPath: string): Promise<ConsumptionSummary> 
   return call<ConsumptionSummary>("dashboard_consumption", { repoPath });
 }
 
-// --- Economy summary (W7 — 2026-05-20-economia-moat-unification) ---
+// --- Economy summary ---
 //
-// Thin wrapper for the W7 backend command. The scope union maps directly
+// Thin wrapper for the backend command. The scope union maps directly
 // onto the Rust `EconomyScopeDto` (internally tagged on `kind` with snake_case
 // variant names) — JS literal `{ kind: "project", project: "/..." }` is the
 // exact payload serde-deserialize expects on the other side.
@@ -414,7 +414,7 @@ export function useActiveProjectName(): string | null {
   return match?.name || _basename(projectsRoot) || projectsRoot;
 }
 
-// --- Wave-6 hygiene health ---
+// --- Hygiene health ---
 
 export type { WorkspaceHealth } from "@/lib/types/specs";
 
@@ -428,7 +428,7 @@ export function fetchWorkspaceHealth(
   return call("workspace_health", { repoPath });
 }
 
-// --- Wave-3 spec-card commands ---
+// --- Spec-card commands ---
 
 export type {
   SpecCard,
@@ -494,7 +494,7 @@ export function dashboardWorkspaceSummary(
 }
 
 /**
- * Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`): list
+ * List
  * sub-specs linked to `parent` via the `spec.link` event. Always resolves —
  * the backend collapses missing rows / DB-unavailable into an empty Vec so
  * the UI renders an empty state.
@@ -507,7 +507,7 @@ export function dashboardSpecChildren(
 }
 
 /**
- * Wave 3 (spec-lifecycle-unification): fetch the children tree (waves +
+ * Fetch the children tree (waves +
  * acceptance criteria + sub-specs) for one spec in a single round-trip. Backed
  * by `mustard-rt run spec-children-tree --spec NAME`. Always resolves — the
  * backend collapses subprocess/parse failures into an empty tree so the
@@ -520,7 +520,7 @@ export function fetchSpecChildrenTree(
   return call("spec_children_tree", { spec, projectPath });
 }
 
-// --- Wave-2 (spec 2026-05-21-dashboard-spec-tabs): real file count + wave markdown ---
+// --- Real file count + wave markdown ---
 
 /**
  * Real file count for a wave + full wave-N markdown so the drawer can render
@@ -545,7 +545,7 @@ export function dashboardSpecWaveFiles(
   });
 }
 
-// --- Wave 1 polish (spec 2026-05-21-dashboard-spec-tabs-polish): planned waves ---
+// --- Planned waves ---
 //
 // One wave declared on disk under `.claude/spec/{spec}/wave-N-{role}/`. The
 // Specs page unions this with the SpecWave[] projection from SQLite so the
@@ -568,7 +568,7 @@ export function dashboardSpecWavesPlanned(
   });
 }
 
-// --- Wave 3 (spec checklist-progresso-por-onda): per-wave checklist progress ---
+// --- Per-wave checklist progress ---
 
 /**
  * Per-wave checklist progress — `done`/`total` trackable items. Wave `0` is
@@ -594,38 +594,31 @@ export function dashboardSpecChecklistProgress(
   });
 }
 
-// --- Wave 4 mustard-unification — language + tone settings ----------------
+// --- Language setting --------------------------------------------------------
 //
-// `mustard.json#lang` (BCP-47 `pt-BR`/`en-US`) and `mustard.json#tone`
-// (`didactic`/`technical`/`concise`) are written via these backend commands so
-// the validation + telemetry contract is centralised on the backend.
+// `mustard.json` `language.text` (BCP-47 `pt-BR`/`en-US`) is written via this
+// backend command so the validation + telemetry contract is centralised on the
+// backend. There is no tone to set: the voice is one, plain and didactic.
 
-/** Shape returned by `commands::settings::read_settings`. Both fields are
- *  optional — a fresh project ships `mustard.json` without either. */
+/** Shape returned by `commands::settings::read_settings`. Optional — a fresh
+ *  project ships `mustard.json` without a declared language. */
 export interface ProjectSettings {
   lang: string | null;
-  tone: string | null;
 }
 
-/** Read `lang` + `tone` from `mustard.json`. Fail-open: a missing or
- *  malformed file resolves to `{ lang: null, tone: null }`. */
+/** Read the declared text language from `mustard.json`. Fail-open: a missing
+ *  or malformed file resolves to `{ lang: null }`. */
 export function readSettings(repoPath: string): Promise<ProjectSettings> {
   return call<ProjectSettings>("read_settings", { repoPath });
 }
 
-/** Write `mustard.json#lang` after validating against the BCP-47 catalog
- *  (`pt-BR` / `en-US`). Rejects legacy short forms with a typed error. */
+/** Write `mustard.json` `language.text` after validating against the BCP-47
+ *  catalog (`pt-BR` / `en-US`). Rejects legacy short forms with a typed error. */
 export function setLanguage(repoPath: string, lang: string): Promise<void> {
   return call<void>("set_language", { repoPath, lang });
 }
 
-/** Write `mustard.json#tone` after validating against the catalog
- *  (`didactic` / `technical` / `concise`). */
-export function setTone(repoPath: string, tone: string): Promise<void> {
-  return call<void>("set_tone", { repoPath, tone });
-}
-
-// --- Visão Geral redesign (spec redesenho-rota-visao-geral-dashboard, W2) ---
+// --- Visão Geral redesign ---
 //
 // Local git inspection + grain-model project overview for the overview cards.
 // Both backend commands are fail-open (`dashboard_git_info` /

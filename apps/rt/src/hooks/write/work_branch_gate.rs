@@ -485,7 +485,7 @@ impl Check for WorkBranchGate {
             CensusDoor::WriteHookPass,
         ) {
             CensusSettlement::Refuse(busy) => {
-                return Ok(Verdict::Deny { reason: busy.reason(config.i18n().lang) })
+                return Ok(Verdict::Deny { reason: busy.reason(config.language().text_or_default()) })
             }
             CensusSettlement::Recorded(_) | CensusSettlement::Proceed => {}
         }
@@ -508,7 +508,7 @@ impl Check for WorkBranchGate {
         let base = match resolved_base {
             Ok(base) => base,
             Err(candidates) => {
-                let message = translate("workbranch.base.unknown", config.i18n().lang)
+                let message = translate("workbranch.base.unknown", config.language().text_or_default())
                     .replace("{target}", &target)
                     .replace("{candidates}", &candidates.join(", "));
                 return Ok(if on_protected {
@@ -550,7 +550,7 @@ impl Check for WorkBranchGate {
                 Ok(Verdict::Allow)
             }
             Err(e) => {
-                let lang = config.i18n().lang;
+                let lang = config.language().text_or_default();
                 let note = dirty_note(&dirty, lang);
                 if on_protected {
                     // We could not leave the protected branch — refuse rather

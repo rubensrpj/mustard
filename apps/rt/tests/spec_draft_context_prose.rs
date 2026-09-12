@@ -39,13 +39,18 @@ fn drafted_context_is_prose_only() {
     // --- 1. A freshly drafted skeleton is clean ---------------------------
     for (scope, lang, waves) in [("light", "en-US", 0), ("full", "pt-BR", 2)] {
         let out = tmp.path().join(format!("draft-{scope}-{lang}"));
+        // O rascunho sai no idioma do texto do projeto.
+        std::fs::write(
+            tmp.path().join("mustard.json"),
+            format!(r#"{{"language":{{"text":"{lang}"}}}}"#),
+        )
+        .unwrap();
         // O projeto é a pasta temporária: a pasta do processo é o checkout de
         // verdade, e a fase gravada no fim do rascunho iria parar na spec real.
         let code = run_at(tmp.path(), SpecDraftOpts {
             intent: "Keep the harness honest about what it measured".into(),
             slug: None,
             scope: scope.into(),
-            lang: lang.into(),
             signals: None,
             output: Some(out.clone()),
             material: None,

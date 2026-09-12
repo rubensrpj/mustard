@@ -135,9 +135,9 @@ pub enum SpecCmd {
     ///
     /// `spec-draft` materialises ONLY the top-level `spec.md` + `meta.json`
     /// (recording `scope`/`totalWaves`/`isWavePlan`); full-scope wave dirs are
-    /// materialised by `wave-scaffold`. `--lang` accepts BCP-47 only (`pt-BR` /
-    /// `en-US`); short codes are rejected. `--signals` is a free-form
-    /// comma-separated list embedded in `spec.md` as a comment.
+    /// materialised by `wave-scaffold`. The narrative is written in the
+    /// project's text language (`mustard.json` `language.text`). `--signals` is
+    /// a free-form comma-separated list embedded in `spec.md` as a comment.
     #[command(display_order = 57)]
     SpecDraft {
         /// Free-text intent — the spec TITLE, and the last-resort slug seed.
@@ -154,9 +154,6 @@ pub enum SpecCmd {
         /// `light` (single-shot) or `full` (wave plan).
         #[arg(long, default_value = "full")]
         scope: String,
-        /// BCP-47 narrative locale (`pt-BR` / `en-US`).
-        #[arg(long, default_value = "pt-BR")]
-        lang: String,
         /// Optional comma-separated signal list (`layers,files,registry`).
         #[arg(long)]
         signals: Option<String>,
@@ -612,7 +609,6 @@ pub fn dispatch(cmd: SpecCmd) {
             intent,
             slug,
             scope,
-            lang,
             signals,
             output,
             material,
@@ -628,7 +624,6 @@ pub fn dispatch(cmd: SpecCmd) {
                 intent,
                 slug,
                 scope,
-                lang,
                 signals,
                 output,
                 material,

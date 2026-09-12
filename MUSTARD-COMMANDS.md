@@ -485,7 +485,7 @@ flowchart TD
     which -->|nenhuma| ups["mustard-rt run upsert"]
     ups --> lists["relata created / updated /<br/>preserved / migrated em linguagem clara"]
     lists --> first{"installedBefore?"}
-    first -->|false| hint["primeira instalação: defaults funcionam;<br/>git.flow e specLang no mustard.json"]
+    first -->|false| hint["primeira instalação: defaults funcionam;<br/>git.flow e language no mustard.json"]
     first -->|true| doneU(["atualização aplicada"])
     hint --> doneU
 

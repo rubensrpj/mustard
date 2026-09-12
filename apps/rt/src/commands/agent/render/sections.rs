@@ -74,42 +74,6 @@ pub fn read_guards_block(root: &Path, subproject_dir: &Path) -> String {
     format!("{UNCURATED_GUARDS_NOTICE}\n\n{block}")
 }
 
-/// Resolve the spec's narrative locale. Defaults to `"en-US"` (BCP-47).
-///
-/// Resolution — **`meta.json` is the single source of truth**:
-/// 1. `meta.json#lang` beside the spec.
-/// 2. Legacy fallback: the `### Lang:` header in `spec.md` (first 30 lines)
-///    for un-migrated specs.
-///
-/// Legacy short codes (`pt` / `en`) are tolerated on read and returned
-/// verbatim — `mustard_core::SupportedLocale::from_str` is the canonical parser
-/// for downstream consumers.
-pub(crate) fn read_spec_lang(spec_path: &Path) -> String {
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_path)
-        && let Some(lang) = m.lang.filter(|s| !s.is_empty()) {
-            return lang;
-        }
-    // Legacy fallback: the `### Lang:` header in the markdown.
-    let text = mfs::read_to_string(spec_path).unwrap_or_default();
-    for line in text.lines().take(30) {
-        let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix("### ") else {
-            continue;
-        };
-        let Some(colon) = rest.find(':') else {
-            continue;
-        };
-        let key = rest[..colon].trim();
-        if key.eq_ignore_ascii_case("lang") {
-            let val = rest[colon + 1..].trim();
-            if !val.is_empty() {
-                return val.to_string();
-            }
-        }
-    }
-    "en-US".to_string()
-}
-
 /// Cut the `## Tarefas` / `## Tasks` section from a spec file. Empty when
 /// neither heading exists.
 ///
@@ -1349,34 +1313,6 @@ mod tests {
         // A shared tail that is not a path segment must NOT match.
         assert!(!same_file("notsrc/a.rs", "rc/a.rs"));
         assert!(!same_file("src/a.rs", "src/b.rs"));
-    }
-
-    #[test]
-    fn read_spec_lang_defaults_to_en() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("spec.md");
-        std::fs::write(&path, "# Title\n\n## Body\n").unwrap();
-        // BCP-47 default per `project_locale_codes` memory.
-        assert_eq!(read_spec_lang(&path), "en-US");
-    }
-
-    #[test]
-    fn read_spec_lang_parses_pt() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("spec.md");
-        // BCP-47 spelling is the canonical write form.
-        std::fs::write(&path, "# Title\n### Lang: pt-BR\n").unwrap();
-        assert_eq!(read_spec_lang(&path), "pt-BR");
-    }
-
-    #[test]
-    fn read_spec_lang_tolerates_legacy_short_form() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("spec.md");
-        // Legacy short codes are returned verbatim — `SupportedLocale::from_str` rejects
-        // them so downstream code must normalise (e.g. via the tolerant path).
-        std::fs::write(&path, "# Title\n### Lang: pt\n").unwrap();
-        assert_eq!(read_spec_lang(&path), "pt");
     }
 
     #[test]

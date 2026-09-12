@@ -369,7 +369,7 @@ pub(crate) fn commit_census(project: &Path, paths: &[String]) -> bool {
         RecordOutcome::TreeNotClean => "basegate.census.not_clean",
         RecordOutcome::Unavailable => "basegate.census.unavailable",
     };
-    let lang = ProjectConfig::load(project).i18n().lang;
+    let lang = ProjectConfig::load(project).language().text_or_default();
     eprintln!(
         "{}",
         mustard_core::translate(key, lang).replace("{paths}", &paths.join(", "))

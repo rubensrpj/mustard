@@ -8,14 +8,14 @@
     clippy::uninlined_format_args
 )]
 
-//! Integration tests for `amend-finalize` (AC-11 … AC-14).
+//! Integration tests for `amend-finalize`.
 //!
-//! W8A-3 (no-sqlite Wave 8): the seed path migrated from
+//! The seed path migrated from
 //! `SqliteEventStore::open_amend_window` + `record_amend_activity` etc. to
 //! direct filesystem writes:
 //!
 //! - the amend window state lands in `.claude/spec/{id}/.amend-window.json`
-//!   (W3C atomic write — same schema the production `amend_capture` hook
+//!   (atomic write — same schema the production `amend_capture` hook
 //!   produces);
 //! - the `pipeline.scope` / `pipeline.amend_activity` / `pipeline.amend_intent`
 //!   events the finalize reader resolves are seeded as NDJSON lines under
@@ -146,7 +146,7 @@ fn seed_intent_event(root: &Path, spec_id: &str, session_id: &str, prompt: &str)
 }
 
 fn create_spec_md(project_root: &Path, spec_id: &str) {
-    // Wave-2 flat layout: specs live at .claude/spec/{spec_id}/ for their
+    // Flat layout: specs live at .claude/spec/{spec_id}/ for their
     // entire lifetime; no active/ or archived/ buckets.
     let spec_dir = project_root.join(".claude").join("spec").join(spec_id);
     std::fs::create_dir_all(&spec_dir).unwrap();
@@ -183,7 +183,7 @@ fn run_finalize(project_root: &Path, session_id: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// AC-11: archived — build_verde_at >= last_activity_at → status="archived",
+// archived — build_verde_at >= last_activity_at → status="archived",
 //         spec.md contains PT block
 // ---------------------------------------------------------------------------
 
@@ -226,15 +226,15 @@ fn amend_session_end_archived() {
     let flat_dir = root.join(".claude").join("spec").join(spec_id);
     assert!(flat_dir.exists(), "spec dir must remain at flat path .claude/spec/{spec_id}/");
 
-    // AC-13 contract: either `.amend-window.json` is removed OR a
+    // The contract: either `.amend-window.json` is removed OR a
     // `pipeline.amend_close` event lands in the per-spec NDJSON sink.
-    // W8A-3 keeps the window file (closed=true) for audit, so we assert the
+    // The finalize keeps the window file (closed=true) for audit, so we assert the
     // event-side branch of the OR — the close event is the durable signal.
     let window_path = flat_dir.join(".amend-window.json");
     let close_event_present = scan_close_event(root, spec_id, session_id);
     assert!(
         !window_path.exists() || close_event_present,
-        "AC-13: either `.amend-window.json` must be removed OR pipeline.amend_close event must be present in NDJSON"
+        "either `.amend-window.json` must be removed OR pipeline.amend_close event must be present in NDJSON"
     );
     assert!(
         close_event_present,
@@ -272,7 +272,7 @@ fn scan_close_event(root: &Path, spec_id: &str, session_id: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// AC-12: closed-amend-pending — activity but no build_verde_at
+// closed-amend-pending — activity but no build_verde_at
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -298,7 +298,7 @@ fn amend_session_end_pending() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-13: closed-amend-drift — drift_emitted=true wins regardless of build verde
+// closed-amend-drift — drift_emitted=true wins regardless of build verde
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -331,17 +331,17 @@ fn amend_session_end_drift() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-14a: lang="pt" → PT block (prompt do usuário)
+// No declared text language → the pt-BR of Mustard's messages
 // ---------------------------------------------------------------------------
 
 #[test]
-fn amend_writer_lang_pt() {
+fn amend_writer_without_a_declared_language_writes_portuguese() {
     let project = make_project();
     let root = project.path();
-    let session_id = "session-ac14-a";
-    let spec_id = "spec-ac14-a";
+    let session_id = "session-lang-a";
+    let spec_id = "spec-lang-a";
 
-    seed_scope_event(root, spec_id, session_id, Some("pt"));
+    seed_scope_event(root, spec_id, session_id, None);
     write_amend_window(
         root,
         spec_id,
@@ -369,17 +369,17 @@ fn amend_writer_lang_pt() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-14b: no lang field → defaults to EN (user prompt)
+// `language.text` = en-US → EN block (user prompt)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn amend_writer_lang_default_en() {
+fn amend_writer_follows_the_project_text_language() {
     let project = make_project();
     let root = project.path();
-    let session_id = "session-ac14-b";
-    let spec_id = "spec-ac14-b";
+    let session_id = "session-lang-b";
+    let spec_id = "spec-lang-b";
 
-    // scope event without lang field.
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
     seed_scope_event(root, spec_id, session_id, None);
     write_amend_window(
         root,
@@ -408,17 +408,18 @@ fn amend_writer_lang_default_en() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-14c: lang="en" → EN block
+// A language recorded in the scope event is not read: the project's decides
 // ---------------------------------------------------------------------------
 
 #[test]
-fn amend_writer_lang_en() {
+fn amend_writer_ignores_a_language_recorded_in_the_scope_event() {
     let project = make_project();
     let root = project.path();
-    let session_id = "session-ac14-c";
-    let spec_id = "spec-ac14-c";
+    let session_id = "session-lang-c";
+    let spec_id = "spec-lang-c";
 
-    seed_scope_event(root, spec_id, session_id, Some("en"));
+    seed_scope_event(root, spec_id, session_id, Some("pt"));
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
     write_amend_window(
         root,
         spec_id,

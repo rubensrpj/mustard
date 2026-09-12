@@ -420,7 +420,7 @@ pub fn inert_segment(cwd: &Path) -> Option<Segment> {
         return None;
     };
 
-    let lang = mustard_core::ProjectConfig::load(cwd).i18n().lang;
+    let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
     let label = mustard_core::translate(key, lang);
     let mut seg = Segment::new(SegmentKind::Inert, format!("\u{2a2f} {label}"));
     seg.override_fg = Some(Color::Ansi(1));
@@ -463,7 +463,7 @@ pub fn prune_segment(cwd: &Path) -> Option<Segment> {
     if count == 0 {
         return None;
     }
-    let lang = mustard_core::ProjectConfig::load(cwd).i18n().lang;
+    let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
     let label = mustard_core::translate("statusline.prune.label", lang);
     let mut seg = Segment::new(SegmentKind::Prune, format!("\u{2702} {count} {label}"));
     // Yellow: something is owed, nothing is wrong.
@@ -569,7 +569,7 @@ mod tests {
         std::fs::write(idle.path().join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
         assert!(unit_segment(idle.path()).is_none(), "no active unit must render nothing");
 
-        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","specLang":"pt-BR"}"#).unwrap();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
         // A unit in PLAN: named, with its stage. The active unit is the newest
         // pipeline-state file — the same source every other consumer reads.
         let spec = root.join(".claude/spec/roteador-didatico");
@@ -870,7 +870,7 @@ mod tests {
 
         let seg =
             prune_segment(root).expect("a delivered unit whose branch survives must be announced");
-        let lang = mustard_core::ProjectConfig::load(root).i18n().lang;
+        let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
         let label = mustard_core::translate("statusline.prune.label", lang);
         assert_eq!(seg.kind, SegmentKind::Prune);
         assert!(seg.text.contains('1'), "the bar states the count: {}", seg.text);

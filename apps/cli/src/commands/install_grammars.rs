@@ -322,8 +322,8 @@ pub fn run(args: InstallGrammarsArgs) -> Result<()> {
         None => std::env::current_dir()?,
     };
     let catalog = GrammarsCatalog::load(&project_root);
-    // Resolve locale + tone once; `render_output` applies both via `I18n::render`.
-    let i18n = mustard_core::ProjectConfig::load(&project_root).i18n();
+    // Resolve the locale once; `render_output` renders through `I18n::render`.
+    let i18n = I18n::new(mustard_core::ProjectConfig::load(&project_root).language().text_or_default());
     let langs = detect_languages(&project_root, &catalog);
     let installed = installed_languages(&project_root);
     let rendered = render_output(&langs, &installed, &catalog, &i18n);
@@ -334,7 +334,7 @@ pub fn run(args: InstallGrammarsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::platform::i18n::{self, Locale};
+    use mustard_core::platform::i18n::Locale;
     use std::fs;
     use tempfile::tempdir;
 
@@ -355,7 +355,7 @@ mod tests {
             &["rust".to_string()],
             &empty,
             &catalog,
-            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+            &I18n::new(Locale::EnUs),
         );
         assert!(
             rendered.contains("https://github.com/tree-sitter/tree-sitter-rust"),
@@ -379,7 +379,7 @@ mod tests {
             &["brainfuck".to_string()],
             &empty,
             &catalog,
-            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+            &I18n::new(Locale::EnUs),
         );
         assert!(
             rendered_unknown.contains("not catalogued"),
@@ -397,7 +397,7 @@ mod tests {
             &["rust".to_string()],
             &installed,
             &catalog,
-            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+            &I18n::new(Locale::EnUs),
         );
         assert!(
             rendered_installed.contains("already installed"),
@@ -413,7 +413,7 @@ mod tests {
             &["rust".to_string()],
             &installed,
             &catalog,
-            &I18n::new(Locale::PtBr, i18n::Tone::default()),
+            &I18n::new(Locale::PtBr),
         );
         assert!(
             rendered_pt.contains("já instalada"),
@@ -425,7 +425,7 @@ mod tests {
             &[],
             &empty,
             &catalog,
-            &I18n::new(Locale::EnUs, i18n::Tone::default()),
+            &I18n::new(Locale::EnUs),
         );
         assert!(
             rendered_empty.contains("No language detected"),

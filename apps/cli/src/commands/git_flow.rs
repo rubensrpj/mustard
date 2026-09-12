@@ -1,18 +1,22 @@
-//! Git-flow + locale configuration for the project-root `mustard.json`.
+//! Git-flow + language configuration for the project-root `mustard.json`.
 //!
 //! Probes the repository (default branch, current branch, submodules),
-//! collects the user's choices (production / dev branch, provider,
-//! **spec language**, **tone**), detects the build/test/lint/type-check command
-//! set agnostically (no hardcoded `npm`), and folds all of it into the single
+//! collects the user's choices (the **text language** and the **code
+//! language**), detects the build/test/lint/type-check command set
+//! agnostically (no hardcoded `npm`), and folds all of it into the single
 //! [`ProjectConfig`] written at the project root. There is no private config
 //! struct here any more — the one schema lives in `mustard_core`.
+//!
+//! A language is written only when the operator chose it. Outside the
+//! interactive mode nothing is asked, so nothing is written: a default written
+//! for them would read, later, exactly like a choice.
 //!
 //! Two entry points:
 //! - [`configure`] — the `mustard config` command: load → (preserve | collect)
 //!   → write.
 //! - [`collect_choices`] + [`apply_choices`] — the building blocks `init` uses
-//!   so it can fold the same git-flow/locale data into the config it stamps with
-//!   `runtime`/`version`, keeping a single write.
+//!   so it can fold the same git-flow/language data into the config it stamps
+//!   with `runtime`/`version`, keeping a single write.
 
 use std::path::Path;
 use std::process::Command;
@@ -20,7 +24,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::Select;
-use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale, Tone};
+use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale};
 
 /// Facts probed from the repository, all fail-open.
 ///
@@ -35,14 +39,17 @@ pub struct GitFacts {
     has_submodules: bool,
 }
 
-/// The user's git-flow + locale choices, resolved either from prompts or from
-/// sensible defaults (`--yes` / non-TTY).
+/// The user's git-flow + language choices, resolved either from prompts or,
+/// outside the interactive mode (`--yes` / non-TTY), from what the project
+/// already declared.
 pub struct Choices {
     production: String,
     dev_branch: String,
     provider: String,
-    spec_lang: String,
-    tone: String,
+    /// The text language the operator picked; `None` when nothing was asked.
+    text_language: Option<String>,
+    /// The code language the operator picked; `None` when nothing was asked.
+    code_language: Option<String>,
 }
 
 /// Run a `git` subcommand in `cwd`, returning trimmed stdout on success.
@@ -95,10 +102,12 @@ fn console_is_tty() -> bool {
     std::io::IsTerminal::is_terminal(&std::io::stdin())
 }
 
-/// Collect the git-flow + locale choices, pre-filling defaults from `existing`.
+/// Collect the git-flow + language choices, pre-filling the prompts from
+/// `existing`.
 ///
-/// Interactive (and a real TTY) prompts the user; otherwise it derives sensible
-/// defaults — preserving any values already present in `existing`.
+/// Interactive (and a real TTY) prompts the user; otherwise nothing is asked,
+/// and the choices only carry forward what `existing` already declared — no
+/// language among them, so none is written.
 ///
 /// # Errors
 /// Propagates a prompt read failure.
@@ -107,9 +116,6 @@ pub fn collect_choices(
     existing: &ProjectConfig,
     interactive: bool,
 ) -> Result<Choices> {
-    let i18n = existing.i18n();
-    let existing_lang = i18n.lang.as_str().to_string();
-    let existing_tone = i18n.tone.as_str().to_string();
     // Carried forward VERBATIM, empty included. It used to coerce empty to
     // "github", which is precisely what would defeat detection: an install
     // would write the override on every run and the remote would never be
@@ -123,12 +129,15 @@ pub fn collect_choices(
         // Preserve what the project already declared; invent nothing. The old
         // code fell back to the probed default branch and to a `dev`/`develop`
         // guess, which is how a fresh install acquired a flow nobody asked for.
+        // The language went the same way — `pt-BR` written for every project
+        // that never answered — and goes the same way now: nothing is asked,
+        // so no language is chosen, and the project keeps the one it declared.
         return Ok(Choices {
             production: existing_prod.unwrap_or_default(),
             dev_branch: existing_dev.unwrap_or_default(),
             provider: existing_provider,
-            spec_lang: existing_lang,
-            tone: existing_tone,
+            text_language: None,
+            code_language: None,
         });
     }
 
@@ -167,35 +176,40 @@ pub fn collect_choices(
     // EXISTING declaration is carried forward untouched here.
     let provider = existing_provider;
 
-    let langs = ["pt-BR", "en-US"];
-    let lang_idx = Select::with_theme(&theme)
-        .with_prompt("Spec language (user-facing specs, waves and banners)")
-        .items(langs)
-        .default(langs.iter().position(|l| *l == existing_lang).unwrap_or(0))
+    // The two languages, each on its own key: the one people read and the one
+    // the names in the code are written in. A language the project already
+    // declared pre-selects its row.
+    let declared = existing.language();
+    let texts = ["pt-BR", "en-US"];
+    let text_idx = Select::with_theme(&theme)
+        .with_prompt("Text language (conversation, specs, pages, code comments, commit messages)")
+        .items(texts)
+        .default(declared.text.and_then(|l| texts.iter().position(|t| *t == l.as_str())).unwrap_or(0))
         .interact()
-        .context("reading spec language")?;
+        .context("reading the text language")?;
 
-    let tones = ["didactic", "technical", "concise"];
-    let tone_idx = Select::with_theme(&theme)
-        .with_prompt("Tone (user-facing output)")
-        .items(tones)
-        .default(tones.iter().position(|t| *t == existing_tone).unwrap_or(0))
+    let codes = ["en", "pt"];
+    let code_idx = Select::with_theme(&theme)
+        .with_prompt("Code language (names of variables, functions, files, commands)")
+        .items(codes)
+        .default(declared.code.as_deref().and_then(|c| codes.iter().position(|x| *x == c)).unwrap_or(0))
         .interact()
-        .context("reading tone")?;
+        .context("reading the code language")?;
 
     Ok(Choices {
         production,
         dev_branch,
         provider,
-        spec_lang: langs[lang_idx].to_string(),
-        tone: tones[tone_idx].to_string(),
+        text_language: Some(texts[text_idx].to_string()),
+        code_language: Some(codes[code_idx].to_string()),
     })
 }
 
 /// Fold `choices` + detected commands into `config`.
 ///
-/// Git flow, provider, language and tone come from `choices` (a prompt or a
-/// default). The command set is detected agnostically from the project's
+/// Git flow and provider come from `choices` (a prompt or what the project
+/// declared); a language comes from them only when the operator chose one, and
+/// is otherwise left as the project declared it. The command set is detected agnostically from the project's
 /// manifests, but **never overwrites** a command the user already set — only
 /// absent fields are filled.
 ///
@@ -233,15 +247,20 @@ pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path)
         config.type_check_command = cmds.type_check;
     }
 
-    // Canonicalise language/tone to the catalogue spelling.
-    config.spec_lang = Some(
-        choices.spec_lang.parse::<SupportedLocale>().unwrap_or_default().as_str().to_string(),
-    );
-    config.tone = Some(Tone::parse(&choices.tone).unwrap_or_default().as_str().to_string());
+    // Only a language the operator chose is written, in the catalogue
+    // spelling. Nothing is asked outside the interactive mode, and then the
+    // project keeps what it declared — or stays without a language, which is
+    // never supposed for it.
+    if let Some(text) = choices.text_language.as_deref().and_then(|t| t.parse::<SupportedLocale>().ok()) {
+        config.language.text = Some(text.as_str().to_string());
+    }
+    if let Some(code) = choices.code_language.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        config.language.code = Some(code.to_string());
+    }
 }
 
-/// Run `mustard config` against `project_path`: (re)configure git flow + locale
-/// in `<root>/mustard.json`.
+/// Run `mustard config` against `project_path`: (re)configure git flow and
+/// the languages in `<root>/mustard.json`.
 ///
 /// Non-interactive over an existing file preserves it verbatim; otherwise the
 /// choices are collected (prompt or default) and folded in.
@@ -277,8 +296,8 @@ mod tests {
         }
     }
 
-    /// AC-5 — the install stops asking which branches the project promotes
-    /// through, and stops writing an answer nobody gave.
+    /// The install stops asking which branches the project promotes through,
+    /// and stops writing an answer nobody gave.
     ///
     /// Both halves are asserted, because either one alone would pass while the
     /// feature was half-done: a run that asks nothing but still seeds a flow
@@ -322,8 +341,8 @@ mod tests {
         assert_eq!(kept.dev_branch, "trunk", "the declared base survives untouched");
     }
 
-    /// AC-3 — the install stops asking who hosts the repository, and stops
-    /// writing an answer nobody gave.
+    /// The install stops asking who hosts the repository, and stops writing an
+    /// answer nobody gave.
     ///
     /// Both halves: an install that asks nothing but still writes `"github"`
     /// leaves a permanent override behind, and the remote would never be
@@ -372,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_choices_fills_git_lang_tone_and_detects_commands() {
+    fn apply_choices_fills_git_language_and_detects_commands() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
         let mut config = ProjectConfig::default();
@@ -380,8 +399,8 @@ mod tests {
             production: "main".into(),
             dev_branch: "dev".into(),
             provider: "gitlab".into(),
-            spec_lang: "en-US".into(),
-            tone: "technical".into(),
+            text_language: Some("en-US".into()),
+            code_language: Some("en".into()),
         };
         apply_choices(&mut config, &choices, dir.path());
 
@@ -389,8 +408,57 @@ mod tests {
         assert_eq!(config.git.flow.get("*"), Some(&"dev".to_string()));
         // Cargo project → cargo build, never npm.
         assert_eq!(config.build_command.as_deref(), Some("cargo build"));
-        assert_eq!(config.spec_lang.as_deref(), Some("en-US"));
-        assert_eq!(config.tone.as_deref(), Some("technical"));
+        assert_eq!(config.language().text, Some(SupportedLocale::EnUs));
+        assert_eq!(config.language().code.as_deref(), Some("en"));
+        let written = serde_json::to_string(&config).expect("serialises");
+        assert!(written.contains(r#""language":{"text":"en-US","code":"en"}"#), "{written}");
+        assert!(!written.contains("specLang") && !written.contains("tone"), "{written}");
+    }
+
+    /// Fora do modo interativo nada é perguntado, e nenhum idioma é gravado
+    /// por padrão: nem num projeto novo, nem num projeto que só tem a chave
+    /// antiga de idioma, que continua no arquivo sem ser lida. O idioma que o
+    /// projeto já declarou fica como está.
+    #[test]
+    fn a_non_interactive_install_writes_no_language_by_default() {
+        let probed = facts(false);
+
+        // A project that only carries the old language key.
+        let old = tempdir().unwrap();
+        std::fs::write(old.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#).unwrap();
+        let mut config = ProjectConfig::load(old.path());
+        let choices = collect_choices(&probed, &config, false).expect("nothing is asked");
+        assert!(choices.text_language.is_none() && choices.code_language.is_none());
+        apply_choices(&mut config, &choices, old.path());
+        config.write(old.path()).unwrap();
+        let raw = std::fs::read_to_string(old.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("\"language\""), "no language is written by default: {raw}");
+        assert_eq!(
+            ProjectConfig::load(old.path()).language(),
+            mustard_core::Language::default(),
+            "the old key declares nothing",
+        );
+
+        // A fresh project.
+        let fresh = tempdir().unwrap();
+        configure(fresh.path(), false).unwrap();
+        let raw = std::fs::read_to_string(fresh.path().join("mustard.json")).unwrap();
+        for key in ["\"language\"", "\"specLang\"", "\"tone\""] {
+            assert!(!raw.contains(key), "a fresh install writes no {key}: {raw}");
+        }
+
+        // A language the project declared survives a non-interactive run.
+        let declared = tempdir().unwrap();
+        std::fs::write(
+            declared.path().join("mustard.json"),
+            r#"{"language":{"text":"en-US","code":"en"}}"#,
+        )
+        .unwrap();
+        let mut config = ProjectConfig::load(declared.path());
+        let choices = collect_choices(&probed, &config, false).expect("nothing is asked");
+        apply_choices(&mut config, &choices, declared.path());
+        assert_eq!(config.language().text, Some(SupportedLocale::EnUs));
+        assert_eq!(config.language().code.as_deref(), Some("en"));
     }
 
     #[test]
@@ -405,8 +473,8 @@ mod tests {
             production: "main".into(),
             dev_branch: String::new(),
             provider: "github".into(),
-            spec_lang: "pt-BR".into(),
-            tone: "didactic".into(),
+            text_language: None,
+            code_language: None,
         };
         apply_choices(&mut config, &choices, dir.path());
         // User's command survives; detection does not clobber it.
@@ -426,8 +494,8 @@ mod tests {
         // from probing the project, not from asking.
         assert_eq!(cfg.git.provider, "", "a fresh install writes no override");
         assert_eq!(cfg.build_command.as_deref(), Some("cargo build"));
-        assert_eq!(cfg.spec_lang.as_deref(), Some("pt-BR"));
-        assert_eq!(cfg.tone.as_deref(), Some("didactic"));
+        // Nor is a language: nothing was asked, so nothing was chosen.
+        assert_eq!(cfg.language(), mustard_core::Language::default());
     }
 
     #[test]

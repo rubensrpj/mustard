@@ -108,7 +108,7 @@ pub(crate) fn run_rules(rules: &[&dyn TurnRule], input: &HookInput, ctx: &Ctx) -
         project_dir: &project_dir,
         session: input.session_id.as_deref(),
         retry: input.stop_hook_active(),
-        lang: mustard_core::ProjectConfig::load(Path::new(&project_dir)).i18n().lang,
+        lang: mustard_core::ProjectConfig::load(Path::new(&project_dir)).language().text_or_default(),
     };
     let findings: Vec<Finding> = rules.iter().filter_map(|rule| rule.check(&turn)).collect();
     verdict(&findings)
@@ -150,11 +150,16 @@ mod tests {
         que ainda falhava na máquina do usuário, eu ajustei a leitura do idioma e a contagem das \
         linhas para que a resposta final saia bem curta e clara.";
 
-    /// Prosa em inglês com palavras bastantes para o idioma ser julgado.
-    const ENGLISH_REPLY: &str = "The wave is done and the tests pass.\n\
+    /// Prosa em inglês com palavras bastantes para o idioma ser julgado, e
+    /// clara: as medidas da escrita rodam em todo projeto, e só o idioma deve
+    /// decidir o veredito.
+    const ENGLISH_REPLY: &str = "The work is done and the tests pass.\n\
         The check now compares the language of the reply with the language of the project.\n\
         It counts the common words of each language.\n\
         A short reply is not judged at all.";
+
+    /// Um projeto que declarou o português do Brasil como idioma do texto.
+    const PT_PROJECT: &str = r#"{"language":{"text":"pt-BR"}}"#;
 
     fn project(config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -218,7 +223,7 @@ mod tests {
     #[test]
     fn a_reply_with_an_internal_code_and_a_long_sentence_blocks_once_then_warns() {
         assert_eq!(FORTY_WORDS.split_whitespace().count(), 40);
-        let dir = project(r#"{"specLang":"pt-BR","tone":"didactic"}"#);
+        let dir = project(PT_PROJECT);
         let root = dir.path();
         let reply = format!("A regra MSTD-RULE-0008 ficou pronta.\n{FORTY_WORDS}");
         let started = Instant::now();
@@ -267,12 +272,14 @@ mod tests {
         assert_eq!(timeouts, vec![STOP_BUDGET_SECS]);
     }
 
-    /// A resposta que sai noutro idioma que não o do projeto reprova, e
-    /// o idioma vem da configuração: o mesmo inglês passa num projeto em
-    /// inglês, e o português reprova nele, com a mensagem no idioma dele.
+    /// A resposta que sai noutro idioma que não o de `language.text` reprova,
+    /// e o idioma vem da configuração: o mesmo inglês passa num projeto em
+    /// inglês, e o português reprova nele, com a mensagem no idioma dele. A
+    /// chave antiga de idioma não é mais lida: um projeto que só tem ela não
+    /// declarou idioma, e nenhuma resposta é julgada pelo idioma.
     #[test]
     fn a_reply_in_another_language_fails_the_end_of_turn_check() {
-        let pt = project(r#"{"specLang":"pt-BR"}"#);
+        let pt = project(PT_PROJECT);
         match EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(pt.path())).expect("never errors") {
             Verdict::Deny { reason } => assert!(
                 reason.contains("\n- resposta em en-US; o idioma do projeto e do usuário é pt-BR"),
@@ -281,7 +288,7 @@ mod tests {
             other => panic!("an English reply in a pt-BR project must fail, got {other:?}"),
         }
 
-        let en = project(r#"{"specLang":"en-US"}"#);
+        let en = project(r#"{"language":{"text":"en-US"}}"#);
         let english = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(en.path()));
         assert_eq!(english.expect("never errors"), Verdict::Allow);
         let portuguese = "A onda terminou e os testes passaram.\n\
@@ -295,6 +302,15 @@ mod tests {
             ),
             other => panic!("a Portuguese reply in an en-US project must fail, got {other:?}"),
         }
+
+        let old_key = project(r#"{"specLang":"pt-BR"}"#);
+        let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(old_key.path()));
+        let text = match verdict.expect("never errors") {
+            Verdict::Deny { reason } => reason,
+            Verdict::Inject { context } => context,
+            _ => String::new(),
+        };
+        assert!(!text.contains("resposta em en-US"), "the old key declares no language: {text}");
     }
 
     /// Lado a lado — a cobrança de pendências mudou de gancho próprio para
@@ -302,7 +318,7 @@ mod tests {
     /// mesmo fechamento dá o mesmo bloqueio, com o mesmo texto.
     #[test]
     fn the_pending_rule_blocks_the_same_inside_the_end_of_turn_check() {
-        let config = r#"{"lang":"pt-BR"}"#;
+        let config = PT_PROJECT;
         let (alone, inside) = (project_with_open_items(config), project_with_open_items(config));
         let message = "Fechei a unidade; segue o html padrao da spec.";
         for dir in [&alone, &inside] {
@@ -325,7 +341,7 @@ mod tests {
     /// e a clareza que ainda reprova só avisa.
     #[test]
     fn pending_and_clarity_share_one_block() {
-        let dir = project_with_open_items(r#"{"lang":"pt-BR","tone":"didactic"}"#);
+        let dir = project_with_open_items(PT_PROJECT);
         let root = dir.path();
         mark_unit_closed(&root.to_string_lossy(), "s-both");
 
@@ -354,7 +370,7 @@ mod tests {
     /// um produto ou o tamanho de uma folha não é barrado.
     #[test]
     fn letters_and_numbers_outside_the_code_format_pass() {
-        let dir = project(r#"{"specLang":"pt-BR","tone":"didactic"}"#);
+        let dir = project(PT_PROJECT);
         let reply = "Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.";
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", reply, false), &ctx(dir.path())).expect("never errors");
         assert_eq!(verdict, Verdict::Allow);
@@ -363,7 +379,7 @@ mod tests {
     /// Fora do `Stop` da sessão principal nada é conferido.
     #[test]
     fn only_the_main_session_stop_is_checked() {
-        let dir = project(r#"{"specLang":"pt-BR","tone":"didactic"}"#);
+        let dir = project(PT_PROJECT);
         let reply = format!("A regra MSTD-RULE-0008 ficou pronta.\n{FORTY_WORDS}");
         let mut sub = stop("s1", &reply, false);
         sub.agent_id = Some("child".to_string());

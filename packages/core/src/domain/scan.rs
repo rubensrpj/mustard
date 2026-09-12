@@ -9,7 +9,7 @@
 //!   a `feature` does to research the repo without reading files.
 //! - `grain spec <model> --entity … [--like …] [--ops …] [--invariant …]` — the
 //!   deterministic implementation-spec DRAFT (English; localized to the
-//!   project's `mustard.json` language/tone only at the lapidation step).
+//!   project's `mustard.json` text language only at the lapidation step).
 //!
 //! The boundary is a TOOL (process + JSON/MD), not a library link: no shared
 //! build, no tree-sitter version coupling, grain stays standalone. This module
