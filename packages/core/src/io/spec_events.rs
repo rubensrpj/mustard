@@ -13,7 +13,10 @@
 //!
 //! Quem depende do arquivo como ficou (a página e o `.md` da spec) recebe o
 //! conteúdo recém-gravado ainda com a trava presa: a gravação seguinte só
-//! entra depois, então quem grava por último refaz a página por último.
+//! entra depois, então quem grava por último refaz a página por último. Numa
+//! pasta de spec do projeto, a linha da spec no índice (`io::spec_index`) é
+//! refeita do mesmo jeito, antes da página: todo gravador passa por aqui, então
+//! todo evento gravado atualiza o índice.
 //!
 //! Num worktree, a spec continua sendo a do checkout principal: o arquivo mora
 //! fora do git, na pasta do Mustard do checkout principal, e sobrevive à troca
@@ -63,6 +66,9 @@ pub struct Written {
     pub removed: Vec<u64>,
     /// Os números cujo texto um `purge` tirou do arquivo.
     pub purged: Vec<u64>,
+    /// Por que a linha da spec no índice não foi refeita, quando não foi. O
+    /// evento já está gravado; o `index` refaz o índice.
+    pub index_warning: Option<Refusal>,
 }
 
 /// Grava um evento com a hora de agora. Veja [`write_at_then`].
@@ -112,10 +118,15 @@ pub fn write_at(
 /// expurgo reescreve o arquivo com o texto dos alvos tirado; as outras
 /// gravações só acrescentam uma linha.
 ///
+/// Numa pasta de spec do projeto (`<raiz>/.claude/spec/<nome>/spec.ndjson`),
+/// a linha da spec no índice é refeita logo depois da escrita, com a trava do
+/// arquivo de eventos ainda presa; se ela não puder ser refeita, o evento
+/// continua gravado, e [`Written::index_warning`] diz por quê.
+///
 /// `then` roda depois da escrita e antes de a trava soltar, com o conteúdo
 /// que acabou de ser gravado, e não lê o disco: é onde a página e o `.md` são
 /// refeitos, para que duas gravações ao mesmo tempo nunca deixem a página sem
-/// a última. Numa recusa, `then` não roda.
+/// a última. Numa recusa, nem o índice nem `then` são tocados.
 pub fn write_at_then(
     path: &Path,
     event_type: &str,
@@ -154,9 +165,13 @@ pub fn write_at_then(
         file.replace(body.as_bytes()).map_err(io_refusal)?;
         body
     };
-    then(&model::parse_log(&written));
+    let log = model::parse_log(&written);
+    // Primeiro a trava da spec, depois a do índice: sempre nessa ordem.
+    let index_warning = crate::io::spec_index::index_for(path)
+        .and_then(|(index, name)| crate::io::spec_index::refresh_line(&index, &name, &log).err());
+    then(&log);
     drop(file);
-    Ok(Written { id, code, removed: effects.removed, purged: effects.purged })
+    Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning })
 }
 
 /// Lê o arquivo inteiro, com a trava compartilhada. `Ok(None)` quando a spec

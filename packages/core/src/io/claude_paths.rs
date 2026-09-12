@@ -207,6 +207,9 @@ const CACHE_FILES: &[&str] = &[
     "spec-material.json",
 ];
 
+/// O nome do índice das specs, dentro de `.claude/spec/`.
+pub const SPEC_INDEX_FILE: &str = "index.ndjson";
+
 impl ClaudePaths {
     /// Build a handle pointing at `<root>/.claude/`.
     ///
@@ -317,6 +320,13 @@ impl ClaudePaths {
     #[must_use]
     pub fn spec_dir(&self) -> PathBuf {
         self.claude_dir().join("spec")
+    }
+
+    /// `<root>/.claude/spec/index.ndjson` — o índice das specs: uma linha por
+    /// spec, refeita pelo binário a cada evento gravado (`io::spec_index`).
+    #[must_use]
+    pub fn spec_index_path(&self) -> PathBuf {
+        self.spec_dir().join(SPEC_INDEX_FILE)
     }
 
     /// `<root>/.claude/pending/` — a lista de pendências que mora fora de

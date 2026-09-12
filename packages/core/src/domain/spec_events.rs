@@ -1077,14 +1077,7 @@ pub fn stamp(mut event: Map<String, Value>, id: u64, code: Option<&str>, at: &st
         event.insert("code".into(), Value::String(code.to_string()));
     }
     event.insert("at".into(), Value::String(at.to_string()));
-    let text = event.get("text").and_then(Value::as_str);
-    let keys: Vec<&str> = event
-        .get("keys")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    if text.is_some() || !keys.is_empty() {
-        let search = search_field(text, &keys);
+    if let Some(search) = search_of(&event) {
         event.insert("search".into(), Value::String(search));
     }
     event
@@ -1198,6 +1191,32 @@ fn purged_envelope(map: &Map<String, Value>, by: u64) -> Map<String, Value> {
     kept
 }
 
+/// O arquivo com o `search` de cada linha recalculado pelo redutor de hoje,
+/// e quantas linhas mudaram. Só é reescrita a linha que tem texto ou chaves e
+/// cujo `search` faltava ou era outro; as outras, inclusive as que não se
+/// entendem, ficam byte a byte como estavam. É o que o índice das specs roda
+/// quando o redutor muda.
+#[must_use]
+pub fn refresh_search_lines(content: &str) -> (String, usize) {
+    let mut changed = 0usize;
+    let body = content
+        .split('\n')
+        .map(|raw| {
+            let line = raw.trim_end_matches('\r');
+            let Some(mut map) = parse_object(line) else { return raw.to_string() };
+            let Some(search) = search_of(&map) else { return raw.to_string() };
+            if map.get("search").and_then(Value::as_str) == Some(search.as_str()) {
+                return raw.to_string();
+            }
+            map.insert("search".into(), Value::String(search));
+            changed += 1;
+            render_line(&map)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (body, changed)
+}
+
 // ---------------------------------------------------------------------------
 // Busca
 // ---------------------------------------------------------------------------
@@ -1234,6 +1253,18 @@ pub fn search_field(text: Option<&str>, keys: &[&str]) -> String {
 #[must_use]
 pub fn search_terms(query: &str) -> Vec<String> {
     roots([query])
+}
+
+/// O `search` que uma linha deve ter, calculado de `text` e de `keys`.
+/// `None` para a linha sem texto e sem chaves, que fica sem o campo.
+fn search_of(event: &Map<String, Value>) -> Option<String> {
+    let text = event.get("text").and_then(Value::as_str);
+    let keys: Vec<&str> = event
+        .get("keys")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    (text.is_some() || !keys.is_empty()).then(|| search_field(text, &keys))
 }
 
 // ---------------------------------------------------------------------------
@@ -1923,6 +1954,35 @@ mod tests {
         assert!(line.starts_with(r#"{"v":1,"id":7,"at":"t","type":"note","author":"assistant","keys":"#), "{line}");
         assert!(line.ends_with(r#""search":"x k"}"#), "{line}");
         assert!(!shown_line(&event).contains("search"));
+    }
+
+    /// Recalcular o `search` reescreve só a linha em que ele faltava ou era
+    /// outro; a linha certa, a que não se entende e a que não tem texto ficam
+    /// byte a byte.
+    #[test]
+    fn refreshing_the_search_rewrites_only_the_stale_lines() {
+        let right = render_line(&stamp(
+            normalize(obj(json!({"text": "Apagar a pasta.", "keys": ["pasta"], "origin": 1})), "note"),
+            1,
+            None,
+            "t",
+        ));
+        let stale = r#"{"v":1,"id":2,"at":"t","type":"note","author":"assistant","keys":["k"],"text":"Trava nova.","search":"velho"}"#;
+        let older = r#"{"id":3,"type":"rule","text":"Sem busca gravada."}"#;
+        let bare = r#"{"v":1,"id":4,"at":"t","type":"message","author":"user","purged":9}"#;
+        let content = format!("{right}\n{stale}\ngarbage\r\n{older}\n{bare}\n");
+
+        let (fixed, changed) = refresh_search_lines(&content);
+        assert_eq!(changed, 2, "{fixed}");
+        let lines: Vec<&str> = fixed.split('\n').collect();
+        assert_eq!(lines[0], right);
+        assert_eq!(lines[2], "garbage\r", "a line that does not parse stays as it was");
+        assert_eq!(lines[4], bare);
+        assert_eq!(lines[5], "", "the file still ends with a newline");
+        let log = parse_log(&fixed);
+        assert_eq!(log.get(2).unwrap().str_field("search"), Some(search_field(Some("Trava nova."), &["k"]).as_str()));
+        assert_eq!(log.get(3).unwrap().str_field("search"), Some(search_field(Some("Sem busca gravada."), &[]).as_str()));
+        assert_eq!(refresh_search_lines(&fixed), (fixed.clone(), 0), "a second pass changes nothing");
     }
 
     #[test]

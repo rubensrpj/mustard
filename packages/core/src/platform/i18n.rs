@@ -1214,6 +1214,17 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "a list of event numbers or item codes, like MSTD-RULE-0002"
         }
 
+        // O índice das specs (`io::spec_index`, o comando `run index` e a
+        // conferência do `doctor`). As vagas vêm do chamador.
+        ("spec_index.write_warning", Locale::PtBr) => {
+            "O evento foi gravado, mas a linha da spec no índice não foi refeita: {detail}. Rode \
+             `mustard-rt run index` para refazer o índice."
+        }
+        ("spec_index.write_warning", Locale::EnUs) => {
+            "The event was written, but the spec's line in the index was not rebuilt: {detail}. \
+             Run `mustard-rt run index` to rebuild the index."
+        }
+
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
         // uma linha curta que o assistente recebe no bloqueio do fim da
         // resposta, ou que o usuário lê no aviso. Sem parênteses: o tom técnico
@@ -2106,6 +2117,22 @@ mod tests {
             ("spec_events.kind.ref", &[][..]),
             ("spec_events.kind.refs", &[][..]),
         ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+    }
+
+    /// Os avisos do índice das specs e as recusas do banco de lições saem do
+    /// catálogo nos dois idiomas, cada um com as vagas que o chamador
+    /// preenche.
+    #[test]
+    fn i18n_translates_spec_index_and_lesson_keys() {
+        for (key, slots) in [("spec_index.write_warning", &["{detail}"][..])] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
             assert_ne!(en, "<missing-key>", "{key} missing in en-US");

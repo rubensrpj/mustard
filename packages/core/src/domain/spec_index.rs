@@ -1,0 +1,415 @@
+//! `spec_index` — o índice das specs (`.claude/spec/index.ndjson`): uma linha
+//! por spec, para achar uma spec sem abrir o arquivo de eventos dela.
+//!
+//! A primeira linha é a do projeto, que guarda o endereço da página do
+//! projeto quando ele existe: `{"v":1,"type":"project"}`. Depois vem uma linha
+//! por spec, em ordem de nome, com o nome, a hora do primeiro e a do último
+//! evento, a fase, a branch, o objetivo numa frase, os títulos das regras e
+//! das decisões vigentes e o campo `search` calculado deles.
+//!
+//! Cada linha de spec sai só do arquivo de eventos dela e é montada por
+//! `render_line`: os mesmos eventos dão sempre os mesmos bytes, e o índice
+//! refeito do zero sai igual ao que as gravações deixaram.
+//!
+//! O objetivo é a primeira frase do primeiro `context` da spec, na versão
+//! vigente dele. O título de uma regra ou de uma decisão é o trecho em negrito
+//! do começo do texto; sem negrito, a primeira frase, cortada em 120
+//! caracteres.
+//!
+//! Função pura: sem disco e sem relógio. A trava e a gravação moram em
+//! `io::spec_index`.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::{Map, Value};
+
+use crate::domain::spec_events::{render_line, search_field, Refusal, SpecEvent, SpecLog, FORMAT_VERSION};
+use crate::platform::i18n::{translate, Locale};
+
+/// O tipo da primeira linha, a do projeto.
+pub const PROJECT_TYPE: &str = "project";
+
+/// O tipo de cada linha de spec.
+pub const SPEC_TYPE: &str = "spec";
+
+/// Até quantos caracteres vai o título tirado da primeira frase.
+pub const TITLE_CHARS: usize = 120;
+
+/// Os tipos cujos itens dão título na linha da spec.
+const TITLED_TYPES: &[&str] = &["rule", "decision"];
+
+/// A linha do projeto, com o endereço da página dele quando há.
+#[must_use]
+pub fn project_line(url: Option<&str>) -> String {
+    let mut line = Map::new();
+    line.insert("v".into(), Value::from(FORMAT_VERSION));
+    line.insert("type".into(), Value::from(PROJECT_TYPE));
+    if let Some(url) = url.map(str::trim).filter(|u| !u.is_empty()) {
+        line.insert("url".into(), Value::from(url));
+    }
+    render_line(&line)
+}
+
+/// A linha da spec `name`, montada do arquivo de eventos dela. `None` quando
+/// o arquivo não tem evento que se entenda: a spec fica fora do índice.
+#[must_use]
+pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
+    let first = log.events.first()?;
+    let last = log.events.last()?;
+    let visible = log.visible();
+    let states: Vec<&SpecEvent> = visible.iter().copied().filter(|e| e.event_type == "state").collect();
+    let phase = states.last().and_then(|e| e.str_field("phase"));
+    let branch = states.iter().rev().find_map(|e| e.str_field("branch"));
+    let goal = goal_of(log);
+    let mut titled: Vec<&SpecEvent> =
+        visible.iter().copied().filter(|e| TITLED_TYPES.contains(&e.event_type.as_str())).collect();
+    titled.sort_by_key(|e| e.id);
+    let titles: Vec<String> = titled.into_iter().filter_map(title_of).collect();
+
+    let mut line = Map::new();
+    line.insert("v".into(), Value::from(FORMAT_VERSION));
+    line.insert("type".into(), Value::from(SPEC_TYPE));
+    line.insert("name".into(), Value::from(name));
+    line.insert("created".into(), Value::from(first.at()));
+    line.insert("updated".into(), Value::from(last.at()));
+    if let Some(phase) = phase {
+        line.insert("phase".into(), Value::from(phase));
+    }
+    if let Some(branch) = branch {
+        line.insert("branch".into(), Value::from(branch));
+    }
+    if let Some(goal) = &goal {
+        line.insert("goal".into(), Value::from(goal.as_str()));
+    }
+    if !titles.is_empty() {
+        line.insert("titles".into(), Value::from(titles.clone()));
+    }
+    let keys: Vec<&str> = std::iter::once(name).chain(titles.iter().map(String::as_str)).collect();
+    let search = search_field(goal.as_deref(), &keys);
+    if !search.is_empty() {
+        line.insert("search".into(), Value::String(search));
+    }
+    Some(render_line(&line))
+}
+
+/// O objetivo da spec numa frase: a primeira frase do primeiro `context`, na
+/// versão vigente dele. `None` sem `context`.
+#[must_use]
+pub fn goal_of(log: &SpecLog) -> Option<String> {
+    log.events
+        .iter()
+        .filter(|e| e.event_type == "context" && e.int("replaces").is_none())
+        .find_map(|e| log.current(e.id))
+        .and_then(|e| e.str_field("text"))
+        .map(first_sentence)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// O título de uma regra ou de uma decisão: o trecho em negrito do começo do
+/// texto; sem negrito, a primeira frase, cortada em [`TITLE_CHARS`]
+/// caracteres. `None` para o item sem texto, como o expurgado.
+#[must_use]
+pub fn title_of(event: &SpecEvent) -> Option<String> {
+    let text = event.str_field("text")?.trim();
+    let bold = text
+        .strip_prefix("**")
+        .and_then(|rest| rest.split_once("**"))
+        .map(|(bold, _)| bold.trim())
+        .filter(|bold| !bold.is_empty());
+    if let Some(bold) = bold {
+        return Some(bold.to_string());
+    }
+    let sentence = first_sentence(text);
+    (!sentence.is_empty()).then(|| cut(sentence, TITLE_CHARS))
+}
+
+/// A primeira frase de um texto: até o primeiro ponto final, de exclamação ou
+/// de interrogação seguido de espaço ou do fim, ou até a primeira quebra de
+/// linha. Um ponto no meio de um nome, como `spec.ndjson`, não corta.
+#[must_use]
+pub fn first_sentence(text: &str) -> &str {
+    let text = text.trim();
+    for (i, c) in text.char_indices() {
+        if c == '\n' {
+            return text[..i].trim_end();
+        }
+        if matches!(c, '.' | '!' | '?') {
+            let end = i + c.len_utf8();
+            if text[end..].chars().next().is_none_or(char::is_whitespace) {
+                return &text[..end];
+            }
+        }
+    }
+    text
+}
+
+/// O texto com no máximo `max` caracteres; o cortado termina em reticências.
+fn cut(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// O índice lido linha a linha.
+struct Lines<'a> {
+    /// A primeira linha do projeto.
+    project: Option<&'a str>,
+    /// A linha de cada spec, pelo nome.
+    specs: BTreeMap<String, &'a str>,
+    /// As linhas que não se entendem, cada uma com o número dela no arquivo.
+    other: Vec<(usize, &'a str)>,
+}
+
+fn read_lines(content: &str) -> Lines<'_> {
+    let mut out = Lines { project: None, specs: BTreeMap::new(), other: Vec::new() };
+    for (i, raw) in content.split('\n').enumerate() {
+        let line = raw.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed = serde_json::from_str::<Value>(line).ok();
+        let field = |key: &str| parsed.as_ref().and_then(|v| v.get(key)).and_then(Value::as_str);
+        match (field("type"), field("name")) {
+            (Some(PROJECT_TYPE), _) if out.project.is_none() => out.project = Some(line),
+            (Some(SPEC_TYPE), Some(name)) if !out.specs.contains_key(name) => {
+                out.specs.insert(name.to_string(), line);
+            }
+            _ => out.other.push((i + 1, line)),
+        }
+    }
+    out
+}
+
+/// O arquivo: a linha do projeto (a de agora ou, sem ela, a sem endereço),
+/// as linhas das specs e as outras, cada uma com o `\n` no fim.
+fn assemble(project: Option<&str>, specs: &[&str], other: &[&str]) -> String {
+    let default = project_line(None);
+    let mut out = String::new();
+    for line in std::iter::once(project.unwrap_or(&default)).chain(specs.iter().copied()).chain(other.iter().copied()) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// O índice com a linha da spec `name` trocada por `line`, posta quando
+/// faltava ou tirada quando `line` é `None`. A linha do projeto fica em
+/// primeiro (e nasce quando falta), as specs seguem em ordem de nome, e as
+/// linhas que não se entendem ficam como estão, no fim.
+#[must_use]
+pub fn merge(content: &str, name: &str, line: Option<&str>) -> String {
+    let lines = read_lines(content);
+    let mut specs: BTreeMap<&str, &str> = lines.specs.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    match line {
+        Some(line) => {
+            specs.insert(name, line);
+        }
+        None => {
+            specs.remove(name);
+        }
+    }
+    let specs: Vec<&str> = specs.into_values().collect();
+    let other: Vec<&str> = lines.other.iter().map(|(_, l)| *l).collect();
+    assemble(lines.project, &specs, &other)
+}
+
+/// O índice só com a linha do projeto e as linhas das specs que `keep`
+/// aceita: sai a linha de spec que não existe mais e a que não se entende.
+#[must_use]
+pub fn prune(content: &str, keep: impl Fn(&str) -> bool) -> String {
+    let lines = read_lines(content);
+    let specs: Vec<&str> = lines.specs.iter().filter(|(name, _)| keep(name)).map(|(_, l)| *l).collect();
+    assemble(lines.project, &specs, &[])
+}
+
+/// O índice esperado: a linha do projeto de `current` e a linha de cada spec
+/// de `specs`, em ordem de nome.
+#[must_use]
+pub fn canonical(current: &str, specs: &BTreeMap<String, String>) -> String {
+    let specs: Vec<&str> = specs.values().map(String::as_str).collect();
+    assemble(read_lines(current).project, &specs, &[])
+}
+
+/// Onde o índice `current` difere de `expected`: o nome de cada spec cuja
+/// linha falta, sobra ou é outra, e `#<n>` para cada linha `n` que não se
+/// entende (`#1` quando falta a linha do projeto).
+#[must_use]
+pub fn diff(current: &str, expected: &str) -> Vec<String> {
+    let (now, want) = (read_lines(current), read_lines(expected));
+    let mut out = Vec::new();
+    if now.project.is_none() {
+        out.push("#1".to_string());
+    }
+    let names: BTreeSet<&String> = now.specs.keys().chain(want.specs.keys()).collect();
+    for name in names {
+        if now.specs.get(name) != want.specs.get(name) {
+            out.push(name.clone());
+        }
+    }
+    out.extend(now.other.iter().map(|(n, _)| format!("#{n}")));
+    out
+}
+
+/// O aviso de uma gravação cuja linha no índice não foi refeita: o evento já
+/// está gravado, e o `index` refaz o índice.
+#[must_use]
+pub fn write_warning(refusal: &Refusal, lang: Locale) -> String {
+    let detail = match refusal {
+        Refusal::Io { detail } => detail.clone(),
+        other => other.message(lang),
+    };
+    translate("spec_index.write_warning", lang).replace("{detail}", &detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::spec_events::{normalize, parse_log, search_terms, stamp};
+    use serde_json::json;
+
+    fn obj(value: Value) -> Map<String, Value> {
+        match value {
+            Value::Object(map) => map,
+            other => panic!("not an object: {other}"),
+        }
+    }
+
+    fn at(hm: &str) -> String {
+        format!("2026-09-11T{hm}:00-03:00")
+    }
+
+    /// Uma linha como o gravador deixa.
+    fn ev(id: u64, hm: &str, event_type: &str, draft: Value) -> String {
+        format!("{}\n", render_line(&stamp(normalize(obj(draft), event_type), id, None, &at(hm))))
+    }
+
+    fn parsed(line: &str) -> Value {
+        serde_json::from_str(line).unwrap()
+    }
+
+    fn long_decision() -> String {
+        format!("A página é publicada só nos marcos, {}até o fim. Segunda frase.", "e mais uma parte comprida ".repeat(8))
+    }
+
+    fn spec() -> String {
+        [
+            ev(1, "08:40", "state", json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"})),
+            ev(2, "08:41", "message", json!({"author": "user", "text": "Revise tudo"})),
+            ev(3, "08:42", "context", json!({"text": "Deixar o Mustard enxuto. O resto vem depois.", "origin": 2})),
+            ev(4, "08:43", "rule", json!({"text": "**Índice das unidades.**\n- Um arquivo só.", "keys": ["índice"], "example": "e", "origin": 2})),
+            ev(5, "08:44", "decision", json!({"text": long_decision(), "why": "w", "keys": ["k"], "origin": 2})),
+            ev(6, "08:45", "state", json!({"author": "binary", "phase": "running"})),
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn the_index_line_carries_name_dates_phase_branch_goal_and_titles() {
+        let line = spec_line("teste", &parse_log(&spec())).unwrap();
+        assert!(line.starts_with(r#"{"v":1,"type":"spec","branch":"feature/teste","created":"#), "{line}");
+        let got = parsed(&line);
+        assert_eq!(got["name"], json!("teste"));
+        assert_eq!(got["created"], json!(at("08:40")));
+        assert_eq!(got["updated"], json!(at("08:45")));
+        assert_eq!(got["phase"], json!("running"), "the last state wins");
+        assert_eq!(got["branch"], json!("feature/teste"), "the last state that has a branch");
+        assert_eq!(got["goal"], json!("Deixar o Mustard enxuto."));
+        let titles = got["titles"].as_array().unwrap();
+        assert_eq!(titles[0], json!("Índice das unidades."), "the bold opening is the title");
+        let cut = titles[1].as_str().unwrap();
+        assert_eq!(cut.chars().count(), TITLE_CHARS, "{cut}");
+        assert!(cut.starts_with("A página é publicada") && cut.ends_with('…'), "{cut}");
+        let search: Vec<&str> = got["search"].as_str().unwrap().split(' ').collect();
+        for word in ["enxuto", "teste", "unidades"] {
+            assert!(search.contains(&search_terms(word)[0].as_str()), "{word}: {search:?}");
+        }
+        assert!(line.ends_with(&format!(r#","updated":"{}","search":"{}"}}"#, at("08:45"), got["search"].as_str().unwrap())));
+    }
+
+    #[test]
+    fn the_same_events_give_the_same_index_line_bytes() {
+        let content = spec();
+        let one = spec_line("teste", &parse_log(&content));
+        assert_eq!(one, spec_line("teste", &parse_log(&content.clone())));
+        let more = format!("{content}{}", ev(7, "09:00", "message", json!({"author": "user", "text": "mais"})));
+        let two = spec_line("teste", &parse_log(&more)).unwrap();
+        let (a, b) = (parsed(one.as_deref().unwrap()), parsed(&two));
+        assert_eq!(b["updated"], json!(at("09:00")));
+        assert_eq!((a["titles"].clone(), a["goal"].clone()), (b["titles"].clone(), b["goal"].clone()));
+        assert!(spec_line("teste", &parse_log("")).is_none(), "a spec with no event has no line");
+    }
+
+    /// Só a versão vigente de uma regra dá título; a regra removida sai. O
+    /// objetivo acompanha a versão nova do primeiro contexto.
+    #[test]
+    fn a_removed_or_replaced_rule_leaves_the_titles() {
+        let content = [
+            spec(),
+            ev(7, "09:00", "rule", json!({"text": "**Título novo.** O resto.", "keys": ["k"], "example": "e", "replaces": 4, "origin": 2})),
+            ev(8, "09:01", "remove", json!({"targets": [5], "reason": "engano"})),
+            ev(9, "09:02", "context", json!({"text": "Objetivo revisto! Detalhe.", "replaces": 3, "origin": 2})),
+            ev(10, "09:03", "context", json!({"text": "Um segundo contexto.", "origin": 2})),
+        ]
+        .concat();
+        let got = parsed(&spec_line("teste", &parse_log(&content)).unwrap());
+        assert_eq!(got["titles"], json!(["Título novo."]));
+        assert_eq!(got["goal"], json!("Objetivo revisto!"));
+
+        let without = [ev(1, "08:40", "message", json!({"author": "user", "text": "oi"}))].concat();
+        let bare = parsed(&spec_line("s", &parse_log(&without)).unwrap());
+        for field in ["goal", "titles", "phase", "branch"] {
+            assert!(bare.get(field).is_none(), "{field}: {bare}");
+        }
+    }
+
+    #[test]
+    fn merging_keeps_the_project_line_first_and_the_specs_sorted_by_name() {
+        let b = r#"{"v":1,"type":"spec","name":"b"}"#;
+        let a = r#"{"v":1,"type":"spec","name":"a"}"#;
+        let first = merge("", "b", Some(b));
+        assert_eq!(first, format!("{}\n{b}\n", project_line(None)));
+        let second = merge(&first, "a", Some(a));
+        assert_eq!(second, format!("{}\n{a}\n{b}\n", project_line(None)));
+
+        // The project line with its address is kept as it is, and a line that
+        // does not parse stays, at the end.
+        let with_url = format!("{b}\ngarbage\n{}\n", project_line(Some("https://x/p")));
+        let merged = merge(&with_url, "a", Some(a));
+        assert_eq!(merged, format!("{}\n{a}\n{b}\ngarbage\n", project_line(Some("https://x/p"))));
+        assert_eq!(merge(&merged, "b", None), format!("{}\n{a}\ngarbage\n", project_line(Some("https://x/p"))));
+        assert_eq!(prune(&merged, |name| name == "b"), format!("{}\n{b}\n", project_line(Some("https://x/p"))));
+    }
+
+    #[test]
+    fn the_difference_names_the_missing_extra_and_changed_lines() {
+        let expected = format!("{}\n{}\n{}\n", project_line(None), r#"{"type":"spec","name":"a"}"#, r#"{"type":"spec","name":"b","v":1}"#);
+        let current = format!(
+            "{}\n{}\n{}\nlixo\n",
+            r#"{"type":"spec","name":"b","v":2}"#,
+            r#"{"type":"spec","name":"c"}"#,
+            project_line(None),
+        );
+        assert_eq!(diff(&current, &expected), ["a", "b", "c", "#4"]);
+        assert!(diff(&expected, &expected).is_empty());
+        assert_eq!(diff("", &expected), ["#1", "a", "b"]);
+    }
+
+    #[test]
+    fn a_sentence_ends_at_its_stop_never_inside_a_name() {
+        assert_eq!(first_sentence("Grava o spec.ndjson inteiro. Depois."), "Grava o spec.ndjson inteiro.");
+        assert_eq!(first_sentence("  Sem ponto final  "), "Sem ponto final");
+        assert_eq!(first_sentence("Linha um\nLinha dois."), "Linha um");
+    }
+
+    #[test]
+    fn the_write_warning_says_the_event_is_in_and_names_the_index_command() {
+        let refusal = Refusal::Io { detail: "Is a directory".into() };
+        let pt = write_warning(&refusal, Locale::PtBr);
+        let en = write_warning(&refusal, Locale::EnUs);
+        assert!(pt.contains("O evento foi gravado") && pt.contains("Is a directory"), "{pt}");
+        assert!(en.contains("The event was written") && en.contains("mustard-rt run index"), "{en}");
+    }
+}

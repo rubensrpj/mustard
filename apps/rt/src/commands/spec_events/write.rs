@@ -22,6 +22,7 @@
 use std::path::PathBuf;
 
 use mustard_core::domain::spec_events::Refusal;
+use mustard_core::domain::spec_index;
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
 
@@ -79,10 +80,18 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             if !written.purged.is_empty() {
                 report["purged"] = json!(written.purged);
             }
-            // Se não deu para gravar a página e o `.md`, o evento já está no
-            // arquivo: fica o aviso.
+            // Se não deu para gravar a página e o `.md`, ou para refazer a
+            // linha da spec no índice, o evento já está no arquivo: fica o
+            // aviso.
+            let mut warnings = Vec::new();
             if let Some(Err(refusal)) = &pages {
-                report["warnings"] = json!([refusal.message(lang)]);
+                warnings.push(refusal.message(lang));
+            }
+            if let Some(refusal) = &written.index_warning {
+                warnings.push(spec_index::write_warning(refusal, lang));
+            }
+            if !warnings.is_empty() {
+                report["warnings"] = json!(warnings);
             }
             report
         }
