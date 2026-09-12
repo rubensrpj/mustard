@@ -1268,7 +1268,7 @@ mod tests {
             child_id: "rt-impl".to_string(),
             iso_ts: "2026-05-27T18:00:00Z".to_string(),
             signal_count: m1_signals.len() + m2_signals.len() + m3_signals.len(),
-            first_message: "W6 regression: telemetry stubbed".to_string(),
+            first_message: "regression: telemetry stubbed".to_string(),
         };
         append_verdict(&wave_dir, &red_entry).expect("append span-level red");
         let span_blocked = matches!(
@@ -1282,7 +1282,7 @@ mod tests {
             .filter(|f| **f)
             .count();
 
-        eprintln!("=== W7 review against W6 fixture ===");
+        eprintln!("=== review against the versioned regression fixture ===");
         eprintln!("Moment 1 (vocabulary): fired={m1_fired} (signals={}, severities={:?}, evidence={:?})",
             m1_signals.len(), m1_severities, m1_evidence);
         eprintln!("Moment 2 (stub AST/textual): fired={m2_fired} (grammar_available={m2_grammar_available}, signals={}, evidence={:?})",

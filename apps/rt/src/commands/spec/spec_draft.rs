@@ -2580,7 +2580,7 @@ mod tests {
         use mustard_core::domain::spec::contract::CHECKLIST_HEADING;
         let dir = tempdir().unwrap();
         let out = dir.path().join("specs").join("light");
-        run(SpecDraftOpts {
+        draft_in(dir.path(), SpecDraftOpts {
             intent: "Demo intent".into(),
             slug: None,
             scope: "light".into(),
@@ -2624,7 +2624,7 @@ mod tests {
         use mustard_core::domain::spec::contract::CHECKLIST_HEADING;
         let dir = tempdir().unwrap();
         let out = dir.path().join("specs").join("epic");
-        run(SpecDraftOpts {
+        draft_in(dir.path(), SpecDraftOpts {
             intent: "Demo intent".into(),
             slug: None,
             scope: "full".into(),
@@ -2684,7 +2684,7 @@ mod tests {
         ] {
             let dir = tempdir().unwrap();
             let out = dir.path().join("specs").join("rt");
-            run(SpecDraftOpts {
+            draft_in(dir.path(), SpecDraftOpts {
                 intent: "Demo roundtrip intent".into(),
                 slug: None,
                 scope: scope.into(),
@@ -2740,7 +2740,7 @@ mod tests {
             query_terms: None,
             force_scope: false,
         };
-        run(opts);
+        draft_in(dir.path(), opts);
         let root = dir.path().join("specs").join("demo");
         assert!(root.join("spec.md").exists());
         assert!(root.join("meta.json").exists());
@@ -2770,9 +2770,17 @@ mod tests {
             query_terms: None,
             force_scope: false,
         };
-        run(opts);
+        draft_in(dir.path(), opts);
         // Output dir should not have been populated.
         assert!(!dir.path().join("out").join("spec.md").exists());
+    }
+
+    /// Roda o rascunho com a pasta temporária do teste como o projeto. O `run`
+    /// usa a pasta do processo, que nos testes é o checkout de verdade: ali o
+    /// nome da spec sai da branch atual, e a fase gravada no fim do rascunho ia
+    /// parar na pasta da spec real.
+    fn draft_in(project: &std::path::Path, opts: SpecDraftOpts) {
+        assert_eq!(run_at(project, opts), 0, "only a refused fused plan exits non-zero");
     }
 
     // --- The conversation channel (--material) ----------------------------
@@ -2789,7 +2797,7 @@ mod tests {
             std::fs::write(&path, json).unwrap();
             path
         });
-        run(SpecDraftOpts {
+        draft_in(dir, SpecDraftOpts {
             intent: "Demo intent".into(),
             slug: None,
             scope: "light".into(),
@@ -2840,16 +2848,16 @@ mod tests {
         };
 
         // No material and no reason: refused, and nothing is written.
-        run(opts(None));
+        draft_in(dir.path(), opts(None));
         assert!(!out.join("spec.md").exists(), "a refused draft must leave no spec behind");
 
         // A blank reason is no reason.
-        run(opts(Some("   ")));
+        draft_in(dir.path(), opts(Some("   ")));
         assert!(!out.join("spec.md").exists(), "whitespace is not a stated reason");
 
         // Stated: the draft proceeds. A re-draft or a mechanical rename says so
         // in one line and is not blocked.
-        run(opts(Some("re-materialisation: nothing new was settled")));
+        draft_in(dir.path(), opts(Some("re-materialisation: nothing new was settled")));
         assert!(out.join("spec.md").exists(), "a stated reason must let the draft through");
     }
 
@@ -3022,7 +3030,7 @@ mod tests {
         assert!(loaded.flow.is_some(), "a flow must load, not abort the draft");
 
         let out = project.join("pt");
-        run(SpecDraftOpts {
+        draft_in(project, SpecDraftOpts {
             intent: "Demo intent".into(),
             slug: None,
             scope: "light".into(),
@@ -3114,7 +3122,7 @@ mod tests {
                 "{name}: malformed material must be refused, not degraded to empty"
             );
             let out = dir.path().join(name);
-            run(SpecDraftOpts {
+            draft_in(dir.path(), SpecDraftOpts {
                 intent: "Demo intent".into(),
                 slug: None,
                 scope: "light".into(),

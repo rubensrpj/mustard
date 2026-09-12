@@ -1508,7 +1508,7 @@ mod tests {
         // the middle child landed as Amber on this host (because the project
         // has no vocab file and the default Semantic list still matched at
         // Medium severity for some reason), force a Red to exercise the
-        // blocking path — the AC is about the *check*, not about which
+        // blocking path — the test is about the *check*, not about which
         // severity tier the matcher chose.
         if matches!(review_spans::check_consolidation(&wave_dir), review_spans::ConsolidationCheck::Allowed) {
             review_spans::append_verdict(
@@ -1518,14 +1518,14 @@ mod tests {
                     child_id: "synthetic-red".to_string(),
                     iso_ts: mustard_core::time::now_iso8601(),
                     signal_count: 1,
-                    first_message: "synthetic Red to exercise AC-A-7".to_string(),
+                    first_message: "synthetic Red to exercise the consolidation block".to_string(),
                 },
             )
             .expect("append synthetic red");
         }
         assert!(
             matches!(review_spans::check_consolidation(&wave_dir), review_spans::ConsolidationCheck::Blocked { .. }),
-            "ledger must report a Red verdict after the W5 sequence"
+            "ledger must report a Red verdict after the three stops"
         );
         match review_spans::check_consolidation(&wave_dir) {
             review_spans::ConsolidationCheck::Blocked { entry } => {

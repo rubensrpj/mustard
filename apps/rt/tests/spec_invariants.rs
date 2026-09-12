@@ -13,6 +13,10 @@
 //!   triple is a legal `SpecState` (the spec-state invariants hold for every on-disk
 //!   spec).
 //!
+//! A pasta de spec no formato de eventos, a que tem o `spec.ndjson`, fica de
+//! fora: o `spec.md` dela é gerado dos eventos e não leva `meta.json` ao lado,
+//! e estas regras são do formato antigo.
+//!
 //! ## Empty workspace
 //!
 //! The test resolves `.claude/spec` from `CARGO_MANIFEST_DIR`. A clean checkout
@@ -106,9 +110,35 @@ fn no_metadata_headers_remain_and_meta_json_is_valid() {
         return;
     }
 
+    let violations = violations_under(&root, &files);
+    assert!(
+        violations.is_empty(),
+        "spec-metadata invariant violations ({}):\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// `true` quando o arquivo mora numa pasta de spec no formato de eventos: ela
+/// ou uma pasta acima dela, até a raiz das specs, tem o `spec.ndjson`. O
+/// `spec.md` dali é gerado dos eventos, sem `meta.json`, e os títulos dele não
+/// são cabeçalhos de ciclo de vida.
+fn in_event_format(root: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(root))
+        .any(|dir| dir.join("spec.ndjson").is_file())
+}
+
+/// As violações das regras do formato antigo nos arquivos `files`, que moram
+/// debaixo de `root`. A pasta no formato de eventos fica de fora.
+fn violations_under(root: &Path, files: &[PathBuf]) -> Vec<String> {
     let mut violations: Vec<String> = Vec::new();
 
-    for path in &files {
+    for path in files {
+        if in_event_format(root, path) {
+            continue;
+        }
         let Ok(content) = std::fs::read_to_string(path) else {
             violations.push(format!("{}: unreadable", path.display()));
             continue;
@@ -160,11 +190,25 @@ fn no_metadata_headers_remain_and_meta_json_is_valid() {
             }
         }
     }
+    violations
+}
 
-    assert!(
-        violations.is_empty(),
-        "spec-metadata invariant violations ({}):\n{}",
-        violations.len(),
-        violations.join("\n")
-    );
+/// A pasta com `spec.ndjson` fica de fora, mesmo sem `meta.json` e com um
+/// título que seria cabeçalho no formato antigo; a pasta do formato antigo, ao
+/// lado, continua sendo cobrada.
+#[test]
+fn a_spec_folder_in_the_event_format_is_left_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let events = root.join("formato-de-eventos");
+    std::fs::create_dir_all(&events).unwrap();
+    std::fs::write(events.join("spec.ndjson"), "{}\n").unwrap();
+    std::fs::write(events.join("spec.md"), "# Spec\n\n### Stage: Plan\n").unwrap();
+    let old = root.join("formato-antigo");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("spec.md"), "# Spec\n").unwrap();
+
+    let got = violations_under(root, &collect_md(root));
+    assert_eq!(got.len(), 1, "only the old-format folder is checked: {got:?}");
+    assert!(got[0].contains("formato-antigo") && got[0].contains("meta.json"), "{got:?}");
 }

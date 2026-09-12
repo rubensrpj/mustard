@@ -521,7 +521,7 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     for deleted in ["writes IN-PLACE", "carves out `.claude/spec/`"] {
         assert!(
             !seed.contains(deleted),
-            "the dispatch seed still teaches `{deleted}` — the carve-out wave 2 removed",
+            "the dispatch seed still teaches `{deleted}` — the carve-out that was removed",
         );
     }
 
