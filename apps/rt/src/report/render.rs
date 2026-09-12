@@ -394,6 +394,22 @@ mod tests {
         assert!(md.contains("  - Origem: MSTD-MSG-0001"), "{md}");
     }
 
+    /// Um código citado na prova de um critério vira link para o item, também
+    /// quando a prova inteira sai como código.
+    #[test]
+    fn a_code_cited_in_a_criterion_proof_links_to_its_item() {
+        let log = [
+            LOG,
+            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"criterion\",\"author\":\"assistant\",\"when\":\"w\",\"then\":\"t\",\"proof\":\"teste da trava (MSTD-RULE-0001)\",\"origin\":2}\n",
+        ]
+        .concat();
+        let html = Render::Html.render(&spec_document("demo", &parse_log(&log), Locale::PtBr));
+        assert!(
+            html.contains("<code>teste da trava (<a href=\"#MSTD-RULE-0001\">MSTD-RULE-0001</a>)</code>"),
+            "{html}"
+        );
+    }
+
     /// Nada do relógio nem da máquina: a página só tem o que os eventos
     /// gravaram.
     #[test]

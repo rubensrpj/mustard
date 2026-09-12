@@ -8,7 +8,8 @@
 //! dois. HTML escrito dentro do markdown não passa: sai escapado, como texto.
 //!
 //! Todo código do Mustard (`MSTD-RULE-0005`) cujo item está na página vira
-//! link para o item; o resto do texto fica como está.
+//! link para o item, também dentro de um trecho entre crases; o resto do
+//! texto fica como está.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -356,7 +357,8 @@ enum Atom<'a> {
 }
 
 /// O markdown de linha em HTML. Um código do Mustard vira link só quando o
-/// item dele está em `anchors`; uma crase ou um `**` sem par sai como está.
+/// item dele está em `anchors`, fora ou dentro de um trecho de código; uma
+/// crase ou um `**` sem par sai como está.
 #[must_use]
 pub fn inline(text: &str, anchors: &BTreeSet<String>) -> String {
     let atoms = atoms(text);
@@ -368,7 +370,7 @@ pub fn inline(text: &str, anchors: &BTreeSet<String>) -> String {
     for atom in atoms {
         match atom {
             Atom::Code(code) => {
-                let _ = write!(out, "<code>{}</code>", escape(code));
+                let _ = write!(out, "<code>{}</code>", linked_codes(code, anchors));
             }
             Atom::Link { label, url } => {
                 let _ = write!(out, "<a href=\"{}\">{}</a>", escape(url), inline(label, &BTreeSet::new()));
@@ -530,7 +532,22 @@ mod tests {
         );
         let plain = "Guardei no R2 da Cloudflare, no S3 e numa folha A4.";
         assert_eq!(inline(plain, &anchors), plain);
-        assert_eq!(inline("`MSTD-RULE-0005`", &anchors), "<code>MSTD-RULE-0005</code>");
+    }
+
+    /// Dentro de um trecho entre crases, o código com item na página também
+    /// vira link, e o resto do trecho continua escapado como código.
+    #[test]
+    fn a_mustard_code_inside_backticks_links_too() {
+        let anchors: BTreeSet<String> = ["MSTD-RULE-0005".to_string()].into();
+        assert_eq!(
+            inline("`MSTD-RULE-0005`", &anchors),
+            "<code><a href=\"#MSTD-RULE-0005\">MSTD-RULE-0005</a></code>"
+        );
+        assert_eq!(
+            inline("`teste a<b> (MSTD-RULE-0005, MSTD-CRIT-0001)`", &anchors),
+            "<code>teste a&lt;b&gt; (<a href=\"#MSTD-RULE-0005\">MSTD-RULE-0005</a>, MSTD-CRIT-0001)</code>"
+        );
+        assert_eq!(html("`MSTD-RULE-0005`"), "<code>MSTD-RULE-0005</code>", "without the item on the page");
     }
 
     #[test]
