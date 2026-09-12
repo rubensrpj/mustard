@@ -65,8 +65,15 @@ tree-sitter-dart-orchard = "0.6"
 # Line-based textual diff for `regression_check` — used as fallback when no
 # tree-sitter grammar is installed for the file's language. The 3.x line keeps
 # the same `TextDiff::from_lines` / `iter_all_changes` / `ChangeTag` surface
-# this crate relies on. Spec A Wave 2 pins this major explicitly.
+# this crate relies on.
 similar = "3"
+# The Portuguese stemmer behind the `search` field of the spec event file
+# (`domain::spec_events`). Version lives in the workspace table.
+rust-stemmers = { workspace = true }
+# Local date and time with the offset (`2026-09-11T21:03:12-03:00`) for the
+# `at` field of each spec event: the person removes "the messages from 21:03 to
+# 21:10" in the clock they read, never in UTC.
+chrono = { workspace = true }
 [dev-dependencies]
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.

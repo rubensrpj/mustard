@@ -113,6 +113,11 @@ rayon = "1.10"
 # only consumes the output as a byte slice / iterator / `[u8; 32]`, all of which
 # stay source-compatible.
 sha2 = "0.11"
+# Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::spec_events` reduces
+# each word of an event to its root with the Portuguese stemmer, so "apagar",
+# "apagando" and "apagou" land on the same search term. Pure Rust, no build
+# script; the 1.2 line was already in the lock file through another crate.
+rust-stemmers = "1.2"
 
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 #
@@ -182,8 +187,7 @@ bool_to_int_with_if = "allow"
 ref_option = "allow"
 needless_pass_by_value = "allow"  # sometimes required for trait obj / generics
 redundant_closure_for_method_calls = "allow"
-# W2 (claude-paths-single-source): the `ClaudePaths::for_project` fallback
-# pattern `.map(|p| accessor()).unwrap_or_else(|_| legacy_join)` is more
+# The `ClaudePaths::for_project` fallback pattern `.map(|p| accessor()).unwrap_or_else(|_| legacy_join)` is more
 # readable than `map_or_else(|_| legacy, |p| accessor())` because the
 # success path is the dominant case and naturally sits first.
 map_unwrap_or = "allow"

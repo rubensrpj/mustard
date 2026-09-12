@@ -1,4 +1,4 @@
-//! The `run` face of `mustard-rt` — the b4 script port.
+//! The `run` face of `mustard-rt` — the script port.
 //!
 //! `mustard-rt on` / `mustard-rt check` are the enforcement faces: they read
 //! the harness JSON from stdin and run hook modules. The `run` face is
@@ -54,6 +54,7 @@ pub mod orient;
 pub mod capability;
 pub mod glossary_coverage;
 pub mod grill_capture;
+pub mod spec_events;
 pub mod statusline;
 // Families whose commands are ported scripts living in flat modules (no
 // `<family>/` directory of their own) keep their clap enum in a `*_cli.rs`
@@ -61,7 +62,7 @@ pub mod statusline;
 pub mod context_cli;
 pub mod git_cli;
 pub mod scan_cli;
-// W3 of `2026-05-26-claude-paths-single-source` — three typed doctor checks
+// Three typed doctor checks
 // (claude-paths, workspace-leaks, i1) that emit native JSON shapes. They are
 // dispatched by `doctor.rs` but live in dedicated modules so the legacy
 // `CheckResult` envelope stays out of their way.
@@ -117,6 +118,9 @@ pub enum RunCmd {
     /// The spec lifecycle: draft, scope, validate, link, close.
     #[command(flatten)]
     Spec(spec::cli::SpecCmd),
+    /// The spec event file: read one block, write one event.
+    #[command(flatten)]
+    SpecEvents(spec_events::cli::SpecEventsCmd),
     /// The Claude Code status bar.
     #[command(flatten)]
     Statusline(statusline::cli::StatuslineCmd),
@@ -145,6 +149,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Review(c) => review::cli::dispatch(c),
         RunCmd::Scan(c) => scan_cli::dispatch(c),
         RunCmd::Spec(c) => spec::cli::dispatch(c),
+        RunCmd::SpecEvents(c) => spec_events::cli::dispatch(c),
         RunCmd::Statusline(c) => statusline::cli::dispatch(c),
         RunCmd::Wave(c) => wave::cli::dispatch(c),
     }

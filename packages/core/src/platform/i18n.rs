@@ -12,8 +12,8 @@
 //! - apply a tone (didactic / technical / concise) on top of a translation;
 //! - slugify free-form text in a way that respects PT-vs-EN accent rules.
 //!
-//! Wave 4 of the `mustard-unification` mega-spec consolidates that into a
-//! single boundary-typed module exported from `mustard_core`.
+//! This module is now that single place, a boundary-typed module exported
+//! from `mustard_core`.
 //!
 //! ## Locale + tone vocabulary
 //!
@@ -29,10 +29,10 @@
 //!
 //! Banners are keyed by dotted-namespace identifiers. Every key is documented
 //! in [`translate`] and surfaced verbatim when the key is unknown (fail-open).
-//! Known keys at Wave 4:
+//! The first keys:
 //!
 //! - `banner.close.success` — "Pipeline closed successfully." (CLOSE phase)
-//! - `banner.amend.drift` — drift-warning message body (see W4 spec).
+//! - `banner.amend.drift` — drift-warning message body.
 //! - `wave.label` — short label for a wave index (`W{n}` / `Onda {n}`).
 //! - `ac.label` — short label for an AC index (`AC-{id}`).
 //! - `prompt.continue` — "Continue?" / "Continuar?" confirmation prompt.
@@ -426,7 +426,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("marker.edit", Locale::PtBr) => "(editar)",
         ("marker.edit", Locale::EnUs) => "(edit)",
 
-        // Spec A v4 / W3 — wave _summary.md section headings.
+        // Wave `_summary.md` section headings.
         ("heading.summary.objective", Locale::PtBr) => "Objetivo",
         ("heading.summary.objective", Locale::EnUs) => "Objective",
         ("heading.summary.inheritance", Locale::PtBr) => "Herança",
@@ -442,7 +442,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("heading.summary.next_steps", Locale::PtBr) => "Próximos passos",
         ("heading.summary.next_steps", Locale::EnUs) => "Next steps",
 
-        // Spec A v4 / W3 — wave _context.md section headings.
+        // Wave `_context.md` section headings.
         ("heading.context.objective", Locale::PtBr) => "Objetivo",
         ("heading.context.objective", Locale::EnUs) => "Objective",
         ("heading.context.inheritance", Locale::PtBr) => "Herança",
@@ -454,7 +454,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("heading.context.next_steps_suggestion", Locale::PtBr) => "Sugestão de próximos passos",
         ("heading.context.next_steps_suggestion", Locale::EnUs) => "Next-steps suggestion",
 
-        // Spec A v4 / W4 — regression gate verdict labels + messages. These are
+        // Regression gate verdict labels + messages. These are
         // MACHINE / log strings (gate verdicts consumed by the orchestrator and
         // written to telemetry), so they are ENGLISH regardless of the user's
         // configured locale — only `gate.askuser.*` below stays config-lang.
@@ -465,14 +465,14 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("gate.verdict.amber.message", _) => "Ambiguous signals detected. Confirmation required.",
         ("gate.verdict.red.message", _) => "Regression detected. Consolidation blocked.",
 
-        // Spec A v4 / W4 — gate signal layer labels (MACHINE / log, English
+        // Gate signal layer labels (MACHINE / log, English
         // regardless of locale). Use the `{slot}` placeholders to let callers
         // interpolate the matched term, function name, etc.
         ("gate.signal.vocabulary", _) => "Vocabulary matched: {term} (layer {layer})",
         ("gate.signal.stub", _) => "Stub pattern: {pattern} in {function}",
         ("gate.signal.snapshot", _) => "Function {function} emptied ({before_lines} → {after_lines} lines)",
 
-        // Spec A v4 / W4 — Amber AskUserQuestion (printed as JSON, consumed by orchestrator).
+        // Amber AskUserQuestion (printed as JSON, consumed by orchestrator).
         ("gate.askuser.amber.question", Locale::PtBr) => "O gate detectou sinais ambíguos. Autorizar a consolidação?",
         ("gate.askuser.amber.question", Locale::EnUs) => "The gate detected ambiguous signals. Authorize consolidation?",
         ("gate.askuser.amber.option_authorize", Locale::PtBr) => "Autorizar",
@@ -482,7 +482,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("gate.askuser.amber.option_block_desc", Locale::PtBr) => "Bloqueia a consolidação até resolução.",
         ("gate.askuser.amber.option_block_desc", Locale::EnUs) => "Block consolidation until resolved.",
 
-        // W5 — span-level review (subagent_inject + agent_prompt_render).
+        // Span-level review (subagent_inject + agent_prompt_render).
         // Vocabulary inject block surfaced in the child agent's prompt so the
         // child knows which terms the gate's Moment 1 scan flags.
         ("gate.vocabulary.inject.heading", Locale::PtBr) => "Vocabulário de regressão",
@@ -505,7 +505,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Consolidation blocked: child {child} returned a red verdict — {message}"
         }
 
-        // W8.5 — install-grammars CLI helper.
+        // The install-grammars CLI helper.
         // User-facing strings for `mustard install-grammars`. The helper suggests
         // tree-sitter grammar repos for detected languages — Mustard never
         // downloads or compiles. Format is shell-ready markdown so the user can
@@ -1103,6 +1103,139 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              {id} --reason \"…\"` or pick another title."
         }
 
+        // Recusas e avisos do arquivo de eventos da spec (`domain::spec_events`,
+        // comandos `run write` e `run read`). As vagas vêm do chamador.
+        ("spec_events.not_an_object", Locale::PtBr) => {
+            "Os campos do evento precisam vir num objeto JSON, como {\"text\": \"…\"}, e o que \
+             veio não serve: {detail}. Nada foi gravado."
+        }
+        ("spec_events.not_an_object", Locale::EnUs) => {
+            "The event's fields must come as one JSON object, like {\"text\": \"…\"}, and what \
+             came does not parse: {detail}. Nothing was written."
+        }
+        ("spec_events.unknown_type", Locale::PtBr) => {
+            "O tipo {type} não existe no arquivo da spec. Nada foi gravado. Tipos aceitos: {types}."
+        }
+        ("spec_events.unknown_type", Locale::EnUs) => {
+            "The spec file has no {type} event type. Nothing was written. Accepted types: {types}."
+        }
+        ("spec_events.missing_field", Locale::PtBr) => {
+            "O evento {type} precisa do campo {field}, que faltou ou veio vazio. Nada foi gravado."
+        }
+        ("spec_events.missing_field", Locale::EnUs) => {
+            "The {type} event needs the {field} field, which is missing or empty. Nothing was \
+             written."
+        }
+        ("spec_events.invalid_value", Locale::PtBr) => {
+            "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
+        }
+        ("spec_events.invalid_value", Locale::EnUs) => {
+            "The {field} field of the {type} event must be {expected}. Nothing was written."
+        }
+        ("spec_events.wrong_count", Locale::PtBr) => {
+            "O campo {field} do evento {type} leva de {min} a {max} itens, e vieram {count}. Nada \
+             foi gravado."
+        }
+        ("spec_events.wrong_count", Locale::EnUs) => {
+            "The {field} field of the {type} event takes {min} to {max} items, and {count} came. \
+             Nothing was written."
+        }
+        ("spec_events.fact_without_source", Locale::PtBr) => {
+            "O fato {fact} do ponto não tem fonte. Diga de onde ele saiu: o arquivo e a linha, o \
+             comando com o resultado, ou o número da mensagem do usuário. Nada foi gravado."
+        }
+        ("spec_events.fact_without_source", Locale::EnUs) => {
+            "Fact {fact} of the point has no source. Say where it came from: the file and line, \
+             the command with its result, or the number of the user's message. Nothing was \
+             written."
+        }
+        ("spec_events.cited_file_missing", Locale::PtBr) => {
+            "O fato {fact} cita {path}, e esse arquivo não existe. Confira o caminho antes de \
+             afirmar. Nada foi gravado."
+        }
+        ("spec_events.cited_file_missing", Locale::EnUs) => {
+            "Fact {fact} cites {path}, and that file does not exist. Check the path before stating \
+             it. Nothing was written."
+        }
+        ("spec_events.cited_line_missing", Locale::PtBr) => {
+            "O fato {fact} cita a linha {line} de {path}, mas o arquivo tem {lines} linhas. Confira \
+             a linha antes de afirmar. Nada foi gravado."
+        }
+        ("spec_events.cited_line_missing", Locale::EnUs) => {
+            "Fact {fact} cites line {line} of {path}, but the file has {lines} lines. Check the \
+             line before stating it. Nothing was written."
+        }
+        ("spec_events.unknown_target", Locale::PtBr) => {
+            "O evento {id} não existe nesta spec. Nada foi gravado."
+        }
+        ("spec_events.unknown_target", Locale::EnUs) => {
+            "Event {id} does not exist in this spec. Nothing was written."
+        }
+        ("spec_events.replaces_other_type", Locale::PtBr) => {
+            "O evento {id} é do tipo {found}, e a versão nova veio como {type}; ela precisa ser do \
+             mesmo tipo. Nada foi gravado."
+        }
+        ("spec_events.replaces_other_type", Locale::EnUs) => {
+            "Event {id} is a {found}, and the new version came as {type}; it must have the same \
+             type. Nothing was written."
+        }
+        ("spec_events.filter_matches_nothing", Locale::PtBr) => {
+            "Nenhum evento {type} entre {from} e {to}. Nada foi gravado."
+        }
+        ("spec_events.filter_matches_nothing", Locale::EnUs) => {
+            "No {type} event between {from} and {to}. Nothing was written."
+        }
+        ("spec_events.unknown_block", Locale::PtBr) => "O bloco {block} não existe. Blocos: {blocks}.",
+        ("spec_events.unknown_block", Locale::EnUs) => "There is no {block} block. Blocks: {blocks}.",
+        ("spec_events.bad_spec_name", Locale::PtBr) => {
+            "{spec} não serve como nome de spec: use um nome sem barra e sem \"..\"."
+        }
+        ("spec_events.bad_spec_name", Locale::EnUs) => {
+            "{spec} cannot name a spec: use a name with no slash and no \"..\"."
+        }
+        ("spec_events.no_spec_file", Locale::PtBr) => "A spec {spec} ainda não tem arquivo de eventos.",
+        ("spec_events.no_spec_file", Locale::EnUs) => "The spec {spec} has no event file yet.",
+        ("spec_events.io_failed", Locale::PtBr) => "Não consegui usar o arquivo da spec: {detail}.",
+        ("spec_events.io_failed", Locale::EnUs) => "Could not use the spec file: {detail}.",
+        ("spec_events.skipped_line", Locale::PtBr) => {
+            "A linha {line} do spec.ndjson não se entende e foi pulada; o resto do arquivo foi lido."
+        }
+        ("spec_events.skipped_line", Locale::EnUs) => {
+            "Line {line} of spec.ndjson could not be understood and was skipped; the rest of the \
+             file was read."
+        }
+        ("spec_events.duplicate_id", Locale::PtBr) => {
+            "A linha {line} do spec.ndjson repete o número {id}, que já apareceu antes, e foi \
+             pulada."
+        }
+        ("spec_events.duplicate_id", Locale::EnUs) => {
+            "Line {line} of spec.ndjson repeats number {id}, already used above, and was skipped."
+        }
+        ("spec_events.kind.text", Locale::PtBr) => "um texto",
+        ("spec_events.kind.text", Locale::EnUs) => "a text",
+        ("spec_events.kind.int", Locale::PtBr) => "um número inteiro",
+        ("spec_events.kind.int", Locale::EnUs) => "a whole number",
+        ("spec_events.kind.bool", Locale::PtBr) => "true ou false",
+        ("spec_events.kind.bool", Locale::EnUs) => "true or false",
+        ("spec_events.kind.object", Locale::PtBr) => "um objeto JSON",
+        ("spec_events.kind.object", Locale::EnUs) => "a JSON object",
+        ("spec_events.kind.ints", Locale::PtBr) => "uma lista de números inteiros",
+        ("spec_events.kind.ints", Locale::EnUs) => "a list of whole numbers",
+        ("spec_events.kind.texts", Locale::PtBr) => "uma lista de textos",
+        ("spec_events.kind.texts", Locale::EnUs) => "a list of texts",
+        ("spec_events.kind.objects", Locale::PtBr) => "uma lista de objetos JSON",
+        ("spec_events.kind.objects", Locale::EnUs) => "a list of JSON objects",
+        ("spec_events.kind.list", Locale::PtBr) => "uma lista",
+        ("spec_events.kind.list", Locale::EnUs) => "a list",
+        ("spec_events.kind.one_of", Locale::PtBr) => "uma destas palavras: {values}",
+        ("spec_events.kind.one_of", Locale::EnUs) => "one of these words: {values}",
+        ("spec_events.kind.many_of", Locale::PtBr) => "uma lista só com estas palavras: {values}",
+        ("spec_events.kind.many_of", Locale::EnUs) => "a list with only these words: {values}",
+        ("spec_events.kind.text_or_object", Locale::PtBr) => "um texto ou um objeto JSON",
+        ("spec_events.kind.text_or_object", Locale::EnUs) => "a text or a JSON object",
+        ("spec_events.kind.time", Locale::PtBr) => "uma data e hora como 2026-09-11T21:03",
+        ("spec_events.kind.time", Locale::EnUs) => "a date and time like 2026-09-11T21:03",
+
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
         // uma linha curta que o assistente recebe no bloqueio do fim da
         // resposta, ou que o usuário lê no aviso. Sem parênteses: o tom técnico
@@ -1224,7 +1357,7 @@ fn strip_parentheticals(text: &str) -> String {
 ///
 /// PT locale strips Latin diacritics (`ç → c`, `ã → a`, …) before kebab-casing
 /// so spec slugs round-trip cleanly. EN locale keeps the input as-is (no
-/// Unicode normalisation) — the W4 spec calls out "acentos removidos só do PT".
+/// Unicode normalisation): accents are removed only in PT.
 /// Stopword lists differ per locale (basic articles/prepositions are dropped).
 ///
 /// The output never contains leading/trailing dashes and never collapses to an
@@ -1279,14 +1412,13 @@ pub fn slugify(text: &str, lang: Locale) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// W7 type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
+// Type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
 // ---------------------------------------------------------------------------
 
 /// Catalogue-backed locale — the closed set Mustard ships translations for.
 ///
-/// `SupportedLocale` is a type alias for the original [`Locale`] enum.  Wave 7
-/// of the deep-refactor renames the type at every callsite; this alias lets the
-/// migration land in a single wave without breaking every consumer at once.
+/// `SupportedLocale` is a type alias for the original [`Locale`] enum, so each
+/// callsite could move to the new name without breaking every consumer at once.
 pub type SupportedLocale = Locale;
 
 /// User-declared BCP-47 locale from `mustard.json#specLang` or `### Lang:`.
@@ -1442,7 +1574,7 @@ pub fn line_has_file_marker(line: &str, marker: FileMarker) -> bool {
 mod tests {
     use super::*;
 
-    // AC-W4-3: short forms rejected with a typed error.
+    // Short forms are rejected with a typed error.
     #[test]
     fn i18n_rejects_short_form() {
         assert_eq!(
@@ -1474,7 +1606,7 @@ mod tests {
         ));
     }
 
-    // AC-W4-6: known keys translate to the canonical literals.
+    // Known keys translate to the canonical literals.
     #[test]
     fn i18n_translates_known_keys() {
         assert_eq!(
@@ -1544,6 +1676,51 @@ mod tests {
         ] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(key, lang), "<missing-key>", "{key} left with its hook");
+            }
+        }
+    }
+
+    /// As recusas e os avisos do arquivo de eventos da spec saem do catálogo
+    /// nos dois idiomas, cada um com as vagas que o chamador preenche.
+    #[test]
+    fn i18n_translates_spec_event_keys() {
+        for (key, slots) in [
+            ("spec_events.not_an_object", &["{detail}"][..]),
+            ("spec_events.unknown_type", &["{type}", "{types}"][..]),
+            ("spec_events.missing_field", &["{type}", "{field}"][..]),
+            ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
+            ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
+            ("spec_events.fact_without_source", &["{fact}"][..]),
+            ("spec_events.cited_file_missing", &["{fact}", "{path}"][..]),
+            ("spec_events.cited_line_missing", &["{fact}", "{path}", "{line}", "{lines}"][..]),
+            ("spec_events.unknown_target", &["{id}"][..]),
+            ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),
+            ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
+            ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
+            ("spec_events.bad_spec_name", &["{spec}"][..]),
+            ("spec_events.no_spec_file", &["{spec}"][..]),
+            ("spec_events.io_failed", &["{detail}"][..]),
+            ("spec_events.skipped_line", &["{line}"][..]),
+            ("spec_events.duplicate_id", &["{line}", "{id}"][..]),
+            ("spec_events.kind.text", &[][..]),
+            ("spec_events.kind.int", &[][..]),
+            ("spec_events.kind.bool", &[][..]),
+            ("spec_events.kind.object", &[][..]),
+            ("spec_events.kind.ints", &[][..]),
+            ("spec_events.kind.texts", &[][..]),
+            ("spec_events.kind.objects", &[][..]),
+            ("spec_events.kind.list", &[][..]),
+            ("spec_events.kind.one_of", &["{values}"][..]),
+            ("spec_events.kind.many_of", &["{values}"][..]),
+            ("spec_events.kind.text_or_object", &[][..]),
+            ("spec_events.kind.time", &[][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
     }

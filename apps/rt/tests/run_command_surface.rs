@@ -24,7 +24,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 98 declared variants + `help`, which clap generates at build time.
+/// 100 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "ac-add",
     "ac-amend",
@@ -88,6 +88,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "pr-ready",
     "pr-review",
     "qa-run",
+    "read",
     "rebuild-specs",
     "rehook",
     "resume-bootstrap",
@@ -129,6 +130,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "wave-tree",
     "work-unit-open",
     "worktree-gc",
+    "write",
 ];
 
 /// Instruction surfaces SHIPPED to the reader, relative to the repo root, with

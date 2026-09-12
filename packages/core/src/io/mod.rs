@@ -3,3 +3,4 @@ pub mod fs;
 pub mod claude_paths;
 pub mod events;
 pub mod workspace;
+pub mod spec_events;

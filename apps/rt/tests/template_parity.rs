@@ -81,7 +81,7 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
         "regression-gate engine consumed in-process \
          (commands/agent/context_inject.rs build_vocab_matcher; \
          review_spans.rs parses its verdicts); the CLI face has no scripted \
-         caller - flagged as dark surface in the F1 LOT C report",
+         caller",
     ),
     (
         "maint-deps",
@@ -120,7 +120,7 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
         "metrics-wave-status",
         "user-facing wave telemetry; main.rs keeps the two-token rewrite \
          (metrics wave-status) for human invocation - its dashboard spawn was \
-         removed in the 2.0 dashboard cut (flagged in the F1 LOT C report)",
+         removed in the 2.0 dashboard cut",
     ),
     (
         "pipeline-summary",
@@ -128,23 +128,26 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          named in commands/mustard/close/SKILL.md step 7",
     ),
     (
+        "read",
+        "the reader of a spec's event file (commands/spec_events/read.rs): each \
+         step of the flow reads one block through it; the flow prose that will \
+         call it is rewritten together with the rest of the flow",
+    ),
+    (
         "rebuild-specs",
         "manual repair tool: regenerates the committed .summary.json sidecars \
-         (commands/spec/rebuild_specs.rs module doc); user-invoked only \
-         (flagged in the F1 LOT C report)",
+         (commands/spec/rebuild_specs.rs module doc); user-invoked only",
     ),
     (
         "review-dispatch",
         "built to replace the review SKILL's imperative steps, but the SKILL \
-         still calls review-prefetch/diff-context directly - unadopted \
-         (flagged as dark surface in the F1 LOT C report)",
+         still calls review-prefetch/diff-context directly - unadopted",
     ),
     (
         "security-scan",
         "secret/permission scanner with an exit-code contract \
          (commands/review/security_scan.rs, JS-era port); no product caller \
-         since scripts/ was retired (flagged as dark surface in the F1 LOT C \
-         report)",
+         since scripts/ was retired",
     ),
     (
         "status",
@@ -152,6 +155,12 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          (commands/pipeline/status.rs); its only prose caller was the \
          `/status` door, dropped by the four-door surface prune - an \
          observability escape hatch with no scripted caller",
+    ),
+    (
+        "write",
+        "the only writer of a spec's event file (commands/spec_events/write.rs): \
+         the assistant records each event through it; the flow prose that will \
+         call it is rewritten together with the rest of the flow",
     ),
 ];
 
@@ -857,7 +866,7 @@ fn runtime_whitelist_stays_sorted_live_and_not_redundant() {
     }
 }
 
-/// AC-7 — o revisor e o agente de onda aprendem, pela própria instrução, a
+/// O revisor e o agente de onda aprendem, pela própria instrução, a
 /// compilar a cópia descartável na compilação compartilhada e a apagá-la pela
 /// porta `scratch-gc --path`, nunca pela exclusão recursiva que a trava nega.
 ///
@@ -899,7 +908,7 @@ fn review_agent_teaches_shared_target_and_scratch_gc() {
     }
 }
 
-/// AC-9 — a regra injetada do material manda todo HTML mostrado ao usuário
+/// A regra injetada do material manda todo HTML mostrado ao usuário
 /// passar pelo `doc-page` e ser publicado no claude.ai, e a página da spec
 /// gravar o endereço pela porta `spec-doc --published-url`.
 ///

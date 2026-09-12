@@ -11,7 +11,7 @@
 //!   `.claude/spec/{name}/wave-N-{role}/spec.md` with subtle slug variants.
 //! - **Double-nesting.** A handful of call-sites accidentally re-applied
 //!   `.join(".claude")` on top of a path that was already inside `.claude/`,
-//!   producing the forbidden `.claude/.claude/` sequence. Guard I1 below
+//!   producing the forbidden `.claude/.claude/` sequence. The guard below
 //!   exists to make this a typed error rather than silent corruption.
 //! - **No catalog.** `claude_dir_prune` and `doctor` both maintained their own
 //!   private lists of "known" directories / cache files — every new entry had
@@ -48,7 +48,9 @@
 //! ├── capabilities/
 //! └── spec/
 //!     └── {name}/
+//!         ├── spec.ndjson
 //!         ├── spec.md
+//!         ├── spec.html
 //!         ├── meta.json
 //!         ├── wave-plan.md
 //!         ├── qa-report.json
@@ -68,7 +70,7 @@
 //! ## Inviolable safety contract
 //!
 //! - **No `.claude/.claude/`.** [`ClaudePaths::for_project`] applies a
-//!   defensive guard (I1): if the path it is handed terminates in `.claude`
+//!   defensive guard: if the path it is handed terminates in `.claude`
 //!   or contains the sequence `.claude/.claude/` anywhere, it returns
 //!   [`ClaudePathsError::ForbiddenDotClaudeDotClaude`]. The canonical
 //!   resolver lives in [`crate::io::workspace::workspace_root`]; this guard is
@@ -212,7 +214,7 @@ impl ClaudePaths {
     ///
     /// Returns [`ClaudePathsError::ForbiddenDotClaudeDotClaude`] when `root`
     /// terminates in `.claude` or contains the sequence `.claude/.claude/`
-    /// anywhere. This is the I1 defensive guard — the canonical resolver
+    /// anywhere. This is the defensive guard — the canonical resolver
     /// [`crate::io::workspace::workspace_root`] should already have caught the
     /// problem upstream.
     pub fn for_project(root: impl AsRef<Path>) -> Result<Self, ClaudePathsError> {
@@ -236,19 +238,18 @@ impl ClaudePaths {
         Ok(Self { root })
     }
 
-    /// Build a handle without running the I1 guard.
+    /// Build a handle without running the `.claude/.claude/` guard.
     ///
     /// **Fail-open callers only.** This bypass exists so a fallback branch in
     /// telemetry/event paths can keep using the same typed accessor surface
     /// as the happy path after `ClaudePaths::for_project(..).ok()` rejected
     /// the root. Production code that is not a fail-open fallback **must**
-    /// use [`Self::for_project`] so I1 violations are surfaced rather than
+    /// use [`Self::for_project`] so guard violations are surfaced rather than
     /// silently materialised into `.claude/.claude/` paths.
     ///
-    /// AC-TF1 of `2026-05-26-w2-residuals-50-unlisted-apps-rt` rewards
-    /// preserving the helper surface even on the fallback branch — replacing
-    /// open-coded `project.join(".claude").join("…")` strings with accessor
-    /// calls over a `compose_unchecked(project)` handle.
+    /// Even on the fallback branch, accessor calls over a
+    /// `compose_unchecked(project)` handle beat open-coded
+    /// `project.join(".claude").join("…")` strings.
     #[must_use]
     pub fn compose_unchecked(project: impl AsRef<Path>) -> Self {
         Self {
@@ -355,8 +356,7 @@ impl ClaudePaths {
     /// This accessor remains for the *pipeline-state JSON files themselves*
     /// (`{spec}.json` markers).
     /// Active pipeline-state tracking writes here today; future work may move
-    /// these to a per-spec destination, but that migration is out of scope
-    /// for W2 of `2026-05-26-claude-paths-single-source`.
+    /// these to a per-spec destination.
     #[must_use]
     pub fn pipeline_states_dir(&self) -> PathBuf {
         self.claude_dir().join(".pipeline-states")
@@ -533,7 +533,7 @@ impl ClaudePaths {
 
     /// Resolve `<root>/.claude/spec/<spec>/` through [`Self::for_project`] +
     /// [`Self::for_spec`], falling back to [`Self::compose_unchecked`] when the
-    /// I1 guard rejects `project` or `spec` fails slug validation.
+    /// `.claude/.claude/` guard rejects `project` or `spec` fails slug validation.
     ///
     /// This folds the fail-open spec-dir resolution that the pipeline / event /
     /// spec command families each open-coded — the
@@ -542,9 +542,9 @@ impl ClaudePaths {
     /// that want the per-spec `.events/` directory append `.join(".events")`
     /// (equivalently [`SpecPaths::events_dir`] on the happy path).
     ///
-    /// **Fail-open callers only** — the fallback bypasses the I1 guard exactly
+    /// **Fail-open callers only** — the fallback bypasses the guard exactly
     /// as [`Self::compose_unchecked`] documents; production paths that must
-    /// surface an I1 violation should call [`Self::for_project`] directly.
+    /// surface a guard violation should call [`Self::for_project`] directly.
     #[must_use]
     pub fn spec_dir_or_unchecked(project: impl AsRef<Path>, spec: &str) -> PathBuf {
         let project = project.as_ref();
@@ -574,10 +574,24 @@ impl SpecPaths {
         &self.spec_name
     }
 
-    /// `<spec>/spec.md` — the spec narrative.
+    /// `<spec>/spec.ndjson` — the spec's event file, one event per line,
+    /// written only by the binary (`io::spec_events`). The `.md` and the
+    /// `.html` beside it are projections of it.
+    #[must_use]
+    pub fn spec_ndjson_path(&self) -> PathBuf {
+        self.spec_dir.join("spec.ndjson")
+    }
+
+    /// `<spec>/spec.md` — the spec as text, projected from `spec.ndjson`.
     #[must_use]
     pub fn spec_md_path(&self) -> PathBuf {
         self.spec_dir.join("spec.md")
+    }
+
+    /// `<spec>/spec.html` — the spec page, projected from `spec.ndjson`.
+    #[must_use]
+    pub fn spec_html_path(&self) -> PathBuf {
+        self.spec_dir.join("spec.html")
     }
 
     /// `<spec>/meta.json` — sidecar lifecycle metadata.
@@ -593,8 +607,8 @@ impl SpecPaths {
         self.spec_dir.join("wave-plan.md")
     }
 
-    /// `<spec>/.events/` — per-spec NDJSON event log (per the
-    /// `2026-05-23-per-spec-event-log-claude-devtools` spec).
+    /// `<spec>/.events/` — the per-spec NDJSON event log of the old format,
+    /// read until every spec lives in [`Self::spec_ndjson_path`].
     #[must_use]
     pub fn events_dir(&self) -> PathBuf {
         self.spec_dir.join(".events")
@@ -678,7 +692,7 @@ impl WavePaths {
 
 // -- helpers ------------------------------------------------------------
 
-/// I1 guard: a project root must never terminate in `.claude` and must never
+/// The `.claude/.claude/` guard: a project root must never terminate in `.claude` and must never
 /// contain the sub-sequence `.claude/.claude/`.
 fn violates_dot_claude_guard(path: &Path) -> bool {
     let last_is_dot_claude =
@@ -938,6 +952,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let cp = ClaudePaths::for_project(dir.path()).unwrap();
         let sp = cp.for_spec("2026-05-26-claude-paths").unwrap();
+        // The three files of a spec sit side by side in its folder.
+        assert_eq!(sp.spec_ndjson_path(), sp.dir().join("spec.ndjson"));
+        assert_eq!(sp.spec_md_path(), sp.dir().join("spec.md"));
+        assert_eq!(sp.spec_html_path(), sp.dir().join("spec.html"));
+        assert_eq!(sp.dir(), dir.path().join(".claude").join("spec").join("2026-05-26-claude-paths"));
         assert!(sp.spec_md_path().ends_with("spec.md"));
         assert!(sp.meta_json_path().ends_with("meta.json"));
         assert!(sp.wave_plan_md_path().ends_with("wave-plan.md"));
@@ -967,7 +986,7 @@ mod tests {
     #[test]
     fn spec_dir_or_unchecked_falls_back_when_guard_rejects() {
         let dir = tempdir().unwrap();
-        // A `.claude`-terminal root fails the I1 guard, so the resolver falls
+        // A `.claude`-terminal root fails the `.claude/.claude/` guard, so the resolver falls
         // back to the unchecked composition rather than panicking or erroring.
         let bad = dir.path().join(".claude");
         assert_eq!(

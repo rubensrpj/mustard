@@ -30,7 +30,7 @@
 //!
 //! `MUSTARD_WORKSPACE_ROOT` short-circuits the walker. The value is the path
 //! to use directly; it is validated against the same anchor predicate and the
-//! I1 `.claude/.claude/` guard before being accepted.
+//! `.claude/.claude/` guard before being accepted.
 //!
 //! ## Worktree redirect
 //!
@@ -55,7 +55,7 @@
 //! - **No `.claude/.claude/`.** Resolved paths are rejected with
 //!   [`WorkspaceError::ForbiddenDotClaudeDotClaude`] if the final segment is
 //!   `.claude` or the path contains the sub-sequence `.claude/.claude/`. This
-//!   keeps the I1 guard close to the boundary where the path is minted.
+//!   keeps the guard close to the boundary where the path is minted.
 //! - **Memoised per process.** Repeated calls with the same
 //!   `(start_dir, override_value)` pair return the cached
 //!   [`PathBuf`] without re-walking — the canonical resolver lives on the hot
@@ -174,7 +174,7 @@ pub fn resolve_with_override(
     // spelling, so the key only has to be stable per caller (the raw path is).
     let key: CacheKey = (start_dir.to_path_buf(), override_value.map(str::to_string));
 
-    // Fast path — already cached. Re-validate the I1 guard against the
+    // Fast path — already cached. Re-validate the `.claude/.claude/` guard against the
     // cached value so a stale `.claude/.claude/` answer can never sneak
     // through.
     if let Ok(guard) = cache().lock() {
@@ -218,7 +218,7 @@ fn resolve_uncached(
 }
 
 /// Validate an override value: the path must exist, satisfy the anchor
-/// predicate, and not violate the I1 guard.
+/// predicate, and not violate the `.claude/.claude/` guard.
 ///
 /// Deliberately validates against the **loose** anchor rule (`mustard.json` +
 /// `.claude/` only), NOT the strict git-root rule the ancestor walk prefers:
@@ -327,19 +327,7 @@ fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<PathBuf> {
 /// checkout (dirs equal), or a derived root that is not a valid Mustard anchor
 /// all yield `None`, so only a proven linked worktree is ever redirected.
 fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
-    let git_dir = git_rev_parse(dir, &["--path-format=absolute", "--git-dir"])?;
-    let common = git_rev_parse(dir, &["--path-format=absolute", "--git-common-dir"])?;
-    // Main checkout ⇒ identical dirs ⇒ nothing to redirect (behaviour identical).
-    if canonical(&git_dir) == canonical(&common) {
-        return None;
-    }
-    // Linked worktree: the parent of the shared `…/.git` common dir is the main
-    // checkout root; `--show-toplevel` is the fallback for an unusual common dir.
-    let main = if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
-        common.parent()?.to_path_buf()
-    } else {
-        git_rev_parse(dir, &["--path-format=absolute", "--show-toplevel"])?
-    };
+    let main = linked_worktree_main(dir)?;
     // Redirect only to a genuine, uncontaminated Mustard anchor — otherwise keep
     // today's resolution rather than invent a root.
     if is_anchor(&main) && !violates_dot_claude_guard(&main) {
@@ -349,7 +337,34 @@ fn main_checkout_if_linked(dir: &Path) -> Option<PathBuf> {
     }
 }
 
-/// I1 guard mirrored from [`crate::io::claude_paths`] — kept private so the two
+/// The MAIN checkout when `dir` is inside a LINKED git worktree; `None` in the
+/// main checkout itself, outside git, or when git fails.
+///
+/// A linked worktree reports a per-worktree `--git-dir` distinct from the
+/// shared `--git-common-dir`; the main checkout reports the same path for both.
+/// The parent of the absolute `…/.git` common dir is the main checkout, and
+/// `--show-toplevel` answers for an unusual common dir.
+///
+/// Unlike the walk's redirect, it does not ask the main checkout to be a
+/// Mustard anchor as seen from the worktree: once Mustard stays out of git, a
+/// worktree carries no Mustard file at all, and the spec event writer still has
+/// to reach the main checkout's file.
+#[must_use]
+pub fn linked_worktree_main(dir: &Path) -> Option<PathBuf> {
+    let git_dir = git_rev_parse(dir, &["--path-format=absolute", "--git-dir"])?;
+    let common = git_rev_parse(dir, &["--path-format=absolute", "--git-common-dir"])?;
+    // Main checkout ⇒ identical dirs ⇒ nothing to redirect.
+    if canonical(&git_dir) == canonical(&common) {
+        return None;
+    }
+    if common.file_name().and_then(|n| n.to_str()) == Some(".git") {
+        common.parent().map(Path::to_path_buf)
+    } else {
+        git_rev_parse(dir, &["--path-format=absolute", "--show-toplevel"])
+    }
+}
+
+/// The `.claude/.claude/` guard mirrored from [`crate::io::claude_paths`] — kept private so the two
 /// modules cannot drift apart accidentally.
 fn violates_dot_claude_guard(path: &Path) -> bool {
     let last_is_dot_claude =
@@ -535,7 +550,7 @@ mod tests {
         let _guard = serialize_test();
         // Construct a contaminated start_dir: <root>/.claude/.claude. We
         // plant the anchor at <root>/.claude/ so the walker resolves to it
-        // and the I1 guard fires.
+        // and the `.claude/.claude/` guard fires.
         let dir = tempdir().unwrap();
         let contaminated_root = dir.path().join(".claude");
         std::fs::create_dir_all(&contaminated_root).unwrap();
