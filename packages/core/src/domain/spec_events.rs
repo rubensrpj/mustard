@@ -14,6 +14,13 @@
 //! `replaces` apontando a antiga, que some da leitura. O expurgo é a exceção:
 //! a linha do item fica só com o envelope, sem o texto.
 //!
+//! Cada item tem um código, `MSTD-<sigla>-<NNNN>`, que o binário grava na
+//! linha: o maior número já dado ao tipo, mais 1. A versão nova de um item
+//! grava o código da antiga. Como o código mora na linha, apagar outra linha à
+//! mão não muda código nenhum, e um número que saiu não volta. Quem aponta um
+//! item (`replaces`, os alvos de `remove` e `purge`) pode usar o número do
+//! evento ou esse código.
+//!
 //! Função pura: sem disco e sem relógio. A trava, a gravação e o caminho do
 //! arquivo moram em `io::spec_events`.
 
@@ -35,14 +42,21 @@ pub const AUTHORS: &[&str] = &["user", "assistant", "hook", "binary", "wave", "r
 pub const DEFAULT_AUTHOR: &str = "assistant";
 
 /// Os campos que só o binário escreve. O que vier neles de quem grava é
-/// descartado e trocado.
+/// descartado e trocado, menos os de [`REFUSED_FIELDS`].
 pub const BINARY_FIELDS: &[&str] = &["v", "id", "at", "search", "code"];
+
+/// Os campos do binário que, vindos de quem grava, recusam o evento em vez de
+/// serem descartados. Quem manda um código quer apontar um item, e trocar o
+/// código em silêncio criaria um item novo no lugar: o item se aponta por
+/// `replaces` ou pelos alvos de `remove` e `purge`.
+pub const REFUSED_FIELDS: &[&str] = &["code"];
 
 /// O campo que marca uma linha expurgada; guarda o número do expurgo.
 pub const PURGED_FIELD: &str = "purged";
 
-/// O envelope, na ordem em que abre cada linha do arquivo.
-const LEAD_FIELDS: &[&str] = &["v", "id", "at", "type", "author"];
+/// O envelope, na ordem em que abre cada linha do arquivo. O expurgo guarda o
+/// envelope, então o código do item continua no arquivo depois dele.
+const LEAD_FIELDS: &[&str] = &["v", "id", "code", "at", "type", "author"];
 
 // ---------------------------------------------------------------------------
 // Blocos
@@ -165,12 +179,19 @@ pub enum Kind {
     TextOrObject,
     /// Uma data e hora como `2026-09-11T21:03`.
     Time,
+    /// Um evento apontado: o número dele ou o código do item.
+    Ref,
+    /// Uma lista de eventos apontados, cada um pelo número ou pelo código.
+    Refs,
 }
 
 impl Kind {
     fn accepts(self, value: &Value) -> bool {
         let is_int = |v: &Value| v.is_i64() || v.is_u64();
+        let is_ref = |v: &Value| EventRef::from_value(v).is_some();
         match self {
+            Self::Ref => is_ref(value),
+            Self::Refs => value.as_array().is_some_and(|a| a.iter().all(is_ref)),
             Self::Text => value.is_string(),
             Self::Int => is_int(value),
             Self::Bool => value.is_boolean(),
@@ -204,6 +225,8 @@ impl Kind {
             Self::ManyOf(w) => ("spec_events.kind.many_of", Some(w)),
             Self::TextOrObject => ("spec_events.kind.text_or_object", None),
             Self::Time => ("spec_events.kind.time", None),
+            Self::Ref => ("spec_events.kind.ref", None),
+            Self::Refs => ("spec_events.kind.refs", None),
         };
         let base = translate(key, lang);
         words.map_or_else(|| base.to_string(), |w| base.replace("{values}", &w.join(", ")))
@@ -217,6 +240,27 @@ fn is_time_prefix(s: &str) -> bool {
     let b = s.as_bytes();
     matches!(b.len(), 10 | 16 | 19)
         && b.iter().zip(SHAPE).all(|(c, s)| if *s == b'd' { c.is_ascii_digit() } else { c == s })
+}
+
+/// Como um campo aponta outro evento: pelo número do evento ou pelo código do
+/// item, o mesmo que a página mostra.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventRef {
+    Id(u64),
+    Code(String),
+}
+
+impl EventRef {
+    /// O evento apontado por um valor: um número positivo ou um código
+    /// inteiro, como `MSTD-RULE-0002`. `None` para qualquer outra coisa.
+    #[must_use]
+    pub fn from_value(value: &Value) -> Option<Self> {
+        if let Some(id) = value.as_u64() {
+            return Some(Self::Id(id));
+        }
+        let code = value.as_str()?.trim();
+        mustard_id::is_id(code).then(|| Self::Code(code.to_string()))
+    }
 }
 
 /// Um campo de um tipo.
@@ -504,14 +548,14 @@ pub const TYPES: &[TypeSpec] = &[
         "RMV",
         Block::Conversation,
         false,
-        &[req("reason", Kind::Text), opt("targets", Kind::Ints), opt("filter", Kind::Object)],
+        &[req("reason", Kind::Text), opt("targets", Kind::Refs), opt("filter", Kind::Object)],
     ),
     ty(
         "purge",
         "PURGE",
         Block::Conversation,
         false,
-        &[req("targets", Kind::Ints), req("reason", Kind::OneOf(PURGE_REASONS))],
+        &[req("targets", Kind::Refs), req("reason", Kind::OneOf(PURGE_REASONS))],
     ),
 ];
 
@@ -556,7 +600,8 @@ pub enum Refusal {
     FactWithoutSource { fact: usize },
     CitedFileMissing { fact: usize, path: String },
     CitedLineMissing { fact: usize, path: String, line: u64, lines: u64 },
-    UnknownTarget { id: u64 },
+    BinaryOnlyField { field: String },
+    UnknownTarget { target: EventRef },
     ReplacesOtherType { id: u64, found: String, event_type: String },
     FilterMatchesNothing { event_type: String, from: String, to: String },
     UnknownBlock { found: String },
@@ -578,6 +623,7 @@ impl Refusal {
             Self::FactWithoutSource { .. } => "fact-without-source",
             Self::CitedFileMissing { .. } => "cited-file-missing",
             Self::CitedLineMissing { .. } => "cited-line-missing",
+            Self::BinaryOnlyField { .. } => "binary-only-field",
             Self::UnknownTarget { .. } => "unknown-target",
             Self::ReplacesOtherType { .. } => "replaces-other-type",
             Self::FilterMatchesNothing { .. } => "filter-matches-nothing",
@@ -642,8 +688,14 @@ impl Refusal {
                     ("{lines}", lines.to_string()),
                 ],
             ),
-            Self::UnknownTarget { id } => {
+            Self::BinaryOnlyField { field } => {
+                fill("spec_events.binary_only_field", &[("{field}", field.clone())])
+            }
+            Self::UnknownTarget { target: EventRef::Id(id) } => {
                 fill("spec_events.unknown_target", &[("{id}", id.to_string())])
+            }
+            Self::UnknownTarget { target: EventRef::Code(code) } => {
+                fill("spec_events.unknown_code", &[("{code}", code.clone())])
             }
             Self::ReplacesOtherType { id, found, event_type } => fill(
                 "spec_events.replaces_other_type",
@@ -690,10 +742,11 @@ fn is_empty(value: &Value) -> bool {
 
 /// O rascunho de quem grava, pronto para a conferência: sem os campos que só
 /// o binário escreve, com o tipo pedido e com o autor (o assistente, quando
-/// quem grava não diz).
+/// quem grava não diz). Os campos de [`REFUSED_FIELDS`] ficam, para que
+/// [`validate`] recuse o evento que os trouxe.
 #[must_use]
 pub fn normalize(mut draft: Map<String, Value>, event_type: &str) -> Map<String, Value> {
-    for field in BINARY_FIELDS {
+    for field in BINARY_FIELDS.iter().filter(|f| !REFUSED_FIELDS.contains(f)) {
         draft.remove(*field);
     }
     draft.remove(PURGED_FIELD);
@@ -713,9 +766,12 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
     let Some(spec) = type_spec(found) else {
         return Err(Refusal::UnknownType { found: found.to_string() });
     };
+    if let Some(field) = REFUSED_FIELDS.iter().find(|f| event.contains_key(**f)) {
+        return Err(Refusal::BinaryOnlyField { field: (*field).to_string() });
+    }
     check_field(event, spec.name, req("author", Kind::OneOf(AUTHORS)))?;
     check_field(event, spec.name, Field { name: "origin", kind: Kind::Int, required: spec.needs_origin })?;
-    for envelope in [opt("label", Kind::Text), opt("replaces", Kind::Int)] {
+    for envelope in [opt("label", Kind::Text), opt("replaces", Kind::Ref)] {
         check_field(event, spec.name, envelope)?;
     }
     for shared in [opt("text", Kind::Text), opt("keys", Kind::Texts)] {
@@ -902,6 +958,50 @@ pub fn file_citation(source: &str) -> Option<(String, u64)> {
     Some((path, start.max(end)))
 }
 
+/// Troca cada código (`MSTD-RULE-0002`) dos campos que apontam eventos pelos
+/// números que ele nomeia no arquivo como está, para que a linha gravada
+/// guarde só números: em `replaces`, a versão mais nova do item; nos alvos de
+/// `remove` e `purge`, todas as versões dele. Um código que não existe na spec
+/// recusa o evento. Um evento sem código nenhum sai como entrou.
+pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<(), Refusal> {
+    let is_code = |v: &Value| matches!(EventRef::from_value(v), Some(EventRef::Code(_)));
+    let replaces_code = event.get("replaces").is_some_and(is_code);
+    let targets = event.get("targets").and_then(Value::as_array).cloned().unwrap_or_default();
+    if !replaces_code && !targets.iter().any(is_code) {
+        return Ok(());
+    }
+    let codes = log.codes();
+    let ids_of = |code: &str| -> Result<Vec<u64>, Refusal> {
+        let ids: Vec<u64> =
+            log.events.iter().map(|e| e.id).filter(|id| codes.get(id).is_some_and(|c| c == code)).collect();
+        if ids.is_empty() {
+            Err(Refusal::UnknownTarget { target: EventRef::Code(code.to_string()) })
+        } else {
+            Ok(ids)
+        }
+    };
+    if let Some(EventRef::Code(code)) = event.get("replaces").and_then(EventRef::from_value) {
+        let newest = ids_of(&code)?.last().copied().unwrap_or_default();
+        event.insert("replaces".into(), Value::from(newest));
+    }
+    if targets.iter().any(is_code) {
+        let mut resolved: Vec<Value> = Vec::new();
+        for target in &targets {
+            let ids: Vec<Value> = match EventRef::from_value(target) {
+                Some(EventRef::Code(code)) => ids_of(&code)?.into_iter().map(Value::from).collect(),
+                _ => vec![target.clone()],
+            };
+            for id in ids {
+                if !resolved.contains(&id) {
+                    resolved.push(id);
+                }
+            }
+        }
+        event.insert("targets".into(), Value::Array(resolved));
+    }
+    Ok(())
+}
+
 /// O que uma gravação muda no resto do arquivo.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Effects {
@@ -922,7 +1022,7 @@ pub fn check_against(
     let event_type = event.get("type").and_then(Value::as_str).unwrap_or_default();
     if let Some(old) = event.get("replaces").and_then(Value::as_u64) {
         let Some(previous) = log.get(old) else {
-            return Err(Refusal::UnknownTarget { id: old });
+            return Err(Refusal::UnknownTarget { target: EventRef::Id(old) });
         };
         if previous.event_type != event_type {
             return Err(Refusal::ReplacesOtherType {
@@ -934,7 +1034,7 @@ pub fn check_against(
     }
     let mut targets = ints(event.get("targets"));
     if let Some(unknown) = targets.iter().find(|id| log.get(**id).is_none()) {
-        return Err(Refusal::UnknownTarget { id: *unknown });
+        return Err(Refusal::UnknownTarget { target: EventRef::Id(*unknown) });
     }
     let mut effects = Effects::default();
     match event_type {
@@ -964,12 +1064,16 @@ pub fn check_against(
     Ok(effects)
 }
 
-/// O evento pronto para o arquivo: a versão do formato, o número, a hora e o
-/// campo de busca, calculado de `text` e `keys`.
+/// O evento pronto para o arquivo: a versão do formato, o número, o código do
+/// item (veja [`code_after`]), a hora e o campo de busca, calculado de `text`
+/// e `keys`.
 #[must_use]
-pub fn stamp(mut event: Map<String, Value>, id: u64, at: &str) -> Map<String, Value> {
+pub fn stamp(mut event: Map<String, Value>, id: u64, code: Option<&str>, at: &str) -> Map<String, Value> {
     event.insert("v".into(), Value::from(FORMAT_VERSION));
     event.insert("id".into(), Value::from(id));
+    if let Some(code) = code {
+        event.insert("code".into(), Value::String(code.to_string()));
+    }
     event.insert("at".into(), Value::String(at.to_string()));
     let text = event.get("text").and_then(Value::as_str);
     let keys: Vec<&str> = event
@@ -1565,43 +1669,85 @@ impl SpecLog {
 
     /// O código de cada evento, `MSTD-<sigla>-<NNNN>`, pelo número do evento.
     ///
-    /// Conta por tipo, na ordem do arquivo, todas as linhas lidas, inclusive
-    /// as removidas e as expurgadas, que continuam no arquivo: um número dado
-    /// nunca volta. A versão nova de um item (`replaces`) herda o código da
-    /// antiga, porque é o mesmo item, revisto. Um tipo que este binário não
-    /// conhece fica sem código. Cada spec conta do zero.
+    /// O código gravado na linha vale como está. Uma linha sem código, de uma
+    /// edição à mão ou de um gravador anterior, recebe o da versão que ela
+    /// substitui (`replaces`) ou, senão, o próximo número livre do tipo: o
+    /// seguinte ao maior visto até ela no arquivo, pulando os que outra linha
+    /// já gravou. Assim os códigos gravados nunca mudam, e o de uma linha sem
+    /// código não muda quando outra linha é gravada no fim. Um tipo que este
+    /// binário não conhece fica sem código. Cada spec conta do zero.
     #[must_use]
     pub fn codes(&self) -> BTreeMap<u64, String> {
-        let mut counters: BTreeMap<&str, u64> = BTreeMap::new();
         let mut codes: BTreeMap<u64, String> = BTreeMap::new();
+        let mut taken: BTreeSet<(&str, u64)> = BTreeSet::new();
+        for event in &self.events {
+            if let Some((kind, n)) = recorded_code(event) {
+                codes.insert(event.id, mustard_id::format(kind, n));
+                taken.insert((kind, n));
+            }
+        }
+        let mut highest: BTreeMap<&str, u64> = BTreeMap::new();
         for event in &self.events {
             let Some(spec) = type_spec(&event.event_type) else {
                 continue;
             };
+            let top = highest.entry(spec.code).or_insert(0);
+            if let Some((_, n)) = recorded_code(event) {
+                *top = (*top).max(n);
+                continue;
+            }
             let inherited = event
                 .int("replaces")
                 .filter(|old| self.get(*old).is_some_and(|o| o.event_type == event.event_type))
                 .and_then(|old| codes.get(&old).cloned());
-            let code = inherited.unwrap_or_else(|| {
-                let n = counters.entry(spec.code).or_insert(0);
-                *n += 1;
-                mustard_id::format(spec.code, *n)
-            });
-            codes.insert(event.id, code);
+            if let Some(code) = inherited {
+                codes.insert(event.id, code);
+                continue;
+            }
+            let mut n = *top + 1;
+            while taken.contains(&(spec.code, n)) {
+                n += 1;
+            }
+            *top = n;
+            codes.insert(event.id, mustard_id::format(spec.code, n));
         }
         codes
     }
 }
 
-/// O código que um evento recém-carimbado recebe quando entra depois de tudo o
-/// que `log` já tem. `None` para um tipo desconhecido.
+/// O código gravado numa linha, como sigla e número, quando ele tem o formato
+/// e a sigla do tipo da linha. Um código de outro tipo ou fora do formato
+/// conta como ausente.
+fn recorded_code(event: &SpecEvent) -> Option<(&'static str, u64)> {
+    let spec = type_spec(&event.event_type)?;
+    let (kind, n) = mustard_id::parse(event.str_field("code")?.trim())?;
+    (kind == spec.code).then_some((spec.code, n))
+}
+
+/// O código que o evento `event` grava ao entrar no fim de `log`: o da versão
+/// que ele substitui, quando `replaces` aponta um item do mesmo tipo; senão, o
+/// maior número que o tipo já tem na spec, mais 1. Nunca a posição: um número
+/// que saiu do meio do arquivo não volta. `None` para um tipo desconhecido.
 #[must_use]
 pub fn code_after(log: &SpecLog, event: &Map<String, Value>) -> Option<String> {
-    let id = event.get("id").and_then(Value::as_u64)?;
-    let event_type = event.get("type").and_then(Value::as_str)?.to_string();
-    let mut after = log.clone();
-    after.events.push(SpecEvent { id, event_type, line: 0, fields: event.clone() });
-    after.codes().remove(&id)
+    let spec = type_spec(event.get("type").and_then(Value::as_str)?)?;
+    let codes = log.codes();
+    let inherited = event
+        .get("replaces")
+        .and_then(Value::as_u64)
+        .filter(|old| log.get(*old).is_some_and(|o| o.event_type == spec.name))
+        .and_then(|old| codes.get(&old).cloned());
+    if inherited.is_some() {
+        return inherited;
+    }
+    let top = codes
+        .values()
+        .filter_map(|code| mustard_id::parse(code))
+        .filter(|(kind, _)| *kind == spec.code)
+        .map(|(_, n)| n)
+        .max()
+        .unwrap_or(0);
+    Some(mustard_id::format(spec.code, top + 1))
 }
 
 #[cfg(test)]
@@ -1753,7 +1899,7 @@ mod tests {
 
     #[test]
     fn a_line_starts_with_the_envelope_and_ends_with_search() {
-        let event = stamp(normalize(obj(json!({"text": "x", "keys": ["k"], "origin": 1})), "note"), 7, "t");
+        let event = stamp(normalize(obj(json!({"text": "x", "keys": ["k"], "origin": 1})), "note"), 7, None, "t");
         let line = render_line(&event);
         assert!(line.starts_with(r#"{"v":1,"id":7,"at":"t","type":"note","author":"assistant","keys":"#), "{line}");
         assert!(line.ends_with(r#""search":"x k"}"#), "{line}");
@@ -1850,5 +1996,99 @@ mod tests {
         // Outra spec conta do zero.
         let other = parse_log(&line(1, "rule", ",\"text\":\"z\""));
         assert_eq!(other.codes()[&1], "MSTD-RULE-0001");
+    }
+
+    /// O código gravado na linha vale como está. Uma linha sem código recebe
+    /// o próximo número livre do tipo, pulando os que outra linha gravou, e
+    /// esse número não muda quando outra linha é gravada no fim. Um código de
+    /// outra sigla não vale.
+    #[test]
+    fn recorded_codes_stand_and_a_line_without_one_takes_the_next_free_number() {
+        let coded = |id: u64, event_type: &str, code: &str, extra: &str| {
+            line(id, event_type, &format!(",\"code\":\"{code}\"{extra}"))
+        };
+        let mut content = [
+            coded(1, "rule", "MSTD-RULE-0001", ""),
+            line(2, "rule", ",\"text\":\"inserida à mão\""),
+            coded(3, "rule", "MSTD-RULE-0002", ""),
+            coded(4, "rule", "MSTD-RULE-0003", ""),
+            coded(5, "criterion", "MSTD-CRIT-0007", ""),
+            line(6, "rule", ",\"text\":\"revista à mão\",\"replaces\":3"),
+            coded(7, "rule", "MSTD-CRIT-0009", ""),
+        ]
+        .concat();
+        let codes = parse_log(&content).codes();
+        let got: Vec<&str> = (1..=7).map(|id| codes[&id].as_str()).collect();
+        assert_eq!(
+            got,
+            [
+                "MSTD-RULE-0001",
+                "MSTD-RULE-0004",
+                "MSTD-RULE-0002",
+                "MSTD-RULE-0003",
+                "MSTD-CRIT-0007",
+                "MSTD-RULE-0002",
+                "MSTD-RULE-0005",
+            ]
+        );
+        let next = obj(json!({"type": "rule", "text": "nova"}));
+        assert_eq!(code_after(&parse_log(&content), &next).as_deref(), Some("MSTD-RULE-0006"));
+        assert_eq!(
+            code_after(&parse_log(&content), &obj(json!({"type": "criterion"}))).as_deref(),
+            Some("MSTD-CRIT-0008"),
+            "the next number follows the largest, never the position"
+        );
+
+        content.push_str(&coded(8, "rule", "MSTD-RULE-0006", ""));
+        let after = parse_log(&content).codes();
+        assert_eq!((after[&2].as_str(), after[&7].as_str()), ("MSTD-RULE-0004", "MSTD-RULE-0005"));
+    }
+
+    /// O código não vem de quem grava: o evento que o traz é recusado, com a
+    /// mensagem nos dois idiomas. Os outros campos do binário continuam
+    /// descartados.
+    #[test]
+    fn a_code_sent_by_the_caller_is_refused() {
+        let draft = json!({"text": "t", "keys": ["k"], "origin": 1, "code": "MSTD-NOTE-0001"});
+        let refusal = checked("note", draft).unwrap_err();
+        assert_eq!(refusal, Refusal::BinaryOnlyField { field: "code".into() });
+        let (pt, en) = (refusal.message(Locale::PtBr), refusal.message(Locale::EnUs));
+        assert!(pt.contains("O campo code é gravado só pelo binário"), "{pt}");
+        assert!(en.contains("The code field is written only by the binary"), "{en}");
+        assert!(checked("note", json!({"text": "t", "keys": ["k"], "origin": 1, "id": 9, "at": "x"})).is_ok());
+    }
+
+    /// Um código aponta o item: em `replaces`, a versão mais nova; nos alvos,
+    /// todas as versões. Um código que não existe é recusado citando o código,
+    /// nos dois idiomas, e um texto fora do formato nem passa da conferência.
+    #[test]
+    fn a_code_points_at_its_item_and_an_unknown_code_is_refused() {
+        let log = parse_log(
+            &[
+                line(1, "rule", ",\"code\":\"MSTD-RULE-0001\""),
+                line(2, "rule", ",\"code\":\"MSTD-RULE-0002\""),
+                line(3, "rule", ",\"code\":\"MSTD-RULE-0002\",\"replaces\":2"),
+            ]
+            .concat(),
+        );
+        let mut removal = obj(json!({"type": "remove", "targets": ["MSTD-RULE-0002", 1, 3], "reason": "r"}));
+        resolve_codes(&log, &mut removal).unwrap();
+        assert_eq!(removal["targets"], json!([2, 3, 1]));
+        let mut revision = obj(json!({"type": "rule", "replaces": "MSTD-RULE-0002"}));
+        resolve_codes(&log, &mut revision).unwrap();
+        assert_eq!(revision["replaces"], json!(3));
+
+        let mut unknown = obj(json!({"type": "purge", "targets": ["MSTD-RULE-0009"], "reason": "secret"}));
+        let refusal = resolve_codes(&log, &mut unknown).unwrap_err();
+        assert_eq!(refusal, Refusal::UnknownTarget { target: EventRef::Code("MSTD-RULE-0009".into()) });
+        assert_eq!(refusal.reason(), "unknown-target");
+        assert!(refusal.message(Locale::PtBr).contains("O item MSTD-RULE-0009 não existe nesta spec"));
+        assert!(refusal.message(Locale::EnUs).contains("Item MSTD-RULE-0009 does not exist in this spec"));
+
+        assert!(checked("remove", json!({"targets": ["MSTD-RULE-0002"], "reason": "r"})).is_ok());
+        assert!(matches!(
+            checked("remove", json!({"targets": ["R2"], "reason": "r"})).unwrap_err(),
+            Refusal::InvalidValue { ref field, expected: Kind::Refs, .. } if field == "targets"
+        ));
     }
 }

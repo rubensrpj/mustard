@@ -1,13 +1,19 @@
 //! `mustard-rt run write <tipo> --spec <nome> --json '{…}'` — grava um evento
 //! no arquivo de eventos da spec, a única porta de escrita dele.
 //!
-//! O binário põe a versão do formato, o número, a hora com o fuso e o campo de
-//! busca; o resto vem do `--json`. A saída diz o número gravado e, num
-//! `remove` ou num `purge`, os números afetados:
+//! O binário põe a versão do formato, o número, o código do item, a hora com o
+//! fuso e o campo de busca; o resto vem do `--json`, que não pode trazer o
+//! código. Quem aponta um item (`replaces`, os alvos de `remove` e `purge`)
+//! usa o número do evento ou o código que a página mostra. A saída diz o
+//! número e o código gravados e, num `remove` ou num `purge`, os números
+//! afetados:
 //!
 //! ```text
-//! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "removed": [12, 13]}
+//! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "code": "MSTD-RMV-0002", "removed": [12, 13]}
 //! ```
+//!
+//! A página e o `.md` da spec são refeitos a cada gravação, ainda com a trava
+//! do arquivo de eventos presa.
 //!
 //! Num worktree, o evento vai para o arquivo do checkout principal. As
 //! citações de arquivo de um ponto são conferidas a partir de onde o comando
@@ -49,7 +55,14 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         Err(refusal) => return refuse(refusal),
     };
     let roots = store::citation_roots(&opts.root, &project.root);
-    match store::write(&path, &opts.event_type, draft, &roots) {
+    // A página e o `.md` acompanham cada gravação e são refeitos antes de a
+    // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
+    // outra sessão, só entra depois, e refaz os dois por último.
+    let mut pages = None;
+    let written = store::write_then(&path, &opts.event_type, draft, &roots, |log| {
+        pages = Some(super::pages::rebuild(&project.root, &opts.spec, log, lang));
+    });
+    match written {
         Ok(written) => {
             let mut report = json!({
                 "ok": true,
@@ -66,9 +79,9 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             if !written.purged.is_empty() {
                 report["purged"] = json!(written.purged);
             }
-            // A página e o `.md` acompanham cada gravação. Se não der para
-            // gravá-los, o evento já está no arquivo: fica o aviso.
-            if let Err(refusal) = super::pages::refresh(&project.root, &opts.spec, lang) {
+            // Se não deu para gravar a página e o `.md`, o evento já está no
+            // arquivo: fica o aviso.
+            if let Some(Err(refusal)) = &pages {
                 report["warnings"] = json!([refusal.message(lang)]);
             }
             report
@@ -144,6 +157,51 @@ mod tests {
         }
         let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
         assert!(events.contains("Anotação que sai.") && events.contains("engano"), "{events}");
+    }
+
+    /// Remover pelo código que a página mostra tira o item da leitura, da
+    /// página e do `.md`, e ele continua no arquivo com o motivo. Um código
+    /// que não existe é recusado citando o código, e nada é gravado.
+    #[test]
+    fn removing_by_the_code_takes_the_item_out_of_the_reading_the_page_and_the_md() {
+        use crate::commands::spec_events::read::{read_at, ReadOpts};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"combine as regras"}"#);
+        for text in ["Regra um.", "Regra dois.", "Regra três."] {
+            let json = json!({"text": text, "keys": ["k"], "example": "e", "origin": 1}).to_string();
+            assert_eq!(write(root, "rule", &json)["ok"], json!(true));
+        }
+        let removal = write(root, "remove", r#"{"targets":["MSTD-RULE-0002"],"reason":"Regra repetida."}"#);
+        assert_eq!(removal["removed"], json!([3]), "{removal}");
+        assert!(removal.get("warnings").is_none(), "{removal}");
+
+        let agreed = read_at(&ReadOpts {
+            root: root.to_path_buf(),
+            spec: "teste".into(),
+            block: "agreed".into(),
+            term: None,
+        })
+        .unwrap();
+        assert!(!agreed.contains("Regra dois.") && agreed.contains("Regra três."), "{agreed}");
+        let spec = root.join(".claude").join("spec").join("teste");
+        for page in ["spec.md", "spec.html"] {
+            let shown = std::fs::read_to_string(spec.join(page)).unwrap();
+            assert!(!shown.contains("Regra dois."), "{page}: {shown}");
+            assert!(shown.contains("Regra um.") && shown.contains("Regra três."), "{page}");
+        }
+        let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
+        assert!(events.contains("Regra dois.") && events.contains("Regra repetida."), "{events}");
+
+        let unknown = write(root, "remove", r#"{"targets":["MSTD-RULE-0009"],"reason":"r"}"#);
+        assert_eq!(unknown["reason"], json!("unknown-target"), "{unknown}");
+        assert!(unknown["hint"].as_str().unwrap().contains("MSTD-RULE-0009"), "{unknown}");
+        let revised = write(root, "rule", r#"{"text":"Regra três, revista.","keys":["k"],"example":"e","origin":1,"replaces":"MSTD-RULE-0003"}"#);
+        assert_eq!(revised["code"], json!("MSTD-RULE-0003"), "{revised}");
+        let with_code = write(root, "note", r#"{"text":"t","keys":["k"],"origin":1,"code":"MSTD-NOTE-0001"}"#);
+        assert_eq!(with_code["reason"], json!("binary-only-field"), "{with_code}");
+        let after = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
+        assert_eq!(after.lines().count(), events.lines().count() + 1, "only the revision was written");
     }
 
     #[test]

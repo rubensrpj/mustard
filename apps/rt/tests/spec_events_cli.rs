@@ -68,6 +68,39 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
     assert_eq!(ids, (1..=2 * rounds).collect::<Vec<u64>>(), "consecutive, in file order, none repeated");
 }
 
+/// A página e o `.md` são refeitos dentro da trava do arquivo de eventos:
+/// depois de duas gravações ao mesmo tempo, os dois têm os dois itens.
+#[test]
+fn two_processes_writing_at_once_leave_both_items_on_the_page_and_the_md() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let spec = root.join(".claude").join("spec").join("teste");
+    for round in 0..10 {
+        let texts: Vec<String> = (0..2).map(|w| format!("rodada {round} escrita {w}")).collect();
+        let writers: Vec<_> = texts
+            .iter()
+            .map(|text| {
+                let fields = json!({"author": "user", "text": text});
+                rt(root, &["write", "message", "--spec", "teste", "--json", &fields.to_string()])
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .expect("spawn write")
+            })
+            .collect();
+        for writer in writers {
+            let out = writer.wait_with_output().expect("wait write");
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+            assert!(stdout_json(&out).get("warnings").is_none(), "{}", String::from_utf8_lossy(&out.stdout));
+        }
+        for page in ["spec.md", "spec.html"] {
+            let shown = std::fs::read_to_string(spec.join(page)).expect("the page exists");
+            for text in &texts {
+                assert!(shown.contains(text.as_str()), "round {round}: {page} lacks {text}");
+            }
+        }
+    }
+}
+
 #[test]
 fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() {
     let dir = tempfile::tempdir().expect("tempdir");

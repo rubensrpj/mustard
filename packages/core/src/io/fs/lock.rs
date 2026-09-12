@@ -41,6 +41,25 @@ impl LockedFile {
         Ok(Self { file })
     }
 
+    /// Abre `path`, que precisa existir, para ler e escrever, e espera a trava
+    /// exclusiva. Não cria arquivo nem pasta.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] quando o arquivo não existe; [`Error::Io`] quando ele
+    /// não abre ou a trava falha.
+    pub fn existing(path: &Path) -> Result<Self> {
+        let file = match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                return Err(Error::NotFound(path.display().to_string()));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        file.lock()?;
+        Ok(Self { file })
+    }
+
     /// O conteúdo inteiro, lido pelo manipulador que segura a trava. Um byte
     /// que não é UTF-8 vira `U+FFFD`: a linha dele deixa de se entender, e o
     /// resto do arquivo continua legível.
@@ -139,5 +158,16 @@ mod tests {
     fn reading_a_missing_file_says_not_found() {
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(read_shared(&dir.path().join("x")), Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn locking_an_existing_file_never_creates_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a/log.ndjson");
+        assert!(matches!(LockedFile::existing(&path), Err(Error::NotFound(_))));
+        assert!(!path.exists() && !path.parent().unwrap().exists(), "nothing was created");
+        LockedFile::exclusive(&path).unwrap().append_line("um").unwrap();
+        let mut file = LockedFile::existing(&path).unwrap();
+        assert_eq!(file.read_to_string().unwrap(), "um\n");
     }
 }

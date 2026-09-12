@@ -1171,6 +1171,23 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("spec_events.unknown_target", Locale::EnUs) => {
             "Event {id} does not exist in this spec. Nothing was written."
         }
+        ("spec_events.unknown_code", Locale::PtBr) => {
+            "O item {code} não existe nesta spec. Confira o código na página ou no read. Nada foi \
+             gravado."
+        }
+        ("spec_events.unknown_code", Locale::EnUs) => {
+            "Item {code} does not exist in this spec. Check the code on the page or in read. \
+             Nothing was written."
+        }
+        ("spec_events.binary_only_field", Locale::PtBr) => {
+            "O campo {field} é gravado só pelo binário e não pode vir no --json. Para apontar um \
+             item pelo código, use replaces ou os alvos de remove e purge. Nada foi gravado."
+        }
+        ("spec_events.binary_only_field", Locale::EnUs) => {
+            "The {field} field is written only by the binary and cannot come in --json. To point \
+             at an item by its code, use replaces or the targets of remove and purge. Nothing was \
+             written."
+        }
         ("spec_events.replaces_other_type", Locale::PtBr) => {
             "O evento {id} é do tipo {found}, e a versão nova veio como {type}; ela precisa ser do \
              mesmo tipo. Nada foi gravado."
@@ -1235,6 +1252,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("spec_events.kind.text_or_object", Locale::EnUs) => "a text or a JSON object",
         ("spec_events.kind.time", Locale::PtBr) => "uma data e hora como 2026-09-11T21:03",
         ("spec_events.kind.time", Locale::EnUs) => "a date and time like 2026-09-11T21:03",
+        ("spec_events.kind.ref", Locale::PtBr) => {
+            "o número de um evento ou o código de um item, como MSTD-RULE-0002"
+        }
+        ("spec_events.kind.ref", Locale::EnUs) => "an event number or an item code, like MSTD-RULE-0002",
+        ("spec_events.kind.refs", Locale::PtBr) => {
+            "uma lista de números de evento ou de códigos de item, como MSTD-RULE-0002"
+        }
+        ("spec_events.kind.refs", Locale::EnUs) => {
+            "a list of event numbers or item codes, like MSTD-RULE-0002"
+        }
 
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
         // uma linha curta que o assistente recebe no bloqueio do fim da
@@ -2149,6 +2176,8 @@ mod tests {
             ("spec_events.cited_file_missing", &["{fact}", "{path}"][..]),
             ("spec_events.cited_line_missing", &["{fact}", "{path}", "{line}", "{lines}"][..]),
             ("spec_events.unknown_target", &["{id}"][..]),
+            ("spec_events.unknown_code", &["{code}"][..]),
+            ("spec_events.binary_only_field", &["{field}"][..]),
             ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
@@ -2169,6 +2198,8 @@ mod tests {
             ("spec_events.kind.many_of", &["{values}"][..]),
             ("spec_events.kind.text_or_object", &[][..]),
             ("spec_events.kind.time", &[][..]),
+            ("spec_events.kind.ref", &[][..]),
+            ("spec_events.kind.refs", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

@@ -383,8 +383,9 @@ impl<'a> Page<'a> {
         {
             return self.code(id);
         }
-        if EVENT_REFS.contains(&name) && kind == Kind::Ints {
-            return join(ints(value).into_iter().map(|id| self.code(id)));
+        if EVENT_REFS.contains(&name) && matches!(kind, Kind::Ints | Kind::Refs) {
+            let each = |v: &Value| v.as_u64().map_or_else(|| self.plain(v), |id| self.code(id));
+            return join(value.as_array().into_iter().flatten().map(each));
         }
         if WAVE_NUMBERS.contains(&name) {
             return value.as_u64().map_or_else(|| join(ints(value).into_iter().map(|n| n.to_string())), |n| n.to_string());

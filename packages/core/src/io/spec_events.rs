@@ -11,6 +11,10 @@
 //! descartado. O próximo número parte do maior que existe, inclusive depois
 //! de uma edição à mão.
 //!
+//! Quem depende do arquivo como ficou (a página e o `.md` da spec) recebe o
+//! conteúdo recém-gravado ainda com a trava presa: a gravação seguinte só
+//! entra depois, então quem grava por último refaz a página por último.
+//!
 //! Num worktree, a spec continua sendo a do checkout principal: o arquivo mora
 //! fora do git, na pasta do Mustard do checkout principal, e sobrevive à troca
 //! de branch.
@@ -61,24 +65,29 @@ pub struct Written {
     pub purged: Vec<u64>,
 }
 
-/// Grava um evento com a hora de agora. Veja [`write_at`].
+/// Grava um evento com a hora de agora. Veja [`write_at_then`].
 pub fn write(
     path: &Path,
     event_type: &str,
     draft: Map<String, Value>,
     cite_roots: &[PathBuf],
 ) -> Result<Written, Refusal> {
-    write_at(path, event_type, draft, cite_roots, &now())
+    write_at_then(path, event_type, draft, cite_roots, &now(), |_| {})
 }
 
-/// Grava um evento do tipo `event_type` com os campos de `draft` e a hora
-/// `at`.
-///
-/// Recusa, sem tocar no arquivo: tipo desconhecido, campo obrigatório vazio,
-/// fato de ponto sem fonte, arquivo citado que não existe em nenhuma de
-/// `cite_roots`, número apontado que não existe, versão nova de outro tipo e
-/// filtro de remoção que não pega nada. O expurgo reescreve o arquivo com o
-/// texto dos alvos tirado; as outras gravações só acrescentam uma linha.
+/// Grava um evento com a hora de agora e entrega a `then` o arquivo como
+/// ficou, ainda com a trava presa. Veja [`write_at_then`].
+pub fn write_then(
+    path: &Path,
+    event_type: &str,
+    draft: Map<String, Value>,
+    cite_roots: &[PathBuf],
+    then: impl FnOnce(&SpecLog),
+) -> Result<Written, Refusal> {
+    write_at_then(path, event_type, draft, cite_roots, &now(), then)
+}
+
+/// Grava um evento com a hora `at`. Veja [`write_at_then`].
 pub fn write_at(
     path: &Path,
     event_type: &str,
@@ -86,7 +95,36 @@ pub fn write_at(
     cite_roots: &[PathBuf],
     at: &str,
 ) -> Result<Written, Refusal> {
-    let event = model::normalize(draft, event_type);
+    write_at_then(path, event_type, draft, cite_roots, at, |_| {})
+}
+
+/// Grava um evento do tipo `event_type` com os campos de `draft` e a hora
+/// `at`, e entrega a `then` o arquivo como ficou.
+///
+/// O binário grava o número, a hora e o código do item (veja
+/// [`model::code_after`]). Um código em `replaces` ou nos alvos de `remove` e
+/// `purge` vira o número do evento que ele nomeia antes da gravação.
+///
+/// Recusa, sem tocar no arquivo: tipo desconhecido, campo obrigatório vazio,
+/// código mandado por quem grava, fato de ponto sem fonte, arquivo citado que
+/// não existe em nenhuma de `cite_roots`, número ou código apontado que não
+/// existe, versão nova de outro tipo e filtro de remoção que não pega nada. O
+/// expurgo reescreve o arquivo com o texto dos alvos tirado; as outras
+/// gravações só acrescentam uma linha.
+///
+/// `then` roda depois da escrita e antes de a trava soltar, com o conteúdo
+/// que acabou de ser gravado, e não lê o disco: é onde a página e o `.md` são
+/// refeitos, para que duas gravações ao mesmo tempo nunca deixem a página sem
+/// a última. Numa recusa, `then` não roda.
+pub fn write_at_then(
+    path: &Path,
+    event_type: &str,
+    draft: Map<String, Value>,
+    cite_roots: &[PathBuf],
+    at: &str,
+    then: impl FnOnce(&SpecLog),
+) -> Result<Written, Refusal> {
+    let mut event = model::normalize(draft, event_type);
     model::validate(&event)?;
     check_citations(cite_roots, &event)?;
 
@@ -94,16 +132,18 @@ pub fn write_at(
     let content = file.read_to_string().map_err(io_refusal)?;
     let log = model::parse_log(&content);
     let id = log.max_id().saturating_add(1);
+    model::resolve_codes(&log, &mut event)?;
     let effects = model::check_against(&log, &event, id)?;
-    let stamped = model::stamp(event, id, at);
-    let code = model::code_after(&log, &stamped);
-    let line = model::render_line(&stamped);
+    let code = model::code_after(&log, &event);
+    let line = model::render_line(&model::stamp(event, id, code.as_deref(), at));
 
-    let wrote = if effects.purged.is_empty() {
+    let written = if effects.purged.is_empty() {
         // Uma última linha pela metade fica sozinha na linha dela, e a
         // gravação começa numa linha nova.
         let clean = content.is_empty() || content.ends_with('\n');
-        file.append_line(&if clean { line } else { format!("\n{line}") })
+        let added = if clean { line } else { format!("\n{line}") };
+        file.append_line(&added).map_err(io_refusal)?;
+        format!("{content}{added}\n")
     } else {
         let mut body = model::purge_lines(&content, &effects.purged, id);
         if !body.is_empty() && !body.ends_with('\n') {
@@ -111,9 +151,11 @@ pub fn write_at(
         }
         body.push_str(&line);
         body.push('\n');
-        file.replace(body.as_bytes())
+        file.replace(body.as_bytes()).map_err(io_refusal)?;
+        body
     };
-    wrote.map_err(io_refusal)?;
+    then(&model::parse_log(&written));
+    drop(file);
     Ok(Written { id, code, removed: effects.removed, purged: effects.purged })
 }
 
@@ -125,6 +167,23 @@ pub fn read(path: &Path) -> Result<Option<SpecLog>, Refusal> {
         Err(Error::NotFound(_)) => Ok(None),
         Err(e) => Err(io_refusal(e)),
     }
+}
+
+/// Pega a trava exclusiva do arquivo, lê pelo mesmo manipulador e entrega o
+/// arquivo lido a `f`, soltando a trava só depois. É como a página é refeita
+/// sem gravar evento: nenhuma gravação entra no meio, então a página nunca
+/// fica atrás do arquivo. `Ok(None)` quando a spec ainda não tem arquivo; nada
+/// é criado.
+pub fn with_locked_log<R>(path: &Path, f: impl FnOnce(&SpecLog) -> R) -> Result<Option<R>, Refusal> {
+    let mut file = match LockedFile::existing(path) {
+        Ok(file) => file,
+        Err(Error::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(io_refusal(e)),
+    };
+    let content = file.read_to_string().map_err(io_refusal)?;
+    let out = f(&model::parse_log(&content));
+    drop(file);
+    Ok(Some(out))
 }
 
 /// O que está errado numa citação de arquivo.
@@ -205,7 +264,7 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::spec_events::{Block, BlockQuery, Hidden, SkipReason, Step, TYPES};
+    use crate::domain::spec_events::{Block, BlockQuery, EventRef, Hidden, SkipReason, Step, TYPES};
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -610,6 +669,7 @@ mod tests {
         assert!(!raw.contains("hunter2"), "the purge takes the text out of the file");
         let purged_line = raw.lines().find(|l| l.contains(&format!("\"id\":{secret},"))).unwrap();
         assert!(purged_line.contains(&format!("\"purged\":{}", purge.id)), "{purged_line}");
+        assert!(purged_line.contains("\"code\":\"MSTD-MSG-0012\""), "the purge keeps the code: {purged_line}");
         assert!(log.skipped.is_empty(), "the rewrite leaves no broken line");
 
         // A filter that catches nothing and an unknown number write nothing.
@@ -623,7 +683,10 @@ mod tests {
         );
         assert!(matches!(none.unwrap_err(), Refusal::FilterMatchesNothing { .. }));
         let unknown = write_at(&path, "remove", obj(json!({"targets": [999], "reason": "r"})), &[], &at("21:31"));
-        assert_eq!(unknown.unwrap_err(), Refusal::UnknownTarget { id: 999 });
+        assert_eq!(unknown.unwrap_err(), Refusal::UnknownTarget { target: EventRef::Id(999) });
+        let unknown_code =
+            write_at(&path, "remove", obj(json!({"targets": ["MSTD-NOTE-0009"], "reason": "r"})), &[], &at("21:32"));
+        assert_eq!(unknown_code.unwrap_err(), Refusal::UnknownTarget { target: EventRef::Code("MSTD-NOTE-0009".into()) });
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
@@ -644,7 +707,99 @@ mod tests {
             Refusal::ReplacesOtherType { id: new, found: "decision".into(), event_type: "note".into() }
         );
         let missing = write_at(&path, "decision", obj(json!({"text": "t", "why": "w", "keys": ["k"], "replaces": 99, "origin": 1})), &[], &at("10:03"));
-        assert_eq!(missing.unwrap_err(), Refusal::UnknownTarget { id: 99 });
+        assert_eq!(missing.unwrap_err(), Refusal::UnknownTarget { target: EventRef::Id(99) });
+    }
+
+    fn rule(text: &str) -> Value {
+        json!({"text": text, "example": "e", "keys": ["k"], "origin": 1})
+    }
+
+    fn line_of(path: &Path, id: u64) -> String {
+        let raw = std::fs::read_to_string(path).unwrap();
+        raw.lines().find(|l| l.contains(&format!("\"id\":{id},"))).unwrap_or_default().to_string()
+    }
+
+    /// O código mora na linha: apagar à mão uma linha do meio não muda o
+    /// código de nenhuma outra, e o número que saiu nunca volta. A versão nova
+    /// grava o código da antiga. Uma linha sem código, posta à mão, recebe o
+    /// próximo número livre e não o perde quando outra linha é gravada.
+    #[test]
+    fn the_code_is_written_in_the_line_and_a_hand_deleted_line_moves_no_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        let written: Vec<Written> =
+            (1..=4).map(|i| put(&path, &[], "rule", &at("10:00"), rule(&format!("regra {i}")))).collect();
+        for (i, w) in written.iter().enumerate() {
+            let code = format!("MSTD-RULE-000{}", i + 1);
+            assert_eq!(w.code.as_deref(), Some(code.as_str()));
+            assert!(line_of(&path, w.id).contains(&format!("\"code\":\"{code}\"")), "{}", line_of(&path, w.id));
+        }
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let kept: String = raw.lines().filter(|l| !l.contains("regra 2")).flat_map(|l| [l, "\n"]).collect();
+        std::fs::write(&path, kept).unwrap();
+        let codes = read(&path).unwrap().unwrap().codes();
+        let shown: Vec<&str> = [1, 3, 4].iter().map(|id| codes[id].as_str()).collect();
+        assert_eq!(shown, ["MSTD-RULE-0001", "MSTD-RULE-0003", "MSTD-RULE-0004"]);
+
+        let fifth = put(&path, &[], "rule", &at("10:01"), rule("regra 5"));
+        assert_eq!(fifth.code.as_deref(), Some("MSTD-RULE-0005"), "the number that left never returns");
+
+        let mut revised = rule("regra 3, revista");
+        revised["replaces"] = json!(3);
+        let revised = put(&path, &[], "rule", &at("10:02"), revised);
+        assert_eq!(revised.code.as_deref(), Some("MSTD-RULE-0003"));
+        assert!(line_of(&path, revised.id).contains("\"code\":\"MSTD-RULE-0003\""));
+
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"v\":1,\"id\":50,\"at\":\"2026-09-11T10:03:00-03:00\",\"type\":\"rule\",\"author\":\"assistant\",\"text\":\"à mão\"}\n");
+        std::fs::write(&path, raw).unwrap();
+        assert_eq!(read(&path).unwrap().unwrap().codes()[&50], "MSTD-RULE-0006");
+        let after = put(&path, &[], "rule", &at("10:04"), rule("regra 7"));
+        assert_eq!(after.code.as_deref(), Some("MSTD-RULE-0007"));
+        let codes = read(&path).unwrap().unwrap().codes();
+        assert_eq!(codes[&50], "MSTD-RULE-0006", "the hand line keeps its number");
+        assert_eq!(codes[&4], "MSTD-RULE-0004");
+    }
+
+    /// Um item se aponta pelo código que a página mostra: a remoção tira da
+    /// leitura, a linha guarda o número do evento e o motivo fica no arquivo.
+    #[test]
+    fn an_item_is_removed_by_its_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        let ids: Vec<u64> = (1..=3).map(|i| put(&path, &[], "rule", &at("10:00"), rule(&format!("regra {i}"))).id).collect();
+        let removal = put(&path, &[], "remove", &at("10:01"), json!({"targets": ["MSTD-RULE-0002"], "reason": "repetida"}));
+        assert_eq!(removal.removed, [ids[1]]);
+        assert!(line_of(&path, removal.id).contains(&format!("\"targets\":[{}]", ids[1])));
+        let log = read(&path).unwrap().unwrap();
+        assert_eq!(ids_of(&log.block(BlockQuery::Block(Block::Agreed))), [ids[0], ids[2]]);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("regra 2") && raw.contains("repetida"));
+    }
+
+    /// Quem recebe o arquivo depois da gravação recebe o que acabou de ser
+    /// gravado, com o evento novo; numa recusa, não recebe nada.
+    #[test]
+    fn what_comes_after_a_write_sees_the_line_just_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.ndjson");
+        let mut seen = Vec::new();
+        let written = write_at_then(&path, "rule", obj(rule("regra")), &[], &at("10:00"), |log| {
+            seen = log.events.iter().map(|e| e.id).collect();
+        })
+        .unwrap();
+        assert_eq!(seen, [written.id]);
+        let mut called = false;
+        let refused =
+            write_at_then(&path, "remove", obj(json!({"targets": [9], "reason": "r"})), &[], &at("10:01"), |_| {
+                called = true;
+            });
+        assert!(refused.is_err() && !called);
+        let locked = with_locked_log(&path, |log| log.events.len()).unwrap();
+        assert_eq!(locked, Some(1));
+        assert_eq!(with_locked_log(&dir.path().join("nada.ndjson"), |_| ()).unwrap(), None);
+        assert!(!dir.path().join("nada.ndjson").exists());
     }
 
     #[test]

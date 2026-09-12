@@ -58,7 +58,8 @@ pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
 }
 
 /// A linha como a leitura mostra, com o código do item (`MSTD-RULE-0005`),
-/// que é o jeito de citá-lo e o endereço dele na página.
+/// que é o jeito de citá-lo e o endereço dele na página: o gravado na linha
+/// ou, numa linha sem código, o que a leitura dá a ela.
 fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>) -> String {
     let mut fields = event.fields.clone();
     if let Some(code) = codes.get(&event.id) {

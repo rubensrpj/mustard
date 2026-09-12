@@ -29,6 +29,17 @@ pub fn is_id(token: &str) -> bool {
     find(token) == [(0, token.len())]
 }
 
+/// A sigla e o número de um código inteiro: `parse("MSTD-RULE-0005")` é
+/// `Some(("RULE", 5))`. `None` para o que não é código.
+#[must_use]
+pub fn parse(token: &str) -> Option<(&str, u64)> {
+    if !is_id(token) {
+        return None;
+    }
+    let (kind, digits) = token.strip_prefix(PREFIX)?.strip_prefix('-')?.rsplit_once('-')?;
+    Some((kind, digits.parse().ok()?))
+}
+
 /// Os trechos `(início, fim)`, em bytes, de cada código de `text`, na ordem.
 ///
 /// Um código precisa começar e terminar numa fronteira de palavra: `xMSTD-…`
@@ -95,6 +106,16 @@ mod tests {
         assert_eq!(format("WAVE", 12345), "MSTD-WAVE-12345");
         assert!(is_id("MSTD-RULE-0005"));
         assert!(!is_id("MSTD-RULE-0005 "));
+    }
+
+    #[test]
+    fn a_code_reads_back_as_its_kind_and_number() {
+        assert_eq!(parse("MSTD-RULE-0005"), Some(("RULE", 5)));
+        assert_eq!(parse("MSTD-WAVE-12345"), Some(("WAVE", 12345)));
+        assert_eq!(parse(&format("CRIT", 7)), Some(("CRIT", 7)));
+        for token in ["MSTD-RULE-005", "R8", "MSTD-RULE-0005 ", "", "12"] {
+            assert_eq!(parse(token), None, "{token}");
+        }
     }
 
     #[test]

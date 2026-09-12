@@ -40,7 +40,9 @@ pub enum SpecEventsCmd {
     /// Write ONE event to a spec's event file, the only way it is written.
     /// Refuses an unknown type, an empty required field and, on a `point`, a
     /// fact without a source or citing a file that does not exist. `remove`,
-    /// `purge` and a new version (`replaces`) are events like any other.
+    /// `purge` and a new version (`replaces`) are events like any other; they
+    /// point at an item by its event number or by the code the page shows,
+    /// like `MSTD-RULE-0002`.
     #[command(display_order = 103)]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave` or `remove`.
@@ -51,7 +53,8 @@ pub enum SpecEventsCmd {
         spec: String,
         /// The event's own fields as one JSON object, e.g.
         /// `{"text":"…","keys":["…"],"example":"…","origin":3}`. The binary
-        /// sets `v`, `id`, `at` and `search`.
+        /// sets `v`, `id`, `code`, `at` and `search`; a `code` sent here is
+        /// refused.
         #[arg(long, default_value = "{}")]
         json: String,
         /// Any directory inside the repo. Defaults to the current dir.
