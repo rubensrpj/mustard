@@ -62,6 +62,18 @@ pub enum SpecEventsCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Rebuild the spec index (`.claude/spec/index.ndjson` of the main
+    /// checkout) from every spec's event file, and recompute the `search`
+    /// field of each line, when the index is missing or diverges. Every
+    /// `write` already refreshes its own spec's line; this is the full repair
+    /// the `doctor` names when it flags a divergence. Folders without an event
+    /// file are listed in `skipped`.
+    #[command(display_order = 104)]
+    Index {
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `spec_events`-family `run` subcommand.
@@ -72,6 +84,9 @@ pub fn dispatch(cmd: SpecEventsCmd) {
         }
         SpecEventsCmd::Write { event_type, spec, json, root } => {
             spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json });
+        }
+        SpecEventsCmd::Index { root } => {
+            spec_events::index::run(&spec_events::index::IndexOpts { root });
         }
     }
 }

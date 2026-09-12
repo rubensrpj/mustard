@@ -1224,6 +1224,34 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The event was written, but the spec's line in the index was not rebuilt: {detail}. \
              Run `mustard-rt run index` to rebuild the index."
         }
+        ("spec_index.missing", Locale::PtBr) => {
+            "O índice das specs (.claude/spec/index.ndjson) não existe, e há {count} spec(s) com \
+             arquivo de eventos. Rode `mustard-rt run index` para refazê-lo."
+        }
+        ("spec_index.missing", Locale::EnUs) => {
+            "The spec index (.claude/spec/index.ndjson) does not exist, and {count} spec(s) have an \
+             event file. Run `mustard-rt run index` to rebuild it."
+        }
+        ("spec_index.diverged", Locale::PtBr) => {
+            "O índice das specs difere dos arquivos de eventos em {count} linha(s): {specs}. Rode \
+             `mustard-rt run index` para refazê-lo."
+        }
+        ("spec_index.diverged", Locale::EnUs) => {
+            "The spec index differs from the event files in {count} line(s): {specs}. Run \
+             `mustard-rt run index` to rebuild it."
+        }
+        ("spec_index.stale_search", Locale::PtBr) => {
+            "{count} linha(s) dos arquivos de eventos têm o campo search calculado por outro \
+             redutor. Rode `mustard-rt run index` para recalculá-lo."
+        }
+        ("spec_index.stale_search", Locale::EnUs) => {
+            "{count} line(s) of the event files have a search field computed by another stemmer. \
+             Run `mustard-rt run index` to recompute it."
+        }
+        ("spec_index.no_specs", Locale::PtBr) => {
+            "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
+        }
+        ("spec_index.no_specs", Locale::EnUs) => "No spec has an event file: there is no index to check.",
 
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
         // uma linha curta que o assistente recebe no bloqueio do fim da
@@ -2132,7 +2160,13 @@ mod tests {
     /// preenche.
     #[test]
     fn i18n_translates_spec_index_and_lesson_keys() {
-        for (key, slots) in [("spec_index.write_warning", &["{detail}"][..])] {
+        for (key, slots) in [
+            ("spec_index.write_warning", &["{detail}"][..]),
+            ("spec_index.missing", &["{count}"][..]),
+            ("spec_index.diverged", &["{count}", "{specs}"][..]),
+            ("spec_index.stale_search", &["{count}"][..]),
+            ("spec_index.no_specs", &[][..]),
+        ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
             assert_ne!(en, "<missing-key>", "{key} missing in en-US");

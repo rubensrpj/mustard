@@ -84,6 +84,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          caller",
     ),
     (
+        "index",
+        "rebuilds the spec index and the search field from the event files \
+         (commands/spec_events/index.rs); the doctor's divergence warning and \
+         the write's index warning name it, and the flow prose that will call \
+         it is rewritten together with the rest of the flow",
+    ),
+    (
         "maint-deps",
         "user-invoked per-subproject dependency install \
          (commands/maint/maint_deps.rs); its only prose caller was the `/maint \

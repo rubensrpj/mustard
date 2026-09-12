@@ -144,3 +144,48 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     assert_eq!(block.status.code(), Some(1));
     assert_eq!(stdout_json(&block)["reason"], json!("unknown-block"));
 }
+
+fn index_file(root: &Path) -> std::path::PathBuf {
+    root.join(".claude").join("spec").join("index.ndjson")
+}
+
+/// Cada gravação deixa a linha da spec no índice; apagado o índice, o
+/// `index` pelo binário devolve o arquivo com os mesmos bytes.
+#[test]
+fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "state", &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
+    let msg = write(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
+    write(root, "context", &json!({"text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
+    write(root, "rule", &json!({"text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));
+    let written = std::fs::read(index_file(root)).expect("the write left the index");
+    let text = String::from_utf8_lossy(&written);
+    assert!(text.contains("\"name\":\"teste\"") && text.contains("\"goal\":\"Deixar o índice certo.\""), "{text}");
+
+    std::fs::remove_file(index_file(root)).expect("delete the index");
+    let out = rt(root, &["index"]).output().expect("run index");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let report = stdout_json(&out);
+    assert_eq!(report["index"], json!(".claude/spec/index.ndjson"), "{report}");
+    assert_eq!(report["specs"], json!(1), "{report}");
+    assert_eq!(std::fs::read(index_file(root)).expect("the index is back"), written);
+}
+
+/// Com o índice no lugar de uma pasta, o `index` recusa com exit 1, e o
+/// `write` grava o evento mesmo assim, com o aviso.
+#[test]
+fn an_index_that_cannot_be_written_is_refused_with_exit_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(index_file(root)).expect("an index that is a folder");
+    let fields = json!({"author": "user", "text": "fica gravado"}).to_string();
+    let written = rt(root, &["write", "message", "--spec", "teste", "--json", &fields]).output().expect("run write");
+    assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stdout));
+    let warnings = stdout_json(&written)["warnings"].to_string();
+    assert!(warnings.contains("mustard-rt run index"), "{warnings}");
+
+    let out = rt(root, &["index"]).output().expect("run index");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_json(&out)["reason"], json!("io-failed"));
+}

@@ -33,12 +33,18 @@
 //!   (`origin/HEAD` ∪ `mustard.json#git.protected`). WARN only when
 //!   `origin/HEAD` is unreadable, because protection then rests on literals
 //!   this project may not use at all.
+//! - **spec-index** — o índice das specs (`.claude/spec/index.ndjson`) contra
+//!   os arquivos de eventos: índice que falta, linha que falta, sobra ou
+//!   difere, e campo `search` calculado por outro redutor. Só lê e acusa, com
+//!   WARN e a mensagem no idioma do projeto, que manda rodar
+//!   `mustard-rt run index`.
 
 use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
 use crate::shared::events::economy;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
+use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -1088,6 +1094,54 @@ fn render_report_json(results: &[CheckResult]) {
 }
 
 // ---------------------------------------------------------------------------
+// Check: spec-index
+// ---------------------------------------------------------------------------
+
+/// O índice das specs do projeto `root` contra os arquivos de eventos. Só lê:
+/// sem spec, não há o que conferir; índice que falta, linha que diverge e
+/// `search` calculado por outro redutor viram WARN, cada um com a mensagem no
+/// idioma `lang`, que manda rodar `mustard-rt run index`. Um erro de leitura
+/// também é WARN: a conferência nunca derruba o `doctor`.
+fn check_spec_index(root: &Path, lang: Locale) -> CheckResult {
+    const NAME: &str = "spec-index";
+    let divergence = match mustard_core::io::spec_index::divergence(root) {
+        Ok(divergence) => divergence,
+        Err(refusal) => return CheckResult::warn(NAME, vec![refusal.message(lang)]),
+    };
+    if divergence.specs == 0 && divergence.stale_search == 0 {
+        return CheckResult::skip(NAME, translate("spec_index.no_specs", lang));
+    }
+    let mut details = Vec::new();
+    if divergence.specs > 0 && !divergence.index_exists {
+        details.push(translate("spec_index.missing", lang).replace("{count}", &divergence.specs.to_string()));
+    }
+    if !divergence.diverged.is_empty() {
+        details.push(
+            translate("spec_index.diverged", lang)
+                .replace("{count}", &divergence.diverged.len().to_string())
+                .replace("{specs}", &divergence.diverged.join(", ")),
+        );
+    }
+    if divergence.stale_search > 0 {
+        details.push(
+            translate("spec_index.stale_search", lang).replace("{count}", &divergence.stale_search.to_string()),
+        );
+    }
+    if details.is_empty() {
+        CheckResult::ok(NAME)
+    } else {
+        CheckResult::warn(NAME, details)
+    }
+}
+
+/// A raiz das specs e o idioma das mensagens, vistos de `cwd`.
+fn spec_root_and_lang(cwd: &Path) -> (PathBuf, Locale) {
+    let root = mustard_core::io::spec_events::spec_root(cwd);
+    let lang = mustard_core::ProjectConfig::load(&root).language().text_or_default();
+    (root, lang)
+}
+
+// ---------------------------------------------------------------------------
 // Check: status-consistency
 // ---------------------------------------------------------------------------
 
@@ -1397,10 +1451,14 @@ pub fn run(opts: DoctorOpts) {
             "wave-integrity" => check_wave_integrity(&claude_dir),
             "status-consistency" => check_status_consistency(&claude_dir),
             "branch-protection" => check_branch_protection(&cwd),
+            "spec-index" => {
+                let (root, lang) = spec_root_and_lang(&cwd);
+                check_spec_index(&root, lang)
+            }
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, inject-delivery, branch-protection"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, inject-delivery, branch-protection, spec-index"
                 );
                 std::process::exit(1);
             }
@@ -1434,6 +1492,11 @@ pub fn run(opts: DoctorOpts) {
         // protection resting on the unmeasured fallback is invisible until it
         // fails to stop a commit.
         check_branch_protection(&cwd),
+        // O índice das specs contra os arquivos de eventos: só acusa.
+        {
+            let (root, lang) = spec_root_and_lang(&cwd);
+            check_spec_index(&root, lang)
+        },
     ];
 
     if opts.residue {
@@ -1883,6 +1946,55 @@ mod tests {
             r#"{{ "hooks": {{ "PreToolUse": [{{ "hooks": [{{ "type": "command", "command": "{command}" }}] }}] }} }}"#
         );
         write_file(&hooks_dir.join("settings.json"), &settings);
+    }
+
+    // --- spec-index tests ---
+
+    fn spec_event(root: &Path, spec: &str, text: &str) {
+        let path = root.join(".claude").join("spec").join(spec).join("spec.ndjson");
+        let serde_json::Value::Object(draft) = json!({"author": "user", "text": text}) else { unreachable!() };
+        mustard_core::io::spec_events::write_at(&path, "message", draft, &[], "2026-09-11T10:00:00-03:00").unwrap();
+    }
+
+    fn spec_index_file(root: &Path) -> PathBuf {
+        root.join(".claude").join("spec").join("index.ndjson")
+    }
+
+    /// Uma linha do índice mexida à mão faz o doctor acusar a spec pelo nome,
+    /// com o comando que conserta; depois do `index`, a conferência passa.
+    #[test]
+    fn the_doctor_flags_a_divergent_index_line() {
+        let dir = tempdir().unwrap();
+        spec_event(dir.path(), "trava", "um");
+        spec_event(dir.path(), "busca", "dois");
+        let index = spec_index_file(dir.path());
+        let raw = std::fs::read_to_string(&index).unwrap();
+        std::fs::write(&index, raw.replace("\"name\":\"trava\"", "\"name\":\"trava\",\"phase\":\"closed\"")).unwrap();
+
+        let result = check_spec_index(dir.path(), Locale::PtBr);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let detail = result.details.join(" ");
+        assert!(detail.contains("difere") && detail.contains("trava"), "{detail}");
+        assert!(!detail.contains("busca"), "only the divergent spec is named: {detail}");
+        assert!(detail.contains("mustard-rt run index"), "{detail}");
+
+        mustard_core::io::spec_index::rebuild(dir.path()).unwrap();
+        assert_eq!(check_spec_index(dir.path(), Locale::PtBr).status, Status::Ok);
+    }
+
+    #[test]
+    fn the_doctor_flags_a_missing_index_and_is_quiet_when_it_matches() {
+        let dir = tempdir().unwrap();
+        assert_eq!(check_spec_index(dir.path(), Locale::EnUs).status, Status::Skip, "no spec, nothing to check");
+        spec_event(dir.path(), "trava", "um");
+        let quiet = check_spec_index(dir.path(), Locale::EnUs);
+        assert_eq!(quiet.status, Status::Ok, "{:?}", quiet.details);
+
+        std::fs::remove_file(spec_index_file(dir.path())).unwrap();
+        let missing = check_spec_index(dir.path(), Locale::EnUs);
+        assert_eq!(missing.status, Status::Warn);
+        assert!(missing.details[0].contains("does not exist"), "{:?}", missing.details);
+        assert!(missing.details[0].contains("mustard-rt run index"), "{:?}", missing.details);
     }
 
     // --- wiring tests ---

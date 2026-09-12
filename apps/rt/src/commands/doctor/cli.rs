@@ -37,9 +37,12 @@ pub enum DoctorCmd {
         /// maintainer can archive), `capability-drift`, `guards-scaffold`,
         /// `inject-delivery` (does the declared router actually REACH the
         /// window — plugin switched off, a declared file absent, the router
-        /// declared by halves), or
+        /// declared by halves),
         /// `branch-protection` (which branches this repository REALLY refuses a
-        /// direct write on — the measured set, not what `git.flow` declares).
+        /// direct write on — the measured set, not what `git.flow` declares),
+        /// or `spec-index` (the spec index against every spec's event file: a
+        /// missing index, a line that diverges or a stale `search` field, each
+        /// naming `mustard-rt run index`, which rebuilds it).
         /// An unknown name exits 1 after printing the list above.
         #[arg(long)]
         check: Option<String>,

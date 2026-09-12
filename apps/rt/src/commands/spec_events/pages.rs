@@ -73,6 +73,8 @@ fn write_pages(
     Ok(SpecPages { md: relative(root, &files.md), html: relative(root, &files.html) })
 }
 
-fn relative(root: &Path, path: &Path) -> String {
+/// O caminho relativo ao projeto, com barras normais: a saída não traz o
+/// caminho da máquina.
+pub(crate) fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
