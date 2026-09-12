@@ -467,7 +467,9 @@ pub const TYPES: &[TypeSpec] = &[
         &[
             req("wave", Kind::Int),
             TEXT,
-            req("files", Kind::Objects),
+            // Nem toda tarefa muda um arquivo que já se sabe qual é: a
+            // tarefa sem arquivo fica sem o campo.
+            opt("files", Kind::Objects),
             opt("skill", Kind::Text),
             opt("covers", Kind::Ints),
             opt("must_read", Kind::List),
@@ -1828,6 +1830,17 @@ mod tests {
             Refusal::MissingField { event_type: "note".into(), field: "origin".into() }
         );
         assert!(checked("message", json!({"text": "oi", "author": "user"})).is_ok());
+    }
+
+    /// Uma tarefa que não cita arquivo entra sem o campo; quando o campo vem,
+    /// cada arquivo continua precisando do caminho.
+    #[test]
+    fn a_task_without_files_is_accepted_and_a_file_without_path_is_not() {
+        assert!(checked("task", json!({"wave": 1, "text": "Medir de novo.", "origin": 1})).is_ok());
+        assert_eq!(
+            checked("task", json!({"wave": 1, "text": "t", "files": [{"new": true}], "origin": 1})).unwrap_err(),
+            Refusal::MissingField { event_type: "task".into(), field: "files[1].path".into() }
+        );
     }
 
     #[test]

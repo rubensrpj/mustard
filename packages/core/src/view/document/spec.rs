@@ -664,6 +664,23 @@ mod tests {
         assert!(criterion.fields.iter().any(|f| f.value == "passou (MSTD-CRUN-0001)"), "{criterion:?}");
     }
 
+    /// Uma tarefa sem arquivo sai sem a linha dos arquivos; a que cita
+    /// arquivo continua mostrando a linha.
+    #[test]
+    fn a_task_without_files_shows_no_files_line() {
+        let content = [
+            line(1, "wave", ",\"n\":1,\"text\":\"Objetivo.\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"),
+            line(2, "task", ",\"wave\":1,\"text\":\"Medir de novo.\",\"origin\":1"),
+            line(3, "task", ",\"wave\":1,\"text\":\"Mudar o leitor.\",\"files\":[{\"path\":\"a.rs\"}],\"origin\":1"),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let all = sections(&doc);
+        let tasks: Vec<&Item> = items(all[5]).into_iter().filter(|i| i.code.starts_with("MSTD-TASK-")).collect();
+        let files = |item: &Item| item.fields.iter().any(|f| f.label == "Arquivos");
+        assert_eq!((files(tasks[0]), files(tasks[1])), (false, true), "{tasks:?}");
+    }
+
     /// Uma prova que já traz o comando entre crases no meio da frase sai
     /// como foi escrita, sem crase a mais em volta; uma prova sem crase
     /// nenhuma sai inteira como código.
