@@ -1293,13 +1293,18 @@ impl SpecEvent {
         }
     }
 
-    /// `true` quando o `search` do evento tem todas as raízes do termo.
+    /// `true` quando o evento tem todas as raízes do termo, somando as do
+    /// `search` e as do código do item (`code`, o que a leitura dá a ele): o
+    /// `search` não guarda o código, e sem ele um item não seria achado pelo
+    /// próprio código que a página mostra. `None` olha só o `search`.
     #[must_use]
-    pub fn matches(&self, terms: &[String]) -> bool {
+    pub fn matches(&self, terms: &[String], code: Option<&str>) -> bool {
         if terms.is_empty() {
             return true;
         }
-        let words: BTreeSet<&str> = self.str_field("search").unwrap_or_default().split(' ').collect();
+        let code_roots = code.map(|c| roots([c])).unwrap_or_default();
+        let mut words: BTreeSet<&str> = self.str_field("search").unwrap_or_default().split(' ').collect();
+        words.extend(code_roots.iter().map(String::as_str));
         terms.iter().all(|t| words.contains(t.as_str()))
     }
 
@@ -1605,10 +1610,11 @@ impl SpecLog {
             }
             Step::Question { term } => {
                 let terms = search_terms(term);
+                let codes = self.codes();
                 pick(&mut picked,self
                     .block(BlockQuery::Block(Block::Conversation))
                     .into_iter()
-                    .filter(|e| e.matches(&terms))
+                    .filter(|e| e.matches(&terms, codes.get(&e.id).map(String::as_str)))
                     .collect());
             }
             Step::Review { wave } => {

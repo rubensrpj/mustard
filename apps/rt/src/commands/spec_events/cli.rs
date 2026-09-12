@@ -29,8 +29,9 @@ pub enum SpecEventsCmd {
         /// The spec whose file is read.
         #[arg(long)]
         spec: String,
-        /// Keep only the events whose words match this term — the
-        /// conversation searched for a subject.
+        /// Keep only the events whose words or item code match this term —
+        /// the conversation searched for a subject, or an item found by the
+        /// code the page shows, like `MSTD-CRIT-0016`.
         #[arg(long)]
         term: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.

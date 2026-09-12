@@ -50,7 +50,7 @@ pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
     let events: Vec<String> = log
         .block(query)
         .into_iter()
-        .filter(|e| e.matches(&terms))
+        .filter(|e| e.matches(&terms, codes.get(&e.id).map(String::as_str)))
         .map(|e| shown_with_code(e, &codes))
         .collect();
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
@@ -165,6 +165,18 @@ mod tests {
         let got = events(&read_at(&opts(root, "conversation", Some("apagar"))).unwrap());
         assert_eq!(got.len(), 1);
         assert_eq!(got[0]["text"], json!("apagando a pasta"));
+    }
+
+    #[test]
+    fn a_term_that_is_an_item_code_finds_that_item() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "keys": ["C-1"], "origin": 1}));
+        put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "keys": ["C-2"], "origin": 1}));
+        let got = events(&read_at(&opts(root, "criteria", Some("MSTD-CRIT-0002"))).unwrap());
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0]["code"], json!("MSTD-CRIT-0002"));
+        assert_eq!(got[0]["when"], json!("c"));
     }
 
     #[test]

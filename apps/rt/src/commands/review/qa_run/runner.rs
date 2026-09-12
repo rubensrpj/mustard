@@ -628,8 +628,8 @@ fn run_ac_command_inner(
     // Measured four times in one session: a second `cargo` compiling in
     // parallel makes the first lose the build lock, the shell answers 127, and
     // all fourteen criteria fail at once — every one of them passing again less
-    // than a minute later. The Stop gate then names a healthy criterion and
-    // asks for a fix to something that is not broken.
+    // than a minute later. The spec's close then names a healthy criterion
+    // and asks for a fix to something that is not broken.
     //
     // The verdict stays `fail` if the retry also fails. Grading 127 `skip` is
     // the tempting fix and it is the wrong one: it shipped once and let a spec

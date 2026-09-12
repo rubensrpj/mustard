@@ -408,7 +408,7 @@ mod tests {
         assert!(rule_line.contains(r#""search":"#), "{rule_line}");
         let log = spec.log();
         let rule = log.get(spec.ids["rule"]).unwrap();
-        assert!(rule.matches(&model::search_terms("apagando")), "the stem of the key matches");
+        assert!(rule.matches(&model::search_terms("apagando"), None), "the stem of the key matches");
         assert!(!rule.shown().contains("search"));
     }
 

@@ -684,6 +684,12 @@ const SUPERSEDED: &[(&str, &str)] = &[
         "packages/core/src/platform/i18n.rs",
         "Peça ao assistente para publicar a página no claude.ai",
     ),
+    // O gancho do fim da resposta que mandava republicar a página e listava
+    // os `scp` saiu: a prosa que contava com ele ensinava um passo que ninguém
+    // mais dá.
+    ("plugin/commands/spec.md", "the end-of-turn hook speaks only when the page changes"),
+    ("plugin/commands/spec.md", "the hook blocks that ending with the order to publish"),
+    ("plugin/commands/spec.md", "the `scp` commands the end-of-turn message lists"),
 ];
 
 /// AC-12 — em sessão remota, o roteiro do `/mustard:spec` sabe que o `file://`
@@ -706,7 +712,19 @@ fn spec_door_teaches_remote_publishing() {
         .split("\n\n")
         .find(|p| p.contains("SSH_CONNECTION"))
         .unwrap_or_else(|| panic!("no paragraph of spec.md names the remote (SSH) session"));
-    for needle in ["SSH_CLIENT", "claude.ai", "resumo.html", "BEFORE", "AskUserQuestion", "scp", "last resort"] {
+    // Os comandos `scp` estão na própria prosa: nenhuma mensagem os lista.
+    for needle in [
+        "SSH_CLIENT",
+        "claude.ai",
+        "resumo.html",
+        "BEFORE",
+        "AskUserQuestion",
+        "scp",
+        "last resort",
+        "`$USER`",
+        "third field of `SSH_CONNECTION`",
+        "xdg-open",
+    ] {
         assert!(paragraph.contains(needle), "the remote-session rule misses {needle}:\n{paragraph}");
     }
 
@@ -725,16 +743,18 @@ fn spec_door_teaches_remote_publishing() {
     );
 }
 
-/// AC-4 — em TODA retomada, em qualquer etapa, o roteiro do `/mustard:spec`
-/// entrega o link publicado (`publishedUrl`) numa linha própria e, sem endereço
-/// gravado, publica a página e grava o endereço com `--published-url`.
-/// Publicar vale sempre, não só em SSH: os `scp` ficam como último recurso.
+/// Em TODA retomada, em qualquer etapa, o roteiro do `/mustard:spec` entrega o
+/// link publicado (`publishedUrl`) numa linha própria e, sem endereço gravado,
+/// publica a página e grava o endereço com `--published-url`. Publicar vale
+/// sempre, não só em SSH: os `scp` ficam como último recurso.
 ///
-/// O gancho de fim de resposta só fala quando a página muda (E-2), então quem
-/// retomava uma unidade de página parada nunca via o link de novo. As duas
-/// metades são lidas: a prosa do §3, entre a chamada do `resume-bootstrap` e a
-/// regra que vale só para o plano, e o motor que a sustenta — o campo que a
-/// retomada devolve e a flag que o `spec-doc` declara, com os nomes da prosa.
+/// Nenhum gancho entrega o link nem manda republicar, então quem retomava uma
+/// unidade de página parada nunca via o link de novo; e a página que muda só é
+/// republicada porque a prosa manda o próprio assistente fazer isso, no mesmo
+/// endereço. As duas metades são lidas: a prosa do §3, entre a chamada do
+/// `resume-bootstrap` e a regra que vale só para o plano, e o motor que a
+/// sustenta — o campo que a retomada devolve e a flag que o `spec-doc`
+/// declara, com os nomes da prosa.
 #[test]
 fn spec_door_hands_the_published_link_on_every_resume() {
     let picker = read("plugin/commands/spec.md").replace("\r\n", "\n");
@@ -751,6 +771,8 @@ fn spec_door_hands_the_published_link_on_every_resume() {
         "rtk mustard-rt run spec-doc --spec {specName} --published-url",
         "never an option offered to the user",
         "over SSH alike",
+        "republish it yourself",
+        "`changed`",
     ] {
         assert!(paragraph.contains(needle), "the resume rule misses {needle}:\n{paragraph}");
     }
