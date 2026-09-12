@@ -22,7 +22,7 @@ use crate::commands::{economy};
 pub enum EconomyCmd {
     /// Cut the relevant term blocks from one or more `CONTEXT.md` glossaries.
     ///
-    /// W8.T8.8 also accepts `--context-claude-md <path>`: a CLAUDE.md file
+    /// Also accepts `--context-claude-md <path>`: a CLAUDE.md file
     /// whose `## Heading` / `### Heading` sections are kept when their body
     /// contains any spec-derived relevance term. The CLAUDE.md slice is
     /// emitted after the CONTEXT.md slice (separated by a blank line).
@@ -34,7 +34,7 @@ pub enum EconomyCmd {
         /// The spec file to match relevance against.
         #[arg(long)]
         spec: Option<String>,
-        /// W8.T8.8 — slice the given CLAUDE.md against the same relevance
+        /// Slice the given CLAUDE.md against the same relevance
         /// terms. Optional; the CONTEXT.md path(s) remain primary.
         #[arg(long = "context-claude-md")]
         context_claude_md: Option<String>,
@@ -54,7 +54,7 @@ pub enum EconomyCmd {
     /// Per-wave status + telemetry roll-up for a parent (epic) spec.
     ///
     /// Promoted to a top-level `RunCmd` variant so clap renders `--spec` in
-    /// `--help` natively (wave-network spec AC-6). Aliased to `metrics-wave-status`;
+    /// `--help` natively. Aliased to `metrics-wave-status`;
     /// invoked from CLI as `mustard-rt run metrics wave-status --spec <parent>`
     /// via argv pre-routing in `main.rs`.
     #[command(name = "metrics-wave-status")]

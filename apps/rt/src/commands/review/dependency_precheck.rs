@@ -1340,7 +1340,7 @@ mod tests {
         );
     }
 
-    /// **AC-5.** A gate that DECLINED to judge and a gate that judged and found
+    /// A gate that DECLINED to judge and a gate that judged and found
     /// nothing wrong both ship `ok: true`; the only thing separating them was a
     /// key the reader had to know to look for. The report now says which one it
     /// is, in a field whose name is the question.

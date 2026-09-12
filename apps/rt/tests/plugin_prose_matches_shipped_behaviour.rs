@@ -81,7 +81,7 @@ fn offered_options<'a>(row: &'a str, label: &str) -> Vec<&'a str> {
     rest.split("   ").map(str::trim).filter(|s| !s.is_empty()).collect()
 }
 
-/// AC-10 — the CLOSE prose teaches the confirmation pass the pipeline takes.
+/// The CLOSE prose teaches the confirmation pass the pipeline takes.
 ///
 /// The red proof ("this criterion knows how to fail") shipped with prose; the
 /// green half shipped as a flag nobody was told existed and nothing called.
@@ -133,7 +133,7 @@ fn close_prose_teaches_the_confirmation_pass() {
     );
 }
 
-/// AC-11 — the picker prose carries the `Onde` legend the table now prints.
+/// The picker prose carries the `Onde` legend the table now prints.
 ///
 /// `commands/spec.md` §2 orders the Siglas block printed "literally", so that
 /// block IS the legend the operator reads. It listed every column but the one
@@ -161,7 +161,7 @@ fn picker_prose_teaches_the_onde_column() {
     );
 }
 
-/// AC-12 — the resume prose names `neverDispatched` beside `currentWave`.
+/// The resume prose names `neverDispatched` beside `currentWave`.
 ///
 /// `currentWave` names a wave; it never claimed one started. The scaffold
 /// materialises every wave directory before any agent runs, so "wave 1 of 5"
@@ -196,7 +196,7 @@ fn resume_prose_teaches_never_dispatched() {
     );
 }
 
-/// AC-5 — the dispatch prose teaches the precheck SKIP marker beside the `ok`
+/// The dispatch prose teaches the precheck SKIP marker beside the `ok`
 /// reading.
 ///
 /// On an unsupported stack the dependency gate DECLINES to judge: it answers
@@ -236,7 +236,7 @@ fn dispatch_prose_teaches_the_precheck_skip() {
     );
 }
 
-/// AC-3 — the resume prose reads `insideWorkBranch`, and the engine emits it.
+/// The resume prose reads `insideWorkBranch`, and the engine emits it.
 ///
 /// The work unit is the branch plus everything the work produced, so a caller
 /// standing on the unit's own branch is inside the work already. The picker still
@@ -304,7 +304,7 @@ fn resume_inside_own_branch_prose_and_engine_agree() {
     );
 }
 
-/// AC-6 — the orchestrator's Verdict rule names a MEASUREMENT an agent claims
+/// The orchestrator's Verdict rule names a MEASUREMENT an agent claims
 /// as the second thing never relayed on a briefing alone.
 ///
 /// The rule used to cover one claim only: a runtime symptom the user reported.
@@ -384,7 +384,7 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     );
 }
 
-/// AC-8 — the plan schema names the reserved role names that resolve to
+/// The plan schema names the reserved role names that resolve to
 /// read-only agents.
 ///
 /// `role` reads like a free label in the schema example, and it is not: five
@@ -501,7 +501,7 @@ fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
 /// The isolation prose teaches the branch the harness actually cuts.
 ///
 /// This one is here because its absence had a cost, and the cost was paid every
-/// turn. Wave 2 removed the `.claude/spec/` carve-out from `work_branch_gate`
+/// turn. A later change removed the `.claude/spec/` carve-out from `work_branch_gate`
 /// and `spec-draft` began cutting the unit's branch in the MAIN checkout at
 /// approval — the branch became the isolation. The orchestrator's own paragraph
 /// kept teaching the opposite ("writes IN-PLACE … on the base branch with NO
@@ -1105,7 +1105,7 @@ fn router_offers_the_name_for_correction() {
     );
 }
 
-/// AC-9 — the worktree prose teaches the REFUSAL and the reaper, and teaches no
+/// The worktree prose teaches the REFUSAL and the reaper, and teaches no
 /// environment declaration.
 ///
 /// The environment-carrying design was withdrawn after review: `link` planted a
@@ -1275,7 +1275,7 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
     );
 }
 
-/// AC-8 — the bugfix prose carries the diagnosis INTO the spec through the
+/// The bugfix prose carries the diagnosis INTO the spec through the
 /// material channel, instead of leaving it to be retyped.
 ///
 /// `spec-draft --material` shipped for `/feature` and `/bugfix` never used it,
@@ -1430,7 +1430,7 @@ fn bugfix_prose_teaches_the_material_channel() {
     );
 }
 
-/// AC-9 — the hygiene question fires on a collision, not on every run.
+/// The hygiene question fires on a collision, not on every run.
 ///
 /// Step 3 asked whether to continue an in-progress spec unconditionally,
 /// including in the case that is by far the most common: the user just asked for
@@ -1713,7 +1713,7 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
     // --- 2. What replaced it is the measurement, RUN not read ----------------
     //
     // This half used to grep `doctor.rs` for the function name and the call it
-    // makes — the practice AC-3 forbids by name, and for the reason five review
+    // makes — the practice its own acceptance criterion forbids by name, and for the reason five review
     // rounds kept demonstrating: a source-substring assertion certifies that a
     // line is present, never that the behaviour holds. So the check is executed
     // against a real project in the installed shape (no `git.flow` written) and
@@ -1975,7 +1975,7 @@ fn the_router_prose_names_the_signal_the_gate_emits() {
     );
 }
 
-/// AC-13 — the shipped router teaches the delivery model this unit MEASURED,
+/// The shipped router teaches the delivery model this unit MEASURED,
 /// and the delivered copy matches the seed.
 ///
 /// Two claims used to be wrong in the prose, and both were load-bearing. The
@@ -2663,8 +2663,8 @@ fn ask_a_real_cmd(tmp: &Path) {
     }
 
     // The copy has no mustard-rt.exe beside it, so a script that parsed all the
-    // way to `:run` says the binary is missing and exits 1 — the loud failure
-    // (C-44). A parse abort exits 255 and never reaches that line, so the
+    // way to `:run` says the binary is missing and exits 1 — the loud failure.
+    // A parse abort exits 255 and never reaches that line, so the
     // message is the proof the whole file was read.
     let out = ask_cmd(&script);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -2676,7 +2676,7 @@ fn ask_a_real_cmd(tmp: &Path) {
     );
 }
 
-/// C-44 — with the binary missing, the launcher fails LOUDLY: exit 1 (a
+/// With the binary missing, the launcher fails LOUDLY: exit 1 (a
 /// non-blocking hook error the harness shows; never 2, which would block the
 /// tool call) and one clear line on stderr, in the project's language, naming
 /// the command that downloads the binary. It used to exit 0 in silence.
@@ -2759,7 +2759,7 @@ fn both_boot_twins_name_the_missing_binary_the_same_way() {
 /// hand-off still has to fit under it. Both files say in prose "keep this in
 /// step with the twin", and prose is not a lock: a bump applied to one body only
 /// is invisible, and shows up as `Hook cancelled` on exactly one operating
-/// system. AC-1 asserts each twin has SOME deadline; this asserts they are the
+/// system. Another test asserts each twin has SOME deadline; this asserts they are the
 /// same one, and that it fits.
 #[test]
 fn both_boot_twins_carry_the_same_download_deadline() {

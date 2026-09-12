@@ -16,7 +16,7 @@
 //! All I/O is fail-soft. The stdout JSON line stays shape-compatible with the
 //! `/close` command that parses it (the `{ ok, mode, spec, ... }` line).
 //!
-//! W4C migration: every SQLite reader/writer was removed. Events are written
+//! SQLite removal: every SQLite reader/writer was removed. Events are written
 //! via [`crate::shared::events::writer_ndjson::write_event_with_ts`] and read via
 //! [`mustard_core::view::projection::read_harness_events_from_ndjson_dir`].
 

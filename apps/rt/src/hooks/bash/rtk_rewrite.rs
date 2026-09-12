@@ -83,7 +83,7 @@ fn filter_rtk_noise(s: &str) -> String {
 ///
 /// The binary name defaults to `"rtk"` but can be overridden via the
 /// `MUSTARD_RTK_BIN` environment variable — required for the fail-open unit
-/// test (AC-7) so tests never depend on a real `rtk` in `PATH`.
+/// test for a missing binary so tests never depend on a real `rtk` in `PATH`.
 #[must_use]
 fn run_rtk_rewrite_subprocess(cmd: &str) -> Option<String> {
     let binary = std::env::var("MUSTARD_RTK_BIN").unwrap_or_else(|_| "rtk".into());
@@ -461,8 +461,8 @@ thread_local! {
 //
 // Strategy: [`rtk_rewrite_with`] accepts a closure that stands in for the real
 // `rtk rewrite` subprocess. Each test injects a purpose-built closure so the
-// eight AC scenarios can be verified without requiring `rtk` on PATH and without
-// touching process environment. The subprocess fail-open test (AC-7) calls
+// eight scenarios can be verified without requiring `rtk` on PATH and without
+// touching process environment. The subprocess fail-open test (missing binary) calls
 // `run_rtk_rewrite_subprocess_with_bin` directly with a fake binary name,
 // avoiding `std::env::set_var` which is `unsafe` in edition 2024.
 
@@ -510,7 +510,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-1: Already rtk-prefixed → short-circuit, rewriter never called.
+    // Already rtk-prefixed → short-circuit, rewriter never called.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -528,7 +528,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-2: Rewriter returns a changed string → Verdict::Rewrite with the
+    // Rewriter returns a changed string → Verdict::Rewrite with the
     //       rewritten command in tool_input["command"], coverage = "specific".
     // -----------------------------------------------------------------------
 
@@ -549,7 +549,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-3: Rewriter returns None for a non-builtin command → blanket prefix
+    // Rewriter returns None for a non-builtin command → blanket prefix
     //       kicks in and returns Verdict::Rewrite, coverage = "blanket".
     //       Builtins (e.g. `cd`) still return None — see
     //       rtk_rewrite_skips_shell_builtin_cd below.
@@ -572,7 +572,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-4: Rewriter returns the same string → specific path skipped;
+    // Rewriter returns the same string → specific path skipped;
     //       blanket path fires for non-builtins, returning Rewrite.
     // -----------------------------------------------------------------------
 
@@ -593,7 +593,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-5: Rewriter returns empty string → specific path skipped;
+    // Rewriter returns empty string → specific path skipped;
     //       blanket path fires for non-builtins.
     // -----------------------------------------------------------------------
 
@@ -610,7 +610,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-6: Rewriter returns whitespace-only → specific path skipped;
+    // Rewriter returns whitespace-only → specific path skipped;
     //       blanket path fires for non-builtins.
     // -----------------------------------------------------------------------
 
@@ -627,7 +627,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-7 (closure path): Trailing newline is stripped from the rewritten
+    // Closure path: trailing newline is stripped from the rewritten
     //       command before it is placed in tool_input["command"].
     // -----------------------------------------------------------------------
 
@@ -648,7 +648,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC-7 (subprocess path): When the binary name is a nonexistent executable,
+    // Subprocess path: when the binary name is a nonexistent executable,
     //       run_rtk_rewrite_subprocess_with_bin must return None (fail-open).
     //
     // Uses the with_bin helper directly so no process environment mutation is
@@ -668,10 +668,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Blanket-prefix Golden Rule tests (new AC set)
+    // Blanket-prefix Golden Rule tests
     // -----------------------------------------------------------------------
 
-    // BL-1: Unknown command with no specific RTK filter → blanket prefix.
+    // Unknown command with no specific RTK filter → blanket prefix.
     #[test]
     fn rtk_rewrite_blanket_prefixes_unknown_command() {
         let result = rtk_rewrite_with("cargo run -p foo", |_| None, Mode::Warn);
@@ -684,7 +684,7 @@ mod tests {
         }
     }
 
-    // BL-2: `node` command with no specific RTK filter → blanket prefix.
+    // `node` command with no specific RTK filter → blanket prefix.
     #[test]
     fn rtk_rewrite_blanket_prefixes_node_command() {
         let result = rtk_rewrite_with(r#"node -e "42""#, |_| None, Mode::Warn);
@@ -697,7 +697,7 @@ mod tests {
         }
     }
 
-    // BL-3: Env-prefixed command — `rtk` is inserted AFTER env assignments so
+    // Env-prefixed command — `rtk` is inserted AFTER env assignments so
     //       the shell sets the variable before invoking RTK.
     //       `RUST_LOG=debug rtk cargo run` is the correct form;
     //       `rtk RUST_LOG=debug cargo run` would fail (RTK tries to exec
@@ -718,7 +718,7 @@ mod tests {
         }
     }
 
-    // BL-4: Shell builtin `cd` → blanket must be suppressed (RTK cannot exec
+    // Shell builtin `cd` → blanket must be suppressed (RTK cannot exec
     //       a shell builtin; it would exit 127 with "Binary 'cd' not found").
     #[test]
     fn rtk_rewrite_skips_shell_builtin_cd() {
@@ -729,7 +729,7 @@ mod tests {
         );
     }
 
-    // BL-5: Env prefix before a builtin — env assignments do not change the
+    // Env prefix before a builtin — env assignments do not change the
     //       fact that the executable token is a builtin.
     #[test]
     fn rtk_rewrite_skips_shell_builtin_with_env() {
@@ -740,7 +740,7 @@ mod tests {
         );
     }
 
-    // BL-6: Subshell expression `(cmd)` — blanket-prefix is ambiguous here;
+    // Subshell expression `(cmd)` — blanket-prefix is ambiguous here;
     //       `rtk (cargo build; cargo test)` is not valid shell.
     #[test]
     fn rtk_rewrite_skips_subshell() {
@@ -751,7 +751,7 @@ mod tests {
         );
     }
 
-    // BL-7: Command substitution mid-command (`echo $(date)`) — the head
+    // Command substitution mid-command (`echo $(date)`) — the head
     //       binary is `echo`, and the shell expands `$(date)` BEFORE running
     //       `rtk`, so blanket-prefix is safe (and desirable for token savings).
     #[test]
@@ -766,7 +766,7 @@ mod tests {
         }
     }
 
-    // BL-7b: A real backtick exec at the start of the command has no head
+    // A real backtick exec at the start of the command has no head
     //        binary for `rtk` to wrap, so it must still be skipped.
     #[test]
     fn rtk_rewrite_skips_leading_backtick_exec() {
@@ -777,7 +777,7 @@ mod tests {
         );
     }
 
-    // BL-7c: A literal `(` *inside an argument* is fine — the shell sees it as
+    // A literal `(` *inside an argument* is fine — the shell sees it as
     //        text, not a subshell. Blanket must still wrap the head binary.
     #[test]
     fn rtk_rewrite_blanket_with_paren_inside_arg() {
@@ -791,7 +791,7 @@ mod tests {
         }
     }
 
-    // BL-7d: Backtick inside an argument (`echo \`date\``) — the head binary
+    // Backtick inside an argument (`echo \`date\``) — the head binary
     //        is `echo`. Wrap.
     #[test]
     fn rtk_rewrite_blanket_with_backtick_inside_arg() {
@@ -805,7 +805,7 @@ mod tests {
         }
     }
 
-    // BL-8: When the specific rewriter returns a real rewrite, the specific
+    // When the specific rewriter returns a real rewrite, the specific
     //       path wins — no blanket path is attempted.
     #[test]
     fn rtk_rewrite_specific_takes_precedence_over_blanket() {
@@ -819,7 +819,7 @@ mod tests {
         }
     }
 
-    // BL-9: Compound command with `&&` — first segment token (`cargo`) is not
+    // Compound command with `&&` — first segment token (`cargo`) is not
     //       a builtin so blanket prefix applies to the whole string.
     //       The shell expands `&&` after RTK exits, so `rtk cargo run &&
     //       cargo test` correctly runs `cargo test` in the same shell context.
@@ -837,7 +837,7 @@ mod tests {
         }
     }
 
-    // BL-10: Already-prefixed command → short-circuit returns None immediately
+    // Already-prefixed command → short-circuit returns None immediately
     //        (rewriter closure is never invoked).
     #[test]
     fn rtk_rewrite_already_prefixed_no_op() {
@@ -856,9 +856,9 @@ mod tests {
     // second segment — `SCRATCH="…"; rtk for sp in …` is a bash syntax error.
     // -----------------------------------------------------------------------
 
-    // BL-11: Assignment-only first segment followed by a loop keyword → None.
+    // Assignment-only first segment followed by a loop keyword → None.
     //        Must not rewrite in Warn and must not deny in Strict — the skip
-    //        is an eligibility rule, exactly like the builtin skip (BL-4).
+    //        is an eligibility rule, exactly like the builtin skip for `cd`.
     #[test]
     fn rtk_rewrite_skips_assignment_only_first_segment_before_loop() {
         let cmd = "VAR=x; for sp in a b; do echo $sp; done";
@@ -874,7 +874,7 @@ mod tests {
         );
     }
 
-    // BL-12: Assignment-only first segment followed by a plain command → None.
+    // Assignment-only first segment followed by a plain command → None.
     //        Conservative: the first segment has no executable, so the guarded
     //        slice has nothing to prefix; the command passes untouched.
     #[test]
@@ -886,7 +886,7 @@ mod tests {
         );
     }
 
-    // BL-13: Env assignment WITHOUT a separator is the BL-3 shape — the
+    // Env assignment WITHOUT a separator is the env-prefixed shape — the
     //        executable lives in the same (only) segment, so blanket still
     //        wraps it after the assignment.
     #[test]
@@ -901,7 +901,7 @@ mod tests {
         }
     }
 
-    // BL-14: Bare loop — `for` heads the first segment and is a shell keyword
+    // Bare loop — `for` heads the first segment and is a shell keyword
     //        (SHELL_BUILTINS), so the builtin skip already covers it. Assert it.
     #[test]
     fn rtk_rewrite_skips_bare_for_loop() {

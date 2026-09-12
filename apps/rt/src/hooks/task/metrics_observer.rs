@@ -112,7 +112,7 @@ mod tests {
         MetricsObserver.observe(&input, &ctx(Trigger::PostToolUse, project));
     }
 
-    /// AC-1 regression: a PostToolUse observer receiving `HookInput.session_id`
+    /// Regression: a PostToolUse observer receiving `HookInput.session_id`
     /// must write its event under `.session/<id>/`, not `.session/unknown/`.
     /// Fails before the chokepoint fix (event was born `"unknown"`), passes
     /// after. Uses a real id (`"s-x"`) so `route::emit` never falls through to

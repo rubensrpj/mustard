@@ -24,7 +24,7 @@
 //! server — losing a few datapoints beats taking down the harness pipeline.
 //! A canary log line (`.canary.log`) records each request and each error.
 //!
-//! ## Persistence (post-W5A)
+//! ## Persistence
 //!
 //! There is no SQLite store. Each accepted datapoint is serialised into the
 //! per-spec NDJSON event log via
@@ -59,7 +59,7 @@ const KIND_RUN: &str = "pipeline.telemetry.run";
 /// The only `usage_totals` metric names the dashboard ever reads.
 ///
 /// Was a re-export from `mustard_core::telemetry::CONSUMED_METRICS`; moved
-/// here as a module-local constant in W8A-1 (no-sqlite Wave 8) when the
+/// here as a module-local constant when the
 /// SQLite telemetry crate-side module was deleted. The collector itself is
 /// the only consumer of this filter — colocating the list keeps it within
 /// the single responsibility that uses it.
@@ -336,7 +336,7 @@ fn write_metrics_into(
 }
 
 /// Translate OTLP/JSON `traces` into [`mustard_core::domain::economy::SpanRecord`]s via
-/// the W1 ingest adapter, then write one `pipeline.telemetry.run` record per
+/// the span ingest adapter, then write one `pipeline.telemetry.run` record per
 /// span to the NDJSON sink.
 ///
 /// Attribution is carried within the SpanRecord (`spec`, `session_id`,
@@ -632,7 +632,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // AC3 — metric attribution to the originating session.
+    // Metric attribution to the originating session.
     // -----------------------------------------------------------------------
 
     /// `metric_target` routes to the metric's own `session_id` under the
@@ -756,7 +756,7 @@ mod tests {
         std::fs::write(dir.join(format!("{sid}.jsonl")), format!("{line}\n")).unwrap();
     }
 
-    /// AC-1 — a metric whose `session_id` resolves (via the global transcript
+    /// A metric whose `session_id` resolves (via the global transcript
     /// store) to a *different* project than the collector's lands under THAT
     /// project's `.claude/.session/<id>/.events/`, not the collector's. This is
     /// the cross-project leak fix: the foreign session's tokens follow the
@@ -797,7 +797,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — a metric whose `session_id` resolves nowhere (no session dir under
+    /// A metric whose `session_id` resolves nowhere (no session dir under
     /// the collector AND no transcript in the global store) stays in
     /// `otel-unattached` under the collector's own project. The in-project case
     /// is unaffected (covered by `otel_metric_routed_to_origin_session`).

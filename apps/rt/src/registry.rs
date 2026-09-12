@@ -1,6 +1,6 @@
 //! The module registry — which enforcement modules run for which event/tool.
 //!
-//! Open/Closed in practice (b3 spec § Arquitetura "SOLID"): adding a check is
+//! Open/Closed in practice (SOLID): adding a check is
 //! *only* registering a [`Module`] here. The dispatcher reads the registry and
 //! never changes. A module is keyed by the `(Trigger, tool)` pairs it applies
 //! to, so an unrelated invocation skips it entirely instead of running it just
@@ -109,7 +109,7 @@ pub struct Registry {
 impl Registry {
     /// Build the registry with every module Mustard ships.
     ///
-    /// Early b3 waves register only `bash_command_gate`; later waves push their
+    /// Early port stages register only `bash_command_gate`; later stages push their
     /// families (`budget`, `size_gate`, …) here, leaving the dispatcher
     /// untouched.
     #[must_use]
@@ -132,7 +132,7 @@ impl Registry {
                 check: Some(Box::new(BashCommandGate)),
                 observer: Some(Box::new(BashCommandGate)),
             },
-            // ── Wave 3: Task / Subagent family ───────────────────────────────
+            // ── Task / Subagent family ───────────────────────────────────────
             Module {
                 id: "context_budget_gate",
                 // `context-budget` (PreToolUse(Task) prompt-size gate) +
@@ -214,7 +214,7 @@ impl Registry {
                 // (Bash stdout/stderr/exit, Edit/MultiEdit before/after, Write
                 // content, Read content excerpt). Emits a `tool.result` event
                 // the dashboard `<ExecutionTrace>` joins with the matching
-                // `tool.use` (followup-2 § 4b/4c).
+                // `tool.use`.
                 applies_to: &[
                     (Trigger::PostToolUse, ToolMatch::Named("Bash")),
                     (Trigger::PostToolUse, ToolMatch::Named("Edit")),
@@ -225,7 +225,7 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ToolResultObserver)),
             },
-            // ── Wave 4: Write/Edit family ────────────────────────────────────
+            // ── Write/Edit family ────────────────────────────────────────────
             Module {
                 id: "size_gate",
                 // `spec-size-gate` + `skill-size-gate` + `skill-validate-gate` —
@@ -383,13 +383,13 @@ impl Registry {
                 check: Some(Box::new(PostEdit)),
                 observer: Some(Box::new(PostEdit)),
             },
-            // ── Wave 5: session-lifecycle families ───────────────────────────
+            // ── session-lifecycle families ───────────────────────────────────
             // `spec_hygiene_observer` is registered *before* `session_start_inject`
             // so its gated auto-close (and the spec-header rewrite it performs)
             // runs ahead of the SessionStart memory injection. It is a pure
             // side effect (an `Observer`), and the dispatcher runs a module's
             // observer before its check, so registering it first preserves the
-            // ordering (spec-lifecycle-unification W5).
+            // ordering.
             Module {
                 id: "spec_hygiene_observer",
                 // SessionStart-only side effect — emits `hygiene.*` events and,
@@ -458,24 +458,24 @@ impl Registry {
                 id: "prompt_submit_inject",
                 // `followup-cancel-gate` (amendment-window close, a side
                 // effect) + declared injectables (`mustard.json#inject`,
-                // `on: userPromptSubmit`) + the W8.T8.2 pipeline-in-flight
+                // `on: userPromptSubmit`) + the pipeline-in-flight
                 // banner — composed into one `Inject`; never blocks.
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
                 check: Some(Box::new(PromptSubmitInject)),
                 observer: None,
             },
-            // ── W8 deep-refactor: context-injection optimisation ─────────────
+            // ── Context-injection optimisation ───────────────────────────────
             Module {
                 id: "subagent_inject",
-                // T8.3 — for Task dispatches without a declared SKILL, inject a
-                // minimal CONTEXT.md + skills slice (resolved via W1's
+                // For Task dispatches without a declared SKILL, inject a
+                // minimal CONTEXT.md + skills slice (resolved via the
                 // `skill-resolve`).
                 //
-                // Spec A v4 / W5.T5.2 adds `SubagentStop` so the same module
+                // `SubagentStop` is added so the same module
                 // can run the span-level regression eval per returning child
-                // (AC-A-5). The `SubagentStop` branch is fail-open and never
+                // (never batched to wave end). The `SubagentStop` branch is fail-open and never
                 // emits a blocking verdict — the per-child verdict lands in
-                // `_review-spans.md` and AC-A-7's consolidation gate reads
+                // `_review-spans.md` and the consolidation gate reads
                 // the ledger at wave close.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Task")),
@@ -563,7 +563,7 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(PickerApprovalObserver)),
             },
-            // ── W3E (no-sqlite git source of truth) — wikilink footer ────────
+            // ── Wikilink footer ──────────────────────────────────────────────
             Module {
                 id: "wikilink_footer_observer",
                 // PostToolUse(Write|Edit) auto-footer renderer for
@@ -576,7 +576,7 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(WikilinkFooterObserver)),
             },
-            // ── Wave 6: session-bound amendment window ───────────────────────
+            // ── session-bound amendment window ───────────────────────────────
             Module {
                 id: "amend_window_inject",
                 // Tracks in-session edits after pipeline close.
@@ -604,7 +604,7 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ChangeRequestLog)),
             },
-            // ── FASE 4-c: auto-abertura por tipo (structural → automatic) ────
+            // ── auto-abertura por tipo (structural → automatic) ──────────────
             // Both are pure Observers — they emit/restructure as a side effect
             // and are structurally incapable of denying a write (decision 6:
             // re-wave / wave-advance are advisory restructuring, never gates).

@@ -261,7 +261,7 @@ fn audit_targets(root: &Path) -> Vec<PathBuf> {
         // The compiled-in harness seeds (settings, injectable instruction
         // files) — moved from apps/cli/templates, still under the EN policy.
         "packages/core/templates",
-        // The command/skill/ref prose moved to the plugin tree in F4 (2.0);
+        // The command/skill/ref prose moved to the plugin tree in 2.0;
         // it must stay under the EN-only audit like the old `.claude/refs` did.
         "plugin",
         ".claude/refs",

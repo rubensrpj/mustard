@@ -998,7 +998,7 @@ mod tests {
         dir
     }
 
-    /// AC-4 — `pr list` from a work branch REFUSES and names the base to switch
+    /// `pr list` from a work branch REFUSES and names the base to switch
     /// to; from the base it does not refuse (whatever the provider answers).
     #[test]
     fn pr_list_refuses_off_an_integration_base_and_names_it() {
@@ -1075,7 +1075,7 @@ mod tests {
         );
     }
 
-    /// AC-5 — a merge requested with NO recorded review verdict warns and asks:
+    /// A merge requested with NO recorded review verdict warns and asks:
     /// it does not refuse (`ok` stays true) and it does not merge (neither
     /// injected effect runs). `--confirm` is the answer coming back.
     #[test]
@@ -1209,7 +1209,7 @@ mod tests {
         asks(Err("gh-not-found".to_string()), "provider-checks-unreadable");
     }
 
-    /// AC-1 — the run that was still in flight when PR 237 was merged. With an
+    /// The run that was still in flight when PR 237 was merged. With an
     /// APPROVED verdict recorded (so the review half consents), a provider
     /// whose checks are still running stops the merge dead: the door asks, and
     /// neither injected effect is called.
@@ -1254,7 +1254,7 @@ mod tests {
         assert_eq!(confirmed.checks, "running", "the override is recorded, not hidden");
     }
 
-    /// AC-2 — checks that came back FAILING do not merge either. Same one
+    /// Checks that came back FAILING do not merge either. Same one
     /// rule, its own reason: the operator's next move is to fix, not to wait.
     #[test]
     fn pr_merge_refuses_when_provider_checks_failed() {
@@ -1324,7 +1324,7 @@ mod tests {
         );
     }
 
-    /// AC-7 — o merge do pull request de uma unidade ligada a uma pendência
+    /// O merge do pull request de uma unidade ligada a uma pendência
     /// fecha essa pendência com o número do PR no motivo, e o relatório lista as
     /// que seguem abertas. A ligação é gravada pelo gravador de verdade
     /// (`with_pending_link`, o mesmo do `emit-pipeline --pending`).

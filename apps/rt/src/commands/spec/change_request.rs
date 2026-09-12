@@ -209,7 +209,7 @@ mod tests {
         sp.dir().to_path_buf()
     }
 
-    /// AC-1 — a registered instruction lands in the change log in the shape the
+    /// A registered instruction lands in the change log in the shape the
     /// per-wave renderer reads, and comes back out of the NEXT rendered prompt:
     /// no hand-formatted bullet anywhere in the path.
     #[test]
@@ -257,7 +257,7 @@ mod tests {
         assert!(prompt.contains(instruction), "instruction reached the prompt: {prompt}");
     }
 
-    /// AC-2 — an empty / whitespace-only instruction is refused and NOTHING is
+    /// An empty / whitespace-only instruction is refused and NOTHING is
     /// written, so the log cannot fill with entries that say nothing.
     #[test]
     fn change_request_refuses_an_empty_instruction() {

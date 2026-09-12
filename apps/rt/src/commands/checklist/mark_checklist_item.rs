@@ -840,7 +840,7 @@ mod tests {
         assert_eq!(lines[i], "- [x] beta");
     }
 
-    // --- meta-first marking (checklist-progresso-por-onda W2) ---------------
+    // --- meta-first marking ---------------------------------------------------
 
     #[test]
     fn item_matches_label_path_and_basename() {
@@ -1028,7 +1028,7 @@ mod tests {
         assert!(try_move_in_metas(project.path(), &spec_dir, "a", Move::Mark).is_none());
     }
 
-    // --- the third position: dropped on purpose (AC-8) ----------------------
+    // --- the third position: dropped on purpose, with a reason --------------
 
     /// Seed a wave-plan spec with one open checklist item; returns
     /// `(project, spec_dir, wave_dir)`.
@@ -1051,7 +1051,7 @@ mod tests {
         (project, spec_dir, wave_dir)
     }
 
-    /// AC-8 — a checklist item dropped on purpose WITH a stated reason is
+    /// A checklist item dropped on purpose WITH a stated reason is
     /// recorded as a decision (sidecar + `checklist.item.dropped` event) and
     /// stays distinct from an unchecked item: it is not open work, it is not
     /// done, and no later mark turns it back into either.

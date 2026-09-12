@@ -1,6 +1,6 @@
 //! `session_cleanup_observer` — the `SessionEnd` state-cleanup module.
 //!
-//! ## Scope (b3 Wave 5, session family)
+//! ## Scope (session family)
 //!
 //! Ports `session-cleanup.js` **alone** — a single concern with no sibling
 //! hook to merge, kept as its own module so the registry wiring is one-to-one.
@@ -283,7 +283,7 @@ fn spawn_kill(pid: u32) -> std::io::Result<()> {
         .map(|_| ())
 }
 
-/// Pull every `rtk gain --json` rewrite into the W1 `savings_records` table
+/// Pull every `rtk gain --json` rewrite into the `savings_records` table
 /// once per session.
 ///
 /// Mirrors [`crate::commands::economy::rtk_gain`]'s own `persist_savings()` — same
@@ -312,7 +312,7 @@ fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
         return;
     }
 
-    // W7B: emit one `pipeline.economy.savings.rtk-rewrite` NDJSON event per
+    // Emit one `pipeline.economy.savings.rtk-rewrite` NDJSON event per
     // record. The router fail-opens per call; a malformed record does not
     // block the rest.
     for rec in records {
@@ -323,7 +323,7 @@ fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
 
 /// Prune telemetry NDJSON files older than [`TELEMETRY_RETENTION_DAYS`].
 ///
-/// W8A-1 (no-sqlite): the dedicated `telemetry.db` is gone — telemetry now
+/// With SQLite dropped, the dedicated `telemetry.db` is gone — telemetry now
 /// lives inline in the per-spec / per-session NDJSON event logs. Retention is
 /// expressed at the file granularity: any `<root>/.claude/spec/*/.events/*.ndjson`
 /// or `<root>/.claude/.session/*/.events/*.ndjson` whose `mtime` is older than
@@ -457,21 +457,21 @@ fn step_prune_telemetry(target: &CleanupTarget) {
     prune_telemetry(&target.cwd);
 }
 
-/// Wave 2 (economia-didatica-e-economias-reais): drain the local
+/// Drain the local
 /// `rtk gain --json` ledger into `savings_records` once per session. Mirrors
 /// the per-invocation persistence already done by `mustard-rt run rtk-gain`,
 /// but for sessions that never explicitly run that subcommand — without this
-/// hook, RTK rewrites never land in the W1 savings table. Strict side-effect,
+/// hook, RTK rewrites never land in the savings table. Strict side-effect,
 /// fail-open, and it spawns `rtk`, which is why it trails the plan.
 fn step_ingest_rtk_savings(target: &CleanupTarget) {
     ingest_rtk_savings(&target.cwd, target.session_id.as_deref());
 }
 
-/// wave-18-rt-followups (W4#1): finalize the per-session amendment window
+/// Finalize the per-session amendment window
 /// before the session ends. The standalone CLI
 /// (`mustard-rt run amend-finalize --session-id <id>`) is still available; this
-/// re-wires the automatic SessionEnd hook that was dropped during the W3B
-/// migration. Fail-open: no session id, or any internal error inside
+/// re-wires the automatic SessionEnd hook that was dropped when the event
+/// store left SQLite. Fail-open: no session id, or any internal error inside
 /// `amend_finalize::run`, must never abort the rest of cleanup.
 fn step_amend_finalize(target: &CleanupTarget) {
     let Some(sid) = target.session_id.as_deref() else {
@@ -620,7 +620,7 @@ mod tests {
         assert!(!pid.exists());
     }
 
-    /// AC-3: on `SessionEnd` the collector teardown is the FIRST thing cleanup
+    /// On `SessionEnd` the collector teardown is the FIRST thing cleanup
     /// does — ahead of every subtree walk and every process that is not the
     /// kill itself.
     ///
@@ -716,7 +716,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // W8A-1 (no-sqlite) — AC-PRUNE tests for the NDJSON retention pruner.
+    // Tests for the NDJSON retention pruner that replaced SQLite telemetry.
     // ---------------------------------------------------------------------
 
     fn mtime_ms(path: &Path) -> i64 {

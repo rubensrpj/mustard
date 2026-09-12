@@ -24,7 +24,7 @@
 //! - [`mode_decision`] — `continued`/`reanalyzed`/`ask` + refresh signal.
 //! - [`dispatch_failure`] — dispatch-failure JSON rendering.
 //! - [`post_execute_gate`] — REVIEW/QA gate + `nextAction`.
-//! - [`context_loader`] — W6 disciplined context (prune + `_context.md`).
+//! - [`context_loader`] — disciplined context (prune + `_context.md`).
 //! - [`event_emission`] — `pipeline.scope` / `pipeline.resume_mode` emission.
 
 mod context_loader;
@@ -76,7 +76,7 @@ const RESUME_MODE_DEBOUNCE_MS: i64 = 10 * 1_000;
 /// Cap on the `## Resumo` first-line snippet.
 const SUMMARY_CAP: usize = 200;
 
-/// Hard token budget for resume bootstrap context loading (Spec A v4 / W6 / AC-A-10).
+/// Hard token budget for resume bootstrap context loading.
 ///
 /// `_summary.md` files from prior waves are pruned to this cap so the orchestrator
 /// can start a resumed wave without the legacy ~60k-token bloat
@@ -211,16 +211,16 @@ pub struct ResumeBootstrap {
     /// the PUBLISHED command it implies always travel together.
     #[serde(rename = "dispatchCommand", skip_serializing_if = "Option::is_none")]
     pub dispatch_command: Option<String>,
-    /// Spec A v4 / W6 — estimated token usage of the pruned prior-wave context
-    /// loaded by this bootstrap. Bounded by [`RESUME_TOKEN_BUDGET`] (AC-A-10).
+    /// Estimated token usage of the pruned prior-wave context
+    /// loaded by this bootstrap. Bounded by [`RESUME_TOKEN_BUDGET`].
     /// `0` when no prior summaries were available (first wave, fresh spec).
     #[serde(rename = "tokensUsed")]
     pub tokens_used: usize,
-    /// Spec A v4 / W6 — number of `_summary.md` files that fit inside the budget.
+    /// Number of `_summary.md` files that fit inside the budget.
     /// Surfaces how aggressive the pruning was without spilling the whole list.
     #[serde(rename = "summariesLoaded")]
     pub summaries_loaded: usize,
-    /// Spec A v4 / W6 — resolved path of the `_context.md` rendered for the
+    /// Resolved path of the `_context.md` rendered for the
     /// current wave (relative to project root). `None` when generation was
     /// skipped (non-wave spec, first wave with no inheritance, or write error).
     #[serde(rename = "contextPath", skip_serializing_if = "Option::is_none")]
@@ -265,7 +265,7 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
     };
 
     // --- Load pipeline state (fail-open: missing events dir → defaults preserved). ---
-    // W8A-1 (no-sqlite): the legacy event-store replay was replaced by the
+    // When the SQLite store was dropped, the legacy event-store replay was replaced by the
     // NDJSON workspace walker. `pipeline_state_from_events` is unchanged —
     // same fold, different source.
     let events = read_workspace_events(&project);
@@ -400,7 +400,7 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
     // owns what it drops because of it.
     out.inside_work_branch = inside_own_work_branch(&project, spec);
 
-    // --- D5: entry-into-Execute approval hard-gate. ---
+    // --- Entry-into-Execute approval hard-gate. ---
     //
     // A Full-scope spec must NOT begin EXECUTE without an explicit `/spec`
     // approval event. Runs BEFORE the post-execute gate so an unapproved Full
@@ -440,11 +440,11 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
     // no-ops when any of them spoke.
     signal_approved_plan_ready(spec, &spec_dir, &mut out);
 
-    // --- Spec A v4 / W6 — disciplined context load (AC-A-10). ---
+    // --- Disciplined context load, under the hard token budget. ---
     //
     // Read prior-wave `_summary.md` files, prune them to the
-    // [`RESUME_TOKEN_BUDGET`] cap (T6.3) — but only the ones whose names appear
-    // as wikilinks inside the operational wave spec (T6.4). Result: even a
+    // [`RESUME_TOKEN_BUDGET`] cap — but only the ones whose names appear
+    // as wikilinks inside the operational wave spec. Result: even a
     // 12-wave spec starts resume well below 10 000 tokens.
     if out.is_wave_plan {
         let op_body = op_path
@@ -463,7 +463,7 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
         out.tokens_used = used_tokens;
         out.summaries_loaded = kept_count;
 
-        // T6.5 — generate `_context.md` on resume. Inheritance is the same
+        // Generate `_context.md` on resume. Inheritance is the same
         // wikilink set we just pruned (so the file the agent reads matches the
         // prefix we loaded). Fail-open: write errors leave `context_path = None`.
         if let Some(written) = generate_context_on_resume(
@@ -526,7 +526,7 @@ fn print_table(out: &ResumeBootstrap) {
         println!("dispatchCommand  : {d}");
     }
     println!("clarifyRecordsNothing: {}", out.clarify_records_nothing);
-    // W6#3: surface the W6 budget metrics in the text-table form so callers
+    // Surface the budget metrics in the text-table form so callers
     // who don't pass `--json` still see how the budget was spent.
     println!("tokensUsed       : {}", out.tokens_used);
     println!("summariesLoaded  : {}", out.summaries_loaded);
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(derive_role_from_wave_path(p2), None);
     }
 
-    /// AC-6 — a scaffolded plan and a running one are the SAME on disk.
+    /// A scaffolded plan and a running one are the SAME on disk.
     ///
     /// `wave-scaffold` writes every `wave-N-*` directory before an agent runs,
     /// so the FS census answers `wave 1 of 5` whether the plan was dispatched or

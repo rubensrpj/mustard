@@ -9,7 +9,7 @@
 //! `apps/{rt,cli,dashboard}` source references it, but the file walkers (vault
 //! indexer, doctor, security-scan) still traverse them.
 //!
-//! This subcommand performs the audit Deep-Refactor W2.T2.2 demands: it
+//! This subcommand performs the `.claude/` audit the deep refactor asked for: it
 //! enumerates every direct child of `.claude/`, classifies it against a
 //! declared consumer list, and either reports candidates (default `--dry-run`)
 //! or removes the ORPHAN / LEGACY ones (`--apply`).
@@ -408,7 +408,7 @@ fn classify(
         );
     }
 
-    // 4. Documented ephemerals — derived from the canonical W2 catalog,
+    // 4. Documented ephemerals — derived from the canonical path catalog,
     //    which is the only source.
     if documented_dirs().contains(&name) {
         return (
@@ -520,7 +520,7 @@ mod tests {
         let dir = tempdir().unwrap();
         // Four names the canonical catalog documents — `worktrees` among
         // them since it joined the catalog and stopped being held over
-        // here. `.pipeline-states` and `.qa-reports` were retired in W2 and
+        // here. `.pipeline-states` and `.qa-reports` were retired from that catalog and
         // are correctly flagged as orphans now, so they are not exercised
         // here.
         fake_dirs(dir.path(), &["worktrees", ".cache", ".metrics", ".agent-state"]);

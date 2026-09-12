@@ -391,7 +391,7 @@ fn builtin_grammars() -> Vec<(&'static str, &'static [&'static str], Language)> 
 mod tests {
     use super::*;
 
-    /// AC-A-17 — empty discovery + missing grammar fail-open.
+    /// Empty discovery + missing grammar fail-open.
     ///
     /// Builds a loader over a temp directory (no installed grammars), checks
     /// that:
@@ -409,7 +409,7 @@ mod tests {
         // machine may have a populated `~/.config/tree-sitter/config.json`),
         // so we exercise both paths: the real loader for the "discovery
         // works" half, and `GrammarLoader::empty` for the "no grammars"
-        // half. AC-A-17 requires both to fail-open and never panic.
+        // half. Both must fail-open and never panic.
 
         // Real loader — must succeed even when discovery turns up nothing.
         let real = GrammarLoader::from_project(tmp.path()).expect("real loader builds");

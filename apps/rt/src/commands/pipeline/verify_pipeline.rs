@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn stack_aware_skips_foreign_subproject_without_detection() {
-        // AC1 (T1) regression: a poliglot repo whose grain model predates
+        // Regression: a poliglot repo whose grain model predates
         // per-subproject stack detection (detected_stacks empty). The global
         // mustard.json command is a JS `npm test`; one subproject is a C#/.NET dir
         // (a top-level `.csproj`, no package.json). Spraying `npm test` there runs

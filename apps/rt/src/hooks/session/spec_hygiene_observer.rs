@@ -1,7 +1,7 @@
 // SPEC LANG: pt-allowed — test fixtures cover pt-BR spec parsing paths.
 //! `spec_hygiene_observer` — SessionStart spec-lifecycle hygiene + gated auto-close.
 //!
-//! ## Scope (spec-lifecycle-unification Wave 5, W3C migration)
+//! ## Scope (spec lifecycle, migrated off SQLite)
 //!
 //! Runs on `SessionStart`, **before** the [`session_start_inject`](crate::hooks::session::session_start_inject)
 //! memory injection (registration order in `registry.rs`). For each *active*
@@ -13,7 +13,7 @@
 //!   spec — emitting `hygiene.autoclose` + `pipeline.outcome: completed` and
 //!   rewriting the spec header to `Outcome: Completed`.
 //!
-//! ## W3C migration
+//! ## Migration off SQLite
 //!
 //! The `last_event_at` for a spec is now resolved by scanning the per-spec
 //! NDJSON `.events/` directory (via
@@ -388,7 +388,7 @@ fn emit(project_dir: &str, kind: &str, spec: &str, payload: Value) {
         payload,
         spec: Some(spec.to_string()),
     };
-    // `hygiene.*` is non-pipeline → per-spec NDJSON via the W5 router.
+    // `hygiene.*` is non-pipeline → per-spec NDJSON via the event router.
     let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
@@ -488,7 +488,7 @@ fn mark_completed(spec_md_path: &Path) {
 /// Resolve the ISO timestamp of the last harness event for `spec_name` by
 /// reading the per-spec NDJSON `.events/` directory.
 ///
-/// Replaces the legacy `store.query(Some(spec_name))` SQLite call (W3C).
+/// Replaces the legacy `store.query(Some(spec_name))` SQLite call.
 /// Fail-open: returns `None` when the directory is absent or unreadable.
 fn last_event_at_from_ndjson(cwd: &str, spec_name: &str) -> Option<String> {
     let Ok(cp) = ClaudePaths::for_project(cwd) else {
@@ -551,7 +551,7 @@ fn process_spec(
     let now = mustard_core::time::now_unix_millis() as u128;
     let (ac_pct, ac_complete, has_ac) = ac_evidence(spec_md);
 
-    // Last event of any kind for this spec — resolved from NDJSON (W3C).
+    // Last event of any kind for this spec — resolved from NDJSON.
     let last_event_at = last_event_at_from_ndjson(cwd, spec_name);
     let last_event_age_ms = last_event_at
         .as_deref()

@@ -1,7 +1,7 @@
 //! `mustard-rt run spec-children-tree --spec NAME` — a single round-trip
 //! projection of a parent spec's **waves**, **acceptance criteria** and
 //! **sub-specs**, consumed by the dashboard's `spec_children_tree` command
-//! (Wave 3 of `spec-lifecycle-unification`).
+//! (introduced by `spec-lifecycle-unification`).
 //!
 //! Why one subcommand
 //! ------------------
@@ -39,7 +39,8 @@ use mustard_core::{AcStatus, Outcome, SpecState, Stage, WaveStatus, WaveView};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// One wave row in the children tree. Field shapes per Wave 2 task #2.
+/// One wave row in the children tree. Field shapes are the contract the
+/// dashboard's tree view reads.
 ///
 /// `idx` is the 1-based wave number, `role` the wave-plan role tag (empty when
 /// the plan declared none), `status` the canonical [`WaveStatus`].
@@ -73,7 +74,8 @@ impl From<WaveView> for WaveChild {
     }
 }
 
-/// One acceptance-criterion row. Field shapes per Wave 2 task #3.
+/// One acceptance-criterion row. Field shapes are the contract the
+/// dashboard's tree view reads.
 ///
 /// `evidence` is a summarised stdout/stderr excerpt of the AC's pass/fail run
 /// — the `fail_reason` the core quality projection captured from the latest
@@ -176,7 +178,7 @@ fn child_from_entry(entry: ChildEntry) -> Subspec {
 /// open contributes empty waves/acs, and sub-spec discovery degrades to `[]`.
 #[must_use]
 pub(crate) fn build_tree(project: &Path, spec: &str) -> ChildrenTree {
-    // W8A-1 (no-sqlite): SqliteSpecReader removed; both projections now fold
+    // SqliteSpecReader went with the SQLite store; both projections now fold
     // directly over the NDJSON workspace events. Fail-open: an empty events
     // walk returns empty `waves` / `acs`, same as the legacy DB-open failure.
     let events = read_workspace_events(project);

@@ -12,7 +12,7 @@
 //!
 //! ## Why this module exists
 //!
-//! Wave 7 of `spec-lifecycle-unification` migrated 166 spec headers from the
+//! `spec-lifecycle-unification` migrated 166 spec headers from the
 //! legacy `### Status:` + `### Phase:` shape to the new three-line canonical
 //! form. Before this module, ~17 `mustard-rt` subcommands each carried their
 //! *own* inline `### Status:` parser (and several their own header *writers*),
@@ -57,15 +57,15 @@
 use crate::domain::model::view::{Flags, Outcome, SpecState, Stage};
 use std::path::Path;
 
-// Byte-stable spec layout contract — Wave 1, `2026-05-25-mustard-deep-refactor`.
+// Byte-stable spec layout contract — from `2026-05-25-mustard-deep-refactor`.
 // Public API entry point: `validate(&SpecInput)`. Lives in its own submodule so
 // the historical header parser/serializer above stays the single owner of
 // header IO without bloating with the contract surface.
 pub mod contract;
 
-// `## Funções tocadas` canonical-format parser — Wave 0,
-// `2026-05-27-mustard-v4-foundation` (Spec A). Owns parsing, validation, and
-// the fallback resolver consumed by W2 (snapshot) and W4 (gate). Lives here so
+// `## Funções tocadas` canonical-format parser — from
+// `2026-05-27-mustard-v4-foundation`. Owns parsing, validation, and
+// the fallback resolver consumed by the regression snapshot and the regression gate. Lives here so
 // the spec-document module is the single home of every parser that reads a
 // `spec.md`; the body parser stays free of regression-check concerns. The
 // module identifier is `touched_functions` (EN) to honour

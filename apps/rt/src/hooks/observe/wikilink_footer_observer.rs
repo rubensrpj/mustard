@@ -1,7 +1,7 @@
 //! `wikilink_footer_observer` — PostToolUse(Write|Edit) auto-footer renderer for
 //! `.claude/{memory,knowledge,spec,capabilities,graph}/**/*.md` files.
 //!
-//! ## Scope (W3E, wave-11-rt of `2026-05-26-no-sqlite-git-source-of-truth`)
+//! ## Scope (atomic-md auto-footer, no SQLite)
 //!
 //! After a Write/Edit lands on a markdown file under one of the three canonical
 //! atomic-md trees, this `Observer` reads the file, recomputes the auto-footer
@@ -21,7 +21,7 @@
 //! - **All parser/render logic lives in `mustard_core::io::atomic_md::wikilink`.**
 //!   This module owns only the "when to run" decision and the post-write
 //!   rewrite. It does not duplicate the `[[ ]]` scanner or the sentinel
-//!   handling — the W3E AC checks for that explicitly.
+//!   handling — its acceptance check looks for that explicitly.
 //! - **Fail-open.** A missing file, a non-markdown path, or a write error all
 //!   resolve to no-op.
 

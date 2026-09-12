@@ -1,6 +1,6 @@
 //! `post_edit` — the consolidated PostToolUse(Write|Edit) module.
 //!
-//! ## Scope (b3 Wave 4, Write/Edit family)
+//! ## Scope (Write/Edit family)
 //!
 //! This module consolidates three JavaScript hooks, all `PostToolUse(Write|Edit)`.
 //! Two are pure side effects (`Observer`), one reaches a verdict (`Check`):
@@ -28,7 +28,7 @@
 //!
 //! `pipeline-phase.js` used to live here as a fourth side effect: it parsed
 //! `phaseName` out of a pipeline-state Write and emitted a `pipeline.phase`
-//! event. Wave 2 of `2026-05-19-dashboard-phase-from-sqlite` removed the
+//! event. The dashboard-phase-from-sqlite migration removed the
 //! `phaseName` writer from SKILL.md, so that trigger no longer fires. The
 //! `pipeline.phase` producer now lives entirely in `mustard-rt run emit-phase`
 //! (`apps/rt/src/run/emit_phase.rs`), driven explicitly by the pipeline
@@ -121,7 +121,7 @@ fn is_word_byte(b: u8) -> bool {
 /// Advisory only — returns the warning message or `None`. Port of
 /// `checkBoundaries`. Flat layout: scans `.claude/spec/` directly.
 ///
-/// wave-18-rt-followups (W4#7): the scan now filters out non-active specs —
+/// The scan now filters out non-active specs —
 /// previously the first spec dir (alphabetically) with a `## Boundaries`
 /// section always won, so a stale `Close + Active + followup_open` spec
 /// (e.g. `dashboard-i18n-migration`) would warn on every unrelated edit. The
@@ -136,7 +136,7 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<(String, String)> {
     let entries = fs::read_dir(&spec_root).ok()?;
     let normalized_edit = file_path.replace('\\', "/");
 
-    // W5#4: collect every Active+open spec that ships a `## Boundaries` (or
+    // Collect every Active+open spec that ships a `## Boundaries` (or
     // `## Limites`) block, then keep ONLY the most-recently-checkpointed one.
     // Without this, `read_dir`'s alphabetical order makes an older spec
     // (`2026-05-26-deep-refactor-followups`) outrank a newer active spec
@@ -282,7 +282,7 @@ fn spec_state_meta_first(spec_file: &Path, content: &str) -> Option<mustard_core
     spec::parse_state(content)
 }
 
-/// W5#4 helper: a lexicographically-comparable recency key. Prefers the spec's
+/// Helper: a lexicographically-comparable recency key. Prefers the spec's
 /// ISO checkpoint (so `2026-05-28T10:00:00.000Z` sorts above
 /// `2026-05-27T17:56:09.926Z`), read **`meta.json`-first** (`#checkpoint`) with
 /// a fallback to a legacy `### Checkpoint:` header; falls back to the directory
@@ -1345,7 +1345,7 @@ mod tests {
         assert!(updated.contains("- [ ] Edit spec.md notes"));
     }
 
-    /// Meta-first auto-mark (checklist-progresso-por-onda W2): a Write of a
+    /// Meta-first auto-mark: a Write of a
     /// checklist target file flips the matching item in the WAVE's
     /// `meta.json#checklist` (idempotently) and emits `checklist.item.marked`.
     /// An item dropped ON PURPOSE names a file; editing that file must NOT
@@ -1475,7 +1475,7 @@ mod tests {
         PostEdit.observe(&input, &ctx(cwd_str));
     }
 
-    // pipeline-phase tests removed — the emitter was deleted (see § A.II of
+    // pipeline-phase tests removed — the emitter was deleted (in
     // the dashboard-phase-from-sqlite migration). `mustard-rt run emit-phase`
     // is the sole producer of `pipeline.phase` events; its tests live in
     // `apps/rt/src/run/emit_phase.rs`.
@@ -1515,7 +1515,7 @@ mod tests {
         PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
     }
 
-    // --- W5#4: boundary resolver picks the most recent active spec ---------
+    // --- boundary resolver picks the most recent active spec ---------------
 
     #[test]
     fn check_boundaries_picks_newer_active_spec_over_older() {
@@ -1542,7 +1542,7 @@ mod tests {
         .unwrap();
 
         // An edit to `post_edit.rs` is declared by the NEWER spec, not the
-        // older one. With the W5#4 fix the resolver picks the newer spec and
+        // older one. With the recency fix the resolver picks the newer spec and
         // returns `None` (allowed); pre-fix it would warn under the older
         // spec's boundaries.
         let edit_path = root

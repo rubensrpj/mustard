@@ -7,9 +7,9 @@
 //!
 //! Views ported: `agent-visibility`, `pipeline-state`, `session-summary`,
 //! `epic-summary`, `cross-session-timeline`, `spec-tree`, `pr-metrics`. The JS
-//! `buildSlopeReport` projection is **deliberately not ported** — B3 deleted
-//! the `duplication.warn` / `convention.warn` hooks that fed it, so nothing
-//! emits those events anymore (b4 spec, dead-code removal). An unknown
+//! `buildSlopeReport` projection is **deliberately not ported** — the move of
+//! the hooks to Rust deleted the `duplication.warn` / `convention.warn` hooks
+//! that fed it, so nothing emits those events anymore (removed as dead code). An unknown
 //! `--view` returns `{ "error": ... }`.
 //!
 //! `--format json` (default) prints the projection. `--format html` wraps the
@@ -42,7 +42,7 @@ mod pr_metrics;
 /// crate path so existing rt callers (`resume_bootstrap`, `spec_children_tree`,
 /// the projection `project` dispatcher below) continue to use the short name.
 ///
-/// W8A-2 (no-sqlite Wave 8): the canonical walker moved to `mustard-core` so
+/// When the SQLite store was dropped, the canonical walker moved to `mustard-core` so
 /// both the rt crate and the dashboard backend can fold over the same
 /// event slice without duplicating the converter logic.
 pub(crate) fn read_workspace_events(cwd: &Path) -> Vec<HarnessEvent> {
@@ -101,7 +101,7 @@ fn project(cwd: &Path, view: &str, spec: Option<&str>, wave: Option<u32>) -> Val
 /// Write the standalone HTML report wrapping the projection JSON.
 ///
 /// Event-projection reports are *not* per-spec QA reports — they are
-/// workspace-wide diagnostic views. The W2 cache reorg keeps them under
+/// workspace-wide diagnostic views. The cache reorganisation keeps them under
 /// `<root>/.claude/.metrics/event-projections/` (rather than the legacy
 /// `.qa-reports/` directory, which is now reserved for the per-spec
 /// `spec/{name}/qa-report.{json,html}` pair).
@@ -137,7 +137,7 @@ pub fn run(view: Option<&str>, spec: Option<&str>, wave: Option<u32>, format: &s
 }
 
 // ---------------------------------------------------------------------------
-// Typed pipeline-state projection — Wave 2 of 2026-05-19-pipeline-state-from-sqlite
+// Typed pipeline-state projection, read from events instead of SQLite
 // ---------------------------------------------------------------------------
 
 /// A single task tracked inside a pipeline run. Built from `pipeline.task.dispatch`

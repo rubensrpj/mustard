@@ -25,7 +25,7 @@ pub enum DoctorCmd {
     /// residue. Prints a compact OK/WARN/FAIL report and exits 1 if any
     /// category is FAIL, 0 otherwise.
     ///
-    /// Pass `--json` as a shortcut for `--format json` (W10.T10.6).
+    /// Pass `--json` as a shortcut for `--format json`.
     #[command(display_order = 41)]
     Doctor {
         /// Also scan for dead file/script references (slower).
@@ -46,7 +46,7 @@ pub enum DoctorCmd {
         /// Output format: `text` (default) or `json`.
         #[arg(long, default_value = "text")]
         format: String,
-        /// Shorthand for `--format json` (W10.T10.6).
+        /// Shorthand for `--format json`.
         #[arg(long)]
         json: bool,
     },
@@ -89,7 +89,7 @@ pub enum DoctorCmd {
 pub fn dispatch(cmd: DoctorCmd) {
     match cmd {
         DoctorCmd::Doctor { residue, check, format, json } => {
-            // `--json` is a shorthand for `--format json` (W10.T10.6).
+            // `--json` is a shorthand for `--format json`.
             let effective_format = if json { "json".to_string() } else { format };
             doctor::doctor::run(doctor::doctor::DoctorOpts {
                 residue,

@@ -310,7 +310,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // (`commands/orient.rs`) and the machine-owned `.claude/scan-map.md`
         // (`commands/scan_claude.rs::render_map`). Both are DISPLAYED to the
         // developer and injected into the session, so they follow
-        // `mustard.json#lang` (finding #1 of the 2026-07 SOLID audit) — unlike
+        // `mustard.json#lang` (as the 2026-07 SOLID audit asked) — unlike
         // the internal census/index/search, which stays English by policy. The
         // `{kind}` / `{count}` slots are interpolated by the caller.
         ("orient.terrain.header", Locale::PtBr) => {

@@ -1,13 +1,13 @@
 //! `amend_window_inject` — session-bound amendment window enforcement module.
 //!
-//! ## Scope (Wave 2 — 2026-05-20-session-bound-amendments, W3C migration)
+//! ## Scope (session-bound amendments, migrated off SQLite)
 //!
 //! Fires on `PostToolUse(Bash|Write|Edit)` and `UserPromptSubmit` to track
 //! in-session edits that happen after a pipeline is closed. When the number of
 //! edits that fall outside the original pipeline scope (`drift`) exceeds the
 //! configured threshold, an advisory is injected into the agent's context.
 //!
-//! ## Persistence (W3C)
+//! ## Persistence (no SQLite)
 //!
 //! The amendment window state is no longer stored in SQLite. It is persisted to
 //! `.claude/spec/{spec_id}/.amend-window.json` via atomic write (tmpfile +
@@ -67,7 +67,7 @@ fn drift_threshold(project_dir: &str) -> u32 {
 
 /// The amendment window state persisted to `.claude/spec/{id}/.amend-window.json`.
 ///
-/// Replaces the `AmendWindow` SQLite row (W3C migration).
+/// Replaces the `AmendWindow` SQLite row (the migration off SQLite).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct WindowState {
     /// ISO-8601 timestamp when the window was opened (pipeline closed).
@@ -727,7 +727,7 @@ mod tests {
         std::fs::write(states.join(format!("{spec_id}.json")), "{}").unwrap();
     }
 
-    // ---- AC-3: in-scope Write → activity written to window ----------------
+    // ---- in-scope Write → activity written to window ----------------------
 
     #[test]
     fn amend_capture_activity() {
@@ -752,7 +752,7 @@ mod tests {
         assert!(win.last_activity_at.is_some(), "activity should be recorded");
     }
 
-    // ---- AC-4: build/test success → build_verde_at stamped ----------------
+    // ---- build/test success → build_verde_at stamped ----------------------
 
     #[test]
     fn amend_capture_build_verde() {
@@ -776,7 +776,7 @@ mod tests {
         assert!(win.build_verde_at.is_some());
     }
 
-    // ---- AC-5: UserPromptSubmit when window active (no-panic check) -------
+    // ---- UserPromptSubmit when window active (no-panic check) -------------
 
     #[test]
     fn amend_capture_intent_does_not_panic() {
@@ -798,7 +798,7 @@ mod tests {
         AmendWindowInject.observe(&input, &ctx);
     }
 
-    // ---- AC-8: 1 drift file → under threshold, no event ------------------
+    // ---- 1 drift file → under threshold, no event ------------------------
 
     #[test]
     fn amend_drift_under_threshold() {
@@ -823,7 +823,7 @@ mod tests {
         assert!(!win.drift_emitted);
     }
 
-    // ---- AC-9: Check injects warning when forecast >= threshold -----------
+    // ---- Check injects warning when forecast >= threshold -----------------
 
     #[test]
     fn amend_drift_check_injects_warning() {
@@ -859,7 +859,7 @@ mod tests {
         );
     }
 
-    // ---- AC-10: file within declared subproject → no drift ---------------
+    // ---- file within declared subproject → no drift ----------------------
 
     #[test]
     fn amend_drift_same_subproject_ok() {

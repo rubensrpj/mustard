@@ -1,7 +1,7 @@
 //! `tool_result_observer` — PostToolUse `Observer` that captures the rich tool output
 //! (stdout, stderr, file diffs, content excerpts) into a `tool.result` event.
 //!
-//! ## Why this exists (followup-2 § Trace rico)
+//! ## Why this exists (rich trace)
 //!
 //! The existing `metrics_observer` (in [`crate::hooks::task::metrics_observer`]) emits a
 //! `tool.use` heartbeat with the PreToolUse *intent* — command string, file
@@ -44,7 +44,7 @@ const FILE_CHUNK_CAP: usize = 4 * 1024;
 /// The wire payload emitted on `tool.result` events.
 ///
 /// Field shape matches the dashboard `ToolResultPayload` consumer in
-/// `apps/dashboard/server/src/telemetry.rs` (followup-2 § 4c). All inner
+/// `apps/dashboard/server/src/telemetry.rs`. All inner
 /// fields are optional — different tools populate different subsets.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct ToolResultPayload {
@@ -289,7 +289,7 @@ fn emit_event(project_dir: &str, payload: ToolResultPayload, session_id: Option<
         payload: value,
         spec: current_spec(project_dir),
     };
-    // `tool.result` is non-pipeline → per-spec NDJSON via the W5 router.
+    // `tool.result` is non-pipeline → per-spec NDJSON via the event router.
     let _ = crate::shared::events::route::emit(project_dir, &harness_event);
 }
 
@@ -551,7 +551,7 @@ mod tests {
         };
         ToolResultObserver.observe(&input, &ctx(project));
 
-        // W5: `tool.result` is non-pipeline → lives in the NDJSON sink under
+        // `tool.result` is non-pipeline → lives in the NDJSON sink under
         // `<project>/.claude/.session/<slug>/events/` (no spec resolves in
         // this test). Read the first file and confirm the payload landed.
         let events_root = dir.path().join(".claude").join(".session");

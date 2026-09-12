@@ -9,9 +9,9 @@
 //! and maps the typed ViewModel into the JSON shape the frontend already
 //! expects (so React contracts stay untouched). The legacy hand-rolled SQL functions
 //! (`spec_card`, `spec_waves`, `spec_quality`, `spec_timeline`,
-//! `workspace_summary`) were removed in Wave 2 of spec
+//! `workspace_summary`) were removed by spec
 //! `2026-05-20-sdd-domain-finalization`; the commands in `lib.rs` already
-//! delegated to the `*_v2` adapters since Wave 4 of the audit.
+//! delegated to the `*_v2` adapters since the dashboard audit.
 
 use mustard_core::io::fs;
 use serde::{Deserialize, Serialize};
@@ -55,8 +55,7 @@ pub struct SpecCard {
     pub source_reads_before_digest: i64,
 }
 
-/// Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`) — one
-/// sub-spec linked to a parent via the `spec.link` event. Mirrors the JSON
+/// One sub-spec linked to a parent via the `spec.link` event. Mirrors the JSON
 /// shape consumed by the dashboard's "Sub-specs" tab; the Rust source of
 /// truth is [`mustard_core::SpecChild`].
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -68,15 +67,14 @@ pub struct SpecChild {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub reason: Option<String>,
-    /// Wave-6 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`): provenance of
+    /// Provenance of
     /// this child entry. `"event"` = found only in the SQLite `spec.link`
     /// projection; `"header"` = found only via the filesystem `### Parent:`
     /// header scan; `"both"` = present in both. Optional + serde default
     /// keeps older payloads (and the legacy SQLite-only path) compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs-polish`):
-    /// the parent wave whose execution window contains this child's
+    /// The parent wave whose execution window contains this child's
     /// `started_at`. `None` when the child has no `started_at` or its start
     /// falls outside every wave window. The dashboard renders sub-specs
     /// nested under the matching wave row in the Ondas tab; rows with
@@ -185,8 +183,7 @@ pub struct WorkspaceSummary {
     pub top_files_today: Vec<FileCount>,
 }
 
-/// Wave-6 (2026-05-21, spec `spec-lifecycle-unification/wave-6-observability`) —
-/// hygiene health roll-up for one project. Aggregates counts of active specs,
+/// Hygiene health roll-up for one project. Aggregates counts of active specs,
 /// hygiene suspects (recent `hygiene.detected` events), auto-closures today,
 /// and flag-bearing specs (`blocked`, `wave_failed`, `followup_open`).
 ///
@@ -214,13 +211,13 @@ pub struct WorkspaceHealth {
     pub suspect_specs: Vec<String>,
 }
 
-// Onda 1: `workspace_health_impl`, `spec_events`, and the entire `spec_action`
+// `workspace_health_impl`, `spec_events`, and the entire `spec_action`
 // family (`spec_action` + `reopen_target_status` + `emit_pipeline_status` +
 // `emit_pipeline_removed` + `sync_spec_status_header`) were reachable only
 // through the deleted SQLite `with_db` gate, which always short-circuited.
 // They are removed here.
 //
-// Onda 2 rebuilt these in `lib.rs` over the NDJSON sink:
+// A later pass rebuilt these in `lib.rs` over the NDJSON sink:
 //   * `dashboard_spec_action`   → reopen/close/remove now emit `pipeline.status`
 //                                 via `lib_emit_pipeline_status` (no longer the
 //                                 "banco de dados indisponível" error fallback).
@@ -229,7 +226,7 @@ pub struct WorkspaceHealth {
 // `_cancel` / `_reactivate`, which call `crate::lib_emit_ndjson`.
 
 // ===========================================================================
-// Wave 4 adapters (2026-05-20) — `*_v2` family backed by `mustard-core`.
+// Adapters (2026-05-20) — `*_v2` family backed by `mustard-core`.
 //
 // These produce the *same* JSON shape as the legacy functions above (the
 // shapes themselves did not move), but the projection layer is now the SDD
@@ -237,7 +234,7 @@ pub struct WorkspaceHealth {
 // functions stay alongside until `spec_views_test.rs` is retired.
 // ===========================================================================
 
-/// W8A-2 adapter: build a [`SpecCard`] via `mustard-core` projections.
+/// Adapter: build a [`SpecCard`] via `mustard-core` projections.
 ///
 /// Walks the NDJSON workspace, folds the slice into a
 /// [`mustard_core::SpecView`] via `project_spec_view_with_header` (so the
@@ -523,7 +520,7 @@ fn merge_attributed_counts(
     }
 }
 
-/// W8A-2 adapter: build the wave list via `mustard-core` projections.
+/// Adapter: build the wave list via `mustard-core` projections.
 /// Empty `Vec` when the spec has no wave events.
 ///
 /// Enrichment (dashboard layer): the event projection (`project_waves`) is
@@ -622,8 +619,8 @@ fn running_wave_numbers(
     active
 }
 
-/// Wave 3 (2026-06-10, spec `checklist-progresso-por-onda`) — per-wave
-/// checklist progress for one spec. Wave `0` is the spec's own sidecar
+/// Per-wave checklist progress for one spec.
+/// Wave `0` is the spec's own sidecar
 /// (items outside a wave plan); waves `1..` map to the `wave-N-{role}/`
 /// sidecars. `total` counts the trackable items seeded in
 /// `meta.json#checklist`; `done` is the live completion signal.
@@ -746,7 +743,7 @@ pub fn spec_checklist_progress_v2(
         .collect())
 }
 
-/// W8A-2 adapter: AC roll-up via `mustard-core` projections.
+/// Adapter: AC roll-up via `mustard-core` projections.
 ///
 /// Enrichment (dashboard layer): `project_quality` reads each AC's `label` from
 /// the `qa.result` event, falling back to the bare id when the event carries no
@@ -1031,7 +1028,7 @@ fn parse_wave_plan_row(line: &str) -> Option<(i64, Option<String>, Option<String
     Some((n, role, summary))
 }
 
-/// Wave-6 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`): list sub-specs
+/// List sub-specs
 /// linked to `parent` via the **union** of two sources — the SQLite
 /// `spec.link` projection AND a filesystem scan for `### Parent: <slug>` in
 /// every `.claude/spec/*/spec.md` header. The union lives in `mustard-rt run
@@ -1110,19 +1107,18 @@ struct ChildEntryRaw {
     reason: Option<String>,
     /// `"event" | "header" | "both"` — see [`SpecChild::source`].
     source: String,
-    /// Wave 2 (spec `2026-05-21-dashboard-spec-tabs-polish`): parent wave
+    /// Parent wave
     /// number containing this child's `started_at`. Optional + serde default
-    /// keeps older subprocess payloads (pre-Wave-2) compatible.
+    /// keeps older subprocess payloads (from before this field) compatible.
     #[serde(default)]
     wave: Option<u32>,
 }
 
-/// Wave 4 adapter: workspace summary via `mustard-core`. Replaces the
+/// Adapter: workspace summary via `mustard-core`. Replaces the
 /// broken `events_per_minute` and `tokens_saved_today` SQL with the
 /// projection from `project_workspace`.
 ///
-/// Wave 8 (2026-05-21, spec `2026-05-20-economia-moat-unification/wave-8-visao-geral-revamp`):
-/// after delegating to mustard-core we override `top_files_today` with an
+/// After delegating to mustard-core we override `top_files_today` with an
 /// independent SQLite aggregation. The previous reader path replayed every
 /// event from the store and then filtered by `today_start = now - (now %
 /// 86_400_000)` in the projection. That UTC-midnight cut combined with the
@@ -1156,11 +1152,11 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
         .retain(|track| !is_terminal_status(track.status.as_str()));
     out.specs_active_count = i64::try_from(out.spec_tracks.len()).unwrap_or(i64::MAX);
 
-    // Onda 1: the legacy session-agnostic SQLite override of `top_files_today`
+    // The legacy session-agnostic SQLite override of `top_files_today`
     // is gone (it short-circuited to a no-op once `db.rs` became a facade).
     // `out.top_files_today` keeps the value from the mustard-core NDJSON
     // projection (`project_workspace`) above. A faithful session-agnostic
-    // NDJSON ranking is Onda 2.
+    // NDJSON ranking is left for later.
     Ok(out)
 }
 
@@ -1245,7 +1241,7 @@ fn workspace_summary_from_view(view: &mustard_core::WorkspaceSummary) -> Workspa
         // Preserve `None` end-to-end so the frontend can render "—" when
         // token-savings data is unavailable instead of misrepresenting it
         // as a literal "0 tokens economizados". Spec
-        // `2026-05-20-dashboard-ux-honest` Wave 1.
+        // `2026-05-20-dashboard-ux-honest`.
         tokens_saved_today: view.tokens_saved_today,
         specs_active_count: i64::from(view.specs_active_count),
         spec_tracks: view.spec_tracks.iter().map(spec_track_from_view).collect(),
@@ -1400,7 +1396,7 @@ fn slice_json(stdout: &str) -> &str {
     }
 }
 
-/// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — payload for
+/// Payload for
 /// `dashboard_spec_wave_files`. `count` is the number of files declared in the
 /// wave sub-spec's `## Arquivos` section; `markdown` is the full wave-N spec
 /// markdown so the drawer can render it without a second round-trip; `path`
@@ -1413,8 +1409,8 @@ pub struct WaveFilesPayload {
     pub path: Option<String>,
 }
 
-/// Wave 1 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs-polish`) — one
-/// wave declared on disk (a `wave-N-{role}/` subdir of the spec). Surfaces
+/// One wave declared on disk
+/// (a `wave-N-{role}/` subdir of the spec). Surfaces
 /// the structure the wave-plan declared, independent of whether the SQLite
 /// event stream has any `wave.*` events for it yet. The dashboard unions
 /// this with `SpecWave[]` from the SQLite projection so the "Ondas" tab
@@ -1476,7 +1472,7 @@ fn parse_arquivos_count(text: &str) -> usize {
     count
 }
 
-/// Wave 1 — scan `<repo>/.claude/spec/{spec}/` for `wave-N-{role}/` subdirs and
+/// Scan `<repo>/.claude/spec/{spec}/` for `wave-N-{role}/` subdirs and
 /// return one [`SpecWavePlanned`] per match, sorted by wave number ascending.
 /// Resolves files in-process (no `mustard-rt` subprocess) because otherwise we
 /// would spawn once per wave per spec drawer open. Fail-open: any I/O hiccup
@@ -1545,7 +1541,7 @@ pub fn dashboard_spec_waves_planned_run(
     Ok(out)
 }
 
-/// Wave 2 — invoke `mustard-rt run wave-files --spec <name> --wave <N>` and
+/// Invoke `mustard-rt run wave-files --spec <name> --wave <N>` and
 /// parse the JSON stdout into a typed [`WaveFilesPayload`]. Subprocess
 /// invocation goes through [`mustard_rt_command`] (Windows uses
 /// `cmd /C mustard-rt …`, POSIX uses the binary directly). Fail-open:
@@ -1577,7 +1573,7 @@ pub fn dashboard_spec_wave_files_run(
 }
 
 // ===========================================================================
-// Wave 3 (spec-lifecycle-unification) — spec-children-tree.
+// spec-children-tree.
 //
 // `dashboard_spec_children_tree` shells out to `mustard-rt run
 // spec-children-tree --spec NAME` and returns the parsed `ChildrenTree`. The
@@ -1836,7 +1832,7 @@ mod tests {
         assert!(running.is_empty());
     }
 
-    // ── Wave 3 (spec `checklist-progresso-por-onda`): per-wave progress ──────
+    // ── Per-wave checklist progress ──────
 
     fn write_file(root: &std::path::Path, rel: &str, body: &str) {
         let path = root.join(rel);

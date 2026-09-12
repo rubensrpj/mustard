@@ -547,7 +547,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// AC-7 — the bar names the active unit and its stage, and says so when the
+    /// The bar names the active unit and its stage, and says so when the
     /// harness is inert.
     ///
     /// Both halves answer the same question: what does the operator see without
@@ -604,7 +604,7 @@ mod tests {
         out
     }
 
-    /// AC-5 — com endereço publicado gravado, o segmento da unidade vira link
+    /// Com endereço publicado gravado, o segmento da unidade vira link
     /// para a página, e o nome não se repete quando o branch já o mostra.
     ///
     /// Cada estado usa uma raiz própria: `current_spec` guarda a resposta por
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(cached_count(&td.path().join("never-written")), None, "a miss is a miss");
     }
 
-    /// **AC-8.** With units owed, the bar SAYS SO: the count, in the language
+    /// With units owed, the bar SAYS SO: the count, in the language
     /// the project configured, derived from the project's OWN bases.
     ///
     /// The agnosticism half is two-sided against the production region only

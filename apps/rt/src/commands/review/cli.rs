@@ -44,12 +44,12 @@ pub enum ReviewCmd {
         #[arg(long)]
         subproject: Option<String>,
     },
-    /// Spec A v4 / W4 — run the behavior-regression gate at the requested moment.
+    /// Run the behavior-regression gate at the requested moment.
     ///
     /// Reads the spec's `plan.txt` (or `spec.md` body) as the Moment-1 plan
     /// text and dispatches to `review::gate_regression_check::run`. Moments 2 and 3
     /// require external `diff` + snapshots that the bare CLI does not
-    /// collect today — those moments are exercised via the W5 span-level
+    /// collect today — those moments are exercised via the span-level
     /// integration.
     /// Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2.
     #[command(name = "gate-regression-check")]
@@ -61,7 +61,7 @@ pub enum ReviewCmd {
         /// Moment to evaluate: 1 (pre-edit), 2 (during diff), 3 (after child return).
         #[arg(long, default_value_t = 1)]
         moment: u8,
-        /// W5#3 — wave directory (e.g. `.claude/spec/<spec>/wave-5-rt`) used
+        /// Wave directory (e.g. `.claude/spec/<spec>/wave-5-rt`) used
         /// only with `--moment 3`. When set, the subcommand inspects that
         /// wave's `_review-spans.md` ledger via
         /// `review::review_spans::check_consolidation` and exits non-zero (2) when any
@@ -319,7 +319,7 @@ pub enum ReviewCmd {
         #[arg(long, alias = "from-spec")]
         spec: Option<String>,
     },
-    /// W5.T5.2 — Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
+    /// Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
     #[command(display_order = 66)]
     ReviewDispatch {
@@ -348,7 +348,7 @@ pub fn dispatch(cmd: ReviewCmd) {
             wave_dir,
         } => {
             use crate::commands::review::gate_regression_check::{GateInput, Moment};
-            // W5#3: Moment-3 + --wave-dir path consults the on-disk
+            // Moment-3 + --wave-dir path consults the on-disk
             // `_review-spans.md` ledger via `review::review_spans::check_consolidation`.
             // Exits 0 when consolidation is allowed (no red rows) and 2 when
             // blocked. This is the close-gate path; ledger lives on disk so

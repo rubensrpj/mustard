@@ -21,7 +21,7 @@
 //! Events with `spec != Some(spec_name)` are filtered out before the fold —
 //! callers that pre-filtered (e.g. `store.query(Some(name))`) pay zero cost.
 //!
-//! ## Sidecar / header fallback (Wave 1, 2026-05-21)
+//! ## Sidecar / header fallback (2026-05-21)
 //!
 //! When the event stream is empty and a `spec.md` path is supplied, the fold
 //! seeds the [`SpecView`] from the filesystem. **`meta.json` is the single
@@ -69,7 +69,7 @@ pub fn project_spec_view(spec_name: &str, events: &[HarnessEvent]) -> SpecView {
 /// When `events` is non-empty the path is ignored — the event log is
 /// authoritative.
 ///
-/// W8A-4 drop: the optional `emit_sink` parameter (a Wave 5 SQLite backfill
+/// Dropped with the SQLite store: the optional `emit_sink` parameter (a SQLite backfill
 /// hook for the legacy `EventSink`) is gone. With the NDJSON-only store,
 /// header-derived state is computed on demand by every reader and there is
 /// no second log to seed.
@@ -400,7 +400,7 @@ fn view_from_header(spec_name: &str, path: &Path) -> Option<SpecView> {
     // New canonical header (`### Stage:` / `### Outcome:` / `### Flags:`) takes
     // precedence when a `### Stage:` line is present. The legacy `### Status:`
     // / `### Phase:` block remains the fallback for specs not yet rewritten
-    // (rewrite is Wave 7).
+    // to the new header.
     if let Some(state) = state_from_new_header(&header) {
         view.state = state;
         if let Some(phase_raw) = header.get("phase")
@@ -827,9 +827,9 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Header fallback (Wave 1 of 2026-05-21-flatten-spec-layout-and-multi-collab)
+    // Header fallback (from 2026-05-21-flatten-spec-layout-and-multi-collab)
     //
-    // W8A-4 (no-sqlite Wave 8) deleted the `EventSink`-backed synthetic-emit
+    // Dropping the SQLite store deleted the `EventSink`-backed synthetic-emit
     // hook plus its `CapturingSink` test double. Header fallback is now a
     // pure read: caller passes `Some(&path)` to opt in, gets back a typed
     // view derived from the spec.md header. No second store, nothing to

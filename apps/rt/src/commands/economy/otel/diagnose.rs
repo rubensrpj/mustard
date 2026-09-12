@@ -7,7 +7,7 @@
 //! it is a diagnose tool, not a gate. Only `--expect-rows-after` can fail
 //! (exit `1`); every other path exits `0`.
 //!
-//! ## Persistence (post-W5A)
+//! ## Persistence
 //!
 //! The diagnose face reads NDJSON. Two event kinds drive the report:
 //!
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn env_ok_under_dual_emit_even_when_exporter_vars_unset() {
-        // AC4: with dual-emit + a healthy collector, the absent OTEL exporter
+        // With dual-emit + a healthy collector, the absent OTEL exporter
         // vars must NOT mark env as a failure. `check_env(true)` reports
         // `ok: true` while still listing each unset var as null in `status`.
         let v = check_env(true);

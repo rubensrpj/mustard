@@ -1,6 +1,6 @@
 //! `session_start_inject` — the consolidated `SessionStart` lifecycle module.
 //!
-//! ## Scope (b3 Wave 5, session family)
+//! ## Scope (session family)
 //!
 //! This module consolidates the `SessionStart` concerns. Each is a distinct
 //! *concern* kept as its own internal section — consolidation regroups, it
@@ -64,10 +64,10 @@
 //! itself could not reach past it, and three went red on a box mid-upgrade
 //! while staying green on the runner, where no plugin is installed at all.
 //!
-//! ## OTEL collector spawn (Wave 3 — economia-moat-unification)
+//! ## OTEL collector spawn
 //!
 //! `harness-init.js` historically spawned an OTEL collector subprocess. With
-//! the b4 port complete (`mustard-rt run otel-collector`) the spawn is now
+//! the port to Rust complete (`mustard-rt run otel-collector`) the spawn is now
 //! handled in-binary here: [`spawn_otel_collector`] detaches the child through
 //! [`crate::shared::proc::spawn_detached`], which on Windows routes via
 //! `cmd /C start "" /B` so the long-lived collector does NOT inherit this
@@ -180,7 +180,7 @@ fn run_harness_init(input: &HookInput, cwd: &str) {
         spec: None,
     };
     // `session.start` is non-pipeline → per-spec NDJSON (or session fallback
-    // when there is no active spec yet) via the W5 router.
+    // when there is no active spec yet) via the event router.
     let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
@@ -209,7 +209,7 @@ fn prune_old_sessions(sessions_dir: &Path) {
 }
 
 // ===========================================================================
-// OTEL collector spawn (Wave 3 — economia-moat-unification)
+// OTEL collector spawn
 // ===========================================================================
 
 /// File where the OTEL collector records its PID, under the project's harness
@@ -388,7 +388,7 @@ fn session_start_core(
     }
     let cwd = ctx.project_dir_or_cwd(input);
     run_harness_init(input, &cwd);
-    // Wave 3 (economia-moat-unification): the OTEL collector is no longer
+    // The OTEL collector is no longer
     // an "out-of-scope spawn" — fire it detached and let `session_cleanup`
     // remove the PID file on `SessionEnd`.
     spawn_otel_collector(&cwd);
@@ -400,8 +400,7 @@ fn session_start_core(
     // work unit's worktree or one holding uncommitted work. Fail-open at
     // every step.
     crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));
-    // Deep-Refactor Wave 2 (T2.3 / claude-paths-single-source W2.T2.6):
-    // advisory probe for drift in the project's `.claude/` directory.
+    // Advisory probe for drift in the project's `.claude/` directory.
     // Read-only; emits a single stderr warning when one or more children
     // classify as `ORPHAN` (no declared consumer in
     // `apps/{rt,cli,dashboard}`) — the underlying audit now derives its
@@ -617,7 +616,7 @@ const PRUNE_NOTICE_NAMES: usize = 4;
 ///
 /// **Session start only, since the `stop_gate` left.** It also called this at
 /// the end of every turn, because the debt is BORN mid-session, at the merge;
-/// that end-of-turn copy left with it (Mustard enxuto, wave 2), and mid-session
+/// that end-of-turn copy left with it, and mid-session
 /// the statusline still shows the same count live to the human.
 pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
@@ -758,7 +757,7 @@ fn scratch_notice(root: &Path, scratch: Option<&ScratchProbe>, i18n: I18n) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `session.start` lands in the per-session NDJSON sink under W5.
+    // `session.start` lands in the per-session NDJSON sink.
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
@@ -774,7 +773,7 @@ mod tests {
     }
 
 
-    /// AC-5 — a renewed window RE-ARMS the prompt family; it does not fold it
+    /// A renewed window RE-ARMS the prompt family; it does not fold it
     /// into this response.
     ///
     /// An earlier revision did fold it in, and the response measured 11,973
@@ -879,7 +878,7 @@ mod tests {
 
     // --- stale-plugin advisory ----------------------------------------------
 
-    /// AC-5 — a session whose loaded plugin is behind the one the registry
+    /// A session whose loaded plugin is behind the one the registry
     /// records as installed says so in ONE line, and says that reloading is
     /// what fixes it. The drift advisory cannot reach this case: the stamp it
     /// compares was written BY the running harness.
@@ -993,7 +992,7 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "seed: {out}");
     }
 
-    /// AC-4 — a sessão que abre com pendências abertas recebe, no contexto
+    /// A sessão que abre com pendências abertas recebe, no contexto
     /// injetado, cada uma com id e título.
     #[test]
     fn session_start_lists_open_pending_items() {
@@ -1050,7 +1049,7 @@ mod tests {
         SessionStartInject.evaluate(&input, &ctx(project)).unwrap();
         assert!(dir.path().join(".claude/.harness/sessions").is_dir());
 
-        // W5: `session.start` is non-pipeline → lands in the per-session NDJSON
+        // `session.start` is non-pipeline → lands in the per-session NDJSON
         // sink under `<project>/.claude/.session/<slug>/.events/`.
         let session_root = dir.path().join(".claude").join(".session");
         let mut found = false;
@@ -1079,10 +1078,10 @@ mod tests {
 
     #[test]
     fn harness_init_creates_harness_dir_no_jsonl() {
-        // W5: `session.start` is non-pipeline → it lands in the per-session
+        // `session.start` is non-pipeline → it lands in the per-session
         // NDJSON sink, NOT in `mustard.db`. The harness directory still gets
         // created so later pipeline.* events can land there.
-        // W3B: no event-store seeding required.
+        // No event-store seeding required.
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         SessionStartInject
@@ -1185,7 +1184,7 @@ mod tests {
     /// suíte nunca entram num teste que não fala delas.
     const NO_SCRATCH: Option<&ScratchProbe> = None;
 
-    /// AC-6 — com as sobras acima do limite, o início da sessão mostra o total
+    /// Com as sobras acima do limite, o início da sessão mostra o total
     /// e o comando que limpa; abaixo do limite, nada aparece.
     #[test]
     fn session_start_warns_when_scratch_is_large() {

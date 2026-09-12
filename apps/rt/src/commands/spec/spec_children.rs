@@ -6,7 +6,7 @@
 //! Filesystem-only discovery
 //! -------------------------
 //!
-//! W4A migration: the SQLite branch (`SqliteSpecReader::children_of` +
+//! SQLite removal: the SQLite branch (`SqliteSpecReader::children_of` +
 //! `correlate_waves`) was removed. Sub-spec discovery is now purely
 //! filesystem-driven — filesystem-versioned, cross-developer canonical, durable
 //! across `git pull`. The parent edge is read from `meta.json#parent` first
@@ -53,7 +53,8 @@ pub struct ChildEntry {
     /// Free-form `spec.link` payload reason (e.g. `"tactical-fix"`).
     /// Header-only entries default `None`.
     pub reason: Option<String>,
-    /// Which source produced this entry — always `Header` post-W4A.
+    /// Which source produced this entry — always `Header` since the SQLite
+    /// branch was removed.
     pub source: ChildSource,
     /// Wave attribution. Header-only entries default `None` (no `started_at`
     /// to correlate against parent wave windows).
@@ -177,7 +178,7 @@ fn scan_filesystem(project: &Path, parent: &str) -> Vec<ChildEntry> {
 
 /// List sub-specs of `parent` — header-driven discovery.
 ///
-/// W4A: SQLite-backed Set A (events) and wave correlation removed. Every
+/// The SQLite-backed Set A (events) and wave correlation were removed. Every
 /// row is `ChildSource::Header`; output is sorted by slug ascending for
 /// byte-stability.
 #[must_use]

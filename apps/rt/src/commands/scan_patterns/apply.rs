@@ -738,7 +738,7 @@ mod tests {
         assert!(resolve_content(&format!("@{}", missing.display())).is_none());
     }
 
-    /// AC-4 — the apply takes the SAME `@<path>` face the relay does, through
+    /// The apply takes the SAME `@<path>` face the relay does, through
     /// the SAME reader. Two copies of the resolution is how the relay grew a
     /// file face the apply lacked, so the shared reader is the guard: a body
     /// too large for an argv reaches either command the same way.
@@ -1092,7 +1092,7 @@ mod tests {
         assert!(structure_defects(&fenced).is_empty(), "fenced samples are not sections");
     }
 
-    /// AC-1 — uma `## Examples` sem bloco cercado é exatamente o formato que os
+    /// Uma `## Examples` sem bloco cercado é exatamente o formato que os
     /// dezesseis moldes deste repositório carregam: uma lista de caminhos. Um
     /// molde que manda ler o código não ensinou, apontou — e como ele
     /// auto-carrega em toda edição futura da pasta, esse custo se repete em cada
@@ -1166,7 +1166,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — o trecho vem dos exemplares que o agente leu, nunca de código
+    /// O trecho vem dos exemplares que o agente leu, nunca de código
     /// inventado. Um bloco que não aparece em nenhum `Ref:` citado é uma lição
     /// falsa ensinada para sempre, e cai pelo mesmo princípio de
     /// prova-por-leitura que já derruba um `Ref:` para caminho inexistente.

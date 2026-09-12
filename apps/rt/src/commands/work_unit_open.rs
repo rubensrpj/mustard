@@ -1487,7 +1487,7 @@ mod tests {
         }
     }
 
-    /// AC-1 — a fresh worktree receives what GIT brings plus what its
+    /// A fresh worktree receives what GIT brings plus what its
     /// SUBMODULES bring, and nothing the harness invented.
     ///
     /// Carrying the project's git-ignored environment into a cut (and LINKING
@@ -1550,7 +1550,7 @@ mod tests {
         assert!(!wt.join("node_modules").exists(), "a git-ignored directory never travels");
     }
 
-    /// AC-2 — nothing inside a fresh worktree points back into the main
+    /// Nothing inside a fresh worktree points back into the main
     /// checkout.
     ///
     /// This is the withdrawn defect stated as a property. A directory junction

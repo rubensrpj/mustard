@@ -1,4 +1,4 @@
-//! `event_writer_ndjson` — per-spec NDJSON event sink (W5.T5.1).
+//! `event_writer_ndjson` — per-spec NDJSON event sink.
 //!
 //! ## Why
 //!
@@ -7,7 +7,7 @@
 //! writer lock turns into a queue. The `events` table grows unbounded; the
 //! dashboard timeline only ever reads the most recent spec slice.
 //!
-//! The W5 contract moves the hot path to **per-spec NDJSON files**:
+//! The event-sink contract moves the hot path to **per-spec NDJSON files**:
 //!
 //! ```text
 //! .claude/spec/{name}/[wave-N-{role}/].events/{ts-ns}-{run-id}-{pid}.ndjson
@@ -36,7 +36,7 @@
 //! Every IO error degrades to a silent no-op — the caller's tool execution
 //! is never blocked by a telemetry failure.
 
-// W5 follow-up: `write_event` is now wired through `crate::shared::events::route`
+// `write_event` is now wired through `crate::shared::events::route`
 // (the single classification layer that splits `pipeline.*` → SQLite from
 // everything else → this NDJSON sink). `event_dir` is still the canonical
 // path-resolver used by tests and the dashboard reader contract.
@@ -53,7 +53,7 @@ use std::sync::OnceLock;
 /// Detect whether `project` resolves to the `mustard-rt` crate's own source
 /// directory — set by `cargo test` via `CARGO_MANIFEST_DIR`. Treating that
 /// as "no harness available" prevents in-crate test runs from leaking a
-/// `apps/rt/.claude/` tree (umbrella AC-G2). Fail-open: any env read failure
+/// `apps/rt/.claude/` tree. Fail-open: any env read failure
 /// returns `false`.
 fn project_is_own_crate(project: &Path) -> bool {
     let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else { return false; };
@@ -69,7 +69,7 @@ fn project_is_own_crate(project: &Path) -> bool {
 /// for inside-wave writes; `None` for the parent spec dir.
 ///
 /// Falls back to `.claude/.session/{slug}/.events/` when `spec` is empty — the
-/// W5.T5.4 sessions sidebar consumes that directory.
+/// dashboard's sessions sidebar consumes that directory.
 #[must_use]
 pub(crate) fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
     if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
@@ -177,7 +177,7 @@ struct NdjsonRecord<'a> {
 /// in [`write_event_with_ts`].
 ///
 /// `ts_override` lets the router preserve a pre-constructed event's `ts`
-/// (W6 follow-up: the SQLite-vs-NDJSON cascade revealed that
+/// (a follow-up fix: the SQLite-vs-NDJSON cascade revealed that
 /// `route::emit` was discarding the caller's `HarnessEvent.ts`,
 /// breaking consumer-side ts filters like the MCP `since` lower bound and
 /// the `metrics wave-status` min/max duration). `None` falls back to
@@ -256,7 +256,7 @@ fn write_event_inner(
 /// silent no-op — the caller's tool execution must never be blocked by a
 /// telemetry failure.
 // Test-only entry point: the production callsite (`route::emit`) routes
-// through [`write_event_with_ts`] for the W6 ts-preservation fix, so this
+// through [`write_event_with_ts`] for the ts-preservation fix, so this
 // historical signature survives solely for the in-crate unit tests.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(leap - non, 366 * 86_400_000);
     }
 
-    /// AC-W5-8 — hot-path latency smoke. Real benchmark target is < 50 µs on
+    /// Hot-path latency smoke. Real benchmark target is < 50 µs on
     /// the SSD path the user dev'd against. CI / Windows file IO under
     /// virus-scan contention can spike to tens of ms per write, so the assert
     /// bound here is a sanity ceiling (the order of magnitude).

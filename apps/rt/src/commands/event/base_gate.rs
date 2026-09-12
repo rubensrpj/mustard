@@ -580,7 +580,7 @@ mod tests {
         git(root, &["commit", "-m", "init"]);
     }
 
-    /// AC-1 — the refusal this test used to assert is GONE, and its absence is
+    /// The refusal this test used to assert is GONE, and its absence is
     /// the feature. A branch the project never declared is an ordinary base:
     /// `release/2026-Q3` is cut on a Tuesday and works the same afternoon,
     /// where before it was told it "is not an integration base of this
@@ -599,7 +599,7 @@ mod tests {
         );
     }
 
-    /// AC-6 — the compatibility half, and the reason `git.flow` was kept rather
+    /// The compatibility half, and the reason `git.flow` was kept rather
     /// than deleted: a project that still declares one is not restricted BY it.
     /// The declaration survives as a hint for where a picker opens; it decides
     /// nothing here.
@@ -829,7 +829,7 @@ mod tests {
     /// committed — the shape this repository has, and the only one where a
     /// census refresh can dirty anything at all. Returns the model path.
     /// The fixture tracks BOTH artifacts a scan writes, because the real miner
-    /// writes both. Tracking only the model made the AC-2 test a false
+    /// writes both. Tracking only the model made the refresh test below a false
     /// positive: it passed while the field run left the dictionary sidecar
     /// modified and the tree dirty.
     fn repo_tracking_the_census(root: &Path) -> std::path::PathBuf {
@@ -855,7 +855,7 @@ mod tests {
         std::fs::write(model.with_file_name(GRAIN_DICTIONARY), "{\"terms\":[\"wave\"]}\n").unwrap();
     }
 
-    /// AC-2 — the refresh finishes its own job. Re-mining a VERSIONED census on
+    /// The refresh finishes its own job. Re-mining a VERSIONED census on
     /// a tree the gate found clean leaves the tree clean again, with no manual
     /// commit in between.
     ///
@@ -891,7 +891,7 @@ mod tests {
         );
     }
 
-    /// AC-3 — and it never finishes SOMEONE ELSE's. A tree that already carried
+    /// And it never finishes SOMEONE ELSE's. A tree that already carried
     /// the operator's work is left entirely alone: nothing is committed, and
     /// their change is neither swept into a commit of ours nor staged.
     #[test]
@@ -949,7 +949,7 @@ mod tests {
         .unwrap();
     }
 
-    /// AC-7 — a abertura ORDINÁRIA: o operador parado NA base, a árvore suja só
+    /// A abertura ORDINÁRIA: o operador parado NA base, a árvore suja só
     /// com o censo, e o corte da próxima unidade NÃO é recusado — o portão fecha
     /// a conta ele mesmo, em vez de deixá-la para o operador.
     ///
@@ -1063,7 +1063,7 @@ mod tests {
             "a fixture tem de começar com a base ATRÁS do origin",
         );
 
-        // A abertura ordinária do AC-7: a árvore suja só com o censo.
+        // A abertura ordinária: a árvore suja só com o censo.
         remine(&model);
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
@@ -1701,7 +1701,8 @@ mod tests {
         );
 
         // …e a outra metade, que não pode ser apertada junto: PARADO NA BASE, o
-        // corte ordinário continua gravando e deixando a árvore limpa (AC-7).
+        // corte ordinário continua gravando e deixando a árvore limpa, como na
+        // abertura ordinária.
         git(root, &["checkout", "dev"]);
         remine(&model);
         leftover_enrichment(root);

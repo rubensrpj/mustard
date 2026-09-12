@@ -52,7 +52,7 @@ pub enum SpecCmd {
     },
     /// Project a parent spec's waves + acceptance criteria + sub-specs into a
     /// single JSON document. Consumed by the dashboard's `spec_children_tree`
-    /// command (Wave 3 of `spec-lifecycle-unification`). Fail-open: a missing
+    /// command (introduced by `spec-lifecycle-unification`). Fail-open: a missing
     /// spec or store degrades to empty arrays.
     #[command(display_order = 15)]
     SpecChildrenTree {

@@ -1940,7 +1940,7 @@ mod tests {
         run_git(root, &["commit", "-m", "seed"]);
     }
 
-    /// AC-3 — the migration recognises an equivalent spelling of the router's
+    /// The migration recognises an equivalent spelling of the router's
     /// declared path.
     ///
     /// Matching the raw string made `./.claude/mustard/orchestrator.md` and the
@@ -2263,7 +2263,7 @@ mod tests {
 
     // --- .gitignore line-merge ------------------------------------------------
 
-    /// AC-13 — seeding over an EXISTING ignore file appends the patterns it
+    /// Seeding over an EXISTING ignore file appends the patterns it
     /// lacks instead of preserving the file whole.
     ///
     /// The defect this closes shipped in this very repository: the write gate
@@ -2584,7 +2584,7 @@ mod tests {
         assert!(!manifest_registers_sibling_hooks(&hooks.join("nao-existe.json")));
     }
 
-    /// AC-2 — a project split across two events is MOVED onto one, not
+    /// A project split across two events is MOVED onto one, not
     /// duplicated.
     ///
     /// This is the shape every project installed between the split and this
@@ -3119,7 +3119,7 @@ mod tests {
     /// only ownership says whether it should.
     ///
     /// Both halves are needed, and the negative one carries most of the weight:
-    /// an over-broad rule makes the CLEAN-status criterion (AC-8) MORE likely to
+    /// an over-broad rule makes the CLEAN-status criterion MORE likely to
     /// pass, not less, so nothing else in this unit can see it.
     ///
     /// The matching is done by git — `check-ignore` in a probe repository

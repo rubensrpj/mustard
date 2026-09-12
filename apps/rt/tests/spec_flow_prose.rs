@@ -79,7 +79,7 @@ fn assert_superseded_gone(rel: &str, body: &str) {
     );
 }
 
-/// AC-4 — the picker states that SELECTING is approving.
+/// The picker states that SELECTING is approving.
 ///
 /// The picker used to say the opposite in four places, and it was load-bearing
 /// prose: the operator read it and routed a user who had already typed their
@@ -161,7 +161,7 @@ fn picker_prose_states_the_typed_letter_is_the_approval() {
     assert_superseded_gone("plugin/commands/spec.md", &picker);
 }
 
-/// AC-4 — §A takes the shortcut it already had, for the typed form too.
+/// §A takes the shortcut it already had, for the typed form too.
 ///
 /// §A already skipped the re-approval on `approvedByUser:true`, for exactly the
 /// reason that applies here: the marker exists, so asking again is the
@@ -219,7 +219,7 @@ fn resume_prose_skips_the_second_gesture_for_the_typed_form() {
     assert_superseded_gone("plugin/refs/spec/resume-loop.md", &loop_ref);
 }
 
-/// AC-4 — the Full plan materialises in ONE call, and `plan-materialize` is
+/// The Full plan materialises in ONE call, and `plan-materialize` is
 /// named as the RE-materialisation door.
 ///
 /// The old steps 2 and 3 spent two calls on one decision the first call had
@@ -278,7 +278,7 @@ fn full_plan_prose_materialises_in_one_call() {
     assert_superseded_gone("plugin/refs/feature/full-plan.md", &plan);
 }
 
-/// AC-7 — the Full path reaches the full-plan machinery BEFORE the step that
+/// The Full path reaches the full-plan machinery BEFORE the step that
 /// reads the `## Files` census.
 ///
 /// `/feature` §2 ordered `plan-prepare` immediately after the draft, and on the
@@ -360,7 +360,7 @@ fn the_full_path_reaches_full_plan_before_the_census_step() {
     }
 }
 
-/// **AC-9** — the picker's own legend names the status the table can now print.
+/// The picker's own legend names the status the table can now print.
 ///
 /// The renderer gained `W{N} a iniciar` for a plan that was scaffolded and never
 /// dispatched, and `active_specs` pins the legend it renders itself. The picker
@@ -433,7 +433,7 @@ fn the_picker_legend_names_the_not_yet_started_status() {
     );
 }
 
-/// **AC-10** — the flow hands the draft the name the GATE minted, rather than
+/// The flow hands the draft the name the GATE minted, rather than
 /// letting it derive a second one.
 ///
 /// The engine no longer depends on this — `spec-draft` reads the slug half of
@@ -692,7 +692,7 @@ const SUPERSEDED: &[(&str, &str)] = &[
     ("plugin/commands/spec.md", "the `scp` commands the end-of-turn message lists"),
 ];
 
-/// AC-12 — em sessão remota, o roteiro do `/mustard:spec` sabe que o `file://`
+/// Em sessão remota, o roteiro do `/mustard:spec` sabe que o `file://`
 /// não chega ao usuário, e os `scp` que ele ensina são o último recurso, só sem
 /// ferramenta de publicação — sempre ANTES da pergunta de aprovação.
 ///
@@ -700,8 +700,8 @@ const SUPERSEDED: &[(&str, &str)] = &[
 /// navegador de lá nunca chega ao usuário: foi assim que ele ficou sem ler a
 /// spec em 10/09/2026. A prosa é lida: o parágrafo do §3, entre a chamada do
 /// `spec-doc` e o roteamento, e o inviolável. O gancho do fim da resposta que
-/// também reconhecia a sessão remota (`spec_doc_present`) saiu na onda 2 do
-/// Mustard enxuto; a regra fica só na prosa.
+/// também reconhecia a sessão remota (`spec_doc_present`) saiu, e a regra fica
+/// só na prosa, com os comandos `scp` escritos nela.
 #[test]
 fn spec_door_teaches_remote_publishing() {
     // O checkout do Windows entrega a prosa com CRLF, e o recorte por

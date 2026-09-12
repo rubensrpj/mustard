@@ -1734,7 +1734,7 @@ mod tests {
         );
     }
 
-    /// AC-4 — prosa que atribui trabalho a uma onda pelo número, sob um título
+    /// Prosa que atribui trabalho a uma onda pelo número, sob um título
     /// FORA do vocabulário canônico, vira `wave-prescription-unreachable` — e o
     /// aviso diz para onde mover o texto.
     ///

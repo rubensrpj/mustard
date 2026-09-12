@@ -413,7 +413,7 @@ mod tests {
         assert!(!ghost.exists());
     }
 
-    /// AC-W1.3 — a wave dir at Plan/Active; after sync_status(Close,
+    /// A wave dir at Plan/Active; after sync_status(Close,
     /// Completed), meta.json carries Close/Completed and spec.md stays narrative.
     #[test]
     fn sync_status_wave_complete() {

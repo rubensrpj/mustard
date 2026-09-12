@@ -12,7 +12,7 @@
 //!    denies while any of them still owes a destination.
 //! 4. **QA gate** — denies if no `qa.result` with `overall=pass`
 //!    exists in the harness event log.
-//! 5. **Build/test gate (Wave 9)** — runs `build → type → lint → test` from
+//! 5. **Build/test gate** — runs `build → type → lint → test` from
 //!    `mustard.json` and denies on the first real (non-env) failure.
 //!
 //! Each sub-gate has its own `MUSTARD_*_MODE` env var; the dominant default is
@@ -306,14 +306,14 @@ fn has_marker_with_content(lower: &str, token: &str) -> bool {
 /// unmarked)` — `found=false` means the spec or section is absent (skip).
 /// Port of `findUnmarkedChecklistItems`.
 ///
-/// **Wave-plan parent (D1/D2):** a decomposed Full spec is a coordination doc —
+/// **Wave-plan parent:** a decomposed Full spec is a coordination doc —
 /// it carries NO `## Checklist`; the actionable checklists live in each
 /// `wave-N-*/` sidecar. If the parent has no checklist section AND it is a
 /// wave-plan parent (its `meta.json#isWavePlan`/`totalWaves` says so, or wave
 /// subdirs exist), this CONSOLIDATES the wave checklists instead of skipping —
 /// otherwise CLOSE would pass having checked nothing (an orphaned gate).
 ///
-/// **Meta-first (checklist-progresso-por-onda W2):** each wave is read from
+/// **Meta-first:** each wave is read from
 /// its `meta.json#checklist` (the canonical home seeded by `wave-scaffold` and
 /// flipped by the auto-mark hook / `mark-checklist-item`); the wave's markdown
 /// `## Checklist` section is the legacy fallback. The parent root meta carries
@@ -575,7 +575,7 @@ fn finding_refusal(spec: &str, finding: &FindingItem) -> String {
 /// `criteria_count` distinguishes the two `overall=skip` shapes (0 = the spec
 /// carries no AC at all; >0 = ACs exist but every one skipped at run time).
 ///
-/// W5: `qa.result` events live in the per-spec NDJSON sink, not in `pipeline_events`,
+/// `qa.result` events live in the per-spec NDJSON sink, not in `pipeline_events`,
 /// so this reads the spec's `events/` directory directly. With `spec = None` we
 /// fall back to scanning every spec dir under `.claude/spec/` — slow but rare.
 fn find_last_qa_result(
@@ -905,7 +905,7 @@ fn emit_close_gate_event(cwd: &str, spec: Option<&str>, payload: Value) {
         payload,
         spec: spec.map(str::to_string),
     };
-    // `close-gate.check` is non-pipeline → per-spec NDJSON via the W5 router.
+    // `close-gate.check` is non-pipeline → per-spec NDJSON via the event router.
     let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
@@ -1452,7 +1452,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
         }
     }
 
-    // ── Build/test gate (Wave 9) ──────────────────────────────────────────
+    // ── Build/test gate ───────────────────────────────────────────────────
     // `commands()` always returns (fields `None` when the key is absent or the
     // file is missing/unreadable). Each stage already skips on an absent command,
     // and the `stages.is_empty()` check below fail-open skips when none are set —
@@ -1608,7 +1608,7 @@ mod tests {
         assert!(find_symptom_findings(cwd, None).is_empty());
     }
     use super::*;
-    // W5 follow-up landed: `qa.result` events seed straight into the per-spec
+    // `qa.result` events seed straight into the per-spec
     // NDJSON dir, mirroring `qa-run`'s production write path through
     // `route::emit`.
     use crate::shared::events::route;
@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     fn write_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: Value) {
-        // Route a `qa.result` through the event router — W5 lands it in the
+        // Route a `qa.result` through the event router — it lands in the
         // per-spec NDJSON sink, same path `qa-run` uses in production.
         let event = HarnessEvent {
             v: SCHEMA_VERSION,

@@ -19,10 +19,10 @@
 //! used to host now lives on
 //! [`HookInput::file_path`](mustard_core::domain::model::contract::HookInput::file_path).
 //!
-//! ## W3C migration
+//! ## Migration off SQLite
 //!
 //! `boundary_gate` previously used the SQLite event store to feed
-//! `pipeline_state_from_events`. The W3C migration replaces that with two
+//! `pipeline_state_from_events`. The migration off SQLite replaces that with two
 //! filesystem reads:
 //!
 //! 1. `read_harness_events_from_ndjson_dir` — per-spec NDJSON event log.
@@ -497,7 +497,7 @@ fn pattern_matches(rel: &str, pattern: &str) -> bool {
 
 /// Collect harness events for `spec_name` from the per-spec NDJSON event log.
 ///
-/// W3C: replaces the broad `store.replay()` (all events from SQLite) with a
+/// Replaces the broad `store.replay()` (all events from SQLite) with a
 /// targeted read of the per-spec `.events/` directory. Fail-open: an absent
 /// or unreadable directory returns an empty vec.
 fn read_spec_events(cwd: &str, spec_name: &str) -> Vec<HarnessEvent> {
@@ -553,7 +553,7 @@ fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
 /// `None` (pass through). A real mismatch → `Deny` in strict mode, `Warn` in
 /// warn mode.
 ///
-/// W3C migration: spec pipeline-state fields (`isWavePlan`, `currentWave`,
+/// Since the migration off SQLite, spec pipeline-state fields (`isWavePlan`, `currentWave`,
 /// `status`) are derived from the NDJSON event log via
 /// `pipeline_state_from_events`. The JSON state file is still consulted for
 /// `specName` (filesystem identity) and the mtime freshness gate. When the
@@ -582,7 +582,7 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     let spec_name = resolve_boundary_spec(cwd, input.session_id.as_deref())?;
     let spec_name = spec_name.as_str();
 
-    // Collect events from the NDJSON event log (W3C — no SQLite).
+    // Collect events from the NDJSON event log (no SQLite).
     let events = read_spec_events(cwd, spec_name);
 
     // Derive the spec's pipeline state from the NDJSON event log.
@@ -804,7 +804,7 @@ mod tests {
         assert!(boundary_gate(&allowed, &cwd_str).is_none());
     }
 
-    // --- W3C: NDJSON event source -------------------------------------------
+    // --- NDJSON event source ------------------------------------------------
 
     #[test]
     fn boundary_gate_allows_when_no_events_and_no_patterns() {
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn boundary_gate_reads_terminal_status_from_spec_header() {
-        // W3C: terminal state is detected via spec header fallback (no SQLite).
+        // Terminal state is detected via spec header fallback (no SQLite).
         // A spec whose header says `### Outcome: Completed` must skip the gate.
         let dir = tempdir().unwrap();
         let cwd = dir.path();
@@ -925,7 +925,7 @@ mod tests {
         );
     }
 
-    /// AC-12 — when the gate checks an edit against a WAVE's file list, the
+    /// When the gate checks an edit against a WAVE's file list, the
     /// warning names that wave as the boundary it checked, not the parent slug
     /// alone. The parent's own `## Files` deliberately LISTS the edited path
     /// here: pointing the author at the parent would send them to a section

@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(to_json(&c)["uncovered"], serde_json::json!([]));
     }
 
-    /// AC-1 — a project with NO glossary is handed a starting list.
+    /// A project with NO glossary is handed a starting list.
     ///
     /// The gap this closes: the report correctly said the glossary was missing
     /// and correctly handed back no `uncovered` (there are no authored entries
@@ -1072,7 +1072,7 @@ mod tests {
         assert_eq!(to_json(&c)["seed"], serde_json::json!(["payable", "ledger"]));
     }
 
-    /// AC-2 — nothing rather than noise, in both directions that matter.
+    /// Nothing rather than noise, in both directions that matter.
     #[test]
     fn a_seed_is_empty_rather_than_padded_with_noise() {
         let index = sample_corpus();
@@ -1122,7 +1122,7 @@ mod tests {
         }
     }
 
-    /// AC-3 — an authored glossary is never offered a seed, however thin it is.
+    /// An authored glossary is never offered a seed, however thin it is.
     ///
     /// The seed answers "what would a FIRST glossary open with". A project that
     /// already keeps one is asking the other question, and `uncovered` is

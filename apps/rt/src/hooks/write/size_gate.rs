@@ -1,6 +1,6 @@
 //! `size_gate` — the consolidated Write/Edit size & skill-validation module.
 //!
-//! ## Scope (b3 Wave 4, Write/Edit family)
+//! ## Scope (Write/Edit family)
 //!
 //! This module ports the **structural-gate** concerns of three JavaScript
 //! hooks, all `PreToolUse(Write|Edit)` gates:

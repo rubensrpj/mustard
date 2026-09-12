@@ -295,7 +295,7 @@ mod tests {
         );
     }
 
-    /// AC-7 (table half): a census authored as a markdown table contributes
+    /// The table half: a census authored as a markdown table contributes
     /// its path column; header and separator rows contribute nothing; bullets
     /// and table rows mix in document order. (The "names an unreadable one"
     /// half — the diagnostic — is asserted in `scope_decompose`.)

@@ -122,7 +122,7 @@
 //! Emits two harness events per invocation (fail-open):
 //!
 //! - `pipeline.economy.operation.invoked { operation: "worktree-gc", duration_ms }`
-//!   — the universal `/economia` operation marker (W12 contract).
+//!   — the universal `/economia` operation marker, the same for every operation.
 
 use crate::commands::git_settle::git_out;
 use crate::commands::review::work_removed::scratch_prefix;
@@ -196,7 +196,7 @@ struct GcReport {
 ///
 /// `worktrees/` has no typed accessor on `ClaudePaths` (it's a legacy direct
 /// child of `.claude/`); routing via `claude_dir()` keeps the boundary owned
-/// by the canonical handle without expanding W4 scope.
+/// by the canonical handle without adding a typed accessor for it.
 fn list_agent_worktrees(repo: &Path) -> Vec<PathBuf> {
     let Ok(paths) = ClaudePaths::for_project(repo) else {
         return Vec::new();
@@ -1012,7 +1012,7 @@ mod tests {
         pid
     }
 
-    /// AC-4 — a worktree whose owner is gone is collected NOW, minutes old,
+    /// A worktree whose owner is gone is collected NOW, minutes old,
     /// nowhere near the seven-day threshold. Two-sided: the identical worktree
     /// owned by a process that IS alive survives, so what collected the first
     /// one was ownership and not merely the widened reach.
@@ -1042,7 +1042,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&busy);
     }
 
-    /// AC-5 — the collector that now ACTS still refuses a worktree holding
+    /// The collector that now ACTS still refuses a worktree holding
     /// work, even when its owner is provably gone. The guard that made acting
     /// safe is not weakened by acting.
     #[test]
@@ -1081,7 +1081,7 @@ mod tests {
         let _ = backdate(&head, when);
     }
 
-    /// AC-12 — the collector removes on a POSITIVE observation of emptiness and
+    /// The collector removes on a POSITIVE observation of emptiness and
     /// on nothing else. Both halves, in the two shapes the field has:
     ///
     /// (a) a candidate whose emptiness could not be ESTABLISHED — git's own
@@ -1208,7 +1208,8 @@ mod tests {
     /// reads as BRAND NEW, holding an unsaved file, is refused for what it
     /// HOLDS and says so.
     ///
-    /// This is the shape AC-12 could not pin on its own. AC-12 ages its fixture,
+    /// This is the shape the emptiness test above could not pin on its own. That
+    /// test ages its fixture,
     /// so on any machine where the backdating takes it reaches [`contents`]
     /// whatever the order is — which is how "ask the age first" survived review
     /// and shipped, green on Windows and reporting `below threshold` on the
@@ -1241,7 +1242,7 @@ mod tests {
         assert!(report.removed.is_empty(), "{:?}", report.removed);
     }
 
-    /// AC-6 — the worktree an interrupted removal pass leaves behind lives in
+    /// The worktree an interrupted removal pass leaves behind lives in
     /// the OS temp directory, outside the only tree the collector used to walk.
     /// It is now within reach AND collected by the session-start sweep.
     #[test]

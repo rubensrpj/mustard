@@ -1376,7 +1376,7 @@ mod tests {
         git(&wt2, &["commit", "-m", "open work"]);
     }
 
-    /// AC-1 — the fixture a test receives was CLONED, not rebuilt.
+    /// The fixture a test receives was CLONED, not rebuilt.
     ///
     /// The proof is the template's own marker: `build_fixture` runs once per
     /// process, so a file written into the template AFTER the first clone is
@@ -1399,7 +1399,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — a clone resolves its remote and its worktrees INSIDE itself.
+    /// A clone resolves its remote and its worktrees INSIDE itself.
     ///
     /// The defect this exists to prevent: git records both as ABSOLUTE paths, so
     /// a raw copy keeps pointing at the template. Tests in parallel would then
@@ -1564,7 +1564,7 @@ mod tests {
         assert_eq!(local, remote, "base fast-forwarded");
     }
 
-    /// AC-3 — an exit that could NOT free the local floor (here a LOCKED worktree,
+    /// An exit that could NOT free the local floor (here a LOCKED worktree,
     /// a stand-in for the OS still holding the folder open) leaves the REMOTE
     /// branch alone too.
     ///
@@ -1663,7 +1663,7 @@ mod tests {
         assert_eq!(local, remote, "base fast-forwarded to origin");
     }
 
-    /// AC-3 — an IN-PLACE merged unit (cut on the main checkout, no worktree —
+    /// An IN-PLACE merged unit (cut on the main checkout, no worktree —
     /// the default shape the work-branch gate produces) must appear among the
     /// units still awaiting a prune.
     ///
@@ -1746,7 +1746,7 @@ mod tests {
         assert_eq!(row("dev_landed")["state"], json!("awaiting-prune"));
     }
 
-    /// AC-9 — the module's prose may not assert a merge method nobody measured.
+    /// The module's prose may not assert a merge method nobody measured.
     ///
     /// Both halves, so the assertion can fail: the doc no longer claims THIS
     /// repository squash-merges (measured false — the merges carry two parents
@@ -2234,7 +2234,7 @@ mod tests {
             .expect("blocking dirt");
     }
 
-    /// AC-1 — a base that did not advance prunes NOTHING, and says so before the
+    /// A base that did not advance prunes NOTHING, and says so before the
     /// fact rather than after it.
     ///
     /// The 2026-08-11 field incident ran the whole prune, then reported
@@ -2348,7 +2348,7 @@ mod tests {
         assert_ne!(v["clearFirst"], v["nextAction"], "two different steps, in order: {v}");
     }
 
-    /// AC-2 — the prune is authorised by the BASE ADVANCE, never by the unit's
+    /// The prune is authorised by the BASE ADVANCE, never by the unit's
     /// own commit being reachable from the base.
     ///
     /// The distinction is not academic. A portal that squashes rewrites the
@@ -2428,7 +2428,7 @@ mod tests {
         );
     }
 
-    /// AC-4 — a tree dirty ONLY in paths the advance does not carry still
+    /// A tree dirty ONLY in paths the advance does not carry still
     /// fast-forwards.
     ///
     /// This is the case the removed pre-check refused and git never did. Measured
@@ -2469,7 +2469,7 @@ mod tests {
         );
     }
 
-    /// AC-5 — a refused advance names the obstacle git actually hit: `dirty-tree`
+    /// A refused advance names the obstacle git actually hit: `dirty-tree`
     /// only where a fast-forward was possible and the tree stopped it,
     /// `non-ff-or-no-remote` where the histories have parted.
     ///
@@ -2614,7 +2614,7 @@ mod tests {
         assert_eq!(v["repos"], json!([{ "repo": ".", "branch": "dev_done", "settled": true }]), "{v}");
     }
 
-    /// AC-11 — a base that already HOLDS origin's tip authorises the prune, even
+    /// A base that already HOLDS origin's tip authorises the prune, even
     /// though the operation that would advance it refuses.
     ///
     /// `fetch origin <base>:<base>` rewinds nothing, so it rejects a base that is
@@ -2702,7 +2702,7 @@ mod tests {
         git(main, &["checkout", "dev_inplace"]);
     }
 
-    /// AC-14 — an in-place prune the base did not authorise puts the checkout
+    /// An in-place prune the base did not authorise puts the checkout
     /// back on the unit branch, and says so.
     ///
     /// The exit half of the ritual runs FIRST (settle checks out the base so the

@@ -13,12 +13,12 @@ use serde_json::{json, Value};
 
 /// `subagent-tracker`: emits `agent.start` / `agent.stop` telemetry.
 ///
-/// CONCERN (Wave 4): the JS `subagent-tracker.js` *also* denies a duplicate
+/// CONCERN: the JS `subagent-tracker.js` *also* denies a duplicate
 /// explorer dispatch within 60s (the `explorer-dedup` path) and inspects
 /// pipeline-state / wave-slice byte measurements. Those depend on a
 /// `session_id` / wave on `Ctx` that the contract does not yet carry (see the
-/// `Ctx` doc comment — "Wave 1 placeholder"). The dedup `deny` is therefore
-/// **not ported here**; it is registered as a Wave-4/5 concern. This module
+/// `Ctx` doc comment — a minimal placeholder). The dedup `deny` is therefore
+/// **not ported here**; it is registered as an open concern. This module
 /// ports only the verdict-free `agent.start` / `agent.stop` emission, which is
 /// the dominant behaviour and never affects a verdict.
 pub struct SubagentObserver;
@@ -46,7 +46,7 @@ impl Observer for SubagentObserver {
                     .unwrap_or("unknown");
                 let model = tool_input.get("model").cloned().unwrap_or(Value::Null);
 
-                // Wave 2 (telemetry-separation): make the run born attributed.
+                // Make the run born attributed.
                 // The dispatch already carries everything needed to attribute
                 // its eventual span — resolve it here and (a) stamp it onto the
                 // `agent.start` payload (the legacy read-time JOIN keys) and
@@ -80,7 +80,7 @@ impl Observer for SubagentObserver {
                     payload,
                     input.session_id.as_deref(),
                 );
-                // W7B: legacy SQLite `run_attribution` UPSERT removed.
+                // Legacy SQLite `run_attribution` UPSERT removed.
                 // Attribution travels inline on each run event (see
                 // `record_task_run` in PostToolUse below).
             }
@@ -102,7 +102,7 @@ impl Observer for SubagentObserver {
                     input.session_id.as_deref(),
                 );
                 // Finalise the dispatch as one `pipeline.economy.run` NDJSON event
-                // (W7B). Token counts come from the Anthropic `usage` payload when
+                // Token counts come from the Anthropic `usage` payload when
                 // the harness forwards it, else are estimated from byte sizes.
                 // Best-effort — never blocks the verdict.
                 let tool_input_text = serde_json::to_string(tool_input).unwrap_or_default();
@@ -137,7 +137,7 @@ impl Observer for SubagentObserver {
                     }, str::to_string);
                 // Attribution: re-derive in PostToolUse so the run event carries
                 // wave_id / agent_id / tool_use_id inline (replaces the SQLite
-                // `run_attribution` UPSERT — W7B).
+                // `run_attribution` UPSERT).
                 let post_wave_id = common::current_wave_id();
                 let post_subagent_type = tool_input
                     .get("subagent_type")

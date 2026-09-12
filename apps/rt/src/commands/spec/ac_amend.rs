@@ -577,7 +577,7 @@ fn is_statement_continuation(line: &str) -> bool {
 /// rewrite that replaces just it leaves the remaining lines on disk, orphaned
 /// under a statement they no longer continue — the reader gets the new sentence
 /// welded to the tail of the old one. Found in review (2026-07-28) after
-/// amending AC-1 of this very spec, and cleaned by hand; the hand is exactly
+/// amending a criterion of this very spec, and cleaned by hand; the hand is exactly
 /// what this door exists to replace.
 ///
 /// So a `--statement` rewrite consumes the WHOLE block: the header line is
@@ -1944,7 +1944,7 @@ mod tests {
         assert!(!printed.contains("\"at\""), "no timestamp on stdout: {printed}");
     }
 
-    /// AC-2 — the one case the red rule cannot express. A criterion the engine
+    /// The one case the red rule cannot express. A criterion the engine
     /// itself recorded as INEXECUTABLE is repaired by a substitute that PASSES,
     /// because by the time inexecutability is discovered the work is done and
     /// the corrected command legitimately passes.
@@ -2139,7 +2139,7 @@ mod tests {
     /// A `--statement` rewrite replaces the WHOLE statement block, not just the
     /// line the parser reads.
     ///
-    /// The defect this pins, found in review on 2026-07-28: amending AC-1 of the
+    /// The defect this pins, found in review on 2026-07-28: amending a criterion of the
     /// spec that built this door left the superseded statement's continuation
     /// lines on disk, orphaned under the new sentence — the reader saw the new
     /// statement welded to the tail of the old one, and it had to be cleaned by

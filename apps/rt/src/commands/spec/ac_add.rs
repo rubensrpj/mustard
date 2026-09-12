@@ -864,7 +864,7 @@ mod tests {
         assert!(report.written.is_empty(), "a refusal writes nothing");
     }
 
-    /// AC-1 — the accepted direction. A criterion the spec does not carry is
+    /// The accepted direction. A criterion the spec does not carry is
     /// introduced, and it lands in the artefacts and in the ledger ONLY after
     /// taking the same red proof a planned criterion takes.
     ///
@@ -960,7 +960,7 @@ mod tests {
         assert!(!printed.contains("\"at\""), "no timestamp on stdout: {printed}");
     }
 
-    /// AC-2 — the load-bearing refusal. A criterion whose command ALREADY passes
+    /// The load-bearing refusal. A criterion whose command ALREADY passes
     /// against the tree as it is verifies nothing, so the door refuses it and
     /// NOTHING is written: not the artefacts, not the ledger.
     ///

@@ -265,7 +265,7 @@ fn invalidate_session_spec(project_dir_path: &str, session_id: &str) {
 /// Resolve the Mustard workspace root by ancestor walk, **failing strictly**
 /// on missing anchor.
 ///
-/// This is the W2 entry point for run subcommands — unlike enforcement hooks
+/// This is the strict entry point for run subcommands — unlike enforcement hooks
 /// (which fail open via `dispatch::build_ctx`), a `run` subcommand has no
 /// useful behaviour without a workspace and must surface the error to the
 /// caller. The returned [`PathBuf`] is the directory containing both
@@ -292,7 +292,7 @@ pub fn workspace_root_strict() -> Result<PathBuf, WorkspaceError> {
 
 /// Resolve the project directory.
 ///
-/// W2 (claude-paths-single-source) made the canonical resolver
+/// The single-source move of `.claude` paths made the canonical resolver
 /// [`workspace_root_strict`], which fails strictly on a missing anchor.
 /// `project_dir` keeps its legacy `String` return shape so the many existing
 /// call-sites that bake the value into `current_dir(...)` of a `Command`
@@ -1490,7 +1490,7 @@ mod tests {
 
     #[test]
     fn session_id_falls_back_to_newest_session_dir() {
-        // AC-2 — `newest_session_dir` returns the newest real session id and
+        // `newest_session_dir` returns the newest real session id and
         // never the `"unknown"` bucket. Exercised directly (the crate forbids
         // `unsafe`, so a test cannot unset the env to reach this branch via
         // `session_id()`); mirrors `current_spec`'s FS-branch unit tests.
@@ -1511,7 +1511,7 @@ mod tests {
         assert!(newest_session_dir(Path::new("/nonexistent-mustard-session-xyzzy")).is_none());
     }
 
-    /// AC-11 — the session→spec binding reaches the session the hooks read.
+    /// The session→spec binding reaches the session the hooks read.
     ///
     /// The field defect: `emit-pipeline` run from the CLI carries no harness
     /// session id, the mtime fallback resolved the OTEL collector's

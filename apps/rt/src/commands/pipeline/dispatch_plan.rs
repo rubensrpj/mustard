@@ -1401,7 +1401,7 @@ mod tests {
         assert_eq!(items[1].level, 1);
     }
 
-    /// AC-5: the git-boundary fact reaches the dispatch item. A subproject whose
+    /// The git-boundary fact reaches the dispatch item. A subproject whose
     /// own dir is a nested git root (`.git` FILE — the submodule shape) makes the
     /// item carry `own_git_root: true`; a plain subproject stays false.
     #[test]

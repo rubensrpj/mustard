@@ -1,7 +1,7 @@
 //! The dispatcher — turns one harness invocation into one [`Outcome`].
 //!
-//! This is the single place the b3 fail-open contract lives (spec §
-//! Arquitetura): a module never has to defend against bad input or its own
+//! This is the single place the hooks' fail-open contract lives: a module
+//! never has to defend against bad input or its own
 //! errors — the dispatcher absorbs them. The flow per invocation:
 //!
 //! 1. Resolve the applicable modules from the [`Registry`].

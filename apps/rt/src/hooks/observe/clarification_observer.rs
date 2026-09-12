@@ -191,7 +191,7 @@ mod tests {
         serde_json::from_str(&raw).ok()
     }
 
-    /// AC-4 — a pergunta respondida vira esclarecimento da unidade ativa, com
+    /// A pergunta respondida vira esclarecimento da unidade ativa, com
     /// a resposta escolhida e as notas do usuário, sem o assistente fazer nada.
     #[test]
     fn answered_question_is_recorded_as_clarification() {

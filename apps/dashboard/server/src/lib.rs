@@ -370,7 +370,7 @@ fn dashboard_recent_events(
 }
 
 fn dashboard_recent_events_impl(repo_path: String, limit: Option<usize>) -> Result<Vec<RecentEvent>, String> {
-    // Onda 2 (HIGH-VALUE): chronological tail over the complete walker
+    // Chronological tail over the complete walker
     // (spec `.events/` + wave subdirs + `.session/`). Newest first.
     let base = PathBuf::from(&repo_path);
     let events = telemetry::walk_ndjson_events_cached(&base);
@@ -556,9 +556,10 @@ fn dashboard_specs_impl(repo_path: String) -> Result<Vec<SpecRow>, String> {
     let base = PathBuf::from(&repo_path);
 
     // The filesystem is the source of truth for spec existence. The walk also
-    // covers wave-plan children, emitting them with parent set. Post-W6A there
+    // covers wave-plan children, emitting them with parent set. Since the SQLite store
+    // was retired there
     // is no SQLite event-log merge — phase/timestamps that the legacy DB
-    // enriched here come back unset until the NDJSON projection lands (Onda 2);
+    // enriched here come back unset until the NDJSON projection lands;
     // `phase` falls back to the value parsed from spec.md/wave-plan.md frontmatter.
     // Served from the watcher-invalidated specs cache: spec.md is tiny markdown,
     // the list route must never wait on a directory walk when nothing changed.
@@ -593,7 +594,7 @@ fn dashboard_specs_impl(repo_path: String) -> Result<Vec<SpecRow>, String> {
 }
 
 /// Process-global, per-repo cache of the [`specs_from_fs`] walk (spec
-/// `performance-dashboard-rotas-lentas-cache`, wave 1). spec.md is tiny
+/// `performance-dashboard-rotas-lentas-cache`). spec.md is tiny
 /// markdown, but the walk opens every `spec.md` / `wave-plan.md` under
 /// `.claude/spec/` — on the list route that is pure latency when nothing
 /// changed. The watcher invalidates the entry on any `spec`-kind fs-change
@@ -631,7 +632,7 @@ pub(crate) fn invalidate_specs_cache(repo: &str) {
 }
 
 /// Aggregated push payload for the `dashboard:specs-snapshot` event (spec
-/// `performance-dashboard-rotas-lentas-cache`, wave 2): the spec list plus the
+/// `performance-dashboard-rotas-lentas-cache`): the spec list plus the
 /// active-pipeline projections, rebuilt on a background thread by the watcher
 /// and shipped ready to render. The frontend applies it via `setQueryData`
 /// instead of refetching after a mass invalidation. `Clone` because the
@@ -671,7 +672,7 @@ pub(crate) fn build_specs_snapshot(repo_path: &str) -> SpecsSnapshot {
 // DB wins for: status, phase, tasks, wave counts — merged by `dashboard_specs`.
 // FS wins for: spec existence, title, narrative (### Lang: / ### Scope:).
 //
-// The legacy state-file walk was removed in Wave 3b of spec
+// The legacy state-file walk was removed by spec
 // 2026-05-19-pipeline-state-from-sqlite: the event log is canonical for all
 // pipeline fields; FS JSON files are stale artifacts.
 fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
@@ -978,7 +979,7 @@ fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<
 // `spec_views.rs` — duplicated rather than re-exported to avoid splitting the
 // module's privacy boundary.
 
-/// Emit `pipeline.status: <to>` via the per-spec NDJSON sink. Wave 6A of
+/// Emit `pipeline.status: <to>` via the per-spec NDJSON sink. Spec
 /// [[2026-05-26-no-sqlite-git-source-of-truth]] retired the SQLite event
 /// store; per-spec `.events/*.ndjson` files are now the canonical hot path.
 /// Fail-open.
@@ -1328,7 +1329,7 @@ fn workspace_spec_cards(repo_path: &str) -> Vec<(String, Option<spec_views::Spec
 }
 
 fn dashboard_active_pipelines_impl(repo_path: String) -> Result<Vec<ActivePipeline>, String> {
-    // Onda 2 (HIGH-VALUE): fold the NDJSON workspace once, then per discovered
+    // Fold the NDJSON workspace once, then per discovered
     // spec build a SpecCard via the same `spec_card_v2` primitive the spec page
     // uses. Specs in a terminal status (completed / cancelled / closed-followup)
     // are dropped — the "PIPELINES ATIVOS" card lists only live work.
@@ -1400,9 +1401,9 @@ fn dashboard_write_env(repo_path: String, env: HashMap<String, String>) -> Resul
     Ok(())
 }
 
-// ── Wave-2 per-spec rollup commands ──────────────────────────────────────────
+// ── Per-spec rollup commands ─────────────────────────────────────────────────
 
-/// Wave 4 (2026-05-20) — these spec commands now delegate to
+/// These spec commands now delegate to
 /// `mustard-core` via the `*_v2` adapters in `spec_views.rs`. The legacy
 /// fallback that hard-coded `"unknown"`/`0` for missing data is gone: a spec
 /// with no events resolves to the empty typed view, which the adapter
@@ -1478,7 +1479,7 @@ fn dashboard_spec_waves(repo_path: String, spec: String) -> Result<Vec<spec_view
         .unwrap_or_else(|()| Ok(Vec::new()))
 }
 
-/// Wave 3 (spec `checklist-progresso-por-onda`) — per-wave checklist progress
+/// Per-wave checklist progress
 /// (`done`/`total`) folded from the `meta.json#checklist` sidecars plus the
 /// `checklist.item.marked` NDJSON events. Fail-open: a spec with no checklist
 /// data resolves to an empty vec so the frontend renders nothing rather than
@@ -1499,7 +1500,7 @@ fn dashboard_spec_quality(repo_path: String, spec: String) -> Result<Vec<spec_vi
 }
 
 fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Result<spec_views::SpecAction, String> {
-    // Onda 2: actually perform the verb over the NDJSON sink via the same
+    // Actually perform the verb over the NDJSON sink via the same
     // `lib_emit_pipeline_status` the live `dashboard_spec_complete` / `_cancel`
     // / `_reactivate` commands use, instead of returning the error fallback.
     //   reopen → implementing   close → completed   remove → cancelled
@@ -1521,11 +1522,10 @@ fn dashboard_spec_action(repo_path: String, spec: String, action: String) -> Res
     })
 }
 
-/// Wave-3 (2026-05-20, spec `2026-05-20-tactical-fix-via-sub-spec`) — list
-/// sub-specs linked to `parent` via `spec.link` events. Delegates to
+/// List sub-specs linked to `parent` via `spec.link` events. Delegates to
 /// `spec_views::spec_children_v2`, which now spawns `mustard-rt run
 /// spec-children` (the cross-developer UNION of events + `### Parent:`
-/// headers — see W4A migration notes in `spec_views.rs`).
+/// headers — see the migration notes in `spec_views.rs`).
 fn dashboard_spec_children(
     repo_path: String,
     parent: String,
@@ -1533,7 +1533,7 @@ fn dashboard_spec_children(
     spec_views::spec_children_v2(&repo_path, &parent)
 }
 
-/// Wave 3 (spec-lifecycle-unification) — shell out to `mustard-rt run
+/// Shell out to `mustard-rt run
 /// spec-children-tree --spec NAME` and return the parsed `ChildrenTree`
 /// (waves + acceptance criteria + sub-specs) for the dense `/specs` drill-down.
 fn spec_children_tree(
@@ -1543,7 +1543,7 @@ fn spec_children_tree(
     spec_views::spec_children_tree_run(&project_path, &spec)
 }
 
-/// Wave 2 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs`) — shell out to
+/// Shell out to
 /// `mustard-rt run wave-files --spec <name> --wave <N>` and return the typed
 /// payload (real file count from the wave sub-spec's `## Arquivos` block plus
 /// the full markdown for the wave drawer).
@@ -1555,7 +1555,7 @@ fn dashboard_spec_wave_files(
     spec_views::dashboard_spec_wave_files_run(&repo_path, &spec, wave)
 }
 
-/// Wave 1 (2026-05-21, spec `2026-05-21-dashboard-spec-tabs-polish`) — scan
+/// Scan
 /// `<repo>/.claude/spec/{spec}/wave-N-{role}/` and return the wave structure
 /// declared on disk, independent of whether the SQLite event log has caught
 /// up. The `SpecWavesTab` unions this with the projection from
@@ -1568,7 +1568,7 @@ fn dashboard_spec_waves_planned(
     spec_views::dashboard_spec_waves_planned_run(&repo_path, &spec)
 }
 
-/// Wave 4 (2026-05-20) — delegate to `mustard-core::workspace_summary`.
+/// Delegate to `mustard-core::workspace_summary`.
 /// Fixes the previous `events_per_minute` SQL filter that silently
 /// short-circuited (returned the all-time count → `2904.0` in the audit) and
 /// the `tokens_saved_today LIKE '%token%saved%'` query that never matched
@@ -1581,9 +1581,9 @@ fn dashboard_workspace_summary(repo_path: String) -> Result<spec_views::Workspac
         .unwrap_or_else(|()| Ok(spec_views::WorkspaceSummary::default()))
 }
 
-// ── Wave-6 hygiene observability ─────────────────────────────────────────────
+// ── Hygiene observability ────────────────────────────────────────────────────
 
-/// Onda 2 (§5): honest hygiene health roll-up. There is no fabricated health
+/// Honest hygiene health roll-up. There is no fabricated health
 /// score — every field is a real count:
 ///   * `active`            — discovered specs whose latest projected status is
 ///     non-terminal (the FS spec walk ∩ `spec_card_v2`).
@@ -1807,7 +1807,7 @@ mod onda2_tests {
 
     #[test]
     fn specs_cache_serves_warm_list_until_invalidated() {
-        // Wave-1 task 4: the spec LIST never waits on a directory walk when
+        // The spec LIST never waits on a directory walk when
         // warm; the watcher (kind `spec`) is the invalidation path.
         let tmp = TempDir::new().expect("tempdir");
         let spec_root = tmp.path().join(".claude").join("spec");

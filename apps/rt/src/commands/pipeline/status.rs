@@ -412,7 +412,7 @@ fn last_build(root: &Path) -> Option<BuildResult> {
     let paths = ClaudePaths::for_project(root).ok()?;
     // `.last-build.json` is a legacy direct child of `.claude/` with no typed
     // accessor on `ClaudePaths` — using `claude_dir().join(...)` keeps it
-    // routed through the canonical handle without expanding W4 scope.
+    // routed through the canonical handle without adding a typed accessor.
     let path = paths.claude_dir().join(".last-build.json");
     let text = fs::read_to_string(&path).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;

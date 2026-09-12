@@ -1,7 +1,7 @@
 //! `mustard-rt run doctor --check workspace-leaks` — detect non-root
 //! `.claude/` directories that hold pipeline state.
 //!
-//! W3.T3.8 of `2026-05-26-claude-paths-single-source`. Only the workspace
+//! Part of `2026-05-26-claude-paths-single-source`. Only the workspace
 //! root anchor (the directory with both `mustard.json` and `.claude/`) is
 //! supposed to own pipeline state. Any nested `.claude/` that picks up
 //! `.harness/`, `.agent-state/`, `.pipeline-states/`, `memory/`, `plans/`,

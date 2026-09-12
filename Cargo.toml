@@ -37,7 +37,7 @@ version = "0.1.71"
 
 # Single source of dependency-version truth for every Mustard crate. A crate
 # opts in with `dep = { workspace = true }`. Versions verified against
-# crates.io, May 2026 (see spec b2 § Stack Rust).
+# crates.io, May 2026, when the Rust stack was chosen.
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

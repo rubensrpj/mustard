@@ -1,9 +1,9 @@
 //! `mustard-rt run amend-finalize` — session-end amendment window finalization.
 //!
-//! ## Scope (W4C migration)
+//! ## Scope
 //!
 //! Reads every `.amend-window.json` under `.claude/spec/*/` (the per-spec
-//! filesystem state introduced in W3C), filters by `session_id`, and for each
+//! filesystem state the amendment-capture hook writes), filters by `session_id`, and for each
 //! window:
 //!
 //! 1. Decides the final `status` (`archived`, `closed-amend-pending`,
@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 const PROJECT_ROOT_ENV: &str = "MUSTARD_PROJECT_ROOT";
 
 /// JSON schema persisted at `.claude/spec/{id}/.amend-window.json` — mirrors
-/// the W3C `amend_capture::WindowState` (duplicated here so this run module
+/// the capture hook's `amend_capture::WindowState` (duplicated here so this run module
 /// does not import from a sibling hook).
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct WindowState {
@@ -58,7 +58,7 @@ struct WindowState {
     build_verde_at: Option<String>,
     #[serde(default)]
     closed: bool,
-    /// Optional — when the W3C writer does not set this, we fall back to the
+    /// Optional — when the capture hook's writer does not set this, we fall back to the
     /// session id discovered from per-spec events.
     #[serde(default)]
     session_id: Option<String>,

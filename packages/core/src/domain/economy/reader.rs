@@ -1,6 +1,6 @@
 //! NDJSON-backed economy readers.
 //!
-//! W7A of [[2026-05-26-no-sqlite-git-source-of-truth]] migrated every reader
+//! [[2026-05-26-no-sqlite-git-source-of-truth]] migrated every reader
 //! off the legacy SQLite connection. Each function now takes the project
 //! root [`Path`] + an [`EconomyScope`] and walks the per-spec NDJSON event
 //! log under `<project_root>/.claude/spec/*/.events/*.ndjson` (plus the
@@ -1792,7 +1792,7 @@ mod tests {
         assert_eq!(s.by_session.len(), 0); // empty at filtered scope
     }
 
-    // ── Time-window filter (AC-1 / AC-2) ──────────────────────────────────
+    // ── Time-window filter ────────────────────────────────────────────────
     //
     // A run event carrying a top-level ISO `ts` is the unit the window filters:
     // `event_ts_ms` reads that `ts`, and `walk_events_in_window` keeps only the

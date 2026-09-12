@@ -2,8 +2,8 @@
 //!
 //! [`capture_for_spec`] is the only public entry point. It:
 //!
-//! 1. Parses `## Funções tocadas` via [`crate::domain::spec::touched_functions::parse`]
-//!    (W0). Specs without that section resolve to an empty snapshot — the
+//! 1. Parses `## Funções tocadas` via [`crate::domain::spec::touched_functions::parse`].
+//!    Specs without that section resolve to an empty snapshot — the
 //!    gate's job is to flag drift in declared functions, so a wave that did
 //!    not declare any is by definition clean here.
 //! 2. For each declared function, resolves the source file from the
@@ -15,8 +15,8 @@
 //!    - `PathHint(foo/bar.rs::run)` — path is split on `::` and the file is
 //!      opened directly.
 //!    - `Pure(name)` — same as Module, falls back to scanning the path hint.
-//! 3. Resolves a language id via [`crate::domain::ast::GrammarLoader::language_id_for_path`]
-//!    (W1.5). When the loader returns `Some`, the AST path is attempted:
+//! 3. Resolves a language id via [`crate::domain::ast::GrammarLoader::language_id_for_path`].
+//!    When the loader returns `Some`, the AST path is attempted:
 //!    [`crate::domain::ast::TreeSitterParser::for_language`] +
 //!    [`crate::domain::ast::extract_function_signatures`] locate the function and
 //!    the surrounding `function_item` (or equivalent) node text is captured.
@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 pub enum RegressionError {
     /// `## Funções tocadas` section parsed but no declared functions —
     /// distinct from "section absent". Callers may demote this to a
-    /// warning; the W4 gate currently treats it as a clean snapshot.
+    /// warning; the regression gate currently treats it as a clean snapshot.
     #[error("spec declared no touched functions")]
     NoDeclaredFunctions,
 
@@ -485,7 +485,7 @@ fn capture_via_text(source: &str, final_name: &str) -> Option<(String, TextSpan)
 }
 
 /// `true` when `line` syntactically looks like a public-function declaration
-/// for `name`. Agnostic — accepts any prefix recognised by the W1.5 fallback
+/// for `name`. Agnostic — accepts any prefix recognised by the textual fallback
 /// regex (pub fn, export function, def, func, public T, ...).
 fn line_smells_like_declaration_of(line: &str, name: &str) -> bool {
     let stripped = line.trim_start();

@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(shelf_before, build_skills_list(root, "apps/rt"), "the shelf is untouched");
     }
 
-    /// AC-6 — um molde que cobre vários arquivos da onda os nomeia TODOS, na
+    /// Um molde que cobre vários arquivos da onda os nomeia TODOS, na
     /// lista estruturada e na linha do prompt, e não só o primeiro que casou.
     #[test]
     fn wave_molds_list_every_covered_file() {

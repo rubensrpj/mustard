@@ -12,7 +12,7 @@
 //!
 //! - **Never downloads, clones, or compiles** any grammar. The user copy-pastes
 //!   the suggested commands. This is a non-goal of the parent spec
-//!   (`2026-05-27-mustard-v4-foundation` § Não-Objetivos — "Linkar grammars
+//!   (`2026-05-27-mustard-v4-foundation`: "Linkar grammars
 //!   individuais no binário Mustard — proibido sempre").
 //! - **Never feeds the suggestion catalogue back into the regression gate.** The
 //!   catalogue here is a *UX bookmark*; `mustard_core::domain::ast::GrammarLoader`
@@ -105,7 +105,7 @@ impl GrammarsCatalog {
 
     /// Load the catalogue. Always starts from the embedded source of truth and
     /// **merges** entries from `<project>/.claude/grammars-suggestions.json`
-    /// on top when present (W8.5#1): an override entry whose `lang_id` matches
+    /// on top when present: an override entry whose `lang_id` matches
     /// an embedded one replaces only that row; new `lang_id`s are appended;
     /// embedded entries the override doesn't mention are kept. This lets users
     /// add ONE language or tweak ONE repo without re-stating the other nine.
@@ -342,7 +342,7 @@ mod tests {
         GrammarsCatalog::from_embedded()
     }
 
-    /// AC-A-18 — catalogued language renders repo + install cmd; unknown
+    /// Catalogued language renders repo + install cmd; unknown
     /// renders fallback; installed marker appears when the loader reports
     /// the lang; pt-BR locale honoured; empty stack produces `no_stack`.
     #[test]
@@ -513,7 +513,7 @@ mod tests {
     /// A per-project override at `.claude/grammars-suggestions.json` merges
     /// on top of the embedded catalogue: matching `lang_id`s are replaced,
     /// new `lang_id`s are appended, and embedded entries the override doesn't
-    /// mention are kept (W8.5#1 — merge, not wholesale replace).
+    /// mention are kept (merge, not wholesale replace).
     #[test]
     fn per_project_override_merges_with_embedded() {
         let tmp = tempdir().unwrap();
@@ -552,7 +552,7 @@ mod tests {
         let bf = catalog.lookup("brainfuck").expect("brainfuck appended");
         assert_eq!(bf.label, "Brainfuck");
         // Untouched embedded entry — Python is kept verbatim from the
-        // embedded catalogue (this is the regression W8.5#1 guards).
+        // embedded catalogue (the regression the merge guards against).
         assert!(
             catalog.lookup("python").is_some(),
             "embedded entries the override doesn't mention must be preserved"

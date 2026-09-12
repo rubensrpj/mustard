@@ -10,7 +10,7 @@
 //! Contract:
 //! - **Glossary write.** It writes a single term block (`## {Term}\n{definition}`)
 //!   into a `CONTEXT.md`; the glossary write itself never touches ADRs or specs.
-//! - **Clarify finalize (F6).** With `--finalize`, the command RECORDS the
+//! - **Clarify finalize.** With `--finalize`, the command RECORDS the
 //!   clarification into `<spec>/.clarified` — the marker `approve-spec` requires
 //!   before a Full plan may be approved. This is the SINGLE, explicit
 //!   "clarification complete" action; a term capture NEVER mints it. The marker
@@ -443,7 +443,7 @@ mod tests {
             "the confirmed term must be persisted to the glossary"
         );
         // ...but a term capture NEVER mints .clarified — only the deliberate
-        // finalize does (F6: clarification is explicit, not a capture side effect).
+        // finalize does (clarification is explicit, not a capture side effect).
         let marker = clarified_marker_path(root.to_str().unwrap(), "epic").unwrap();
         assert!(!marker.exists(), "a capture must NOT mint .clarified");
     }

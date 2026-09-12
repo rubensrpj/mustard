@@ -52,7 +52,7 @@ pub(super) fn parse_header_value(text: &str, key_lower: &str) -> Option<String> 
 
 /// Detect the canonical stage word for the operational spec.
 ///
-/// Resolution order (F4-f — meta.json is the single source of lifecycle state):
+/// Resolution order (meta.json is the single source of lifecycle state):
 /// 1. The `stage` field of the `meta.json` sidecar beside `op_path` — the
 ///    authoritative source. Every writer keeps it current.
 /// 2. The `### Stage:` header in the spec-md `head` — the **legacy fallback**
@@ -191,7 +191,7 @@ mod tests {
     use mustard_core::domain::meta::{write_meta, Meta};
     use tempfile::tempdir;
 
-    /// F4-f item 3: `detect_stage` prefers the `meta.json` sidecar over the
+    /// `detect_stage` prefers the `meta.json` sidecar over the
     /// spec-md `### Stage:` header. Here meta says Execute while the header
     /// says Plan → Execute wins.
     #[test]

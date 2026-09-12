@@ -990,7 +990,7 @@ mod tests {
         assert_eq!(out["waves"][1]["dependsOnOrigin"].as_str(), Some("undeclared"));
     }
 
-    /// AC-9: the dependency command emits the edges the plan DECLARED — by
+    /// The dependency command emits the edges the plan DECLARED — by
     /// number or by wave name, skipping waves the author skipped — and the
     /// import-DAG path emits the REAL derived topology; every edge carries the
     /// origin it came from.
@@ -1047,7 +1047,7 @@ mod tests {
         }
     }
 
-    /// AC-1 — o arquivo declarado por duas ondas sem dependência entre elas é
+    /// O arquivo declarado por duas ondas sem dependência entre elas é
     /// RELATADO, não descartado em silêncio.
     ///
     /// A dedup continua governando `files` (o motivo dela — não criar nó fantasma

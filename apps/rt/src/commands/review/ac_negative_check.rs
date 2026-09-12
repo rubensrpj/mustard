@@ -1844,7 +1844,7 @@ mod tests {
         )
     }
 
-    /// AC-2 — a criterion whose command already exits green against the tree as
+    /// A criterion whose command already exits green against the tree as
     /// it is is VACUOUS, not proven: it cannot tell done from not-done. The
     /// wording says the proof was TAKEN and came back green — never the
     /// never-taken wording, which asks for the opposite action.
@@ -1876,7 +1876,7 @@ mod tests {
         assert_eq!(entry(&report, "AC-3").verdict, Verdict::Exempt);
     }
 
-    /// AC-3 — one unproven criterion blocks (exit 2) and the ledger STILL
+    /// One unproven criterion blocks (exit 2) and the ledger STILL
     /// records the proofs the run did obtain: those reds are the expensive part
     /// of the run and must survive a sibling's failure.
     #[test]
@@ -2522,7 +2522,7 @@ mod tests {
         assert_eq!(entry(&again, "AC-1").proof, Proof::Unstable, "re-asked, still a coin");
     }
 
-    /// AC-1 — the second half of the proof. A criterion that cleared the red
+    /// The second half of the proof. A criterion that cleared the red
     /// pass must come back GREEN once its work has landed; one that is STILL
     /// red there is reported unproven instead of clearing on its earlier
     /// failure alone.
@@ -2607,7 +2607,7 @@ mod tests {
         );
     }
 
-    /// AC-3 — the THIRD transition, and the LIMIT it declares instead of
+    /// The THIRD transition, and the LIMIT it declares instead of
     /// papering over.
     ///
     /// Three criteria, built so the differences between them are the whole

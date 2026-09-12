@@ -666,7 +666,7 @@ mod tests {
         compose_azure(&mock_azure_pr(), &mock_azure_threads(), &mock_azure_reviewers(), files)
     }
 
-    /// T3 — the Azure composition emits the SAME document shape as the GitHub
+    /// The Azure composition emits the SAME document shape as the GitHub
     /// path, key for key, so the consumer never learns who answered.
     #[test]
     fn azure_document_has_the_same_shape_as_the_github_one() {
@@ -694,7 +694,7 @@ mod tests {
         assert!(table.contains("1 APPROVED / 1 CHANGES_REQUESTED"), "got: {table}");
     }
 
-    /// T3 — the field mappings: refs come out short, the body is Azure's
+    /// The field mappings: refs come out short, the body is Azure's
     /// `description`, comments come from ACTIVE threads only (system rows and
     /// resolved threads never enter), the thread's path loses its leading `/`,
     /// and votes reduce onto the GitHub state words (a 0 vote is no review).
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(doc["files"][0]["path"], "src/auth.ts");
     }
 
-    /// T3 — the numstat parse: plain rows carry their counts, a binary row
+    /// The numstat parse: plain rows carry their counts, a binary row
     /// (`-` columns) keeps its path with zero lines, junk lines never enter.
     #[test]
     fn numstat_rows_become_file_rows() {
@@ -744,7 +744,7 @@ mod tests {
         assert!(files_from_numstat("").is_empty());
     }
 
-    /// T3 — the Azure PR reference: a bare number, the PR web URL, or junk.
+    /// The Azure PR reference: a bare number, the PR web URL, or junk.
     #[test]
     fn azure_pr_number_reads_the_url_tail() {
         assert_eq!(azure_pr_number("123"), Some(123));

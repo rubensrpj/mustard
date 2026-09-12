@@ -1,6 +1,6 @@
-//! Telemetry readers — restored by wave-21-dashboard-restore.
+//! Telemetry readers — restored after the SQLite read paths were retired.
 //!
-//! Wave 6B (commit 723ad1a) of [[2026-05-26-no-sqlite-git-source-of-truth]]
+//! Commit 723ad1a of [[2026-05-26-no-sqlite-git-source-of-truth]]
 //! retired the SQLite read paths that backed every dashboard telemetry
 //! surface, but left ~8 public functions returning `Default::default()` /
 //! `Vec::new()`. This file restores real readers for each, sourced from the
@@ -33,9 +33,9 @@
 //! set to `"pipeline.telemetry.run"`), so the historical filter on
 //! `event.kind == "pipeline.telemetry.run"` still works for that subset.
 //!
-//! ## W5#8 — attribution two-tier
+//! ## Attribution two-tier
 //!
-//! The OTEL collector (W5A) writes `pipeline.telemetry.run` records carrying
+//! The OTEL collector writes `pipeline.telemetry.run` records carrying
 //! the full [`mustard_core::domain::economy::SpanRecord`] shape. Attribution lives
 //! inside `SpanRecord.extra` as the JSON keys `tool_use_id`, `session_id`,
 //! `spec`. Resolution follows two tiers — `Tier 1` is exact
@@ -159,7 +159,7 @@ pub struct CollectorHealth {
     pub last_canary_msg: Option<String>,
 }
 
-// ── Attribution (W5#8 absorbed) ─────────────────────────────────────────────
+// ── Attribution ─────────────────────────────────────────────────────────────
 
 /// Resolved attribution carried by a `pipeline.telemetry.run` span.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -255,7 +255,7 @@ const SESSION_OPEN_WINDOW_MS: i64 = 15 * 60 * 1000;
 const SESSION_FILES_CAP: usize = 20;
 
 /// Two-tier attribution lookup against the per-spec NDJSON `.events/*.ndjson`
-/// channels (W5#8).
+/// channels.
 #[must_use]
 pub fn lookup_attribution_extra(
     repo_path: &Path,
@@ -1590,9 +1590,9 @@ pub enum EconomyScopeDto {
 
 // ── Dashboard-command surface ──────────────────────────────────────────────
 //
-// W7D of [[2026-05-26-no-sqlite-git-source-of-truth]] wired these commands
+// [[2026-05-26-no-sqlite-git-source-of-truth]] wired these commands
 // against the real NDJSON readers in `mustard_core::domain::economy::reader::*`
-// (migrated in W7A). The behavioural gap left by wave-21 is closed —
+// (migrated there too). The behavioural gap the first restore left is closed —
 // dashboard pages now see live data instead of `Default::default()`.
 
 impl EconomyScopeDto {
@@ -1664,7 +1664,7 @@ impl EconomyScopeDto {
 /// the coverage of `mustard_core::domain::economy::reader::ndjson_paths` so the
 /// per-page aggregators see the same complete event slice the core readers do.
 ///
-/// `pub(crate)` so the Onda-2 aggregators in `lib.rs` and `spec_views.rs` reuse
+/// `pub(crate)` so the cross-spec aggregators in `lib.rs` and `spec_views.rs` reuse
 /// the same walker (the directive's "complete walker" requirement — never the
 /// spec-only `for_each_ndjson_line`, which misses `.session/` and wave subdirs).
 pub(crate) fn walk_ndjson_events(root: &Path) -> Vec<Value> {
@@ -1733,7 +1733,7 @@ struct FileChunk {
 }
 
 /// Per-repo incremental parsed-events cache (spec
-/// `performance-dashboard-rotas-lentas-cache`, wave 1).
+/// `performance-dashboard-rotas-lentas-cache`).
 ///
 /// The previous cache held one flat `Arc<Vec<Value>>` per repo and the watcher
 /// dropped the WHOLE entry on any change — every event write re-walked and
@@ -2190,7 +2190,7 @@ pub(crate) fn events_cache_cloned_events(repo: &Path) -> u64 {
 }
 
 /// Canonical harness event NAME for a raw record (`"event"` ?? `"kind"`).
-/// Re-exported `pub(crate)` for the Onda-2 aggregators in `lib.rs` /
+/// Re-exported `pub(crate)` for the cross-spec aggregators in `lib.rs` /
 /// `spec_views.rs` so every cross-spec fold matches the harness NAME, never the
 /// logical `kind` class.
 #[must_use]
@@ -2198,7 +2198,7 @@ pub(crate) fn event_name_of(record: &Value) -> &str {
     event_name(record)
 }
 
-/// `pub(crate)` ISO-8601 → epoch-ms for the Onda-2 aggregators (weekday × hour
+/// `pub(crate)` ISO-8601 → epoch-ms for the cross-spec aggregators (weekday × hour
 /// heatmap, duration math). Same parser the attribution + session readers use.
 #[must_use]
 pub(crate) fn iso_to_ms_crate(s: &str) -> Option<i64> {
@@ -3104,7 +3104,7 @@ fn lookup_agent_metric(map: &HashMap<String, i64>, id: &str) -> Option<i64> {
 
 /// Spec trace — a tree of `spec → [wave] → agent → tool`.
 ///
-/// W7D restored the full tree shape; the agent attribution was later rebuilt on
+/// The NDJSON migration restored the full tree shape; the agent attribution was later rebuilt on
 /// time intervals (the wire carries no per-tool agent identity — every
 /// `tool.use` has `actor="metrics-tracker"`, empty `wave`, and no matching
 /// `tool_use_id`). [`build_agent_intervals`] pairs `agent.start`/`agent.stop`
@@ -5036,7 +5036,7 @@ mod tests {
         assert_eq!(fresh.len(), 2, "the re-parse must pick up the new event");
     }
 
-    /// AC-3 — a second `dashboard_sessions` call with nothing changed on disk
+    /// A second `dashboard_sessions` call with nothing changed on disk
     /// re-parses no shard, and a `limit` cuts the sessions BEFORE the
     /// aggregation work rather than after it.
     ///
@@ -5109,7 +5109,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — with the cache warm and exactly ONE shard changed, the re-read
+    /// With the cache warm and exactly ONE shard changed, the re-read
     /// must not re-clone the whole history: the cost has to follow the changed
     /// shard, not the corpus.
     ///
@@ -5205,7 +5205,7 @@ mod tests {
 
     #[test]
     fn events_cache_warm_hit_reads_no_shard_and_dirty_path_rereads_only_it() {
-        // The incremental contract (wave-1 task 6): with a warm cache the
+        // The incremental contract: with a warm cache the
         // second call performs ZERO shard reads; after touching ONE shard,
         // exactly that shard is re-read — asserted via the parse counter.
         let tmp = TempDir::new().expect("tempdir");
@@ -5321,7 +5321,7 @@ mod tests {
         );
     }
 
-    // ── Economy time-window plumbing (Onda 2 — dashboard layer) ──────────────
+    // ── Economy time-window plumbing (dashboard layer) ───────────────────────
 
     #[test]
     fn economy_windowed_dto_to_core_composes_window() {

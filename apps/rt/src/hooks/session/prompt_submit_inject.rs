@@ -1,6 +1,6 @@
 //! `prompt_submit_inject` — the UserPromptSubmit gate module.
 //!
-//! ## Scope (b3 Wave 5, prompt family + orchestrator-redesign injectables)
+//! ## Scope (prompt family + orchestrator-redesign injectables)
 //!
 //! Four concerns ride `UserPromptSubmit`, in this order:
 //!
@@ -11,7 +11,7 @@
 //!   prefix and passes too). The gate runs BEFORE the injectables: without an
 //!   installation there is nothing to inject. A free-text prompt is never
 //!   gated — the hooks stay silent on uninstalled projects.
-//! - `followup-cancel-gate` (the b3 port): when the prompt invokes
+//! - `followup-cancel-gate` (the port of the old JS hook): when the prompt invokes
 //!   `/mustard:feature`, `/mustard:bugfix`, or `/mustard:task`, close any open
 //!   per-session amendment window — the previous follow-up window is over, so
 //!   subsequent edits belong to a new context.
@@ -46,7 +46,7 @@
 //! ## Contract shape
 //!
 //! `followup-cancel-gate.js` never blocked — it always `process.exit(0)`. The
-//! b3 spec classes `prompt_gate` as a [`Check`], which is exactly why the
+//! hook contract classes `prompt_gate` as a [`Check`], which is exactly why the
 //! installation gate could land here: `UserPromptSubmit` is the seam where a
 //! prompt gate denies, and `main.rs` maps a [`Verdict::Deny`] on this event to
 //! the harness's `{"decision": "block", "reason": …}` shape. Every other path
@@ -59,7 +59,7 @@
 //! window to archive). What remains on a new-pipeline prompt is closing the
 //! session's amendment window.
 //!
-//! ## W3C migration
+//! ## Migration off SQLite
 //!
 //! `emit_economy_operation` routes economy events via
 //! `crate::shared::events::route::emit` (NDJSON path) instead of the old SQLite
@@ -73,7 +73,7 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use mustard_core::ProjectConfig;
 use std::path::Path;
 
-/// W8.T8.2 — pipeline-in-flight reminder: surfaced when the user's prompt is
+/// Pipeline-in-flight reminder: surfaced when the user's prompt is
 /// NOT a `/mustard:*` invocation AND a spec is active. Keeps the agent aware
 /// that a pipeline is owning the conversation without bloating every prompt.
 const PIPELINE_IN_FLIGHT_BANNER: &str = "Pipeline em curso";
@@ -267,7 +267,7 @@ fn tone_rule(root: &Path) -> Option<String> {
 /// do usuário, que é o do projeto (`mustard.json` `lang`/`specLang`). Em
 /// 10/09/2026 o assistente respondeu em inglês por vários turnos a quem escreve
 /// em português: tinha acabado de ler skills e relatórios em inglês, e nada na
-/// regra falava de idioma (E-4). O usuário pediu que valesse para todo projeto,
+/// regra falava de idioma. O usuário pediu que valesse para todo projeto,
 /// não só para quem declarou o tom didático. `None` sem `mustard.json`: num
 /// projeto sem o Mustard os ganchos ficam calados.
 ///
@@ -331,7 +331,7 @@ impl Check for PromptSubmitInject {
     /// `mustard.json` at the root. Then close the session's amendment window
     /// when the prompt starts a new pipeline. For a non-`/mustard:*` prompt
     /// the verdict composes the declared injectables (`mustard.json#inject`,
-    /// `on: userPromptSubmit`) and the W8.T8.2 pipeline-in-flight banner into
+    /// `on: userPromptSubmit`) and the pipeline-in-flight banner into
     /// ONE `Inject` — injectables first, banner after, the writing rule
     /// (`mustard.json#tone`) last; any one alone also injects. A `/mustard:*`
     /// prompt receives neither injectables nor banner (it is already inside the
@@ -415,7 +415,7 @@ impl Check for PromptSubmitInject {
             false,
             ctx.inject_only.as_deref(),
         );
-        // W8.T8.2 — inject a single-line reminder when a spec is active. The
+        // Inject a single-line reminder when a spec is active. The
         // per-prompt entrypoints census that used to fill the no-spec branch
         // was REMOVED: lexical prompt-token × path-token matching measured 1
         // useful hit in 17 across two field sessions — location is on-demand
@@ -448,14 +448,14 @@ impl Check for PromptSubmitInject {
 /// Emit a `pipeline.economy.operation.invoked` event via the NDJSON route.
 /// Fail-open: any error degrades to a no-op.
 ///
-/// W3C: routes via `crate::shared::events::route::emit` (NDJSON for
+/// Routes via `crate::shared::events::route::emit` (NDJSON for
 /// non-`pipeline.*` events, SQLite lifecycle index for `pipeline.*`).
 #[cfg(test)]
 mod tests {
     use super::*;
     use mustard_core::ClaudePaths;
 
-    /// Build a [`Ctx`] with a unique tempdir project path so the W8.T8.2 active-spec
+    /// Build a [`Ctx`] with a unique tempdir project path so the active-spec
     /// resolver (`current_spec`) cannot accidentally find a real pipeline-state.
     fn ctx() -> (tempfile::TempDir, Ctx) {
         // SAFETY: env mutation is local to the test process; we restore on drop.
@@ -524,7 +524,7 @@ mod tests {
         (dir, verdict)
     }
 
-    /// AC-1 — an ORDINARY prompt carries the writing rule, through the gate.
+    /// An ORDINARY prompt carries the writing rule, through the gate.
     ///
     /// Every prompt, not once per session: delivered once, the rule drifts
     /// away while the thing it governs — the next answer — is always the
@@ -549,7 +549,7 @@ mod tests {
         }
     }
 
-    /// AC-6 — a regra de escrita manda responder no idioma em que o usuário
+    /// A regra de escrita manda responder no idioma em que o usuário
     /// escreve, o do projeto, mesmo depois de ler material em outro idioma. O
     /// idioma nomeado sai do `mustard.json`, nunca de um valor fixo.
     #[test]
@@ -575,7 +575,7 @@ mod tests {
         assert!(context.contains("this project's is en-US"), "{context}");
     }
 
-    /// AC-13 — sem `lang` nem `specLang` no `mustard.json`, o idioma nunca é
+    /// Sem `lang` nem `specLang` no `mustard.json`, o idioma nunca é
     /// suposto: a regra manda seguir o idioma do usuário sem nomear idioma de
     /// projeto, e uma resposta em inglês não ganha defeito de idioma — nem
     /// fora do tom didático, nem nele. Com pt-BR declarado, o defeito continua.
@@ -638,7 +638,7 @@ mod tests {
         Verdict::Inject { context: language_rule(root).expect("an installed project has the rule") }
     }
 
-    /// AC-12 — a regra de idioma e a medição de idioma valem para todo projeto
+    /// A regra de idioma e a medição de idioma valem para todo projeto
     /// com `mustard.json`, qualquer que seja o tom. Sem tom declarado e com tom
     /// técnico, o prompt leva a regra (e não a do tom didático), e uma resposta
     /// em inglês num projeto em pt-BR é barrada no fim da resposta com o
@@ -719,7 +719,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — a project that declared nothing gets nothing. The RESOLVED tone
+    /// A project that declared nothing gets nothing. The RESOLVED tone
     /// defaults to `didactic`, so reading it would put this paragraph in front
     /// of every project that merely has a `mustard.json`.
     #[test]
@@ -762,7 +762,7 @@ mod tests {
         );
     }
 
-    /// AC-3 — a `/mustard:*` prompt carries it too. That branch drops the
+    /// A `/mustard:*` prompt carries it too. That branch drops the
     /// injectables and the banner because a slash command knows its own
     /// context; the writing rule is different in kind, because it governs how
     /// the ANSWER is written and that answer is read by the same person.
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn pipeline_prompt_allows() {
         // The amendment-window close is a no-op without an open window; the
-        // prompt itself is a `/mustard:*` command, so the W8.T8.2 banner is
+        // prompt itself is a `/mustard:*` command, so the pipeline-in-flight banner is
         // suppressed either way. The project is INSTALLED (mustard.json
         // present) so the installation gate stays out of the way.
         let (dir, c) = ctx();
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn non_pipeline_prompt_allows_without_active_spec() {
         // No `.claude/.pipeline-states/` in our tempdir, so `current_spec`
-        // returns None and the W8.T8.2 banner stays silent.
+        // returns None and the pipeline-in-flight banner stays silent.
         let (_dir, c) = ctx();
         // The env-var branch can still inject; guard by checking either Allow
         // (the expected case in CI) or Inject (when MUSTARD_ACTIVE_SPEC is set
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn non_pipeline_prompt_injects_with_active_spec() {
-        // W8.T8.2: when a spec is active, the user's free-text prompt gets a
+        // When a spec is active, the user's free-text prompt gets a
         // single-line banner injected.
         let (dir, _) = ctx();
         let paths = ClaudePaths::for_project(dir.path()).unwrap();
@@ -971,7 +971,7 @@ mod tests {
 
         // Same session, next prompt: the once-entry stays quiet. The verdict
         // may still be an Inject when the outer shell exports
-        // MUSTARD_ACTIVE_SPEC (the W8.T8.2 banner) — assert on the CONTENT.
+        // MUSTARD_ACTIVE_SPEC (the pipeline-in-flight banner) — assert on the CONTENT.
         let v = PromptSubmitInject
             .evaluate(&prompt_input_with_session("second question", "sess-1"), &c)
             .unwrap();
@@ -1001,7 +1001,7 @@ mod tests {
         );
     }
 
-    /// AC-8 — ANY slash command owns its turn, not just Mustard's own.
+    /// ANY slash command owns its turn, not just Mustard's own.
     ///
     /// The carve-out used to match `/mustard:` alone, so a third party's
     /// interview skill was routed over: the operator answered one of its
@@ -1085,7 +1085,7 @@ mod tests {
         }
     }
 
-    /// AC-12 — o pior caso da primeira mensagem da sessão cabe numa resposta de
+    /// O pior caso da primeira mensagem da sessão cabe numa resposta de
     /// gancho: o arquivo de regras injetado (`orchestrator.md`, o que a
     /// instalação semeia), o aviso de pipeline em curso, a regra de tom e a de
     /// idioma. Tudo sai numa só resposta, sob um só teto de 10.000 caracteres —

@@ -1,5 +1,5 @@
 //! `pipeline-state` + `active-pipelines` projections. Extracted from
-//! `event_projections` (F3 PERF-D split).
+//! `event_projections` when the module was split for performance.
 
 use mustard_core::ClaudePaths;
 use mustard_core::io::fs;

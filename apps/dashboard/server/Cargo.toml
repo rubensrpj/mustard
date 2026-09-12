@@ -40,7 +40,7 @@ name = "mustard_cli_test"
 path = "tests/mustard_cli_test.rs"
 
 [dev-dependencies]
-# Test-only: temp dirs for the B5 Wave 3 mustard-cli integration smoke test.
+# Test-only: temp dirs for the mustard-cli integration smoke test.
 tempfile = { workspace = true }
 # `mustard-cli` was a normal dependency, described as "the dashboard
 # installs/updates Mustard by calling `mustard_cli::init`/`update` directly".

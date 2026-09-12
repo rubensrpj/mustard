@@ -477,7 +477,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// AC-1 — uma pendência gravada sem nenhuma unidade aberta aparece na
+    /// Uma pendência gravada sem nenhuma unidade aberta aparece na
     /// listagem lida de OUTRO branch do mesmo checkout, e também de um worktree.
     #[test]
     fn pending_item_added_without_unit_is_listed() {
@@ -512,7 +512,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — fechar ou descartar sem motivo (ausente ou em branco) recusa, e o
+    /// Fechar ou descartar sem motivo (ausente ou em branco) recusa, e o
     /// arquivo fica byte a byte intacto.
     #[test]
     fn pending_close_without_reason_is_refused() {
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(again["reason"], json!("already-settled"), "{again}");
     }
 
-    /// AC-3 — o `material.md` injetado manda gravar com `run pending` todo
+    /// O `material.md` injetado manda gravar com `run pending` todo
     /// trabalho combinado além da unidade aberta, e continua cabendo no teto do
     /// injetável.
     #[test]

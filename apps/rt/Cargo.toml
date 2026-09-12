@@ -44,9 +44,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 
-# The `otel-collector` / `diagnose-otel` ports (Wave 6) need a local OTLP/JSON
+# The `otel-collector` / `diagnose-otel` ports need a local OTLP/JSON
 # receiver. `tiny_http` is a minimal blocking HTTP server with no tokio/async
-# runtime; events land in per-spec NDJSON via the W5 router (no SQLite).
+# runtime; events land in per-spec NDJSON via the event router (no SQLite).
 tiny_http = "0.12"
 
 # The `mcp` face moved to the standalone `mustard-mcp` crate so the long-lived

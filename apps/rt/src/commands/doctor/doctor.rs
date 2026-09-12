@@ -805,7 +805,7 @@ fn is_timestamp_expired(ts: &str, now_ms: u128, expiry_ms: u128) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Check: wave-integrity (W10.T10.5)
+// Check: wave-integrity
 // ---------------------------------------------------------------------------
 
 /// For each active spec under `.claude/spec/`, parse `wave-plan.md` for
@@ -1026,7 +1026,7 @@ fn render_report(results: &[CheckResult]) {
 // JSON renderer
 // ---------------------------------------------------------------------------
 
-/// Serialize the report as JSON. W10.T10.6 shape:
+/// Serialize the report as JSON, in this shape:
 ///
 /// ```json
 /// {
@@ -1088,7 +1088,7 @@ fn render_report_json(results: &[CheckResult]) {
 }
 
 // ---------------------------------------------------------------------------
-// Check: status-consistency (W2 — spec-status-consistency)
+// Check: status-consistency
 // ---------------------------------------------------------------------------
 
 /// Check every spec directory under `.claude/spec/` for lifecycle consistency.
@@ -1374,7 +1374,7 @@ pub fn run(opts: DoctorOpts) {
 
     // When a specific --check is requested, run only that check.
     if let Some(ref check_name) = opts.check {
-        // W3.T3.4 / T3.8 / T3.9 — the three claude-paths-single-source checks
+        // The three single-source claude-paths checks
         // produce native JSON shapes (not the generic `CheckResult` envelope).
         // They short-circuit BEFORE the legacy match below so their JSON form
         // is the only output.
@@ -1426,9 +1426,9 @@ pub fn run(opts: DoctorOpts) {
         check_claude_cli(),
         lsp_check(&cwd),
         check_nerd_font(),
-        // W10.T10.5 — new check, always in the full run.
+        // Wave-integrity check — always in the full run.
         check_wave_integrity(&claude_dir),
-        // W2 spec-status-consistency — always in the full run.
+        // Status-consistency check — always in the full run.
         check_status_consistency(&claude_dir),
         // What is really protected, measured — always in the full run: a
         // protection resting on the unmeasured fallback is invisible until it
@@ -1443,7 +1443,7 @@ pub fn run(opts: DoctorOpts) {
         ));
     }
 
-    // W3.T3.10 — claude-paths-single-source check trio. Each check renders
+    // The claude-paths check trio. Each check renders
     // its native JSON object under its own top-level key in the JSON path;
     // in text mode it folds into a `CheckResult` envelope so the OK/WARN/FAIL
     // summary line still works.
@@ -1504,7 +1504,7 @@ pub fn run(opts: DoctorOpts) {
 }
 
 // ---------------------------------------------------------------------------
-// W3.T3.4 / T3.8 / T3.9 — typed-check JSON path
+// Typed-check JSON path
 // ---------------------------------------------------------------------------
 
 /// Run one of the typed checks (`claude-paths`, `workspace-leaks`, `i1`) and
@@ -1582,7 +1582,7 @@ fn print_typed_value(
 }
 
 /// Render the default (all-checks) JSON payload. Combines the legacy
-/// `CheckResult` array shape with the three W3 typed reports under fixed
+/// `CheckResult` array shape with the three typed reports under fixed
 /// top-level keys (`claude_paths`, `workspace_leaks`, `i1`) so the dashboard
 /// and CI consumers can read each independently.
 fn render_combined_json(
@@ -1638,7 +1638,7 @@ fn render_combined_json(
         "checks": checks,
         "overall": overall,
         "violations": violations,
-        // W3.T3.10 — three named, typed reports keyed verbatim.
+        // Three named, typed reports keyed verbatim.
         "claude_paths": cp,
         "workspace_leaks": wl,
         "i1": i1,
@@ -1957,7 +1957,7 @@ mod tests {
         assert_eq!(result.status, Status::Ok);
     }
 
-    /// AC-5 — com sobra candidata, o `--residue` relata o tamanho dela e o da
+    /// Com sobra candidata, o `--residue` relata o tamanho dela e o da
     /// compilação compartilhada.
     #[test]
     fn doctor_residue_reports_scratch_leftovers() {

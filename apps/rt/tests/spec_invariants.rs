@@ -10,7 +10,7 @@
 //!   / `### Flags:` / `### Scope:` / `### Lang:` / `### Checkpoint:` /
 //!   `### Parent:` / `### Total waves:`,
 //! - every spec dir carries a `meta.json` whose parsed `(Stage, Outcome, Flags)`
-//!   triple is a legal `SpecState` (the W1 invariants hold for every on-disk
+//!   triple is a legal `SpecState` (the spec-state invariants hold for every on-disk
 //!   spec).
 //!
 //! ## Empty workspace

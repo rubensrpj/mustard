@@ -2,7 +2,7 @@
 //! conforming to [`mustard_core::domain::spec::contract`].
 //!
 //! Replaces the ~80 lines of literal-template boilerplate that lived inline in
-//! `plugin/commands/feature.md` (W6 will remove the
+//! `plugin/commands/feature.md` (a follow-up will remove the
 //! literal block from that SKILL.md once this subcommand is in place).
 //!
 //! ## CLI shape
@@ -48,7 +48,7 @@
 //! {output}/
 //!   spec.md              # PRD + (when scope=full) plan
 //!   meta.json            # canonical lifecycle metadata (scope/totalWaves/isWavePlan)
-//!   memory/_index.md     # T1.9 — stub memory index
+//!   memory/_index.md     # stub memory index
 //! ```
 //!
 //! ## `--plan` — the fused first materialisation
@@ -2144,7 +2144,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// AC-2 — the draft CONSUMES the unit's name instead of minting a second
+    /// The draft CONSUMES the unit's name instead of minting a second
     /// one.
     ///
     /// The gate names the unit (`emit-pipeline --kind pipeline.kind` reports it
@@ -2212,7 +2212,7 @@ mod tests {
         assert_eq!(resolve_slug(project, None, None, intent, Locale::EnUs), derived);
     }
 
-    /// AC-2/AC-3, the leg the flag does not cover — the name survives the hook
+    /// The leg the flag does not cover — the name survives the hook
     /// cutting the branch FIRST.
     ///
     /// The shipped order is: the gate mints the name and drops the pending
@@ -2667,7 +2667,7 @@ mod tests {
         assert_eq!(section_heading_for("extra", Locale::EnUs), "extra");
     }
 
-    /// Roundtrip AC-1 (TF 2026-06-10-ac-heading-unico): a VIRGIN draft — every
+    /// Roundtrip (TF 2026-06-10-ac-heading-unico): a VIRGIN draft — every
     /// scope × locale — carries exactly ONE AC heading in `spec.md` and passes
     /// its own `analyze-validation` with `ok: true` (zero issues). This is the
     /// regression the duplicated heading broke: `section_block` captured the
@@ -2810,7 +2810,7 @@ mod tests {
         std::fs::read_to_string(out.join("spec.md")).expect("draft written")
     }
 
-    /// AC-10 — an empty channel must be a stated CHOICE, not an omission.
+    /// An empty channel must be a stated CHOICE, not an omission.
     ///
     /// Passing no material used to produce a draft byte-identical to one
     /// written before the channel existed, so a spec that lost a conversation's
@@ -2981,7 +2981,7 @@ mod tests {
         assert!(msg.contains("Evidence"), "the rejection names the destination: {msg}");
     }
 
-    /// AC-3 — o material com riscos, resumo e esclarecimentos NÃO aborta o
+    /// O material com riscos, resumo e esclarecimentos NÃO aborta o
     /// rascunho (o carregador falha fechado, e antes estas chaves eram
     /// desconhecidas), e os riscos ganham a seção deles no idioma da spec.
     ///

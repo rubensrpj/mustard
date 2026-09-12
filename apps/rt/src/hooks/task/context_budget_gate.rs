@@ -1,6 +1,6 @@
 //! `context_budget_gate` — the consolidated Task-prompt / agent-return size module.
 //!
-//! ## Scope (b3 Wave 3, Task family)
+//! ## Scope (Task family)
 //!
 //! This module ports the **size** concerns of two JavaScript hooks:
 //!
@@ -29,13 +29,13 @@
 //! `context-budget` is a gate (`Check`) on `PreToolUse(Task)`. `output-budget`
 //! is an advisory on `PostToolUse(Task)` — it never blocks and never rewrites.
 //!
-//! Through Wave 3 `output-budget` was an [`Observer`] that, on an over-budget
+//! At first `output-budget` was an [`Observer`] that, on an over-budget
 //! return, wrote the `hookSpecificOutput.additionalContext` advisory **direct
 //! to stdout** with a raw `println!`, bypassing the dispatcher's single
-//! `emit_outcome` (b3 Wave-3 Concern "`budget::observe` stdout bypass" — under
+//! `emit_outcome` (the "`budget::observe` stdout bypass" concern — under
 //! the consolidated binary two JSON objects could leave one invocation).
 //!
-//! Wave 5 resolves it: `output-budget` is now part of the `Check` path. On
+//! That is now resolved: `output-budget` is now part of the `Check` path. On
 //! `PostToolUse(Task)` [`ContextBudgetGate::evaluate`] emits the return-size metric
 //! and, when over budget, returns a [`Verdict::Inject`] carrying the advisory.
 //! The dispatcher folds that `Inject` into the single `Outcome`, so exactly
@@ -561,7 +561,7 @@ fn over_budget_tail(input: &HookInput) -> Option<String> {
 /// Resolve the cwd a metric write should be rooted at: the harness `cwd`,
 /// falling back to `.` (the JS uses `process.cwd()`).
 ///
-/// W5 AC-W5.2: when no harness cwd is supplied, returning `"."` causes the
+/// When no harness cwd is supplied, returning `"."` causes the
 /// metric writer to materialise a `.claude/.metrics/` tree under whatever
 /// the process cwd happens to be — under `cargo test -p mustard-rt` that is
 /// `apps/rt/`, producing the forbidden `apps/rt/.claude/` leak.

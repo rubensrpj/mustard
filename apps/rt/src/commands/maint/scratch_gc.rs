@@ -917,7 +917,7 @@ mod tests {
     }
 
 
-    /// AC-1 — sem opção, a candidata antiga é listada com tamanho e data da
+    /// Sem opção, a candidata antiga é listada com tamanho e data da
     /// última mudança, e nada é apagado.
     #[test]
     fn scratch_gc_dry_run_lists_and_keeps() {
@@ -969,7 +969,7 @@ mod tests {
         assert!(first.contains("tmp.old1") && first.contains("tmp.young"), "{first}");
     }
 
-    /// AC-2 — `--apply` apaga só as candidatas antigas; a pasta recente, a da
+    /// O `--apply` apaga só as candidatas antigas; a pasta recente, a da
     /// sessão atual e a que não é do Mustard ficam.
     #[test]
     fn scratch_gc_apply_removes_only_old_candidates() {
@@ -1043,7 +1043,7 @@ mod tests {
         assert_eq!(reason_of(&running), "current session");
     }
 
-    /// AC-3 — `--path` fora do temp (o repositório, a home) é recusado e nada
+    /// O `--path` fora do temp (o repositório, a home) é recusado e nada
     /// é apagado; dentro do temp, os filtros 1 e 2 continuam valendo.
     #[test]
     fn scratch_gc_path_refuses_outside_temp() {
@@ -1108,7 +1108,7 @@ mod tests {
         assert!(!scratch.exists());
     }
 
-    /// AC-4 — acima do teto, a compilação compartilhada é esvaziada no
+    /// Acima do teto, a compilação compartilhada é esvaziada no
     /// `--apply`; abaixo dele, ou sem `--apply`, fica como está.
     #[test]
     fn scratch_gc_empties_shared_target_above_cap() {
@@ -1270,7 +1270,7 @@ mod tests {
         assert!(!owned_by(&meta, None));
     }
 
-    /// AC-9 — uma worktree registrada no git (`.git` ARQUIVO) nunca é tocada:
+    /// Uma worktree registrada no git (`.git` ARQUIVO) nunca é tocada:
     /// nem listada, nem apagada pelo `--apply`, e o `--path` a recusa — seja a
     /// candidata, seja uma filha direta dela, seja no `scratchpad/` de uma
     /// sessão antiga (o caso medido nesta máquina). O clone ao lado, com

@@ -6,8 +6,8 @@
 //! behaviours a component can have: [`Check`] (may affect the result) and
 //! [`Observer`] (telemetry only, never blocks).
 //!
-//! **Frozen at the end of b2 Wave 1.** B3 (hooks → Rust) and B4 (scripts →
-//! Rust) build a dispatcher on top of these types; a late change here
+//! **Frozen.** The port of the hooks to Rust and the port of the scripts to
+//! Rust build a dispatcher on top of these types; a late change here
 //! propagates everywhere. Add to it via `#[non_exhaustive]`, do not reshape it.
 
 use crate::platform::error::Error;
@@ -390,7 +390,7 @@ impl Verdict {
 /// The consolidated result of running one or more [`Check`]s against a hook
 /// invocation.
 ///
-/// The B3 dispatcher folds every [`Verdict`] produced for an invocation into
+/// The hook dispatcher folds every [`Verdict`] produced for an invocation into
 /// one `Outcome`, then turns it into stdout JSON + a process exit code. A
 /// blocking [`Verdict::Deny`] dominates; otherwise warnings, rewrites, and
 /// injections accumulate.
@@ -465,10 +465,10 @@ impl Outcome {
 
 /// Ambient context handed to a [`Check`] alongside the [`HookInput`].
 ///
-/// **Minimal placeholder for Wave 1.** It carries only what a check needs to
-/// resolve "where am I": the project directory and the [`Trigger`]. b2 Wave 3
+/// **Minimal placeholder.** It carries only what a check needs to
+/// resolve "where am I": the project directory and the [`Trigger`]. Later work
 /// grows this with enforcement config, the event sink, and pipeline-state
-/// access; B3 may extend it further. New fields are additive.
+/// access; the hook dispatcher may extend it further. New fields are additive.
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
     /// Absolute path to the project root for this invocation.

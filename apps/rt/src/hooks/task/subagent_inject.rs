@@ -1,4 +1,4 @@
-//! `subagent_inject` — PreToolUse(Task) context injector (W8.T8.3).
+//! `subagent_inject` — PreToolUse(Task) context injector.
 //!
 //! For every `Task` dispatch that does NOT already declare a `SKILL:` block in
 //! its `prompt`, we resolve a minimal slice of:
@@ -13,7 +13,7 @@
 //! covers the ad-hoc `Task(general-purpose)` calls that bypass the renderer
 //! (the L0 path from CLAUDE.md).
 //!
-//! ## T8.10 — selective spec-memory load
+//! ## Selective spec-memory load
 //!
 //! `SessionStart` no longer auto-injects the active spec's `memory/`. Per the
 //! deep-refactor budget, spec-memory is loaded **per dispatch**: this hook
@@ -45,7 +45,7 @@ use crate::commands::review::review_result;
 use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
 
 
-/// The W8 subagent-inject hook.
+/// The subagent-inject hook.
 pub struct SubagentInject;
 
 
@@ -789,7 +789,7 @@ fn capture_review_verdict_with_session(project: &Path, cwd: &str, input: &HookIn
     let _ = review_result::record_review(project, &spec, &verdict.verdict, verdict.critical, None, None);
 }
 
-/// Run the W4 span-level gate (Moment 3) for the returning child and append
+/// Run the span-level gate (Moment 3) for the returning child and append
 /// the verdict to `<wave-dir>/_review-spans.md`. Fail-open at every step —
 /// any IO or gate error degrades to a no-op so the orchestrator's
 /// SubagentStop flow continues.
@@ -865,8 +865,8 @@ fn dispatch_prompt(input: &HookInput) -> String {
 
 impl Check for SubagentInject {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        // W5.T5.2 — Span-level eval at SubagentStop. Runs per child return,
-        // never accumulating until end-of-wave (AC-A-5). Fail-open: any IO
+        // Span-level eval at SubagentStop. Runs per child return,
+        // never accumulating until end-of-wave. Fail-open: any IO
         // or gate error degrades to a no-op so the orchestrator continues.
         //
         // Memory capture rides the SAME return: harvest a `<MEMORY>` block
@@ -962,7 +962,7 @@ impl Check for SubagentInject {
             && !spec.is_empty() {
                 memory = spec_memory_block(&project, &spec, &prompt, &role);
             }
-        // W5.T5.1 — Pre-arm the child with the regression vocabulary the
+        // Pre-arm the child with the regression vocabulary the
         // gate will check. This is an INTERNAL subagent prompt, so the
         // vocabulary is rendered in EN/technical regardless of the project's
         // user-facing locale — agent/subagent prompts stay EN by policy; only
@@ -1366,7 +1366,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // W5 — span-level review (T5.1, T5.2, T5.7)
+    // Span-level review
     // -----------------------------------------------------------------------
 
     /// Build a project skeleton with the wave dir + a mustard.json declaring
@@ -1446,7 +1446,7 @@ mod tests {
         assert_eq!(final_output_text(&post_tool), "inline body");
     }
 
-    /// AC-A-5 + AC-A-7 — three sequential children fire `SubagentStop` and
+    /// Three sequential children fire `SubagentStop` and
     /// each call appends one line to `_review-spans.md`. The second child
     /// emits a Red verdict (its output text triggers a Semantic vocab hit);
     /// consolidation must then be blocked by [`review_spans::check_consolidation`].
@@ -1491,20 +1491,20 @@ mod tests {
         );
         assert_eq!(v3, Some(VERDICT_GREEN), "child-3 should land as green");
 
-        // AC-A-5 — span-level: 3 lines on disk (one per stop), in order.
+        // Span-level: 3 lines on disk (one per stop), in order.
         let entries = review_spans::read_entries(&wave_dir);
         assert_eq!(entries.len(), 3, "expected one ledger line per SubagentStop, got {entries:?}");
         assert_eq!(entries[0].child_id, "child-1");
         assert_eq!(entries[1].child_id, "child-2");
         assert_eq!(entries[2].child_id, "child-3");
 
-        // The middle child must have escalated past green — drives AC-A-7.
+        // The middle child must have escalated past green — that is what blocks consolidation below.
         assert_ne!(
             entries[1].verdict, VERDICT_GREEN,
             "child-2 must not be green: it mentioned a Semantic term"
         );
 
-        // AC-A-7 — at least one Red on the ledger blocks consolidation. If
+        // At least one Red on the ledger blocks consolidation. If
         // the middle child landed as Amber on this host (because the project
         // has no vocab file and the default Semantic list still matched at
         // Medium severity for some reason), force a Red to exercise the
@@ -1535,7 +1535,7 @@ mod tests {
         }
     }
 
-    /// T5.1 — PreToolUse Task dispatch surfaces the vocabulary inject block.
+    /// PreToolUse Task dispatch surfaces the vocabulary inject block.
     ///
     /// The injected vocabulary is an INTERNAL subagent prompt, so it is always
     /// EN/technical regardless of the project's user-facing locale — even though
@@ -1864,7 +1864,7 @@ mod tests {
         );
     }
 
-    /// AC-1 — a review subagent returns a `<VERDICT>` block; the SubagentStop
+    /// A review subagent returns a `<VERDICT>` block; the SubagentStop
     /// hook parses it and emits ONE `review.result` event whose `verdict` and
     /// `criticalCount` equal the block's values, with no orchestrator call to
     /// `review-result`.
@@ -1892,7 +1892,7 @@ mod tests {
         assert_eq!(results[0]["spec"], json!(spec));
     }
 
-    /// AC-1 (faithful shape): the SAME capture, but driven from a payload
+    /// Faithful shape: the SAME capture, but driven from a payload
     /// DESERIALISED from the exact stdin JSON a real `SubagentStop` delivers —
     /// `agent_type` at the top level (serde routes it to the TYPED field, not
     /// `raw`) and the output as `last_assistant_message`. This is precisely the
@@ -1933,7 +1933,7 @@ mod tests {
         assert_eq!(results[0]["spec"], json!(spec));
     }
 
-    /// AC-2 — no `<VERDICT>` block, or a malformed / out-of-vocabulary one, is a
+    /// No `<VERDICT>` block, or a malformed / out-of-vocabulary one, is a
     /// silent no-op (fail-open): the hook emits nothing and the manual
     /// `review-result` path stays the source of the verdict.
     #[test]

@@ -1,6 +1,6 @@
 //! `bash_command_gate` — the Bash-tool family dispatcher.
 //!
-//! ## Scope (b3 Bash family, 5/5)
+//! ## Scope (Bash family, 5/5)
 //!
 //! The five Bash-tool concerns live in sibling modules, one behavior each:
 //!
@@ -96,7 +96,7 @@ impl Check for BashCommandGate {
                     .unwrap_or("");
                 let spec_slug = current_spec(&ctx.project_dir);
                 // Emit a `pipeline.economy.savings.rtk-rewrite` NDJSON event
-                // (W3A: SQLite savings writes → NDJSON). Tokens we did NOT have
+                // (savings writes moved from SQLite to NDJSON). Tokens we did NOT have
                 // to ship as a verbose Bash response because `rtk` summarised
                 // the command. `RtkRewrite` bucket — `BashCommandGateBlock` is
                 // reserved for deny verdicts so the dashboard can surface
@@ -149,7 +149,7 @@ impl Check for BashCommandGate {
                     }),
                     spec: spec_slug,
                 };
-                // `rtk-rewrite` is non-pipeline → NDJSON via W5 router.
+                // `rtk-rewrite` is non-pipeline → NDJSON via the event router.
                 let _ = crate::shared::events::route::emit(&ctx.project_dir, &event);
             }
             return Ok(verdict);

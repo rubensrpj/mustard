@@ -697,7 +697,7 @@ mod tests {
         names
     }
 
-    /// AC-9: a lesson a wave produced survives that wave and reaches the NEXT
+    /// A lesson a wave produced survives that wave and reaches the NEXT
     /// round — the whole point of materializing at wave close instead of spec
     /// close.
     ///
@@ -767,7 +767,7 @@ mod tests {
         assert_eq!(memory_files(root, spec), names, "no duplicate, no re-attribution");
     }
 
-    /// AC-1: a ROUND closes several waves, and each one's memory is written
+    /// A ROUND closes several waves, and each one's memory is written
     /// under the wave that emitted it — none stamped with a sibling's number,
     /// none reported by a sibling's close, and none dropped.
     ///
@@ -911,8 +911,8 @@ mod tests {
         );
     }
 
-    /// AC-1, through the chain a real run actually walks — no hand-seeded wave
-    /// anywhere.
+    /// The same per-wave attribution, through the chain a real run actually
+    /// walks — no hand-seeded wave anywhere.
     ///
     /// Why this test exists next to [`every_wave_keeps_its_own_memory`]: that one
     /// writes the `wave` field into the event itself, so it proves the
@@ -1083,7 +1083,7 @@ mod tests {
         );
     }
 
-    /// The other half of AC-1: a decision whose event recorded NO wave is still
+    /// The other half of the per-wave attribution: a decision whose event recorded NO wave is still
     /// materialized — never dropped — and the file says `unknown` instead of
     /// borrowing the closing wave's number. Asserting the drop alone would pass
     /// on a writer that simply refused every unattributed lesson.
@@ -1121,7 +1121,7 @@ mod tests {
         assert!(body.contains("\nwave: unknown\n"), "{body}");
     }
 
-    /// AC-10: the value filter has an input it REJECTS. Both directions are
+    /// The value filter has an input it REJECTS. Both directions are
     /// asserted in one test on purpose — a filter that accepts everything and a
     /// filter that rejects everything are equally useless, and only checking one
     /// side cannot tell them apart.
@@ -1199,7 +1199,7 @@ mod tests {
         let _ = crate::shared::events::route::emit(&root.to_string_lossy(), &event);
     }
 
-    /// AC-5: a wave that closes without reporting a duty it was given has that
+    /// A wave that closes without reporting a duty it was given has that
     /// duty named — by id, with the duty verbatim.
     ///
     /// Two-sided on purpose: the SAME wave carries a second duty the returning
@@ -1459,7 +1459,7 @@ mod tests {
         assert!(m2[0].ends_with("-wave2.md"), "and it must be its own: {m2:?}");
     }
 
-    /// AC-2: an account of `RO-3.10` leaves `RO-3.1` unaccounted.
+    /// An account of `RO-3.10` leaves `RO-3.1` unaccounted.
     ///
     /// The match was a bare `contains`, and obligation ids share prefixes by
     /// construction — the tenth duty of a wave spells the first one inside

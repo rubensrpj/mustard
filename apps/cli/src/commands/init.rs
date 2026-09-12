@@ -1497,7 +1497,7 @@ mod tests {
         );
     }
 
-    /// AC-4 — a repository that TRACKS `mustard.json` gets its version stamp
+    /// A repository that TRACKS `mustard.json` gets its version stamp
     /// re-written on every install, and until now the installer left that
     /// change sitting uncommitted. The next command that guards on a clean tree
     /// then refused, naming the operator's own work as the cause — a false

@@ -50,7 +50,7 @@
 //!   terms). Degrades to an empty ranking WITH a `note` when the
 //!   `grain.dictionary.json` sidecar is absent (the rank pool needs it).
 //!
-//! ## Persistence (post-W5B)
+//! ## Persistence (since SQLite was dropped)
 //!
 //! No SQLite. Every read is filesystem-backed:
 //!
@@ -60,7 +60,7 @@
 //! - events    → `.claude/spec/<spec>/.events/*.ndjson` via [`mustard_core::EventReader`].
 //! - specs     → `.claude/spec/<spec>/spec.md` header walk (name + body).
 //! - metrics   → projected from events via the same NDJSON channel.
-//! - runs      → `pipeline.telemetry.run` events written by W5A's OTEL collector.
+//! - runs      → `pipeline.telemetry.run` events written by the OTEL collector.
 //!
 //! ## Runtime scoping
 //!
@@ -210,7 +210,7 @@ struct GetRunSummaryArgs {
     phase: Option<String>,
 }
 
-/// Input for `find_anchors` — the scan census DIGEST query wrapper (F6).
+/// Input for `find_anchors` — the scan census DIGEST query wrapper.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct FindAnchorsArgs {
     /// Free-text intent. Tokenized (lowercased alphanumeric runs of >= 3 chars,
@@ -221,7 +221,7 @@ struct FindAnchorsArgs {
     limit: Option<usize>,
 }
 
-/// Input for `rank_files` — the scan census personalized-PageRank wrapper (F6).
+/// Input for `rank_files` — the scan census personalized-PageRank wrapper.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct RankFilesArgs {
     /// Free-text (any language) query the ranker matches against the
@@ -615,7 +615,7 @@ impl MustardMemory {
     }
 }
 
-/// The scan-census retrieval bodies (F6), split from the `#[tool]` methods so
+/// The scan-census retrieval bodies, split from the `#[tool]` methods so
 /// the IO / spawn is separate from the pure shaping and both are testable
 /// without the MCP transport — mirroring `search_knowledge` over
 /// `knowledge_rows`. Every step is fail-open: a degraded read returns an empty
@@ -930,7 +930,7 @@ fn missing_metrics(spec: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// find_anchors / rank_files — the promoted scan census retrieval (F6)
+// find_anchors / rank_files — the promoted scan census retrieval
 //
 // `find_anchors` wraps `mustard_core::Scan::digest_query`; `rank_files` wraps
 // `Scan::rank_detail`. Both keep the crate's read-only, fail-open contract.
@@ -1263,7 +1263,7 @@ mod tests {
         assert!(out.by_model.is_empty());
     }
 
-    // -- F6: find_anchors / rank_files (promoted scan census retrieval) ----
+    // -- find_anchors / rank_files (promoted scan census retrieval) ----
 
     #[test]
     fn intent_terms_lowercases_dedups_drops_short_and_caps() {

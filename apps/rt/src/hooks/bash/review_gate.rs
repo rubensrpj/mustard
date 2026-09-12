@@ -326,7 +326,7 @@ fn emit_commit_gate_event(
         }),
         spec: current_spec(project_dir),
     };
-    // `commit-gate.check` is non-pipeline → per-spec NDJSON via W5 router.
+    // `commit-gate.check` is non-pipeline → per-spec NDJSON via the event router.
     let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 

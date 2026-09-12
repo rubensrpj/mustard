@@ -16,7 +16,7 @@
 //! A wave is complete when its `_review-spans.md` ledger
 //! ([`crate::commands::review::review_spans`]) records **≥1 returned child** and
 //! **no red verdict** (consolidation Allowed). The span ledger is the same
-//! deterministic source the W5 regression gate and `close_orchestrate` already
+//! deterministic source the regression gate and `close_orchestrate` already
 //! read; a red entry means a child failed the behaviour gate, so the wave is
 //! *not* done and no completion is emitted. The active wave is resolved from the
 //! `MUSTARD_ACTIVE_SPEC` + `MUSTARD_ACTIVE_WAVE` env vars (same lookup

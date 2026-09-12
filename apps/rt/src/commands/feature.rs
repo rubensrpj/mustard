@@ -542,7 +542,7 @@ fn auto_gloss(intent: &str) -> Option<String> {
 }
 
 /// Expand the raw intent with the scan-time equivalence tokens (the measured
-/// C2 query shape: raw PT + added EN tokens): each intent token ≥3 chars is
+/// query shape: raw PT + added EN tokens): each intent token ≥3 chars is
 /// accent-folded and looked up EXACTLY in the `grain.equivalences.json` map;
 /// hits append their tokens, deduped across the whole intent in
 /// first-occurrence order. No hit → the intent passes through verbatim.
@@ -1074,7 +1074,8 @@ mod tests {
         assert_eq!(v["anchors"], json!(["src/cancel.cs"]), "strong keeps anchors: {v}");
     }
 
-    /// The rt half of AC-8 (named so the same `cargo test --workspace
+    /// The rt half of the rule that keeps machine-written modules out of the
+    /// exemplars (named so the same `cargo test --workspace
     /// exemplar_files_exclude_machine_written_modules` filter runs it beside
     /// the scan-side exemplar test): a `generated_only` report withholds the
     /// planning fields exactly as `weak`/`none` do — its note forbids editing

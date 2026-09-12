@@ -245,7 +245,7 @@ pub fn run(
         task_filter,
         task_text,
     );
-    // AC-12 — what this wave's prompt actually carries, on stderr.
+    // What this wave's prompt actually carries, on stderr.
     //
     // stdout is the prompt itself and must stay raw, so the measurement rides
     // the diagnostic channel. Without it a hollow wave is invisible until the
@@ -734,7 +734,7 @@ pub(crate) fn render_prompt_with_census(
         }
         cross_wave_memory.push_str(&decisions_block);
     }
-    // W5.T5.3 — inject the regression vocabulary so the child agent sees
+    // Inject the regression vocabulary so the child agent sees
     // the same Semantic/Pattern term lists the gate will check at Moment 1.
     // This is an INTERNAL agent prompt, so the regression vocabulary is rendered
     // in EN/technical regardless of the project's user-facing locale — agent and
@@ -900,7 +900,7 @@ fn read_cached(project: &Path, spec: &str, name: &str) -> String {
     mfs::read_to_string(&path).unwrap_or_default()
 }
 
-/// Read the diff captured by wave `wave_num` (per the W2 path catalog: the file
+/// Read the diff captured by wave `wave_num` (per the canonical path catalog: the file
 /// at `<root>/.claude/spec/{spec}/wave-{n}-{role}/diff.md`). The role suffix
 /// is unknown a priori, so the first matching directory wins.
 ///
@@ -1008,7 +1008,7 @@ fn read_change_log(spec_dir: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// AC-12 — the render measures what each wave's prompt carries.
+    /// The render measures what each wave's prompt carries.
     ///
     /// A hollow wave used to be invisible until its agent came back with
     /// something thin. These two counts make it visible BEFORE the dispatch.
@@ -1254,7 +1254,7 @@ mod tests {
         assert!(body.contains("guard the option"), "TASK block missing plan: {body:?}");
     }
 
-    /// B1: the retry template carries a `## RETRY CONTEXT` heading that collapses
+    /// The retry template carries a `## RETRY CONTEXT` heading that collapses
     /// when the body is empty and survives (with its body) when filled — the fix
     /// for the bare `{retry_context}` that had no heading at all.
     #[test]
@@ -2216,7 +2216,7 @@ mod tests {
         assert!(rendered.contains("**AC-1**"), "a régua continua chegando: {rendered}");
     }
 
-    /// AC-5: when the target subproject is its OWN nested git repository (`.git`
+    /// When the target subproject is its OWN nested git repository (`.git`
     /// FILE — the submodule shape), the rendered prompt states the git boundary
     /// (separate commit history; do not bump the superproject gitlink yourself —
     /// the `/git` parent step owns that sync). A plain subproject and the

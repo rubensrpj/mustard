@@ -1,4 +1,4 @@
-//! `detect_stub_patterns` — Camera 2 of the regression gate (W4).
+//! `detect_stub_patterns` — Camera 2 of the regression gate.
 //!
 //! Detects the five canonical stub-fail-open patterns
 //! ([`StubPattern`](super::StubPattern)) inside the bodies of *declared*
@@ -428,7 +428,7 @@ pub fn pattern_todo() -> u32 {
         }
     }
 
-    /// AC-A-16 — `detect_stub_patterns` detects all five patterns in both
+    /// `detect_stub_patterns` detects all five patterns in both
     /// modes (AST-when-available + textual fallback), tagging the resulting
     /// `mode` correctly.
     #[test]

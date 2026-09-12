@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 const EXTRA_IGNORE_DIRS: &[&str] = &[
     ".next", "vendor", "__pycache__", ".nuxt", ".output", "coverage",
     "migrations", ".vs", ".idea",
-    // W0/AC-0.2: skip orphan agent worktrees that linger under
+    // Skip orphan agent worktrees that linger under
     // `.claude/worktrees/` — they mirror the source tree and trigger
     // false-positive stale-doc hits. Pruned by the DIRECTORY, so the harness's
     // opaque worktree names never need to be predicted here.

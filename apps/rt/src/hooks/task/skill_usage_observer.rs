@@ -131,7 +131,7 @@ mod tests {
         };
         SkillUsageObserver.observe(&input, &ctx(Trigger::PostToolUse, project));
 
-        // W5: `skill.invoked` is non-pipeline → per-session NDJSON (no spec
+        // `skill.invoked` is non-pipeline → per-session NDJSON (no spec
         // resolves in this test). Scan every NDJSON file under
         // `<project>/.claude/.session/*/.events/`.
         let session_root = dir.path().join(".claude").join(".session");

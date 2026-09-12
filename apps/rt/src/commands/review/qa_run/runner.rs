@@ -696,7 +696,7 @@ pub(super) fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[V
         payload,
         spec: Some(spec.to_string()),
     };
-    // `qa.result` is non-pipeline → per-spec NDJSON via the W5 router.
+    // `qa.result` is non-pipeline → per-spec NDJSON via the event router.
     let _ = crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &ev);
 }
 
@@ -1017,7 +1017,7 @@ mod tests {
             .join(format!("{package}{}", std::env::consts::EXE_SUFFIX))
     }
 
-    /// AC-1 — the guard's question is about PATHS, not spelling. A command that
+    /// The guard's question is about PATHS, not spelling. A command that
     /// rebuilds this crate while writing to a file OTHER than the one this
     /// process executes from is RUN, not refused: that is the shipped shape
     /// (installed binary, workspace `target/`), and refusing it by crate name
@@ -1060,7 +1060,7 @@ mod tests {
         assert!(!overwrites_running_binary("cargo test --workspace", &target_root, &debug_exe));
     }
 
-    /// AC-2 — and the refusal STANDS when the two paths coincide: a harness
+    /// The refusal STANDS when the two paths coincide: a harness
     /// started from its own build directory really would be overwritten. The
     /// reason names that file, relative to the project, so the committed QA
     /// report says `target/debug/mustard-rt` and not a path off one machine.

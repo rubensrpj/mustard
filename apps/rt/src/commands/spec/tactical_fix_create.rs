@@ -163,7 +163,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     // Emit the `spec.link` parent → child edge in-process — the retired
     // `spec-link` face used to do this via a child process. Routed with the
     // caller's `cwd`, so unit tests under `cargo test -p mustard-rt` write to
-    // their own workspace (umbrella AC-G2 regression).
+    // their own workspace, never into the repository's own `.claude/`.
     let link_ev = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: ts.clone(),

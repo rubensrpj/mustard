@@ -116,7 +116,7 @@ impl Check for MainContextCounter {
     /// honest; a `Task`/`Agent` dispatch resets `mainCount` (work delegated).
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         // Resolve the project root that owns the counter state file.
-        // W5 AC-W5.2: when neither `ctx` nor `input.cwd` carries a valid
+        // When neither `ctx` nor `input.cwd` carries a valid
         // root, skip the counter machinery entirely — otherwise we leak a
         // `.claude/.agent-state/main-context.counter.json` tree into the
         // process cwd (`apps/rt/` under `cargo test`).

@@ -8,7 +8,7 @@
     clippy::uninlined_format_args
 )]
 
-//! Integration tests for spec 2026-05-20-restore-rtk-rewrite — AC-3, AC-4, AC-5,
+//! Integration tests for spec 2026-05-20-restore-rtk-rewrite — rewrite, pass-through and the persisted event,
 //! plus dual-coverage sibling tests for spec 2026-05-21-rtk-rewrite-dual-coverage
 //! (warn vs strict mode emitted by `bash_guard`).
 //!
@@ -77,14 +77,14 @@ fn run_hook_with_mode(tmp: &TempDir, command: &str, mode: &str) -> (std::path::P
 /// hook-input JSON on stdin.  Returns the DB path where events should land.
 ///
 /// Thin wrapper around [`run_hook_with_mode`] pinned to `warn` explicitly so
-/// the AC-3 / AC-4 / AC-5 rewrite-path tests are mode-independent. (`warn` is
+/// the rewrite-path tests are mode-independent. (`warn` is
 /// also the gate default now; pinning keeps them robust to env overrides.)
 fn run_hook(tmp: &TempDir, command: &str) -> std::path::PathBuf {
     let (db_path, _stdout) = run_hook_with_mode(tmp, command, "warn");
     db_path
 }
 
-/// Variant of `run_hook` that also returns the hook's stdout, used by AC-3/AC-4
+/// Variant of `run_hook` that also returns the hook's stdout, used by the tests
 /// to inspect the `updatedInput` rewrite or confirm a silent pass-through.
 ///
 /// Thin wrapper around [`run_hook_with_mode`] pinned to `warn`.
@@ -155,7 +155,7 @@ fn rtk_default_mode_rewrites_not_denies() {
     );
 }
 
-/// AC-3: a raw command without `rtk` prefix that has an RTK equivalent must
+/// A raw command without `rtk` prefix that has an RTK equivalent must
 /// produce a `Verdict::Rewrite` encoded as `updatedInput` in the hook's stdout.
 #[test]
 fn rtk_rewrite_e2e_rewrites_unprefixed_command() {
@@ -177,7 +177,7 @@ fn rtk_rewrite_e2e_rewrites_unprefixed_command() {
     );
 }
 
-/// AC-4: a command already prefixed with `rtk` short-circuits the rewrite path.
+/// A command already prefixed with `rtk` short-circuits the rewrite path.
 /// The hook responds with a silent allow (empty stdout).
 #[test]
 fn rtk_rewrite_e2e_passes_through_rtk_prefixed_command() {
@@ -190,10 +190,10 @@ fn rtk_rewrite_e2e_passes_through_rtk_prefixed_command() {
     );
 }
 
-/// AC-5: when `bash_guard` rewrites a `Bash` command via `rtk`, an `rtk-rewrite`
+/// When `bash_guard` rewrites a `Bash` command via `rtk`, an `rtk-rewrite`
 /// event must be persisted.
 ///
-/// W5: `rtk-rewrite` is a non-pipeline event and now lands in the per-spec /
+/// `rtk-rewrite` is a non-pipeline event and now lands in the per-spec /
 /// per-session NDJSON sink under `<project>/.claude/.session/<slug>/events/`.
 /// The test scans every `*.ndjson` file under `.claude/` for the rewrite line.
 ///
@@ -306,7 +306,7 @@ fn rtk_rewrite_strict_passes_through_rtk_prefixed() {
 /// Strict mode denies before the rewrite path runs, so no `rtk-rewrite`
 /// event should ever land in the NDJSON sink.
 ///
-/// W8A-3 (no-sqlite Wave 8): assertion path migrated from `SELECT COUNT(*)
+/// With SQLite dropped, the assertion path migrated from `SELECT COUNT(*)
 /// FROM events WHERE event = 'rtk-rewrite'` to a `walk_ndjson` scan over
 /// `.claude/`. Verdict-side semantics are unchanged.
 #[test]

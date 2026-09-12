@@ -45,7 +45,7 @@ use std::time::SystemTime;
 /// `wave`, `session_id`, `actor`) are present in `raw` via the flatten.
 /// Unknown / missing fields default safely (fail-open).
 ///
-/// W8A-2 (no-sqlite Wave 8): lifted from `apps/rt/src/run/event_projections.rs`
+/// Lifted, when the SQLite store was dropped, from `apps/rt/src/run/event_projections.rs`
 /// to the shared core so both the rt run-face and the dashboard backend can
 /// fold over the same canonical event slice without duplicating the converter.
 #[must_use]
@@ -56,7 +56,7 @@ pub(crate) fn ndjson_to_harness(e: Event) -> HarnessEvent {
 /// Convert one already-loaded raw NDJSON record (the full line as a
 /// [`serde_json::Value`], including its `payload` key) into a [`HarnessEvent`].
 ///
-/// Performance spec `performance-dashboard-rotas-lentas-cache` (wave 1): the
+/// Performance spec `performance-dashboard-rotas-lentas-cache`: the
 /// dashboard keeps the parsed workspace records in an in-memory cache and must
 /// feed the projections WITHOUT re-walking the disk. This is the conversion
 /// entry point for events the caller already holds; [`ndjson_to_harness`]
@@ -115,13 +115,13 @@ fn harness_from_raw(raw: &Value, payload: Value) -> HarnessEvent {
 /// unreadable files and malformed lines are silently skipped — telemetry is
 /// never load-bearing, the projection callers always render *something*.
 ///
-/// W8A-2 (no-sqlite Wave 8): the canonical disk-walking event-slice loader.
+/// The canonical disk-walking event-slice loader (moved here when the SQLite store was dropped).
 /// `apps/rt` (one-shot CLI) consumes this directly; the dashboard backend now
 /// feeds the same projections from its incremental parsed-events cache via
 /// [`harness_events_from_values`] instead of re-walking the disk per command
-/// (spec `performance-dashboard-rotas-lentas-cache`, wave 1). Conversion stays
+/// (spec `performance-dashboard-rotas-lentas-cache`). Conversion stays
 /// shared (`harness_from_raw`), so the projection inputs remain identical
-/// across the two consumers (the regression W6 caught when the dashboard had
+/// across the two consumers (the regression seen when the dashboard had
 /// its own copy).
 #[must_use]
 pub fn read_workspace_events(project_root: &Path) -> Vec<HarnessEvent> {

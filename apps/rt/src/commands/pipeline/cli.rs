@@ -65,7 +65,7 @@ pub enum PipelineCmd {
     ///
     /// With `--self-test`: instantiate a minimal [`mustard_core::SpecSummaryDoc`],
     /// serialise it to pretty JSON, print to stdout, and exit 0. Used by
-    /// `cargo run -p mustard-rt -- run pipeline-summary --self-test` in AC-1A-1.
+    /// `cargo run -p mustard-rt -- run pipeline-summary --self-test` as a smoke check.
     #[command(display_order = 34)]
     PipelineSummary {
         /// Path to the spec directory (must contain `spec.md`). Also accepts a
@@ -114,7 +114,7 @@ pub enum PipelineCmd {
         #[arg(long)]
         json: bool,
     },
-    /// W5.T5.1 — Drive the CLOSE-phase gates (verify → qa → docs-stale → summary).
+    /// Drive the CLOSE-phase gates (verify → qa → docs-stale → summary).
     #[command(name = "close-orchestrate")]
     #[command(display_order = 65)]
     CloseOrchestrate {
@@ -199,7 +199,7 @@ pub fn dispatch(cmd: PipelineCmd) {
             pipeline::status::run(pipeline::status::StatusOpts { harness, format, root });
         }
         PipelineCmd::ResumeBootstrap { spec, json } => pipeline::resume_bootstrap::run(&spec, json),
-        // --- W5 deep-refactor: T5.1–T5.16 -------------------------------------
+        // --- close orchestration, plan and wave-advance commands --------------
         PipelineCmd::CloseOrchestrate { spec, skip_docs } => {
             pipeline::close_orchestrate::run(pipeline::close_orchestrate::CloseOrchestrateOpts { spec, skip_docs });
         }

@@ -431,7 +431,7 @@ fn render(model: &Model, pt: bool) -> String {
 ///
 /// When `self_test` is `true`, instantiates a minimal [`SpecSummaryDoc`],
 /// serialises it with `serde_json::to_string_pretty`, prints to stdout, and
-/// returns immediately (exit 0). Used by AC-1A-1 to verify the summary
+/// returns immediately (exit 0). Used as a smoke check that the summary
 /// foundation compiles and the `version` field is numeric.
 pub fn run(spec_dir: Option<&str>, format: &str, self_test: bool) {
     if self_test {

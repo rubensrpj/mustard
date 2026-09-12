@@ -1,9 +1,9 @@
-//! Spec A v4 / W6 — disciplined resume context (AC-A-10).
+//! Disciplined resume context, held under a hard token budget.
 //!
 //! Reads prior-wave `_summary.md` files, prunes them to the
-//! [`super::RESUME_TOKEN_BUDGET`] cap (T6.3) restricted to the wikilink set the
-//! operational wave spec declares (T6.4), then renders a `_context.md` for the
-//! current wave (T6.5). Every reader fail-opens — a wave with no summary simply
+//! [`super::RESUME_TOKEN_BUDGET`] cap restricted to the wikilink set the
+//! operational wave spec declares, then renders a `_context.md` for the
+//! current wave. Every reader fail-opens — a wave with no summary simply
 //! does not contribute to the budget; a write error leaves `context_path =
 //! None`.
 
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// Extract the set of `[[name]]` targets appearing inside the operational
 /// wave spec body. Used as the filter for which prior `_summary.md` files are
-/// allowed into the pruning pool (T6.4: load only summaries the current wave
+/// allowed into the pruning pool (load only summaries the current wave
 /// actually references).
 ///
 /// Returns `None` when no wikilinks were declared — the caller treats that as
@@ -103,7 +103,7 @@ pub(super) fn load_pruned_prior_summaries(
     by_wave.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     for (n, dir_name, path) in by_wave {
-        // T6.4 — when the operational spec declared its inheritance via wikilinks,
+        // When the operational spec declared its inheritance via wikilinks,
         // skip summaries that are not referenced.
         if let Some(filter) = allowed
             && !filter.contains(&dir_name) {
@@ -147,7 +147,7 @@ pub(super) fn load_pruned_prior_summaries(
     (texts, used_tokens, count)
 }
 
-/// Generate `_context.md` for the current wave on resume (T6.5).
+/// Generate `_context.md` for the current wave on resume.
 ///
 /// Builds a [`WaveContextInput`] from filesystem state — the pruned wikilinks,
 /// the wave map (every `wave-N-*` dir in `spec_dir`), and an objective line
@@ -198,7 +198,7 @@ pub(super) fn generate_context_on_resume(
         objective,
         inheritance,
         // Memory entries — best-effort. Spec memory lives at `<spec>/memory/*.md`.
-        // We collect file stems for now; richer typing arrives with W7+.
+        // We collect file stems for now; richer typing can come later.
         memory: list_spec_memory(spec_dir),
         position,
         // Resume does not prescribe concrete next steps — leave empty so the
@@ -335,13 +335,14 @@ mod tests {
         );
         if declare_wikilinks {
             // Reference only the two most recent prior waves — pruning must
-            // exclude the other 11 even before the budget cap kicks in (T6.4).
+            // exclude the other 11 through the wikilink filter, even before the budget
+            // cap kicks in.
             body.push_str("Inherits from [[wave-11-rt/_summary]] and [[wave-10-rt/_summary]].\n");
         }
         std::fs::write(&op_path, body).unwrap();
     }
 
-    /// AC-A-10 — with wikilink filter declared, only the referenced summaries
+    /// With wikilink filter declared, only the referenced summaries
     /// are loaded AND the byte cost stays within 10 000 tokens regardless of
     /// how big each prior summary is.
     #[test]
@@ -364,7 +365,7 @@ mod tests {
             &op_body,
             RESUME_TOKEN_BUDGET,
         );
-        // AC-A-10: under the 10 000-token cap, no matter what.
+        // Under the 10 000-token cap, no matter what.
         assert!(
             used_tokens <= RESUME_TOKEN_BUDGET,
             "used_tokens={used_tokens} exceeded budget={RESUME_TOKEN_BUDGET}"
@@ -401,7 +402,7 @@ mod tests {
         assert!(count >= 1, "at least one summary must survive the cap");
     }
 
-    /// T6.5 — `generate_context_on_resume` writes a `_context.md` under the
+    /// `generate_context_on_resume` writes a `_context.md` under the
     /// current wave directory using the i18n-aware renderer.
     #[test]
     fn test_resume_bootstrap_generates_context_md() {
@@ -426,7 +427,7 @@ mod tests {
         assert!(body.contains("[[wave-"), "must reference at least one prior wave");
     }
 
-    /// T6.4 — `wikilinked_summary_targets` strips the trailing `/_summary`
+    /// `wikilinked_summary_targets` strips the trailing `/_summary`
     /// suffix so consumers can match against wave dir names directly.
     #[test]
     fn test_wikilinked_summary_targets_normalizes_suffix() {

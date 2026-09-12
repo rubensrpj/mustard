@@ -227,7 +227,7 @@ mod tests {
         run_rules(&[&PendingRule], input, &ctx(root))
     }
 
-    /// AC-5 — o turno em que uma unidade fechou e cuja mensagem final omite uma
+    /// O turno em que uma unidade fechou e cuja mensagem final omite uma
     /// pendência aberta é bloqueado, e o motivo NOMEIA a omitida (e só ela). A
     /// reescrita que a cita passa e encerra o fechamento.
     #[test]
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(verdict(root, &stop("s-close", summary)), Verdict::Allow, "once per closure");
     }
 
-    /// AC-6 — sem fechamento neste turno, a resposta passa mesmo omitindo todas
+    /// Sem fechamento neste turno, a resposta passa mesmo omitindo todas
     /// as pendências abertas; e o fechamento de OUTRA sessão não conta.
     #[test]
     fn pending_gate_ignores_turn_without_closure() {

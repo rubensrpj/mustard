@@ -157,7 +157,7 @@ pub enum MaintCmd {
         #[arg(long)]
         json: bool,
     },
-    /// W5.T5.6 — Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
+    /// Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
     #[command(name = "adapt-cursor")]
     #[command(display_order = 70)]
     AdaptCursor {
@@ -168,7 +168,7 @@ pub enum MaintCmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// W5.T5.7a — Install dependencies in every detected subproject.
+    /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
     #[command(display_order = 71)]
     MaintDeps {
@@ -176,7 +176,7 @@ pub enum MaintCmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// W5.T5.7b — Run build/type-check validation in every detected subproject.
+    /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
     #[command(display_order = 72)]
     MaintValidate {

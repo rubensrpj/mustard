@@ -258,11 +258,12 @@ fn header_from_meta_text(text: &str) -> Option<SpecHeader> {
     serde_json::from_str::<meta::Meta>(text).ok().map(header_from_meta)
 }
 
-/// Parse the header fields, preferring `meta.json` sidecar (W3 onward),
+/// Parse the header fields, preferring the `meta.json` sidecar (the source
+/// since the `meta-sidecar` migration),
 /// with fall-back to the legacy `### Key:` markdown header.
 ///
 /// Resolution order:
-/// 1. `meta.json` next to `spec_file` — authoritative after the W3
+/// 1. `meta.json` next to `spec_file` — authoritative after the
 ///    `meta-sidecar` migration removed header lines from the `.md`.
 /// 2. Legacy header lines in the first 2 KiB of the `.md` — kept so a
 ///    teammate's un-migrated spec (e.g. pulled from a feature branch)
@@ -1844,7 +1845,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // T3.4 — malformed + closed-followup inclusion tests
+    // Malformed + closed-followup inclusion tests
     // -----------------------------------------------------------------------
 
     /// Helper: create a spec dir with an explicit meta.json sidecar.
@@ -2011,7 +2012,7 @@ mod tests {
             }
         }
 
-        // Verify opts compiles (satisfies AC-W3.4 that the struct is usable)
+        // Verify opts compiles (the struct stays usable from a test)
         drop(opts);
     }
 
@@ -2164,7 +2165,7 @@ mod tests {
         std::fs::write(events_dir.join("seed.ndjson"), format!("{line}\n")).unwrap();
     }
 
-    /// **AC-4.** A wave directory is born `Outcome=Active` at scaffold time, so
+    /// A wave directory is born `Outcome=Active` at scaffold time, so
     /// the first active wave of a plan NOBODY dispatched is wave 1 — the same
     /// answer a plan whose wave 1 is in flight gives. The table used to print
     /// `W1 em exec` for both, which asks the operator to RESUME work that never
@@ -2227,13 +2228,13 @@ mod tests {
         );
     }
 
-    /// **AC-11.** Every value [`derive_status`] can return has to FIT the column
+    /// Every value [`derive_status`] can return has to FIT the column
     /// it is printed in, or that row pushes `Onde` and `Resumo` to the right and
     /// the table stops lining up on exactly the rows the operator most needs to
     /// read.
     ///
     /// The column was 10 wide while `closed-followup` (15) was already
-    /// reachable, and wave 2 of this unit added `W{N} a iniciar` (12-13) — a
+    /// reachable, and this unit added `W{N} a iniciar` (12-13) — a
     /// status that mis-renders the table is the same class of defect this unit
     /// exists to remove, in miniature.
     ///
@@ -2382,7 +2383,7 @@ mod tests {
         td
     }
 
-    /// **AC-3.** A spec living on an unmerged work branch is listed as
+    /// A spec living on an unmerged work branch is listed as
     /// in-flight, naming the branch that holds it — instead of being reported
     /// as absent because the checkout does not carry its directory.
     ///
@@ -2526,7 +2527,7 @@ mod tests {
         );
     }
 
-    /// **AC-2.** BOTH consumers ask the same enumerator, and neither of the two
+    /// BOTH consumers ask the same enumerator, and neither of the two
     /// earlier sweeps survives: the sweep MOVED, it did not get copied.
     ///
     /// Every half is asserted, like the deletion-reach test in `branch_state`:

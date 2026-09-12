@@ -256,7 +256,7 @@ impl Observer for DelegationAdvisory {
             return;
         };
         // Resolve the project root that owns the shared counter state. Skip
-        // entirely when no valid root is available (the AC-W5.2 regression:
+        // entirely when no valid root is available (the cwd-leak regression:
         // never leak `.agent-state` into the process cwd under `cargo test`).
         let project = if ctx.project_dir.is_empty() {
             match common::project_dir_opt(input) {

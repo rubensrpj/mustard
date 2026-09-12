@@ -1,6 +1,6 @@
 //! `session_knowledge_observer` — the consolidated knowledge-extraction module.
 //!
-//! ## Scope (b3 Wave 5, knowledge family)
+//! ## Scope (knowledge family)
 //!
 //! This module consolidates two JavaScript hooks. Each is a distinct
 //! *concern* kept as its own internal section — consolidation regroups, it
@@ -231,7 +231,7 @@ fn save_friction(entries: &[FrictionEntry], claude_dir: &Path) {
         }
         record.insert("updatedAt".into(), json!(ts));
 
-        // New fields: verification metadata (AC-3).
+        // New fields: verification metadata.
         record.insert("verifiedAt".to_string(), Value::Null);
         record.insert("sourceFiles".to_string(), Value::Array(Vec::new()));
 
@@ -300,7 +300,7 @@ fn read_state_objects(paths: &ClaudePaths) -> Vec<StateObject> {
 
 /// `true` when the per-spec NDJSON log already carries a `retry.attempt` event.
 ///
-/// W5: `retry.attempt` lives in the per-spec NDJSON sink, not in `pipeline_events`.
+/// `retry.attempt` lives in the per-spec NDJSON sink, not in `pipeline_events`.
 /// Existence-only probe (a single line is enough), so this returns early.
 fn spec_has_retry_events(cwd: &str, spec: &str) -> bool {
     let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
@@ -351,7 +351,7 @@ fn emit_retry_attempts(state: &StateObject, input: &HookInput, cwd: &str) {
             spec: Some(spec.clone()),
         };
         // `retry.attempt` is non-pipeline → routed to the per-spec NDJSON
-        // sink by the W5 split. `route::emit` is the single
+        // sink by the pipeline/non-pipeline split. `route::emit` is the single
         // classifier; see `apps/rt/src/run/event_route.rs`.
         let _ = crate::shared::events::route::emit(cwd, &event);
     }
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(parsed["entries"].as_array().unwrap().len(), 1);
     }
 
-    /// Count `retry.attempt` rows across every per-spec NDJSON dir (W5).
+    /// Count `retry.attempt` rows across every per-spec NDJSON dir.
     fn count_retry_events(project: &Path) -> usize {
         let Ok(paths) = ClaudePaths::for_project(project) else {
             return 0;

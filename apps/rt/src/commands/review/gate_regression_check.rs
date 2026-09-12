@@ -1,11 +1,11 @@
-//! `gate_regression_check` — Wave 4 of Spec A v4.
+//! `gate_regression_check` — the `gate-regression-check` command.
 //!
 //! The behavior-regression gate. Connects the three `mustard-core` primitives
-//! (vocabulary W1, AST agnostic W1.5, snapshot W2) into a single gate with
+//! (vocabulary, language-agnostic AST, snapshot) into a single gate with
 //! three moments × three layers:
 //!
 //! - **Moment 1 (pre-edit, vocabulary).** Scan the agent's free-form plan text
-//!   against `vocabulary::scan` (W1). Hits in the `Semantic` layer escalate
+//!   against `vocabulary::scan`. Hits in the `Semantic` layer escalate
 //!   to High severity; hits in the `Pattern` layer become Medium; `Keyword`
 //!   hits become Low; `Noise` hits are dropped.
 //! - **Moment 2 (during diff, AST).** Build a `GrammarLoader::from_project`
@@ -52,7 +52,8 @@ use std::path::{Path, PathBuf};
 
 /// Line-change threshold above which a `Modified` snapshot delta becomes a
 /// regression signal. Five lines is the empirical floor — below this, deltas
-/// are noise (rename, whitespace, single-line tweak) per the W6 fixture audit.
+/// are noise (rename, whitespace, single-line tweak) per the audit of the
+/// versioned regression fixture.
 pub(crate) const LINE_CHANGE_THRESHOLD: usize = 5;
 
 // ---------------------------------------------------------------------------
@@ -268,7 +269,7 @@ fn severity_for_layer(layer: VocabLayerKind) -> Option<Severity> {
 /// default set when no `.claude/vocab/regression.toml` is installed so the
 /// gate never returns zero hits on a fresh project.
 ///
-/// W5 (`subagent_inject` + `agent_prompt_render`) consumes the same matcher to
+/// The dispatch side (`subagent_inject` + `agent_prompt_render`) consumes the same matcher to
 /// pre-arm child agents with the wave's vocabulary — exposing this helper
 /// avoids duplicating the file-lookup + fallback contract across modules.
 pub fn build_vocab_matcher(project_root: &Path) -> Option<VocabularyMatcher> {
@@ -399,13 +400,13 @@ fn moment_three_signals(
     for delta in diff.deltas {
         match delta.change {
             ChangeKind::Modified { line_changes } => {
-                // W7#3: signal fires when either (a) line_changes exceeds the
+                // The signal fires when either (a) line_changes exceeds the
                 // configured threshold, OR (b) the function's body emptied —
                 // i.e. the post body is <= 1/3 of the pre body (or zero).
                 // Pattern (b) catches small bodies that shrink past 100% but
                 // stay under the raw threshold (the `rtk_summary` case).
                 //
-                // W7#2: `threshold` is sourced from `[thresholds]` in
+                // `threshold` is sourced from `[thresholds]` in
                 // `.claude/vocab/regression.toml` when present, otherwise
                 // falls back to `LINE_CHANGE_THRESHOLD`.
                 let before_lines = line_count(delta.before.as_ref());
@@ -437,7 +438,7 @@ fn moment_three_signals(
     signals
 }
 
-/// W7#2 helper: read the line-change threshold from
+/// Read the line-change threshold from
 /// `<project>/.claude/vocab/regression.toml#[thresholds]`. Falls back to
 /// [`LINE_CHANGE_THRESHOLD`] when the file is missing, malformed, or the
 /// `[thresholds]` table is absent — never errors out.
@@ -452,7 +453,7 @@ fn load_line_change_threshold(project_root: &Path) -> usize {
         .unwrap_or(LINE_CHANGE_THRESHOLD)
 }
 
-/// W7#2: thin wrapper that scales severity against the configured threshold.
+/// Thin wrapper that scales severity against the configured threshold.
 fn snapshot_signal_with_threshold(
     template: &str,
     delta: &FunctionDelta,
@@ -719,7 +720,7 @@ mod tests {
         assert_eq!(out, "hi {who}");
     }
 
-    /// AC-A-2 — Moment 1 hits a semantic plan and fires a non-Green verdict
+    /// Moment 1 hits a semantic plan and fires a non-Green verdict
     /// with a translated message under pt-BR. A single Semantic hit ⇒ High
     /// severity ⇒ `Err(GateError::Blocked)` from `run`; we recover the signals
     /// via `moment_one_signals` directly to inspect the translated body.
@@ -760,7 +761,7 @@ mod tests {
         );
     }
 
-    /// AC-A-2 (locale switch) — the same plan under en-US produces the EN
+    /// Locale switch — the same plan under en-US produces the EN
     /// template literal.
     #[test]
     fn test_moment1_amber_en_us() {
@@ -799,7 +800,7 @@ mod tests {
         project_root
     }
 
-    /// AC-A-3 — Moment 2 surfaces a non-Green verdict on a stub-fail-open
+    /// Moment 2 surfaces a non-Green verdict on a stub-fail-open
     /// diff inside a declared function, *when the host has a Rust grammar*
     /// installed. On hosts without one, `language_id_for_path` returns `None`
     /// and the stub-detector legally short-circuits — we then validate the
@@ -871,7 +872,7 @@ mod tests {
         }
     }
 
-    /// AC-A-6 — Amber verdict prints the AskUserQuestion JSON to stdout.
+    /// Amber verdict prints the AskUserQuestion JSON to stdout.
     ///
     /// We can't easily capture stdout from a `run()` call inside a test
     /// without re-architecting the helpers, so this test exercises
@@ -893,7 +894,7 @@ mod tests {
             "Medium-only single-layer ⇒ Amber, got {verdict:?}"
         );
 
-        // AC-A-6 — call the real `amber_askuser_json` builder and validate
+        // Call the real `amber_askuser_json` builder and validate
         // the contract surface that the orchestrator interprets.
         let i18n = I18n::new(Locale::PtBr, i18n::Tone::default());
         let serialised = amber_askuser_json(&signals, &i18n);
@@ -930,7 +931,7 @@ mod tests {
         );
     }
 
-    /// AC-A-7 — Red verdict produces the blocked JSON shape and `run` returns
+    /// Red verdict produces the blocked JSON shape and `run` returns
     /// `Err(GateError::Blocked)`.
     #[test]
     fn test_verdict_red_emits_blocked_json() {
@@ -1048,18 +1049,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Wave 7 — review-cobertura-w6 (AC-A-1)
+    // Replay of a real regression across the four gate moments
     // -----------------------------------------------------------------------
     //
-    // Replays the no-sqlite W6 regression against the gate. The fixtures
+    // Replays a real regression against the gate: nine telemetry functions
+    // stubbed out while the SQLite store was being dropped. The fixtures
     // (`fixtures/w6-pre/telemetry.rs` and `fixtures/w6-post/telemetry.rs`) were
-    // captured by W0; this test exercises all 4 critical points (Moment 1,
-    // Moment 2, Moment 3, span-level) and asserts ≥3 fire, in line with the
-    // spec's success metric (PRD §"Métrica de sucesso").
+    // captured from the tree before and after that change; this test exercises all 4 critical points (Moment 1,
+    // Moment 2, Moment 3, span-level) and asserts ≥3 fire — the success bar
+    // the gate was built to clear.
     //
     // Empirical strategy: no synthetic stand-ins. Each moment runs against the
-    // real W6 fixture; whichever moments fail to fire are reported honestly in
-    // `review-w7-report.md`. Moment 2 is expected to silently no-op on hosts
+    // real fixture; whichever moments fail to fire are reported honestly on
+    // stderr and in the assertion message. Moment 2 is expected to silently no-op on hosts
     // without a Rust tree-sitter grammar installed — that is documented as a
     // **host-dependent gap** rather than a gate bug.
 
@@ -1144,7 +1146,7 @@ mod tests {
         })
     }
 
-    /// AC-A-1 — replay the W6 fixture across all 4 gate moments and assert
+    /// Replay the regression fixture across all 4 gate moments and assert
     /// that ≥3 of them fire. Empirical: no synthetic substitutions, no
     /// threshold inflation — if the gate genuinely produces <3, this test
     /// FAILS so the human operator can act on it.
@@ -1161,10 +1163,10 @@ mod tests {
         let pre_src = std::fs::read_to_string(&pre_path).expect("read pre fixture");
         let post_src = std::fs::read_to_string(&post_path).expect("read post fixture");
 
-        // The canonical W6 regression: 9 telemetry functions went from real
+        // The canonical regression: 9 telemetry functions went from real
         // bodies to `Vec::new()` / `Default::default()` / empty JSON. These
         // are precisely the qualifiers the gate would scope Moment 2 + 3
-        // against if `## Funções tocadas` of W6 had declared them.
+        // against if the regressing change's `## Funções tocadas` had declared them.
         let declared_fns: Vec<String> = vec![
             "rtk_summary",
             "hook_fire_counts",
@@ -1190,9 +1192,9 @@ mod tests {
         let project_root = resolve_project_root(&spec_path);
         let i18n = mustard_core::ProjectConfig::load(&project_root).i18n();
 
-        // --- Moment 1: vocabulary over W6-style plan text ------------------
+        // --- Moment 1: vocabulary over stub-deferral plan text ------------
         //
-        // Plan text mimics the W6 phrasing the user flagged in
+        // Plan text mimics the phrasing the user flagged in
         // feedback_refactor_no_stub_deferral / feedback_no_stub_fail_open:
         // "vamos manter a assinatura e empurrar a implementação real pra W7"
         // is the canonical fail-open deferral phrase.
@@ -1254,7 +1256,7 @@ mod tests {
 
         // --- Span-level: simulate a SubagentStop appending a Red verdict ---
         //
-        // The span-level check (W5) appends one VerdictEntry per child stop
+        // The span-level check appends one VerdictEntry per child stop
         // via `review_spans::append_verdict`, then `check_consolidation` is
         // expected to block on the first red.
         use crate::commands::review::review_spans::{

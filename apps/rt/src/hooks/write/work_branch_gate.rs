@@ -822,7 +822,7 @@ mod tests {
         assert!(context::pending_branch_for(root_s, sid).is_none());
     }
 
-    /// AC-2 — spec authoring is NO LONGER carved out of branch protection.
+    /// Spec authoring is NO LONGER carved out of branch protection.
     ///
     /// `.claude/spec/…` used to return `Allow` here whatever the branch, so a
     /// spec was authored on the protected base and the unit's own artefacts
@@ -1325,7 +1325,7 @@ mod tests {
         );
     }
 
-    /// AC-6 — sanctioned scratch evidence (`.claude/scratch/…`) is writable on
+    /// Sanctioned scratch evidence (`.claude/scratch/…`) is writable on
     /// a bare integration base: the diagnosis that decides whether there is any
     /// work at all happens BEFORE a unit exists, and the cheapest way to choose
     /// between two hypotheses is to RUN them. The carve-out has the same
@@ -1444,7 +1444,7 @@ mod tests {
         );
     }
 
-    /// AC-5 (submodule base): a marker consumed while editing a file INSIDE a
+    /// Submodule base: a marker consumed while editing a file INSIDE a
     /// DISTINCT nested git repo (a submodule) cuts the work branch off the
     /// SUBMODULE's own default branch and names it with the submodule's base —
     /// never the superproject's. Here the superproject sits on `dev` but the
@@ -1508,7 +1508,7 @@ mod tests {
         );
     }
 
-    /// AC-13 — when the work branch cannot be created and the run continues on
+    /// When the work branch cannot be created and the run continues on
     /// the previous branch, the RECORD is rewritten to the real branch and the
     /// warning names BOTH. The marker used to be cleared on failure, so the
     /// intent was destroyed: the only record of the computed branch was a name
@@ -1758,7 +1758,7 @@ mod tests {
         (dir, root, reason)
     }
 
-    /// AC-7 — the SECOND unit is REFUSED instead of taking the checkout:
+    /// The SECOND unit is REFUSED instead of taking the checkout:
     /// nothing is cut, nothing is diverted, and the checkout is left exactly as
     /// the first unit had it.
     #[test]
@@ -1802,7 +1802,7 @@ mod tests {
         );
     }
 
-    /// AC-3 — the refusal NAMES the paths holding the uncommitted work, so the
+    /// The refusal NAMES the paths holding the uncommitted work, so the
     /// operator knows what to commit or stash without hunting for it.
     ///
     /// Both shapes are the unit's OWN `.claude/spec/…`, because that is what an
@@ -1845,7 +1845,7 @@ mod tests {
         );
     }
 
-    /// AC-8 — the first unit keeps BOTH its branch and its uncommitted work.
+    /// The first unit keeps BOTH its branch and its uncommitted work.
     /// The edits were in the tree when the second unit arrived; a plain
     /// `checkout -b` would have carried them onto the second unit's branch.
     ///

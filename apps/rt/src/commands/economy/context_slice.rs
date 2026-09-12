@@ -485,7 +485,7 @@ pub fn slice_text(context_md: &str, relevance_source: &str) -> String {
 ///
 /// Exit code is always `0` (fail-graceful).
 ///
-/// W8.T8.8 — `--context-claude-md <path>` accepts a CLAUDE.md path as an extra
+/// `--context-claude-md <path>` accepts a CLAUDE.md path as an extra
 /// source. CLAUDE.md is not a term-block glossary, so it is sliced through a
 /// simpler heuristic: every `## Heading` / `### Heading` block whose body
 /// contains a spec-derived relevance term is kept. The output is appended
@@ -529,7 +529,7 @@ pub fn run(
         }
     }
 
-    // T8.8: slice CLAUDE.md against the same spec-derived relevance terms.
+    // Slice CLAUDE.md against the same spec-derived relevance terms.
     if let Some(claude_md_path) = context_claude_md {
         let slice = slice_claude_md(claude_md_path, spec);
         if !slice.is_empty() {

@@ -60,7 +60,7 @@ fn parse_new_entity_count(spec_text: &str) -> i64 {
 
 /// Walk up from `start_dir` to find the project root.
 ///
-/// W2: routes through `mustard_core::io::workspace::workspace_root` so the search
+/// Routes through `mustard_core::io::workspace::workspace_root` so the search
 /// uses the same `mustard.json + .claude/` anchor predicate as the rest of the
 /// harness. Returns `None` when no anchor is found in any ancestor.
 fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn find_project_root_locates_claude_dir() {
         let dir = tempdir().unwrap();
-        // The W2 anchor predicate requires BOTH `mustard.json` and `.claude/`
+        // The shared anchor predicate requires BOTH `mustard.json` and `.claude/`
         // in the same directory, so plant both.
         std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
         std::fs::write(dir.path().join("mustard.json"), "{}").unwrap();

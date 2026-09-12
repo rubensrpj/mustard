@@ -736,7 +736,7 @@ mod tests {
         assert!(!p.at.is_empty(), "the door must record an instant");
     }
 
-    /// AC-9 — the forged approval, closed in BOTH directions.
+    /// The forged approval, closed in BOTH directions.
     ///
     /// Free text carrying approval words mints NOTHING, however emphatic; a
     /// genuine selection of an offered approval option still mints the marker

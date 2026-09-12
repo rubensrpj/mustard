@@ -1,6 +1,6 @@
 //! `scan_gate` — the pre-pipeline scan gate.
 //!
-//! ## Scope (b3 Wave 4, Skill family)
+//! ## Scope (Skill family)
 //!
 //! A `PreToolUse(Skill)` gate that blocks the `/mustard:feature` and
 //! `/mustard:bugfix` pipelines until grain's model

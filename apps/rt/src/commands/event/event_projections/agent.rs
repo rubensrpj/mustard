@@ -1,5 +1,6 @@
 //! `agent-visibility` projection: recent events of a wave, with `agent.stop`
-//! summary truncation. Extracted from `event_projections` (F3 PERF-D split).
+//! summary truncation. Extracted from `event_projections` when the module was
+//! split for performance.
 
 use mustard_core::domain::model::event::HarnessEvent;
 use serde_json::{json, Value};

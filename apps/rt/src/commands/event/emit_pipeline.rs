@@ -64,7 +64,7 @@ use mustard_core::{
 use serde_json::{json, Value};
 use std::path::Path;
 
-// --- Canonical state-model event kinds (spec-lifecycle-unification W2) -------
+// --- Canonical state-model event kinds ---------------------------------------
 //
 // These are not yet `EVENT_PIPELINE_*` constants in `mustard-core` (that crate
 // is out of this wave's boundary), so they live here as literals. When core
@@ -83,7 +83,7 @@ const EVENT_PIPELINE_OUTCOME: &str = "pipeline.outcome";
 /// directly-emittable "new" set.
 const EVENT_PIPELINE_PHASE: &str = "pipeline.phase";
 
-// --- Hygiene event kinds (spec-lifecycle-unification W5) ---------------------
+// --- Hygiene event kinds -----------------------------------------------------
 //
 // Emitted by the `spec_hygiene` SessionStart hook (and accepted here so the
 // hook — or a test — can also drive them via `emit-pipeline`). They carry no
@@ -102,13 +102,13 @@ const EVENT_HYGIENE_SKIPPED: &str = "hygiene.skipped";
 /// `pipeline.economy.operation.invoked` — a model operation was completed via
 /// the `claude` CLI cold-path (scan interpret). Payload carries `operation`,
 /// `duration_ms`, and `tokens_used: 0` (cost via CLI subscription, not API
-/// key). Feeds the `/economia` dashboard (W12).
+/// key). Feeds the `/economia` dashboard.
 const EVENT_ECONOMY_OPERATION_INVOKED: &str = "pipeline.economy.operation.invoked";
 
 /// The 20 valid pipeline event kind strings: the 9 legacy `pipeline.*` kinds,
 /// plus the legacy `pipeline.phase` (alias-only), plus the `pipeline.wave.start`
-/// signal, plus the 4 new canonical state-model kinds, plus the 3 W5
-/// `hygiene.*` kinds, plus the 1 W2 `pipeline.economy.*` kind, plus the
+/// signal, plus the 4 new canonical state-model kinds, plus the 3
+/// `hygiene.*` kinds, plus the 1 `pipeline.economy.*` kind, plus the
 /// `pipeline.kind` work-type signal (porta-unica). A literal list — no magic
 /// alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
 const KNOWN_KINDS: &[&str] = &[
@@ -325,7 +325,7 @@ pub fn run(opts: EmitPipelineOpts) {
     // Capture the kind/spec strings and one shared `ts` + `session_id` for the
     // whole transition: a legacy event and its new-kind alias must land on the
     // *same* timestamp/session so the projection correlates them as one
-    // transition (AC-W2-6). The event router opens its store on demand — no
+    // transition. The event router opens its store on demand — no
     // eager open here.
     let kind = opts.kind.clone();
     // The unit's ONE name. On `pipeline.kind` with an `--intent` it is minted
@@ -342,7 +342,7 @@ pub fn run(opts: EmitPipelineOpts) {
     // a placeholder bucket (`unknown`, the OTEL collector's `otel-unattached`)
     // and `bind_session_spec` refuses one, so the session→spec binding this
     // emit leaves behind lands under a session id the hooks are actually
-    // handed — not under a directory no reader ever consults (AC-11).
+    // handed — not under a directory no reader ever consults.
     let sid = session_id();
     emit_primary_and_alias(&kind, &spec, &payload, &ts, &sid);
 
@@ -893,7 +893,7 @@ fn sync_status_transition(cwd: &Path, spec: &str, payload: &Value, ts: &str, sid
     let Some(to) = payload.get("to").and_then(Value::as_str) else {
         return;
     };
-    // Fix-loop exhaustion twin (F1 G): a `to: wave-failed` status is the
+    // Fix-loop exhaustion twin: a `to: wave-failed` status is the
     // deterministic signal a wave exhausted its fix-loops
     // (refs/resume/fix-loop-wave.md). Fan out the wave-scoped
     // `pipeline.wave.failed` the dashboard pairs with `pipeline.wave.complete`.
@@ -1124,7 +1124,7 @@ fn is_terminal_event(kind: &str, payload: &Value) -> bool {
             .and_then(Value::as_str)
             .unwrap_or("");
         let lower = to.trim().to_ascii_lowercase();
-        // Wave 4 of deep-refactor (2026-05-25) added `superseded`/`absorbed`
+        // The deep refactor (2026-05-25) added `superseded`/`absorbed`
         // as first-class terminal outcomes — both close the spec.
         return matches!(
             lower.as_str(),
@@ -1244,9 +1244,9 @@ fn tag_legacy_alias(payload: Value) -> Value {
 
 /// Build the canonical new-kind event a legacy `kind` aliases to, or `None`
 /// when `kind` is not a legacy kind (a new kind emitted directly never
-/// aliases — that is the idempotency guarantee of task #7).
+/// aliases — that is what keeps the aliasing idempotent).
 ///
-/// Mapping (per Wave 2 task #6):
+/// Mapping:
 /// - `pipeline.status` with payload `{to: <terminal>}` → `pipeline.outcome`
 ///   `{outcome: <terminal>}`.
 /// - `pipeline.status` with payload `{to: <stage>}` → `pipeline.stage`
@@ -2053,7 +2053,7 @@ mod tests {
         assert!(!other.contains("work-type"), "{other}");
     }
 
-    /// AC-1 — the pipeline-opening door NAMES the unit, once.
+    /// The pipeline-opening door NAMES the unit, once.
     ///
     /// The name it mints is the same string `spec-draft` derives from the same
     /// intent (one derivation, several callers), it is what `{kind}/{slug}` is
@@ -2210,7 +2210,7 @@ mod tests {
     #[test]
     fn known_kinds_list_covers_legacy_and_new_kinds() {
         // 9 legacy + 1 legacy phase (alias-only) + 1 wave.start + 2 new
-        // canonical + 3 hygiene + 1 economy (W2 mustard-unification) + 1
+        // canonical + 3 hygiene + 1 economy + 1
         // pipeline.kind (porta-unica work-type signal).
         assert_eq!(KNOWN_KINDS.len(), 18);
         // Legacy nine.
@@ -2231,11 +2231,11 @@ mod tests {
         // New canonical state-model kinds.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_STAGE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_OUTCOME));
-        // W5 hygiene kinds.
+        // Hygiene kinds.
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_DETECTED));
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_AUTOCLOSE));
         assert!(KNOWN_KINDS.contains(&EVENT_HYGIENE_SKIPPED));
-        // W2 economy kind.
+        // Economy kind.
         assert!(KNOWN_KINDS.contains(&EVENT_ECONOMY_OPERATION_INVOKED));
     }
 
@@ -2625,7 +2625,7 @@ mod tests {
     // Tactical-fix 2026-05-26: pipeline.wave.complete drives meta-sync
     //
     // `sync_wave_meta_sidecar` was inlined into `spec_scaffold::sync_status`
-    // during the W2-residuals sweep; the wave-meta write is now exercised
+    // during a later cleanup sweep; the wave-meta write is now exercised
     // through the higher-level `bump_parent_progress` regression below + the
     // end-to-end projection tests in `tests/pipeline_state_projection_test.rs`.
     // -----------------------------------------------------------------------
