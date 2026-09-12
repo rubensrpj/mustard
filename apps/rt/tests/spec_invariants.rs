@@ -197,18 +197,19 @@ fn violations_under(root: &Path, files: &[PathBuf]) -> Vec<String> {
 /// título que seria cabeçalho no formato antigo; a pasta do formato antigo, ao
 /// lado, continua sendo cobrada.
 #[test]
-fn a_spec_folder_in_the_event_format_is_left_out() {
-    let dir = tempfile::tempdir().unwrap();
+fn a_spec_folder_in_the_event_format_is_left_out() -> std::io::Result<()> {
+    let dir = tempfile::tempdir()?;
     let root = dir.path();
     let events = root.join("formato-de-eventos");
-    std::fs::create_dir_all(&events).unwrap();
-    std::fs::write(events.join("spec.ndjson"), "{}\n").unwrap();
-    std::fs::write(events.join("spec.md"), "# Spec\n\n### Stage: Plan\n").unwrap();
+    std::fs::create_dir_all(&events)?;
+    std::fs::write(events.join("spec.ndjson"), "{}\n")?;
+    std::fs::write(events.join("spec.md"), "# Spec\n\n### Stage: Plan\n")?;
     let old = root.join("formato-antigo");
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(old.join("spec.md"), "# Spec\n").unwrap();
+    std::fs::create_dir_all(&old)?;
+    std::fs::write(old.join("spec.md"), "# Spec\n")?;
 
     let got = violations_under(root, &collect_md(root));
     assert_eq!(got.len(), 1, "only the old-format folder is checked: {got:?}");
     assert!(got[0].contains("formato-antigo") && got[0].contains("meta.json"), "{got:?}");
+    Ok(())
 }
