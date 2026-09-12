@@ -453,7 +453,14 @@ impl<'a> Page<'a> {
                 format!("{} {} → {}", self.t(&format!("page.type.{}", get("type"))), get("from"), get("to"))
             }
             "url" => value.as_str().map_or_else(String::new, |url| format!("[{url}]({url})")),
-            _ if LITERAL.contains(&name) => value.as_str().map_or_else(|| self.plain(value), code_span),
+            // Um valor que já traz as próprias crases é markdown escrito por
+            // quem gravou, como uma prova que cita o comando no meio da
+            // frase: sai como está, senão as crases de dentro apareceriam na
+            // página. Sem crase nenhuma, o valor inteiro é o código.
+            _ if LITERAL.contains(&name) => value.as_str().map_or_else(
+                || self.plain(value),
+                |text| if text.contains('`') { one_line(text) } else { code_span(text) },
+            ),
             _ => self.plain(value),
         }
     }
@@ -655,6 +662,27 @@ mod tests {
         let criterion = items(all[4])[0];
         assert!(criterion.fields.iter().any(|f| f.value == "`cargo test`"));
         assert!(criterion.fields.iter().any(|f| f.value == "passou (MSTD-CRUN-0001)"), "{criterion:?}");
+    }
+
+    /// Uma prova que já traz o comando entre crases no meio da frase sai
+    /// como foi escrita, sem crase a mais em volta; uma prova sem crase
+    /// nenhuma sai inteira como código.
+    #[test]
+    fn a_proof_with_its_own_code_marks_comes_out_as_written() {
+        let content = [
+            line(1, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"`find . -type f | wc -l` = 3\",\"origin\":1"),
+            line(2, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"cargo test\",\"origin\":1"),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let all = sections(&doc);
+        let proofs: Vec<&str> = items(all[4])
+            .iter()
+            .flat_map(|i| i.fields.iter())
+            .filter(|f| f.label == "Prova")
+            .map(|f| f.value.as_str())
+            .collect();
+        assert_eq!(proofs, ["`find . -type f | wc -l` = 3", "`cargo test`"]);
     }
 
     /// Todo rótulo que a página usa existe nos dois idiomas: blocos, tipos,
