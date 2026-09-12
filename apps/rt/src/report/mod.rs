@@ -1,22 +1,34 @@
-//! A shared, dependency-free HTML report generator for the `run` face.
+//! O motor de página do Mustard: o único lugar que escreve uma página HTML.
 //!
-//! Several `run` subcommands (`qa-run`, `metrics`, `event-projections`,
-//! `verify-pipeline`) accept `--format json|html`. JSON is the default — it is
-//! what the pipeline consumes. HTML is an *additional* artifact: a single,
-//! self-contained `.html` file with embedded CSS and no external dependencies,
-//! meant for a human to open in a browser.
+//! A página de uma spec, a do projeto, uma página avulsa escrita em markdown e
+//! os relatórios da face `run` saem daqui, no layout padrão do Mustard (v4,
+//! mostarda e carvão), com as fontes Geist e Geist Mono buscadas do Google
+//! Fonts. Nenhuma fonte vai gravada dentro da página; quem abre o arquivo sem
+//! internet vê a fonte do sistema.
 //!
-//! Fail-open contract: rendering an HTML page must never crash a `run`
-//! subcommand. The caller decides what to print; if it ever cannot build a
-//! page it can still emit valid JSON instead. The functions here are pure —
-//! they build a `String` and never touch the filesystem or exit the process.
+//! - [`Report`] monta a moldura da página: o `<head>`, o estilo, o cabeçalho.
+//! - [`markdown`] é o único conversor de markdown do Mustard.
+//! - [`Render`] escreve a árvore de `view::document` como `.md` ou `.html`.
+//!
+//! As funções daqui são puras: montam um `String` e nunca tocam no disco nem
+//! encerram o processo.
 
 use std::fmt::Write as _;
 
-/// Folha de estilo embutida: o layout padrão do Mustard (v4, mostarda e
-/// carvão), o mesmo para todo documento HTML que o Mustard gera. Mora em
-/// `layout.css` para ser lida e revisada como CSS, não como literal Rust.
+pub mod markdown;
+mod render;
+
+pub use render::{markdown_html, Render};
+
+/// Folha de estilo do layout padrão do Mustard (v4, mostarda e carvão), a
+/// mesma para toda página. Mora em `layout.css` para ser lida e revisada como
+/// CSS, não como literal Rust.
 const STYLE: &str = include_str!("layout.css");
+
+/// As fontes do layout, buscadas do Google Fonts. Sem internet, vale a pilha
+/// do sistema declarada no estilo.
+pub(crate) const FONTS: &str = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?\
+family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap\">";
 
 /// Idioma do atributo `lang` quando o chamador não pede outro.
 const DEFAULT_LANG: &str = "en";
@@ -38,8 +50,8 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-/// A self-contained HTML page: a document builder that callers feed sections
-/// into. The finished string carries its own `<style>` — no external assets.
+/// A moldura de uma página: o chamador acrescenta as seções, e a página
+/// pronta traz o próprio estilo e o link das fontes.
 pub struct Report {
     title: String,
     subtitle: String,
@@ -138,11 +150,12 @@ impl Report {
         }
         format!(
             "<!doctype html>\n<html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{fonts}\
 <title>{title}</title><style>{style}</style></head><body><main>\
 <header class=\"doc\"><p class=\"kind\">{kind}</p><h1>{title}</h1>\
 <ul class=\"meta\">{meta}</ul></header>{body}</main></body></html>\n",
             lang = escape(&self.lang),
+            fonts = FONTS,
             title = escape(&self.title),
             style = STYLE,
             body = self.body,
@@ -172,6 +185,21 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     html
 }
 
+/// Os endereços de fora que uma página do motor carrega: só o das fontes.
+#[cfg(test)]
+pub(crate) fn assert_only_the_fonts_are_external(html: &str) {
+    for (at, _) in html.match_indices("://") {
+        let start = html[..at].rfind('"').map_or(0, |q| q + 1);
+        assert!(
+            html[start..].starts_with("https://fonts.googleapis.com/"),
+            "an external address other than the fonts: {}",
+            &html[start..(at + 40).min(html.len())]
+        );
+    }
+    assert!(!html.contains("src="), "the page loads a script or an image");
+    assert_eq!(html.matches("href=\"https://").count(), 1, "only the fonts link leaves the page");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,9 +216,7 @@ mod tests {
         let html = r.render();
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<style>"));
-        // No external resource references — fully self-contained.
-        assert!(!html.contains("http://") && !html.contains("https://"));
-        assert!(!html.contains("src=") && !html.contains("href="));
+        assert_only_the_fonts_are_external(&html);
         assert!(html.contains("spec: demo"));
         assert!(html.ends_with("</html>\n"));
     }
@@ -292,17 +318,21 @@ mod tests {
         }
     }
 
-    /// As fontes Geist e Geist Mono vêm embutidas no CSS (data URI woff2), e a
-    /// página continua sem nenhuma referência externa.
+    /// Geist e Geist Mono vêm do Google Fonts, por um link no `<head>`, e o
+    /// estilo guarda a fonte do sistema como reserva; nenhuma fonte vai
+    /// gravada dentro da página, que fica pequena.
     #[test]
-    fn report_embeds_the_geist_fonts() {
+    fn report_links_the_geist_fonts_from_google_fonts() {
         let html = Report::new("QA", "x").render();
-        for family in ["font-family:\"Geist\"", "font-family:\"Geist Mono\""] {
-            assert!(html.contains(family), "@font-face de {family} ausente");
-        }
-        assert_eq!(html.matches("url(data:font/woff2;base64,").count(), 2, "duas fontes embutidas");
-        assert!(!html.contains("http://") && !html.contains("https://"));
-        assert!(!html.contains("src=") && !html.contains("href="));
+        let head = html.split_once("</head>").map(|(head, _)| head).expect("página sem <head>");
+        assert!(head.contains(FONTS), "o link das fontes fica no <head>");
+        assert!(FONTS.contains("family=Geist:wght@100..900") && FONTS.contains("family=Geist+Mono:wght@100..900"));
+        assert!(!html.contains("@font-face"), "nenhuma fonte declarada dentro da página");
+        assert!(!html.contains("data:font") && !html.contains("base64"), "nenhuma fonte gravada");
+        assert!(STYLE.contains("--sans:\"Geist\",") && STYLE.contains("system-ui"));
+        assert!(STYLE.contains("--mono:\"Geist Mono\",") && STYLE.contains("ui-monospace"));
+        assert!(html.len() < 12_000, "a página vazia pesa {} bytes", html.len());
+        assert_only_the_fonts_are_external(&html);
     }
 
     /// A faixa do cabeçalho diz que documento é, e a linha `.meta` junta os

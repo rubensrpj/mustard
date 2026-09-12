@@ -53,6 +53,8 @@ pub fn spec_file(root: &Path, name: &str) -> Result<PathBuf, Refusal> {
 pub struct Written {
     /// O número do evento gravado.
     pub id: u64,
+    /// O código do item, `MSTD-<sigla>-<NNNN>`.
+    pub code: Option<String>,
     /// Os números que um `remove` tirou da leitura.
     pub removed: Vec<u64>,
     /// Os números cujo texto um `purge` tirou do arquivo.
@@ -93,7 +95,9 @@ pub fn write_at(
     let log = model::parse_log(&content);
     let id = log.max_id().saturating_add(1);
     let effects = model::check_against(&log, &event, id)?;
-    let line = model::render_line(&model::stamp(event, id, at));
+    let stamped = model::stamp(event, id, at);
+    let code = model::code_after(&log, &stamped);
+    let line = model::render_line(&stamped);
 
     let wrote = if effects.purged.is_empty() {
         // Uma última linha pela metade fica sozinha na linha dela, e a
@@ -110,7 +114,7 @@ pub fn write_at(
         file.replace(body.as_bytes())
     };
     wrote.map_err(io_refusal)?;
-    Ok(Written { id, removed: effects.removed, purged: effects.purged })
+    Ok(Written { id, code, removed: effects.removed, purged: effects.purged })
 }
 
 /// Lê o arquivo inteiro, com a trava compartilhada. `Ok(None)` quando a spec

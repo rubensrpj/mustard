@@ -32,7 +32,7 @@
 //! ## O endereço publicado
 //!
 //! Quem publica a página no claude.ai é o assistente, então o binário nunca
-//! fica sabendo o endereço sozinho (K-3). `--published-url <url>` o grava em
+//! fica sabendo o endereço sozinho. `--published-url <url>` o grava em
 //! `.claude/spec/<slug>/published-url`, uma linha, antes de montar a página; o
 //! relatório o devolve em `publishedUrl`, e [`published_url`] é o leitor único
 //! de quem precisa dele. O endereço fica fora da página: gravá-lo não muda o
@@ -588,9 +588,8 @@ fn summary_html(material: &Material, i: &I18n) -> Option<String> {
     let mut paragraphs = summary.split("\n\n").map(str::trim).filter(|p| !p.is_empty());
     let first = paragraphs.next()?;
     let mut html = format!(
-        "<div class=\"callout\"><p class=\"lead\"><strong>{}</strong> {}</p>",
-        escape(&i.render("doc.summary.lead")),
-        inline(&one_line(first)),
+        "<div class=\"callout\"><p class=\"lead\">{}</p>",
+        inline(&format!("**{}** {}", i.render("doc.summary.lead"), one_line(first))),
     );
     for paragraph in paragraphs {
         let _ = write!(html, "<p>{}</p>", inline(&one_line(paragraph)));
@@ -667,12 +666,8 @@ fn decisions_html(material: &Material) -> Option<String> {
     }
     let mut html = String::from("<ol class=\"wrap-code\">");
     for d in &material.decisions {
-        let _ = write!(
-            html,
-            "<li><strong>{}</strong> {}</li>",
-            inline(&with_period(&d.decision)),
-            inline(&d.reason),
-        );
+        let line = format!("**{}** {}", with_period(&d.decision), d.reason);
+        let _ = write!(html, "<li>{}</li>", inline(&line));
     }
     html.push_str("</ol>");
     Some(html)
@@ -853,16 +848,11 @@ fn waves_html(root: &Path, waves: &[WaveDoc], i: &I18n) -> Option<String> {
                 "<p class=\"label\">{}</p><ul class=\"wrap-code\">",
                 escape(&i.render("doc.wave.skills")),
             );
-            let covers_word = escape(&i.render("doc.wave.covers"));
+            let covers_word = i.render("doc.wave.covers");
             for cover in &covers {
-                let files: Vec<String> =
-                    cover.files.iter().map(|f| format!("<code>{}</code>", escape(f))).collect();
-                let _ = write!(
-                    html,
-                    "<li><code>{}</code> — {covers_word} {}</li>",
-                    escape(&cover.name),
-                    files.join(", "),
-                );
+                let files: Vec<String> = cover.files.iter().map(|f| format!("`{f}`")).collect();
+                let line = format!("`{}` — {covers_word} {}", cover.name, files.join(", "));
+                let _ = write!(html, "<li>{}</li>", inline(&line));
             }
             html.push_str("</ul>");
         }
@@ -961,110 +951,16 @@ fn next_html(position: Position, waves: &[WaveDoc], i: &I18n) -> String {
 // Pequenos montadores de HTML
 // ---------------------------------------------------------------------------
 
-/// Texto de usuário para HTML: escapado, com cada trecho entre crases virando
-/// `<code>` e cada `**negrito**` fora delas virando `<strong>`. Uma crase ou um
-/// `**` sem par sai como está.
+/// Texto de usuário para HTML, pelo conversor do motor de página: código
+/// entre crases, negrito entre `**` e o resto escapado.
 fn inline(text: &str) -> String {
-    let parts: Vec<&str> = text.split('`').collect();
-    let last = parts.len() - 1;
-    let mut out = String::with_capacity(text.len());
-    for (index, part) in parts.iter().enumerate() {
-        if index % 2 == 0 {
-            out.push_str(&bold(&escape(part)));
-        } else if index == last {
-            // Número ímpar de crases: a última não fecha nada.
-            out.push('`');
-            out.push_str(&escape(part));
-        } else {
-            let _ = write!(out, "<code>{}</code>", escape(part));
-        }
-    }
-    out
+    crate::report::markdown::inline(text, &BTreeSet::new())
 }
 
-/// `**x**` (já escapado) vira `<strong>x</strong>`; o último `**` de uma
-/// contagem ímpar não fecha nada e sai como está. É o que impede a linha de
-/// uma obrigação (`- **RO-4.1** — …`) de mostrar os asteriscos crus.
-fn bold(escaped: &str) -> String {
-    let parts: Vec<&str> = escaped.split("**").collect();
-    if parts.len() < 3 {
-        return escaped.to_string();
-    }
-    let last = parts.len() - 1;
-    let mut out = String::with_capacity(escaped.len());
-    for (index, part) in parts.iter().enumerate() {
-        if index % 2 == 0 {
-            out.push_str(part);
-        } else if index == last {
-            out.push_str("**");
-            out.push_str(part);
-        } else {
-            let _ = write!(out, "<strong>{part}</strong>");
-        }
-    }
-    out
-}
-
-/// Um trecho de markdown da spec em HTML simples: parágrafos e listas `- `, com
-/// código inline. Linha recuada logo depois de um item continua o item; título
-/// `###` vira rótulo; comentário HTML some. Vazio quando não sobra nada.
+/// Um trecho de markdown da spec em HTML, pelo conversor do motor de página.
+/// Vazio quando não sobra nada.
 fn blocks_html(body: &str) -> String {
-    let mut html = String::new();
-    let mut paragraph: Vec<&str> = Vec::new();
-    let mut items: Vec<String> = Vec::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("<!--") {
-            flush_paragraph(&mut html, &mut paragraph);
-            flush_list(&mut html, &mut items);
-            continue;
-        }
-        if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
-            flush_paragraph(&mut html, &mut paragraph);
-            items.push(strip_checkbox(item).to_string());
-            continue;
-        }
-        if trimmed.starts_with('#') {
-            flush_paragraph(&mut html, &mut paragraph);
-            flush_list(&mut html, &mut items);
-            let _ = write!(html, "<p class=\"label\">{}</p>", inline(trimmed.trim_start_matches('#').trim()));
-            continue;
-        }
-        if line.starts_with([' ', '\t'])
-            && let Some(last) = items.last_mut() {
-                last.push(' ');
-                last.push_str(trimmed);
-                continue;
-            }
-        flush_list(&mut html, &mut items);
-        paragraph.push(trimmed);
-    }
-    flush_paragraph(&mut html, &mut paragraph);
-    flush_list(&mut html, &mut items);
-    html
-}
-
-fn flush_paragraph(html: &mut String, paragraph: &mut Vec<&str>) {
-    if !paragraph.is_empty() {
-        let _ = write!(html, "<p>{}</p>", inline(&paragraph.join(" ")));
-        paragraph.clear();
-    }
-}
-
-fn flush_list(html: &mut String, items: &mut Vec<String>) {
-    if !items.is_empty() {
-        html.push_str("<ul class=\"wrap-code\">");
-        for item in items.iter() {
-            let _ = write!(html, "<li>{}</li>", inline(item));
-        }
-        html.push_str("</ul>");
-        items.clear();
-    }
-}
-
-/// Tira a caixinha `[ ]` / `[x]` do começo de um item de tarefa.
-fn strip_checkbox(item: &str) -> &str {
-    ["[ ] ", "[x] ", "[X] "].iter().find_map(|b| item.strip_prefix(b)).unwrap_or(item)
+    crate::report::markdown_html(body)
 }
 
 fn with_period(text: &str) -> String {
@@ -1235,7 +1131,7 @@ mod tests {
         fs::write(root.join(".claude/pending/ledger.json"), PENDING).unwrap();
     }
 
-    /// AC-5 — a página de uma spec com material, ondas, prova e pendências traz
+    /// A página de uma spec com material, ondas, prova e pendências traz
     /// cada seção, na ordem combinada, e só regrava quando o conteúdo muda.
     #[test]
     fn spec_doc_renders_every_section() {
@@ -1340,7 +1236,7 @@ mod tests {
         assert_eq!(again.hash, report.hash);
     }
 
-    /// AC-11 — na tabela de Evidências, a coluna Onde quebra a linha só depois
+    /// Na tabela de Evidências, a coluna Onde quebra a linha só depois
     /// de cada barra: cada trecho do caminho vai num `nowrap` inteiro (nem o
     /// hífen de um nome de pasta quebra), o `<wbr>` fica só ENTRE trechos, e o
     /// `//` de um endereço não se parte. E a regra `td.where` do layout deixou de
@@ -1422,7 +1318,7 @@ mod tests {
         assert!(rule(".nw{").contains("white-space:nowrap"), "the .nw span must not wrap");
     }
 
-    /// AC-10 — o `flow` do material vira a seção Antes e depois, entre os riscos
+    /// O `flow` do material vira a seção Antes e depois, entre os riscos
     /// e a spec, com o diagrama num bloco monoespaçado, escapado e com o recuo
     /// intacto; sem `flow`, a seção some.
     #[test]
@@ -1496,15 +1392,7 @@ mod tests {
         assert_eq!(generate(tmp.path(), "../fora").error.as_deref(), Some("invalid_spec"));
     }
 
-    #[test]
-    fn inline_turns_backticks_into_code_and_escapes_the_rest() {
-        assert_eq!(inline("use `a<b>` agora"), "use <code>a&lt;b&gt;</code> agora");
-        assert_eq!(inline("crase `sem par"), "crase `sem par");
-        assert_eq!(inline("- **RO-4.1** — ler `a**b`"), "- <strong>RO-4.1</strong> — ler <code>a**b</code>");
-        assert_eq!(inline("um ** sozinho"), "um ** sozinho");
-    }
-
-    /// AC-3 — `--published-url` grava o endereço na pasta da spec, o relatório
+    /// `--published-url` grava o endereço na pasta da spec, o relatório
     /// o devolve em `publishedUrl` e a retomada o devolve no mesmo campo. Gravar
     /// não muda a página — senão o gancho de fim de resposta pediria outra
     /// publicação —, e o que não é link é recusado sem mexer no arquivo.

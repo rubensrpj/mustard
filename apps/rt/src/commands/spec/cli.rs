@@ -265,7 +265,7 @@ pub enum SpecCmd {
         #[arg(long)]
         resume: bool,
     },
-    /// W5.T5.3 — Create a sub-spec linked to a parent spec for a tactical fix.
+    /// Create a sub-spec linked to a parent spec for a tactical fix.
     #[command(name = "tactical-fix-create")]
     #[command(display_order = 68)]
     TacticalFixCreate {
@@ -545,34 +545,42 @@ pub enum SpecCmd {
         #[arg(long = "published-url")]
         published_url: Option<String>,
     },
-    /// Embrulha um corpo HTML no layout padrão do Mustard e grava a página em
-    /// `--out`.
+    /// Gera uma página no layout do Mustard, pelo motor de página, com as
+    /// fontes do Google Fonts.
     ///
-    /// Todo HTML mostrado ao usuário (plano, relatório, resumo, spec) passa
-    /// por aqui, nunca por um visual próprio: o corpo é só o fragmento que vai
-    /// dentro de `<main>`; cabeçalho, fontes e cores vêm do layout. Devolve
-    /// `{ok, path}`; título vazio ou corpo ilegível são recusados sem gravar.
-    #[command(name = "doc-page")]
+    /// Com `--body` e `--out`, gera uma página avulsa (análise, relatório,
+    /// plano) a partir de um arquivo markdown: escreve-se markdown, nunca
+    /// HTML. Sem `--title`, o título é a primeira linha `# Título`. Com
+    /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
+    /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
+    #[command(name = "page")]
     #[command(display_order = 101)]
-    DocPage {
-        /// O título da página, no `<title>` e no `<h1>`. Recusado quando vazio.
+    Page {
+        /// A spec cuja página e cujo `.md` são refeitos.
+        #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind", "lang"])]
+        spec: Option<String>,
+        /// O arquivo markdown da página avulsa.
         #[arg(long)]
-        title: String,
-        /// O arquivo com o fragmento HTML que vai dentro de `<main>`.
+        body: Option<PathBuf>,
+        /// Onde gravar a página avulsa; pastas ausentes são criadas.
         #[arg(long)]
-        body: PathBuf,
-        /// Uma linha solta sob o título, na faixa `.meta`.
+        out: Option<PathBuf>,
+        /// O título, no `<title>` e no `<h1>`; sem ele, a primeira linha
+        /// `# Título` do markdown.
+        #[arg(long)]
+        title: Option<String>,
+        /// Uma linha solta sob o título, na faixa do cabeçalho.
         #[arg(long)]
         subtitle: Option<String>,
         /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
         #[arg(long)]
         kind: Option<String>,
-        /// Idioma BCP-47 do atributo `lang` (sem ele, `en`).
+        /// Idioma BCP-47 do atributo `lang`; sem ele, o idioma do projeto.
         #[arg(long)]
         lang: Option<String>,
-        /// Onde gravar a página; diretórios ausentes são criados.
-        #[arg(long)]
-        out: PathBuf,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
 }
 
@@ -730,14 +738,16 @@ pub fn dispatch(cmd: SpecCmd) {
         SpecCmd::SpecDoc { spec: slug, published_url } => {
             spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug, published_url });
         }
-        SpecCmd::DocPage { title, body, subtitle, kind, lang, out } => {
-            spec::doc_page::run(&spec::doc_page::DocPageOpts {
-                title,
+        SpecCmd::Page { spec: slug, body, out, title, subtitle, kind, lang, root } => {
+            spec::page::run(&spec::page::PageOpts {
+                root,
+                spec: slug,
                 body,
+                out,
+                title,
                 subtitle,
                 kind,
                 lang,
-                out,
             });
         }
     }

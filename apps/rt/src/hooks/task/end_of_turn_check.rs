@@ -210,7 +210,7 @@ mod tests {
         dir
     }
 
-    /// C-15 — a resposta final com um código como "R8" e uma frase de 40
+    /// A resposta final com um código como "MSTD-RULE-0008" e uma frase de 40
     /// palavras é barrada uma vez, com os defeitos em português simples; a
     /// reescrita que chega com `stop_hook_active` e ainda reprova só avisa o
     /// usuário. Tudo pelo `Stop` de verdade (registro, `fold` e a resposta
@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(FORTY_WORDS.split_whitespace().count(), 40);
         let dir = project(r#"{"specLang":"pt-BR","tone":"didactic"}"#);
         let root = dir.path();
-        let reply = format!("A regra R8 ficou pronta.\n{FORTY_WORDS}");
+        let reply = format!("A regra MSTD-RULE-0008 ficou pronta.\n{FORTY_WORDS}");
         let started = Instant::now();
 
         let blocked = run_stop(root, &stop("s1", &reply, false));
@@ -233,7 +233,7 @@ mod tests {
             ),
             "{reason}"
         );
-        assert!(reason.contains("\n- R8 é um código interno; diga o assunto pelo nome"), "{reason}");
+        assert!(reason.contains("\n- MSTD-RULE-0008 é um código interno; diga o assunto pelo nome"), "{reason}");
         assert!(
             reason.contains("\n- frase com 40 palavras: \"Depois de ler todos os arquivos do projeto…\""),
             "{reason}"
@@ -246,14 +246,14 @@ mod tests {
             note.starts_with("Mustard · clareza: a resposta acima ainda foge da regra de escrita:"),
             "{note}"
         );
-        assert!(note.contains("\n- R8 é um código interno"), "{note}");
+        assert!(note.contains("\n- MSTD-RULE-0008 é um código interno"), "{note}");
         assert!(note.contains("\n- frase com 40 palavras"), "{note}");
 
         let elapsed = started.elapsed();
         assert!(elapsed < Duration::from_secs(STOP_BUDGET_SECS), "{elapsed:?} for two Stops");
     }
 
-    /// Tarefa 4 — o `Stop` tem 30 segundos no `hooks.json`, não mais 5.
+    /// O `Stop` tem 30 segundos no `hooks.json`, não mais 5.
     #[test]
     fn the_stop_hook_has_thirty_seconds() {
         let manifest: Value = serde_json::from_str(HOOKS_JSON).expect("hooks.json");
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(timeouts, vec![STOP_BUDGET_SECS]);
     }
 
-    /// C-9 — a resposta que sai noutro idioma que não o do projeto reprova, e
+    /// A resposta que sai noutro idioma que não o do projeto reprova, e
     /// o idioma vem da configuração: o mesmo inglês passa num projeto em
     /// inglês, e o português reprova nele, com a mensagem no idioma dele.
     #[test]
@@ -329,7 +329,7 @@ mod tests {
         let root = dir.path();
         mark_unit_closed(&root.to_string_lossy(), "s-both");
 
-        let first = "Fechei a unidade R8; segue o html padrao da spec.";
+        let first = "Fechei a unidade MSTD-RULE-0008; segue o html padrao da spec.";
         let Verdict::Deny { reason } =
             EndOfTurnCheck.evaluate(&stop("s-both", first, false), &ctx(root)).expect("never errors")
         else {
@@ -338,23 +338,33 @@ mod tests {
         let pending = reason.find("[Mustard] Uma unidade fechou").unwrap_or_else(|| panic!("{reason}"));
         let clarity = reason.find("[Mustard] A resposta fugiu").unwrap_or_else(|| panic!("{reason}"));
         assert!(pending < clarity, "the rules keep their order: {reason}");
-        assert!(reason.contains("Humanize") && reason.contains("- R8 é um código interno"), "{reason}");
+        assert!(reason.contains("Humanize") && reason.contains("- MSTD-RULE-0008 é um código interno"), "{reason}");
 
-        let rewrite = "Fechei a unidade R8; seguem o Humanize e o html padrao da spec.";
+        let rewrite = "Fechei a unidade MSTD-RULE-0008; seguem o Humanize e o html padrao da spec.";
         match EndOfTurnCheck.evaluate(&stop("s-both", rewrite, true), &ctx(root)).expect("never errors") {
             Verdict::Inject { context } => {
-                assert!(context.contains("- R8 é um código interno"), "{context}");
+                assert!(context.contains("- MSTD-RULE-0008 é um código interno"), "{context}");
                 assert!(!context.contains("Uma unidade fechou"), "the cited items passed: {context}");
             }
             other => panic!("the rewrite only warns, got {other:?}"),
         }
     }
 
+    /// Letra com número fora do formato do Mustard é texto comum: o nome de
+    /// um produto ou o tamanho de uma folha não é barrado.
+    #[test]
+    fn letters_and_numbers_outside_the_code_format_pass() {
+        let dir = project(r#"{"specLang":"pt-BR","tone":"didactic"}"#);
+        let reply = "Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.";
+        let verdict = EndOfTurnCheck.evaluate(&stop("s1", reply, false), &ctx(dir.path())).expect("never errors");
+        assert_eq!(verdict, Verdict::Allow);
+    }
+
     /// Fora do `Stop` da sessão principal nada é conferido.
     #[test]
     fn only_the_main_session_stop_is_checked() {
         let dir = project(r#"{"specLang":"pt-BR","tone":"didactic"}"#);
-        let reply = format!("A regra R8 ficou pronta.\n{FORTY_WORDS}");
+        let reply = format!("A regra MSTD-RULE-0008 ficou pronta.\n{FORTY_WORDS}");
         let mut sub = stop("s1", &reply, false);
         sub.agent_id = Some("child".to_string());
         assert_eq!(EndOfTurnCheck.evaluate(&sub, &ctx(dir.path())).expect("never errors"), Verdict::Allow);

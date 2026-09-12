@@ -48,10 +48,10 @@ The base the unit was cut from is RECORDED at the cut and fixes the `/git` PR ta
 
 ## Pages
 
-**Every HTML page shown to the user — a plan, a report, a summary, a spec — goes through `doc-page`**, never a look of its own. Write only the fragment that goes inside `<main>`; the command brings the layout:
+**Every page shown to the user — a plan, a report, a summary, an analysis — goes through `page`**, never a look of its own. Write it in markdown, never HTML; the command brings the layout and the fonts, and the first `# Title` line is the title:
 
 ```
-mustard-rt run doc-page --title "<title>" --body <fragment.html> --out <page.html> [--subtitle "<line>"] [--kind "<label>"] [--lang pt-BR]
+mustard-rt run page --body <page.md> --out <page.html> [--subtitle "<line>"] [--kind "<label>"] [--lang pt-BR]
 ```
 
 The Mustard layout IS the project's design system: it beats any page-design guidance that asks for a fresh look per subject. Measured 2026-09-10: a page published in another project with a look of its own — the rule lived in one machine's memory, and memory does not travel.

@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rust_stemmers::{Algorithm, Stemmer};
 use serde_json::{Map, Value};
 
-use crate::domain::text;
+use crate::domain::{mustard_id, text};
 use crate::platform::i18n::{translate, Locale};
 
 /// A versão do formato de cada linha. O leitor entende as anteriores.
@@ -36,7 +36,7 @@ pub const DEFAULT_AUTHOR: &str = "assistant";
 
 /// Os campos que só o binário escreve. O que vier neles de quem grava é
 /// descartado e trocado.
-pub const BINARY_FIELDS: &[&str] = &["v", "id", "at", "search"];
+pub const BINARY_FIELDS: &[&str] = &["v", "id", "at", "search", "code"];
 
 /// O campo que marca uma linha expurgada; guarda o número do expurgo.
 pub const PURGED_FIELD: &str = "purged";
@@ -235,10 +235,14 @@ const fn opt(name: &'static str, kind: Kind) -> Field {
     Field { name, kind, required: false }
 }
 
-/// Um tipo de evento: o nome, o bloco, e os campos próprios.
+/// Um tipo de evento: o nome, a sigla do código, o bloco, e os campos
+/// próprios.
 #[derive(Debug)]
 pub struct TypeSpec {
     pub name: &'static str,
+    /// A sigla do tipo no código de cada item, `MSTD-<sigla>-<NNNN>`: só
+    /// letras maiúsculas, uma por tipo.
+    pub code: &'static str,
     pub block: Block,
     /// O assistente grava este tipo a partir da conversa: o número da mensagem
     /// de onde ele veio (`origin`) é obrigatório.
@@ -248,11 +252,12 @@ pub struct TypeSpec {
 
 const fn ty(
     name: &'static str,
+    code: &'static str,
     block: Block,
     needs_origin: bool,
     fields: &'static [Field],
 ) -> TypeSpec {
-    TypeSpec { name, block, needs_origin, fields }
+    TypeSpec { name, code, block, needs_origin, fields }
 }
 
 const TEXT: Field = req("text", Kind::Text);
@@ -280,16 +285,18 @@ const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa.
-    ty("message", Block::Conversation, false, &[TEXT]),
-    ty("response", Block::Conversation, false, &[TEXT, req("reply_to", Kind::Int)]),
+    ty("message", "MSG", Block::Conversation, false, &[TEXT]),
+    ty("response", "RESP", Block::Conversation, false, &[TEXT, req("reply_to", Kind::Int)]),
     ty(
         "injection",
+        "INJ",
         Block::Conversation,
         false,
         &[req("hook", Kind::Text), req("chars", Kind::Int), TEXT],
     ),
     ty(
         "hook",
+        "HOOK",
         Block::Conversation,
         false,
         &[
@@ -301,6 +308,7 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty(
         "call",
+        "CALL",
         Block::Conversation,
         false,
         &[
@@ -313,6 +321,7 @@ pub const TYPES: &[TypeSpec] = &[
     // Estado.
     ty(
         "state",
+        "STATE",
         Block::State,
         false,
         &[
@@ -326,6 +335,7 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty(
         "publish",
+        "PUB",
         Block::State,
         false,
         &[
@@ -337,9 +347,10 @@ pub const TYPES: &[TypeSpec] = &[
         ],
     ),
     // Combinado.
-    ty("work_type", Block::Agreed, true, &[req("kinds", Kind::ManyOf(WORK_KINDS))]),
+    ty("work_type", "WORK", Block::Agreed, true, &[req("kinds", Kind::ManyOf(WORK_KINDS))]),
     ty(
         "point",
+        "POINT",
         Block::Agreed,
         true,
         &[
@@ -354,19 +365,20 @@ pub const TYPES: &[TypeSpec] = &[
             opt("reminders", Kind::List),
         ],
     ),
-    ty("rule", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO]),
-    ty("limit", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO]),
-    ty("contract", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO]),
-    ty("error", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text)]),
-    ty("edge_case", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text)]),
-    ty("out_of_scope", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text)]),
-    ty("decision", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text)]),
+    ty("rule", "RULE", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO]),
+    ty("limit", "LIMIT", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO]),
+    ty("contract", "CONTR", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO]),
+    ty("error", "ERR", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text)]),
+    ty("edge_case", "EDGE", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text)]),
+    ty("out_of_scope", "SCOPE", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text)]),
+    ty("decision", "DEC", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text)]),
     // Especificação.
-    ty("context", Block::Specification, true, &[TEXT]),
-    ty("concern", Block::Specification, true, &[TEXT]),
+    ty("context", "CTX", Block::Specification, true, &[TEXT]),
+    ty("concern", "CONC", Block::Specification, true, &[TEXT]),
     // Critérios.
     ty(
         "criterion",
+        "CRIT",
         Block::Criteria,
         true,
         &[
@@ -378,6 +390,7 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty(
         "criterion_run",
+        "CRUN",
         Block::Criteria,
         false,
         &[
@@ -391,6 +404,7 @@ pub const TYPES: &[TypeSpec] = &[
     // Ondas.
     ty(
         "wave",
+        "WAVE",
         Block::Waves,
         true,
         &[
@@ -403,6 +417,7 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty(
         "task",
+        "TASK",
         Block::Waves,
         true,
         &[
@@ -416,6 +431,7 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty(
         "skill",
+        "SKILL",
         Block::Waves,
         false,
         &[
@@ -428,6 +444,7 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty(
         "send",
+        "SEND",
         Block::Waves,
         false,
         &[
@@ -443,6 +460,7 @@ pub const TYPES: &[TypeSpec] = &[
     ),
     ty(
         "delivered",
+        "DELIV",
         Block::Waves,
         false,
         &[req("wave", Kind::Int), TEXT, req("files", Kind::Texts)],
@@ -450,6 +468,7 @@ pub const TYPES: &[TypeSpec] = &[
     // Revisão.
     ty(
         "verdict",
+        "VERD",
         Block::Review,
         false,
         &[
@@ -463,6 +482,7 @@ pub const TYPES: &[TypeSpec] = &[
     // Andamento.
     ty(
         "commit",
+        "COMMIT",
         Block::Progress,
         false,
         &[
@@ -473,20 +493,22 @@ pub const TYPES: &[TypeSpec] = &[
             req("repo", Kind::Text),
         ],
     ),
-    ty("pr_summary", Block::Progress, false, &[TEXT]),
+    ty("pr_summary", "PRSUM", Block::Progress, false, &[TEXT]),
     // Anotações.
-    ty("request", Block::Notes, true, &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS))]),
-    ty("deferred", Block::Notes, true, &[TEXT, KEYS, req("pending", Kind::Int)]),
-    ty("note", Block::Notes, true, &[TEXT, KEYS]),
+    ty("request", "REQ", Block::Notes, true, &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS))]),
+    ty("deferred", "DEFER", Block::Notes, true, &[TEXT, KEYS, req("pending", Kind::Int)]),
+    ty("note", "NOTE", Block::Notes, true, &[TEXT, KEYS]),
     // Remoção e expurgo, na conversa.
     ty(
         "remove",
+        "RMV",
         Block::Conversation,
         false,
         &[req("reason", Kind::Text), opt("targets", Kind::Ints), opt("filter", Kind::Object)],
     ),
     ty(
         "purge",
+        "PURGE",
         Block::Conversation,
         false,
         &[req("targets", Kind::Ints), req("reason", Kind::OneOf(PURGE_REASONS))],
@@ -1540,6 +1562,46 @@ impl SpecLog {
             .filter_map(|id| self.current(id))
             .collect()
     }
+
+    /// O código de cada evento, `MSTD-<sigla>-<NNNN>`, pelo número do evento.
+    ///
+    /// Conta por tipo, na ordem do arquivo, todas as linhas lidas, inclusive
+    /// as removidas e as expurgadas, que continuam no arquivo: um número dado
+    /// nunca volta. A versão nova de um item (`replaces`) herda o código da
+    /// antiga, porque é o mesmo item, revisto. Um tipo que este binário não
+    /// conhece fica sem código. Cada spec conta do zero.
+    #[must_use]
+    pub fn codes(&self) -> BTreeMap<u64, String> {
+        let mut counters: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut codes: BTreeMap<u64, String> = BTreeMap::new();
+        for event in &self.events {
+            let Some(spec) = type_spec(&event.event_type) else {
+                continue;
+            };
+            let inherited = event
+                .int("replaces")
+                .filter(|old| self.get(*old).is_some_and(|o| o.event_type == event.event_type))
+                .and_then(|old| codes.get(&old).cloned());
+            let code = inherited.unwrap_or_else(|| {
+                let n = counters.entry(spec.code).or_insert(0);
+                *n += 1;
+                mustard_id::format(spec.code, *n)
+            });
+            codes.insert(event.id, code);
+        }
+        codes
+    }
+}
+
+/// O código que um evento recém-carimbado recebe quando entra depois de tudo o
+/// que `log` já tem. `None` para um tipo desconhecido.
+#[must_use]
+pub fn code_after(log: &SpecLog, event: &Map<String, Value>) -> Option<String> {
+    let id = event.get("id").and_then(Value::as_u64)?;
+    let event_type = event.get("type").and_then(Value::as_str)?.to_string();
+    let mut after = log.clone();
+    after.events.push(SpecEvent { id, event_type, line: 0, fields: event.clone() });
+    after.codes().remove(&id)
 }
 
 #[cfg(test)]
@@ -1733,5 +1795,60 @@ mod tests {
         assert_eq!(log.events.len(), 2);
         assert!(log.skipped.is_empty());
         assert_eq!(log.events[1].block(), None, "an unknown type belongs to no block");
+    }
+
+    /// Cada tipo tem uma sigla própria, só de letras maiúsculas, e o código
+    /// montado com ela tem o formato do identificador do Mustard.
+    #[test]
+    fn every_type_has_its_own_code_letters() {
+        let codes: BTreeSet<&str> = TYPES.iter().map(|t| t.code).collect();
+        assert_eq!(codes.len(), TYPES.len(), "two types share a code");
+        for t in TYPES {
+            assert!(!t.code.is_empty() && t.code.bytes().all(|b| b.is_ascii_uppercase()), "{}", t.name);
+            assert!(mustard_id::is_id(&mustard_id::format(t.code, 1)), "{}", t.name);
+        }
+    }
+
+    fn line(id: u64, event_type: &str, extra: &str) -> String {
+        format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-12T10:00:00-03:00\",\"type\":\"{event_type}\"{extra}}}\n")
+    }
+
+    /// Os códigos contam por tipo, na ordem do arquivo; a versão nova herda o
+    /// código da antiga; um item removido ou expurgado segue contando, e o
+    /// número dele nunca é dado de novo.
+    #[test]
+    fn codes_count_per_type_and_a_number_never_returns() {
+        let content = [
+            line(1, "rule", ",\"text\":\"a\""),
+            line(2, "criterion", ",\"when\":\"w\""),
+            line(3, "rule", ",\"text\":\"b\""),
+            line(4, "remove", ",\"targets\":[3],\"reason\":\"x\""),
+            line(5, "rule", ",\"text\":\"a2\",\"replaces\":1"),
+            line(6, "purge", ",\"targets\":[2],\"reason\":\"secret\""),
+            line(7, "rule", ",\"text\":\"c\""),
+            line(8, "criterion", ",\"when\":\"w2\""),
+            line(9, "future_kind", ""),
+        ]
+        .concat();
+        let log = parse_log(&content);
+        let codes = log.codes();
+        assert_eq!(codes[&1], "MSTD-RULE-0001");
+        assert_eq!(codes[&2], "MSTD-CRIT-0001");
+        assert_eq!(codes[&3], "MSTD-RULE-0002");
+        assert_eq!(codes[&4], "MSTD-RMV-0001");
+        assert_eq!(codes[&5], "MSTD-RULE-0001", "the new version is the same item");
+        assert_eq!(codes[&7], "MSTD-RULE-0003", "the removed number 2 never returns");
+        assert_eq!(codes[&8], "MSTD-CRIT-0002", "the purged number 1 never returns");
+        assert!(!codes.contains_key(&9), "an unknown type has no code");
+
+        // O código do próximo evento sai do mesmo cálculo.
+        let next = obj(json!({"id": 10, "type": "rule", "text": "d"}));
+        assert_eq!(code_after(&log, &next).as_deref(), Some("MSTD-RULE-0004"));
+        let revised = obj(json!({"id": 10, "type": "rule", "text": "c2", "replaces": 7}));
+        assert_eq!(code_after(&log, &revised).as_deref(), Some("MSTD-RULE-0003"));
+
+        // Outra spec conta do zero.
+        let other = parse_log(&line(1, "rule", ",\"text\":\"z\""));
+        assert_eq!(other.codes()[&1], "MSTD-RULE-0001");
     }
 }

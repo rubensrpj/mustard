@@ -7,7 +7,7 @@
 //! Com `tone: didactic`, o assistente recebe a regra de escrita em toda
 //! mensagem (`prompt_submit_inject::tone_rule`). Nada conferia se ela foi
 //! cumprida: em 09/09/2026 o usuário reclamou duas vezes de respostas difíceis
-//! de entender, com a regra ativa, e nenhum gancho percebeu (K-1).
+//! de entender, com a regra ativa, e nenhum gancho percebeu.
 //!
 //! ## Quando mede
 //!
@@ -26,9 +26,9 @@
 //!
 //! Mede o texto com o medidor do núcleo (`domain::clarity`): frase longa,
 //! sigla sem as palavras por extenso, nome inventado sem tradução, código
-//! interno ("R8"), tamanho, a nota de Flesch em português e o idioma. Os nomes
+//! do Mustard ("MSTD-RULE-0005"), tamanho, a nota de Flesch em português e o idioma. Os nomes
 //! inventados vêm da semente do output style `mustard-didactic`, nunca de uma
-//! lista escrita aqui (K-4).
+//! lista escrita aqui.
 //!
 //! - Na primeira resposta que reprova, bloqueia: o assistente recebe os
 //!   defeitos e reescreve. A resposta já apareceu na tela, mas o bloqueio é o
@@ -38,7 +38,7 @@
 //! - Guarda em `.claude/.session/<sid>/clarity.json` as siglas e os termos já
 //!   explicados na sessão, para a próxima medição não cobrar de novo.
 //! - Registra um evento `assistant.clarity` com as contagens e o resultado —
-//!   nunca o texto (K-5).
+//!   nunca o texto.
 //!
 //! O bloqueio e o aviso listam no máximo [`MAX_LISTED_DEFECTS`] defeitos, cada
 //! um cortado em [`MAX_DEFECT_CHARS`] caracteres; o resto vira uma contagem.
@@ -219,7 +219,7 @@ fn emit_metrics(project_dir: &str, session: Option<&str>, report: &ClarityReport
 }
 
 /// As métricas de uma medição: contagens e resultado. Nunca o texto, nem os
-/// nomes das siglas, termos e códigos — são pedaços da conversa (K-5).
+/// nomes das siglas, termos e códigos — são pedaços da conversa.
 fn metrics(report: &ClarityReport) -> Value {
     json!({
         "passed": report.passed,

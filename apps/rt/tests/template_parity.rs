@@ -908,20 +908,26 @@ fn review_agent_teaches_shared_target_and_scratch_gc() {
     }
 }
 
-/// A regra injetada do material manda todo HTML mostrado ao usuário
-/// passar pelo `doc-page` e ser publicado no claude.ai, e a página da spec
-/// gravar o endereço pela porta `spec-doc --published-url`.
+/// A regra injetada do material manda toda página mostrada ao usuário
+/// passar pelo `page`, escrita em markdown, e ser publicada no claude.ai, e a
+/// página da spec gravar o endereço pela porta `spec-doc --published-url`.
 ///
 /// Lida do template que o binário embute e conferida pelo mesmo extrator da
 /// catraca: a chamada tem de ser uma invocação de verdade, não o nome solto na
 /// prosa. Confere o fato, nunca a frase — prosa se reescreve.
 #[test]
-fn material_rule_sends_every_page_through_doc_page() {
+fn material_rule_sends_every_page_through_the_page_command() {
     let material = read_lossy(&repo_root().join("packages/core/templates/mustard/material.md"));
     let invocations = extract_run_invocations(&material);
     assert!(
-        invocations.iter().any(|inv| inv.name == "doc-page"),
-        "the material rule never tells the reader to run `mustard-rt run doc-page`"
+        invocations
+            .iter()
+            .any(|inv| inv.name == "page" && inv.flags.iter().any(|f| f == "body")),
+        "the material rule never tells the reader to run `mustard-rt run page --body <page.md>`"
+    );
+    assert!(
+        !invocations.iter().any(|inv| inv.name == "doc-page"),
+        "the material rule still names the old `doc-page`"
     );
     assert!(
         material.contains("claude.ai"),

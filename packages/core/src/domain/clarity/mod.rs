@@ -2,8 +2,8 @@
 //!
 //! A regra pede uma escrita que se lê uma vez, por quem não escreveu o código:
 //! uma ideia por frase; nome inventado traduzido na primeira vez da conversa;
-//! nenhuma sigla sem as palavras por extenso; nenhum código interno ("R8",
-//! "C-15") no lugar do nome do assunto; e nenhuma resposta maior do que o
+//! nenhuma sigla sem as palavras por extenso; nenhum código do Mustard
+//! (`MSTD-RULE-0005`) no lugar do nome do assunto; e nenhuma resposta maior do que o
 //! assunto pede. Este módulo confere isso por sinais objetivos — quantas
 //! palavras tem cada frase, quais siglas, termos e códigos aparecem, quantas
 //! linhas a resposta tem e a nota de facilidade de leitura (o índice de Flesch
@@ -29,6 +29,7 @@
 //! projeto, qualquer que seja o tom: [`measure_language`] a faz sozinha, e
 //! [`measure`] a inclui junto das medições da escrita.
 
+use crate::domain::mustard_id;
 use crate::domain::text::{COMMON_WORDS_EN, COMMON_WORDS_PT};
 use crate::domain::vocabulary::aho::KeyedAutomaton;
 use crate::platform::i18n::{translate, Locale};
@@ -146,7 +147,7 @@ pub struct ClarityReport {
     pub unexpanded_acronyms: Vec<String>,
     /// Nomes inventados cujo primeiro uso na sessão veio sem tradução.
     pub unexplained_terms: Vec<String>,
-    /// Códigos internos ("R8", "C-15", "L-3.3") no texto corrido, cada um uma
+    /// Códigos do Mustard (`MSTD-RULE-0005`) no texto corrido, cada um uma
     /// vez, na ordem em que aparecem.
     pub internal_codes: Vec<String>,
     /// Linhas de texto corrido, sem código, tabela nem JSON.
@@ -270,35 +271,19 @@ pub fn measure(
 // Código interno
 // ---------------------------------------------------------------------------
 
-/// Os códigos internos do texto corrido, cada um uma vez, na ordem em que
-/// aparecem. Código inline já saiu da prosa: `R8` entre crases é código, não
-/// conversa.
+/// Os códigos do Mustard (`MSTD-RULE-0005`) no texto corrido, cada um uma
+/// vez, na ordem em que aparecem: na conversa, o assunto se diz pelo nome.
+/// Só esse formato conta; letra com número ("R2 da Cloudflare", "S3", "A4")
+/// é texto comum. Código inline já saiu da prosa: entre crases, o código é
+/// citação, não conversa.
 fn internal_codes(sentences: &[&str]) -> Vec<String> {
     let mut codes = Vec::new();
     for sentence in sentences {
-        for token in sentence.split_whitespace() {
-            let core = token.trim_start_matches(LEADERS).trim_end_matches(TRAILERS);
-            if is_internal_code(core) {
-                push_unique(&mut codes, core.to_string());
-            }
+        for (start, end) in mustard_id::find(sentence) {
+            push_unique(&mut codes, sentence[start..end].to_string());
         }
     }
     codes
-}
-
-/// Uma ou duas letras maiúsculas, um hífen opcional e um número que pode ter
-/// pontos: "R8", "C-15", "AC-5", "L-3.3". Fica de fora o que tem mais letras
-/// ("UTF-8"), letra minúscula ("v0.3", "x86") ou letra depois do número
-/// ("E2E").
-fn is_internal_code(core: &str) -> bool {
-    let letters = core.len() - core.trim_start_matches(|c: char| c.is_ascii_uppercase()).len();
-    if !(1..=2).contains(&letters) {
-        return false;
-    }
-    let number = &core[letters..];
-    let number = number.strip_prefix('-').unwrap_or(number);
-    !number.is_empty()
-        && number.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 // ---------------------------------------------------------------------------
@@ -693,8 +678,9 @@ fn is_acronym(word: &str) -> bool {
 ///   CONVERSATION") ou é uma palavra comprida com vogais ("NUNCA", "RESUMO");
 /// - a região de um código de idioma ("pt-BR", "en-US");
 /// - um numeral romano ("Fase II", "onda IV");
-/// - as letras de um código interno ("AC" em "AC-5"), que a medição dos
-///   códigos já aponta inteiro.
+/// - as letras de um rótulo com hífen e número ("AC" em "AC-5");
+/// - uma parte de um código do Mustard ("MSTD" e "RULE" em `MSTD-RULE-0005`),
+///   que a medição dos códigos já aponta inteiro.
 ///
 /// Limite aceito: ênfase curta e com poucas vogais, sozinha ("MUST"), continua
 /// contando como sigla — não há como separá-la de "SSH" só pela forma.
@@ -704,10 +690,16 @@ fn mimics_acronym(sentence: &str, runs: &[(usize, usize)], idx: usize, core: &st
         || in_shouted_sequence(sentence, runs, idx)
         || is_locale_region(sentence, runs[idx].0, core)
         || opens_internal_code(sentence, runs[idx].1)
+        || inside_mustard_id(sentence, runs[idx])
+}
+
+/// A palavra `(início, fim)` está dentro de um código do Mustard.
+fn inside_mustard_id(sentence: &str, (start, end): (usize, usize)) -> bool {
+    mustard_id::find(sentence).iter().any(|&(s, e)| s <= start && end <= e)
 }
 
 /// A palavra que termina em `end` é seguida de hífen e número: são as letras
-/// de um código interno ("AC-5").
+/// de um rótulo ("AC-5"), não uma sigla.
 fn opens_internal_code(sentence: &str, end: usize) -> bool {
     sentence[end..].strip_prefix('-').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
@@ -982,7 +974,7 @@ mod tests {
         list.iter().map(ToString::to_string).collect()
     }
 
-    /// AC-1: a frase acima do limite sai com a contagem e o começo dela; a
+    /// A frase acima do limite sai com a contagem e o começo dela; a
     /// frase curta e o item de lista curto não saem.
     #[test]
     fn clarity_flags_long_sentences() {
@@ -1011,7 +1003,7 @@ mod tests {
         assert_eq!(measure(&item, &[], &[], Some(Locale::PtBr)).long_sentences[0].words, MAX_SENTENCE_WORDS + 1);
     }
 
-    /// AC-2: sigla sem as palavras por extenso é apontada; com a expansão entre
+    /// Sigla sem as palavras por extenso é apontada; com a expansão entre
     /// parênteses (antes ou depois), já expandida na sessão ou de uso comum,
     /// não é.
     #[test]
@@ -1035,7 +1027,7 @@ mod tests {
         assert!(common.unexpanded_acronyms.is_empty(), "{common:?}");
     }
 
-    /// AC-3: o nome inventado sem tradução no primeiro uso da sessão é
+    /// O nome inventado sem tradução no primeiro uso da sessão é
     /// apontado; traduzido uma vez, os usos seguintes passam — na mesma
     /// resposta e nas próximas.
     #[test]
@@ -1067,7 +1059,7 @@ mod tests {
         assert!(measure("Rodei o slugify.", &known, &[], Some(Locale::PtBr)).unexplained_terms.is_empty());
     }
 
-    /// AC-13: a explicação só conta quando vem logo depois do termo.
+    /// A explicação só conta quando vem logo depois do termo.
     /// Dois-pontos, travessão ou "que é" mais adiante na frase falam de outra
     /// coisa, e a sigla ou o nome inventado continua sem explicação.
     #[test]
@@ -1114,7 +1106,7 @@ mod tests {
         assert!(plural.unexplained_terms.is_empty(), "{plural:?}");
     }
 
-    /// AC-4: blocos de código, código inline, caminhos, links, URLs, tabelas e
+    /// Blocos de código, código inline, caminhos, links, URLs, tabelas e
     /// JSON não contam como frase, sigla nem termo.
     #[test]
     fn clarity_ignores_code_and_paths() {
@@ -1161,32 +1153,41 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert!(report.too_long, "{report:?}");
     }
 
-    /// Código interno no texto corrido é apontado, cada um uma vez, e pede o
-    /// nome do assunto. Código entre crases, versão, sigla com número depois
-    /// de três letras e palavra comum não são código.
+    /// Código do Mustard no texto corrido é apontado, cada um uma vez, e pede
+    /// o nome do assunto; as partes dele não contam como sigla. Código entre
+    /// crases, letra com número fora do formato, versão e palavra comum não
+    /// são apontados.
     #[test]
     fn clarity_flags_internal_codes() {
         let report = measure(
-            "A regra R8 vale. Veja o C-15, o L-3.3 e de novo (R8), com o AC-5.",
+            "A regra MSTD-RULE-0008 vale. Veja o MSTD-CRIT-0015 e de novo (MSTD-RULE-0008).",
             &[],
             &[],
             Some(Locale::PtBr),
         );
-        assert_eq!(report.internal_codes, vec!["R8", "C-15", "L-3.3", "AC-5"], "{report:?}");
-        assert!(report.unexpanded_acronyms.is_empty(), "AC in AC-5 is the code, not an acronym: {report:?}");
+        assert_eq!(report.internal_codes, vec!["MSTD-RULE-0008", "MSTD-CRIT-0015"], "{report:?}");
+        assert!(report.unexpanded_acronyms.is_empty(), "MSTD and RULE are the code, not acronyms: {report:?}");
         assert!(!report.passed);
-        assert_eq!(report.defects(Locale::PtBr)[0], "R8 é um código interno; diga o assunto pelo nome");
-        assert_eq!(report.defects(Locale::EnUs)[0], "R8 is an internal code; name the subject instead");
+        assert_eq!(
+            report.defects(Locale::PtBr)[0],
+            "MSTD-RULE-0008 é um código interno; diga o assunto pelo nome"
+        );
+        assert_eq!(report.defects(Locale::EnUs)[0], "MSTD-RULE-0008 is an internal code; name the subject instead");
 
         for clean in [
-            "Rode `R8` e o `C-15` no terminal.",
+            "Rode `MSTD-RULE-0008` no terminal.",
+            "Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.",
+            "A regra R8 vale, e o C-15 e o AC-5 também.",
             "Instalei a versão v0.3 e o UTF-8 num x86.",
             "O teste E2E passou em 2026.",
             "A regra ficou pronta.",
         ] {
             let report = measure(clean, &[], &[], Some(Locale::PtBr));
             assert!(report.internal_codes.is_empty(), "{clean}: {report:?}");
+            assert!(report.unexpanded_acronyms.is_empty(), "{clean}: {report:?}");
         }
+        let plain = measure("Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.", &[], &[], Some(Locale::PtBr));
+        assert!(plain.passed, "{plain:?}");
     }
 
     /// As sílabas em português seguem a separação escolar nos casos comuns:
@@ -1298,7 +1299,7 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         Ela conta as palavras comuns de cada idioma.\n\
         Uma resposta curta não é julgada por ela.";
 
-    /// AC-7: a resposta em inglês num projeto em português aponta o idioma
+    /// A resposta em inglês num projeto em português aponta o idioma
     /// errado, com o defeito tirado do catálogo. No idioma certo, a mesma
     /// resposta passa.
     #[test]

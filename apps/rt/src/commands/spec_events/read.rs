@@ -14,9 +14,10 @@
 //! Uma linha do arquivo que não se entende entra em `warnings`, no idioma do
 //! projeto, e o resto é lido.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use mustard_core::domain::spec_events::{search_terms, BlockQuery, Refusal, SpecEvent};
+use mustard_core::domain::spec_events::{search_terms, shown_line, BlockQuery, Refusal, SpecEvent};
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
 
@@ -45,12 +46,28 @@ pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
         return Err(refuse(Refusal::NoSpecFile { spec: opts.spec.clone() }));
     };
     let terms = opts.term.as_deref().map(search_terms).unwrap_or_default();
-    let events: Vec<&SpecEvent> = log.block(query).into_iter().filter(|e| e.matches(&terms)).collect();
+    let codes = log.codes();
+    let events: Vec<String> = log
+        .block(query)
+        .into_iter()
+        .filter(|e| e.matches(&terms))
+        .map(|e| shown_with_code(e, &codes))
+        .collect();
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&opts.spec, block, &events, &warnings))
 }
 
-fn render(spec: &str, block: &str, events: &[&SpecEvent], warnings: &[String]) -> String {
+/// A linha como a leitura mostra, com o código do item (`MSTD-RULE-0005`),
+/// que é o jeito de citá-lo e o endereço dele na página.
+fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>) -> String {
+    let mut fields = event.fields.clone();
+    if let Some(code) = codes.get(&event.id) {
+        fields.insert("code".into(), Value::String(code.clone()));
+    }
+    shown_line(&fields)
+}
+
+fn render(spec: &str, block: &str, events: &[String], warnings: &[String]) -> String {
     let mut out = format!(
         "{{\"ok\":true,\"spec\":{},\"block\":{},\"count\":{},\"events\":[",
         json!(spec),
@@ -59,7 +76,7 @@ fn render(spec: &str, block: &str, events: &[&SpecEvent], warnings: &[String]) -
     );
     for (i, event) in events.iter().enumerate() {
         out.push_str(if i == 0 { "\n" } else { ",\n" });
-        out.push_str(&event.shown());
+        out.push_str(event);
     }
     if !events.is_empty() {
         out.push('\n');
@@ -129,6 +146,8 @@ mod tests {
         let report = read_at(&opts(root, "wave-2", None)).unwrap();
         let got = events(&report);
         assert_eq!(got.len(), 2, "{report}");
+        assert_eq!(got[0]["code"], json!("MSTD-WAVE-0002"), "each event carries its code");
+        assert_eq!(got[1]["code"], json!("MSTD-TASK-0002"));
         for event in &got {
             let wave = event.get("n").or_else(|| event.get("wave")).and_then(Value::as_u64);
             assert_eq!(wave, Some(2), "{event}");

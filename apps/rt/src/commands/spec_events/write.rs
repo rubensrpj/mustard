@@ -57,11 +57,19 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
                 "id": written.id,
                 "type": opts.event_type.trim(),
             });
+            if let Some(code) = &written.code {
+                report["code"] = json!(code);
+            }
             if !written.removed.is_empty() {
                 report["removed"] = json!(written.removed);
             }
             if !written.purged.is_empty() {
                 report["purged"] = json!(written.purged);
+            }
+            // A página e o `.md` acompanham cada gravação. Se não der para
+            // gravá-los, o evento já está no arquivo: fica o aviso.
+            if let Err(refusal) = super::pages::refresh(&project.root, &opts.spec, lang) {
+                report["warnings"] = json!([refusal.message(lang)]);
             }
             report
         }
@@ -97,11 +105,45 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let first = write(root, "message", r#"{"author":"user","text":"um"}"#);
-        assert_eq!(first, json!({"ok": true, "spec": "teste", "id": 1, "type": "message"}));
+        assert_eq!(
+            first,
+            json!({"ok": true, "spec": "teste", "id": 1, "type": "message", "code": "MSTD-MSG-0001"})
+        );
         write(root, "message", r#"{"author":"user","text":"dois"}"#);
         let removal = write(root, "remove", r#"{"targets":[1,2],"reason":"engano"}"#);
         assert_eq!(removal["removed"], json!([1, 2]), "{removal}");
         assert!(root.join(".claude").join("spec").join("teste").join("spec.ndjson").is_file());
+    }
+
+    /// Cada gravação refaz a página e o `.md` da spec. Uma decisão revista
+    /// mostra só a versão nova fora da conversa, onde a antiga aparece
+    /// marcada como substituída; um item removido some dos dois e continua
+    /// no arquivo de eventos, com o motivo.
+    #[test]
+    fn every_write_rebuilds_the_page_and_the_md() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"decida"}"#);
+        write(root, "decision", r#"{"text":"Texto antigo.","keys":["k"],"why":"w","origin":1}"#);
+        let revised =
+            write(root, "decision", r#"{"text":"Texto novo.","keys":["k"],"why":"w","origin":1,"replaces":2}"#);
+        assert_eq!(revised["code"], json!("MSTD-DEC-0001"), "the new version keeps the code");
+        write(root, "note", r#"{"text":"Anotação que sai.","keys":["n"],"origin":1}"#);
+        let removal = write(root, "remove", r#"{"targets":[4],"reason":"engano"}"#);
+        assert!(removal.get("warnings").is_none(), "{removal}");
+
+        let spec = root.join(".claude").join("spec").join("teste");
+        let md = std::fs::read_to_string(spec.join("spec.md")).unwrap();
+        let html = std::fs::read_to_string(spec.join("spec.html")).unwrap();
+        let (html_before, html_talk) = html.split_once("<section id=\"conversation\">").unwrap();
+        let (md_before, md_talk) = md.rsplit_once("\n## ").unwrap();
+        for (before, talk) in [(html_before, html_talk), (md_before, md_talk)] {
+            assert!(before.contains("Texto novo.") && !before.contains("Texto antigo."), "{before}");
+            assert!(talk.contains("Texto antigo."), "{talk}");
+            assert!(!before.contains("Anotação que sai.") && !talk.contains("Anotação que sai."));
+        }
+        let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
+        assert!(events.contains("Anotação que sai.") && events.contains("engano"), "{events}");
     }
 
     #[test]

@@ -15,3 +15,4 @@ pub mod ranking;
 pub mod clarity;
 pub mod text;
 pub mod spec_events;
+pub mod mustard_id;

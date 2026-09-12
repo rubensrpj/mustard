@@ -465,7 +465,7 @@ fn build_compare(
 /// Write a standalone HTML report wrapping the metrics document.
 ///
 /// Metrics reports are not per-spec QA — they are workspace-wide diagnostic
-/// rollups, so the W2 cache reorg keeps them under
+/// rollups, so the cache reorganisation keeps them under
 /// `<root>/.claude/.metrics/reports/`.
 fn write_html_report(cwd: &Path, subcommand: &str, doc: &Value) -> Option<PathBuf> {
     let paths = ClaudePaths::for_project(cwd).ok()?;
@@ -661,7 +661,7 @@ mod tests {
         let path = write_html_report(dir.path(), "report", &doc).unwrap();
         let html = std::fs::read_to_string(path).unwrap();
         assert!(html.starts_with("<!doctype html>"));
-        assert!(!html.contains("href=") && !html.contains("src="));
+        crate::report::assert_only_the_fonts_are_external(&html);
         assert!(html.contains("budget-check"));
     }
 }
