@@ -43,15 +43,21 @@ pub enum SpecEventsCmd {
     /// fact without a source or citing a file that does not exist. `remove`,
     /// `purge` and a new version (`replaces`) are events like any other; they
     /// point at an item by its event number or by the code the page shows,
-    /// like `MSTD-RULE-0002`.
+    /// like `MSTD-RULE-0002`. With the `lesson` type it writes one lesson to
+    /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
+    /// `{"class":"defect","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
+    /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`.
     #[command(display_order = 103)]
     Write {
-        /// The event type, e.g. `rule`, `decision`, `wave` or `remove`.
+        /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or
+        /// `lesson`.
         #[arg(value_name = "TYPE")]
         event_type: String,
-        /// The spec whose file receives the event.
+        /// The spec whose file receives the event. Required for every type
+        /// but `lesson`, which takes it, when given, as the spec the lesson
+        /// was found in.
         #[arg(long)]
-        spec: String,
+        spec: Option<String>,
         /// The event's own fields as one JSON object, e.g.
         /// `{"text":"…","keys":["…"],"example":"…","origin":3}`. The binary
         /// sets `v`, `id`, `code`, `at` and `search`; a `code` sent here is

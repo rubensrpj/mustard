@@ -12,8 +12,18 @@
 //! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "code": "MSTD-RMV-0002", "removed": [12, 13]}
 //! ```
 //!
-//! A página e o `.md` da spec são refeitos a cada gravação, ainda com a trava
-//! do arquivo de eventos presa.
+//! A página e o `.md` da spec e a linha dela no índice das specs são refeitos
+//! a cada gravação, ainda com a trava do arquivo de eventos presa.
+//!
+//! Com o tipo `lesson`, a gravação vai para o banco de lições
+//! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
+//! `class`, a lição diz onde vale (`applies_to`) e onde nasceu (`found_in`), e
+//! o `--spec`, opcional só aqui, diz a spec em que ela nasceu quando a lição
+//! não diz. A página e o índice não mudam:
+//!
+//! ```text
+//! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
+//! ```
 //!
 //! Num worktree, o evento vai para o arquivo do checkout principal. As
 //! citações de arquivo de um ponto são conferidas a partir de onde o comando
@@ -21,16 +31,19 @@
 
 use std::path::PathBuf;
 
-use mustard_core::domain::spec_events::Refusal;
+use mustard_core::domain::lessons::LESSON;
+use mustard_core::domain::spec_events::{type_spec, Refusal};
 use mustard_core::domain::spec_index;
-use mustard_core::io::spec_events as store;
-use serde_json::{json, Value};
+use mustard_core::io::{lessons, spec_events as store};
+use mustard_core::ClaudePaths;
+use serde_json::{json, Map, Value};
 
 /// Options for `mustard-rt run write`.
 pub struct WriteOpts {
     /// Qualquer pasta dentro do repositório.
     pub root: PathBuf,
-    pub spec: String,
+    /// A spec que recebe o evento; na lição, a spec em que ela nasceu.
+    pub spec: Option<String>,
     pub event_type: String,
     /// Os campos do evento, num objeto JSON.
     pub json: String,
@@ -51,7 +64,19 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         }
         Err(e) => return refuse(Refusal::NotAnObject { detail: e.to_string() }),
     };
-    let path = match store::spec_file(&project.root, &opts.spec) {
+    let event_type = opts.event_type.trim();
+    if event_type == LESSON {
+        return write_lesson(&project, opts.spec.as_deref(), draft);
+    }
+    let Some(spec) = opts.spec.as_deref() else {
+        // Sem spec, um tipo que não existe continua recusado pelo nome.
+        return refuse(if type_spec(event_type).is_some() {
+            Refusal::SpecRequired { event_type: event_type.to_string() }
+        } else {
+            Refusal::UnknownType { found: event_type.to_string() }
+        });
+    };
+    let path = match store::spec_file(&project.root, spec) {
         Ok(path) => path,
         Err(refusal) => return refuse(refusal),
     };
@@ -60,16 +85,16 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
     // outra sessão, só entra depois, e refaz os dois por último.
     let mut pages = None;
-    let written = store::write_then(&path, &opts.event_type, draft, &roots, |log| {
-        pages = Some(super::pages::rebuild(&project.root, &opts.spec, log, lang));
+    let written = store::write_then(&path, event_type, draft, &roots, |log| {
+        pages = Some(super::pages::rebuild(&project.root, spec, log, lang));
     });
     match written {
         Ok(written) => {
             let mut report = json!({
                 "ok": true,
-                "spec": opts.spec.trim(),
+                "spec": spec.trim(),
                 "id": written.id,
-                "type": opts.event_type.trim(),
+                "type": event_type,
             });
             if let Some(code) = &written.code {
                 report["code"] = json!(code);
@@ -99,6 +124,20 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     }
 }
 
+/// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
+/// que spec a lição nasceu.
+fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String, Value>) -> Value {
+    let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
+    let path = match ClaudePaths::for_project(&project.root) {
+        Ok(paths) => paths.lessons_path(),
+        Err(e) => return refuse(Refusal::Io { detail: e.to_string() }),
+    };
+    match lessons::write(&path, draft, spec) {
+        Ok(written) => json!({ "ok": true, "id": written.id, "type": LESSON, "class": written.class }),
+        Err(refusal) => refuse(refusal),
+    }
+}
+
 /// Run `write` and print the JSON report; exit 1 on a refusal.
 pub fn run(opts: &WriteOpts) {
     let report = write_at(opts);
@@ -113,13 +152,17 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn write(root: &std::path::Path, event_type: &str, json: &str) -> Value {
+    fn write_to(root: &std::path::Path, spec: Option<&str>, event_type: &str, json: &str) -> Value {
         write_at(&WriteOpts {
             root: root.to_path_buf(),
-            spec: "teste".into(),
+            spec: spec.map(str::to_string),
             event_type: event_type.into(),
             json: json.into(),
         })
+    }
+
+    fn write(root: &std::path::Path, event_type: &str, json: &str) -> Value {
+        write_to(root, Some("teste"), event_type, json)
     }
 
     #[test]
@@ -223,14 +266,71 @@ mod tests {
         assert!(!dir.path().join(".claude").exists(), "a refusal writes nothing");
     }
 
+    /// Um tipo que não existe e um campo que falta são recusados pelo nome; um
+    /// tipo da spec sem `--spec` pede a spec, e nada é gravado.
     #[test]
     fn an_unknown_type_and_a_missing_field_are_refused_by_name() {
         let dir = tempdir().unwrap();
-        let unknown = write(dir.path(), "lesson", r#"{"text":"x"}"#);
+        let unknown = write(dir.path(), "licao", r#"{"text":"x"}"#);
         assert_eq!(unknown["reason"], json!("unknown-type"));
-        assert!(unknown["hint"].as_str().unwrap().contains("lesson"));
+        assert!(unknown["hint"].as_str().unwrap().contains("licao"));
         let missing = write(dir.path(), "rule", r#"{"text":"t","keys":["k"],"origin":1}"#);
         assert_eq!(missing["reason"], json!("missing-field"));
         assert!(missing["hint"].as_str().unwrap().contains("example"));
+        let no_spec = write_to(dir.path(), None, "rule", r#"{"text":"t","keys":["k"],"example":"e","origin":1}"#);
+        assert_eq!(no_spec["reason"], json!("spec-required"), "{no_spec}");
+        assert!(no_spec["hint"].as_str().unwrap().contains("--spec"), "{no_spec}");
+        let unknown_no_spec = write_to(dir.path(), None, "licao", "{}");
+        assert_eq!(unknown_no_spec["reason"], json!("unknown-type"), "{unknown_no_spec}");
+        assert!(!dir.path().join(".claude").exists(), "a refusal writes nothing");
+    }
+
+    /// A lição vai para o banco de lições, com a spec do `--spec` dizendo
+    /// onde ela nasceu; o arquivo de eventos, a página, o `.md` e o índice
+    /// ficam como estavam. Sem `--spec`, a lição diz sozinha onde nasceu.
+    #[test]
+    fn writing_a_lesson_goes_to_the_bank_and_leaves_the_spec_untouched() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"um"}"#);
+        let specs = root.join(".claude").join("spec");
+        let files = [specs.join("teste").join("spec.ndjson"), specs.join("teste").join("spec.md"), specs.join("teste").join("spec.html"), specs.join("index.ndjson")];
+        let before: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
+
+        let lesson = r#"{"class":"defect","text":"Um rm -rf na pasta errada perde trabalho.","keys":["apagar","rm"],"applies_to":{"subproject":"apps/rt"}}"#;
+        assert_eq!(write(root, "lesson", lesson), json!({"ok": true, "id": 1, "type": "lesson", "class": "defect"}));
+        let after: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
+        assert!(before == after, "the spec's files did not move");
+        let bank = std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap();
+        assert!(bank.contains(r#""found_in":{"spec":"teste"}"#) && bank.contains(r#""type":"defect""#), "{bank}");
+
+        let everywhere = r#"{"class":"user_preference","text":"Resposta curta.","keys":["resposta"],"applies_to":{"files":["**"]},"found_in":{"source":"CLAUDE.md"}}"#;
+        let second = write_to(root, None, "lesson", everywhere);
+        assert_eq!(second["id"], json!(2), "{second}");
+        let no_origin = r#"{"class":"defect","text":"t","keys":["k"],"applies_to":{"skill":"s"}}"#;
+        let refused = write_to(root, None, "lesson", no_origin);
+        assert_eq!(refused["reason"], json!("lesson-origin-missing"), "{refused}");
+        assert_eq!(std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap().lines().count(), 2);
+    }
+
+    /// O `search` é gravado no arquivo de eventos e nunca aparece na página
+    /// nem no `.md`: os dois mostram só o texto original.
+    #[test]
+    fn the_page_and_the_md_never_show_the_search_field() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"combine"}"#);
+        let rule = r#"{"text":"Apagando a pasta, a trava barra o comando.","keys":["apagar","trava"],"example":"rm -rf pasta","origin":1}"#;
+        assert_eq!(write(root, "rule", rule)["ok"], json!(true));
+        let spec = root.join(".claude").join("spec").join("teste");
+        let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
+        let line = events.lines().find(|l| l.contains("\"type\":\"rule\"")).unwrap();
+        let search = serde_json::from_str::<Value>(line).unwrap()["search"].as_str().unwrap().to_string();
+        assert!(search.contains(' '), "{search}");
+        for page in ["spec.md", "spec.html"] {
+            let shown = std::fs::read_to_string(spec.join(page)).unwrap();
+            assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{page}");
+            assert!(!shown.contains(&search) && !shown.contains("\"search\""), "{page} shows the search field");
+        }
     }
 }

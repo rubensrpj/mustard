@@ -210,6 +210,9 @@ const CACHE_FILES: &[&str] = &[
 /// O nome do índice das specs, dentro de `.claude/spec/`.
 pub const SPEC_INDEX_FILE: &str = "index.ndjson";
 
+/// O nome do banco de lições, dentro de `.claude/spec/`.
+pub const LESSONS_FILE: &str = "lessons.ndjson";
+
 impl ClaudePaths {
     /// Build a handle pointing at `<root>/.claude/`.
     ///
@@ -327,6 +330,13 @@ impl ClaudePaths {
     #[must_use]
     pub fn spec_index_path(&self) -> PathBuf {
         self.spec_dir().join(SPEC_INDEX_FILE)
+    }
+
+    /// `<root>/.claude/spec/lessons.ndjson` — o banco de lições, fora das
+    /// pastas das specs e escrito só pelo binário (`io::lessons`).
+    #[must_use]
+    pub fn lessons_path(&self) -> PathBuf {
+        self.spec_dir().join(LESSONS_FILE)
     }
 
     /// `<root>/.claude/pending/` — a lista de pendências que mora fora de

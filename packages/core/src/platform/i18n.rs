@@ -1241,12 +1241,37 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              `mustard-rt run index` to rebuild it."
         }
         ("spec_index.stale_search", Locale::PtBr) => {
-            "{count} linha(s) dos arquivos de eventos têm o campo search calculado por outro \
-             redutor. Rode `mustard-rt run index` para recalculá-lo."
+            "{count} linha(s) dos arquivos de eventos e do banco de lições têm o campo search \
+             calculado por outro redutor. Rode `mustard-rt run index` para recalculá-lo."
         }
         ("spec_index.stale_search", Locale::EnUs) => {
-            "{count} line(s) of the event files have a search field computed by another stemmer. \
-             Run `mustard-rt run index` to recompute it."
+            "{count} line(s) of the event files and the lesson bank have a search field computed \
+             by another stemmer. Run `mustard-rt run index` to recompute it."
+        }
+        ("spec_events.spec_required", Locale::PtBr) => {
+            "Falta a spec: o tipo {type} é gravado no arquivo de eventos de uma spec. Passe \
+             `--spec <nome>`. Nada foi gravado."
+        }
+        ("spec_events.spec_required", Locale::EnUs) => {
+            "The spec is missing: a {type} event is written to a spec's event file. Pass \
+             `--spec <name>`. Nothing was written."
+        }
+
+        // Recusas do banco de lições (`domain::lessons`, `run write lesson`).
+        // As vagas vêm do chamador.
+        ("lessons.unknown_lesson", Locale::PtBr) => {
+            "A lição {id} não existe no banco de lições. Nada foi gravado."
+        }
+        ("lessons.unknown_lesson", Locale::EnUs) => {
+            "Lesson {id} does not exist in the lesson bank. Nothing was written."
+        }
+        ("lessons.origin_missing", Locale::PtBr) => {
+            "A lição precisa dizer onde nasceu, em found_in: `spec`, `branch` e `commit`, ou \
+             `source` (o arquivo de onde ela veio). Nada foi gravado."
+        }
+        ("lessons.origin_missing", Locale::EnUs) => {
+            "The lesson must say where it was born, in found_in: `spec`, `branch` and `commit`, \
+             or `source` (the file it came from). Nothing was written."
         }
         ("spec_index.no_specs", Locale::PtBr) => {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
@@ -2166,6 +2191,9 @@ mod tests {
             ("spec_index.diverged", &["{count}", "{specs}"][..]),
             ("spec_index.stale_search", &["{count}"][..]),
             ("spec_index.no_specs", &[][..]),
+            ("spec_events.spec_required", &["{type}"][..]),
+            ("lessons.unknown_lesson", &["{id}"][..]),
+            ("lessons.origin_missing", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

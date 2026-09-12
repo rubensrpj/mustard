@@ -272,7 +272,7 @@ fn io_refusal(error: Error) -> Refusal {
 }
 
 /// Agora, na hora local com o fuso: `2026-09-11T21:03:12-03:00`.
-fn now() -> String {
+pub(crate) fn now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
@@ -528,8 +528,8 @@ mod tests {
         put(&path, &[], "note", &at("10:00"), json!({"text": "t", "keys": ["k"], "origin": 1}));
         let before = std::fs::read(&path).unwrap();
 
-        let unknown = write_at(&path, "lesson", obj(json!({"text": "x"})), &[], &at("10:01"));
-        assert_eq!(unknown.unwrap_err(), Refusal::UnknownType { found: "lesson".into() });
+        let unknown = write_at(&path, "licao", obj(json!({"text": "x"})), &[], &at("10:01"));
+        assert_eq!(unknown.unwrap_err(), Refusal::UnknownType { found: "licao".into() });
         let empty = write_at(
             &path,
             "rule",

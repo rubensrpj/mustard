@@ -13,6 +13,7 @@ pub mod economy;
 pub mod ast;
 pub mod ranking;
 pub mod search;
+pub mod lessons;
 pub mod clarity;
 pub mod text;
 pub mod spec_events;

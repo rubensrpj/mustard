@@ -131,7 +131,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     assert_eq!(read(root, "conversation")["count"], json!(1));
 
     // Refusals leave with exit 1 and say what is wrong.
-    let unknown = rt(root, &["write", "lesson", "--spec", "teste", "--json", "{}"]).output().expect("run");
+    let unknown = rt(root, &["write", "licao", "--spec", "teste", "--json", "{}"]).output().expect("run");
     assert_eq!(unknown.status.code(), Some(1));
     assert_eq!(stdout_json(&unknown)["reason"], json!("unknown-type"));
     let fields = json!({"text": "t", "keys": ["k"], "origin": msg}).to_string();

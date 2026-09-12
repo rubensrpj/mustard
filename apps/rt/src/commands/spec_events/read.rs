@@ -120,7 +120,7 @@ mod tests {
     fn put(root: &std::path::Path, event_type: &str, fields: Value) -> u64 {
         let out = write_at(&WriteOpts {
             root: root.to_path_buf(),
-            spec: "teste".into(),
+            spec: Some("teste".into()),
             event_type: event_type.into(),
             json: fields.to_string(),
         });

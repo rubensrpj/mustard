@@ -186,7 +186,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn accepts(self, value: &Value) -> bool {
+    pub(crate) fn accepts(self, value: &Value) -> bool {
         let is_int = |v: &Value| v.is_i64() || v.is_u64();
         let is_ref = |v: &Value| EventRef::from_value(v).is_some();
         match self {
@@ -271,11 +271,11 @@ pub struct Field {
     pub required: bool,
 }
 
-const fn req(name: &'static str, kind: Kind) -> Field {
+pub(crate) const fn req(name: &'static str, kind: Kind) -> Field {
     Field { name, kind, required: true }
 }
 
-const fn opt(name: &'static str, kind: Kind) -> Field {
+pub(crate) const fn opt(name: &'static str, kind: Kind) -> Field {
     Field { name, kind, required: false }
 }
 
@@ -591,7 +591,7 @@ pub fn type_names() -> String {
 // Recusas
 // ---------------------------------------------------------------------------
 
-/// Por que um evento não foi gravado ou um bloco não foi lido.
+/// Por que um evento ou uma lição não foi gravado, ou um bloco não foi lido.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     NotAnObject { detail: String },
@@ -609,6 +609,12 @@ pub enum Refusal {
     UnknownBlock { found: String },
     BadSpecName { spec: String },
     NoSpecFile { spec: String },
+    /// Um tipo de evento da spec gravado sem dizer a spec.
+    SpecRequired { event_type: String },
+    /// A lição que `replaces` aponta não existe no banco de lições.
+    UnknownLesson { id: u64 },
+    /// A lição não diz onde nasceu.
+    LessonOriginMissing,
     Io { detail: String },
 }
 
@@ -632,6 +638,9 @@ impl Refusal {
             Self::UnknownBlock { .. } => "unknown-block",
             Self::BadSpecName { .. } => "bad-spec-name",
             Self::NoSpecFile { .. } => "no-spec-file",
+            Self::SpecRequired { .. } => "spec-required",
+            Self::UnknownLesson { .. } => "unknown-lesson",
+            Self::LessonOriginMissing => "lesson-origin-missing",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -721,6 +730,11 @@ impl Refusal {
             Self::NoSpecFile { spec } => {
                 fill("spec_events.no_spec_file", &[("{spec}", spec.clone())])
             }
+            Self::SpecRequired { event_type } => {
+                fill("spec_events.spec_required", &[("{type}", event_type.clone())])
+            }
+            Self::UnknownLesson { id } => fill("lessons.unknown_lesson", &[("{id}", id.to_string())]),
+            Self::LessonOriginMissing => fill("lessons.origin_missing", &[]),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
@@ -732,7 +746,7 @@ impl Refusal {
 
 /// `true` para o que não vale como valor: ausente, `null`, texto em branco,
 /// lista vazia ou objeto vazio. Número e `true`/`false` nunca são vazios.
-fn is_empty(value: &Value) -> bool {
+pub(crate) fn is_empty(value: &Value) -> bool {
     match value {
         Value::Null => true,
         Value::String(s) => s.trim().is_empty(),
@@ -789,7 +803,7 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
     check_fact_sources(event, spec.name)
 }
 
-fn check_field(event: &Map<String, Value>, event_type: &str, field: Field) -> Result<(), Refusal> {
+pub(crate) fn check_field(event: &Map<String, Value>, event_type: &str, field: Field) -> Result<(), Refusal> {
     match event.get(field.name) {
         Some(value) if !is_empty(value) => {
             if field.kind.accepts(value) {
@@ -1835,10 +1849,10 @@ mod tests {
 
     #[test]
     fn an_unknown_type_is_refused_by_name() {
-        let refusal = checked("lesson", json!({"text": "x"})).unwrap_err();
-        assert_eq!(refusal, Refusal::UnknownType { found: "lesson".into() });
-        assert!(refusal.message(Locale::PtBr).contains("O tipo lesson não existe"));
-        assert!(refusal.message(Locale::EnUs).contains("no lesson event type"));
+        let refusal = checked("licao", json!({"text": "x"})).unwrap_err();
+        assert_eq!(refusal, Refusal::UnknownType { found: "licao".into() });
+        assert!(refusal.message(Locale::PtBr).contains("O tipo licao não existe"));
+        assert!(refusal.message(Locale::EnUs).contains("no licao event type"));
     }
 
     #[test]

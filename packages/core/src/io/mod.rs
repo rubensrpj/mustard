@@ -5,3 +5,4 @@ pub mod events;
 pub mod workspace;
 pub mod spec_events;
 pub mod spec_index;
+pub mod lessons;

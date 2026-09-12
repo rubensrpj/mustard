@@ -4,8 +4,8 @@
 //! spec no índice dentro da mesma gravação (`io::spec_events`), sem custo de
 //! tokens. O [`rebuild`] refaz o índice inteiro a partir dos arquivos de
 //! eventos, quando ele falta ou diverge, e recalcula o campo `search` das
-//! linhas. O [`divergence`] só lê e diz onde o índice difere do que os
-//! arquivos de eventos dariam.
+//! linhas dos arquivos de eventos e do banco de lições. O [`divergence`] só lê
+//! e diz onde o índice difere do que os arquivos de eventos dariam.
 //!
 //! As travas são pegas sempre na mesma ordem: primeiro a da spec, depois a do
 //! índice. Nenhum código segura a trava do índice enquanto espera a de uma
@@ -115,6 +115,7 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
         out.specs += 1;
         out.search_updated += changed;
     }
+    out.lessons_search_updated = crate::io::lessons::refresh_search(&paths.lessons_path())?;
 
     let mut file = LockedFile::exclusive(&index_path).map_err(io_refusal)?;
     let current = file.read_to_string().map_err(io_refusal)?;
@@ -165,6 +166,7 @@ pub fn divergence(root: &Path) -> Result<Divergence, Refusal> {
             lines.insert(name.clone(), line);
         }
     }
+    stale_search += crate::io::lessons::stale_search(&paths.lessons_path())?;
     let (current, index_exists) = match read_shared(&paths.spec_index_path()) {
         Ok(content) => (content, true),
         Err(Error::NotFound(_)) => (String::new(), false),
@@ -347,6 +349,28 @@ mod tests {
         let raw = std::fs::read_to_string(index_file(root)).unwrap();
         assert_eq!(raw.lines().count(), 2, "{raw}");
         assert!(!raw.contains("velha") && !raw.contains("busca"), "{raw}");
+    }
+
+    /// O `index` recalcula também o `search` desatualizado do banco de
+    /// lições, e o `divergence` o conta.
+    #[test]
+    fn rebuilding_recomputes_a_stale_lesson_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let bank = ClaudePaths::for_project(root).unwrap().lessons_path();
+        let lesson = json!({"class": "defect", "text": "Apagar a pasta.", "keys": ["apagar"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"spec": "trava"}});
+        crate::io::lessons::write_at(&bank, obj(lesson), None, &at("11:00")).unwrap();
+        let original = std::fs::read_to_string(&bank).unwrap();
+        let (head, _) = original.trim_end().rsplit_once(",\"search\":").unwrap();
+        std::fs::write(&bank, format!("{head},\"search\":\"velho\"}}\n")).unwrap();
+        assert_eq!(divergence(root).unwrap().stale_search, 1);
+
+        let rebuilt = rebuild(root).unwrap();
+        assert_eq!((rebuilt.search_updated, rebuilt.lessons_search_updated), (0, 1));
+        assert_eq!(std::fs::read_to_string(&bank).unwrap(), original);
+        let index = std::fs::read_to_string(index_file(root)).unwrap();
+        assert!(!index.contains("lessons"), "the bank is not a spec: {index}");
     }
 
     #[test]
