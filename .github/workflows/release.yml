@@ -36,10 +36,14 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# Toda etapa abaixo para em 30 minutos (`timeout-minutes`): sem isso, um passo
+# travado segura a máquina pelas seis horas do padrão do GitHub. A publicação
+# inteira mediu de 18 a 19 minutos.
 jobs:
   # --------------------------------------------------------------- versão ----
   version:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
@@ -76,6 +80,7 @@ jobs:
   windows-installer:
     needs: version
     runs-on: windows-latest
+    timeout-minutes: 30
     # Bake the release version into every binary this job compiles (read by
     # `mustard_core::harness_version` via `option_env!`). Job-level so the
     # `cargo build` step and any build script inherit it.
@@ -118,8 +123,15 @@ jobs:
       # One workspace now. `apps/dashboard/server` was a second Cargo root
       # only because its desktop-shell wrapper pinned its own edition and lock; the
       # dashboard backend is a plain member (`apps/dashboard/server`).
+      #
+      # Só restaura. Uma rodada de tag guarda o cache no escopo da própria tag,
+      # que nenhuma rodada seguinte lê. A chave é a mesma da verificação, que só
+      # guarda nas rodadas de push no `dev` e na `main`; a tag lê a da `main`.
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        with:
+          shared-key: mustard-workspace
+          save-if: false
 
       # `mustard-dashboard` joins the list: it is a normal workspace binary now.
       - name: Compila os binários
@@ -214,6 +226,7 @@ jobs:
   macos-installer:
     needs: version
     runs-on: macos-latest
+    timeout-minutes: 30
     # Bake the release version in — `build-pkg.sh` runs `cargo build` and
     # inherits this job-level env.
     env:
@@ -243,9 +256,12 @@ jobs:
           cache: false
           rustflags: ''
 
-      # One workspace now — see the note in the Windows job.
+      # One workspace now, and restore only — see the notes in the Windows job.
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        with:
+          shared-key: mustard-workspace
+          save-if: false
 
       - name: rtk (best-effort — embutido no .pkg se disponível)
         continue-on-error: true
@@ -286,6 +302,7 @@ jobs:
   linux-deb:
     needs: version
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Bake the release version into the compiled binaries (job-level so the
     # cargo build step inherits it).
     env:
@@ -308,8 +325,12 @@ jobs:
           cache: false
           rustflags: ''
 
+      # Só restaura — ver a nota no job do Windows.
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        with:
+          shared-key: mustard-workspace
+          save-if: false
 
       - name: Empacota binários avulsos (bootstrap do plugin)
         env:
@@ -344,6 +365,7 @@ jobs:
     needs: [version, windows-installer, macos-installer, linux-deb]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4   # para os TUTORIAL-*.md e o RELEASE-BODY.md
 
