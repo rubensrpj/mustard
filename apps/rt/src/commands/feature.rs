@@ -22,6 +22,7 @@
 use std::path::Path;
 
 use mustard_core::domain::scan::{DigestQuery, DigestTerm, FileDetail, RankFile};
+use mustard_core::domain::text;
 use mustard_core::io::fs as mfs;
 use mustard_core::Scan;
 use serde_json::{json, Value};
@@ -402,33 +403,6 @@ fn reason_note(q: &DigestQuery) -> &'static str {
 /// explicitly — the calibrated product contract).
 const RANK_DIRECT_BASE: u64 = 100_000;
 
-/// English function words for the language vote — the EN side of the scan
-/// dictionary's `is_non_english` heuristic, embedded compactly (a router,
-/// not a classifier).
-const EN_STOP: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "if", "of", "at", "by", "for", "with", "about", "into",
-    "through", "before", "after", "to", "from", "in", "out", "on", "off", "over", "under", "again",
-    "then", "once", "here", "there", "when", "where", "why", "how", "all", "any", "both", "each",
-    "few", "more", "most", "some", "such", "no", "not", "only", "same", "than", "too", "very",
-    "is", "are", "was", "were", "been", "being", "be", "have", "has", "had", "does", "did", "this",
-    "that", "these", "those", "will", "would", "can", "could", "should", "must", "it", "its",
-    "his", "her", "our", "their", "your", "you", "they", "she", "what", "which", "who", "as",
-];
-
-/// Portuguese function words — the accent-bearing romance side of the vote.
-const PT_STOP: &[&str] = &[
-    "o", "a", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "no", "na",
-    "nos", "nas", "ao", "aos", "à", "às", "pelo", "pela", "pelos", "pelas", "em", "por", "para",
-    "com", "sem", "sob", "sobre", "entre", "até", "e", "ou", "mas", "que", "se", "não", "sim",
-    "é", "são", "foi", "foram", "ser", "sendo", "era", "eram", "está", "estão", "estava", "tem",
-    "têm", "tinha", "há", "já", "mais", "menos", "muito", "muitos", "como", "quando", "onde",
-    "qual", "quais", "quem", "isso", "isto", "esse", "essa", "esses", "essas", "este", "esta",
-    "estes", "estas", "ele", "ela", "eles", "elas", "você", "nós", "eu", "seu", "sua", "seus",
-    "suas", "meu", "minha", "nosso", "nossa", "também", "depois", "antes", "agora", "aqui",
-    "cada", "todo", "toda", "todos", "todas", "outro", "outra", "outros", "outras", "mesmo",
-    "mesma", "ainda", "então", "pois", "porque",
-];
-
 /// `true` when the intent is NOT CONFIDENTLY ENGLISH — the question the gloss
 /// actually needs answered.
 ///
@@ -450,20 +424,17 @@ const PT_STOP: &[&str] = &[
 fn looks_non_english(intent: &str) -> bool {
     let mut en_hits = 0usize;
     let mut pt_hits = 0usize;
-    for word in intent.split(|c: char| !c.is_alphanumeric()) {
-        if word.is_empty() {
-            continue;
-        }
+    for word in text::words(intent) {
         let w = word.to_lowercase();
-        if EN_STOP.contains(&w.as_str()) {
+        if text::FUNCTION_WORDS_EN.contains(&w.as_str()) {
             en_hits += 1;
         }
-        if PT_STOP.contains(&w.as_str()) {
+        if text::FUNCTION_WORDS_PT.contains(&w.as_str()) {
             pt_hits += 1;
         }
     }
     let lower = intent.to_lowercase();
-    let has_accent = super::scan_equivalences::fold_tok(&lower) != lower;
+    let has_accent = text::fold(&lower) != lower;
     // Positive foreign evidence, or NO English evidence at all.
     pt_hits > en_hits || (has_accent && pt_hits >= en_hits) || en_hits == 0
 }
@@ -579,11 +550,11 @@ fn auto_gloss(intent: &str) -> Option<String> {
 /// first-occurrence order. No hit → the intent passes through verbatim.
 fn expand_query(intent: &str, equiv: &std::collections::BTreeMap<String, Vec<String>>) -> String {
     let mut added: Vec<String> = Vec::new();
-    for tok in intent.split(|c: char| !c.is_alphanumeric()) {
+    for tok in text::words(intent) {
         if tok.chars().count() < 3 {
             continue;
         }
-        let key = super::scan_equivalences::fold_tok(tok);
+        let key = text::fold(tok);
         if let Some(toks) = equiv.get(&key) {
             for t in toks {
                 if !added.contains(t) {
@@ -673,7 +644,7 @@ fn uncovered_terms(
     let evidence: Vec<String> = pool
         .iter()
         .flat_map(|c| c.terms.iter())
-        .map(|t| super::scan_equivalences::fold_tok(&t.to_lowercase()))
+        .map(|t| text::fold(t))
         .collect();
     let hits = |probe: &str| {
         evidence.iter().any(|e| {
@@ -685,21 +656,23 @@ fn uncovered_terms(
     };
     let mut seen = std::collections::BTreeSet::new();
     let mut rows: Vec<(String, Vec<String>)> = Vec::new();
-    for raw in intent.split(|c: char| !c.is_alphanumeric()) {
+    for raw in text::words(intent) {
         if raw.chars().count() < 4 || !raw.chars().any(|c| c.is_alphabetic()) {
             continue;
         }
         let lower = raw.to_lowercase();
-        if EN_STOP.contains(&lower.as_str()) || PT_STOP.contains(&lower.as_str()) {
+        if text::FUNCTION_WORDS_EN.contains(&lower.as_str())
+            || text::FUNCTION_WORDS_PT.contains(&lower.as_str())
+        {
             continue;
         }
-        let folded = super::scan_equivalences::fold_tok(&lower);
+        let folded = text::fold(&lower);
         if !seen.insert(folded.clone()) {
             continue;
         }
         let mut tried = vec![folded.clone()];
         for t in equiv.get(&folded).map(Vec::as_slice).unwrap_or(&[]) {
-            let f = super::scan_equivalences::fold_tok(&t.to_lowercase());
+            let f = text::fold(t);
             if !tried.contains(&f) {
                 tried.push(f);
             }

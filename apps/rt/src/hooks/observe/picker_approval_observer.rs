@@ -99,7 +99,6 @@
 //! never returns a verdict.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
-use serde_json::Value;
 use std::path::Path;
 
 use super::approval_marker_observer::{already_approved, is_awaiting_approval};
@@ -243,9 +242,7 @@ fn spec_of_checkout(project: &Path) -> Option<String> {
 /// person (a completed background command, a finished subagent's report).
 fn user_typed_text(input: &HookInput) -> Option<&str> {
     input
-        .raw
-        .get("prompt")
-        .and_then(Value::as_str)
+        .user_prompt()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .filter(|s| !crate::shared::prompt::is_harness_notice(s))
@@ -306,12 +303,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::UserPromptSubmit))
     }
 
     /// A `UserPromptSubmit` input carrying the text the person submitted — the

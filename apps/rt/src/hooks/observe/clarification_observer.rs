@@ -39,11 +39,9 @@
 //! saída padrão de um hook é o canal do JSON do harness.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
-use serde_json::Value;
 use std::path::Path;
 
 use crate::commands::spec::material_add::{add, MaterialAddOpts};
-use crate::hooks::task::crystallise_nudge::spec_is_closed;
 use crate::shared::context::{current_spec, spec_for_session};
 
 /// O gravador de esclarecimentos do PostToolUse(AskUserQuestion).
@@ -63,40 +61,39 @@ struct Answered {
 /// `tool_response.annotations.<pergunta>.notes`, quando o usuário escreveu
 /// alguma; lidas com folga, porque o harness acrescenta campos com o tempo.
 fn answered_questions(input: &HookInput) -> Vec<Answered> {
-    let Some(response) = input.raw.get("tool_response") else {
-        return Vec::new();
-    };
-    let Some(answers) = response.get("answers").and_then(Value::as_object) else {
-        return Vec::new();
-    };
-    let annotations = response.get("annotations").and_then(Value::as_object);
-    let mut out = Vec::new();
-    for (key, value) in answers {
-        let answer = match value {
-            Value::String(s) => s.trim().to_string(),
-            Value::Array(items) => items
-                .iter()
-                .filter_map(Value::as_str)
+    input
+        .ask_answers()
+        .items
+        .into_iter()
+        .filter_map(|item| {
+            let question = item.question.trim();
+            let answer = item.labels.iter().map(|l| l.trim()).collect::<Vec<_>>().join(", ");
+            if question.is_empty() || answer.is_empty() {
+                return None;
+            }
+            let notes = item
+                .notes
+                .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join(", "),
-            _ => String::new(),
-        };
-        let question = key.trim();
-        if question.is_empty() || answer.is_empty() {
-            continue;
-        }
-        let notes = annotations
-            .and_then(|a| a.get(key))
-            .and_then(|n| n.get("notes"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .map(str::to_string);
-        out.push(Answered { question: question.to_string(), answer, notes });
-    }
-    out
+                .filter(|n| !n.is_empty())
+                .map(str::to_string);
+            Some(Answered { question: question.to_string(), answer, notes })
+        })
+        .collect()
+}
+
+/// Has this unit already reached a terminal outcome?
+///
+/// Read from `meta.json`, the single lifecycle source. Fail-open: an absent or
+/// unreadable sidecar answers "not closed", so the gate still applies to a unit
+/// whose state cannot be read — the direction that keeps the reminder working
+/// rather than silently disabling it.
+pub(crate) fn spec_is_closed(root: &Path, spec: &str) -> bool {
+    let spec_md = root.join(".claude").join("spec").join(spec).join("spec.md");
+    mustard_core::domain::meta::read_meta_beside(&spec_md)
+        .and_then(|m| m.outcome)
+        .and_then(|o| mustard_core::Outcome::parse(&o))
+        .is_some_and(|o| o == mustard_core::Outcome::Completed)
 }
 
 /// Fato 2 — a unidade em que o esclarecimento mora: a ligação da sessão
@@ -147,16 +144,11 @@ mod tests {
     use super::*;
     use crate::commands::spec::material_add::MATERIAL_FILE;
     use mustard_core::domain::model::contract::Trigger;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::PostToolUse))
     }
 
     /// O PostToolUse(AskUserQuestion) na forma que o harness entrega: o menu

@@ -723,12 +723,7 @@ mod tests {
     }
 
     fn post_ctx(trigger: Trigger, cwd: &str) -> Ctx {
-        Ctx {
-            project_dir: cwd.to_string(),
-            trigger: Some(trigger),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(cwd.to_string(), Some(trigger))
     }
 
     /// Set the active spec via a pipeline-state file so `current_spec` finds it.
@@ -861,12 +856,7 @@ mod tests {
         let json = serde_json::to_vec_pretty(&state).unwrap();
         std::fs::write(spec_dir.join(".amend-window.json"), &json).unwrap();
 
-        let pre_ctx = Ctx {
-            project_dir: cwd.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let pre_ctx = Ctx::for_test(cwd.to_string(), Some(Trigger::PreToolUse));
         let pre_in = pre_write_input("session-ac9-chk", cwd, "docs/file3.md");
         let verdict = AmendWindowInject.evaluate(&pre_in, &pre_ctx).unwrap();
         assert!(

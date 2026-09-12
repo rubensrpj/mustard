@@ -1,33 +1,9 @@
-//! Enforcement configuration — a typed table that replaces the scattered
-//! `MUSTARD_*_MODE` environment variables.
+//! Enforcement mode — how strongly a check acts: off, advisory or blocking.
 //!
-//! Today every gate hook reads its own `MUSTARD_<NAME>_GATE_MODE` variable
-//! with an ad-hoc `(process.env.X || 'strict').toLowerCase()` call (see
-//! `close-gate.js`, `bash-native-redirect.js`, `model-routing-gate.js`, …).
-//! That spreads the same parsing logic across a dozen hooks and gives no
-//! single place to see what is on. [`EnforcementConfig`] is that single
-//! place: a map from check name to [`Mode`].
-//!
-//! ## Resolution order
-//!
-//! [`EnforcementConfig::resolve`] layers three sources, last-wins:
-//!
-//! 1. **Defaults** — every check defaults to [`Mode::Strict`]; the JS hooks
-//!    treat an unset variable as `strict`.
-//! 2. **`mustard.json`** — an optional `enforcement` object: a `{ checkName:
-//!    mode }` map, plus an optional `disabledChecks` array.
-//! 3. **Environment** — `MUSTARD_<CHECK>_MODE` for each check (highest
-//!    precedence; env always wins over the file), plus `MUSTARD_DISABLED_HOOKS`
-//!    (comma-separated).
-//!
-//! ## Fail-open
-//!
-//! Parsing never panics. An unrecognised mode string, a malformed
-//! `mustard.json`, or a check entry of the wrong type is skipped (and, for the
-//! file, surfaced as [`Error::Config`] from [`EnforcementConfig::from_json`]).
-//! [`EnforcementConfig::resolve`] swallows a bad file and proceeds with
-//! defaults + env, because a hook must never be blocked by a config typo.
-
+//! [`Mode`] is the one vocabulary the `MUSTARD_*_MODE` readers parse into
+//! (the rtk and commit gates). Parsing never panics: an unrecognised string
+//! is `None`, and the caller falls back to its own default, because a hook
+//! must never be blocked by a config typo.
 
 /// How strongly an enforcement check acts.
 ///

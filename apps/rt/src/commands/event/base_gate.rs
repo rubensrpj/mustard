@@ -1832,12 +1832,7 @@ mod tests {
             session_id: Some(sid.to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: root_s,
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(root_s, Some(Trigger::PreToolUse));
         let _ = crate::hooks::write::work_branch_gate::WorkBranchGate.evaluate(&input, &ctx);
     }
 

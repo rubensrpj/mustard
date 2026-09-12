@@ -295,12 +295,7 @@ mod tests {
     }
 
     fn ctx_for(cwd: &std::path::Path) -> Ctx {
-        Ctx {
-            project_dir: cwd.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(cwd.to_string_lossy().into_owned(), Some(Trigger::UserPromptSubmit))
     }
 
     fn log_contents(cwd: &std::path::Path, spec: &str) -> Option<String> {

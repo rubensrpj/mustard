@@ -222,12 +222,7 @@ mod tests {
     fn observer_no_ops_without_active_wave_env() {
         // No MUSTARD_ACTIVE_SPEC/WAVE → active_wave None → observe is a no-op.
         let dir = tempdir().unwrap();
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::SubagentStart),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::SubagentStart));
         let input = HookInput {
             hook_event_name: Some("SubagentStart".to_string()),
             ..HookInput::default()

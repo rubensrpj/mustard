@@ -1003,12 +1003,7 @@ mod tests {
             let verdict = SubagentInject
                 .evaluate(
                     &pre,
-                    &Ctx {
-                        project_dir: cwd.clone(),
-                        trigger: Some(Trigger::PreToolUse),
-                        workspace_root: None,
-                        inject_only: None,
-                    },
+                    &Ctx::for_test(cwd.clone(), Some(Trigger::PreToolUse)),
                 )
                 .expect("hook must not error");
             let Verdict::Rewrite { tool_input } = verdict else {
@@ -1045,12 +1040,7 @@ mod tests {
             SubagentInject
                 .evaluate(
                     &stop,
-                    &Ctx {
-                        project_dir: cwd.clone(),
-                        trigger: Some(Trigger::SubagentStop),
-                        workspace_root: None,
-                        inject_only: None,
-                    },
+                    &Ctx::for_test(cwd.clone(), Some(Trigger::SubagentStop)),
                 )
                 .expect("hook must not error");
         }
@@ -1323,12 +1313,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = |trigger| Ctx {
-            project_dir: cwd.clone(),
-            trigger: Some(trigger),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = |trigger| Ctx::for_test(cwd.clone(), Some(trigger));
         let verdict = SubagentInject
             .evaluate(&pre, &ctx(Trigger::PreToolUse))
             .expect("hook must not error");

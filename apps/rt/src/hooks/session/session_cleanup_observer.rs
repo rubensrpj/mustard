@@ -534,12 +534,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::SessionEnd),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::SessionEnd))
     }
 
     fn session_end_input() -> HookInput {
@@ -563,12 +558,7 @@ mod tests {
     fn non_session_end_trigger_is_noop() {
         let dir = tempdir().unwrap();
         write_state(dir.path(), "done", &json!({ "status": "completed" }));
-        let other = Ctx {
-            project_dir: dir.path().to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let other = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         SessionCleanupObserver.observe(&session_end_input(), &other);
         // PreToolUse → cleanup did not run, the terminal state survives.
         assert!(ClaudePaths::for_project(dir.path()).unwrap().pipeline_state_file("done").exists());

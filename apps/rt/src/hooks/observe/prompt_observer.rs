@@ -46,9 +46,7 @@ fn append_prompt_event(cwd: &str, input: &HookInput) {
     // and this log is what `metrics collect` reads, so the noise would reach the
     // instruments too. See [`crate::shared::prompt`].
     let Some(prompt) = input
-        .raw
-        .get("prompt")
-        .and_then(|v| v.as_str())
+        .user_prompt()
         .filter(|s| !s.is_empty())
         .filter(|s| !crate::shared::prompt::is_harness_notice(s))
     else {
@@ -100,12 +98,7 @@ mod tests {
     }
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::UserPromptSubmit))
     }
 
     /// The session-sink `.events/` dir for a spec-less event (mirrors

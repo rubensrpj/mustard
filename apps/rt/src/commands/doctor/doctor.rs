@@ -1991,6 +1991,7 @@ mod tests {
             home: None,
             clock: AgeClock::Modified,
             owner_uid: crate::commands::maint::scratch_gc::current_uid(),
+            now: std::time::SystemTime::now(),
         };
         let result = check_scratch_residue(&roots);
 

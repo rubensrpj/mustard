@@ -67,6 +67,7 @@ use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::Verdict;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::domain::spec::contract::{FindingItem, FindingSource};
+use mustard_core::domain::text::{has_word_sequence, is_word_byte, Boundaries};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -214,7 +215,7 @@ fn strip_inline_code(line: &str) -> String {
 fn debt_pattern_match(cleaned: &str) -> Option<&'static str> {
     let lower = cleaned.to_ascii_lowercase();
     // `\bfuture\s+hook\b`.
-    if has_word_pair(&lower, "future", "hook") {
+    if has_word_sequence(&lower, &["future", "hook"], Boundaries::WHOLE) {
         return Some("future-hook");
     }
     // `\bnot\s+part\s+of\s+(?:this\s+)?wave\s*\d*\b`.
@@ -222,7 +223,7 @@ fn debt_pattern_match(cleaned: &str) -> Option<&'static str> {
         return Some("not-part-of-wave");
     }
     // `\bnot\s+yet\s+implemented\b`.
-    if has_word_triple(&lower, "not", "yet", "implemented") {
+    if has_word_sequence(&lower, &["not", "yet", "implemented"], Boundaries::WHOLE) {
         return Some("not-yet-implemented");
     }
     // `\bTODO:[^\s]*\s+\S`, `\bFIXME:...`, `\bXXX:...`.
@@ -232,60 +233,6 @@ fn debt_pattern_match(cleaned: &str) -> Option<&'static str> {
         }
     }
     None
-}
-
-/// `true` if `s` (lowercased) matches `\bA\s+B\b`.
-fn has_word_pair(s: &str, a: &str, b: &str) -> bool {
-    let mut from = 0;
-    while let Some(rel) = s[from..].find(a) {
-        let start = from + rel;
-        let end = start + a.len();
-        let left_ok = start == 0 || !is_word_byte(s.as_bytes()[start - 1]);
-        let rest = &s[end..];
-        let trimmed = rest.trim_start();
-        let had_ws = trimmed.len() < rest.len();
-        if left_ok
-            && had_ws
-            && trimmed.starts_with(b)
-            && trimmed
-                .as_bytes()
-                .get(b.len())
-                .is_none_or(|&c| !is_word_byte(c))
-        {
-            return true;
-        }
-        from = end;
-    }
-    false
-}
-
-/// `true` for `\bA\s+B\s+C\b`.
-fn has_word_triple(s: &str, a: &str, b: &str, c: &str) -> bool {
-    let mut from = 0;
-    while let Some(rel) = s[from..].find(a) {
-        let start = from + rel;
-        let end = start + a.len();
-        let left_ok = start == 0 || !is_word_byte(s.as_bytes()[start - 1]);
-        if left_ok {
-            let rest = &s[end..];
-            let after_a = rest.trim_start();
-            if after_a.len() < rest.len() && after_a.starts_with(b) {
-                let after_b = &after_a[b.len()..];
-                let after_b_trim = after_b.trim_start();
-                if after_b_trim.len() < after_b.len()
-                    && after_b_trim.starts_with(c)
-                    && after_b_trim
-                        .as_bytes()
-                        .get(c.len())
-                        .is_none_or(|&x| !is_word_byte(x))
-                {
-                    return true;
-                }
-            }
-        }
-        from = end;
-    }
-    false
 }
 
 /// `true` for `\bnot\s+part\s+of\s+(?:this\s+)?wave\s*\d*\b`.
@@ -349,11 +296,6 @@ fn has_marker_with_content(lower: &str, token: &str) -> bool {
         from = end;
     }
     false
-}
-
-/// `true` for an ASCII word byte.
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 // ---------------------------------------------------------------------------

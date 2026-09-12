@@ -93,7 +93,7 @@ use mustard_core::ClaudePaths;
 
 use crate::commands::spec::spec_doc::{generate, spec_i18n, SpecDocReport, DOC_FILE};
 use crate::hooks::observe::approval_marker_observer::is_awaiting_approval;
-use crate::hooks::task::crystallise_nudge::spec_is_closed;
+use crate::hooks::observe::clarification_observer::spec_is_closed;
 use crate::shared::context::{approval_marker_path, current_spec};
 
 /// O interruptor da abertura automática do navegador.
@@ -501,12 +501,7 @@ mod tests {
         let states = root.join(".claude/.pipeline-states");
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(states.join("demo.json"), "{}").unwrap();
-        let ctx = Ctx {
-            project_dir: root.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::Stop),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::Stop));
 
         // A página mudou, mas este fim é a continuação: solta.
         assert_eq!(SpecDocPresent.evaluate(&continuation(), &ctx).unwrap(), Verdict::Allow);
@@ -711,12 +706,7 @@ mod tests {
     fn the_doc_link_self_restricts_to_the_main_stop() {
         let tmp = tempdir().unwrap();
         let project = tmp.path().to_string_lossy().into_owned();
-        let ctx = |trigger| Ctx {
-            project_dir: project.clone(),
-            trigger: Some(trigger),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = |trigger| Ctx::for_test(project.clone(), Some(trigger));
         let sub = HookInput {
             hook_event_name: Some("Stop".to_string()),
             agent_id: Some("child".to_string()),

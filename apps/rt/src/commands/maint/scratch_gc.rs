@@ -41,7 +41,7 @@
 //!
 //! ## Modos
 //!
-//! - sem opção: SÓ LISTA as candidatas (caminho, tamanho, idade); nada é
+//! - sem opção: SÓ LISTA as candidatas (caminho, tamanho, última mudança); nada é
 //!   apagado;
 //! - `--apply`: apaga exatamente as listadas, e esvazia a compilação
 //!   compartilhada quando ela passa do teto;
@@ -63,6 +63,9 @@
 //! ## Saída
 //!
 //! JSON pretty, campos em ordem de declaração e listas ordenadas por caminho.
+//! Nada nela depende da hora em que o comando roda: a candidata traz a data da
+//! última mudança (`changed_at`, UTC), não a idade, e duas execuções sobre o
+//! mesmo temp saem iguais byte a byte.
 //! Exit 0 sempre, exceto recusa (exit 1): `--path` recusado, ou — em qualquer
 //! modo, inclusive a lista e o `--apply` — um diretório temporário inseguro
 //! (a raiz do disco, a home, ou uma pasta acima da home).
@@ -119,7 +122,9 @@ pub struct ScratchGcOpts {
 pub(crate) struct ScratchRecord {
     pub path: String,
     pub size_bytes: u64,
-    pub age_hours: u64,
+    /// A mudança mais recente da árvore, em UTC. Uma data, não uma idade: a
+    /// idade muda a cada hora, e a saída sai igual em toda execução.
+    pub changed_at: String,
     /// O caminho exato a apagar — fora do JSON, para a exclusão nunca
     /// depender de uma conversão com perda de `path`.
     #[serde(skip)]
@@ -183,6 +188,9 @@ pub(crate) struct ScratchRoots {
     /// O uid que tem de ser dono de cada entrada do topo do temp. No Unix,
     /// `None` (ninguém sabe quem roda) deixa nada passar; fora dele é ignorado.
     pub owner_uid: Option<u32>,
+    /// O relógio da varredura: a idade de cada pasta é medida contra ele.
+    /// Explícito para o teste provar que a saída não depende da hora.
+    pub now: SystemTime,
 }
 
 impl ScratchRoots {
@@ -197,6 +205,7 @@ impl ScratchRoots {
             home: crate::util::home_dir(),
             clock: AgeClock::Changed,
             owner_uid: current_uid(),
+            now: SystemTime::now(),
         }
     }
 }
@@ -490,6 +499,14 @@ fn measure(root: &Path, clock: AgeClock) -> Measure {
     Measure { bytes, newest }
 }
 
+/// Uma data em UTC, com milissegundos: `2026-09-12T10:00:00.000Z`.
+fn iso_utc(t: SystemTime) -> String {
+    let ms = t
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    mustard_core::time::millis_to_iso(ms)
+}
+
 // ---------------------------------------------------------------------------
 // Varredura (reusada pelo `doctor --residue`)
 // ---------------------------------------------------------------------------
@@ -515,7 +532,7 @@ impl Survey {
 /// candidata: listar a home como sobra é mentira, e medi-la estouraria o
 /// prazo do início da sessão.
 pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
-    let now = SystemTime::now();
+    let now = roots.now;
     let min_age = Duration::from_secs(MIN_AGE_HOURS * 3600);
     let mut candidates = Vec::new();
     let mut kept = Vec::new();
@@ -541,7 +558,9 @@ pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
             continue;
         }
         let measured = measure(&loc.path, roots.clock);
-        let Some(elapsed) = measured.newest.and_then(|t| now.duration_since(t).ok()) else {
+        let Some((newest, elapsed)) =
+            measured.newest.and_then(|t| Some((t, now.duration_since(t).ok()?)))
+        else {
             // Data ilegível ou no futuro: sem medida não há autorização.
             kept.push(KeptRecord { path, reason: "unknown age".into() });
             continue;
@@ -553,7 +572,7 @@ pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
         candidates.push(ScratchRecord {
             path,
             size_bytes: measured.bytes,
-            age_hours: elapsed.as_secs() / 3600,
+            changed_at: iso_utc(newest),
             dir: loc.path,
         });
     }
@@ -875,6 +894,9 @@ mod tests {
             // As fixtures envelhecem pelo mtime; o ctime tem teste próprio.
             clock: AgeClock::Modified,
             owner_uid: current_uid(),
+            // Um minuto à frente: as pastas que o teste cria depois de montar
+            // as raízes não podem parecer do futuro.
+            now: SystemTime::now() + Duration::from_secs(60),
         }
     }
 
@@ -896,8 +918,8 @@ mod tests {
     }
 
 
-    /// AC-1 — sem opção, a candidata antiga é listada com tamanho e idade, e
-    /// nada é apagado.
+    /// AC-1 — sem opção, a candidata antiga é listada com tamanho e data da
+    /// última mudança, e nada é apagado.
     #[test]
     fn scratch_gc_dry_run_lists_and_keeps() {
         let base = tempdir().unwrap();
@@ -913,7 +935,9 @@ mod tests {
         let c = &report.candidates[0];
         assert_eq!(c.path, old.display().to_string());
         assert!(c.size_bytes >= 4096, "size reported: {}", c.size_bytes);
-        assert!(c.age_hours >= 20, "age reported: {}", c.age_hours);
+        let changed = mustard_core::time::parse_iso_millis(&c.changed_at).expect("an ISO date");
+        let now_ms = mustard_core::time::now_unix_millis();
+        assert!(now_ms - changed >= 20 * 3600 * 1000, "changed_at reported: {}", c.changed_at);
         assert_eq!(report.candidates_bytes, c.size_bytes);
         assert!(report.removed.is_empty(), "dry-run removes nothing");
         assert!(old.join("Cargo.toml").exists(), "and the folder is intact");
@@ -921,7 +945,29 @@ mod tests {
         let value = serde_json::to_value(&report).unwrap();
         assert!(value["candidates"][0].get("dir").is_none(), "the internal path stays out of the JSON");
         assert!(value["candidates"][0]["size_bytes"].is_u64());
-        assert!(value["candidates"][0]["age_hours"].is_u64());
+        assert!(value["candidates"][0]["changed_at"].is_string());
+        assert!(value["candidates"][0].get("age_hours").is_none(), "no field depends on the clock");
+    }
+
+    /// Critério da onda de preparo: duas execuções sobre o mesmo temp dão a
+    /// mesma saída, byte a byte, mesmo com horas entre elas. Antes, a idade
+    /// em horas mudava a saída a cada hora.
+    #[test]
+    fn scratch_gc_output_is_the_same_on_every_run() {
+        let base = tempdir().unwrap();
+        let mut roots = fake_roots(base.path());
+        let old = roots.temp_root.join("tmp.old1");
+        project_copy(&old);
+        backdate_tree(&old, 20);
+        let young = roots.temp_root.join("tmp.young");
+        project_copy(&young);
+
+        let first = serde_json::to_string_pretty(&gc(&roots, false).0).unwrap();
+        roots.now += Duration::from_secs(3 * 3600);
+        let second = serde_json::to_string_pretty(&gc(&roots, false).0).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.contains("tmp.old1") && first.contains("tmp.young"), "{first}");
     }
 
     /// AC-2 — `--apply` apaga só as candidatas antigas; a pasta recente, a da

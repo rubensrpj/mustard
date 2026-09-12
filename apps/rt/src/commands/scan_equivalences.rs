@@ -23,30 +23,12 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::shared::translate::{Translate, Translation};
+// Keys built here MUST match the fold the query-expansion side (`feature`)
+// applies, or lookups silently miss: both use `text::fold`.
+use mustard_core::domain::text::fold;
 
 /// Alias cap per term (`compare-equiv.ps1`'s `$TopTokens`).
 const TOP_TOKENS: usize = 4;
-
-/// Lowercase + fold Latin diacritics to their ASCII base letter — the exact
-/// character table of the scan tool's `matching::fold`, applied over the
-/// lowercased input (the PS1 `Fold-Tok` shape). Keys built here MUST match
-/// the fold the query-expansion side applies, or lookups silently miss.
-pub(crate) fn fold_tok(s: &str) -> String {
-    s.to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
-            'ç' => 'c',
-            'è' | 'é' | 'ê' | 'ë' => 'e',
-            'ì' | 'í' | 'î' | 'ï' => 'i',
-            'ñ' => 'n',
-            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
-            'ù' | 'ú' | 'û' | 'ü' => 'u',
-            'ý' | 'ÿ' => 'y',
-            _ => c,
-        })
-        .collect()
-}
 
 /// Tokenize one MT translation into alias tokens: split on non-alphanumeric
 /// (ASCII runs, the PS1 splitter), lowercase, keep length ≥3 with at least one
@@ -77,7 +59,7 @@ fn translation_tokens(en: &str, term_folded: &str) -> Vec<String> {
 fn build_equivalences(rows: &[(String, Translation)]) -> BTreeMap<String, Vec<String>> {
     let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (term, tr) in rows {
-        let code_term = fold_tok(term);
+        let code_term = fold(term);
         for english in translation_tokens(&tr.en, &code_term) {
             // INVERTED on purpose. The map is consumed by `feature::expand_query`,
             // which looks up tokens OF THE PROMPT — so the key has to be the word
@@ -280,13 +262,13 @@ fn load_learned(root: &Path) -> BTreeMap<String, Vec<String>> {
 /// EXTENDS its token list. Byte-stable (`BTreeMap` keys + atomic write).
 /// Returns the JSON summary; never panics, never exits non-zero.
 pub(crate) fn learn_at(root: &Path, term: &str, tokens: &str) -> Value {
-    let key = fold_tok(term.trim());
+    let key = fold(term.trim());
     if key.chars().count() < 2 || !key.chars().any(|c| c.is_ascii_alphanumeric()) {
         return json!({ "ok": false, "reason": "bad-term" });
     }
     let mut toks: Vec<String> = Vec::new();
     for raw in tokens.split(|c: char| c == ',' || c.is_whitespace()) {
-        let t = fold_tok(raw.trim());
+        let t = fold(raw.trim());
         if t.chars().count() >= 2
             && t.chars().any(|c| c.is_ascii_alphabetic())
             && t != key
@@ -332,10 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn fold_tok_lowercases_and_strips_diacritics() {
-        assert_eq!(fold_tok("Conciliação"), "conciliacao");
-        assert_eq!(fold_tok("Título"), "titulo");
-        assert_eq!(fold_tok("supplier"), "supplier", "plain ASCII passes through");
+    fn fold_lowercases_and_strips_diacritics() {
+        assert_eq!(fold("Conciliação"), "conciliacao");
+        assert_eq!(fold("Título"), "titulo");
+        assert_eq!(fold("supplier"), "supplier", "plain ASCII passes through");
     }
 
     #[test]

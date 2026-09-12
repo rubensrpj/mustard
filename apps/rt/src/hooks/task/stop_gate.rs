@@ -317,7 +317,7 @@ fn resolve_gated_spec(project_dir: &str, input: &HookInput) -> Option<String> {
     //
     // The same reading the crystallisation nudge already uses, for the same
     // reason: a completed spec is not a subject for a gate.
-    if crate::hooks::task::crystallise_nudge::spec_is_closed(Path::new(project_dir), &spec) {
+    if crate::hooks::observe::clarification_observer::spec_is_closed(Path::new(project_dir), &spec) {
         return None;
     }
     // Executable ACs: the exact union qa-run would run (an empty union is the
@@ -417,12 +417,7 @@ mod tests {
     const AC_FAIL: &str = "- **AC-1** — never green.\n  Command: `echo hi`\n  Expect: `NOPE_MISSING_TOKEN`";
 
     fn ctx(project: &Path) -> Ctx {
-        Ctx {
-            project_dir: project.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::Stop),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(project.to_string_lossy().into_owned(), Some(Trigger::Stop))
     }
 
     fn stop_input(session: &str) -> HookInput {

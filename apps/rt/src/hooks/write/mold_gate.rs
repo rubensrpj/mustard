@@ -84,7 +84,7 @@ fn advise(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     let project = ctx.project_dir_or_cwd(input);
     // Repo work only, and never the harness's own tree (`.claude/` holds the
     // molds themselves, specs, plans — none of that is a module).
-    let rel = super::boundary_gate::relative_to_cwd(&project, &fp)?;
+    let rel = super::work_branch_gate::relative_to_cwd(&project, &fp)?;
     if rel.split('/').any(|seg| seg == ".claude") {
         return None;
     }
@@ -222,12 +222,7 @@ mod tests {
             session_id: Some("sess-mold".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: root.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(root.to_string(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 

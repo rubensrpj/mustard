@@ -41,6 +41,7 @@
 
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::text::{has_word_sequence, Boundaries};
 
 use crate::shared::gate_mode::{resolve_mode, GateMode};
 use crate::util::format_gate_message;
@@ -395,15 +396,20 @@ fn ac_is_rich(ac_lower: &str) -> bool {
         return false;
     };
     let after = &ac_lower[cmd_idx..];
-    has_word_pair_loose(after, "node", "-e")
-        || has_word_pair_loose(after, "bash", "-c")
-        || has_word_pair_loose(after, "bun", "-e")
-        || contains_word(after, "grep")
-        || contains_word(after, "jq")
-        || contains_word(after, "curl")
-        || contains_word(after, "sqlite")
-        || contains_word(after, "sqlite3")
-        || (contains_word(after, "cat") && after.contains('|'))
+    // The pairs keep no boundary after the flag: `node -eval` counts too.
+    let pair = |a: &str, b: &str| {
+        has_word_sequence(after, &[a, b], Boundaries { right: false, ..Boundaries::WHOLE })
+    };
+    let word = |w: &str| has_word_sequence(after, &[w], Boundaries::WHOLE);
+    pair("node", "-e")
+        || pair("bash", "-c")
+        || pair("bun", "-e")
+        || word("grep")
+        || word("jq")
+        || word("curl")
+        || word("sqlite")
+        || word("sqlite3")
+        || (word("cat") && after.contains('|'))
 }
 
 /// `true` if the AC's Command clause is exclusively a build/test wrapper —
@@ -469,44 +475,6 @@ fn ac_non_binary_reason(ac_lower: &str) -> Option<&'static str> {
     None
 }
 
-/// Whitespace-tolerant "word A followed by word B" check.
-fn has_word_pair_loose(s: &str, a: &str, b: &str) -> bool {
-    let mut from = 0;
-    while let Some(rel) = s[from..].find(a) {
-        let start = from + rel;
-        let end = start + a.len();
-        let left_ok = start == 0 || !is_word_byte(s.as_bytes()[start - 1]);
-        let rest = &s[end..];
-        let trimmed = rest.trim_start();
-        let had_ws = trimmed.len() < rest.len();
-        if left_ok && had_ws && trimmed.starts_with(b) {
-            return true;
-        }
-        from = end;
-    }
-    false
-}
-
-/// `true` if `s` contains `word` with word boundaries on both sides.
-fn contains_word(s: &str, word: &str) -> bool {
-    let mut from = 0;
-    while let Some(rel) = s[from..].find(word) {
-        let start = from + rel;
-        let end = start + word.len();
-        let left_ok = start == 0 || !is_word_byte(s.as_bytes()[start - 1]);
-        let right_ok = s.as_bytes().get(end).is_none_or(|&b| !is_word_byte(b));
-        if left_ok && right_ok {
-            return true;
-        }
-        from = end;
-    }
-    false
-}
-
-/// `true` for an ASCII word byte (alphanumeric or `_`).
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
 
 /// The AC-quality advisory text for a spec file, or `None` when the section is
 /// healthy / absent. Advisory only — the caller never turns this into a `Deny`.
@@ -761,7 +729,7 @@ fn has_trigger_word(desc: &str) -> bool {
     }
     ["add", "create", "new", "detect", "check", "write"]
         .iter()
-        .any(|w| contains_word(&lower, w))
+        .any(|w| has_word_sequence(&lower, &[*w], Boundaries::WHOLE))
 }
 
 /// The skill-validate-gate verdict for a `SKILL.md` body under `mode`.
@@ -910,12 +878,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 
@@ -1188,12 +1151,7 @@ mod tests {
     #[test]
     fn non_pre_tool_use_trigger_allows() {
         let (input, _) = write_input("/p/.claude/spec/x/spec.md", &make_content(999));
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PostToolUse));
         assert_eq!(
             SizeGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -1207,12 +1165,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         assert_eq!(
             SizeGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow

@@ -354,11 +354,7 @@ impl Check for PromptSubmitInject {
         if ctx.trigger != Some(Trigger::UserPromptSubmit) {
             return Ok(Verdict::Allow);
         }
-        let prompt = input
-            .raw
-            .get("prompt")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+        let prompt = input.user_prompt().unwrap_or_default();
         let cwd = ctx.project_dir_or_cwd(input);
         // Installation gate — BEFORE everything else (without an installation
         // there is no amend window to close and nothing to inject): any
@@ -484,12 +480,7 @@ mod tests {
         // instead, isolate via a unique project_dir (so `current_spec` falls
         // through to the FS branch and finds nothing).
         let dir = tempfile::tempdir().unwrap();
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         (dir, ctx)
     }
 
@@ -542,12 +533,7 @@ mod tests {
     /// the criterion that claims to guard it.
     fn verdict_for(tone: &str, prompt: &str) -> (tempfile::TempDir, Verdict) {
         let dir = project_declaring_tone(tone);
-        let c = Ctx {
-            project_dir: dir.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict =
             PromptSubmitInject.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
         (dir, verdict)
@@ -595,12 +581,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join("mustard.json"), r#"{"lang":"en-US","tone":"didactic"}"#)
             .expect("write config");
-        let c = Ctx {
-            project_dir: dir.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict =
             PromptSubmitInject.evaluate(&prompt_input("a plain message"), &c).expect("the gate never errors");
         let Verdict::Inject { context } = verdict else {
@@ -630,12 +611,7 @@ mod tests {
         let project = |config: &str| {
             let dir = tempfile::tempdir().expect("temp dir");
             std::fs::write(dir.path().join("mustard.json"), config).expect("write config");
-            let c = Ctx {
-                project_dir: dir.path().to_string_lossy().to_string(),
-                trigger: Some(Trigger::UserPromptSubmit),
-                workspace_root: None,
-                inject_only: None,
-            };
+            let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
             (dir, c)
         };
         let context_of = |verdict: Verdict| match verdict {
@@ -705,12 +681,7 @@ mod tests {
         for config in [r#"{"specLang":"pt-BR"}"#, r#"{"specLang":"pt-BR","tone":"technical"}"#] {
             let dir = tempfile::tempdir().expect("temp dir");
             std::fs::write(dir.path().join("mustard.json"), config).expect("write config");
-            let c = Ctx {
-                project_dir: dir.path().to_string_lossy().to_string(),
-                trigger: Some(Trigger::UserPromptSubmit),
-                workspace_root: None,
-                inject_only: None,
-            };
+            let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
 
             let verdict = PromptSubmitInject
                 .evaluate(&prompt_input_with_session("uma mensagem comum", "s1"), &c)
@@ -741,12 +712,7 @@ mod tests {
 
         // Sem `mustard.json` os ganchos ficam calados: nem regra, nem medição.
         let none = tempfile::tempdir().expect("temp dir");
-        let c = Ctx {
-            project_dir: none.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let c = Ctx::for_test(none.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input_with_session("uma mensagem comum", "s1"), &c)
             .expect("the gate never errors");
@@ -790,12 +756,7 @@ mod tests {
         let bare = tempfile::tempdir().expect("temp dir");
         std::fs::write(bare.path().join("mustard.json"), r#"{"specLang":"pt-BR"}"#)
             .expect("write config");
-        let c = Ctx {
-            project_dir: bare.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let c = Ctx::for_test(bare.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input("uma mensagem comum"), &c)
             .expect("the gate never errors");
@@ -809,12 +770,7 @@ mod tests {
         // uninstalled project — where the hooks are supposed to stay silent —
         // proved only by hand.
         let none = tempfile::tempdir().expect("temp dir");
-        let c = Ctx {
-            project_dir: none.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let c = Ctx::for_test(none.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input("uma mensagem comum"), &c)
             .expect("the gate never errors");
@@ -831,12 +787,7 @@ mod tests {
     #[test]
     fn the_writing_rule_rides_a_slash_command_too() {
         let dir = project_declaring_tone("didactic");
-        let c = Ctx {
-            project_dir: dir.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let verdict = PromptSubmitInject
             .evaluate(&prompt_input("/mustard:pr merge"), &c)
             .expect("the gate never errors");
@@ -958,12 +909,7 @@ mod tests {
         let states = paths.pipeline_states_dir();
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(paths.pipeline_state_file("active-feature-xyz"), "{}").unwrap();
-        let c = Ctx {
-            project_dir: dir.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::UserPromptSubmit),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let v = PromptSubmitInject
             .evaluate(&prompt_input("how do I do X?"), &c)
             .unwrap();
@@ -980,12 +926,7 @@ mod tests {
 
     #[test]
     fn non_user_prompt_submit_trigger_allows() {
-        let other = Ctx {
-            project_dir: ".".to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let other = Ctx::for_test(".".to_string(), Some(Trigger::PreToolUse));
         assert_eq!(
             PromptSubmitInject
                 .evaluate(&prompt_input("/mustard:feature x"), &other)

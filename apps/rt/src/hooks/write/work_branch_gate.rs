@@ -166,7 +166,7 @@ pub struct WorkBranchGate;
 /// module doc for why each is carved out and where the scratch carve-out stops.
 ///
 /// `rel` is the project-relative, forward-slash path
-/// [`super::boundary_gate::relative_to_cwd`] produces, so the same prefixes
+/// [`relative_to_cwd`] produces, so the same prefixes
 /// match on every platform.
 fn is_harness_carve_out(rel: &str) -> bool {
     rel.starts_with(".claude/plans/") || rel.starts_with(".claude/scratch/")
@@ -338,7 +338,7 @@ impl Check for WorkBranchGate {
         // temp dirs, …) is not repo work: never block it, never cut a branch
         // for it, and keep the pending marker for the first IN-repo edit.
         if let Some(fp) = input.file_path() {
-            match super::boundary_gate::relative_to_cwd(&project, &fp) {
+            match relative_to_cwd(&project, &fp) {
                 None => return Ok(Verdict::Allow),
                 // The harness carve-outs (`.claude/plans/…` plan-mode
                 // artifacts, `.claude/scratch/…` scratch evidence) are harness
@@ -612,6 +612,41 @@ impl Check for WorkBranchGate {
     }
 }
 
+/// Compute the path of `file_path` relative to `cwd`, forward-slash
+/// normalised. Returns `None` when `file_path` escapes `cwd` (`../`) — the
+/// caller treats that the same as a meta path (skip). Mirrors the JS
+/// `path.relative(cwd, abs)` + `rel.startsWith('../')` check.
+/// `pub(crate)`: `boundary_gate` and `mold_gate` reuse it.
+pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
+    let cwd_norm = cwd.replace('\\', "/");
+    let fp_norm = file_path.replace('\\', "/");
+    // Resolve `fp` to an absolute-ish path: if not absolute, join under cwd.
+    let abs = if is_absolute(&fp_norm) {
+        fp_norm
+    } else {
+        format!("{}/{}", cwd_norm.trim_end_matches('/'), fp_norm)
+    };
+    let cwd_prefix = format!("{}/", cwd_norm.trim_end_matches('/'));
+    if let Some(rel) = abs.strip_prefix(&cwd_prefix) {
+        Some(rel.to_string())
+    } else if abs == cwd_norm.trim_end_matches('/') {
+        Some(String::new())
+    } else {
+        // Outside cwd — treat as `../` (skip).
+        None
+    }
+}
+
+/// `true` if a forward-slash path looks absolute (POSIX `/...` or Windows
+/// `C:/...`).
+fn is_absolute(p: &str) -> bool {
+    p.starts_with('/')
+        || (p.len() >= 3
+            && p.as_bytes()[0].is_ascii_alphabetic()
+            && p.as_bytes()[1] == b':'
+            && p.as_bytes()[2] == b'/')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,12 +678,7 @@ mod tests {
             session_id: Some(sid.to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: root.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(root.to_string(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 
@@ -883,12 +913,7 @@ mod tests {
             session_id: Some("sess-nested".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: main_s.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(main_s.to_string(), Some(Trigger::PreToolUse));
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(
             matches!(verdict, Verdict::Allow),
@@ -932,12 +957,7 @@ mod tests {
             session_id: Some(sid.to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: main_s.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(main_s.to_string(), Some(Trigger::PreToolUse));
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "got {verdict:?}");
         assert_eq!(
@@ -1469,12 +1489,7 @@ mod tests {
             session_id: Some(sid.to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: main_s.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(main_s.to_string(), Some(Trigger::PreToolUse));
         let verdict = WorkBranchGate.evaluate(&input, &ctx).expect("no error");
         assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
 

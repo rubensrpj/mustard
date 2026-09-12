@@ -20,12 +20,13 @@
 //!
 //! Há ainda uma quinta medição: o idioma. A resposta sai no idioma do projeto,
 //! que é o do usuário. O idioma da prosa sai de uma contagem de palavras comuns
-//! do português e do inglês ([`PT_COMMON_WORDS`], [`EN_COMMON_WORDS`]) — as
-//! outras duas listas fixas do módulo. Não há modelo estatístico: a contagem é
+//! do português e do inglês ([`COMMON_WORDS_PT`], [`COMMON_WORDS_EN`], que
+//! moram em `domain::text`). Não há modelo estatístico: a contagem é
 //! determinística e só julga com prosa bastante ([`MIN_LANGUAGE_WORDS`]). Ela
 //! vale para todo projeto, qualquer que seja o tom: [`measure_language`] a faz
 //! sozinha, e [`measure`] a inclui junto das quatro do tom didático.
 
+use crate::domain::text::{COMMON_WORDS_EN, COMMON_WORDS_PT};
 use crate::domain::vocabulary::aho::KeyedAutomaton;
 use crate::platform::i18n::{translate, Locale};
 use std::cmp::Reverse;
@@ -99,30 +100,6 @@ const MIN_LANGUAGE_MARKERS: usize = 5;
 /// para ele ser o idioma da resposta. Uma resposta em português que cita uma
 /// frase em inglês continua em português.
 const LANGUAGE_DOMINANCE: usize = 2;
-
-/// Palavras comuns do português, com e sem acento: quem digita sem acento
-/// escreve "nao" e "voce". Ficam fora das duas listas as palavras que existem
-/// nos dois idiomas ("a", "as", "no", "do", "se", "for") e as que o inglês usa
-/// sozinhas ("todo", "ate", "ha").
-const PT_COMMON_WORDS: &[&str] = &[
-    "o", "os", "um", "uma", "uns", "umas", "de", "da", "das", "dos", "na", "nas", "nos", "em",
-    "ao", "aos", "à", "às", "pelo", "pela", "pelos", "pelas", "para", "por", "com", "sem",
-    "sobre", "até", "e", "ou", "mas", "que", "não", "nao", "é", "são", "sao", "foi", "foram",
-    "ser", "está", "estão", "estao", "tem", "têm", "há", "já", "mais", "muito", "como", "quando",
-    "onde", "qual", "isso", "isto", "esse", "essa", "este", "esta", "ele", "ela", "eles", "elas",
-    "você", "voce", "seu", "sua", "também", "tambem", "depois", "agora", "aqui", "cada", "toda",
-    "outro", "outra", "mesmo", "ainda", "então", "entao", "pois", "porque",
-];
-
-/// Palavras comuns do inglês, nenhuma delas palavra do português.
-const EN_COMMON_WORDS: &[&str] = &[
-    "the", "and", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "does",
-    "did", "of", "to", "in", "on", "at", "by", "with", "from", "into", "about", "this", "that",
-    "these", "those", "it", "its", "not", "but", "or", "if", "then", "than", "there", "their",
-    "they", "we", "you", "your", "our", "he", "she", "will", "would", "can", "could", "should",
-    "which", "what", "who", "when", "where", "how", "why", "an", "all", "any", "each", "only",
-    "also", "now", "here", "just", "after", "before",
-];
 
 /// Uma frase acima do limite de palavras.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,9 +247,9 @@ fn wrong_language(lines: &[String], expected: Locale) -> Option<WrongLanguage> {
     for word in lines.iter().flat_map(|line| words(line)) {
         total += 1;
         let word = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-        if PT_COMMON_WORDS.contains(&word.as_str()) {
+        if COMMON_WORDS_PT.contains(&word.as_str()) {
             pt += 1;
-        } else if EN_COMMON_WORDS.contains(&word.as_str()) {
+        } else if COMMON_WORDS_EN.contains(&word.as_str()) {
             en += 1;
         }
     }

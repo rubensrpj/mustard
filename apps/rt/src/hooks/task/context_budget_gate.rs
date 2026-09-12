@@ -682,12 +682,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 
@@ -834,12 +829,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         assert_eq!(
             ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -863,12 +853,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         assert_eq!(
             ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -878,12 +863,7 @@ mod tests {
     #[test]
     fn non_pre_tool_use_trigger_allows() {
         let (input, _) = task_input("Explore", 99_999, "");
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PostToolUse));
         assert_eq!(
             ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -959,12 +939,7 @@ mod tests {
             raw: json!({ "tool_response": response }),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PostToolUse));
         match ContextBudgetGate.evaluate(&input, &ctx).expect("no error") {
             Verdict::Inject { context } => {
                 assert!(context.contains("Output Budget"));
@@ -984,12 +959,7 @@ mod tests {
             raw: json!({ "tool_response": response }),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PostToolUse));
         assert_eq!(
             ContextBudgetGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow

@@ -337,12 +337,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::PostToolUse))
     }
 
     /// Walk every NDJSON file under `<session_root>/<slug>/.events/` and return
@@ -533,12 +528,7 @@ mod tests {
             raw: json!({ "tool_response": { "output": "x" } }),
             ..HookInput::default()
         };
-        let pre = Ctx {
-            project_dir: project.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let pre = Ctx::for_test(project.to_string(), Some(Trigger::PreToolUse));
         ToolResultObserver.observe(&input, &pre);
         // No tool.result event should land in the NDJSON session dir.
         let session_root = dir.path().join(".claude").join(".session");

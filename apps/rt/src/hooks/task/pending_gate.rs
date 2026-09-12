@@ -70,7 +70,6 @@ use crate::shared::context::{record_unit_closed_block, take_unit_closed, unit_cl
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
-use serde_json::Value;
 use std::path::Path;
 
 /// Quantas vezes, no máximo, a trava bloqueia por fechamento. Dois: um para o
@@ -119,7 +118,7 @@ impl Check for PendingGate {
 /// As pendências abertas que o texto final do turno não cita. Vazio quando o
 /// `Stop` não trouxe `last_assistant_message`: sem texto, nada a conferir.
 fn omitted_items(input: &HookInput, project_dir: &str) -> Vec<OpenPending> {
-    let Some(message) = input.raw.get("last_assistant_message").and_then(Value::as_str) else {
+    let Some(message) = input.last_assistant_message() else {
         return Vec::new();
     };
     open_pending(Path::new(project_dir))
@@ -185,12 +184,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(dir: &Path) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::Stop),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string_lossy().into_owned(), Some(Trigger::Stop))
     }
 
     /// Um `Stop` da sessão principal com o texto final do turno.

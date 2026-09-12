@@ -254,29 +254,7 @@ pub(crate) fn already_approved(cwd: &str, spec: &str) -> bool {
 /// `tool_response.answers` — a map `{<question>: <label> | [<label>, …]}`. An
 /// empty map (cancel / dismiss) yields nothing.
 fn selected_labels(input: &HookInput) -> Vec<String> {
-    let Some(answers) = input
-        .raw
-        .get("tool_response")
-        .and_then(|r| r.get("answers"))
-        .and_then(Value::as_object)
-    else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for v in answers.values() {
-        match v {
-            Value::String(s) if !s.trim().is_empty() => out.push(s.clone()),
-            Value::Array(items) => {
-                for s in items.iter().filter_map(Value::as_str) {
-                    if !s.trim().is_empty() {
-                        out.push(s.to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
+    input.ask_answers().items.into_iter().flat_map(|item| item.labels).collect()
 }
 
 /// Every option label the QUESTION OFFERED, read from `tool_input`.
@@ -529,12 +507,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::PostToolUse))
     }
 
     /// A PostToolUse(AskUserQuestion) input whose `tool_input` offers `options`

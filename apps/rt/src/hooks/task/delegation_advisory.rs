@@ -428,12 +428,7 @@ mod tests {
         )
         .unwrap();
 
-        let ctx = Ctx {
-            project_dir: root.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
         let edit = |p: &str| HookInput {
             tool_name: Some("Edit".to_string()),
             tool_input: json!({ "file_path": p, "new_string": "x" }),
@@ -477,12 +472,7 @@ mod tests {
         )
         .unwrap();
 
-        let ctx = Ctx {
-            project_dir: root.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
         // Every edit is attributed to a subagent via the harness `agent_id`.
         let edit = |p: &str| HookInput {
             tool_name: Some("Edit".to_string()),
@@ -537,12 +527,7 @@ mod tests {
         )
         .unwrap();
 
-        let ctx = Ctx {
-            project_dir: root.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
         let input = HookInput {
             tool_name: Some("Write".to_string()),
             tool_input: json!({ "file_path": "src/x.rs", "content": "y" }),
@@ -567,12 +552,7 @@ mod tests {
         use mustard_core::domain::model::contract::Trigger;
         use serde_json::json;
         // Empty project_dir + no cwd → project_dir_opt returns None → no-op.
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PostToolUse));
         let input = HookInput {
             tool_name: Some("Edit".to_string()),
             tool_input: json!({ "file_path": "src/a.rs", "new_string": "x" }),

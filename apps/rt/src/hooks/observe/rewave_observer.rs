@@ -206,12 +206,7 @@ mod tests {
         // deny. This test exists to document the contract — calling observe on a
         // bare project is a fail-open no-op.
         let dir = tempdir().unwrap();
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::PreToolUse));
         let input = HookInput {
             tool_name: Some("Write".to_string()),
             tool_input: json!({ "file_path": dir.path().join("x.rs").to_string_lossy(), "content": "x" }),

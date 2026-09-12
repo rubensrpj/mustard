@@ -265,12 +265,7 @@ mod tests {
     }
 
     fn ctx_for(cwd: &Path) -> Ctx {
-        Ctx {
-            project_dir: cwd.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(cwd.to_string_lossy().into_owned(), Some(Trigger::PreToolUse))
     }
 
     /// DENY: Full + Plan + no approval → the approval deny branch (the gate

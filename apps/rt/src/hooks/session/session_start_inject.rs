@@ -765,12 +765,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::SessionStart),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::SessionStart))
     }
 
     fn session_input(session_id: &str) -> HookInput {
@@ -840,12 +835,7 @@ mod tests {
     #[test]
     fn non_session_start_trigger_allows() {
         let input = session_input("s1");
-        let other = Ctx {
-            project_dir: ".".to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let other = Ctx::for_test(".".to_string(), Some(Trigger::PreToolUse));
         assert_eq!(
             SessionStartInject.evaluate(&input, &other).expect("no error"),
             Verdict::Allow
@@ -1232,6 +1222,7 @@ mod tests {
                 home: None,
                 clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
                 owner_uid: crate::commands::maint::scratch_gc::current_uid(),
+                now: std::time::SystemTime::now(),
             },
             warn_bytes,
         };

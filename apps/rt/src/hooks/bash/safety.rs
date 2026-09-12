@@ -14,8 +14,9 @@
 //!    and this harness's own golden rule prefixes every Bash command with
 //!    `rtk`, making the wrapped spelling the common case, not a corner case.
 //! 2. **This table** — the full rule set with the historical substring /
-//!    word-pair semantics (`lex::has_word_pair` / `lex::has_word` match
-//!    anywhere in the string), wrapper-prefix insensitive by construction; it
+//!    word-pair semantics (`text::has_word_sequence` with the `lex` shell
+//!    boundaries matches anywhere in the string), wrapper-prefix insensitive
+//!    by construction; it
 //!    also expresses what a glob structurally cannot (flag clusters, flag
 //!    reordering, character classes). IDs keep their historical `BGnn` names
 //!    so deny reasons stay greppable.
@@ -24,7 +25,9 @@ use std::collections::BTreeSet;
 
 use mustard_core::domain::model::contract::Verdict;
 
-use super::lex::{ends_with_token_seq, has_word, has_word_pair, split_after, truncate};
+use mustard_core::domain::text::has_word_sequence;
+
+use super::lex::{ends_with_token_seq, split_after, truncate, SHELL_WORDS, SHELL_WORD_START};
 
 /// One dangerous-command rule: a substring/structural test plus the user
 /// message.
@@ -61,7 +64,7 @@ const DANGER_RULES: &[DangerRule] = &[
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG03",
-        test: |c, _| has_word_pair(c, "git", "reset") && c.contains("--hard"),
+        test: |c, _| has_word_sequence(c, &["git", "reset"], SHELL_WORDS) && c.contains("--hard"),
         msg: "git reset --hard blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
@@ -97,19 +100,19 @@ const DANGER_RULES: &[DangerRule] = &[
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG08",
-        test: |c, _| has_word_pair(c, "chmod", "777"),
+        test: |c, _| has_word_sequence(c, &["chmod", "777"], SHELL_WORDS),
         msg: "chmod 777 blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG09",
-        test: |c, _| has_word(c, "mkfs"),
+        test: |c, _| has_word_sequence(c, &["mkfs"], SHELL_WORD_START),
         msg: "mkfs blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG10",
-        test: |c, _| has_word_pair(c, "dd", "if="),
+        test: |c, _| has_word_sequence(c, &["dd", "if="], SHELL_WORDS),
         msg: "dd if= blocked",
     },
     // The drive-letter character class (`[a-z]:`) has no native-pattern
@@ -122,13 +125,13 @@ const DANGER_RULES: &[DangerRule] = &[
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG12",
-        test: |c, _| has_word(c, "shutdown"),
+        test: |c, _| has_word_sequence(c, &["shutdown"], SHELL_WORD_START),
         msg: "shutdown blocked",
     },
     // Wrapper-prefix insensitivity is structural (glob is start-anchored).
     DangerRule {
         id: "BG13",
-        test: |c, _| has_word(c, "reboot"),
+        test: |c, _| has_word_sequence(c, &["reboot"], SHELL_WORD_START),
         msg: "reboot blocked",
     },
 ];
@@ -157,7 +160,7 @@ fn is_rm_recursive_force(cmd: &str) -> bool {
 
 /// `\bgit\s+push\s+(-\w*f\b|--force(?!-with-lease))\b`.
 fn is_force_push(cmd: &str) -> bool {
-    if !has_word_pair(cmd, "git", "push") {
+    if !has_word_sequence(cmd, &["git", "push"], SHELL_WORDS) {
         return false;
     }
     for word in cmd.split_whitespace() {
@@ -179,7 +182,7 @@ fn is_force_push(cmd: &str) -> bool {
 
 /// `\bgit\s+clean\s+-f` — `git clean` with a flag token containing `f`.
 fn is_git_clean_force(cmd: &str) -> bool {
-    if !has_word_pair(cmd, "git", "clean") {
+    if !has_word_sequence(cmd, &["git", "clean"], SHELL_WORDS) {
         return false;
     }
     cmd.split_whitespace().any(|w| {
@@ -198,7 +201,7 @@ fn is_git_clean_force(cmd: &str) -> bool {
 /// deletable. `cmd` is already lowercased; branches are matched
 /// case-insensitively so a mixed-case declaration still guards.
 fn is_branch_delete_protected(cmd: &str, bases: &BTreeSet<String>) -> bool {
-    if !has_word_pair(cmd, "git", "branch") {
+    if !has_word_sequence(cmd, &["git", "branch"], SHELL_WORDS) {
         return false;
     }
     let tokens: Vec<&str> = cmd.split_whitespace().collect();

@@ -40,6 +40,8 @@ use mustard_core::platform::error::Error;
 use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 
+use crate::hooks::observe::clarification_observer::spec_is_closed;
+
 /// Turns an active unit may run without its material changing before the gate
 /// speaks up.
 ///
@@ -117,19 +119,6 @@ impl Check for CrystalliseNudge {
     }
 }
 
-/// Has this unit already reached a terminal outcome?
-///
-/// Read from `meta.json`, the single lifecycle source. Fail-open: an absent or
-/// unreadable sidecar answers "not closed", so the gate still applies to a unit
-/// whose state cannot be read — the direction that keeps the reminder working
-/// rather than silently disabling it.
-pub(crate) fn spec_is_closed(root: &Path, spec: &str) -> bool {
-    let spec_md = root.join(".claude").join("spec").join(spec).join("spec.md");
-    mustard_core::domain::meta::read_meta_beside(&spec_md)
-        .and_then(|m| m.outcome)
-        .and_then(|o| mustard_core::Outcome::parse(&o))
-        .is_some_and(|o| o == mustard_core::Outcome::Completed)
-}
 
 /// A cheap fingerprint of the material file: byte length plus modification
 /// time, or `"absent"` when it does not exist.
@@ -219,12 +208,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::Stop),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::Stop))
     }
 
     fn stop_input() -> HookInput {

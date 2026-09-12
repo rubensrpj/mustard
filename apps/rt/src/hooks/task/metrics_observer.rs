@@ -96,12 +96,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx(trigger: Trigger, dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(trigger),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(trigger))
     }
 
     #[test]

@@ -760,25 +760,14 @@ fn grep_symbol_in_subproject(symbol: &str, subproject: &Path) -> bool {
 /// character following `symbol`. Defensive against `export const FooBar`
 /// satisfying a search for `Foo`.
 fn has_word_boundary_hit(content: &str, needle: &str, symbol: &str) -> bool {
-    let mut from = 0usize;
-    while let Some(idx) = content[from..].find(needle) {
-        let absolute = from + idx;
-        let end = absolute + needle.len();
-        // The needle already ends with the symbol or a trailing char (`,`,
-        // ` `, `}`). When it ends with the symbol, the next byte must not be
-        // a word char.
-        if needle.ends_with(symbol) {
-            let next = content.as_bytes().get(end).copied();
-            let is_word = matches!(next, Some(b) if b.is_ascii_alphanumeric() || b == b'_');
-            if !is_word {
-                return true;
-            }
-        } else {
-            return true;
-        }
-        from = end;
+    use mustard_core::domain::text::{has_word_sequence, Boundaries};
+    // The needle already ends with the symbol or a trailing char (`,`, ` `,
+    // `}`). Only when it ends with the symbol must the next byte not be a
+    // word char; there is no boundary check on the left.
+    if !needle.ends_with(symbol) {
+        return content.contains(needle);
     }
-    false
+    has_word_sequence(content, &[needle], Boundaries { left: false, ..Boundaries::WHOLE })
 }
 
 /// Suggest a tactical-fix file path for a missing symbol based on its

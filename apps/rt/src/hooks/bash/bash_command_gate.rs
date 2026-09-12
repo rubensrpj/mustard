@@ -219,12 +219,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 
@@ -300,12 +295,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         assert_eq!(
             BashCommandGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -321,12 +311,7 @@ mod tests {
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PostToolUse));
         assert_eq!(
             BashCommandGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -341,12 +326,7 @@ mod tests {
     #[test]
     fn pr_detect_observer_is_infallible() {
         let dir = tempdir().unwrap();
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
         let ok = HookInput {
             tool_name: Some("Bash".to_string()),
             tool_input: json!({ "command": "gh pr create --fill" }),

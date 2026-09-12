@@ -42,6 +42,7 @@ use crate::commands::review::gate_regression_check::{
     check_after_child_return, GateError, GateInput, RegressionVerdict,
 };
 use crate::commands::review::review_result;
+use crate::hooks::task::clarity_check::read_context_md;
 use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
 
 
@@ -399,30 +400,6 @@ fn role_is_readonly(role: &str) -> bool {
     )
 }
 
-/// Read the project's glossary in full — no size cap. Relevance, not size,
-/// decides what is injected. CONTEXT-MAP-aware: when the project carries a
-/// `CONTEXT-MAP.md`, it is resolved through the SAME map-expanding resolver the
-/// slicer/coverage use (`resolve_context_files`), so the hook sees every
-/// `*context.md` the map links — not just a single root `CONTEXT.md`. The
-/// resolved bodies are concatenated; a project with only a root `CONTEXT.md`
-/// behaves exactly as before. Empty string when nothing resolves.
-pub(crate) fn read_context_md(project: &Path) -> String {
-    // Resolve the root CONTEXT.md plus a CONTEXT-MAP.md (when present) — the
-    // resolver dedups, expands the map, and silently skips missing files.
-    let mut requested: Vec<String> = Vec::new();
-    let map = project.join("CONTEXT-MAP.md");
-    if map.is_file() {
-        requested.push(map.to_string_lossy().into_owned());
-    }
-    requested.push(project.join("CONTEXT.md").to_string_lossy().into_owned());
-
-    let bodies: Vec<String> =
-        crate::commands::economy::context_slice::resolve_context_files(&requested)
-            .iter()
-            .filter_map(|p| fs::read_to_string(p).ok())
-            .collect();
-    bodies.join("\n\n")
-}
 
 /// Pull the spec-memory principle files for the dispatch, honouring the
 /// relevance gate. When the orchestration-layer judge has written
@@ -1035,12 +1012,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn ctx_for(dir: &Path) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string_lossy().to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string_lossy().to_string(), Some(Trigger::PreToolUse))
     }
 
     fn task_input(prompt: &str, role: &str) -> HookInput {

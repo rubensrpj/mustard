@@ -1,8 +1,10 @@
 //! The `run` subcommands for audit checklists (`checklist/`).
 //!
-//! TWO registrations per command, both in this file: the variant in
-//! [`ChecklistCmd`] AND its arm in [`dispatch`] below. Forgetting the second
-//! still compiles, but the command vanishes from the CLI.
+//! FOUR registrations per command. Two live in this file: the variant in
+//! [`ChecklistCmd`] AND its arm in [`dispatch`] below; forgetting the arm still
+//! compiles, but the command vanishes from the CLI. The other two live in
+//! the tests: the name in `tests/run_command_surface.rs`, and a caller (or a
+//! justified `RUNTIME_WHITELIST` line) in `tests/template_parity.rs`.
 //!
 //! [`crate::commands::RunCmd`] hoists this enum with `#[command(flatten)]`, so
 //! every name stays FLAT: `mustard-rt run <name>`, never `run checklist <name>`.

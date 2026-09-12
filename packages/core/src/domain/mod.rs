@@ -13,3 +13,4 @@ pub mod economy;
 pub mod ast;
 pub mod ranking;
 pub mod clarity;
+pub mod text;

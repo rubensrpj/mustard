@@ -20,12 +20,15 @@
 //! THIS level, so every published name stays flat and unchanged:
 //! `mustard-rt run wave-advance`, never `mustard-rt run wave advance`.
 //!
-//! THE INVARIANT, now scoped per family: a new `run` subcommand needs TWO
-//! registrations — the variant in that family's enum AND the arm in that
-//! family's `dispatch()`; forgetting the second compiles but the command
-//! vanishes. `tests/run_command_surface.rs` locks the full name list, so a
-//! dropped registration (or an accidental rename) fails CI instead of silently
-//! disappearing from the CLI the hooks and SKILLs call.
+//! THE INVARIANT, now scoped per family: a new `run` subcommand needs FOUR
+//! registrations. Two live in that family's `cli.rs`: the variant in its enum
+//! AND the arm in its `dispatch()`; forgetting the arm compiles but the
+//! command vanishes. Two live in the tests: `tests/run_command_surface.rs`
+//! locks the full name list, so a dropped registration (or an accidental
+//! rename) fails CI instead of silently disappearing from the CLI the hooks
+//! and SKILLs call; and `tests/template_parity.rs` refuses a command that no
+//! prose or argv calls, unless a justified `RUNTIME_WHITELIST` line explains
+//! it.
 
 pub mod agent;
 pub mod checklist;

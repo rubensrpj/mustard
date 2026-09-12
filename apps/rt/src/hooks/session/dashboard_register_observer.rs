@@ -271,10 +271,7 @@ mod tests {
     #[test]
     fn no_project_root_writes_nothing_and_does_not_panic() {
         let input = HookInput::default();
-        let ctx = Ctx {
-            trigger: Some(Trigger::SessionStart),
-            ..Ctx::default()
-        };
+        let ctx = Ctx::for_test("", Some(Trigger::SessionStart));
         // `workspace_root` is None and the payload carries no project dir, so
         // the `Option` chain returns before any write is attempted.
         DashboardRegisterObserver.observe(&input, &ctx);
@@ -284,10 +281,7 @@ mod tests {
     #[test]
     fn another_trigger_is_a_no_op() {
         let input = HookInput::default();
-        let ctx = Ctx {
-            trigger: Some(Trigger::SessionEnd),
-            ..Ctx::default()
-        };
+        let ctx = Ctx::for_test("", Some(Trigger::SessionEnd));
         DashboardRegisterObserver.observe(&input, &ctx);
     }
 }

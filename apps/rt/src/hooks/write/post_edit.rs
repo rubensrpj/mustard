@@ -1216,12 +1216,7 @@ mod tests {
     }
 
     fn ctx(dir: &str) -> Ctx {
-        Ctx {
-            project_dir: dir.to_string(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(dir.to_string(), Some(Trigger::PostToolUse))
     }
 
     // --- guard-verify parity (hooks.test.js "guard-verify.js") -------------
@@ -1252,12 +1247,7 @@ mod tests {
     fn guard_via_check_only_post_tool_use() {
         let input = edit_input("/proj/src/Models/User.cs", "public int UserId { get; set; }");
         // PreToolUse trigger → the Check self-allows.
-        let pre_ctx = Ctx {
-            project_dir: "/proj".to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let pre_ctx = Ctx::for_test("/proj".to_string(), Some(Trigger::PreToolUse));
         assert_eq!(
             PostEdit.evaluate(&input, &pre_ctx).expect("no error"),
             Verdict::Allow

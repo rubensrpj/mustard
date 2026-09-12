@@ -1163,6 +1163,18 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              leaves the list only with a reason: `mustard-rt run pending --close <id> --reason \
              \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up)."
         }
+        // Recusa do `run pending --add` (`apps/rt/src/commands/event/pending.rs`):
+        // o título repetido, sem ligar para maiúscula nem acento.
+        ("pending.duplicate", Locale::PtBr) => {
+            "Já existe uma pendência aberta com esse título: {id} \"{title}\". Nada foi gravado. \
+             Para mudar o combinado, feche a antiga com `mustard-rt run pending --close {id} \
+             --reason \"…\"` ou use outro título."
+        }
+        ("pending.duplicate", Locale::EnUs) => {
+            "An open pending item already has this title: {id} \"{title}\". Nothing was written. \
+             To change what was agreed, close the old one with `mustard-rt run pending --close \
+             {id} --reason \"…\"` or pick another title."
+        }
 
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
         // uma linha curta que o usuário lê e o assistente recebe para corrigir.
@@ -1281,18 +1293,12 @@ fn strip_parentheticals(text: &str) -> String {
 #[must_use]
 pub fn slugify(text: &str, lang: Locale) -> String {
     let normalised = match lang {
-        Locale::PtBr => strip_pt_accents(text),
+        Locale::PtBr => crate::domain::text::fold_accents(text),
         Locale::EnUs => text.to_string(),
     };
     let stopwords: &[&str] = match lang {
-        Locale::PtBr => &[
-            "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em",
-            // Contractions of `em`/`a` + article — otherwise a trailing `no`
-            // ("em o") eats a token slot and pushes the meaningful next word
-            // (`nome`) out of the capped slug, leaving a `...-erro-no` tail.
-            "no", "na", "nos", "nas", "ao", "aos",
-        ],
-        Locale::EnUs => &["a", "an", "the", "of", "and", "or", "in"],
+        Locale::PtBr => crate::domain::text::SLUG_STOPWORDS_PT,
+        Locale::EnUs => crate::domain::text::SLUG_STOPWORDS_EN,
     };
     // 1. lowercase + split on non-alphanumeric.
     let mut tokens: Vec<String> = Vec::new();
@@ -1330,34 +1336,6 @@ pub fn slugify(text: &str, lang: Locale) -> String {
     } else {
         joined
     }
-}
-
-/// Map common Portuguese diacritics to ASCII. Surgical — not a full Unicode
-/// NFD normaliser (that would pull `unicode-normalization` into core just for
-/// slugs). Covers `ç ã á â à é ê í õ ó ô ú ñ` and their uppercase peers.
-fn strip_pt_accents(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        let replacement = match ch {
-            'ç' => 'c',
-            'Ç' => 'C',
-            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
-            'Á' | 'À' | 'Â' | 'Ã' | 'Ä' => 'A',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'É' | 'È' | 'Ê' | 'Ë' => 'E',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'Í' | 'Ì' | 'Î' | 'Ï' => 'I',
-            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
-            'Ó' | 'Ò' | 'Ô' | 'Õ' | 'Ö' => 'O',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'Ú' | 'Ù' | 'Û' | 'Ü' => 'U',
-            'ñ' => 'n',
-            'Ñ' => 'N',
-            other => other,
-        };
-        out.push(replacement);
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1627,6 +1605,7 @@ mod tests {
             ("deliver.windows", &["{command}"][..]),
             ("pending.notice", &["{count}", "{items}"][..]),
             ("pending.gate.block", &["{count}", "{items}"][..]),
+            ("pending.duplicate", &["{id}", "{title}"][..]),
             ("scratch.residue.notice", &["{total}", "{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

@@ -114,12 +114,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 

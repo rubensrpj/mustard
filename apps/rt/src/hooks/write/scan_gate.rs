@@ -96,12 +96,7 @@ mod tests {
             cwd: Some(cwd.to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: cwd.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(cwd.to_string(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 
@@ -153,12 +148,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: ".".to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(".".to_string(), Some(Trigger::PreToolUse));
         assert_eq!(
             ScanGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -169,12 +159,7 @@ mod tests {
     fn non_pre_tool_use_trigger_allows() {
         let dir = tempdir().unwrap();
         let (input, _) = skill_input("feature", dir.path().to_str().unwrap());
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
         assert_eq!(
             ScanGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow

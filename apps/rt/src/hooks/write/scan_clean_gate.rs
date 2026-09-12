@@ -167,12 +167,7 @@ mod tests {
             cwd: Some(cwd.to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: cwd.to_string(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(cwd.to_string(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 

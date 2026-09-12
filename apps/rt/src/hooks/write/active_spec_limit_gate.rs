@@ -333,12 +333,7 @@ mod tests {
     fn non_pre_tool_use_allows() {
         let dir = tempfile::tempdir().unwrap();
         let input = skill_input("feature", dir.path().to_str().unwrap());
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
         assert_eq!(
             ActiveSpecLimitGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow

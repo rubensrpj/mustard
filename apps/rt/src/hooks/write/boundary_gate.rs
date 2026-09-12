@@ -14,9 +14,9 @@
 //! [`super::secret_files`] residue, which keeps the old case-insensitive
 //! full-path substring semantics the globs cannot express.
 //!
-//! This module also hosts the shared path helper [`relative_to_cwd`] that
-//! `work_branch_gate` consumes to scope branching to in-repo mutations. The
-//! `file_path` extraction it used to host now lives on
+//! The path helper [`relative_to_cwd`] lives in `work_branch_gate`, the gate
+//! that stays, and is imported here. The `file_path` extraction this module
+//! used to host now lives on
 //! [`HookInput::file_path`](mustard_core::domain::model::contract::HookInput::file_path).
 //!
 //! ## W3C migration
@@ -37,6 +37,7 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use crate::util::glob::glob_match;
+use super::work_branch_gate::relative_to_cwd;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -498,42 +499,6 @@ fn pattern_matches(rel: &str, pattern: &str) -> bool {
     false
 }
 
-/// Compute the path of `file_path` relative to `cwd`, forward-slash
-/// normalised. Returns `None` when `file_path` escapes `cwd` (`../`) — the
-/// caller treats that the same as a meta path (skip). Mirrors the JS
-/// `path.relative(cwd, abs)` + `rel.startsWith('../')` check.
-/// `pub(crate)`: `work_branch_gate` reuses it to scope branching to in-repo
-/// mutations.
-pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
-    let cwd_norm = cwd.replace('\\', "/");
-    let fp_norm = file_path.replace('\\', "/");
-    // Resolve `fp` to an absolute-ish path: if not absolute, join under cwd.
-    let abs = if is_absolute(&fp_norm) {
-        fp_norm
-    } else {
-        format!("{}/{}", cwd_norm.trim_end_matches('/'), fp_norm)
-    };
-    let cwd_prefix = format!("{}/", cwd_norm.trim_end_matches('/'));
-    if let Some(rel) = abs.strip_prefix(&cwd_prefix) {
-        Some(rel.to_string())
-    } else if abs == cwd_norm.trim_end_matches('/') {
-        Some(String::new())
-    } else {
-        // Outside cwd — treat as `../` (skip).
-        None
-    }
-}
-
-/// `true` if a forward-slash path looks absolute (POSIX `/...` or Windows
-/// `C:/...`).
-fn is_absolute(p: &str) -> bool {
-    p.starts_with('/')
-        || (p.len() >= 3
-            && p.as_bytes()[0].is_ascii_alphabetic()
-            && p.as_bytes()[1] == b':'
-            && p.as_bytes()[2] == b'/')
-}
-
 /// Collect harness events for `spec_name` from the per-spec NDJSON event log.
 ///
 /// W3C: replaces the broad `store.replay()` (all events from SQLite) with a
@@ -728,12 +693,7 @@ mod tests {
             hook_event_name: Some("PreToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         (input, ctx)
     }
 
@@ -771,12 +731,7 @@ mod tests {
             cwd: Some(dir.path().to_string_lossy().into_owned()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         assert_eq!(
             BoundaryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow
@@ -1192,12 +1147,7 @@ mod tests {
                     hook_event_name: Some("PreToolUse".to_string()),
                     ..HookInput::default()
                 },
-                &Ctx {
-                    project_dir: cwd_str.clone(),
-                    trigger: Some(Trigger::PreToolUse),
-                    workspace_root: None,
-                    inject_only: None,
-                },
+                &Ctx::for_test(cwd_str.clone(), Some(Trigger::PreToolUse)),
             )
             .expect("hook must not error");
         let Verdict::Rewrite { tool_input } = verdict else {
@@ -1286,12 +1236,7 @@ mod tests {
             hook_event_name: Some("PostToolUse".to_string()),
             ..HookInput::default()
         };
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PostToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PostToolUse));
         assert_eq!(
             BoundaryGate.evaluate(&input, &ctx).expect("no error"),
             Verdict::Allow

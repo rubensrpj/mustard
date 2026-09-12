@@ -26,12 +26,15 @@
 //! arquivo. Cada item carrega id `P-{n}`, título, detalhe e estado (`open`,
 //! `closed` ou `dropped`); fechar ou descartar exige motivo, e um motivo em
 //! branco é recusado com o arquivo intacto — um item que some sem dizer por quê
-//! é a perda que esta lista existe para impedir.
+//! é a perda que esta lista existe para impedir. Um item entra uma vez só: o
+//! mesmo título, sem ligar para maiúscula nem acento, é recusado apontando o
+//! item que já está aberto.
 //!
 //! Recusa sai com exit 1 e o JSON `ok: false`, como o `material-add`.
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::text;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -272,34 +275,32 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
     match action {
         Action::List => {}
         Action::Add { title, detail } => {
-            // Repetir o mesmo combinado não duplica: um item ABERTO de mesmo
-            // título devolve o id que já existe.
-            let existing = ledger
-                .items
-                .iter()
-                .find(|i| i.status == Status::Open && i.title == title)
-                .map(|i| i.id.clone());
-            let (id, added) = match existing {
-                Some(id) => (id, false),
-                None => {
-                    let id = next_id(&ledger);
-                    ledger.items.push(PendingItem {
-                        id: id.clone(),
-                        title,
-                        detail,
-                        status: Status::Open,
-                        reason: None,
-                    });
-                    (id, true)
-                }
-            };
-            if added {
-                if let Err(refusal) = write(&path, &ledger) {
-                    return refusal;
-                }
+            // Uma pendência entra uma vez só: o título é comparado sem
+            // maiúscula nem acento ("Humanize" e "humanize" são a mesma), e a
+            // repetição é recusada apontando a que já está aberta.
+            let key = text::fold(&title);
+            if let Some(open) =
+                ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key)
+            {
+                let lang = mustard_core::ProjectConfig::load(&project).i18n().lang;
+                let hint = mustard_core::translate("pending.duplicate", lang)
+                    .replace("{id}", &open.id)
+                    .replace("{title}", &open.title);
+                return json!({ "ok": false, "reason": "duplicate", "id": open.id, "hint": hint });
+            }
+            let id = next_id(&ledger);
+            ledger.items.push(PendingItem {
+                id: id.clone(),
+                title,
+                detail,
+                status: Status::Open,
+                reason: None,
+            });
+            if let Err(refusal) = write(&path, &ledger) {
+                return refusal;
             }
             extra.insert("id".into(), json!(id));
-            extra.insert("added".into(), json!(added));
+            extra.insert("added".into(), json!(true));
         }
         Action::Settle { id, status, reason } => {
             let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
@@ -598,17 +599,17 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&ledger).expect("read"), r#"{"items":[{"id":"P-1""#);
     }
 
-    /// Ids sequenciais que nunca se repetem, repetição dobrada, e as recusas de
-    /// argumento que não fazem sentido juntas.
+    /// Ids sequenciais que nunca se repetem, repetição recusada, e as recusas
+    /// de argumento que não fazem sentido juntas.
     #[test]
-    fn ids_are_sequential_a_repeat_folds_and_stray_flags_refuse() {
+    fn ids_are_sequential_a_repeat_is_refused_and_stray_flags_refuse() {
         let dir = repo();
         let root = dir.path();
         assert_eq!(add(root, "um", "a")["id"], json!("P-1"));
         assert_eq!(add(root, "dois", "b")["id"], json!("P-2"));
         let again = add(root, "um", "outro detalhe");
-        assert_eq!(again["id"], json!("P-1"), "an open item with the same title folds");
-        assert_eq!(again["added"], json!(false));
+        assert_eq!(again["reason"], json!("duplicate"), "{again}");
+        assert_eq!(again["id"], json!("P-1"), "the refusal points at the open item");
 
         let _ = pending_at(&PendingOpts { drop: Some("P-2".into()), reason: Some("x".into()), ..opts(root) });
         assert_eq!(add(root, "tres", "c")["id"], json!("P-3"), "a settled id is never reused");
@@ -619,5 +620,33 @@ mod tests {
         assert_eq!(missing["reason"], json!("missing-field"));
         let stray = pending_at(&PendingOpts { reason: Some("sem acao".into()), ..opts(root) });
         assert_eq!(stray["reason"], json!("stray-flag"));
+    }
+
+    /// "Humanize" com uma "humanize" já aberta é a mesma pendência: a segunda
+    /// é recusada apontando a primeira, e o arquivo fica intacto. Fechada a
+    /// primeira, o mesmo título volta a ser uma pendência nova.
+    #[test]
+    fn a_title_differing_only_in_case_or_accent_is_a_duplicate() {
+        let dir = repo();
+        let root = dir.path();
+        assert_eq!(add(root, "humanize", "a")["id"], json!("P-1"));
+        let ledger = root.join(".claude/pending/ledger.json");
+        let before = std::fs::read_to_string(&ledger).expect("read");
+        for repeat in ["Humanize", "HUMANIZE", "humanizé", "  humanize  "] {
+            let refused = add(root, repeat, "b");
+            assert_eq!(refused["ok"], json!(false), "{repeat}: {refused}");
+            assert_eq!(refused["reason"], json!("duplicate"));
+            assert_eq!(refused["id"], json!("P-1"));
+            assert!(refused["hint"].as_str().unwrap_or_default().contains("P-1 \"humanize\""));
+        }
+        assert_eq!(std::fs::read_to_string(&ledger).expect("read"), before, "nothing was written");
+
+        let closed = pending_at(&PendingOpts {
+            close: Some("P-1".into()),
+            reason: Some("feito".into()),
+            ..opts(root)
+        });
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(add(root, "Humanize", "c")["id"], json!("P-2"));
     }
 }

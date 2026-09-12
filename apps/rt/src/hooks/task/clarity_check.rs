@@ -62,7 +62,6 @@ use serde_json::{json, Value};
 use crate::commands::economy::context_slice::parse_term_blocks;
 use crate::commands::spec::spec_sections::section_block;
 use crate::hooks::session::prompt_submit_inject::declares_didactic;
-use crate::hooks::task::subagent_inject::read_context_md;
 use crate::shared::context::current_spec;
 
 /// O arquivo da sessão onde a medição guarda o que precisa lembrar.
@@ -109,11 +108,8 @@ impl Check for ClarityCheck {
         }
 
         // Fato 3 — há texto para medir.
-        let Some(message) = input
-            .raw
-            .get("last_assistant_message")
-            .and_then(Value::as_str)
-            .filter(|text| !text.trim().is_empty())
+        let Some(message) =
+            input.last_assistant_message().filter(|text| !text.trim().is_empty())
         else {
             return Ok(Verdict::Allow);
         };
@@ -367,6 +363,31 @@ fn glossary_terms(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Read the project's glossary in full — no size cap. Relevance, not size,
+/// decides what is injected. CONTEXT-MAP-aware: when the project carries a
+/// `CONTEXT-MAP.md`, it is resolved through the SAME map-expanding resolver the
+/// slicer/coverage use (`resolve_context_files`), so the hook sees every
+/// `*context.md` the map links — not just a single root `CONTEXT.md`. The
+/// resolved bodies are concatenated; a project with only a root `CONTEXT.md`
+/// behaves exactly as before. Empty string when nothing resolves.
+pub(crate) fn read_context_md(project: &Path) -> String {
+    // Resolve the root CONTEXT.md plus a CONTEXT-MAP.md (when present) — the
+    // resolver dedups, expands the map, and silently skips missing files.
+    let mut requested: Vec<String> = Vec::new();
+    let map = project.join("CONTEXT-MAP.md");
+    if map.is_file() {
+        requested.push(map.to_string_lossy().into_owned());
+    }
+    requested.push(project.join("CONTEXT.md").to_string_lossy().into_owned());
+
+    let bodies: Vec<String> =
+        crate::commands::economy::context_slice::resolve_context_files(&requested)
+            .iter()
+            .filter_map(|p| fs::read_to_string(p).ok())
+            .collect();
+    bodies.join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,12 +414,7 @@ mod tests {
     }
 
     fn ctx(root: &Path, trigger: Trigger) -> Ctx {
-        Ctx {
-            project_dir: root.to_string_lossy().into_owned(),
-            trigger: Some(trigger),
-            workspace_root: None,
-            inject_only: None,
-        }
+        Ctx::for_test(root.to_string_lossy().into_owned(), Some(trigger))
     }
 
     /// O `Stop` da sessão principal com o texto final do turno.

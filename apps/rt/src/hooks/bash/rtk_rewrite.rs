@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use mustard_core::domain::model::contract::Verdict;
 
-use super::lex::{is_cmd_separator, mask_quoted_operators};
+use super::lex::{is_cmd_separator, mask_quoted_operators, strip_env_prefix};
 
 /// Subprocess timeout for `rtk rewrite` calls. The RTK binary is a local
 /// process with no network I/O; 2 s is generous.
@@ -323,105 +323,6 @@ const SHELL_BUILTINS: &[&str] = &[
     "in",
 ];
 
-/// Returns the slice of `s` after stripping any leading `VAR=value` env
-/// assignments (tokens matching `[A-Za-z_][A-Za-z0-9_]*=…` followed by
-/// whitespace). If no env assignments are present the original slice is
-/// returned unchanged.
-/// Byte offset where one `VAR=value` token ends — whitespace, but never
-/// whitespace that sits INSIDE a command substitution, a backtick pair or a
-/// quoted value.
-///
-/// Bash ends a word at an unquoted space; `$( … )`, `` ` … ` `` and `'…'`/`"…"`
-/// suspend that. Reading the token with a plain "find the first space" therefore
-/// cuts `D=$(mktemp -d)` in half, and every offset derived from it points into
-/// the middle of a substitution. Nesting is counted, not merely detected, so
-/// `$(a $(b c))` closes on its own parenthesis.
-fn env_token_end(rest: &str) -> usize {
-    let mut depth = 0usize;
-    let mut backtick = false;
-    let mut quote: Option<char> = None;
-    let mut prev = '\0';
-    for (i, c) in rest.char_indices() {
-        let escaped = prev == '\\';
-        prev = if escaped { '\0' } else { c };
-        if escaped {
-            continue;
-        }
-        if let Some(q) = quote {
-            if c == q {
-                quote = None;
-            }
-            continue;
-        }
-        match c {
-            '\'' | '"' => quote = Some(c),
-            '`' => backtick = !backtick,
-            '(' if rest[..i].ends_with('$') => depth += 1,
-            ')' if depth > 0 => depth -= 1,
-            c if c.is_ascii_whitespace() && depth == 0 && !backtick => return i,
-            _ => {}
-        }
-    }
-    rest.len()
-}
-
-fn strip_env_prefix(s: &str) -> &str {
-    let mut rest = s.trim_start();
-    loop {
-        // An env assignment token starts with an identifier character.
-        let bytes = rest.as_bytes();
-        if bytes.is_empty() {
-            break;
-        }
-        let first = bytes[0] as char;
-        if !(first.is_ascii_alphabetic() || first == '_') {
-            break;
-        }
-        // Find the boundary of this token. Whitespace ends it — EXCEPT inside a
-        // command substitution or a quoted value, where a space is part of the
-        // value and not a boundary.
-        //
-        // **Why this matters, measured in the field on 2026-08-20.** A value
-        // like `D=$(mktemp -d)` was cut at the space, so the token was read as
-        // `D=$(mktemp` and the insertion offset landed INSIDE the substitution:
-        // the rewriter emitted `D=$(mktemp rtk -d)`, which fails with
-        // "too few X's in template 'rtk'" and leaves `D` EMPTY. Every script
-        // that then did `cd "$D"` or `git -C "$D" init` ran in the CURRENT
-        // directory instead — three separate agents corrupted the operator's
-        // repository that way in one session, one of them overwriting the
-        // project's `mustard.json`, another rewriting its git identity.
-        //
-        // A rewriter is allowed to be unhelpful; it is never allowed to change
-        // what a command MEANS.
-        let token_end = env_token_end(rest);
-        let token = &rest[..token_end];
-        // Must contain `=` to be an env assignment.
-        if !token.contains('=') {
-            break;
-        }
-        // The part before `=` must be a valid identifier.
-        let eq_pos = token.find('=').unwrap_or(0); // safe: contains '=' confirmed above
-        let name = &token[..eq_pos];
-        let is_ident = !name.is_empty()
-            && name
-                .chars()
-                .enumerate()
-                .all(|(i, c)| {
-                    if i == 0 {
-                        c.is_ascii_alphabetic() || c == '_'
-                    } else {
-                        c.is_ascii_alphanumeric() || c == '_'
-                    }
-                });
-        if !is_ident {
-            break;
-        }
-        // Advance past this env token and any trailing whitespace.
-        rest = rest[token_end..].trim_start();
-    }
-    rest
-}
-
 /// Returns `true` when it is safe to prepend `rtk ` to `cmd`.
 ///
 /// Returns `false` when:
@@ -603,9 +504,9 @@ mod tests {
 
         // Nested substitutions close on their own parenthesis, and a quoted
         // value keeps its spaces.
-        assert_eq!(env_token_end("A=$(a $(b c)) rest"), "A=$(a $(b c))".len());
-        assert_eq!(env_token_end(r#"A="um dois" rest"#), r#"A="um dois""#.len());
-        assert_eq!(env_token_end("A=b rest"), "A=b".len());
+        assert_eq!(crate::hooks::bash::lex::env_token_end("A=$(a $(b c)) rest"), "A=$(a $(b c))".len());
+        assert_eq!(crate::hooks::bash::lex::env_token_end(r#"A="um dois" rest"#), r#"A="um dois""#.len());
+        assert_eq!(crate::hooks::bash::lex::env_token_end("A=b rest"), "A=b".len());
     }
 
     // -----------------------------------------------------------------------

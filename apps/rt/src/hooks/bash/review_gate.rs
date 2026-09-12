@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 use crate::shared::context::current_spec;
 use crate::util::format_gate_message;
 
-use super::lex::{has_word_pair, is_cmd_separator, mask_quoted_operators, strip_leading_rtk, truncate};
+use mustard_core::domain::text::has_word_sequence;
+
+use super::lex::{is_cmd_separator, mask_quoted_operators, strip_leading_rtk, truncate, SHELL_WORDS};
 
 /// Build timeout for the strict-mode build check (`BUILD_TIMEOUT_MS` in
 /// `review-gate.js`): 5 minutes.
@@ -29,7 +31,7 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// `rtk` prefix). Mirrors `isGitCommit` in `review-gate.js`.
 fn is_git_commit(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
-    has_word_pair(&lower, "git", "commit")
+    has_word_sequence(&lower, &["git", "commit"], SHELL_WORDS)
 }
 
 /// `true` when a `git commit` stages its changes **as part of the commit** —
@@ -544,12 +546,7 @@ mod tests {
     /// A non-commit command never triggers the review gate.
     #[test]
     fn review_gate_ignores_non_commit_commands() {
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         assert_eq!(review_gate("git status", &ctx, Mode::Warn), None);
         assert_eq!(review_gate("npm run build", &ctx, Mode::Warn), None);
     }
@@ -557,12 +554,7 @@ mod tests {
     /// `Mode::Off` skips the gate entirely — even on a `git commit`.
     #[test]
     fn review_gate_off_mode_returns_none() {
-        let ctx = Ctx {
-            project_dir: String::new(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(String::new(), Some(Trigger::PreToolUse));
         assert_eq!(review_gate("git commit -m x", &ctx, Mode::Off), None);
     }
 
@@ -570,12 +562,7 @@ mod tests {
     #[test]
     fn review_gate_fails_open_without_git_repo() {
         let dir = tempdir().unwrap();
-        let ctx = Ctx {
-            project_dir: dir.path().to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         // No `.git`, no `.pipeline-states` → no warnings → no verdict.
         assert_eq!(review_gate("git commit -m x", &ctx, Mode::Warn), None);
     }
@@ -620,12 +607,7 @@ mod tests {
             .stderr(Stdio::null())
             .status();
 
-        let ctx = Ctx {
-            project_dir: repo.to_string_lossy().into_owned(),
-            trigger: Some(Trigger::PreToolUse),
-            workspace_root: None,
-            inject_only: None,
-        };
+        let ctx = Ctx::for_test(repo.to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         let warn = review_gate("git commit -m \"feat: x\"", &ctx, Mode::Warn);
         let strict = review_gate("git commit -m \"feat: x\"", &ctx, Mode::Strict);
         // Warn mode → non-blocking advisory; strict → blocking deny.
