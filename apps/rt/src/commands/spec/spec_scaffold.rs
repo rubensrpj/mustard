@@ -85,7 +85,7 @@ pub fn write_spec_md(
     body.push_str(PRD_DIVIDER);
     body.push('\n');
     for s in &input.prd_sections {
-        // Single-emitter rule (TF 2026-06-10-ac-heading-unico): the AC list
+        // Single-emitter rule: the AC list
         // block below is the ONLY emitter of the AC heading. The PRD entry
         // stays in `SpecInput` purely for the contract's presence+order check
         // (`check_sections`) — rendering it too duplicated the heading
@@ -144,7 +144,7 @@ pub fn write_spec_md(
         body.push_str(PLAN_DIVIDER);
         body.push('\n');
         for s in &input.plan_sections {
-            // D1: the wave-plan parent carries no `## Tarefas` — the roadmap
+            // The wave-plan parent carries no `## Tarefas` — the roadmap
             // belongs to each wave's own spec.md.
             if is_wave_plan && s.name.trim().eq_ignore_ascii_case("tasks") {
                 continue;

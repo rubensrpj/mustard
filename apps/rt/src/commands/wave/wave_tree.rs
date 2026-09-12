@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(read_status(&path), "completed");
     }
 
-    /// Legacy-read contract (F4-f item 1): a spec ALREADY ON DISK that carries
+    /// Legacy-read contract: a spec ALREADY ON DISK that carries
     /// only the new canonical `### Stage:` / `### Outcome:` header and **no
     /// `meta.json` sidecar** must still resolve its status via the markdown
     /// fallback. This protects specs written before meta.json became the single

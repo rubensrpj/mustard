@@ -851,7 +851,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         .unwrap_or_default();
     let own_ac_count = items.len();
 
-    // Append the executable ACs of every linked capability (F5). A spec with no
+    // Append the executable ACs of every linked capability. A spec with no
     // `## Capabilities` section adds nothing here, so its run is unchanged.
     // Capability scenarios carry no `Expect:` regex — they gate on exit code.
     let capability_acs = runner::gather_capability_acs(state, spec);
@@ -887,7 +887,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     }
     runner::emit_qa_metric(state, spec, overall, &criteria);
     render::write_sidecar(state, spec, &payload);
-    // D4: materialise the human-readable report beside the phase dir.
+    // Materialise the human-readable report beside the phase dir.
     render::write_qa_report_md(state, spec, overall, &criteria);
 
     QaResult { overall: overall.to_string(), criteria }
@@ -947,8 +947,8 @@ mod tests {
     /// Wave-plans use `AC-G1`, `AC-G2` (the `G` modifier marks global ACs that
     /// span every wave). The id parser must accept any alphanumeric suffix
     /// after `AC-`, not just digits — otherwise `qa-run` finds the section but
-    /// returns zero parseable items (the bug found while closing
-    /// `2026-05-20-mustard-wave-network-standard`).
+    /// returns zero parseable items (a bug found while
+    /// closing a spec).
     #[test]
     fn parses_ac_id_with_alphanumeric_suffix() {
         let a = parse_ac_line("- [ ] AC-G1: flag exposed — Command: `mustard-rt --version`").unwrap();
@@ -962,7 +962,7 @@ mod tests {
     /// Multi-segment IDs (`AC-W4-1`, `AC-TF-3`, `AC-W4-10`) must parse
     /// correctly. These appear in wave-scoped specs where the wave number is
     /// embedded in the ID (e.g. wave-4 ACs use `AC-W4-N`). This was the bug
-    /// fixed in `2026-05-23-tf-qa-run-parser-multidash-ac`: the scanner stopped
+    /// fixed here: the scanner stopped
     /// at the first `-` inside the ID suffix, producing `AC-W4` instead of
     /// `AC-W4-1` and returning zero parseable items for the whole section.
     #[test]
@@ -987,7 +987,7 @@ mod tests {
     }
 
     /// Bold-wrapped ID with period separator — canonical form used by every
-    /// AC line in the `2026-05-25-mustard-deep-refactor` spec + every wave
+    /// AC line in a wave-plan spec + every wave
     /// spec (`- [ ] **AC-G1.** desc. Command: \`rtk x\``). Regression guard
     /// for the parser fix made while closing that pipeline (qa-run was
     /// returning zero items for an otherwise well-formed section).
@@ -1577,7 +1577,7 @@ mod tests {
         assert_eq!(qa_result_events(cwd, "ext-skip"), 1);
     }
 
-    // --- F5: linked-capability scenario ACs run in QA --------------------
+    // --- linked-capability scenario ACs run in QA --------------------
 
     /// Seed `<cwd>/.claude/spec/{spec}/spec.md` with `body`.
     fn seed_spec_md(cwd: &Path, spec: &str, body: &str) {

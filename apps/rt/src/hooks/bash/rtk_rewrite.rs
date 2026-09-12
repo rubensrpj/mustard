@@ -157,8 +157,8 @@ fn run_rtk_rewrite_subprocess_with_bin(cmd: &str, binary: &str) -> Option<String
 }
 
 /// Read `MUSTARD_RTK_GATE_MODE` and resolve to a [`Mode`]. Default
-/// [`Mode::Warn`] — the `rtk`-on-everything mandate of
-/// `2026-05-20-rtk-mandatory-everywhere` is enforced by **auto-rewriting** the
+/// [`Mode::Warn`] — the `rtk`-on-everything mandate is enforced
+/// by **auto-rewriting** the
 /// command (prepend `rtk`), not by rejecting it. Rewriting reaches the exact
 /// same end state (every command runs under `rtk`) with ZERO round-trip: the
 /// harness applies the [`Verdict::Rewrite`] through `updatedInput` (see
@@ -443,8 +443,7 @@ fn has_rtk_in_any_segment(cmd: &str) -> bool {
 thread_local! {
     /// In test builds, when set, this short-circuits `rtk_rewrite` to return `None`,
     /// isolating gate tests from the real `rtk` binary on PATH and from the
-    /// strict-mode rtk gate (default since spec
-    /// `2026-05-20-rtk-mandatory-everywhere`).
+    /// strict-mode rtk gate.
     ///
     /// **Side-effect warning for future authors:** any test that calls
     /// `verdict_for(...)` (dispatcher tests in `bash_command_gate`) will have
@@ -957,7 +956,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Gate-mode tests (spec: 2026-05-20-rtk-mandatory-everywhere)
+    // Gate-mode tests
     //
     // The gate-mode parameter is passed in directly so tests do not need to
     // mutate `MUSTARD_RTK_GATE_MODE` (`std::env::set_var` is `unsafe` under
@@ -1021,7 +1020,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // filter_rtk_noise — spec 2026-05-26-rtk-quiet-hook-warning
+    // filter_rtk_noise — quiet the rtk "no hook installed" warning
     //
     // rtk 0.34.1 emits "[rtk] /!\ No hook installed — run `rtk init -g`…"
     // on every invocation when no Claude Code hook is registered. Since

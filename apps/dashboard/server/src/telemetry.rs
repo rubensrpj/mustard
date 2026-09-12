@@ -1,6 +1,6 @@
 //! Telemetry readers — restored after the SQLite read paths were retired.
 //!
-//! Commit 723ad1a of [[2026-05-26-no-sqlite-git-source-of-truth]]
+//! Commit 723ad1a
 //! retired the SQLite read paths that backed every dashboard telemetry
 //! surface, but left ~8 public functions returning `Default::default()` /
 //! `Vec::new()`. This file restores real readers for each, sourced from the
@@ -1590,7 +1590,7 @@ pub enum EconomyScopeDto {
 
 // ── Dashboard-command surface ──────────────────────────────────────────────
 //
-// [[2026-05-26-no-sqlite-git-source-of-truth]] wired these commands
+// The move off SQLite wired these commands
 // against the real NDJSON readers in `mustard_core::domain::economy::reader::*`
 // (migrated there too). The behavioural gap the first restore left is closed —
 // dashboard pages now see live data instead of `Default::default()`.

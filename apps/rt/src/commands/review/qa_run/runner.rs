@@ -1,6 +1,6 @@
 //! qa-run acceptance-criteria execution engine: locate the spec file, run each
 //! AC command (with per-AC timeouts and self-invocation guards), and emit the
-//! `qa.result` event and metric. Split out of `qa_run` (F3 PERF-D).
+//! `qa.result` event and metric. Split out of `qa_run`.
 
 use crate::shared::context::session_id;
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
@@ -267,8 +267,7 @@ fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
 ///   3. `.claude/spec/{spec}/wave-plan.md` (flat layout — wave-plan mode where
 ///      the global ACs live in `wave-plan.md` and `spec.md` is absent)
 ///
-/// Flat layout is the post-wave-2 contract of
-/// `2026-05-21-flatten-spec-layout-and-multi-collab`: there are no
+/// Flat layout is the current contract: there are no
 /// `active/` / `completed/` buckets anymore. The spec dir lives at the same
 /// path for its entire lifecycle and the canonical status is in the SQLite
 /// event store + the `### Status:` header.

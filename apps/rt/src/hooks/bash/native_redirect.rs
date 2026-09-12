@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn redirect_allows_single_file_cat() {
-        // T4: `cat` of ONE explicit file is the "slice a captured file" idiom,
+        // `cat` of ONE explicit file is the "slice a captured file" idiom,
         // not a tree scan — the native-tool nudge is silenced (Allow).
         assert_eq!(bash_native_redirect("cat src/main.ts"), Some(Verdict::Allow));
     }
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn redirect_allows_single_file_head_tail() {
-        // T4: slicing ONE explicit file with head/tail is silenced.
+        // Slicing ONE explicit file with head/tail is silenced.
         for cmd in ["head -20 file.txt", "tail -50 app.log"] {
             assert_eq!(
                 bash_native_redirect(cmd),
@@ -344,7 +344,7 @@ mod tests {
         ));
     }
 
-    /// T4 single-file vs tree heuristic (AC4): the nudge is silenced for a read
+    /// Single-file vs tree heuristic: the nudge is silenced for a read
     /// of ONE explicit file (the "capture to a file, slice the file" idiom) and
     /// kept for a tree scan native tools do better.
     #[test]
@@ -466,7 +466,7 @@ mod tests {
     fn redirect_handles_env_var_prefix() {
         // The `VAR=value` prefix is skipped when finding the command; the tree
         // scan `grep -r … src/` is still denied. (A single-file target such as
-        // `grep pattern file.txt` is silenced by the T4 heuristic, so this
+        // `grep pattern file.txt` is silenced by the single-file heuristic, so this
         // parity check uses a tree form to keep exercising the prefix skip.)
         assert!(matches!(
             bash_native_redirect("NODE_ENV=test grep -r pattern src/"),

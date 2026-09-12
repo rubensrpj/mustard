@@ -1,4 +1,4 @@
-//! `approval_marker_observer` — PostToolUse(AskUserQuestion) approval recorder (T5).
+//! `approval_marker_observer` — PostToolUse(AskUserQuestion) approval recorder.
 //!
 //! ## Why this exists — the forgeable approval gate
 //!

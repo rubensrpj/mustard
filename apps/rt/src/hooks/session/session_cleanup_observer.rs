@@ -99,8 +99,7 @@ fn state_spec_name(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `true` if a spec is done — flat layout (wave-2 of
-/// `2026-05-21-flatten-spec-layout-and-multi-collab`) reads the spec dir
+/// `true` if a spec is done — the flat layout reads the spec dir
 /// directly under `.claude/spec/{name}/`, with no `active/` / `completed/`
 /// buckets. Done means either the directory is gone or the spec's lifecycle
 /// metadata reads `Completed`. **`meta.json` is the single source of truth**;

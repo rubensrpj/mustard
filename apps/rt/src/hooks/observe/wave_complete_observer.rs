@@ -1,4 +1,4 @@
-//! `wave_complete_observer` — auto-emit `pipeline.wave.complete` (F4-c item 2).
+//! `wave_complete_observer` — auto-emit `pipeline.wave.complete`.
 //!
 //! ## Decision 6 — auto-abertura por tipo (wave advance is *structural* → automatic)
 //!

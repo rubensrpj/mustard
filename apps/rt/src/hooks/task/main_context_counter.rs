@@ -1,4 +1,4 @@
-//! `main_context_counter` — enforces L0 (Universal Delegation) on the
+//! `main_context_counter` — enforces delegation to subagents on the
 //! orchestrator.
 //!
 //! Ports `main-context-counter.js`: counts un-delegated main-context work
@@ -57,7 +57,7 @@ struct MainState {
     subagent_depth: u32,
 }
 
-/// `main-context-counter`: enforces L0 on the orchestrator.
+/// `main-context-counter`: enforces delegation on the orchestrator.
 ///
 /// A `Check`: in strict mode it can `Deny` once `MAIN_DENY_AT` un-delegated
 /// tool calls accumulate. The JS hook's warn path prints to stderr; a Rust
@@ -109,7 +109,7 @@ impl MainContextCounter {
 }
 
 impl Check for MainContextCounter {
-    /// Count an un-delegated main-context tool call and enforce L0.
+    /// Count an un-delegated main-context tool call and enforce delegation.
     ///
     /// `mode` is resolved from `MUSTARD_MAIN_BUDGET_MODE` (default `warn`).
     /// `Off` short-circuits. Lifecycle events keep the `subagentDepth` gauge
@@ -183,7 +183,7 @@ impl Check for MainContextCounter {
             return Ok(Verdict::Deny {
                 reason: format!(
                     "[main-context-counter] {count} tool calls in the main context \
-                     without a Task dispatch (L0 Universal Delegation). Stop and \
+                     without a Task dispatch (work goes to a subagent). Stop and \
                      delegate: dispatch a Task agent for this work so the \
                      orchestrator context stays lean. Set \
                      MUSTARD_MAIN_BUDGET_MODE=warn to allow with a warning."
@@ -198,7 +198,7 @@ impl Check for MainContextCounter {
             return Ok(Verdict::Warn {
                 message: format!(
                     "[main-context-counter] {count} tool calls in the main context \
-                     without delegating (L0). Consider a Task dispatch — each direct \
+                     without delegating to a subagent. Consider a Task dispatch — each direct \
                      Read/Edit inflates the orchestrator context."
                 ),
             });

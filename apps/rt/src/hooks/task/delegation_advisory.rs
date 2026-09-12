@@ -1,9 +1,9 @@
 //! `delegation_advisory` — advisory when the orchestrator edits many distinct
 //! files DIRECTLY during an active pipeline instead of delegating via `Task`.
 //!
-//! ## Why (L0 Universal Delegation)
+//! ## Why (the orchestrator delegates)
 //!
-//! The orchestrator rule (`.claude/CLAUDE.md` "When to delegate via Task (L0)")
+//! The orchestrator rule on when to delegate via Task
 //! says EXECUTE must be delegated and direct work is for ≤2 already-identified
 //! files. [`super::main_context_counter`] already enforces an *overall* main-
 //! context budget (all counted tool calls between dispatches). This module is
@@ -45,7 +45,7 @@
 //!
 //! ## Main-vs-subagent — now exact (was a proxy)
 //!
-//! This module originally had only the *shared* `subagentDepth` gauge (a P5
+//! This module originally had only the *shared* `subagentDepth` gauge (a
 //! best-effort proxy maintained out-of-band by lifecycle hooks) and flagged
 //! the missing per-invocation signal as a CONCERN. That signal turned out to
 //! EXIST: Claude Code's hook contract sends `agent_id` on the `PostToolUse`
@@ -227,7 +227,7 @@ impl DelegationAdvisory {
             let msg = format!(
                 "[delegation-advisory] {count} distinct files edited directly in \
                  the main context during an active pipeline (threshold {threshold}). \
-                 L0 Universal Delegation: dispatch a Task agent for this work — \
+                 Delegate: dispatch a Task agent for this work — \
                  direct editing is meant for ≤{threshold} already-identified files. \
                  Set MUSTARD_DELEGATION_WARN_MODE=off to silence."
             );

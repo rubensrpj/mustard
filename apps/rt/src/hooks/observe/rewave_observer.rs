@@ -1,4 +1,4 @@
-//! `rewave_observer` — auto re-wave on the first EXECUTE write (F4-c item 1).
+//! `rewave_observer` — auto re-wave on the first EXECUTE write.
 //!
 //! ## Decision 6 — auto-abertura por tipo (re-wave is *structural* → automatic)
 //!

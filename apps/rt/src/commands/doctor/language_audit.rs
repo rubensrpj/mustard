@@ -2,7 +2,7 @@
 //! `mustard-rt run language-audit` — list files in mustard's own repo that
 //! contain PT-BR text where they should be EN.
 //!
-//! Policy ([[2026-05-26-template-agnostic-audit]]): specs follow
+//! Policy: specs follow
 //! `mustard.json#specLang`, and so does every comment written in the source —
 //! `//`, `///`, `//!`, `/* */`. The audit therefore looks only at what sits
 //! OUTSIDE a comment. Everything else stays EN-only: identifiers, file paths,
@@ -249,7 +249,7 @@ fn walk(dir: &Path, visit: &mut dyn FnMut(&Path)) {
 /// Audit targets resolved under `root`. Filters to ones that exist on disk so
 /// tests using a tempdir do not need to materialise every layout.
 fn audit_targets(root: &Path) -> Vec<PathBuf> {
-    // Spec 2026-05-26-template-agnostic-audit line 149 declares scope as `.claude/refs/` only;
+    // The audit scope is `.claude/refs/` only;
     // `.claude/commands/` and `.claude/skills/` were observed to cause stale-install false positives.
     let candidates = [
         "apps/cli/templates",

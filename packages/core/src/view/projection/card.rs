@@ -827,7 +827,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Header fallback (from 2026-05-21-flatten-spec-layout-and-multi-collab)
+    // Header fallback (from the flat spec layout)
     //
     // Dropping the SQLite store deleted the `EventSink`-backed synthetic-emit
     // hook plus its `CapturingSink` test double. Header fallback is now a

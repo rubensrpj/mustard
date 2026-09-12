@@ -308,7 +308,7 @@ fn merge_capabilities_on_close(cwd: &Path, spec: &str, ts: &str) {
     let linked = crate::commands::capability::linked_capability_ids(cwd, spec);
     if linked.is_empty() {
         // No `## Capabilities` links. A Full spec still leaves a living EARS
-        // capability behind, synthesized from its own ACs (F6). Fail-open.
+        // capability behind, synthesized from its own ACs. Fail-open.
         synthesize_capability_from_acs(cwd, spec, ts);
         return;
     }
@@ -1214,7 +1214,7 @@ mod tests {
         assert_eq!(meta["lang"], json!("pt-BR"), "{meta}");
     }
 
-    /// F6: a FULL spec closing with NO `## Capabilities` link still leaves a
+    /// A FULL spec closing with NO `## Capabilities` link still leaves a
     /// living EARS capability, synthesized from its own ACs — the doc is written
     /// and `capability.declared` is emitted so the projection folds it. A
     /// skeleton AC (unfilled `<…>`) is skipped; a filled behaviour AC round-trips

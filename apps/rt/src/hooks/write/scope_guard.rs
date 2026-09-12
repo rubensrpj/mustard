@@ -1,4 +1,4 @@
-//! `scope_guard` — the Full-scope approval hard-gate (D5).
+//! `scope_guard` — the Full-scope approval hard-gate.
 //!
 //! ## Why this exists
 //!
@@ -110,7 +110,7 @@ fn meta_stage_is_plan(stage: Option<&str>) -> bool {
 
 /// `true` when the spec's per-spec NDJSON event log carries an approval event —
 /// a `pipeline.status` with `to == "approved"`. This is the ONLY signal that
-/// counts as approval (D5): it is emitted exclusively by the `/spec` approve
+/// counts as approval: it is emitted exclusively by the `/spec` approve
 /// flow, so a `/feature` self-emitting `pipeline.stage: execute` cannot forge
 /// it. Fail-open: an absent / unreadable events dir returns `false` (no
 /// approval seen) — combined with the other positive conditions, the gate then
@@ -381,7 +381,7 @@ mod tests {
         );
     }
 
-    /// DENY via the session->spec marker (F6 plugin-path resolution): with NO
+    /// DENY via the session->spec marker (the plugin-path resolution): with NO
     /// `.pipeline-states` and NO env override, the spec resolves ONLY through the
     /// `active-spec` marker `bind_session_spec` writes (the same source
     /// `boundary_gate` uses). A Full + Plan + unapproved spec resolved this way

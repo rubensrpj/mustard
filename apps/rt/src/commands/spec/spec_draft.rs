@@ -1239,7 +1239,7 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     // [`backfill_analyze_phase`]).
     backfill_analyze_phase(project_root, &slug);
 
-    // D6: the `memory/_index.md` is NOT born at draft time. A fresh spec used to
+    // The `memory/_index.md` is NOT born at draft time. A fresh spec used to
     // ship an empty stub (and, before the i18n keys existed, a `<missing-key>`
     // line). The index is now born on the FIRST knowledge capture, so an unused
     // spec carries no orphan index file.
@@ -1734,7 +1734,7 @@ fn build_input(
         phase: Some(Phase::Plan),
         scope: Some(scope),
         lang: Some(lang.to_string()),
-        // Invariant (2026-06-02-full-sempre-uma-wave): a Full spec floors at ≥1
+        // Invariant: a Full spec floors at ≥1
         // wave. The floor is named by [`scope_decompose::wave_floor_for_full`]
         // (single source of the "Full ⇒ ≥1 wave" rule); a caller asking for >1
         // wave signals a multi-wave decomposition and raises N above the floor.
@@ -1886,7 +1886,7 @@ fn prd_section_default(name: &str, intent: &str, lang: Locale) -> String {
 fn plan_section_default(name: &str, lang: Locale) -> String {
     match name {
         "files" => translate("placeholder.fill_files", lang).to_string(),
-        // D2: `## Tarefas` is the agent's roadmap, a plain list — NOT a tracked
+        // `## Tarefas` is the agent's roadmap, a plain list — NOT a tracked
         // checklist. Only `## Checklist` carries `[ ]` (with auto-mark on
         // `→ <path>`). A checkbox here was a false gate target nothing marks.
         "tasks" => "- T1 — ...".to_string(),
@@ -2034,7 +2034,7 @@ fn build_meta_from_input(input: &SpecInput) -> Meta {
     }
 }
 
-// D6: the `memory/_index.md` is no longer materialised at draft time (the old
+// The `memory/_index.md` is no longer materialised at draft time (the old
 // `write_memory_stub` shipped an empty stub on every spec). The index is now
 // created/updated on the first knowledge capture.
 
@@ -2465,7 +2465,7 @@ mod tests {
         assert!(mustard_core::domain::spec::contract::validate(&input).is_ok());
     }
 
-    /// Invariant lock (2026-06-02-full-sempre-uma-wave): a Full draft NEVER
+    /// Invariant lock: a Full draft NEVER
     /// yields `total_waves == 0`, and the meta it produces NEVER has
     /// `isWavePlan == Some(false)`. Probed at the most adversarial input —
     /// `waves: 0` from the caller — which `total_waves: Some(waves.max(1))`
@@ -2572,7 +2572,7 @@ mod tests {
         assert_eq!(build_checklist(Locale::PtBr).len(), 1);
     }
 
-    /// D1/D2: a Light spec OWNS its execution → it keeps a parseable
+    /// A Light spec OWNS its execution → it keeps a parseable
     /// `## Checklist` so the close-gate has something to enforce. (A Full draft
     /// is always a wave-plan parent — `total_waves` is forced to ≥ 1 — so its
     /// checklist lives in the waves; that suppression is covered below.)
@@ -2608,7 +2608,7 @@ mod tests {
         );
     }
 
-    /// D2: the `## Tarefas` placeholder is a PLAIN list — no `- [ ]` checkbox.
+    /// The `## Tarefas` placeholder is a PLAIN list — no `- [ ]` checkbox.
     /// Only `## Checklist` carries the tracked box. Asserted at the placeholder
     /// source so it holds regardless of which scope renders the section.
     #[test]
@@ -2618,7 +2618,7 @@ mod tests {
         assert!(!tasks.contains("[ ]"), "Tarefas must carry no checkbox: {tasks:?}");
     }
 
-    /// D1: a wave-plan parent (every Full draft — `total_waves` forced ≥ 1)
+    /// A wave-plan parent (every Full draft — `total_waves` forced ≥ 1)
     /// emits NEITHER `## Tarefas` nor `## Checklist` — both belong to the waves.
     #[test]
     fn wave_plan_parent_suppresses_tasks_and_checklist() {
@@ -2668,7 +2668,7 @@ mod tests {
         assert_eq!(section_heading_for("extra", Locale::EnUs), "extra");
     }
 
-    /// Roundtrip (TF 2026-06-10-ac-heading-unico): a VIRGIN draft — every
+    /// Roundtrip: a VIRGIN draft — every
     /// scope × locale — carries exactly ONE AC heading in `spec.md` and passes
     /// its own `analyze-validation` with `ok: true` (zero issues). This is the
     /// regression the duplicated heading broke: `section_block` captured the
@@ -2745,7 +2745,7 @@ mod tests {
         let root = dir.path().join("specs").join("demo");
         assert!(root.join("spec.md").exists());
         assert!(root.join("meta.json").exists());
-        // D6: a fresh draft no longer ships a `memory/_index.md` stub.
+        // A fresh draft no longer ships a `memory/_index.md` stub.
         assert!(!root.join("memory").join("_index.md").exists());
         // Wave dirs are NOT created by spec-draft — that is wave-scaffold's job.
         assert!(!root.join("wave-plan.md").exists());

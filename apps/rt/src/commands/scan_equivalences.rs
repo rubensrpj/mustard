@@ -1,7 +1,7 @@
 //! `scan-equivalences` — project the scan dictionary's non-English terms
 //! through the local `mustard-translate` sidecar into
 //! `.claude/grain.equivalences.json`: the PT→EN query-expansion table the
-//! `feature` retrieval feeds to `scan rank` (the measured C2 winner —
+//! `feature` retrieval feeds to `scan rank` (the best-measured variant —
 //! query = raw PT + these EN tokens).
 //!
 //! Direct port of the measured `equivalences-mt` generator: ONE

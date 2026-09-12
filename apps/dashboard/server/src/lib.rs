@@ -672,8 +672,7 @@ pub(crate) fn build_specs_snapshot(repo_path: &str) -> SpecsSnapshot {
 // DB wins for: status, phase, tasks, wave counts — merged by `dashboard_specs`.
 // FS wins for: spec existence, title, narrative (### Lang: / ### Scope:).
 //
-// The legacy state-file walk was removed by spec
-// 2026-05-19-pipeline-state-from-sqlite: the event log is canonical for all
+// The legacy state-file walk was removed: the event log is canonical for all
 // pipeline fields; FS JSON files are stale artifacts.
 fn specs_from_fs(base: &std::path::Path) -> Vec<SpecRow> {
     let spec_root = base.join(".claude").join("spec");
@@ -972,16 +971,16 @@ fn dashboard_spec_markdown_impl(repo_path: String, spec_name: String) -> Result<
 
 // ── spec status helpers (emit-only, flat layout) ─────────────────────────────
 //
-// Flat spec layout (spec `2026-05-21-flatten-spec-layout-and-multi-collab`):
+// Flat spec layout:
 // specs live at `.claude/spec/{name}/` for their entire lifecycle; there are
 // no bucket subdirectories (active/completed/cancelled). Status is canonical
 // in the SQLite event store. These helpers mirror the private functions in
 // `spec_views.rs` — duplicated rather than re-exported to avoid splitting the
 // module's privacy boundary.
 
-/// Emit `pipeline.status: <to>` via the per-spec NDJSON sink. Spec
-/// [[2026-05-26-no-sqlite-git-source-of-truth]] retired the SQLite event
-/// store; per-spec `.events/*.ndjson` files are now the canonical hot path.
+/// Emit `pipeline.status: <to>` via the per-spec NDJSON sink. The SQLite
+/// event store is retired; per-spec `.events/*.ndjson` files are now the
+/// canonical hot path.
 /// Fail-open.
 fn lib_emit_pipeline_status(repo_path: &str, spec: &str, to: &str) {
     let payload = serde_json::json!({ "from": serde_json::Value::Null, "to": to });
@@ -1451,8 +1450,8 @@ fn no_events_spec_card(spec: String) -> spec_views::SpecCard {
     }
 }
 
-/// Batch counterpart of [`dashboard_spec_card`] for the Specs LIST route
-/// (spec `sidebar-lento-lista-specs-dispara`): one command returns a card for
+/// Batch counterpart of [`dashboard_spec_card`] for the Specs LIST route:
+/// one command returns a card for
 /// EVERY listed top-level spec, paying a single `attributed_spec_counts`
 /// workspace fold instead of one per row — the page used to fan out N
 /// `dashboard_spec_card` calls, each re-folding the whole event slice. A join
@@ -1972,7 +1971,7 @@ mod onda2_tests {
 
     #[test]
     fn spec_cards_batch_folds_attributed_counts_once() {
-        // T1 contract (spec `sidebar-lento-lista-specs-dispara`): the batch
+        // Contract: the batch
         // command returns one card per listed spec while paying exactly ONE
         // `attributed_spec_counts` workspace fold — the per-row re-fold was
         // the Specs-page latency bug. Counter is per-repo (TempDir), so

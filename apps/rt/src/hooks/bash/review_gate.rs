@@ -526,7 +526,7 @@ mod tests {
         assert!(!commit_stages_inline("git commit -m\"add auth\""));
     }
 
-    /// T6 (AC7): a `git add` chained *before* the commit pre-stages it, so the
+    /// A `git add` chained *before* the commit pre-stages it, so the
     /// empty index at PreToolUse must NOT trip the "No staged changes" advisory.
     /// A plain commit with no chained add still warns.
     #[test]

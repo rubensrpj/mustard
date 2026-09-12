@@ -123,7 +123,7 @@ mod tests {
         SecretFiles.evaluate(&input, &ctx).expect("check never errors")
     }
 
-    // --- file-guard parity (restored from `path_gate.rs` @ pre-F2 HEAD) -----
+    // --- file-guard parity (restored from the old `path_gate.rs`) -----
 
     #[test]
     fn file_guard_blocks_pem_key() {

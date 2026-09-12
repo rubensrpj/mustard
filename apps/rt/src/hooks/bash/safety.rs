@@ -429,7 +429,7 @@ mod tests {
 
     /// THE fix: BG07 protects whatever `git.flow` declares. A `develop`/`master`
     /// project protects BOTH — including the custom `develop` base a hardcoded
-    /// `main|master` guard let through (the audited P2.4 violation). The
+    /// `main|master` guard let through (a violation an audit found). The
     /// wrapper-prefix (`rtk` — our golden rule — or `sudo`) is still caught.
     #[test]
     fn bg07_protects_custom_flow_bases_including_wrapped() {

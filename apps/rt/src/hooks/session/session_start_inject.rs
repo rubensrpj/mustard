@@ -327,8 +327,8 @@ fn free_otel_port() {
 /// add SQLite-driven hygiene (e.g. pruning stale orphan pipeline-state files).
 /// Pure side effect — fail-open throughout. Port of `runHygiene`.
 fn run_spec_hygiene(_cwd: &str) {
-    // No-op under flat layout. See wave-2 of
-    // `2026-05-21-flatten-spec-layout-and-multi-collab`.
+    // No-op under the flat layout: specs no longer move between bucket
+    // directories.
 }
 
 // ===========================================================================

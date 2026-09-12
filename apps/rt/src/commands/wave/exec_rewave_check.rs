@@ -13,7 +13,7 @@
 //! `wave-dependency.js`. Both are now in this binary — this port calls the
 //! Rust logic directly.
 //!
-//! ## Single canonical renderer (F4-d item 2)
+//! ## Single canonical renderer
 //!
 //! There used to be two divergent renderers of `wave-plan.md`: the canonical
 //! one in [`crate::commands::wave::wave_scaffold`] (i18n + `[[wikilinks]]` +
@@ -229,7 +229,7 @@ fn parent_lang(spec_file: &Path) -> String {
 /// wave structure. Returns the same JSON `action` shape [`run`] prints.
 ///
 /// This is the reusable, non-printing core of [`run`] — the `rewave_observer`
-/// hook (F4-c item 1) calls it directly (module-qualified, no subprocess) on the
+/// hook calls it directly (module-qualified, no subprocess) on the
 /// first EXECUTE write of a not-yet-decomposed spec. It is **idempotent**: the
 /// `wave-plan.md` / pipeline-state guards (steps 2–3) make a second invocation a
 /// `{ action: "skip", reason: "already-decomposed" }` no-op. Fully fail-open —
@@ -239,7 +239,7 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
     let spec_dir = spec_file.parent().map_or_else(|| cwd.clone(), Path::to_path_buf);
     let project_root = find_project_root(&spec_dir).unwrap_or_else(|| cwd.clone());
-    // F0-e: role-classification overrides from `mustard.json#rolePatterns`.
+    // Role-classification overrides from `mustard.json#rolePatterns`.
     let role_patterns = load_role_patterns(&project_root);
 
     (|| -> Value {
@@ -317,8 +317,8 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
             return json!({ "action": "keep-single", "reason": "no-dag-depth-or-error", "signals": signals });
         }
 
-        // 8. Write wave structure through the **canonical** renderer
-        //    (F4-d item 2): map the DAG to a `wave_scaffold::Plan` and render
+        // 8. Write wave structure through the **canonical** renderer:
+        //    map the DAG to a `wave_scaffold::Plan` and render
         //    `wave-plan.md` + each `wave-N/spec.md` with the same i18n /
         //    wikilink / heading machinery `/feature` uses at PLAN. No freeform
         //    renderer here — the output is byte-identical in form.
@@ -547,7 +547,7 @@ mod tests {
         assert!(untouched.waves.iter().all(|w| w.satisfies.is_empty()));
     }
 
-    /// **Convergence (F4-d item 2).** The EXECUTE-entry decomposition writes the
+    /// **Convergence.** The EXECUTE-entry decomposition writes the
     /// exact same `wave-plan.md` the PLAN-time scaffold would, for the same
     /// plan. We prove it by rendering the canonical plan two ways — the
     /// converter path (`dag_to_plan` → `render_wave_plan`) and a hand-built

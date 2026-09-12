@@ -1,7 +1,7 @@
 //! `mustard-rt run doctor --check i1` — detect any physical
 //! `.claude/.claude/` sequence anywhere in the workspace.
 //!
-//! Part of `2026-05-26-claude-paths-single-source`. The I1 guard in
+//! The I1 guard in
 //! [`mustard_core::io::claude_paths`] is supposed to make the forbidden sequence
 //! impossible to construct programmatically — but if one physically exists on
 //! disk, it means an older version of Mustard left it behind, or some external

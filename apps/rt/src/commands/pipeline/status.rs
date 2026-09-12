@@ -39,7 +39,7 @@ fn hook_description(name: &str) -> &'static str {
     match name {
         "bash_command_gate" => "Blocks dangerous Bash; redirects grep/ls/cat to native tools; rewrites via rtk; commit gate",
         "tool_use_counter" => "Blocks Explore agents at 15 tool uses (warn at 12)",
-        "main_context_counter" => "Enforces L0 delegation; warns/denies un-delegated main-context tool calls",
+        "main_context_counter" => "Enforces delegation to subagents; warns/denies un-delegated main-context tool calls",
         "context_budget_gate" => "Blocks Task prompts over per-role budget; advisory over 40% model window",
         "close_gate" => "Closes pipeline only if QA + build pass and checklist complete",
         "scan_gate" => "Blocks /feature, /bugfix until grain.model.json exists (run `mustard-rt run scan`)",

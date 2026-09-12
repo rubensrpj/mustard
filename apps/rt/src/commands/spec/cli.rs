@@ -279,7 +279,7 @@ pub enum SpecCmd {
         #[arg(long, default_value = "light")]
         scope: String,
     },
-    /// F4-c item 4 — Propose (do NOT create) tactical fixes from structured
+    /// Propose (do NOT create) tactical fixes from structured
     /// `tactical_fix_candidates[]` in a spec's `review.result` / `qa.result`
     /// events. Emits one `tactical_fix.proposed` event per new candidate;
     /// never scaffolds a sub-spec (decision 6 — "não auto-aprovar").

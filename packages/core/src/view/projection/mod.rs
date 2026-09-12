@@ -56,7 +56,7 @@ pub(crate) fn ndjson_to_harness(e: Event) -> HarnessEvent {
 /// Convert one already-loaded raw NDJSON record (the full line as a
 /// [`serde_json::Value`], including its `payload` key) into a [`HarnessEvent`].
 ///
-/// Performance spec `performance-dashboard-rotas-lentas-cache`: the
+/// For performance, the
 /// dashboard keeps the parsed workspace records in an in-memory cache and must
 /// feed the projections WITHOUT re-walking the disk. This is the conversion
 /// entry point for events the caller already holds; [`ndjson_to_harness`]
@@ -118,8 +118,8 @@ fn harness_from_raw(raw: &Value, payload: Value) -> HarnessEvent {
 /// The canonical disk-walking event-slice loader (moved here when the SQLite store was dropped).
 /// `apps/rt` (one-shot CLI) consumes this directly; the dashboard backend now
 /// feeds the same projections from its incremental parsed-events cache via
-/// [`harness_events_from_values`] instead of re-walking the disk per command
-/// (spec `performance-dashboard-rotas-lentas-cache`). Conversion stays
+/// [`harness_events_from_values`] instead of re-walking the disk per command.
+/// Conversion stays
 /// shared (`harness_from_raw`), so the projection inputs remain identical
 /// across the two consumers (the regression seen when the dashboard had
 /// its own copy).

@@ -11,7 +11,7 @@
 //!   items in the active spec when the edited file matches an item. No verdict.
 //! - `guard-verify.js` — a **`Check`**: flags an edit that falls outside the
 //!   active spec.s declared `## Boundaries` (advisory), AND enforces the edited
-//!   subproject's `[critical]` Guards (F6 item 9 — data-driven, replacing the
+//!   subproject's `[critical]` Guards (data-driven, replacing the
 //!   removed stack-specific DbContext/DIP/int-id block). A checkable critical
 //!   Guard the edit violates is a `Deny` in strict mode; everything else is
 //!   advisory.
@@ -37,7 +37,7 @@
 //! ## Verdict note (guard-verify)
 //!
 //! The boundary mismatch is advisory — an [`Verdict::Inject`]. The data-driven
-//! critical-Guard gate (F6 item 9) is the one blocking path: in `strict` mode a
+//! critical-Guard gate is the one blocking path: in `strict` mode a
 //! checkable `[critical]` Guard of the edited subproject that the edit violates
 //! yields a [`Verdict::Deny`]; `warn` (the default) downgrades it to an
 //! advisory. Everything else stays [`Verdict::Inject`] / [`Verdict::Allow`].
@@ -139,8 +139,7 @@ fn check_boundaries(file_path: &str, cwd: &str) -> Option<(String, String)> {
     // Collect every Active+open spec that ships a `## Boundaries` (or
     // `## Limites`) block, then keep ONLY the most-recently-checkpointed one.
     // Without this, `read_dir`'s alphabetical order makes an older spec
-    // (`2026-05-26-deep-refactor-followups`) outrank a newer active spec
-    // (`2026-05-27-mustard-v4-foundation`) and warn about edits the newer
+    // outrank a newer active spec and warn about edits the newer
     // spec authorised. Recency uses `### Checkpoint:` when present; falls
     // back to the date prefix in the directory name (`YYYY-MM-DD`), then
     // to the name itself.
@@ -495,7 +494,7 @@ fn relative_to_cwd(cwd: &str, file_path: &str) -> String {
 }
 
 // ===========================================================================
-// guards-gate — data-driven critical-Guard enforcement (F6 item 9)
+// guards-gate — data-driven critical-Guard enforcement
 // ===========================================================================
 //
 // The `scan`-authored per-subproject Guards used to be pure advisory context.
@@ -1623,7 +1622,7 @@ mod tests {
         assert!(!boundary_warn_once(cwd, "spec-b", session), "and is then suppressed too");
     }
 
-    // --- F6 item 9: data-driven critical-Guard gate ------------------------
+    // --- data-driven critical-Guard gate ------------------------
 
     /// Materialise a subproject `<root>/<rel_sub>/CLAUDE.md` with a `## Guards`
     /// body of `guards`, and return the subproject dir.

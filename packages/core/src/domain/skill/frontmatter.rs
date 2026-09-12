@@ -5,7 +5,7 @@
 //! Every Mustard skill — both the foundation skills shipped under
 //! `apps/cli/templates/skills/` and the scan-generated ones under
 //! `{subproject}/.claude/skills/` — exposes a YAML frontmatter block. Before
-//! `2026-05-25-mustard-deep-refactor` the shape was implicit
+//! this contract the shape was implicit
 //! (`name`, `description`, `source`). The new contract adds four fields
 //! consumed by `skill-resolve` to score relevance deterministically:
 //!

@@ -2,15 +2,15 @@
 //!
 //! Each `*_v2` function is a thin adapter — it takes the cached workspace
 //! event slice from [`crate::telemetry::workspace_harness_events_cached`]
-//! (spec `performance-dashboard-rotas-lentas-cache`: no per-command disk
+//! (no per-command disk
 //! walk; the incremental cache re-reads only changed shards), folds it with
 //! the matching projection function (`project_spec_view_with_header`,
 //! `project_waves`, `project_quality`, `project_timeline`, `project_workspace`)
 //! and maps the typed ViewModel into the JSON shape the frontend already
 //! expects (so React contracts stay untouched). The legacy hand-rolled SQL functions
 //! (`spec_card`, `spec_waves`, `spec_quality`, `spec_timeline`,
-//! `workspace_summary`) were removed by spec
-//! `2026-05-20-sdd-domain-finalization`; the commands in `lib.rs` already
+//! `workspace_summary`) were removed;
+//! the commands in `lib.rs` already
 //! delegated to the `*_v2` adapters since the dashboard audit.
 
 use mustard_core::io::fs;
@@ -37,12 +37,12 @@ pub struct SpecCard {
     pub model: Option<String>,
     /// Sub-spec count derived from `spec.link` events with this spec as
     /// parent. Lets the dashboard render the `+N sub-specs` badge without
-    /// fanning out one `useSpecChildren` query per rendered card (spec
-    /// `2026-05-21-speccard-use-children-count`). Serde default = 0 keeps
+    /// fanning out one `useSpecChildren` query per rendered card.
+    /// Serde default = 0 keeps
     /// older clients/payloads compatible.
     #[serde(default)]
     pub children_count: u32,
-    /// Digest adherence (spec `instrumentar-adesao-ao-digest-no`): whether the
+    /// Digest adherence: whether the
     /// latest spec-scoped `analyze.digest.summary` event recorded any digest
     /// usage during ANALYZE. Folded by `spec_card_v2_with_counts`; serde
     /// default (`false`) keeps older payloads compatible.
@@ -263,7 +263,7 @@ pub(crate) fn spec_card_v2_with_counts(
     counts: &std::collections::HashMap<String, crate::telemetry::AttributedSpecCounts>,
 ) -> Result<Option<SpecCard>, String> {
     let project = std::path::PathBuf::from(repo_path);
-    // Cached workspace slice (spec `performance-dashboard-rotas-lentas-cache`):
+    // Cached workspace slice:
     // the spec-detail route fans 5 commands out in parallel — each used to
     // re-walk ~10k NDJSON shards via `read_workspace_events`. The shared
     // incremental cache parses a shard once and serves the burst from memory.
@@ -277,7 +277,7 @@ pub(crate) fn spec_card_v2_with_counts(
     if view.is_empty() {
         return Ok(None);
     }
-    // Spec `2026-05-21-speccard-use-children-count`: include the sub-spec
+    // Include the sub-spec
     // count up-front so the React card stops fanning out one
     // `useSpecChildren` query per rendered row. Re-fold the event slice on
     // `spec.link` payloads whose `parent` matches this spec.
@@ -311,7 +311,7 @@ pub(crate) fn spec_card_v2_with_counts(
         card.phase = reconcile_phase_with_meta(&meta, &card.phase);
     }
     merge_attributed_counts(&mut card, counts.get(spec));
-    // Digest adherence (spec `instrumentar-adesao-ao-digest-no`): fold the
+    // Digest adherence: fold the
     // latest `analyze.digest.summary` event for this spec. The payload keys
     // are camelCase (`digestUsed`, `sourceReadsBeforeDigest`) — emitted by
     // `mustard-rt run digest-adherence-finalize`. No event → the struct
@@ -1141,7 +1141,7 @@ pub fn workspace_summary_v2(repo_path: &str) -> Result<WorkspaceSummary, String>
     let summary = mustard_core::view::projection::project_workspace(&events, now_ms);
     let mut out = workspace_summary_from_view(&summary);
 
-    // Followup-fix (2026-05-21, spec `2026-05-21-economia-moat-followup-fixes`):
+    // Follow-up fix:
     // strip terminal-status specs from `spec_tracks` so the "PIPELINES ATIVOS"
     // hero card never lists a `completed` / `cancelled` / `closed-followup`
     // spec as if it were still in EXECUTE. The previous behaviour leaked the
@@ -1240,8 +1240,7 @@ fn workspace_summary_from_view(view: &mustard_core::WorkspaceSummary) -> Workspa
         events_per_minute: view.events_per_minute,
         // Preserve `None` end-to-end so the frontend can render "—" when
         // token-savings data is unavailable instead of misrepresenting it
-        // as a literal "0 tokens economizados". Spec
-        // `2026-05-20-dashboard-ux-honest`.
+        // as a literal "0 tokens economizados".
         tokens_saved_today: view.tokens_saved_today,
         specs_active_count: i64::from(view.specs_active_count),
         spec_tracks: view.spec_tracks.iter().map(spec_track_from_view).collect(),
@@ -1937,7 +1936,7 @@ mod tests {
         assert!(spec_checklist_progress_v2(".", "").is_err());
     }
 
-    // ── Digest adherence fold (spec `instrumentar-adesao-ao-digest-no`) ──────
+    // ── Digest adherence fold ──────
 
     #[test]
     fn spec_card_folds_latest_digest_summary_for_the_spec() {

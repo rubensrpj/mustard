@@ -165,7 +165,7 @@ impl Registry {
             },
             Module {
                 id: "main_context_counter",
-                // `main-context-counter` — enforces L0 on the orchestrator.
+                // `main-context-counter` — enforces delegation on the orchestrator.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Any),
                     (Trigger::SubagentStart, ToolMatch::Any),
@@ -295,7 +295,7 @@ impl Registry {
                 check: Some(Box::new(ScanCleanGate)),
                 observer: None,
             },
-            // F4-d item 1 — hard cap on concurrently active pipelines. A
+            // Hard cap on concurrently active pipelines. A
             // PreToolUse(Skill) gate sibling to `scan_gate`: it sits
             // on the entry of `/feature` and `/bugfix` and refuses (strict) or
             // warns (default) when opening another pipeline would exceed
@@ -327,7 +327,7 @@ impl Registry {
                 check: Some(Box::new(WorkBranchGate)),
                 observer: None,
             },
-            // Full-scope approval hard-gate (D5 — spec-scaffold-lifecycle-gate).
+            // Full-scope approval hard-gate.
             // Denies a PreToolUse(Write|Edit) of a PRODUCTION file when the
             // active spec is `scope=full`, `stage=Plan`, and has no `/spec`
             // approval event. Registered on Task|Agent too (the prompt's "covers
@@ -359,7 +359,7 @@ impl Registry {
             },
             Module {
                 id: "delegation_advisory",
-                // Advisory (L0 Universal Delegation): on PostToolUse(Write|Edit)
+                // Advisory (delegate to subagents): on PostToolUse(Write|Edit)
                 // it counts DISTINCT files the main context edits during an
                 // active pipeline and, past a threshold, reminds the
                 // orchestrator to delegate via Task. Pure Observer —
@@ -485,7 +485,7 @@ impl Registry {
                 check: Some(Box::new(SubagentInject)),
                 observer: None,
             },
-            // T5 (forgeable-approval gate) — on the user's answer to the PLAN
+            // Forgeable-approval gate — on the user's answer to the PLAN
             // approval `AskUserQuestion`, record `<spec>/.approved-by-user` when
             // it is a genuine approval of the active Full spec still awaiting
             // approval in PLAN. `approve-spec` requires that marker in strict
@@ -610,7 +610,7 @@ impl Registry {
             // re-wave / wave-advance are advisory restructuring, never gates).
             Module {
                 id: "rewave_observer",
-                // F4-c item 1 — on the first EXECUTE write of a not-yet-decomposed
+                // On the first EXECUTE write of a not-yet-decomposed
                 // spec, fire `exec_rewave_check::decompose_if_signaled` (idempotent
                 // via the `wave-plan.md` guard). PreToolUse(Write|Edit), fail-open.
                 applies_to: &[
@@ -635,7 +635,7 @@ impl Registry {
             },
             Module {
                 id: "wave_complete_observer",
-                // F4-c item 2 — on SubagentStop, when the active wave's
+                // On SubagentStop, when the active wave's
                 // `_review-spans.md` ledger is clean (≥1 child returned, no red),
                 // auto-emit `pipeline.wave.complete` (idempotent via the NDJSON
                 // event check). SubagentStop, fail-open.

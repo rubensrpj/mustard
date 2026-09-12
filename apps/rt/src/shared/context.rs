@@ -1260,7 +1260,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // clarified_marker_path — shape (F6 clarify gate)
+    // clarified_marker_path — shape (the clarify gate)
     // -----------------------------------------------------------------------
 
     #[test]

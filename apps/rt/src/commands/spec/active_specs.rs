@@ -1886,7 +1886,7 @@ mod tests {
         // Deliberately no meta.json — the .md header is the only source.
     }
 
-    /// Legacy-read contract (F4-f item 1): a spec ALREADY ON DISK that has its
+    /// Legacy-read contract: a spec ALREADY ON DISK that has its
     /// lifecycle header in `spec.md` and **no `meta.json`** must still be read
     /// correctly via the markdown fallback — classified Active (not Malformed)
     /// and surfacing its real stage. This protects specs written before

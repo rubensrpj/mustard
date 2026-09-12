@@ -153,7 +153,7 @@ fn violations_under(root: &Path, files: &[PathBuf]) -> Vec<String> {
 
         // Every `spec.md` / `wave-plan.md` must have a `meta.json` beside it with
         // a legal lifecycle triple — EXCEPT inside a `qa/` or `review/` phase
-        // directory (D3): those are pipeline phases, not specs, so they carry no
+        // directory: those are pipeline phases, not specs, so they carry no
         // lifecycle sidecar (their result lives in `report.md` / `verdict.md`).
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let parent_name = path

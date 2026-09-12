@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn allow_does_not_clobber_prior_decisive_verdict() {
-        // Regression guard for spec 2026-05-20-restore-rtk-rewrite: when one
+        // Regression guard for the rtk rewrite: when one
         // module returns Rewrite and a later module (tool_use_counter /
         // main_context_counter) returns Allow, the Rewrite must survive —
         // otherwise rtk-rewrite is silently swallowed by the dispatcher.

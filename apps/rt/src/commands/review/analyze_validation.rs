@@ -488,7 +488,7 @@ fn truncate_for_message(s: &str) -> String {
 
 /// Whether an AC `command` is a TAUTOLOGY — it exits 0 whether or not the
 /// feature was actually built, so it verifies nothing. These are the rubber
-/// stamps F6 kills: a bare `cargo build`/`cargo check`, a `cargo test` with no
+/// stamps this linter catches: a bare `cargo build`/`cargo check`, a `cargo test` with no
 /// test-name filter (it just re-runs the pre-existing suite), `npm test`/
 /// `npm run build`, or a source `grep`/`rg` (asserts textual presence OR
 /// absence — neither is runtime behaviour).
@@ -1249,7 +1249,7 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
 
     // Validation 6: AC TAUTOLOGY linter. A criterion "verified" by a bare
     // `cargo build` / `cargo test` (no filter) / `npm test` / source `grep`
-    // passes whether or not the feature exists — the rubber stamp F6 kills. Flag
+    // passes whether or not the feature exists — a rubber stamp. Flag
     // each such WEAK AC by id (WARN — analyze-validation never blocks). Two
     // exemptions: the LAST AC is the trailing build-green SAFETY net (kept on
     // purpose), and an unfilled `<…>` skeleton command is not yet a real

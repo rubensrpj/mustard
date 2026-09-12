@@ -11,9 +11,9 @@
 //! ## What this does NOT do
 //!
 //! - **Never downloads, clones, or compiles** any grammar. The user copy-pastes
-//!   the suggested commands. This is a non-goal of the parent spec
-//!   (`2026-05-27-mustard-v4-foundation`: "Linkar grammars
-//!   individuais no binário Mustard — proibido sempre").
+//!   the suggested commands. This is a non-goal
+//!   ("Linkar grammars individuais no binário Mustard — proibido
+//!   sempre").
 //! - **Never feeds the suggestion catalogue back into the regression gate.** The
 //!   catalogue here is a *UX bookmark*; `mustard_core::domain::ast::GrammarLoader`
 //!   discovers grammars from `~/.config/tree-sitter/config.json` at runtime,

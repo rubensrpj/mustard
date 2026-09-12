@@ -8,7 +8,7 @@ use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::{glob_matches, ProjectConfig, RolePattern};
 use std::path::Path;
 
-/// Built-in keyword categories — the pre-F0-e classifier, kept byte-identical so
+/// Built-in keyword categories — the original classifier, kept byte-identical so
 /// known stacks do not regress. The first matching category wins, in order
 /// schema → api → ui → test.
 const BUILTIN_ROLES: &[(&str, &[&str])] = &[
@@ -34,7 +34,7 @@ const GENERIC_SEGMENTS: &[&str] = &[
 ///    so a non-English project can name its own layers.
 /// 2. The built-in keyword categories ([`BUILTIN_ROLES`]) — known stacks stay
 ///    byte-identical.
-/// 3. **Agnostic structural fallback** (F0-e): instead of dumping everything not
+/// 3. **Agnostic structural fallback**: instead of dumping everything not
 ///    matched by an English keyword into `"lib"` (which collapses `layerCount`
 ///    to 1 for any non-JS project), derive the role from the file's most
 ///    significant directory segment. A file under `handlers/` becomes role

@@ -213,7 +213,7 @@ pub fn compute_waves(files: &[String], project_root: &Path) -> Value {
         return json!({ "error": "empty-input" });
     }
     let graph = build_graph(files, project_root);
-    // F0-e: role-classification overrides from `mustard.json#rolePatterns`.
+    // Role-classification overrides from `mustard.json#rolePatterns`.
     let role_patterns = load_role_patterns(project_root);
     match topological_waves(&graph) {
         TopoResult::Cycle(stuck) => {
@@ -384,8 +384,7 @@ fn role_layered_fallback(
 ///
 /// Accepts BOTH input shapes — the prose⇄binary drift that made the documented
 /// `wave-dependency < plan.json` form answer `empty-input` (the refs said to
-/// feed the plan JSON while the binary only parsed `{files}`; first recorded as
-/// a follow-up in spec `redesenho-agnostico-indice-termos-digest`):
+/// feed the plan JSON while the binary only parsed `{files}`):
 ///
 /// - **derivation shape**: top-level `files: [...]` (+ optional `projectRoot`);
 /// - **plan JSON** (the same document `plan-materialize --plan` consumes):
@@ -1369,8 +1368,7 @@ mod tests {
     /// The documented `< plan.json` form: a plan JSON (`{waves: [{files}]}`)
     /// must yield the union of the per-wave censuses — this was the prose⇄binary
     /// drift that answered `empty-input` to the exact input the refs prescribed
-    /// (field report 2026-06-12 + follow-up note in spec
-    /// `redesenho-agnostico-indice-termos-digest`).
+    /// (found by a field report on 2026-06-12).
     #[test]
     fn files_from_value_accepts_plan_json_shape_with_dedup() {
         let v = json!({

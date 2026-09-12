@@ -1,6 +1,6 @@
 //! NDJSON-backed economy readers.
 //!
-//! [[2026-05-26-no-sqlite-git-source-of-truth]] migrated every reader
+//! The move off SQLite migrated every reader
 //! off the legacy SQLite connection. Each function now takes the project
 //! root [`Path`] + an [`EconomyScope`] and walks the per-spec NDJSON event
 //! log under `<project_root>/.claude/spec/*/.events/*.ndjson` (plus the

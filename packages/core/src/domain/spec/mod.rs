@@ -57,14 +57,14 @@
 use crate::domain::model::view::{Flags, Outcome, SpecState, Stage};
 use std::path::Path;
 
-// Byte-stable spec layout contract — from `2026-05-25-mustard-deep-refactor`.
+// Byte-stable spec layout contract.
 // Public API entry point: `validate(&SpecInput)`. Lives in its own submodule so
 // the historical header parser/serializer above stays the single owner of
 // header IO without bloating with the contract surface.
 pub mod contract;
 
-// `## Funções tocadas` canonical-format parser — from
-// `2026-05-27-mustard-v4-foundation`. Owns parsing, validation, and
+// `## Funções tocadas` canonical-format parser. Owns parsing,
+// validation, and
 // the fallback resolver consumed by the regression snapshot and the regression gate. Lives here so
 // the spec-document module is the single home of every parser that reads a
 // `spec.md`; the body parser stays free of regression-check concerns. The

@@ -356,8 +356,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("placeholder.fill_metric", Locale::EnUs) => "fill in the success metric.",
         ("placeholder.fill_excluded", Locale::PtBr) => "O que fica de fora.",
         ("placeholder.fill_excluded", Locale::EnUs) => "fill in what stays out.",
-        // `placeholder.see_below` was retired with the single-AC-heading fix
-        // (TF 2026-06-10-ac-heading-unico): the AC PRD entry is no longer
+        // `placeholder.see_below` was retired with the single-AC-heading fix:
+        // the AC PRD entry is no longer
         // rendered (the list block is the only emitter), so its body needs no
         // user-facing copy.
         ("placeholder.fill_files", Locale::PtBr) => "Listar arquivos afetados.",
@@ -2347,7 +2347,7 @@ mod tests {
         assert_eq!(wave_label(3, Locale::EnUs), "W3");
     }
 
-    /// TF 2026-06-10-ac-heading-unico: `heading.spec.ac` is the ONLY AC
+    /// `heading.spec.ac` is the ONLY AC
     /// heading key — the byte-identical `heading.spec.ac_list` twin is gone
     /// (a second key for the same heading let the scaffold emit it twice).
     #[test]

@@ -430,7 +430,7 @@ pub(crate) fn audit(spec_dir: &Path) -> Value {
 
     let limit = resolve_limit();
     let task_limit = resolve_task_limit();
-    // F0-e: honour `mustard.json#rolePatterns` so non-English / non-JS layers
+    // Honour `mustard.json#rolePatterns` so non-English / non-JS layers
     // classify correctly. Resolve from the workspace anchor, fail-open to cwd.
     let project_root = crate::shared::context::workspace_root_strict().unwrap_or(cwd);
     let role_patterns = load_role_patterns(&project_root);

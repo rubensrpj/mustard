@@ -8,8 +8,8 @@
     clippy::uninlined_format_args
 )]
 
-//! Integration tests for spec 2026-05-20-restore-rtk-rewrite — rewrite, pass-through and the persisted event,
-//! plus dual-coverage sibling tests for spec 2026-05-21-rtk-rewrite-dual-coverage
+//! Integration tests for the rtk rewrite — rewrite, pass-through and the persisted event,
+//! plus dual-coverage sibling tests
 //! (warn vs strict mode emitted by `bash_guard`).
 //!
 //! These drive the `mustard-rt` binary via subprocess (no shell quoting) so the
@@ -265,7 +265,7 @@ fn walk_ndjson(root: &std::path::Path, cb: &mut dyn FnMut(&str)) {
 }
 
 // -----------------------------------------------------------------------------
-// Dual-coverage sibling tests (spec 2026-05-21-rtk-rewrite-dual-coverage)
+// Dual-coverage sibling tests
 //
 // `strict` is an OPT-IN mode (no longer the default): instead of rewriting the
 // command via `updatedInput`, the gate denies and surfaces the rewrite

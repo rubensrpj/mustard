@@ -1,6 +1,6 @@
 //! `active_spec_limit_gate` — hard cap on concurrently active pipelines.
 //!
-//! ## Scope (F4-d item 1 — "não se perder")
+//! ## Scope — so no open pipeline gets lost
 //!
 //! A `PreToolUse(Skill)` gate, sibling to
 //! [`crate::hooks::write::scan_gate::ScanGate`]: it sits on

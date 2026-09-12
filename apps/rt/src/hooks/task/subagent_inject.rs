@@ -11,7 +11,7 @@
 //! The slice is surfaced as a [`Verdict::Inject`]. The orchestrator-side
 //! `agent-prompt-render` already handles fully-formed dispatches; this hook
 //! covers the ad-hoc `Task(general-purpose)` calls that bypass the renderer
-//! (the L0 path from CLAUDE.md).
+//! (the orchestrator delegating by hand).
 //!
 //! ## Selective spec-memory load
 //!

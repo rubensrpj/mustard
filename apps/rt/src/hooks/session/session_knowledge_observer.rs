@@ -506,7 +506,7 @@ mod tests {
             "retries": 3,
             "toolBreakdown": { "Bash": 10, "Edit": 5, "Agent": 1 },
         });
-        let p = derive_prescription(&metrics).expect("L0 heuristic must fire");
+        let p = derive_prescription(&metrics).expect("the delegation heuristic must fire");
         assert!(p.contains("delegate"));
     }
 
