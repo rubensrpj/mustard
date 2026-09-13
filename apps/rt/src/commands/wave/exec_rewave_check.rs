@@ -30,12 +30,14 @@
 //! wrapped.
 
 use crate::commands::spec::scope_decompose::decide;
+use crate::commands::wave::wave_collapse::user_rejected_waves;
 use crate::commands::wave::wave_dependency::compute_waves;
 use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, parse_files_section};
 use crate::commands::wave::wave_scaffold::{
     Plan, WavePlanEntry, headings_for_rewave, render_wave_plan, render_wave_spec, wave_name,
 };
 use mustard_core::io::fs;
+use mustard_core::read_meta;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -214,8 +216,9 @@ fn carry_parent_criteria(plan: &mut Plan, parent_spec_text: &str) {
 /// This is the reusable, non-printing core of [`run`] — the `rewave_observer`
 /// hook calls it directly (module-qualified, no subprocess) on the
 /// first EXECUTE write of a not-yet-decomposed spec. It is **idempotent**: the
-/// `wave-plan.md` / pipeline-state guards (steps 2–3) make a second invocation a
-/// `{ action: "skip", reason: "already-decomposed" }` no-op. Fully fail-open —
+/// `wave-plan.md` guard (step 2) makes a second invocation a
+/// `{ action: "skip", reason: "already-decomposed" }` no-op, and a spec whose
+/// waves the user refused (step 3) is never decomposed again. Fully fail-open —
 /// any IO failure degrades to a `skip` / `keep-single` action, never an error.
 #[must_use]
 pub fn decompose_if_signaled(spec_file: &Path) -> Value {
@@ -239,6 +242,13 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
         let wave_plan_path = spec_dir.join("wave-plan.md");
         if wave_plan_path.exists() {
             return json!({ "action": "skip", "reason": "already-decomposed" });
+        }
+
+        // 3. Skip when the user refused the waves: `wave-collapse` leaves that
+        //    mark in the spec's `meta.json`, and the wave plan it removed must
+        //    not come back on the next write.
+        if read_meta(&spec_dir.join("meta.json")).is_some_and(|meta| user_rejected_waves(&meta)) {
+            return json!({ "action": "skip", "reason": "user-rejected-waves" });
         }
 
         // 4. Parse `## Files`.
@@ -550,6 +560,38 @@ mod tests {
         assert!(!rendered_a.contains("# Plano de Waves"));
         assert!(rendered_a.contains("[[wave.epic-x.1-general]]"));
         assert!(rendered_a.contains("[[wave.epic-x.2-frontend]]"));
+    }
+
+    /// Depois de o usuário juntar as ondas numa spec leve, a decomposição da
+    /// entrada da execução não as refaz: ela lê a marca que o `wave-collapse`
+    /// grava no `meta.json`, pelo gravador dele. Sem a marca, a mesma spec não
+    /// ouve essa resposta.
+    #[test]
+    fn a_spec_whose_waves_the_user_refused_is_never_decomposed_again() {
+        let spec_in = |root: &Path| {
+            let spec_dir = root.join(".claude").join("spec").join("junta");
+            std::fs::create_dir_all(&spec_dir).unwrap();
+            std::fs::write(
+                spec_dir.join("spec.md"),
+                "# Spec\n\n## Files\n- src/domain/user.rs\n- src/api/handler.rs\n- web/src/page.tsx\n",
+            )
+            .unwrap();
+            std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Execute"}"#).unwrap();
+            spec_dir
+        };
+
+        let control = tempdir().unwrap();
+        let plain = spec_in(control.path());
+        let answer = decompose_if_signaled(&plain.join("spec.md"));
+        assert_ne!(answer["reason"], json!("user-rejected-waves"), "{answer}");
+
+        let refused = tempdir().unwrap();
+        let spec_dir = spec_in(refused.path());
+        crate::commands::wave::wave_collapse::patch_root_meta_light(&spec_dir);
+        let answer = decompose_if_signaled(&spec_dir.join("spec.md"));
+        assert_eq!(answer, json!({ "action": "skip", "reason": "user-rejected-waves" }));
+        assert!(spec_dir.join("spec.md").exists(), "the joined spec stays whole");
+        assert!(!spec_dir.join("wave-plan.md").exists(), "no wave plan comes back");
     }
 
     #[test]

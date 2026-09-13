@@ -406,7 +406,7 @@ fn patch_parent_meta_full(spec_dir: &Path) {
 
 /// Patch the root `meta.json` for Light collapse: `isWavePlan:false`, drop
 /// `totalWaves`, `scope_override:"user-rejected-waves"`. Fail-open.
-fn patch_root_meta_light(spec_dir: &Path) {
+pub(crate) fn patch_root_meta_light(spec_dir: &Path) {
     let path = spec_dir.join("meta.json");
     let mut meta = read_meta(&path).unwrap_or_default();
     meta.is_wave_plan = Some(false);
@@ -414,6 +414,11 @@ fn patch_root_meta_light(spec_dir: &Path) {
     set_scope_override(&mut meta);
     write_meta_logged(&path, &meta);
 }
+
+/// A chave do `meta.json` em que a recusa das ondas fica gravada, e o valor
+/// dela.
+const SCOPE_OVERRIDE_KEY: &str = "scopeOverride";
+const USER_REJECTED_WAVES: &str = "user-rejected-waves";
 
 /// Record `scope_override:"user-rejected-waves"` in the `meta.json` catch-all
 /// `raw` object (the key the `refs/spec/resume-loop.md` prose uses).
@@ -423,10 +428,17 @@ fn set_scope_override(meta: &mut Meta) {
     }
     if let Some(obj) = meta.raw.as_object_mut() {
         obj.insert(
-            "scopeOverride".to_string(),
-            Value::String("user-rejected-waves".to_string()),
+            SCOPE_OVERRIDE_KEY.to_string(),
+            Value::String(USER_REJECTED_WAVES.to_string()),
         );
     }
+}
+
+/// O usuário recusou as ondas desta spec: o `meta.json` traz a marca que o
+/// [`set_scope_override`] grava. A decomposição da entrada da execução lê
+/// daqui, para não refazer as ondas que o usuário juntou.
+pub(crate) fn user_rejected_waves(meta: &Meta) -> bool {
+    meta.raw.get(SCOPE_OVERRIDE_KEY).and_then(Value::as_str) == Some(USER_REJECTED_WAVES)
 }
 
 /// Rewrite `wave-plan.md` to a single-wave table referencing only `wave1`. The
