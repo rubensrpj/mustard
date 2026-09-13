@@ -74,14 +74,37 @@ pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
     } else {
         format!("{}/{}", cwd_norm.trim_end_matches('/'), fp_norm)
     };
-    let cwd_prefix = format!("{}/", cwd_norm.trim_end_matches('/'));
-    if let Some(rel) = abs.strip_prefix(&cwd_prefix) {
-        Some(rel.to_string())
-    } else if abs == cwd_norm.trim_end_matches('/') {
-        Some(String::new())
-    } else {
-        None
+    // `.` e `..` saem antes da comparação: `.claude/../src/x.rs` é código do
+    // projeto, e não um artefato de `.claude/`.
+    let (abs, cwd) = (lexical(&abs), lexical(&cwd_norm));
+    if abs == cwd {
+        return Some(String::new());
     }
+    let prefix = if cwd.is_empty() || cwd.ends_with('/') { cwd } else { format!("{cwd}/") };
+    abs.strip_prefix(&prefix).map(str::to_string)
+}
+
+/// `path` com `.` e `..` resolvidos só no texto, sem olhar o disco. Um `..`
+/// que passaria da raiz para nela.
+fn lexical(path: &str) -> String {
+    let (root, rest) = if let Some(rest) = path.strip_prefix('/') {
+        ("/", rest)
+    } else if is_absolute(path) {
+        (path.get(..3).unwrap_or_default(), path.get(3..).unwrap_or_default())
+    } else {
+        ("", path)
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    format!("{root}{}", parts.join("/"))
 }
 
 /// `true` quando um caminho com barras normais é absoluto: `/...` ou `C:/...`.
@@ -289,6 +312,14 @@ mod tests {
         assert_eq!(relative_to_cwd("/p", "/p").as_deref(), Some(""));
         assert_eq!(relative_to_cwd("/p", "/outra/a.rs"), None);
         assert_eq!(relative_to_cwd("/p", "/pp/a.rs"), None, "a sibling folder is outside");
+        // `.` e `..` resolvidos só no texto: o caminho que dá a volta por
+        // `.claude/` chega onde aponta, e um que sai da raiz fica fora.
+        assert_eq!(relative_to_cwd("/p", "/p/.claude/../src/x.rs").as_deref(), Some("src/x.rs"));
+        assert_eq!(
+            relative_to_cwd("/p", ".claude/spec/x/../x/./spec.md").as_deref(),
+            Some(".claude/spec/x/spec.md"),
+        );
+        assert_eq!(relative_to_cwd("/p", "/p/../outra/a.rs"), None);
     }
 
     /// Cada classe, pelas cinco ferramentas de arquivo; outra ferramenta não
@@ -310,6 +341,8 @@ mod tests {
             ("/p/.claude/plans/plano.md", PathClass::Harness),
             ("/p/.claude/scratch/probe.sh", PathClass::Harness),
             ("/p/.claude/.cache/spec-material.json", PathClass::Harness),
+            ("/p/.claude/../src/x.rs", PathClass::Production),
+            ("/p/.claude/spec/x/../x/spec.md", spec("x")),
             ("/p/.claude/settings.json", PathClass::Artifact),
             ("/p/target/debug/x", PathClass::Artifact),
             ("/p/src/scratch_notes.rs", PathClass::Production),
