@@ -599,7 +599,7 @@ fn term_matches(q: &str, t: &str) -> bool {
 /// marks a dangling node (its mass teleports).
 fn adjacency(modules: &[crate::model::Module], direction: Direction, eligible: &[bool]) -> (Vec<Vec<(usize, u64)>>, Vec<u128>) {
     let n = modules.len();
-    let edges = crate::graph::resolve_edges(modules, &None);
+    let edges = crate::graph::resolve_edges(modules, &None, &[]);
     let mut out: Vec<Vec<(usize, u64)>> = vec![Vec::new(); n];
     let mut push = |from: usize, to: usize, w: u64| {
         if eligible[from] && eligible[to] {

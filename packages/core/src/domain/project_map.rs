@@ -510,6 +510,31 @@ pub fn search(map: &ProjectMap, query: &str) -> Vec<Found> {
         .collect()
 }
 
+/// Quantos achados da busca pesam na escolha da pasta.
+const FOLDER_HITS: usize = 50;
+
+/// A pasta que mais casa com as palavras de uma tarefa: a soma das notas dos
+/// arquivos achados, pasta a pasta, sobre os achados mais fortes. Teste e
+/// arquivo escrito por máquina não contam. `None` quando nada casa.
+#[must_use]
+pub fn best_folder(map: &ProjectMap, task: &str) -> Option<String> {
+    let docs: Vec<(u64, String)> = map
+        .modules
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| is_example_material(m))
+        .map(|(i, m)| (i as u64, search_text(m)))
+        .collect();
+    let index = SearchIndex::build(docs.iter().map(|(id, text)| (*id, text.as_str())));
+    let mut by_folder: BTreeMap<&str, u64> = BTreeMap::new();
+    for hit in index.top(&query_terms(task), FOLDER_HITS) {
+        if let Some(m) = map.modules.get(hit.id as usize) {
+            *by_folder.entry(folder_of(&m.path)).or_insert(0) += hit.score;
+        }
+    }
+    by_folder.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0))).map(|(f, _)| f.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Exemplos para uma tarefa
 // ---------------------------------------------------------------------------
@@ -568,19 +593,50 @@ struct Candidate<'a> {
     last_at: i64,
 }
 
+/// As importações principais de uma pasta, tiradas dos arquivos mais
+/// parecidos entre si. Cada arquivo vale a soma, sobre as importações dele, de
+/// quantos outros arquivos da pasta também as têm; os mais parecidos são o
+/// terço de cima (no mínimo dois), e as importações principais são as que pelo
+/// menos dois deles têm, das mais comuns para as menos.
+fn main_imports_of(files: &[&MapModule]) -> Vec<String> {
+    let mut count: BTreeMap<&str, usize> = BTreeMap::new();
+    for m in files {
+        for d in &m.deps {
+            *count.entry(d.as_str()).or_insert(0) += 1;
+        }
+    }
+    let mut ranked: Vec<(usize, &MapModule)> = files
+        .iter()
+        .filter(|m| !m.deps.is_empty())
+        .map(|m| (m.deps.iter().map(|d| count[d.as_str()] - 1).sum(), *m))
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+    let core = ranked.len().div_ceil(3).max(2);
+    let mut shared: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, m) in ranked.iter().take(core).filter(|(score, _)| *score > 0) {
+        for d in &m.deps {
+            *shared.entry(d.as_str()).or_insert(0) += 1;
+        }
+    }
+    let mut common: Vec<(&str, usize)> = shared.into_iter().filter(|&(_, n)| n >= 2).collect();
+    common.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| count[b.0].cmp(&count[a.0])).then_with(|| a.0.cmp(b.0)));
+    common.into_iter().take(MAX_MAIN_IMPORTS).map(|(d, _)| d.to_string()).collect()
+}
+
 /// Escolhe 2 ou 3 exemplos para uma tarefa cujo alvo é `target` (um arquivo
-/// que existe ou vai existir, ou uma pasta), pelos critérios, nesta ordem:
+/// que existe ou vai existir, ou uma pasta):
 ///
-/// 1. mesmo lugar e mesmo papel: a mesma pasta do alvo e as mesmas
-///    importações principais no grafo, nunca o sufixo do nome;
-/// 2. a receita do git: os últimos 3 commits que criaram um arquivo do mesmo
-///    tipo na pasta, com os arquivos mudados junto;
-/// 3. o mais recente;
-/// 4. com teste;
-/// 5. tamanho típico: fora os maiores que o quartil de cima da pasta.
+/// - mesmo lugar e mesmo papel: a mesma pasta do alvo e as mesmas
+///   importações principais no grafo, nunca o sufixo do nome;
+/// - a receita do git: os últimos 3 commits que criaram um arquivo do mesmo
+///   tipo na pasta, com os arquivos mudados junto;
+/// - com teste primeiro, e depois o mais recente;
+/// - tamanho típico: entre o quartil de baixo e o de cima da pasta, o que
+///   deixa de fora o índice de módulo curto, que não mostra como fazer, e o
+///   arquivo grande demais, que mistura trabalhos.
 ///
-/// As lições do banco (critério 6) vêm de quem chama, que lê o banco. Sem
-/// histórico, valem os critérios 1, 4 e 5.
+/// As lições do banco vêm de quem chama, que lê o banco. Sem histórico, valem
+/// a pasta, as importações, o teste e o tamanho.
 #[must_use]
 pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
     let target = clean_path(target);
@@ -590,7 +646,7 @@ pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
     let folder = if is_folder { target.clone() } else { folder_of(&target).to_string() };
     let last_at = |path: &str| -> i64 { file_history(&map.history, path).map_or(0, |h| h.last_at) };
 
-    // 1. A mesma pasta; com menos de 2, as pastas vizinhas (mesmo pai).
+    // A mesma pasta; com menos de 2, as pastas vizinhas (mesmo pai).
     let usable = |m: &&MapModule| is_example_material(m) && m.path != target;
     let mut pool: Vec<(&MapModule, bool)> =
         map.modules.iter().filter(usable).filter(|m| folder_of(&m.path) == folder).map(|m| (m, true)).collect();
@@ -603,22 +659,13 @@ pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
         pool.extend(map.modules.iter().filter(usable).filter(|m| near(m)).map(|m| (m, false)));
     }
 
-    // As importações principais: as do alvo, quando ele existe; senão, as que
-    // pelo menos metade da pasta tem (e no mínimo dois arquivos).
+    // As importações principais: as do alvo, quando ele existe e importa algo;
+    // senão, as dos arquivos mais parecidos da pasta.
     let main_imports: Vec<String> = match target_module {
-        Some(m) => m.deps.iter().take(MAX_MAIN_IMPORTS).cloned().collect(),
-        None => {
+        Some(m) if !m.deps.is_empty() => m.deps.iter().take(MAX_MAIN_IMPORTS).cloned().collect(),
+        _ => {
             let in_folder: Vec<&MapModule> = pool.iter().filter(|(_, same)| *same).map(|(m, _)| *m).collect();
-            let mut count: BTreeMap<&str, usize> = BTreeMap::new();
-            for m in &in_folder {
-                for d in &m.deps {
-                    *count.entry(d.as_str()).or_insert(0) += 1;
-                }
-            }
-            let floor = (in_folder.len().div_ceil(2)).max(2);
-            let mut common: Vec<(&str, usize)> = count.into_iter().filter(|&(_, n)| n >= floor).collect();
-            common.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-            common.into_iter().take(MAX_MAIN_IMPORTS).map(|(d, _)| d.to_string()).collect()
+            main_imports_of(&in_folder)
         }
     };
 
@@ -639,15 +686,17 @@ pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
             candidates.retain(|c| !c.shared.is_empty());
         }
     }
-    // 5. Fora os maiores que o quartil de cima, quando há pelo menos quatro.
-    if candidates.len() >= 4 {
+    // Tamanho típico, quando há pelo menos quatro: entre os quartis.
+    let typical = candidates.len() >= 4;
+    if typical {
         let mut locs: Vec<usize> = candidates.iter().map(|c| c.module.loc).collect();
         locs.sort_unstable();
+        let q1 = locs[locs.len() / 4];
         let q3 = locs[(locs.len() * 3).div_ceil(4) - 1];
-        candidates.retain(|c| c.module.loc <= q3);
+        candidates.retain(|c| (q1..=q3).contains(&c.module.loc));
     }
-    // 4 e 3. Com teste primeiro, depois o mais recente, depois mais
-    // importações em comum, depois o nome.
+    // A mesma pasta antes da vizinha; com teste primeiro; depois o mais
+    // recente, mais importações em comum e o nome.
     let tested = |c: &Candidate| !c.module.tests.is_empty() || c.module.has_tests;
     candidates.sort_by(|a, b| {
         b.same_folder
@@ -657,7 +706,6 @@ pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
             .then_with(|| b.shared.len().cmp(&a.shared.len()))
             .then_with(|| a.module.path.cmp(&b.module.path))
     });
-    let typical = candidates.len() >= 4;
     let picks = candidates
         .iter()
         .take(MAX_PICKS)
@@ -956,6 +1004,62 @@ mod tests {
         }
         assert!(got.picks[0].why.iter().any(|w| w.contains("mesma pasta")), "{:?}", got.picks[0].why);
         assert!(got.picks[0].why.iter().any(|w| w.contains("spec_events_cli.rs")), "{:?}", got.picks[0].why);
+    }
+
+    /// Uma árvore do tamanho da real: uma pasta de comandos com 24 arquivos que
+    /// importam o mesmo núcleo em proporções diferentes, um índice de módulo
+    /// curto que importa todos os irmãos, e uma pasta de ganchos com um arquivo
+    /// pequeno que casa bem com "run" sozinho.
+    fn real_sized_tree() -> ProjectMap {
+        let folder = "apps/rt/src/commands/spec";
+        let context = "apps/rt/src/shared/context.rs";
+        let util = "apps/rt/src/util/mod.rs";
+        let sections = "apps/rt/src/commands/spec/spec_sections.rs";
+        let names: Vec<String> = (0..24).map(|i| format!("{folder}/cmd_{i:02}.rs")).collect();
+        let mut modules = Vec::new();
+        for (i, path) in names.iter().enumerate() {
+            let mut deps = vec![context];
+            if i % 2 == 0 {
+                deps.push(util);
+            }
+            if i % 3 == 0 {
+                deps.push(sections);
+            }
+            let mut m = module(path, 150 + (i * 13) % 200, &deps);
+            m.declarations = vec![MapDecl { name: "run".to_string() }, MapDecl { name: format!("Cmd{i}Opts") }];
+            m.has_tests = i % 4 == 0;
+            modules.push(m);
+        }
+        let siblings: Vec<&str> = names.iter().map(String::as_str).collect();
+        modules.push(module(&format!("{folder}/mod.rs"), 30, &siblings));
+        modules.push(module(sections, 400, &[]));
+        modules.push(module(context, 900, &[]));
+        modules.push(module(util, 300, &[]));
+        let mut hook = module("apps/rt/src/hooks/worktree_create.rs", 20, &[context]);
+        hook.declarations = vec![MapDecl { name: "run".to_string() }, MapDecl { name: "command".to_string() }];
+        modules.push(hook);
+        modules.push(module("apps/rt/src/hooks/mod.rs", 10, &["apps/rt/src/hooks/worktree_create.rs"]));
+        ProjectMap { modules, ..ProjectMap::default() }
+    }
+
+    #[test]
+    fn a_task_in_a_real_sized_tree_lands_in_the_command_folder_with_its_main_imports() {
+        let map = real_sized_tree();
+        let folder = best_folder(&map, "adicionar um comando run").expect("a folder matches");
+        assert!(folder.starts_with("apps/rt/src/commands/"), "the folder is summed, not the first hit: {folder}");
+        let got = examples(&map, "apps/rt/src/commands/spec/novo.rs", Locale::PtBr);
+        assert_eq!(
+            got.main_imports.first().map(String::as_str),
+            Some("apps/rt/src/shared/context.rs"),
+            "the main imports come from the most alike files: {:?}",
+            got.main_imports,
+        );
+        assert!((2..=3).contains(&got.picks.len()), "{:?}", got.picks);
+        for pick in &got.picks {
+            assert!(!pick.path.ends_with("mod.rs"), "a short module index is no example: {pick:?}");
+            assert!(!pick.shared_imports.is_empty(), "{pick:?}");
+        }
+        assert!(got.picks[0].inline_tests, "tested first: {:?}", got.picks[0]);
     }
 
     #[test]

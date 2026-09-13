@@ -385,10 +385,6 @@ struct Analysis {
     full: bool,
 }
 
-/// Only a specific import counts as a dependency in the map: one spread over a
-/// bucket of more than eight files (weight below 1024 / 8) is left out.
-const DEP_MIN_WEIGHT: u64 = 1024 / 8;
-
 /// The code-signature evidence of some modules, as the stack inference takes
 /// it: one text with every signature they carry, one per line. The inference
 /// only asks which signatures fired, so this gives the same stacks the file
@@ -431,7 +427,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                 kept.fan_in = 0;
                 kept.deps.clear();
                 kept.tests.clear();
-                modules.push(kept);
+                modules.push(*kept);
             }
             ingest::Walked::Fresh(sf) => {
                 let extracted =
@@ -471,7 +467,8 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         }
     }
 
-    let (graph_stats, degrees, depth_by_path) = graph::build(&modules, &ing.go_module);
+    let packages = graph::packages(&ing.manifests);
+    let (graph_stats, degrees, depth_by_path) = graph::build(&modules, &ing.go_module, &packages);
     // Persist each module's fan-in (graph::build already computed the full
     // degree map) — additive on the model, so digest projections rank anchors
     // without re-deriving the graph.
@@ -480,11 +477,11 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     }
     // The project files each module imports, from the same resolved edges the
     // graph counts — the answer to "who imports this file", read backwards.
+    // Every resolved edge counts, a namespace import spread over several files
+    // included: it is still an import of each of them.
     let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
-    for (from, to, weight) in graph::resolve_edges(&modules, &ing.go_module) {
-        if weight >= DEP_MIN_WEIGHT {
-            deps[from].insert(to);
-        }
+    for (from, to, _) in graph::resolve_edges(&modules, &ing.go_module, &packages) {
+        deps[from].insert(to);
     }
     let paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
     for (m, targets) in modules.iter_mut().zip(deps) {

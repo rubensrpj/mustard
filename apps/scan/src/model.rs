@@ -128,6 +128,10 @@ pub struct Manifest {
     /// resolves imports the same way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
+    /// The package's own name, as the manifest declares it — kept so imports
+    /// that name another package of the same project resolve inside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -182,7 +186,7 @@ pub struct Module {
     /// The words of this file's comments, with how many times each appears
     /// (hand-written, non-test files only), kept so the dictionary is rebuilt
     /// from the map on every pass without reading the file again.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, with = "words", skip_serializing_if = "BTreeMap::is_empty")]
     pub comment_terms: BTreeMap<String, u32>,
     /// How many of this file's comments read as not English.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -191,6 +195,30 @@ pub struct Module {
 
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
+}
+
+/// The comment words of a module, written as one line (`word:count`, space
+/// separated, in word order) so the map stays compact. A word is letters and
+/// digits only, so neither separator can appear inside one.
+mod words {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(map: &BTreeMap<String, u32>, s: S) -> Result<S::Ok, S::Error> {
+        let pairs: Vec<String> = map.iter().map(|(word, n)| format!("{word}:{n}")).collect();
+        s.serialize_str(&pairs.join(" "))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, u32>, D::Error> {
+        let line = String::deserialize(d)?;
+        Ok(line
+            .split(' ')
+            .filter_map(|pair| {
+                let (word, n) = pair.rsplit_once(':')?;
+                Some((word.to_string(), n.parse().ok()?))
+            })
+            .collect())
+    }
 }
 
 /// serde helper for additive numeric fields (mirrors `String::is_empty` above).

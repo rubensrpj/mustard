@@ -44,7 +44,7 @@ pub struct SourceFile {
 /// A source file as the walk left it: read now, or kept from the previous map.
 pub(crate) enum Walked {
     Fresh(SourceFile),
-    Kept(Module),
+    Kept(Box<Module>),
 }
 
 /// What an incremental pass may take from the previous map instead of reading
@@ -168,6 +168,7 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
                     scripts: p.scripts,
                     name: p.name,
                     module: p.module,
+                    package: p.package,
                 });
                 *top_other.entry(topdir).or_default() += 1;
                 continue;
@@ -184,7 +185,7 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
                 entry.0 += 1;
                 entry.1 += kept.loc;
                 *top_code.entry(topdir).or_default() += 1;
-                files.push(Walked::Kept(kept.clone()));
+                files.push(Walked::Kept(Box::new(kept.clone())));
                 continue;
             }
             if reuse.is_some_and(|r| r.kept_undecodable(&rel)) {

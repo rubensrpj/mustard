@@ -128,8 +128,8 @@ fn examples(opts: &MapOpts, root: &Path, map: &ProjectMap, lang: Locale) -> Resu
     let task = opts.task.as_deref().map(str::trim).filter(|t| !t.is_empty());
     let target = match (file, task) {
         (Some(file), _) => project_map::clean_path(file),
-        (None, Some(task)) => match project_map::search(map, task).first() {
-            Some(found) => project_map::folder_of(&found.path).to_string(),
+        (None, Some(task)) => match project_map::best_folder(map, task) {
+            Some(folder) => folder,
             None => {
                 return Ok(json!({
                     "ok": true,
