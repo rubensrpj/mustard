@@ -1226,6 +1226,89 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The lesson must say where it was born, in found_in: `spec`, `branch` and `commit`, \
              or `source` (the file it came from). Nothing was written."
         }
+        // O mapa do projeto (`run map`): recusas, motivos dos exemplos e o
+        // resumo do início da sessão.
+        ("map.missing", Locale::PtBr) => "O mapa do projeto ainda não existe. Rode `mustard-rt run scan`.",
+        ("map.missing", Locale::EnUs) => "The project map does not exist yet. Run `mustard-rt run scan`.",
+        ("map.unreadable", Locale::PtBr) => {
+            "O mapa do projeto não pôde ser lido ({detail}). Rode `mustard-rt run scan` de novo."
+        }
+        ("map.unreadable", Locale::EnUs) => {
+            "The project map could not be read ({detail}). Run `mustard-rt run scan` again."
+        }
+        ("map.unknown_file", Locale::PtBr) => {
+            "O arquivo `{file}` não está no mapa. Confira o caminho a partir da raiz do projeto, ou \
+             rode `mustard-rt run scan` se ele é novo."
+        }
+        ("map.unknown_file", Locale::EnUs) => {
+            "The file `{file}` is not in the map. Check the path from the project root, or run \
+             `mustard-rt run scan` if it is new."
+        }
+        ("map.missing_argument", Locale::PtBr) => "A pergunta `{question}` precisa de `{flag}`.",
+        ("map.missing_argument", Locale::EnUs) => "The `{question}` question needs `{flag}`.",
+        ("map.skill_unreadable", Locale::PtBr) => "A skill `{path}` não pôde ser lida ({detail}).",
+        ("map.skill_unreadable", Locale::EnUs) => "The skill `{path}` could not be read ({detail}).",
+        ("map.skill_missing_path", Locale::PtBr) => {
+            "A skill cita caminhos que não existem: {paths}. Corrija o caminho ou tire a citação."
+        }
+        ("map.skill_missing_path", Locale::EnUs) => {
+            "The skill cites paths that do not exist: {paths}. Fix the path or drop the citation."
+        }
+        ("map.skill_too_long", Locale::PtBr) => {
+            "A skill tem {lines} linhas, e o limite é {max}. Corte o que não ajuda a tarefa."
+        }
+        ("map.skill_too_long", Locale::EnUs) => {
+            "The skill has {lines} lines, and the limit is {max}. Cut what does not help the task."
+        }
+        ("map.no_target", Locale::PtBr) => {
+            "Nenhum arquivo do mapa casa com a tarefa. Diga o arquivo que ela cria ou muda com `--file`."
+        }
+        ("map.no_target", Locale::EnUs) => {
+            "No file in the map matches the task. Name the file it creates or changes with `--file`."
+        }
+        ("map.no_examples", Locale::PtBr) => "Nenhum arquivo da pasta `{folder}` serve de exemplo.",
+        ("map.no_examples", Locale::EnUs) => "No file in the folder `{folder}` serves as an example.",
+        ("map.why.same_folder", Locale::PtBr) => "na mesma pasta",
+        ("map.why.same_folder", Locale::EnUs) => "in the same folder",
+        ("map.why.near_folder", Locale::PtBr) => "numa pasta vizinha (a pasta tem menos de 2 exemplos)",
+        ("map.why.near_folder", Locale::EnUs) => "in a neighbouring folder (the folder has fewer than 2 examples)",
+        ("map.why.imports", Locale::PtBr) => "{shared} de {of} importações principais em comum",
+        ("map.why.imports", Locale::EnUs) => "{shared} of {of} main imports in common",
+        ("map.why.tested", Locale::PtBr) => "coberto por {tests}",
+        ("map.why.tested", Locale::EnUs) => "covered by {tests}",
+        ("map.why.inline_tests", Locale::PtBr) => "tem testes no próprio arquivo",
+        ("map.why.inline_tests", Locale::EnUs) => "has tests in the file itself",
+        ("map.why.recent", Locale::PtBr) => "mudado em {date}",
+        ("map.why.recent", Locale::EnUs) => "changed on {date}",
+        ("map.why.size", Locale::PtBr) => "tamanho típico da pasta ({loc} linhas)",
+        ("map.why.size", Locale::EnUs) => "typical size for the folder ({loc} lines)",
+        ("map.summary.head", Locale::PtBr) => "Mapa do projeto: {files} arquivos de código ({languages}).",
+        ("map.summary.head", Locale::EnUs) => "Project map: {files} code files ({languages}).",
+        ("map.summary.projects", Locale::PtBr) => "Subprojetos:",
+        ("map.summary.projects", Locale::EnUs) => "Subprojects:",
+        ("map.summary.project_line", Locale::PtBr) => "- {name} (`{dir}`, {kind}, {files} arquivos)",
+        ("map.summary.project_line", Locale::EnUs) => "- {name} (`{dir}`, {kind}, {files} files)",
+        ("map.summary.hubs", Locale::PtBr) => "Mais importados: {files}.",
+        ("map.summary.hubs", Locale::EnUs) => "Most imported: {files}.",
+        ("map.summary.recent", Locale::PtBr) => "Mudados há pouco: {files}.",
+        ("map.summary.recent", Locale::EnUs) => "Recently changed: {files}.",
+        ("map.summary.ask", Locale::PtBr) => {
+            "Pergunte ao mapa: `mustard-rt run map examples --file <caminho>`, `importers`, `tests` ou \
+             `search --query \"<palavras>\"`."
+        }
+        ("map.summary.ask", Locale::EnUs) => {
+            "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests` or \
+             `search --query \"<words>\"`."
+        }
+        // O `doctor` confere que o que o scan escreve fica fora do git.
+        ("doctor.scan_output.visible", Locale::PtBr) => {
+            "O mapa do scan fica visível para o git: {paths}. O scan só escreve fora do git: tire \
+             esses arquivos do git (a instalação privada já os exclui)."
+        }
+        ("doctor.scan_output.visible", Locale::EnUs) => {
+            "The scan map is visible to git: {paths}. The scan only writes outside git: take these \
+             files out of git (the private install already excludes them)."
+        }
         ("spec_index.no_specs", Locale::PtBr) => {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
         }
@@ -2172,6 +2255,45 @@ mod tests {
             ("spec_events.spec_required", &["{type}"][..]),
             ("lessons.unknown_lesson", &["{id}"][..]),
             ("lessons.origin_missing", &[][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+    }
+
+    /// As recusas e os textos do mapa do projeto, e o aviso do `doctor` sobre
+    /// o que o scan escreve, saem do catálogo nos dois idiomas, com as vagas.
+    #[test]
+    fn i18n_translates_project_map_keys() {
+        for (key, slots) in [
+            ("map.missing", &[][..]),
+            ("map.unreadable", &["{detail}"][..]),
+            ("map.unknown_file", &["{file}"][..]),
+            ("map.missing_argument", &["{question}", "{flag}"][..]),
+            ("map.skill_unreadable", &["{path}", "{detail}"][..]),
+            ("map.skill_missing_path", &["{paths}"][..]),
+            ("map.skill_too_long", &["{lines}", "{max}"][..]),
+            ("map.no_target", &[][..]),
+            ("map.no_examples", &["{folder}"][..]),
+            ("map.why.same_folder", &[][..]),
+            ("map.why.near_folder", &[][..]),
+            ("map.why.imports", &["{shared}", "{of}"][..]),
+            ("map.why.tested", &["{tests}"][..]),
+            ("map.why.inline_tests", &[][..]),
+            ("map.why.recent", &["{date}"][..]),
+            ("map.why.size", &["{loc}"][..]),
+            ("map.summary.head", &["{files}", "{languages}"][..]),
+            ("map.summary.projects", &[][..]),
+            ("map.summary.project_line", &["{name}", "{dir}", "{kind}", "{files}"][..]),
+            ("map.summary.hubs", &["{files}"][..]),
+            ("map.summary.recent", &["{files}"][..]),
+            ("map.summary.ask", &[][..]),
+            ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

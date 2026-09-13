@@ -5,6 +5,7 @@
 //! *recurs* in the repo, named by the repo's own vocabulary offline and
 //! (optionally) given a semantic name by the LLM stage.
 
+use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +38,12 @@ pub struct ProjectModel {
     /// models without the field keep deserialising.
     #[serde(default)]
     pub detected_stacks: Vec<StackDetection>,
+    /// Where this pass read from — the commit and the files not committed.
+    #[serde(default)]
+    pub state: ScanState,
+    /// The git history, one entry per commit (created and changed files).
+    #[serde(default, skip_serializing_if = "History::is_empty")]
+    pub history: History,
 }
 
 /// What the scan actually visited — so "did you read everything?" is verifiable.
@@ -115,6 +122,11 @@ pub struct Manifest {
     /// Project name derived per the manifest's rule (stem or parent dir).
     #[serde(default)]
     pub name: String,
+    /// The module path the manifest declares for import resolution, when it
+    /// declares one — kept so a pass that does not re-read the manifest still
+    /// resolves imports the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -150,11 +162,50 @@ pub struct Module {
     /// leaf modules don't serialise it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fan_in: usize,
+    /// The project files this one imports, resolved through the graph — the
+    /// reverse of "who imports this file". Only specific imports count: an
+    /// import spread over a bucket of more than eight files is left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deps: Vec<String>,
+    /// The test files that cover this one: a test that imports it, or a test
+    /// that keeps changing together with it in git.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<String>,
+    /// The file carries its own tests (an inline test marker).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_tests: bool,
+    /// The stack code signatures found in this file's content, kept so a pass
+    /// that does not read the file again still infers the same stacks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
 }
 
 /// serde helper for additive numeric fields (mirrors `String::is_empty` above).
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Where the last pass read from, so the next one reads only what changed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct ScanState {
+    /// The scanner build that wrote the model; another build reads everything.
+    pub format: String,
+    /// The commit checked out at the last pass (empty outside git).
+    pub head: String,
+    /// The files that were not committed at the last pass: they are read
+    /// again even when git says nothing changed since, because they may have
+    /// been put back.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dirty: Vec<String>,
+    /// Source files that could not be decoded, so an unchanged one is counted
+    /// without being opened again.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub non_utf8: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

@@ -499,13 +499,15 @@ impl Scan {
         Self { binary: sibling.unwrap_or_else(|| DEFAULT_BINARY.to_string()) }
     }
 
-    /// Mine `root` into the model file at `out` (`grain scan`).
+    /// Mine `root` into the model file at `out` (`grain scan`). With a model
+    /// of the same project already at `out`, the tool reads only what changed
+    /// since; the report says which files it read.
     ///
     /// # Errors
     /// [`Error::Io`] if the tool cannot be spawned, [`Error::CheckFailed`] on a
-    /// non-zero exit.
-    pub fn scan(&self, root: &Path, out: &Path) -> Result<()> {
-        self.run(&scan_args(root, out)).map(|_| ())
+    /// non-zero exit or a report that does not parse.
+    pub fn scan(&self, root: &Path, out: &Path) -> Result<ScanReport> {
+        parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
     /// Read the model's FULL capability digest (`grain digest <model>`, no
@@ -620,7 +622,27 @@ fn scan_args(root: &Path, out: &Path) -> Vec<String> {
         root.to_string_lossy().into_owned(),
         "--out".to_string(),
         out.to_string_lossy().into_owned(),
+        "--json".to_string(),
     ]
+}
+
+/// What one scan pass reports on its last stdout line: whether it read every
+/// file, the files it read, how many code files the map has, the commit it
+/// read from, and whether it rewrote the dictionary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ScanReport {
+    pub full: bool,
+    pub read: Vec<String>,
+    pub files: usize,
+    pub head: String,
+    pub dictionary: bool,
+}
+
+/// The report a `scan --json` run printed: its last non-empty line.
+fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
+    let line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}");
+    serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan report: {e}")))
 }
 
 fn digest_args(model: &Path) -> Vec<String> {
@@ -701,7 +723,17 @@ mod tests {
     #[test]
     fn scan_args_shape() {
         let a = scan_args(&PathBuf::from("repo"), &PathBuf::from("m.json"));
-        assert_eq!(a, vec!["scan", "repo", "--out", "m.json"]);
+        assert_eq!(a, vec!["scan", "repo", "--out", "m.json", "--json"]);
+    }
+
+    #[test]
+    fn the_scan_report_is_the_last_line() {
+        let report = parse_scan_report("noise\n{\"ok\":true,\"full\":false,\"read\":[\"src/b.rs\"],\"files\":3}\n\n")
+            .expect("report");
+        assert!(!report.full);
+        assert_eq!(report.read, vec!["src/b.rs".to_string()]);
+        assert_eq!(report.files, 3);
+        assert!(parse_scan_report("not json").is_err());
     }
 
     #[test]

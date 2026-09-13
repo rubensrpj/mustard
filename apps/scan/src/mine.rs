@@ -13,7 +13,7 @@
 //!      convention we pick three real reference implementations by complexity:
 //!      simple, medium, complex.
 
-use crate::model::{CodeExample, Convention, Decl, Exemplar, Module, RoleStat};
+use crate::model::{Convention, Decl, Exemplar, Module, RoleStat};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use rayon::prelude::*;
 
@@ -52,7 +52,6 @@ const MIN_CLUSTER: usize = 2;
 struct Symbol {
     kind: String,
     path: String,
-    line: usize,
     loc: usize,
     tokens: Vec<String>,
     supertypes: Vec<String>,
@@ -64,11 +63,7 @@ pub(crate) struct Mined {
     pub shared_contracts: Vec<crate::model::SharedContract>,
 }
 
-pub fn mine(
-    modules: &[Module],
-    degrees: &HashMap<String, (usize, usize)>,
-    content: &HashMap<String, String>,
-) -> Mined {
+pub fn mine(modules: &[Module], degrees: &HashMap<String, (usize, usize)>) -> Mined {
     let loc_by_path: HashMap<&str, usize> = modules.iter().map(|m| (m.path.as_str(), m.loc)).collect();
     let symbols = collect_symbols(modules, &loc_by_path);
 
@@ -354,7 +349,7 @@ pub fn mine(
             continue;
         }
         if let Some(conv) = build_convention(
-            &cluster, &entity_roles, &entity_display, &slot, &symbols, degrees, content,
+            &cluster, &entity_roles, &entity_display, &slot, &symbols, degrees,
         ) {
             conventions.push(conv);
         }
@@ -378,7 +373,6 @@ fn build_convention(
     slot: &HashMap<(String, String), usize>,
     symbols: &[Symbol],
     degrees: &HashMap<String, (usize, usize)>,
-    content: &HashMap<String, String>,
 ) -> Option<Convention> {
     let size = cluster.len();
 
@@ -460,21 +454,10 @@ fn build_convention(
         steps.push(step_line(role, &src, slot, symbols, entity_display, true));
     }
 
-    // Code snippets from the complex exemplar (core + optional it has), abstracted.
-    let mut examples = Vec::new();
-    for role in core.iter().chain(optional.iter()) {
-        if let Some(&i) = slot.get(&(complex_key.clone(), role.clone())) {
-            let sym = &symbols[i];
-            if let Some(snip) = snippet(content, &sym.path, sym.line, 9) {
-                examples.push(CodeExample {
-                    path: sym.path.clone(),
-                    start_line: sym.line,
-                    snippet: abstract_entity(&snip, &complex_entity),
-                    role: role_display(role),
-                });
-            }
-        }
-    }
+    // No code snippets any more: they were the only thing that made the miner
+    // read file contents, which an incremental pass does not have, and nothing
+    // reads them. The exemplar files below say where to look.
+    let examples = Vec::new();
 
     // Three exemplars by complexity.
     let mut exemplars = Vec::new();
@@ -581,7 +564,6 @@ fn collect_symbols(modules: &[Module], loc_by_path: &HashMap<&str, usize>) -> Ve
             out.push(Symbol {
                 kind: d.kind.clone(),
                 path: m.path.clone(),
-                line: d.line,
                 loc: *loc_by_path.get(m.path.as_str()).unwrap_or(&0),
                 tokens: strip_interface_i(split_tokens(&d.name)),
                 supertypes: d.supertypes.clone(),
@@ -817,17 +799,6 @@ fn abstract_entity(text: &str, entity: &str) -> String {
         }
     }
     out
-}
-
-fn snippet(content: &HashMap<String, String>, path: &str, line: usize, span: usize) -> Option<String> {
-    let c = content.get(path)?;
-    let lines: Vec<&str> = c.lines().collect();
-    let start = line.saturating_sub(1);
-    let end = (start + span).min(lines.len());
-    if start >= end {
-        return None;
-    }
-    Some(lines[start..end].iter().map(|l| l.trim_end()).collect::<Vec<_>>().join("\n"))
 }
 
 fn path_segs(path: &str) -> Vec<&str> {

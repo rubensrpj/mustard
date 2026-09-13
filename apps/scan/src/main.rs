@@ -19,13 +19,15 @@ mod mine;
 mod model;
 mod pagerank;
 mod rank;
+mod refresh;
 mod spec;
 mod stemmers;
+mod testmap;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -38,10 +40,19 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Analyze a project and write the intermediate model as JSON (the product).
+    ///
+    /// When `--out` already holds a model of this project, only the files that
+    /// changed since that pass are read again (see `refresh`).
     Scan {
         path: PathBuf,
         #[arg(long, default_value = "grain.model.json")]
         out: PathBuf,
+        /// Read every file, ignoring the previous model.
+        #[arg(long)]
+        all: bool,
+        /// Print one JSON line (what was read) instead of the text summary.
+        #[arg(long)]
+        json: bool,
     },
     /// Emit a small, AI-sized capability DIGEST of the model (slices, roles,
     /// contracts, hubs, projects + a domain-term index) — the searchable surface
@@ -132,7 +143,7 @@ enum Command {
         /// shared sinks a walk piles onto); default 1.0 → 1024, `0` = off.
         #[arg(long, default_value_t = 1024)]
         fanin_penalty: u64,
-        /// Disable the ungated direct-identifier seeding (Wave-2b fix): when set,
+        /// Disable the ungated direct-identifier seeding: when set,
         /// only dictionary-matched terms seed (the pre-fix, dict-gated behavior).
         #[arg(long)]
         no_direct_seed: bool,
@@ -193,31 +204,64 @@ fn load_model(path: &Path) -> Result<ProjectModel> {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     } else {
         // Projections (digest/facts/spec) want only the model; the
-        // dictionary sidecar is a scan-write concern, discarded here — so the
-        // EN normalization (a sidecar spawn) is skipped too.
-        Ok(analyze(path)?.0)
+        // dictionary sidecar is a scan-write concern, discarded here.
+        Ok(analyze(path, None)?.model)
     }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Scan { path, out } => {
-            let (model, dictionary) = analyze(&path)?;
-            print_summary(&model);
-            std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;
-            println!("\nModel written to {}", out.display());
+        Command::Scan { path, out, all, json } => {
+            let previous: Option<ProjectModel> = if all {
+                None
+            } else {
+                std::fs::read_to_string(&out).ok().and_then(|text| serde_json::from_str(&text).ok())
+            };
+            let analysis = analyze(&path, previous.as_ref())?;
+            let model_json = serde_json::to_string_pretty(&analysis.model)?;
+            // Nothing changed → the file is left alone (same bytes, same date).
+            if std::fs::read_to_string(&out).ok().as_deref() != Some(model_json.as_str()) {
+                if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(&out, &model_json)?;
+            }
             // The distinctive-vocabulary sidecar lands NEXT TO the model
-            // (`grain.dictionary.json` beside `grain.model.json`), so `/scan`
-            // (rt → grain --out .claude/grain.model.json) produces both.
+            // (`grain.dictionary.json` beside `grain.model.json`). It is built
+            // from every file's comments, so only a pass that read every file
+            // rewrites it; an incremental pass leaves it as it was.
             let dict_out = out.with_file_name("grain.dictionary.json");
-            std::fs::write(&dict_out, serde_json::to_string_pretty(&dictionary)?)?;
-            println!("Dictionary written to {} ({} terms)", dict_out.display(), dictionary.terms.len());
-            if dictionary.non_english_comments > 0 {
+            if let Some(dictionary) = &analysis.dictionary {
+                std::fs::write(&dict_out, serde_json::to_string_pretty(dictionary)?)?;
+            }
+            if json {
+                let report = serde_json::json!({
+                    "ok": true,
+                    "full": analysis.full,
+                    "read": analysis.read,
+                    "files": analysis.model.modules.len(),
+                    "head": analysis.model.state.head,
+                    "dictionary": analysis.dictionary.is_some(),
+                });
+                println!("{report}");
+            } else {
+                print_summary(&analysis.model);
+                println!("\nModel written to {}", out.display());
                 println!(
-                    "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
-                    dictionary.non_english_comments
+                    "Read {} file(s){}",
+                    analysis.read.len(),
+                    if analysis.full { " (every file)" } else { " (only what changed)" }
                 );
+                if let Some(dictionary) = &analysis.dictionary {
+                    println!("Dictionary written to {} ({} terms)", dict_out.display(), dictionary.terms.len());
+                    if dictionary.non_english_comments > 0 {
+                        println!(
+                            "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
+                            dictionary.non_english_comments
+                        );
+                    }
+                }
             }
         }
         Command::Digest { path, query, out } => {
@@ -328,39 +372,98 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Deterministic stages: produce the project model AND the distinctive-
-/// vocabulary dictionary sidecar (no synthesis, no AI). The dictionary is
-/// returned alongside the model because it is mined from the in-memory
-/// `content` (comments), which only exists during the scan — see [`dictionary`].
-fn analyze(root: &Path) -> Result<(ProjectModel, dictionary::Dictionary)> {
-    let ing = ingest::ingest(root)?;
+/// What one pass produced.
+struct Analysis {
+    model: ProjectModel,
+    /// The distinctive-vocabulary dictionary, built only when every file was
+    /// read: it comes from every file's comments.
+    dictionary: Option<dictionary::Dictionary>,
+    /// The files whose content this pass read, sorted.
+    read: Vec<String>,
+    /// Every file was read (no usable previous model).
+    full: bool,
+}
+
+/// Only a specific import counts as a dependency in the map: one spread over a
+/// bucket of more than eight files (weight below 1024 / 8) is left out.
+const DEP_MIN_WEIGHT: u64 = 1024 / 8;
+
+/// The code-signature evidence of some modules, as the stack inference takes
+/// it: one text with every signature they carry, one per line. The inference
+/// only asks which signatures fired, so this gives the same stacks the file
+/// contents gave, without opening the files again.
+fn code_evidence<'a>(modules: impl Iterator<Item = &'a Module>) -> Vec<String> {
+    let signals: BTreeSet<&str> = modules.flat_map(|m| m.signals.iter().map(String::as_str)).collect();
+    if signals.is_empty() {
+        Vec::new()
+    } else {
+        vec![signals.into_iter().collect::<Vec<_>>().join("\n")]
+    }
+}
+
+/// Deterministic stages (no synthesis, no AI): produce the project model, and
+/// the dictionary sidecar when every file was read. With a `previous` model of
+/// the same project, only the files that changed since are read (see
+/// [`refresh`]); everything else is taken from it, and the result is the same
+/// model a pass reading every file would give.
+fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
+    use mustard_core::domain::project_map::History;
+    use mustard_core::domain::vocabulary::stacks::{code_signals, infer_stacks};
+
+    let plan = refresh::plan(root, previous);
+    let reuse = match (&plan, previous) {
+        (refresh::Plan::Only(changed), Some(prev)) => Some(ingest::Reuse::new(changed, prev)),
+        _ => None,
+    };
+    let full = reuse.is_none();
+    let ing = ingest::ingest(root, reuse.as_ref())?;
     let analyzers = extract::registry();
     // Repo classification overrides (.gitattributes / .editorconfig) — loaded
     // once; they beat the marker catalog in both directions.
     let overrides = classify::Overrides::load(&ing.root);
 
-    let mut modules: Vec<Module> = Vec::new();
+    let mut modules: Vec<Module> = Vec::with_capacity(ing.files.len());
     let mut content: HashMap<String, String> = HashMap::new();
-
-    for sf in &ing.source_files {
-        let extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
-        // Machine-written class (generated/vendored/lockfile/minified) —
-        // additive provenance on the module. The model keeps the module fully
-        // visible to the miner; only the digest projection demotes by class.
-        let (file_class, marker) =
-            classify::classify(&sf.rel_path, &sf.content, &overrides).map(|c| (c.class, c.marker)).unwrap_or_default();
-        content.insert(sf.rel_path.clone(), sf.content.clone());
-        modules.push(Module {
-            path: sf.rel_path.clone(),
-            language: sf.language.clone(),
-            loc: sf.loc,
-            imports: extracted.imports,
-            namespaces: extracted.namespaces,
-            declarations: extracted.declarations,
-            file_class,
-            marker,
-            fan_in: 0, // filled below, once the import graph is resolved
-        });
+    for walked in ing.files {
+        match walked {
+            ingest::Walked::Kept(mut kept) => {
+                // Recomputed below from the whole set of modules.
+                kept.fan_in = 0;
+                kept.deps.clear();
+                kept.tests.clear();
+                modules.push(kept);
+            }
+            ingest::Walked::Fresh(sf) => {
+                let extracted =
+                    analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
+                // Machine-written class (generated/vendored/lockfile/minified) —
+                // additive provenance on the module. The model keeps the module
+                // fully visible to the miner; only the digest projection demotes
+                // by class.
+                let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
+                    .map(|c| (c.class, c.marker))
+                    .unwrap_or_default();
+                let module = Module {
+                    path: sf.rel_path.clone(),
+                    language: sf.language,
+                    loc: sf.loc,
+                    imports: extracted.imports,
+                    namespaces: extracted.namespaces,
+                    declarations: extracted.declarations,
+                    file_class,
+                    marker,
+                    fan_in: 0, // filled below, once the import graph is resolved
+                    deps: Vec::new(),
+                    tests: Vec::new(),
+                    has_tests: testmap::has_inline_tests(&sf.content),
+                    signals: code_signals(&sf.content),
+                };
+                if full {
+                    content.insert(sf.rel_path, sf.content);
+                }
+                modules.push(module);
+            }
+        }
     }
 
     let (graph_stats, degrees, depth_by_path) = graph::build(&modules, &ing.go_module);
@@ -370,23 +473,82 @@ fn analyze(root: &Path) -> Result<(ProjectModel, dictionary::Dictionary)> {
     for m in &mut modules {
         m.fan_in = degrees.get(&m.path).map_or(0, |d| d.0);
     }
-    let mined = mine::mine(&modules, &degrees, &content);
+    // The project files each module imports, from the same resolved edges the
+    // graph counts — the answer to "who imports this file", read backwards.
+    let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
+    for (from, to, weight) in graph::resolve_edges(&modules, &ing.go_module) {
+        if weight >= DEP_MIN_WEIGHT {
+            deps[from].insert(to);
+        }
+    }
+    let paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
+    for (m, targets) in modules.iter_mut().zip(deps) {
+        let mut named: Vec<String> = targets.into_iter().map(|i| paths[i].clone()).collect();
+        named.sort();
+        m.deps = named;
+    }
+    let mined = mine::mine(&modules, &degrees);
     // Distinctive-vocabulary dictionary: a stage right after mining, over the
     // same `modules` + in-memory `content` (the only place comments survive),
     // reusing the mined role affixes to demote structural glue.
-    let dictionary = dictionary::build(&modules, &content, &mined.roles);
+    let dictionary = full.then(|| dictionary::build(&modules, &content, &mined.roles));
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
-    let mut projects = build_projects(&ing.manifests, &modules);
-    infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &ing.source_files);
+    // The git history: only the commits since the previous pass, when that
+    // pass read this same project.
+    let root_text = ing.root.to_string_lossy().to_string();
+    let same = previous.filter(|p| p.root == root_text);
+    let head = refresh::head(&ing.root);
+    let history = match &head {
+        Some(now) => refresh::history(
+            &ing.root,
+            same.map(|p| &p.history),
+            same.map_or("", |p| p.state.head.as_str()),
+            now,
+        ),
+        None => History::default(),
+    };
+    testmap::assign(&mut modules, &history);
 
-    Ok((
-        ProjectModel {
-            root: ing.root.to_string_lossy().to_string(),
+    // Stack inference: the three evidence classes — parsed dependency names,
+    // file paths and the code signatures found in the sources. Which stacks
+    // exist and what identifies them is DATA in mustard-core's registry.
+    // Evidence under a conventional test/fixture tree is discounted from all
+    // three: a committed fixture of another stack describes what the project
+    // tests, not what it is.
+    let evidence_deps: Vec<String> = ing
+        .manifests
+        .iter()
+        .filter(|m| !ingest::under_test_dir(&m.path))
+        .flat_map(|m| m.dependencies.iter().cloned())
+        .collect();
+    let evidence_paths: Vec<String> =
+        ing.walk_paths.iter().filter(|p| !ingest::under_test_dir(p)).cloned().collect();
+    let evidence_code = code_evidence(modules.iter().filter(|m| !ingest::under_test_dir(&m.path)));
+    let detected_stacks = infer_stacks(&evidence_deps, &evidence_paths, &evidence_code);
+
+    let mut projects = build_projects(&ing.manifests, &modules);
+    infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &modules);
+
+    // What the next pass needs to read only what changed: this commit and the
+    // files not committed now (the ones the walk visits).
+    let walked: HashSet<&str> = ing.walk_paths.iter().map(String::as_str).collect();
+    let dirty: Vec<String> =
+        refresh::dirty(&ing.root).unwrap_or_default().into_iter().filter(|p| walked.contains(p.as_str())).collect();
+    let state = model::ScanState {
+        format: refresh::FORMAT.to_string(),
+        head: head.unwrap_or_default(),
+        dirty,
+        non_utf8: ing.non_utf8,
+    };
+
+    Ok(Analysis {
+        model: ProjectModel {
+            root: root_text,
             languages: ing.languages,
             manifests: ing.manifests,
             frameworks: ing.frameworks,
-            detected_stacks: ing.detected_stacks,
+            detected_stacks,
             skeleton,
             modules,
             graph: graph_stats,
@@ -395,9 +557,13 @@ fn analyze(root: &Path) -> Result<(ProjectModel, dictionary::Dictionary)> {
             coverage: ing.coverage,
             projects,
             shared_contracts: mined.shared_contracts,
+            state,
+            history,
         },
         dictionary,
-    ))
+        read: ing.read,
+        full,
+    })
 }
 
 /// Map each project (one per manifest) to its directory and count the source
@@ -464,7 +630,7 @@ fn infer_unit_stacks(
     projects: &mut [model::ProjectUnit],
     manifests: &[model::Manifest],
     walk_paths: &[String],
-    source_files: &[ingest::SourceFile],
+    modules: &[Module],
 ) {
     use mustard_core::domain::vocabulary::stacks::infer_stacks;
     // Immutable snapshot for the longest-prefix ownership test while mutating.
@@ -486,11 +652,9 @@ fn infer_unit_stacks(
             .filter(|p| facts::dir_contains(&project.dir, p) && !ingest::under_test_dir(p))
             .cloned()
             .collect();
-        let contents: Vec<String> = source_files
-            .iter()
-            .filter(|s| facts::dir_contains(&project.dir, &s.rel_path) && !ingest::under_test_dir(&s.rel_path))
-            .map(|s| s.content.clone())
-            .collect();
+        let contents = code_evidence(
+            modules.iter().filter(|m| facts::dir_contains(&project.dir, &m.path) && !ingest::under_test_dir(&m.path)),
+        );
         project.detected_stacks = infer_stacks(&deps, &paths, &contents);
     }
 }

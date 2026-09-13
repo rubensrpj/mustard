@@ -67,15 +67,21 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let scan_result = Scan::locate().scan(root, &model_path);
 
     let mut result: Value = match &scan_result {
-        Ok(()) => json!({ "ok": true, "model": model_path.to_string_lossy() }),
+        Ok(report) => json!({
+            "ok": true,
+            "model": model_path.to_string_lossy(),
+            "full": report.full,
+            "read": report.read,
+            "files": report.files,
+        }),
         Err(err) => {
             eprintln!("scan: grain failed: {err}");
             json!({ "ok": false, "error": err.to_string() })
         }
     };
 
-    // Only run the CLAUDE.md pass when grain succeeded (model file is valid).
-    if scan_result.is_ok() {
+    // Only run the map pass when grain succeeded (model file is valid).
+    if let Ok(report) = &scan_result {
         let mut projects = read_projects(&model_path);
         // The grain miner is git-blind; stamp the git-boundary FACT onto the
         // census here (a `.git` dir/file at each subproject's dir) so the
@@ -107,11 +113,15 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
         // Equivalences artifact (additive): project the dictionary the scan
         // tool wrote NEXT TO the model through the local MT sidecar into
         // `grain.equivalences.json` — the PT→EN query-expansion table the
-        // `feature` retrieval feeds to `scan rank`. Fail-open by contract: a
-        // missing dictionary/translator degrades to `{ok:false, reason}` in
-        // the summary and never fails the scan.
-        let dict_path = model_path.with_file_name("grain.dictionary.json");
-        result["equivalences"] = super::scan_equivalences::generate_at(&dict_path);
+        // `feature` retrieval feeds to `scan rank`. Only when the dictionary
+        // was rewritten (a pass that read every file): otherwise nothing it
+        // is made from changed. Fail-open by contract: a missing
+        // dictionary/translator degrades to `{ok:false, reason}` in the
+        // summary and never fails the scan.
+        if report.dictionary {
+            let dict_path = model_path.with_file_name("grain.dictionary.json");
+            result["equivalences"] = super::scan_equivalences::generate_at(&dict_path);
+        }
     }
 
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));

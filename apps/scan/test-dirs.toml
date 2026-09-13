@@ -30,6 +30,14 @@
 # Like stopwords.toml, this is DATA embedded at compile time (include_str!):
 # tuning the list is a data change, never a logic change in src/.
 
+# Inline test markers: a source file whose content carries one of these
+# literals holds its own tests, so the map says the file covers itself. Read
+# only by the test map (which tests cover each file), never by the stack
+# inference above.
+inline_markers = [
+  "#[cfg(test)]",
+]
+
 segments = [
   "__mocks__",
   "__tests__",
