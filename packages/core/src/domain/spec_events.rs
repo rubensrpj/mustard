@@ -624,6 +624,10 @@ pub enum Refusal {
     /// O `run write` com o tipo `state`, ou uma gravação dele que mudaria o
     /// estado: o estado é gravado pelos comandos do fluxo e pela testemunha.
     StateByFlowOnly { spec: String },
+    /// O `run write` com um tipo que só o binário grava (a execução de um
+    /// critério e o veredito da revisão), ou uma gravação dele que tiraria ou
+    /// reveria um desses eventos.
+    BinaryOnlyType { event_type: String, spec: String },
     /// A página pedida de uma spec cujo `spec.md` é o documento do
     /// `spec-draft`, que refazer do arquivo de eventos apagaria.
     DraftedSpec { spec: String },
@@ -656,6 +660,7 @@ impl Refusal {
             Self::LessonOriginMissing => "lesson-origin-missing",
             Self::PhaseChangeRefused { .. } => "phase-change-refused",
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
+            Self::BinaryOnlyType { .. } => "binary-only-type",
             Self::DraftedSpec { .. } => "drafted-spec",
             Self::Io { .. } => "io-failed",
         }
@@ -760,6 +765,10 @@ impl Refusal {
             Self::StateByFlowOnly { spec } => {
                 fill("spec_events.state_by_flow_only", &[("{spec}", spec.clone())])
             }
+            Self::BinaryOnlyType { event_type, spec } => fill(
+                "spec_events.binary_only_type",
+                &[("{type}", event_type.clone()), ("{spec}", spec.clone())],
+            ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

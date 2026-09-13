@@ -415,6 +415,33 @@ mod tests {
         assert_eq!(report["completed"], json!(false), "{report}");
     }
 
+    /// `close-pipeline` and `complete-spec` answer alike on the same QA: the
+    /// run the composite makes lands in the spec file, and the admission of
+    /// `complete-spec` reads that same run.
+    #[test]
+    fn close_pipeline_and_complete_spec_agree_on_the_same_qa() {
+        for (slug, cmd, passes) in [("agree-pass", "echo ok", true), ("agree-fail", "exit 3", false)] {
+            let dir = tempdir().unwrap();
+            let project = dir.path();
+            anchor(project);
+            seed_spec(project, slug, cmd);
+            crate::shared::spec_state::seed_event(
+                project,
+                slug,
+                "criterion",
+                json!({ "when": "w", "then": "t", "proof": cmd }),
+            );
+            let report = close(project, slug, None);
+            assert_eq!(report["qa"]["overall"] == json!("pass"), passes, "{report}");
+            assert_eq!(crate::commands::event::emit_pipeline::qa_result_passed(project, slug), passes, "{slug}");
+            assert_eq!(
+                crate::commands::spec::complete_spec::close_admission(project, slug).is_ok(),
+                passes,
+                "{slug}"
+            );
+        }
+    }
+
     /// Record the verdict `verdict` of wave 1 in the spec's `spec.ndjson`.
     fn emit_review(project: &Path, spec: &str, verdict: &str) {
         let criteria = crate::shared::spec_state::seed_runs(project, spec, &[None]);

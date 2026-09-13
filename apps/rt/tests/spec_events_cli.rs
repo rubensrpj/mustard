@@ -38,6 +38,14 @@ fn seed_state(root: &Path, fields: &Value) {
     mustard_core::io::spec_events::write(&path, "state", draft, &[]).expect("state");
 }
 
+/// Um evento que só o binário grava, pela gravação do núcleo: o `run write`
+/// recusa a execução dos critérios e o veredito.
+fn seed_binary(root: &Path, event_type: &str, fields: &Value) {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let draft = fields.as_object().cloned().expect("an object");
+    mustard_core::io::spec_events::write(&path, event_type, draft, &[]).expect(event_type);
+}
+
 fn read(root: &Path, block: &str) -> Value {
     let out = rt(root, &["read", block, "--spec", "teste"]).output().expect("run read");
     assert!(out.status.success(), "read {block}: {}", String::from_utf8_lossy(&out.stdout));
@@ -124,7 +132,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     write(root, "wave", &json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "depends_on": [1], "origin": msg}));
     write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": msg}));
     write(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
-    write(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
+    seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
 
     let wave2 = read(root, "wave-2");
     let events = wave2["events"].as_array().expect("events");
@@ -143,6 +151,11 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let unknown = rt(root, &["write", "licao", "--spec", "teste", "--json", "{}"]).output().expect("run");
     assert_eq!(unknown.status.code(), Some(1));
     assert_eq!(stdout_json(&unknown)["reason"], json!("unknown-type"));
+    let verdict = json!({"author": "review", "wave": 2, "result": "rejected", "text": "t", "criteria": [{"criterion": c2, "tests_rule": false}]});
+    let binary_only =
+        rt(root, &["write", "verdict", "--spec", "teste", "--json", &verdict.to_string()]).output().expect("run");
+    assert_eq!(binary_only.status.code(), Some(1));
+    assert_eq!(stdout_json(&binary_only)["reason"], json!("binary-only-type"));
     let fields = json!({"text": "t", "keys": ["k"], "origin": msg}).to_string();
     let missing = rt(root, &["write", "rule", "--spec", "teste", "--json", &fields]).output().expect("run");
     assert_eq!(missing.status.code(), Some(1));

@@ -1284,6 +1284,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              written: the flow's commands write it, and so does the approval witness, when the \
              user chooses \"Approve\" in the question \"Approve this spec?\"."
         }
+        ("spec_events.binary_only_type", Locale::PtBr) => {
+            "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
+             ele, e nada foi gravado: o binário grava a execução dos critérios quando roda o QA, e o \
+             veredito quando registra a revisão."
+        }
+        ("spec_events.binary_only_type", Locale::EnUs) => {
+            "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
+             and nothing was written: the binary writes the criteria runs when it runs the QA, and \
+             the verdict when it records the review."
+        }
         ("spec_events.drafted_spec", Locale::PtBr) => {
             "A spec {spec} tem o spec.md escrito pelo spec-draft: a página e o .md não são refeitos \
              do arquivo de eventos, para não apagar o texto da spec."
@@ -2449,6 +2459,7 @@ mod tests {
             ("spec_events.no_spec_file", &["{spec}"][..]),
             ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
+            ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.drafted_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),

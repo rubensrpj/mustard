@@ -1085,6 +1085,26 @@ mod tests {
         assert!(!closed_state_landed(cwd, "em-plano", since), "a spec in plan never closes by the bridge");
     }
 
+    /// Com a ponte, o QA que a execução grava é o QA que o fechamento lê: o
+    /// `complete-spec` cujo critério passa fecha, e o cujo critério falha
+    /// recusa. Cada critério é o do AC com o mesmo comando.
+    #[test]
+    fn a_passing_qa_run_lets_complete_spec_close_and_a_failing_one_refuses() {
+        for (spec, command, closes) in [("verde", "cd .", true), ("vermelha", "false", false)] {
+            let dir = tempdir().unwrap();
+            let cwd = dir.path();
+            seed_spec_md(cwd, spec, &format!("# S\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `{command}`\n"));
+            crate::shared::spec_state::seed_event(
+                cwd,
+                spec,
+                "criterion",
+                json!({ "when": "w", "then": "t", "proof": command }),
+            );
+            assert_eq!(run_complete(cwd, spec).is_ok(), closes, "{spec}");
+            assert_eq!(completed(cwd, spec), closes, "{spec}");
+        }
+    }
+
     #[test]
     fn parse_iso_millis_round_trips() {
         let ms = mustard_core::time::parse_iso_millis("2026-05-19T00:00:00.000Z").unwrap();

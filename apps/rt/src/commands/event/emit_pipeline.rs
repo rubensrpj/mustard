@@ -1340,6 +1340,13 @@ pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payl
     // Uma spec antiga parada antes da execução nasce em plano antes de o
     // estágio andar: a trava passa a ler o estado, e não o `meta.json`.
     crate::commands::spec_events::write::birth_before_advance(cwd, spec);
+    // Entering execution moves the spec's state to `running`, from an
+    // approved phase only: the automatic re-wave fires on that phase.
+    if kind == EVENT_PIPELINE_STAGE
+        && matches!(payload.get("stage").and_then(Value::as_str).and_then(Stage::parse), Some(Stage::Execute))
+    {
+        let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "running", None);
+    }
     let mut meta = read_meta(&path).unwrap_or_default();
 
     match kind {
@@ -1499,6 +1506,9 @@ fn sync_wave_started(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 /// untouched, never regressed. Fail-open.
 fn sync_parent_started(cwd: &Path, spec: &str, ts: &str) {
     crate::commands::spec_events::write::birth_before_advance(cwd, spec);
+    // A wave starting is the execution too: the state moves to `running`,
+    // from an approved phase only.
+    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "running", None);
     let Some(spec_dir) = ClaudePaths::for_project(cwd)
         .and_then(|p| p.for_spec(spec))
         .ok()

@@ -37,6 +37,10 @@
 //! Quem grava por dentro do binário, como a testemunha da aprovação e o
 //! `spec-draft`, usa [`record`], a mesma gravação deste comando.
 //!
+//! Este comando também não grava a execução de um critério (`criterion_run`)
+//! nem o veredito (`verdict`), nem tira ou revê um deles: quem os grava é o
+//! binário, quando roda o QA ([`record_run`]) e quando registra a revisão.
+//!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
 //! fluxo e da testemunha da aprovação. As portas que gravam `state` são três,
 //! todas aqui — o [`record`] da testemunha, o [`record_birth`] e o
@@ -58,6 +62,16 @@ use serde_json::{json, Map, Value};
 
 use super::pages::SpecPages;
 use crate::shared::spec_state::DiskSpecState;
+
+/// Os tipos que só o binário grava: a execução de um critério, quando ele
+/// roda o QA, e o veredito, quando ele registra a revisão. O `run write` não
+/// os grava, nem tira ou revê um deles.
+const BINARY_ONLY: &[&str] = &["criterion_run", "verdict"];
+
+/// Os números dos eventos `event_type` que a leitura de `log` mostra.
+fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
+    log.visible().into_iter().filter(|event| event.event_type == event_type).map(|event| event.id).collect()
+}
 
 /// Options for `mustard-rt run write`.
 pub struct WriteOpts {
@@ -99,6 +113,9 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     };
     if event_type == "state" {
         return refuse(Refusal::StateByFlowOnly { spec: spec.trim().to_string() });
+    }
+    if BINARY_ONLY.contains(&event_type) {
+        return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
         Ok(Recorded { written, pages }) => {
@@ -216,6 +233,9 @@ fn phase_rule(
     let revised = replaces.and_then(|id| before.get(id)).and_then(|event| event.str_field("phase")).map(str::trim);
     let carried = carried.filter(|phase| revised != Some(*phase));
     let Some(by) = by else {
+        if let Some(event_type) = BINARY_ONLY.iter().find(|t| visible_of(before, t) != visible_of(after, t)) {
+            return Err(Refusal::BinaryOnlyType { event_type: (*event_type).to_string(), spec: spec.to_string() });
+        }
         return if was == now { Ok(()) } else { Err(Refusal::StateByFlowOnly { spec: spec.to_string() }) };
     };
     if phase_write_allowed(&was, &now, carried, by) {
@@ -261,11 +281,44 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Optio
     draft.insert("author".to_string(), json!("binary"));
     match record(start, spec, "state", draft, PhaseWriter::Binary) {
         Ok(recorded) => {
-            let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id, session);
+            // A cobrança dispara com o fechamento e com o merge; a entrada na
+            // execução não cobra nada.
+            if matches!(phase, "closed" | "delivered") {
+                let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id, session);
+            }
             true
         }
         Err(_) => false,
     }
+}
+
+/// A ponte até o gravador definitivo do QA: grava na spec `spec`, vista de
+/// `start`, uma execução do critério de número `criterion` (`pass` quando
+/// `passed`), com o código de saída, o tempo e o fim da saída, pela mesma
+/// gravação do `run write`. Só grava quando a spec tem arquivo de eventos.
+/// `true` quando gravou.
+pub(crate) fn record_run(
+    start: &Path,
+    spec: &str,
+    criterion: u64,
+    passed: bool,
+    exit: Option<i64>,
+    ms: u128,
+    output: &str,
+) -> bool {
+    if DiskSpecState::new(start).log(spec).is_none() {
+        return false;
+    }
+    let mut draft = Map::new();
+    draft.insert("criterion".to_string(), json!(criterion));
+    draft.insert("result".to_string(), json!(if passed { "pass" } else { "fail" }));
+    draft.insert("exit".to_string(), json!(exit.unwrap_or(i64::from(!passed)).max(0)));
+    draft.insert("ms".to_string(), json!(u64::try_from(ms).unwrap_or(u64::MAX)));
+    draft.insert("author".to_string(), json!("binary"));
+    if !output.trim().is_empty() {
+        draft.insert("output".to_string(), json!(output.trim()));
+    }
+    record(start, spec, "criterion_run", draft, PhaseWriter::Binary).is_ok()
 }
 
 /// O nascimento de uma spec aberta fora do arquivo de eventos — pelo
@@ -441,6 +494,35 @@ mod tests {
         let removal = write(root, "remove", r#"{"targets":[1,2],"reason":"engano"}"#);
         assert_eq!(removal["removed"], json!([1, 2]), "{removal}");
         assert!(root.join(".claude").join("spec").join("teste").join("spec.ndjson").is_file());
+    }
+
+    /// A execução de um critério e o veredito são gravados só pelo binário: o
+    /// `run write` recusa os dois, e recusa tirar uma execução gravada. Uma
+    /// execução aprovada escrita à mão nunca abre o fechamento.
+    #[test]
+    fn criteria_runs_and_verdicts_are_written_by_the_binary_only() {
+        use crate::shared::spec_state::{seed_run, seed_runs};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let criteria = seed_runs(root, "teste", &[None]);
+        let failing = seed_run(root, "teste", criteria[0], "fail");
+
+        let run = format!(r#"{{"criterion":{},"result":"pass","exit":0,"ms":1,"author":"binary"}}"#, criteria[0]);
+        let refused = write(root, "criterion_run", &run);
+        assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
+        let verdict = format!(
+            r#"{{"wave":1,"result":"approved","text":"ok","criteria":[{{"criterion":{},"tests_rule":true}}]}}"#,
+            criteria[0]
+        );
+        let refused = write(root, "verdict", &verdict);
+        assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
+        let removal = write(root, "remove", &format!(r#"{{"targets":[{failing}],"reason":"engano"}}"#));
+        assert_eq!(removal["reason"], json!("binary-only-type"), "taking the red run out is refused too: {removal}");
+
+        assert!(
+            crate::commands::spec::complete_spec::close_admission(root, "teste").is_err(),
+            "the close still refuses"
+        );
     }
 
     /// Cada gravação refaz a página e o `.md` da spec. Uma decisão revista

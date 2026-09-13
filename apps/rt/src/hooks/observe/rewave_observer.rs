@@ -158,8 +158,8 @@ mod tests {
         sp.spec_md_path()
     }
 
-    /// O gatilho é o estado da spec atual: em plano, nada; em execução, o
-    /// `spec.md`; já decomposta, nada de novo.
+    /// The trigger is the state of the current spec: in plan, nothing; in
+    /// execution, its `spec.md`; already decomposed, nothing again.
     #[test]
     fn the_trigger_is_the_running_state_of_the_current_spec() {
         // An inherited override answers first; the branch rung is what is
@@ -179,6 +179,36 @@ mod tests {
 
         std::fs::write(spec_md.with_file_name("wave-plan.md"), "# Wave Plan\n").unwrap();
         assert!(target_spec_md(cwd, None).is_none(), "already decomposed");
+    }
+
+    /// Entering execution records `running` on an approved spec, and the
+    /// re-wave then fires for it; before the approval, entering execution
+    /// records nothing.
+    #[test]
+    fn the_rewave_fires_once_the_approved_spec_enters_execution() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        let cwd = project.to_str().unwrap();
+        let spec_md = make_spec(project, "specB", "- src/a.ts\n- src/b.ts", Some("plan"));
+        crate::shared::spec_state::stand_on_spec_branch(project, "specB");
+        let enter = || {
+            crate::commands::event::emit_pipeline::patch_meta_for_transition(
+                project,
+                "specB",
+                "pipeline.stage",
+                &json!({ "stage": "Execute" }),
+                "2026-09-13T12:00:00.000Z",
+            );
+        };
+
+        enter();
+        assert!(target_spec_md(cwd, None).is_none(), "a plan never jumps to execution");
+        crate::shared::spec_state::approve_in(spec_md.parent().unwrap());
+        enter();
+        assert_eq!(target_spec_md(cwd, None), Some(spec_md), "an approved spec in execution re-waves");
     }
 
     #[test]
