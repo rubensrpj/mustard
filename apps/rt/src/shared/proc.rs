@@ -346,7 +346,8 @@ pub enum ShellOutcome {
 /// in the first place.
 ///
 /// Fail-open by construction: every failure mode is a [`ShellOutcome`] variant,
-/// never a panic. On timeout the child is killed and reaped before returning.
+/// never a panic. On timeout the child's whole process group (its process tree
+/// on Windows) is killed and reaped before returning — see [`reap`].
 #[must_use]
 pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> ShellOutcome {
     let mut cmd = crate::util::platform::build_shell_command(command);
@@ -356,6 +357,14 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
         .stderr(Stdio::piped());
     if let Some(path) = augmented_path() {
         cmd.env("PATH", path);
+    }
+    // O comando roda no próprio grupo de processos, para o prazo matar o grupo
+    // inteiro: o shell nem sempre cede o lugar ao comando (o `sh` do Debian não
+    // cede), e o comando de verdade fica neto dele.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -406,23 +415,50 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
     })
 }
 
-/// Kill + reap a child whose output no longer matters, and let its readers go.
+/// Kill + reap a child whose output no longer matters, with everything it
+/// started, then join its readers.
 ///
-/// The readers are NOT joined. Killing the shell does not kill what the shell
-/// started: a grandchild (`sh -c "sleep 5"`, or `cmd /C gh …` on Windows)
-/// keeps the pipes open, and joining the readers would wait for it — the
-/// deadline would hold only as long as the grandchild chose to. Dropping the
-/// handles detaches the threads; they hit EOF and finish on their own when the
-/// grandchild exits, and this call returns at the deadline.
+/// Killing only the shell is not enough: the shell does not always hand its
+/// place over to the command (`sh -c "sleep 5"`, or `cmd /C gh …` on Windows),
+/// so the real command is a grandchild that would go on running alone — a
+/// `cargo` holding the build directory's lock while the next criterion times
+/// out behind it. The child runs in its own process group on Unix, and
+/// [`kill_tree`] kills the whole group (the whole tree on Windows). With it
+/// dead, the pipes close and the readers finish.
 fn reap(
     child: &mut std::process::Child,
     out_reader: std::thread::JoinHandle<Vec<u8>>,
     err_reader: std::thread::JoinHandle<Vec<u8>>,
 ) {
+    kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    drop(out_reader);
-    drop(err_reader);
+    let _ = out_reader.join();
+    let _ = err_reader.join();
+}
+
+/// Kill the process group `pid` leads (Unix: `kill -KILL -<pid>` through the
+/// shell, since the crate forbids `unsafe`) or the process tree rooted at
+/// `pid` (Windows: `taskkill /F /T /PID`). Best-effort, like [`kill_pid`].
+///
+/// No `--` before the negative group: the `kill` built into `dash`, the `sh`
+/// of Debian and Ubuntu, refuses it ("Illegal number"), and the group would
+/// live on. With the signal named first, the negative number can only be the
+/// group, in `dash`, `bash` and `zsh` alike.
+fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", &format!("taskkill /F /T /PID {pid}")]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.args(["-c", &format!("kill -KILL -{pid}")]);
+        c
+    };
+    let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// Free the given OTLP port: find whatever process is listening on
@@ -745,8 +781,8 @@ mod tests {
     /// A command that outlives its deadline is killed and reported as
     /// `TimedOut` — a class of its own, never a silent success. The call
     /// returns at the deadline, not when the command would have ended: the
-    /// sleeping process is a grandchild of the shell, and it holds the pipes
-    /// open after the shell is killed.
+    /// sleeping process, a grandchild of the shell, dies with the shell's
+    /// process group.
     #[test]
     fn shell_reports_timed_out_when_the_deadline_fires_first() {
         let dir = std::env::temp_dir();
@@ -757,6 +793,40 @@ mod tests {
             other => panic!("a command past its deadline must report TimedOut, got {other:?}"),
         }
         assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
+    }
+
+    /// `true` when `pid` no longer runs: absent, or a zombie, which is already
+    /// dead and only waits to be collected.
+    #[cfg(unix)]
+    fn no_longer_runs(pid: u32) -> bool {
+        Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().is_ok_and(|out| {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            stat.is_empty() || stat.starts_with('Z')
+        })
+    }
+
+    /// No prazo, o grupo inteiro morre: o neto que o shell lançou e que dorme
+    /// mais que o prazo não roda mais quando a função volta, e ela volta no
+    /// prazo.
+    #[cfg(unix)]
+    #[test]
+    fn the_deadline_kills_the_grandchild_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("neto.pid");
+        let command = format!("sleep 7 & echo $! > '{}'; wait", pid_file.display());
+        let started = Instant::now();
+        let outcome = run_shell_with_deadline(&command, dir.path(), Duration::from_secs(1));
+        assert!(matches!(outcome, ShellOutcome::TimedOut { .. }), "{outcome:?}");
+        assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
+        let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let gone = (0..20).any(|_| {
+            no_longer_runs(pid) || {
+                std::thread::sleep(Duration::from_millis(50));
+                false
+            }
+        });
+        assert!(gone, "the grandchild {pid} outlived the deadline");
     }
 
     #[test]
