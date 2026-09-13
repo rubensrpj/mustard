@@ -29,7 +29,7 @@ The placeholders the renderer substitutes — `TEMPLATE_PLACEHOLDERS` in `apps/r
 | `{role_block}` | `--role` (`build_role_block` / `build_guards_role_block`) | The role cue **plus** a per-role delivery contract (what to produce, return-cap, read-only vs write). |
 | `{spec_lang}` | `mustard.json` `language.text` | `pt-BR` when the project declares none; affects only the narrative — code stays EN. |
 | `{task_steps}` | `## Tasks` of the wave, or `--task-text` when spec-less (`/scan` guards, `/task`) | VARIABLE — per wave; `--task-text` fills `## TASK` so the prompt stays self-contained (never hand-append the task). |
-| `{context_md}` | `mustard-rt run context-slice` (cached, refreshed per wave) | Stable across a wave. Empty when no `CONTEXT.md` glossary exists (opt-in via `grill-with-docs`) — blank by design, not a failure. |
+| `{context_md}` | nothing today — the renderer fills it with an empty string | Always empty: the glossary no longer reaches a dispatched prompt. Blank by design, not a failure; the section collapses. |
 | `{prior_wave_diff}` | per-wave `diff.md` (`git diff HEAD~1 HEAD --stat`, cached by `wave-done`) | VARIABLE — empty on wave 1 or when the diff is empty. |
 | `{change_log}` | spec `change-log.md` request bullets | VARIABLE — mid-pipeline change requests; empty when none. |
 | `{reality_obligations}` | the wave's `## Reality Obligations` (materialised from the plan JSON's per-wave `reality_obligations`) | VARIABLE — the duties this wave owes the WORLD outside the repository, each with its `RO-{n}.{i}` id; the rendered body tells the agent to account for each BY ID in its report, and `wave-done` names the ids nothing it recorded accounts for. Empty when the plan declared none. |
@@ -86,7 +86,7 @@ The embedded file holds two `<!-- TEMPLATE: … -->` blocks — **preserve every
 ## CONTEXT           (static ground rules: Guards pointer, sibling check, spec language)
 ## WHY               ({why_block} — the parent spec's `## Context` + `## Non-Goals`)
 ## GUARDS            ({guards_summary})
-## SHARED LANGUAGE   ({context_md} slice — stable across the wave)
+## SHARED LANGUAGE   ({context_md} — empty today, so the section collapses)
 ## REFERENCE         ({reference_files} — paths + signatures)
 ## SKILLS            ({skills_list} — names + trigger descriptions, never bodies; empty for `patterns`)
 ## WEB VALIDATION    (static)

@@ -1,8 +1,8 @@
 //! `mustard-rt run pipeline-summary` — a port of `scripts/pipeline-summary.js`.
 //!
 //! Renders a "Done / Left / Next Steps / Manual Follow-ups" summary for a spec
-//! at CLOSE. Reads `<spec-dir>/spec.md` (required) and the optional
-//! `.claude/.pipeline-states/<basename>.json` (fail-open).
+//! at CLOSE. Reads `<spec-dir>/spec.md` (required) and the `meta.json`
+//! sidecar beside it (fail-open).
 //!
 //! `--format markdown` (default) prints the rendered summary; `--format json`
 //! prints `{ done, left, nextSteps, followUps }`. No `--format html`.

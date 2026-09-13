@@ -27,7 +27,7 @@ Roles are the render's canonical vocabulary: SIX named contracts — `explore`, 
 
 Spec-less is not context-less. **Locate first** (`${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md` owns how to triage, shape the query, and read anchors): a LITERAL token → `grep`/`glob`; a CONCEPT → the digest `mustard-rt run feature --intent "…"`, then READ the anchors it points to. Dispatching blind is the top cause of an empty `/task`.
 
-The agent prompt is **always** produced by `agent-prompt-render` — NEVER hand-assembled. `{guards_summary}` (subproject `## Guards`) and `{context_md}` (relevance-sliced glossary) are filled by the renderer. Render each action, folding the anchors into `--task-text` so the agent starts from them:
+The agent prompt is **always** produced by `agent-prompt-render` — NEVER hand-assembled. `{guards_summary}` (subproject `## Guards`) is filled by the renderer; `{context_md}` stays empty, because the glossary no longer reaches a prompt. Render each action, folding the anchors into `--task-text` so the agent starts from them:
 
 ```bash
 mustard-rt run agent-prompt-render --role {role} \

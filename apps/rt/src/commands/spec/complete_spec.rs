@@ -20,7 +20,7 @@
 //! via [`crate::shared::events::writer_ndjson::write_event_with_ts`] and read via
 //! [`mustard_core::view::projection::read_harness_events_from_ndjson_dir`].
 
-use crate::shared::context::session_id;
+use crate::shared::spec_state::session_from_env;
 use mustard_core::io::fs;
 use mustard_core::view::projection::{read_harness_events_from_ndjson_dir, read_workspace_events};
 use mustard_core::ClaudePaths;
@@ -139,17 +139,17 @@ pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
 
 /// Emit a typed pipeline event via the canonical NDJSON sink.
 fn emit_ndjson(cwd: &Path, spec: &str, event_name: &str, payload: &Value, ts: &str) {
-    let sid = session_id();
+    let sid = session_from_env();
     let kind = crate::shared::events::route::classify_kind(event_name);
     let _ = crate::shared::events::writer_ndjson::write_event_with_ts(
         cwd,
         Some(spec),
         None,
-        &sid,
+        sid.as_deref().unwrap_or("unknown"),
         event_name,
         kind,
         Some(0),
-        Some(&sid),
+        sid.as_deref(),
         Some("complete-spec"),
         None,
         payload,
@@ -253,12 +253,13 @@ fn mark_complete(cwd: &Path, spec: &str) -> Value {
     // landed above and must succeed regardless.
     merge_capabilities_on_close(cwd, spec, &now);
 
-    // Drop the session→spec binding now that the spec is terminal: events in
-    // the gap after the close must not inherit this just-finished spec. Only on
-    // the completed close, and only when a real session is resolvable (a
-    // `"unknown"` id is skipped inside `unbind_session_spec`).
-    let sid = session_id();
-    crate::shared::context::unbind_session_spec(&cwd.to_string_lossy(), &sid);
+    // Desliga a spec da sessão agora que ela terminou: os eventos depois do
+    // fechamento não herdam a spec que acabou. Só a sessão que o ambiente
+    // entrega; sem ela, nada é desligado, porque um palpite pela pasta de
+    // sessão mais nova desligaria a spec de outra sessão.
+    if let Some(sid) = session_from_env() {
+        crate::shared::context::unbind_session_spec(&cwd.to_string_lossy(), &sid);
+    }
 
     json!({
         "ok": true,
@@ -520,7 +521,7 @@ fn emit_capability_event(cwd: &Path, spec: &str, ts: &str, event_name: &str, pay
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: ts.to_string(),
-        session_id: session_id(),
+        session_id: session_from_env().unwrap_or_default(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
@@ -550,18 +551,18 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
         return;
     }
     let ts = mustard_core::time::now_iso8601();
-    let sid = session_id();
+    let sid = session_from_env();
     let payload = json!({ "from": last, "to": "CLOSE" });
     let kind = crate::shared::events::route::classify_kind("pipeline.phase");
     let _ = crate::shared::events::writer_ndjson::write_event_with_ts(
         cwd,
         Some(spec),
         None,
-        &sid,
+        sid.as_deref().unwrap_or("unknown"),
         "pipeline.phase",
         kind,
         Some(0),
-        Some(&sid),
+        sid.as_deref(),
         Some("complete-spec"),
         None,
         &payload,

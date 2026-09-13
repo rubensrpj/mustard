@@ -46,9 +46,8 @@ fn hook_description(name: &str) -> &'static str {
         "size_gate" => "Warns specs > 500 lines; validates skill YAML frontmatter",
         "boundary_gate" => "Flags edits outside the active spec's declared boundary (sensitive-file denies live in settings permissions.deny)",
         "post_edit" => "Auto-formats by extension; auto-marks Checklist items; guard-verify; pipeline-phase events",
-        "session_knowledge_observer" => "Extracts non-obvious decisions to memory_decisions SQLite; friction telemetry",
         "session_start_inject" => "Bootstraps event bus; runs spec-hygiene; injects top-N knowledge patterns",
-        "session_cleanup_observer" => "Removes terminal pipeline-states and stale state files",
+        "session_cleanup_observer" => "Stops the OTEL collector; prunes old compact-state and telemetry files",
         "prompt_submit_inject" => "Archives pending closed-followup specs on a new pipeline command",
         _ => "(no description)",
     }
@@ -61,10 +60,10 @@ fn hook_description(name: &str) -> &'static str {
 /// accepted and changes nothing. Two such names sat here — `MUSTARD_POST_EDIT_MODE`
 /// and `MUSTARD_KNOWLEDGE_MODE` — and neither was ever read by a hook.
 /// `post_edit` now names `MUSTARD_GUARD_GATE_MODE`, which is what its one
-/// refusing half really reads (`hooks/write/post_edit.rs`);
-/// `session_knowledge_observer` names nothing, because an Observer returns no
-/// verdict and so has no enforcement level to set. `gate_table_parity.rs` holds
-/// that line: an arm naming a var no env-reading call consults fails the build.
+/// refusing half really reads (`hooks/write/post_edit.rs`); an Observer names
+/// nothing, because it returns no verdict and so has no enforcement level to
+/// set. `gate_table_parity.rs` holds that line: an arm naming a var no
+/// env-reading call consults fails the build.
 fn hook_mode_env(name: &str) -> Option<&'static str> {
     match name {
         "bash_command_gate" => Some("MUSTARD_COMMIT_GATE_MODE"),
@@ -75,7 +74,6 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
         "size_gate" => Some("MUSTARD_SPEC_SIZE_MODE"),
         "boundary_gate" => Some("MUSTARD_BOUNDARY_MODE"),
         "post_edit" => Some("MUSTARD_GUARD_GATE_MODE"),
-        // `session_knowledge_observer` is an Observer: no verdict, no mode.
         _ => None,
     }
 }
@@ -246,9 +244,9 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
 fn event_to_module(event: &str) -> &'static str {
     match event {
         "PreToolUse" => "bash_command_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + boundary_gate",
-        "PostToolUse" => "post_edit + session_knowledge_observer",
+        "PostToolUse" => "post_edit",
         "SessionStart" => "spec_hygiene_observer + session_start_inject",
-        "SessionEnd" => "session_cleanup_observer + session_knowledge_observer",
+        "SessionEnd" => "session_cleanup_observer",
         "SubagentStart" => "tool_use_counter + main_context_counter",
         "SubagentStop" => "tool_use_counter + main_context_counter",
         "UserPromptSubmit" => "prompt_submit_inject",

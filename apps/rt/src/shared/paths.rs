@@ -107,6 +107,17 @@ fn lexical(path: &str) -> String {
     format!("{root}{}", parts.join("/"))
 }
 
+/// `given` junto da raiz quando é relativo, com barras normais e com `.` e
+/// `..` resolvidos só no texto.
+fn resolved(root: &str, given: &str) -> String {
+    let given = given.replace('\\', "/");
+    if is_absolute(&given) {
+        lexical(&given)
+    } else {
+        lexical(&format!("{}/{given}", root.replace('\\', "/").trim_end_matches('/')))
+    }
+}
+
 /// `true` quando um caminho com barras normais é absoluto: `/...` ou `C:/...`.
 fn is_absolute(p: &str) -> bool {
     p.starts_with('/')
@@ -214,13 +225,18 @@ impl WriteTarget {
 
 /// A classe de `given`, que fica em `rel` quando mora na raiz.
 fn classify_path(root: &str, given: &str, rel: Option<&str>) -> PathClass {
+    // As duas comparações que olham o caminho inteiro recebem-no já junto da
+    // raiz e sem `.`, `..` nem barra dobrada: `/p/.git/./config` e
+    // `/p/.git//config` são a configuração do git, e a pasta das specs do
+    // checkout principal continua achada quando o caminho traz um `./`.
+    let full = resolved(root, given);
     // O caminho inteiro contém o nome do arquivo, então um padrão de nome casa
     // nele também.
-    if let Some(pattern) = sensitive_pattern(given) {
+    if let Some(pattern) = sensitive_pattern(&full) {
         return PathClass::Secret { pattern };
     }
     let Some(rel) = rel else {
-        return main_checkout_rel(root, given)
+        return main_checkout_rel(root, &full)
             .and_then(|rel| spec_file(&rel))
             .unwrap_or(PathClass::OutsideRepo);
     };
@@ -320,6 +336,52 @@ mod tests {
             Some(".claude/spec/x/spec.md"),
         );
         assert_eq!(relative_to_cwd("/p", "/p/../outra/a.rs"), None);
+    }
+
+    /// Um `.` ou uma barra dobrada no meio do caminho não escondem a
+    /// configuração do git.
+    #[test]
+    fn a_dot_or_a_double_slash_does_not_hide_a_sensitive_file() {
+        for path in ["/p/.git/./config", "/p/.git//config", "/p/src/../.git/config", ".git/./config"] {
+            for tool in ["Read", "Write"] {
+                let target = WriteTarget::classify("/p", &input(tool, path)).expect("a file tool");
+                assert_eq!(target.class, PathClass::Secret { pattern: ".git/config" }, "{tool} {path}");
+            }
+        }
+    }
+
+    /// Visto de um worktree, o arquivo de eventos da spec do checkout
+    /// principal continua sendo um arquivo que só o binário grava, mesmo com
+    /// um `./` no meio do caminho.
+    #[test]
+    fn from_a_worktree_a_dot_in_the_main_spec_path_still_names_the_spec_file() {
+        let git = |dir: &Path, args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} failed in {}", dir.display());
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let main = tmp.path().join("principal");
+        std::fs::create_dir_all(&main).expect("main");
+        git(&main, &["init", "-q"]);
+        git(&main, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
+        let wt = tmp.path().join("trabalho");
+        git(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/x"]);
+
+        let main_str = main.to_string_lossy().replace('\\', "/");
+        let wt_str = wt.to_string_lossy().replace('\\', "/");
+        for spelling in [
+            format!("{main_str}/.claude/./spec/x/spec.ndjson"),
+            format!("{main_str}/.claude//spec/x/spec.ndjson"),
+            format!("{main_str}/.claude/spec/x/spec.ndjson"),
+        ] {
+            let target = WriteTarget::classify(&wt_str, &input("Edit", &spelling)).expect("a file tool");
+            assert_eq!(target.class, PathClass::SpecFile { spec: Some("x".to_string()) }, "{spelling}");
+        }
     }
 
     /// Cada classe, pelas cinco ferramentas de arquivo; outra ferramenta não

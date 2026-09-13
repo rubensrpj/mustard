@@ -1458,8 +1458,8 @@ mod tests {
     /// that resolves the wave directory from the current spec and the wave
     /// variable.
     #[test]
-    fn w5_three_sequential_children_append_per_stop_and_red_blocks_consolidation() {
-        let spec = "w5-test-span-eval";
+    fn three_sequential_children_append_per_stop_and_red_blocks_consolidation() {
+        let spec = "span-eval";
         let wave_slug = "wave-5-rt";
         let (dir, wave_dir) = setup_wave_project(spec, wave_slug, "pt-BR");
         let cwd = dir.path().to_string_lossy().to_string();
@@ -1541,7 +1541,7 @@ mod tests {
     /// EN/technical regardless of the project's user-facing locale — even though
     /// this fixture declares `pt-BR` in mustard.json, the heading stays EN.
     #[test]
-    fn w5_pretooluse_dispatch_injects_vocabulary_block() {
+    fn pretooluse_dispatch_injects_vocabulary_block() {
         let dir = tempdir().unwrap();
         // A pt-BR mustard.json still must NOT localise the internal prompt.
         let claude = dir.path().join(".claude");

@@ -44,6 +44,12 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          module doc); maintenance escape hatch with no scripted caller",
     ),
     (
+        "context-slice",
+        "the glossary slicer (commands/economy/context_slice.rs); the prompt \
+         renderer no longer fills `{context_md}` with it, so no prose calls it, \
+         and it leaves with the rest of the old memory in the commands cut",
+    ),
+    (
         "dependency-precheck",
         "EXECUTE pre-gate the orchestrator runs from the bare-name instruction \
          in commands/mustard/feature/SKILL.md section 3 (never spelled with \

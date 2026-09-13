@@ -46,7 +46,8 @@
 //! evento da unidade, de onde o `pr-merge` o lê para fechar o item.
 
 use super::pending::{format_pending_items, open_pending, OpenPending, UNIT_PENDING_KEY};
-use crate::shared::context::{project_dir, session_id};
+use crate::shared::context::project_dir;
+use crate::shared::spec_state::session_from_env;
 use crate::shared::work_kind::{BaseFlow, WorkKind};
 use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -109,8 +110,8 @@ const EVENT_ECONOMY_OPERATION_INVOKED: &str = "pipeline.economy.operation.invoke
 /// plus the legacy `pipeline.phase` (alias-only), plus the `pipeline.wave.start`
 /// signal, plus the 4 new canonical state-model kinds, plus the 3
 /// `hygiene.*` kinds, plus the 1 `pipeline.economy.*` kind, plus the
-/// `pipeline.kind` work-type signal. A literal list — no magic
-/// alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
+/// `pipeline.kind` work-type signal. A literal list — no magic alias
+/// resolution: every kind is spelled with its full `pipeline.` prefix.
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
     EVENT_PIPELINE_STATUS,
@@ -338,12 +339,10 @@ pub fn run(opts: EmitPipelineOpts) {
         .as_ref()
         .map_or_else(|| opts.spec.clone(), |m| m.slug.clone());
     let ts = now_iso8601();
-    // Env → newest REAL `.claude/.session/<id>/` dir. The resolver never picks
-    // a placeholder bucket (`unknown`, the OTEL collector's `otel-unattached`)
-    // and `bind_session_spec` refuses one, so the session→spec binding this
-    // emit leaves behind lands under a session id the hooks are actually
-    // handed — not under a directory no reader ever consults.
-    let sid = session_id();
+    // Só a sessão que o ambiente entrega. Sem ela, o id fica vazio: o roteador
+    // não liga a spec a sessão nenhuma e a branch pendente não é gravada. Um
+    // palpite pela pasta de sessão mais nova gravaria as duas sob outra sessão.
+    let sid = session_from_env().unwrap_or_default();
     emit_primary_and_alias(&kind, &spec, &payload, &ts, &sid);
 
     // --- APPLY the one kind-specific side effect, keyed by `kind` -------------
@@ -1578,7 +1577,7 @@ pub(crate) fn emit_wave_start(project: &Path, spec: &str, wave: u32) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: ts.clone(),
-        session_id: session_id(),
+        session_id: session_from_env().unwrap_or_default(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
@@ -1615,7 +1614,7 @@ pub(crate) fn emit_wave_retry(project: &Path, spec: &str, wave: u32, attempt: u3
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: now_iso8601(),
-        session_id: session_id(),
+        session_id: session_from_env().unwrap_or_default(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
@@ -1704,7 +1703,7 @@ pub(crate) fn emit_dispatch_failure(
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: ts.clone(),
-        session_id: session_id(),
+        session_id: session_from_env().unwrap_or_default(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
@@ -1886,7 +1885,7 @@ fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
         // No QA owed → finalize exactly like `complete-spec`.
         patch_meta_complete(cwd, spec, ts);
         emit_pipeline_complete(cwd, spec, ts);
-        emit_completed_status_if_needed(cwd, spec, ts, &session_id());
+        emit_completed_status_if_needed(cwd, spec, ts, &session_from_env().unwrap_or_default());
     }
 }
 
@@ -1900,7 +1899,7 @@ fn emit_pipeline_complete(cwd: &Path, spec: &str, ts: &str) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: ts.to_string(),
-        session_id: session_id(),
+        session_id: session_from_env().unwrap_or_default(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
