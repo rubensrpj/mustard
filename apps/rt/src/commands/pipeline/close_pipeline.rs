@@ -98,7 +98,8 @@ use std::path::{Path, PathBuf};
 /// CLI entry — `mustard-rt run close-pipeline --spec <slug>`.
 pub fn run(spec: &str) {
     let cwd = PathBuf::from(crate::shared::context::project_dir());
-    let report = close(&cwd, spec);
+    let session = crate::shared::spec_state::session_from_env();
+    let report = close(&cwd, spec, session.as_deref());
     println!(
         "{}",
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
@@ -107,7 +108,8 @@ pub fn run(spec: &str) {
 
 /// The composite miolo against an explicit `cwd` root (testable without
 /// mutating the process cwd). Returns the report Value [`run`] prints.
-pub(crate) fn close(cwd: &Path, spec: &str) -> Value {
+/// `session` é a de quem fecha, lida do ambiente pela entrada `run`.
+pub(crate) fn close(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     // 1. Reviews — advisory listing of every review.result verdict.
     let reviews = collect_review_verdicts(cwd, spec);
 
@@ -172,8 +174,7 @@ pub(crate) fn close(cwd: &Path, spec: &str) -> Value {
         });
     }
 
-    let session = crate::shared::spec_state::session_from_env();
-    let complete_value = complete_spec::finalize(cwd, spec, session.as_deref());
+    let complete_value = complete_spec::finalize(cwd, spec, session);
     let completed = complete_value
         .get("ok")
         .and_then(Value::as_bool)
@@ -631,7 +632,7 @@ mod tests {
         let spec_dir = seed_spec(project, spec, "echo ok");
         emit_review(project, spec, "approved", 0, "2026-06-09T00:00:01.000Z");
 
-        let report = close(project, spec);
+        let report = close(project, spec, None);
 
         assert_eq!(report["qa"]["overall"], json!("pass"), "{report}");
         assert_eq!(report["completed"], json!(true), "{report}");
@@ -663,7 +664,7 @@ mod tests {
         let spec_dir = seed_spec(project, spec, "exit 3");
         emit_review(project, spec, "rejected", 2, "2026-06-09T00:00:01.000Z");
 
-        let report = close(project, spec);
+        let report = close(project, spec, None);
 
         assert_eq!(report["qa"]["overall"], json!("fail"), "{report}");
         assert_eq!(report["completed"], json!(false), "{report}");
@@ -775,7 +776,7 @@ mod tests {
             "precondition: nobody has confirmed AC-1 yet",
         );
 
-        let report = close(dir.path(), spec);
+        let report = close(dir.path(), spec, None);
 
         assert_eq!(report["qa"]["overall"], json!("pass"), "{report}");
         assert_eq!(report["completed"], json!(true), "{report}");
@@ -796,7 +797,7 @@ mod tests {
         let spec = "confirm-no-proof";
         seed_spec_two_acs(dir.path(), spec, "echo ok");
 
-        let report = close(dir.path(), spec);
+        let report = close(dir.path(), spec, None);
 
         assert_eq!(report["qa"]["overall"], json!("pass"), "{report}");
         assert_eq!(report["confirmation"]["taken"], json!(true), "{report}");
@@ -822,7 +823,7 @@ mod tests {
         let spec_dir = seed_spec_two_acs(dir.path(), spec, "exit 3");
         seed_red_ledger(&spec_dir, spec, "exit 3");
 
-        let report = close(dir.path(), spec);
+        let report = close(dir.path(), spec, None);
 
         assert_eq!(report["qa"]["overall"], json!("fail"), "{report}");
         assert_eq!(report["completed"], json!(false), "{report}");
@@ -870,7 +871,7 @@ mod tests {
         let spec_dir = seed_spec_two_acs(dir.path(), spec, "mkdir confirm-probe");
         seed_red_ledger(&spec_dir, spec, "mkdir confirm-probe");
 
-        let report = close(dir.path(), spec);
+        let report = close(dir.path(), spec, None);
 
         assert_eq!(report["qa"]["overall"], json!("pass"), "QA itself passed: {report}");
         // The still-red criterion is named, with what its column says.
@@ -961,7 +962,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = close(root, spec);
+        let report = close(root, spec, None);
 
         assert_eq!(report["qa"]["overall"], json!("pass"), "{report}");
         assert_eq!(report["confirmation"]["ok"], json!(true), "{report}");
@@ -989,7 +990,7 @@ mod tests {
         let spec_dir = seed_spec_two_acs(dir.path(), spec, "echo ok");
         seed_red_ledger(&spec_dir, spec, "echo ok");
 
-        let report = close(dir.path(), spec);
+        let report = close(dir.path(), spec, None);
 
         assert_eq!(report["removal"]["taken"], json!(false), "{report}");
         assert!(
@@ -1017,7 +1018,7 @@ mod tests {
     fn composite_close_pipeline_unknown_spec_skips_without_closing() {
         let dir = tempdir().unwrap();
         anchor(dir.path());
-        let report = close(dir.path(), "ghost-spec");
+        let report = close(dir.path(), "ghost-spec", None);
         assert_eq!(report["qa"]["overall"], json!("spec-not-found"), "{report}");
         assert_eq!(report["completed"], json!(false), "{report}");
         assert_eq!(report["reviews"], json!([]), "{report}");
@@ -1154,7 +1155,7 @@ mod tests {
         std::fs::write(project.join("apps/rt/src/main.rs"), b"fn main() {}\n").unwrap();
 
         let before = tree_snapshot(project);
-        let report = close(project, spec);
+        let report = close(project, spec, None);
         assert_eq!(report["completed"], json!(true), "the close must really run: {report}");
         let after = tree_snapshot(project);
 

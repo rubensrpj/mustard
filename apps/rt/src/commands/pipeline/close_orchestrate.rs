@@ -257,7 +257,8 @@ pub fn run(opts: CloseOrchestrateOpts) {
     // Deterministic chaining: when every gate passes, finalize the spec in
     // process (no LLM judgement, no subprocess) and auto-verify the
     // `pipeline.complete` event landed. A failing gate is report-only.
-    let (chained, verified) = chain_close(&cwd, &opts.spec, &gates);
+    let session = crate::shared::spec_state::session_from_env();
+    let (chained, verified) = chain_close(&cwd, &opts.spec, &gates, session.as_deref());
 
     let total = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let report = CloseReport {
@@ -321,11 +322,11 @@ fn close_gates_gate(cwd: &Path, spec: &str) -> GateReport {
 /// disagree. Returns `(chained, verified)`: a refusing vector is report-only,
 /// which means [`finalize_and_verify`] is not reached at all and nothing is
 /// written, emitted or marked `completed`.
-fn chain_close(cwd: &Path, spec: &str, gates: &[GateReport]) -> (bool, Option<bool>) {
+fn chain_close(cwd: &Path, spec: &str, gates: &[GateReport], session: Option<&str>) -> (bool, Option<bool>) {
     if !close_overall(gates) {
         return (false, None);
     }
-    finalize_and_verify(cwd, spec)
+    finalize_and_verify(cwd, spec, session)
 }
 
 /// Finalize the spec in-process and confirm the close landed.
@@ -340,7 +341,9 @@ fn chain_close(cwd: &Path, spec: &str, gates: &[GateReport]) -> (bool, Option<bo
 /// `pipeline.complete` event landed in the per-spec NDJSON window. Both steps
 /// are deterministic; `complete_spec`'s emits are idempotent, so a re-run after
 /// an already-closed spec is a no-op flip. Returns `(chained, Some(verified))`.
-fn finalize_and_verify(cwd: &Path, spec: &str) -> (bool, Option<bool>) {
+///
+/// `session` é a de quem fecha, lida do ambiente pela entrada `run`.
+fn finalize_and_verify(cwd: &Path, spec: &str, session: Option<&str>) -> (bool, Option<bool>) {
     // Use `finalize`, NOT `run_complete`: the QA gate above already ran every AC
     // and, crucially, gated on the RECORDED `qa.result overall=pass` — the same
     // fact `run_complete`'s admission would read, so routing here would refuse
@@ -349,8 +352,7 @@ fn finalize_and_verify(cwd: &Path, spec: &str) -> (bool, Option<bool>) {
     // strict: until it was fixed it accepted `skip`, and this line asserted a
     // verification that had not happened. `finalize` is the qa-less terminal path
     // `close-pipeline` already uses for exactly this reason.
-    let session = crate::shared::spec_state::session_from_env();
-    let _ = crate::commands::spec::complete_spec::finalize(cwd, spec, session.as_deref());
+    let _ = crate::commands::spec::complete_spec::finalize(cwd, spec, session);
     let verified = crate::commands::event::verify_emit::verify_event_landed(
         cwd,
         "pipeline.complete",
@@ -558,7 +560,7 @@ mod tests {
             gate,
         ];
         assert!(!close_overall(&gates), "the vector must fail the close");
-        assert_eq!(chain_close(cwd, "found", &gates), (false, None));
+        assert_eq!(chain_close(cwd, "found", &gates, None), (false, None));
         assert!(
             !crate::commands::event::verify_emit::verify_event_landed(
                 cwd,
