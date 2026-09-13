@@ -672,10 +672,9 @@ mod tests {
 
     #[test]
     fn allow_does_not_clobber_prior_decisive_verdict() {
-        // Regression guard for the rtk rewrite: when one
-        // module returns Rewrite and a later module (tool_use_counter /
-        // main_context_counter) returns Allow, the Rewrite must survive —
-        // otherwise rtk-rewrite is silently swallowed by the dispatcher.
+        // When one module returns Rewrite and a later module returns Allow,
+        // the Rewrite must survive — otherwise the tool input a module
+        // handed back is silently swallowed by the dispatcher.
         let mut outcome = Outcome::allow();
         let rewrite = Verdict::Rewrite {
             tool_input: serde_json::json!({ "command": "rtk git status" }),

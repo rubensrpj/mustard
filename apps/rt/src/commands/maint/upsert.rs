@@ -224,7 +224,8 @@ pub fn run() {
 /// tests drive the whole decision without a `claude` on `PATH`.
 ///
 /// The binary name defaults to `claude` and can be pointed elsewhere with
-/// `MUSTARD_CLAUDE_BIN`, mirroring `MUSTARD_RTK_BIN` in the rewrite gate.
+/// `MUSTARD_CLAUDE_BIN`, the way the rtk economy reader
+/// (`packages/core/src/domain/economy/sources/rtk.rs`) takes `MUSTARD_RTK_BIN`.
 fn refresh_plugin(root: &Path) -> PluginRefresh {
     let binary = std::env::var("MUSTARD_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
     let target = claude_config_dir()

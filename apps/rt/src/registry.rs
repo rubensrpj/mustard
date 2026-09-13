@@ -120,9 +120,9 @@ impl Registry {
         let modules = vec![
             Module {
                 id: "bash_command_gate",
-                // `bash_command_gate` is both a `Check` and an `Observer` — it ports
-                // the full Bash family (5/5): `bash-safety`,
-                // `bash-native-redirect`, `rtk-rewrite` and `review-gate` as
+                // `bash_command_gate` is both a `Check` and an `Observer`: the
+                // command guard, the Windows-path check, the native redirect,
+                // the commit review and the pull-request advisories as
                 // PreToolUse(Bash) gates, plus `pr-detect` as PostToolUse(Bash)
                 // telemetry.
                 applies_to: &[

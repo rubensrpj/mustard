@@ -37,7 +37,7 @@ pub struct StatusOpts {
 /// Hard-coded human-readable description per hook filename.
 fn hook_description(name: &str) -> &'static str {
     match name {
-        "bash_command_gate" => "Blocks dangerous Bash; redirects grep/ls/cat to native tools; rewrites via rtk; commit gate",
+        "bash_command_gate" => "Blocks commands that destroy work; redirects grep/ls/cat to native tools; commit gate",
         "tool_use_counter" => "Blocks Explore agents at 15 tool uses (warn at 12)",
         "main_context_counter" => "Enforces delegation to subagents; warns/denies un-delegated main-context tool calls",
         "context_budget_gate" => "Blocks Task prompts over per-role budget; advisory over 40% model window",

@@ -1,16 +1,13 @@
 //! `bash_command_gate` — the Bash-tool family dispatcher.
 //!
-//! ## Scope (Bash family, 5/5)
+//! The Bash-tool concerns live in sibling modules, one behavior each:
 //!
-//! The five Bash-tool concerns live in sibling modules, one behavior each:
-//!
-//! - [`safety`] — the destructive-ops residue (structural predicates only;
-//!   the law's home is `settings.json permissions.deny`).
+//! - [`lex`] — reads the command the way the terminal splits it.
+//! - [`safety`] — the command guard: refuses the commands that destroy work.
 //! - [`windows_redirect`] — deny `> C:\...` style redirects the POSIX shell
 //!   would mangle.
 //! - [`native_redirect`] — deny/advise native-tool equivalents for shell
 //!   reads (`grep`/`ls`/`cat` → Grep/Glob/Read).
-//! - [`rtk_rewrite`] — rewrite commands through RTK (the Golden Rule).
 //! - [`review_gate`] — validate before `git commit` (its own
 //!   `MUSTARD_COMMIT_GATE_MODE`, default `warn`).
 //! - [`pr_detect`] — DORA telemetry on `gh pr` commands (PostToolUse).
@@ -18,25 +15,19 @@
 //! - [`pr_qa_gate`] — advisory when a `gh pr create`/`merge` integrates a spec
 //!   with no passing `qa.result` (the QA ↔ integration coupling).
 //!
+//! Rewriting a command to `rtk` is not done here: rtk's own hook does it.
+//!
 //! This module is the ORCHESTRATION face only: it implements [`Check`] for
 //! PreToolUse(Bash) and [`Observer`] for PostToolUse(Bash), calling the
-//! siblings in the exact historical order — `safety` → `windows-redirect` →
-//! `native-redirect` → `rtk-rewrite` → `review-gate`. The first gate to reach
-//! a decisive verdict wins; gates that pass return `None` and the next runs.
+//! siblings in order — command guard → Windows path → native redirect →
+//! commit review → pull-request advisories. The first gate to reach a
+//! decisive verdict wins; gates that pass return `None` and the next runs.
 //! No re-exports — callers needing a specific gate use its module directly.
 
-use crate::shared::context::current_spec;
-use mustard_core::domain::economy::estimator;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::time::now_iso8601;
-use serde_json::json;
 
-use super::{
-    lex, native_redirect, pr_body_gate, pr_detect, pr_qa_gate, review_gate, rtk_rewrite, safety,
-    windows_redirect,
-};
+use super::{lex, native_redirect, pr_body_gate, pr_detect, pr_qa_gate, review_gate, safety, windows_redirect};
 
 /// The consolidated Bash-tool enforcement module (dispatcher).
 pub struct BashCommandGate;
@@ -53,14 +44,13 @@ impl BashCommandGate {
 }
 
 impl Check for BashCommandGate {
-    /// Run the PreToolUse(Bash) gates in `bash-safety` →
-    /// `bash-windows-redirect` → `bash-native-redirect` → `rtk-rewrite` →
-    /// `review-gate` order.
+    /// Run the PreToolUse(Bash) gates: command guard → Windows path → native
+    /// redirect → commit review → pull-request advisories.
     ///
-    /// `bash-safety` is the non-negotiable gate (it has no mode — always
-    /// strict). `review-gate` runs last and only fires on `git commit` — it
-    /// computes its verdict with its own `MUSTARD_COMMIT_GATE_MODE`,
-    /// independent of the module enforcement mode the dispatcher applies.
+    /// The command guard is the non-negotiable gate (it has no mode — always
+    /// strict). The commit review only fires on `git commit` — it computes its
+    /// verdict with its own `MUSTARD_COMMIT_GATE_MODE`, independent of the
+    /// module enforcement mode the dispatcher applies.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         // Only PreToolUse(Bash) is a gate.
         if ctx.trigger != Some(Trigger::PreToolUse) {
@@ -91,88 +81,16 @@ impl Check for BashCommandGate {
         if let Some(verdict) = native_redirect::bash_native_redirect(&cmd) {
             return Ok(verdict);
         }
-        if let Some((verdict, coverage)) = rtk_rewrite::rtk_rewrite(&cmd) {
-            // Emit `rtk-rewrite` telemetry before returning. Best-effort —
-            // a store failure must never block the tool call.
-            if let Verdict::Rewrite { ref tool_input } = verdict {
-                let rewritten = tool_input
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let spec_slug = current_spec(&ctx.project_dir);
-                // Emit a `pipeline.economy.savings.rtk-rewrite` NDJSON event
-                // (savings writes moved from SQLite to NDJSON). Tokens we did NOT have
-                // to ship as a verbose Bash response because `rtk` summarised
-                // the command. `RtkRewrite` bucket — `BashCommandGateBlock` is
-                // reserved for deny verdicts so the dashboard can surface
-                // "rewrites vs blocks" without conflating the two.
-                {
-                    let model = std::env::var("CLAUDE_MODEL").unwrap_or_default();
-                    let saved = i64::from(estimator::estimate_input_tokens(&cmd, &model));
-                    let saved = saved.max(1);
-                    let savings_event = HarnessEvent {
-                        v: SCHEMA_VERSION,
-                        ts: now_iso8601(),
-                        session_id: input.session_id.as_deref().unwrap_or("unknown").to_string(),
-                        wave: 0,
-                        actor: Actor {
-                            kind: ActorKind::Hook,
-                            id: Some("bash_guard".to_string()),
-                            actor_type: None,
-                        },
-                        event: "pipeline.economy.savings.rtk-rewrite".to_string(),
-                        payload: json!({
-                            "source": "RtkRewrite",
-                            "tokens_saved": saved,
-                            "spec_id": spec_slug.clone(),
-                            "wave_id": std::env::var("MUSTARD_ACTIVE_WAVE").ok().filter(|s| !s.is_empty()),
-                            "agent_id": "bash_guard",
-                        }),
-                        spec: spec_slug.clone(),
-                    };
-                    let _ = crate::shared::events::route::emit(&ctx.project_dir, &savings_event);
-                }
-                // Harness event for downstream readers.
-                let event = HarnessEvent {
-                    v: SCHEMA_VERSION,
-                    ts: now_iso8601(),
-                    session_id: input.session_id.as_deref().unwrap_or("unknown").to_string(),
-                    wave: 0,
-                    actor: Actor {
-                        kind: ActorKind::Hook,
-                        id: Some("rtk-rewrite".to_string()),
-                        actor_type: None,
-                    },
-                    event: "rtk-rewrite".to_string(),
-                    payload: json!({
-                        "event": "rtk-rewrite",
-                        "tokens_affected": i64::try_from(cmd.len()).unwrap_or(i64::MAX),
-                        "note": "rewritten via rtk",
-                        "coverage": coverage,
-                        "command_head": &cmd[..cmd.len().min(60)],
-                        "rewritten_head": &rewritten[..rewritten.len().min(60)],
-                    }),
-                    spec: spec_slug,
-                };
-                // `rtk-rewrite` is non-pipeline → NDJSON via the event router.
-                let _ = crate::shared::events::route::emit(&ctx.project_dir, &event);
-            }
-            return Ok(verdict);
-        }
         if let Some(verdict) = review_gate::review_gate(&cmd, ctx, review_gate::commit_gate_mode()) {
             return Ok(verdict);
         }
-        // `pr-qa-gate` runs LAST: it must see the command AFTER `rtk_rewrite`
-        // had its say (an unprefixed `gh pr …` is rewritten first, and the
-        // re-issued `rtk gh pr …` reaches here — `classify_pr` sees through the
-        // wrapper). Advisory only; never blocks integration.
+        // The pull-request advisories come last (`classify_pr` sees through
+        // an `rtk` prefix). Advisory only; never blocks integration.
         if let Some(verdict) = pr_qa_gate::pr_qa_gate(&cmd, &ctx.project_dir) {
             return Ok(verdict);
         }
-        // `pr-body-gate` runs after it, for the same reason and with the same
-        // shape: it must see the command AFTER `rtk_rewrite`. QA first because
-        // integrating unverified work is the graver of the two — a thin PR body
-        // is recoverable with one `gh pr edit`.
+        // QA first because integrating unverified work is the graver of the
+        // two — a thin PR body is recoverable with one `gh pr edit`.
         if let Some(verdict) = pr_body_gate::pr_body_gate(&cmd, &ctx.project_dir) {
             return Ok(verdict);
         }
@@ -214,6 +132,7 @@ impl Observer for BashCommandGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::time::now_iso8601;
     use mustard_core::SupportedLocale;
     use serde_json::json;
     use tempfile::tempdir;
@@ -229,11 +148,8 @@ mod tests {
         (input, ctx)
     }
 
-    /// Run the `Check` for a PreToolUse(Bash) command. Forces the rtk gate off
-    /// (see `rtk_rewrite::RTK_REWRITE_TEST_OVERRIDE`) so chain tests exercise
-    /// the other gates deterministically.
+    /// Run the `Check` for a PreToolUse(Bash) command.
     fn verdict_for(command: &str) -> Verdict {
-        rtk_rewrite::RTK_REWRITE_TEST_OVERRIDE.with(|c| c.set(true));
         let (input, ctx) = pre_bash(command);
         BashCommandGate.evaluate(&input, &ctx).expect("check never errors")
     }
@@ -286,7 +202,7 @@ mod tests {
     }
 
     /// Non-commit commands pass the full chain without blocking (the review
-    /// gate only fires on `git commit`; rtk gate is forced off in tests).
+    /// gate only fires on `git commit`).
     #[test]
     fn non_commit_commands_pass_the_chain() {
         assert!(!verdict_for("git status").is_blocking());
