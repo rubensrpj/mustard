@@ -135,6 +135,7 @@ use crate::commands::event::work_branch::{
 };
 use crate::commands::work_unit_open::dirty_paths;
 use crate::shared::context;
+use crate::shared::paths::relative_to_cwd;
 
 /// The dirty-path note appended to a checkout-failure verdict, built from the
 /// SAME probe the worktree door uses ([`dirty_paths`]) — measured BEFORE the
@@ -599,41 +600,6 @@ impl Check for WorkBranchGate {
             }
         }
     }
-}
-
-/// Compute the path of `file_path` relative to `cwd`, forward-slash
-/// normalised. Returns `None` when `file_path` escapes `cwd` (`../`) — the
-/// caller treats that the same as a meta path (skip). Mirrors the JS
-/// `path.relative(cwd, abs)` + `rel.startsWith('../')` check.
-/// `pub(crate)`: `boundary_gate` and `mold_gate` reuse it.
-pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
-    let cwd_norm = cwd.replace('\\', "/");
-    let fp_norm = file_path.replace('\\', "/");
-    // Resolve `fp` to an absolute-ish path: if not absolute, join under cwd.
-    let abs = if is_absolute(&fp_norm) {
-        fp_norm
-    } else {
-        format!("{}/{}", cwd_norm.trim_end_matches('/'), fp_norm)
-    };
-    let cwd_prefix = format!("{}/", cwd_norm.trim_end_matches('/'));
-    if let Some(rel) = abs.strip_prefix(&cwd_prefix) {
-        Some(rel.to_string())
-    } else if abs == cwd_norm.trim_end_matches('/') {
-        Some(String::new())
-    } else {
-        // Outside cwd — treat as `../` (skip).
-        None
-    }
-}
-
-/// `true` if a forward-slash path looks absolute (POSIX `/...` or Windows
-/// `C:/...`).
-fn is_absolute(p: &str) -> bool {
-    p.starts_with('/')
-        || (p.len() >= 3
-            && p.as_bytes()[0].is_ascii_alphabetic()
-            && p.as_bytes()[1] == b':'
-            && p.as_bytes()[2] == b'/')
 }
 
 #[cfg(test)]

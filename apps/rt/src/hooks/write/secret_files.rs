@@ -23,47 +23,6 @@ use mustard_core::platform::error::Error;
 /// The secret-file gate.
 pub struct SecretFiles;
 
-/// `true` if `path` (forward-slash normalised, original case) matches a
-/// sensitive-file pattern. Mirrors `BLOCKED_PATTERNS` in `file-guard.js`:
-/// `credentials`, `*.pem`, `*.key`, `.git/config`, `id_rsa`, `id_ed25519`,
-/// `*.pfx`, `*.p12` — all case-insensitive.
-fn sensitive_pattern_match(path: &str) -> Option<&'static str> {
-    let lower = path.replace('\\', "/").to_ascii_lowercase();
-    // /credentials/i — substring.
-    if lower.contains("credentials") {
-        return Some("credentials");
-    }
-    // /\.pem$/i, /\.key$/i, /\.pfx$/i, /\.p12$/i — extension.
-    // `lower` is already ASCII-lowercased, so ends_with is case-insensitive here.
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
-    {
-        if lower.ends_with(".pem") {
-            return Some("\\.pem$");
-        }
-        if lower.ends_with(".key") {
-            return Some("\\.key$");
-        }
-        if lower.ends_with(".pfx") {
-            return Some("\\.pfx$");
-        }
-        if lower.ends_with(".p12") {
-            return Some("\\.p12$");
-        }
-    }
-    // /\.git[/\\]config$/i — `.git/config` at the end of the path.
-    if lower.ends_with(".git/config") {
-        return Some("\\.git[/\\\\]config$");
-    }
-    // /id_rsa/i, /id_ed25519/i — substring.
-    if lower.contains("id_rsa") {
-        return Some("id_rsa");
-    }
-    if lower.contains("id_ed25519") {
-        return Some("id_ed25519");
-    }
-    None
-}
-
 /// The `file-guard` law: deny a Read/Write/Edit on a sensitive file.
 ///
 /// 1:1 with `file-guard.js`: only `Read`/`Write`/`Edit` tools are inspected;
@@ -78,12 +37,8 @@ fn file_guard(input: &HookInput) -> Option<Verdict> {
     let normalized = file_path.replace('\\', "/");
     let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
 
-    // The JS tests `pattern.test(normalized) || pattern.test(basename)`.
-    // `sensitive_pattern_match` already covers both: substring patterns hit
-    // the full path, extension patterns hit either — so testing the full path
-    // and the basename separately reproduces the JS exactly.
-    let pattern =
-        sensitive_pattern_match(&normalized).or_else(|| sensitive_pattern_match(basename))?;
+    // The full path contains the basename, so one match covers both.
+    let pattern = crate::shared::paths::sensitive_pattern(&normalized)?;
     Some(Verdict::Deny {
         reason: format!(
             "[file-guard] Access to sensitive file blocked: {basename}\n\

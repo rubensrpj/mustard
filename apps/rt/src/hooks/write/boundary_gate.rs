@@ -10,12 +10,12 @@
 //! The sensitive-file law that used to live here as `file-guard`
 //! (`credentials*`, `*.pem`, `*.key`, `.git/config`, SSH keys, `*.pfx`,
 //! `*.p12`) is now two-layer: `settings.json permissions.deny`
-//! `Read`/`Edit`/`Write` globs (first line, survives `/unhook`) + the
-//! [`super::secret_files`] residue, which keeps the old case-insensitive
-//! full-path substring semantics the globs cannot express.
+//! `Read`/`Edit`/`Write` globs (first line, survives `/unhook`) + the write
+//! gate's secret rule, which keeps the old case-insensitive full-path
+//! substring semantics the globs cannot express.
 //!
-//! The path helper [`relative_to_cwd`] lives in `work_branch_gate`, the gate
-//! that stays, and is imported here. The `file_path` extraction this module
+//! The path helper [`relative_to_cwd`] lives in `shared::paths`, with the
+//! write gate's path classifier. The `file_path` extraction this module
 //! used to host now lives on
 //! [`HookInput::file_path`](mustard_core::domain::model::contract::HookInput::file_path).
 //!
@@ -37,7 +37,7 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use crate::util::glob::glob_match;
-use super::work_branch_gate::relative_to_cwd;
+use crate::shared::paths::relative_to_cwd;
 use std::path::Path;
 
 use crate::commands::{PipelineStateView, pipeline_state_from_events};
