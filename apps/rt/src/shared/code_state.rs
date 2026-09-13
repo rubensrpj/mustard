@@ -4,11 +4,12 @@
 //! ## Why this exists
 //!
 //! Mustard's law is that a pass is an OBSERVED exit code, never an inferred one.
-//! It already keeps the observation: every `qa-run` writes a `qa.result` event,
-//! and the close gate reads that record instead of re-executing the criteria.
-//! Half of "do not repeat what was already tested" was therefore already true.
+//! Every `qa-run` writes a `qa.result` event and stamps it with this
+//! fingerprint, so the record says which tree its criteria ran against. The
+//! close gates read the criteria runs of the spec's `spec.ndjson` instead, and
+//! those runs carry no fingerprint: nothing compares one today.
 //!
-//! What was missing is the other half — deciding when the record stopped being
+//! What the fingerprint answers is when a record stopped being
 //! about the code in front of you. The staleness check compared the run's
 //! timestamp against the mtime of `spec.md` and `wave-plan.md`, and against
 //! nothing else. The source tree was not in the comparison at all, so:
@@ -41,8 +42,8 @@
 //!
 //! The uncovered column is why [`fingerprint`] is a FRESHNESS check and never a
 //! promise: it answers *did the code move*, and a `None` (no repository, git
-//! unavailable, any read error) must be read as *cannot tell*, which every
-//! caller treats as stale. Fail-closed: an unanswerable question re-runs.
+//! unavailable, any read error) must be read as *cannot tell*, never as
+//! *nothing changed*.
 
 use std::path::Path;
 use std::process::Command;
@@ -106,17 +107,6 @@ pub fn fingerprint(cwd: &Path) -> Option<String> {
     Some(h.hex_digest().chars().take(16).collect())
 }
 
-/// `true` when a run recorded under `recorded` still describes the tree at
-/// `cwd`. An absent recorded fingerprint, or one that cannot be taken now,
-/// answers `false` — see [`fingerprint`] on why *cannot tell* is stale.
-#[must_use]
-pub fn still_current(cwd: &Path, recorded: Option<&str>) -> bool {
-    let Some(recorded) = recorded.filter(|s| !s.trim().is_empty()) else {
-        return false;
-    };
-    fingerprint(cwd).is_some_and(|now| now == recorded)
-}
-
 /// One git read in `cwd`. `None` on a non-zero exit or any spawn failure — the
 /// caller degrades, never propagates.
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
@@ -155,15 +145,13 @@ mod tests {
         git_ok(root, &["commit", "-qm", "init"]);
     }
 
-    /// The whole point: an unchanged tree keeps its fingerprint, so a recorded
-    /// run stays reusable.
+    /// The whole point: an unchanged tree keeps its fingerprint.
     #[test]
     fn an_unchanged_tree_keeps_its_fingerprint() {
         let dir = tempdir().unwrap();
         repo(dir.path());
         let first = fingerprint(dir.path()).expect("a repository has a fingerprint");
         assert_eq!(fingerprint(dir.path()).as_deref(), Some(first.as_str()));
-        assert!(still_current(dir.path(), Some(&first)));
     }
 
     /// **The hole this closes.** Editing the CODE used to leave the recorded QA
@@ -177,10 +165,6 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "fn a() { panic!() }\n").unwrap();
         let after = fingerprint(dir.path()).expect("fingerprint");
         assert_ne!(before, after, "a tracked edit must move the key");
-        assert!(
-            !still_current(dir.path(), Some(&before)),
-            "a run recorded before that edit no longer describes this tree"
-        );
     }
 
     /// A SECOND edit to an already-dirty file must move it too — the reason the
@@ -230,7 +214,6 @@ mod tests {
             Some(before.as_str()),
             "recording the run must not invalidate the record it just wrote"
         );
-        assert!(still_current(dir.path(), Some(&before)));
     }
 
     /// A new commit moves it — the ordinary case of work landing.
@@ -245,27 +228,14 @@ mod tests {
         assert_ne!(Some(before), fingerprint(dir.path()));
     }
 
-    /// Fail-closed on both halves of *cannot tell*: no repository, and no
-    /// recorded fingerprint to compare against.
+    /// *Cannot tell* is `None`: no repository, no fingerprint.
     #[test]
-    fn cannot_tell_reads_as_stale() {
+    fn cannot_tell_is_no_fingerprint() {
         let dir = tempdir().unwrap();
         assert_eq!(
             fingerprint(dir.path()),
             None,
             "no repository → no fingerprint"
-        );
-        assert!(!still_current(dir.path(), Some("deadbeefdeadbeef")));
-
-        let repo_dir = tempdir().unwrap();
-        repo(repo_dir.path());
-        assert!(
-            !still_current(repo_dir.path(), None),
-            "no record → nothing to trust"
-        );
-        assert!(
-            !still_current(repo_dir.path(), Some("   ")),
-            "a blank record is no record"
         );
     }
 }

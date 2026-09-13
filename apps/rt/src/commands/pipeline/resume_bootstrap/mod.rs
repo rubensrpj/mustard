@@ -31,7 +31,7 @@ mod context_loader;
 mod dispatch_failure;
 mod event_emission;
 mod mode_decision;
-mod post_execute_gate;
+pub(crate) mod post_execute_gate;
 mod stage_resolver;
 mod wave_progress;
 

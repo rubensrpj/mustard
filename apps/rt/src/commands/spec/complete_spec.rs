@@ -606,7 +606,7 @@ fn emit_phase_close(cwd: &Path, spec: &str) {
 ///
 /// `Err` carries the operator-facing reason so the caller only decides how to
 /// print it and which code to exit with. No environment switch relaxes it.
-fn close_admission(cwd: &Path, spec: &str) -> Result<(), String> {
+pub(crate) fn close_admission(cwd: &Path, spec: &str) -> Result<(), String> {
     if is_terminal_status(projected_status(cwd, spec).as_deref()) {
         return Ok(());
     }
@@ -614,8 +614,8 @@ fn close_admission(cwd: &Path, spec: &str) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "no `qa.result` event with overall=pass is recorded for {spec}, so completing it would \
-         claim a verification that never happened. Record one first — and run it EXTERNALLY, \
+        "not every acceptance criterion in the spec.ndjson of {spec} has a passing last run, so \
+         completing it would claim a verification that never happened. Record one first — and run it EXTERNALLY, \
          because a run inside this binary cannot rebuild the binary its own criteria target and \
          so records nothing: `mustard-rt run qa-run --spec {spec}`. This refusal is \
          unconditional; no environment switch relaxes it."
@@ -1303,19 +1303,6 @@ mod tests {
         );
     }
 
-    /// Seed one `qa.result` for `spec` with the given `overall`, through the same
-    /// writer production uses — so the admission reads a real event row, not a
-    /// hand-built fixture that could drift from the shape on disk.
-    fn seed_qa_result(cwd: &Path, spec: &str, overall: &str) {
-        emit_ndjson(
-            cwd,
-            spec,
-            "qa.result",
-            &json!({ "spec": spec, "overall": overall, "criteria": [] }),
-            "2026-07-26T00:00:00.000Z",
-        );
-    }
-
     /// `true` when a `pipeline.complete` exists for the spec — the ONE observable
     /// the admission protects.
     fn completed(cwd: &Path, spec: &str) -> bool {
@@ -1354,11 +1341,12 @@ mod tests {
             "the refusal must name the spec it refuses: {refusal}"
         );
 
-        // A recorded SKIP is still not a pass — the exact field shape.
-        seed_qa_result(cwd, spec, "skip");
-        assert!(close_admission(cwd, spec).is_err(), "skip is not a pass");
+        // A criterion never run is still not a pass — the shape of a run that
+        // verified nothing.
+        let criteria = crate::shared::spec_state::seed_runs(cwd, spec, &[None]);
+        assert!(close_admission(cwd, spec).is_err(), "a criterion never run is not a pass");
         // And a recorded FAIL is not a pass either.
-        seed_qa_result(cwd, spec, "fail");
+        crate::shared::spec_state::seed_run(cwd, spec, criteria[0], "fail");
         assert!(close_admission(cwd, spec).is_err(), "fail is not a pass");
 
         // The guarded observable never appeared, and the entry point refuses.
@@ -1411,7 +1399,7 @@ mod tests {
         let proven = "proven-spec";
         seed_spec_md(cwd, proven, "# S\n");
         assert!(close_admission(cwd, proven).is_err(), "no verdict yet");
-        seed_qa_result(cwd, proven, "pass");
+        crate::shared::spec_state::seed_runs(cwd, proven, &[Some("pass")]);
         assert!(close_admission(cwd, proven).is_ok(), "a recorded pass admits");
         let _ = finalize(cwd, proven, None);
         assert!(completed(cwd, proven), "the admitted close must actually complete");

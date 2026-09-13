@@ -685,8 +685,9 @@ fn enforce_qa_gate_or_exit(opts: &EmitPipelineOpts) {
     let cwd = effect_cwd();
     if !qa_result_passed(&cwd, &opts.spec) {
         eprintln!(
-            "BLOCKED: cannot emit pipeline.complete for {} — no qa.result event \
-             with overall=pass exists. Run: rtk mustard-rt run qa-run --spec {}",
+            "BLOCKED: cannot emit pipeline.complete for {} — not every acceptance \
+             criterion in its spec.ndjson has a passing last run. Run: rtk mustard-rt \
+             run qa-run --spec {}",
             opts.spec, opts.spec
         );
         std::process::exit(2);
@@ -1037,40 +1038,22 @@ fn success_line(
     done
 }
 
-/// Returns `true` when the spec has a `qa.result` event with
-/// `overall == "pass"` in its per-spec NDJSON event log.
+/// Returns `true` when every acceptance criterion in the spec's `spec.ndjson`
+/// has a passing last run — read through the core's one QA fold.
 ///
-/// **Fail-open semantics:** a missing events dir, an unreadable file, or no
-/// matching event all return `false` — meaning the gate stays *closed*. This
-/// is the opposite of telemetry-style fail-open: we are guarding a verdict, so
-/// the conservative outcome on missing data is to block (not allow). Callers
-/// can opt out via `--allow-no-qa`.
-/// `pub(crate)` so the Bash-family `pr_qa_gate` advisory consults the SAME
-/// source of truth as this module's hard `pipeline.complete` gate — an advisory
-/// that could disagree with the gate that actually blocks would be worse than
-/// none.
+/// **Fail-closed:** a missing spec file, a spec with no criterion, or a
+/// criterion never run all return `false` — the gate stays *closed*. We are
+/// guarding a verdict, so the conservative outcome on missing data is to block
+/// (not allow). Callers can opt out via `--allow-no-qa`.
+/// `pub(crate)` so the Bash-family `pr_qa_gate` advisory, `complete-spec` and
+/// `close-orchestrate` consult the SAME source of truth as this module's hard
+/// `pipeline.complete` gate — an advisory that could disagree with the gate
+/// that actually blocks would be worse than none.
 pub(crate) fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
-    let events_dir = ClaudePaths::spec_dir_or_unchecked(cwd, spec).join(".events");
-    let mut events =
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
-    // Chronological order — last matching event wins (mirrors `close_gate`).
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-    let mut last_overall: Option<String> = None;
-    for ev in events {
-        if ev.event != "qa.result" {
-            continue;
-        }
-        if let Some(ev_spec) = ev.payload.get("spec").and_then(Value::as_str)
-            && ev_spec != spec {
-                continue;
-            }
-        last_overall = ev
-            .payload
-            .get("overall")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-    }
-    last_overall.as_deref() == Some("pass")
+    use mustard_core::domain::spec_state::SpecState as _;
+    crate::shared::spec_state::DiskSpecState::new(cwd)
+        .log(spec)
+        .is_some_and(|log| mustard_core::domain::spec_state::qa(&log).passed_all())
 }
 
 /// Fan out the `pipeline.wave.failed` twin for a `pipeline.status
@@ -2457,102 +2440,48 @@ mod tests {
     // REVIEW/QA gate on `pipeline.complete` (2026-05-25 deep-refactor follow-up)
     // -----------------------------------------------------------------------
 
-    /// `qa_result_passed` returns `false` when the spec has no `.events/` dir
+    /// `qa_result_passed` returns `false` when the spec has no `spec.ndjson`
     /// — the gate must stay closed (block emission).
     #[test]
-    fn qa_result_passed_false_when_no_events_dir() {
+    fn qa_result_passed_false_without_the_spec_file() {
         let dir = tempdir().unwrap();
         // Spec dir does not even exist.
         assert!(!super::qa_result_passed(dir.path(), "ghost-spec"));
     }
 
-    /// `qa_result_passed` returns `true` only when the most recent `qa.result`
-    /// for the spec has `overall == "pass"`.
+    /// A red run followed by a green one of the same criterion passes: the
+    /// newest run decides.
     #[test]
-    fn qa_result_passed_requires_overall_pass() {
+    fn qa_result_passed_requires_the_last_run_to_pass() {
+        use crate::shared::spec_state::{seed_run, seed_runs};
         let dir = tempdir().unwrap();
         let spec = "qa-gate-spec";
-        // Emit a failing qa.result first, then a passing one.
-        emit_routed(
-            dir.path(),
-            "qa.result",
-            spec,
-            json!({ "spec": spec, "overall": "fail", "criteria": [] }),
-        );
-        emit_routed(
-            dir.path(),
-            "qa.result",
-            spec,
-            json!({ "spec": spec, "overall": "pass", "criteria": [] }),
-        );
+        let criteria = seed_runs(dir.path(), spec, &[Some("fail")]);
+        assert!(!super::qa_result_passed(dir.path(), spec), "a failing-only spec stays closed");
+        seed_run(dir.path(), spec, criteria[0], "pass");
         assert!(super::qa_result_passed(dir.path(), spec));
     }
 
-    /// A failing-only spec → gate stays closed.
+    /// A criterion never run keeps the gate closed: a spec is not verified by
+    /// the criteria that did run.
     #[test]
-    fn qa_result_passed_false_when_only_fail() {
-        let dir = tempdir().unwrap();
-        let spec = "qa-fail-only";
-        emit_routed(
-            dir.path(),
-            "qa.result",
-            spec,
-            json!({ "spec": spec, "overall": "fail", "criteria": [] }),
-        );
-        assert!(!super::qa_result_passed(dir.path(), spec));
-    }
-
-    /// A skip-only spec → gate stays closed (skip != pass).
-    #[test]
-    fn qa_result_passed_false_when_overall_skip() {
+    fn qa_result_passed_false_with_a_criterion_never_run() {
         let dir = tempdir().unwrap();
         let spec = "qa-skip-only";
-        emit_routed(
-            dir.path(),
-            "qa.result",
-            spec,
-            json!({ "spec": spec, "overall": "skip", "criteria": [] }),
-        );
+        crate::shared::spec_state::seed_runs(dir.path(), spec, &[Some("pass"), None]);
         assert!(!super::qa_result_passed(dir.path(), spec));
     }
 
-    /// Last-write-wins: a passing event followed by a failing one means the
-    /// most recent verdict is FAIL → gate stays closed.
+    /// Last run wins: a pass followed by a fail of the same criterion means
+    /// the gate stays closed.
     #[test]
-    fn qa_result_passed_uses_most_recent_event() {
+    fn qa_result_passed_uses_the_most_recent_run() {
+        use crate::shared::spec_state::{seed_run, seed_runs};
         let dir = tempdir().unwrap();
         let spec = "qa-regression";
-        // First a pass with an early ts, then a fail with a later ts.
-        let ev_pass = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-05-20T00:00:00.000Z".to_string(),
-            session_id: "test-session".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Cli,
-                id: Some("qa-run".to_string()),
-                actor_type: None,
-            },
-            event: "qa.result".to_string(),
-            payload: json!({ "spec": spec, "overall": "pass", "criteria": [] }),
-            spec: Some(spec.to_string()),
-        };
-        let ev_fail = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-05-21T00:00:00.000Z".to_string(),
-            session_id: "test-session".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Cli,
-                id: Some("qa-run".to_string()),
-                actor_type: None,
-            },
-            event: "qa.result".to_string(),
-            payload: json!({ "spec": spec, "overall": "fail", "criteria": [] }),
-            spec: Some(spec.to_string()),
-        };
-        let _ = crate::shared::events::route::emit(dir.path().to_str().unwrap(), &ev_pass);
-        let _ = crate::shared::events::route::emit(dir.path().to_str().unwrap(), &ev_fail);
+        let criteria = seed_runs(dir.path(), spec, &[Some("pass")]);
+        assert!(super::qa_result_passed(dir.path(), spec));
+        seed_run(dir.path(), spec, criteria[0], "fail");
         assert!(!super::qa_result_passed(dir.path(), spec));
     }
 

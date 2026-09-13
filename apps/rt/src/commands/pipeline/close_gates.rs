@@ -10,8 +10,8 @@
 //!    items.
 //! 3. **Findings gate** — collects the work unit's findings in-process and
 //!    denies while any of them still owes a destination.
-//! 4. **QA gate** — denies if no `qa.result` with `overall=pass`
-//!    exists in the harness event log.
+//! 4. **QA gate** — denies unless every acceptance criterion in the spec's
+//!    `spec.ndjson` has a passing last run, and none was revised after it.
 //! 5. **Build/test gate** — runs `build → type → lint → test` from
 //!    `mustard.json` and denies on the first real (non-env) failure.
 //!
@@ -62,9 +62,10 @@
 //! move-`Child`-into-a-worker-thread shape could not reach it to kill).
 
 use mustard_core::io::fs;
-use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::Verdict;
+use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_state::{self, SpecState as _};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::domain::spec::contract::{FindingItem, FindingSource};
 use mustard_core::domain::text::{has_word_sequence, is_word_byte, Boundaries};
@@ -78,6 +79,7 @@ use crate::commands::review::finding_collect;
 // prints can never name a set `mark-finding` does not accept.
 use crate::commands::spec::mark_finding::DESTINATIONS;
 use crate::shared::gate_mode::{resolve_mode, GateMode};
+use crate::shared::spec_state::DiskSpecState;
 use crate::util::format_gate_message;
 use mustard_core::time::now_iso8601;
 
@@ -569,205 +571,30 @@ fn finding_refusal(spec: &str, finding: &FindingItem) -> String {
 // QA gate
 // ---------------------------------------------------------------------------
 
-/// The last `qa.result` for a spec. Returns
-/// `(found, overall, failed_count, criteria_count, ts)` — `ts` is the ISO-8601
-/// timestamp of that most-recent `qa.result` (used to detect a stale pass);
-/// `criteria_count` distinguishes the two `overall=skip` shapes (0 = the spec
-/// carries no AC at all; >0 = ACs exist but every one skipped at run time).
-///
-/// `qa.result` events live in the per-spec NDJSON sink, not in `pipeline_events`,
-/// so this reads the spec's `events/` directory directly. With `spec = None` we
-/// fall back to scanning every spec dir under `.claude/spec/` — slow but rare.
-fn find_last_qa_result(
-    cwd: &str,
-    spec: Option<&str>,
-) -> (bool, Option<String>, usize, usize, Option<String>) {
-    let project = Path::new(cwd);
-    let mut events: Vec<HarnessEvent> = Vec::new();
-    let paths = ClaudePaths::for_project(project).ok();
-    if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
-        if let Some(events_dir) = paths
-            .as_ref()
-            .and_then(|p| p.for_spec(spec_name).ok())
-            .map(|sp| sp.events_dir())
-        {
-            events.extend(read_harness_events_from_ndjson_dir(&events_dir));
-        }
-    } else {
-        // No spec attribution — scan every per-spec .events/ dir under .claude/spec/.
-        let Some(specs_root) = paths.as_ref().map(ClaudePaths::spec_dir) else {
-            return (false, None, 0, 0, None);
-        };
-        if let Ok(entries) = fs::read_dir(&specs_root) {
-            for entry in entries {
-                if !entry.is_dir {
-                    continue;
-                }
-                let dir = specs_root.join(&entry.file_name).join(".events");
-                events.extend(read_harness_events_from_ndjson_dir(&dir));
+/// O arquivo de eventos da spec, pela interface [`SpecState`]; `None` sem
+/// spec ou sem `spec.ndjson`. É dele que o portão lê as execuções dos
+/// critérios e os pedidos.
+fn spec_log(cwd: &str, spec: Option<&str>) -> Option<SpecLog> {
+    let spec = spec.map(str::trim).filter(|s| !s.is_empty())?;
+    DiskSpecState::new(Path::new(cwd)).log(spec)
+}
+
+/// Os pedidos de mudança gravados depois da última execução dos critérios
+/// (`last_run`): mudanças que os critérios conferidos talvez não cubram. Uma
+/// linha curta por pedido, `(efeito) começo do texto`.
+fn unaddressed_change_requests(log: &SpecLog, last_run: u64) -> Vec<String> {
+    spec_state::requests_after(log, last_run)
+        .iter()
+        .map(|request| {
+            let effect = request.str_field("effect").unwrap_or_default();
+            let preview: String = request.str_field("text").unwrap_or_default().chars().take(60).collect();
+            if effect.is_empty() {
+                preview
+            } else {
+                format!("({effect}) {preview}")
             }
-        }
-    }
-    // Chronological scan — most recent qa.result wins.
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-    let mut last: Option<HarnessEvent> = None;
-    for ev in events {
-        if ev.event != "qa.result" {
-            continue;
-        }
-        // Filter by spec when one is known and the event carries one.
-        if let Some(spec) = spec
-            && let Some(ev_spec) = ev.payload.get("spec").and_then(|v| v.as_str())
-                && ev_spec != spec {
-                    continue;
-                }
-        last = Some(ev);
-    }
-    let Some(last) = last else {
-        return (false, None, 0, 0, None);
-    };
-    let overall = last
-        .payload
-        .get("overall")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let criteria = last.payload.get("criteria").and_then(Value::as_array);
-    let failed_count = criteria.map_or(0, |arr| {
-        arr.iter()
-            .filter(|c| c.get("status").and_then(|v| v.as_str()) == Some("fail"))
-            .count()
-    });
-    let criteria_count = criteria.map_or(0, Vec::len);
-    (true, overall, failed_count, criteria_count, Some(last.ts))
-}
-
-/// The `codeState` fingerprint the last `qa.result` for `spec` was recorded
-/// against, or `None` when there is no record, or the record predates the field.
-///
-/// Kept apart from [`find_last_qa_result`] rather than widening its already
-/// five-wide tuple: three call sites read that tuple and only one needs this.
-fn last_qa_code_state(cwd: &str, spec: Option<&str>) -> Option<String> {
-    let spec_name = spec.filter(|s| !s.is_empty())?;
-    let events_dir = ClaudePaths::for_project(Path::new(cwd))
-        .ok()?
-        .for_spec(spec_name)
-        .ok()
-        .map(|sp| sp.events_dir())?;
-    let mut events = read_harness_events_from_ndjson_dir(&events_dir);
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-    events
-        .into_iter()
-        .rfind(|ev| {
-            ev.event == "qa.result"
-                && ev
-                    .payload
-                    .get("spec")
-                    .and_then(|v| v.as_str())
-                    .is_none_or(|s| s == spec_name)
-        })?
-        .payload
-        .get(crate::shared::code_state::CODE_STATE_KEY)
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
-/// What went stale since the recorded QA pass, or `None` when nothing did.
-///
-/// Two things can invalidate a recorded run, and until this unit only the first
-/// was checked:
-///
-/// 1. **The acceptance source moved.** `spec.md` / `wave-plan.md` modified
-///    strictly after `qa_ts`. Returns the filename. mtime-based by design: a
-///    post-QA write for ANY reason (folding a change request into
-///    `## Acceptance Criteria`, editing a criterion, a narrative amendment) is a
-///    legitimate re-verification trigger.
-/// 2. **The CODE moved.** The tree no longer matches the fingerprint the run was
-///    recorded against ([`crate::shared::code_state`]). Returns
-///    `"the source tree"`.
-///
-/// **The second one is the hole.** The check watched the spec file and nothing
-/// else, so editing the spec invalidated the record while editing the code did
-/// not — the file that almost never changes gated, and the one that always
-/// changes did not. A unit could therefore close on a green observed BEFORE the
-/// change under review, which is the "nobody watched this pass" outcome the QA
-/// law exists to prevent. Reproduced on this repository, 2026-08-27.
-///
-/// A record carrying NO fingerprint (written before this field existed, or on a
-/// machine with no git) is not treated as stale on that account: the check
-/// degrades to the spec-mtime half it always had, so an old record keeps
-/// behaving exactly as it used to rather than blocking every close on upgrade.
-/// It is [`crate::shared::code_state::still_current`] that is fail-closed —
-/// once a fingerprint IS recorded, an unanswerable comparison re-runs.
-///
-/// `None` also on no spec and on any read error (fail-open: never block CLOSE on
-/// a sensor failure). Both timestamps are ISO-8601 UTC, so a lexicographic `>`
-/// is chronological.
-fn spec_edited_after(
-    cwd: &str,
-    spec: Option<&str>,
-    qa_ts: &str,
-    qa_code_state: Option<&str>,
-) -> Option<String> {
-    let spec = spec.filter(|s| !s.is_empty())?;
-    let sp = ClaudePaths::for_project(Path::new(cwd)).ok()?.for_spec(spec).ok()?;
-    let dir = sp.dir();
-    for name in ["spec.md", "wave-plan.md"] {
-        if let Some(mtime_iso) = file_mtime_iso(&dir.join(name))
-            && mtime_iso.as_str() > qa_ts {
-                return Some(name.to_string());
-            }
-    }
-    // Only ask when the record actually carries a fingerprint — see above on why
-    // an old record must not be invalidated merely for predating the field.
-    if qa_code_state.is_some_and(|recorded| {
-        !crate::shared::code_state::still_current(Path::new(cwd), Some(recorded))
-    }) {
-        return Some("the source tree".to_string());
-    }
-    None
-}
-
-/// The mtime of `path` as an ISO-8601 UTC string. `None` on a missing file or
-/// any read/conversion error.
-fn file_mtime_iso(path: &Path) -> Option<String> {
-    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
-    let millis = mtime
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis();
-    Some(mustard_core::time::millis_to_iso(i64::try_from(millis).ok()?))
-}
-
-/// Mid-spec change requests recorded AFTER `qa_ts` (the last QA pass) — requests
-/// the verified criteria may not cover. Returns one short description per
-/// request (`(stage) prompt-preview`). Reads the spec's per-spec NDJSON event
-/// sink. Empty on no spec / read error (fail-open).
-fn unaddressed_change_requests(cwd: &str, spec: Option<&str>, qa_ts: &str) -> Vec<String> {
-    let Some(spec_name) = spec.filter(|s| !s.is_empty()) else {
-        return Vec::new();
-    };
-    let Some(events_dir) = ClaudePaths::for_project(Path::new(cwd))
-        .ok()
-        .and_then(|p| p.for_spec(spec_name).ok())
-        .map(|sp| sp.events_dir())
-    else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for ev in read_harness_events_from_ndjson_dir(&events_dir) {
-        if ev.event != "pipeline.change.request" || ev.ts.as_str() <= qa_ts {
-            continue;
-        }
-        let stage = ev.payload.get("stage").and_then(Value::as_str).unwrap_or("");
-        let prompt = ev.payload.get("prompt").and_then(Value::as_str).unwrap_or("");
-        let preview: String = prompt.chars().take(60).collect();
-        out.push(if stage.is_empty() {
-            preview
-        } else {
-            format!("({stage}) {preview}")
-        });
-    }
-    out
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1223,11 +1050,18 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
     }
 
     // ── QA gate ───────────────────────────────────────────────────────────
+    // O QA gravado vem do `spec.ndjson` da spec: a última execução de cada
+    // critério. Sem arquivo, ou com critérios e nenhuma execução, não há QA.
     let qa_mode = modes.qa;
+    let log = spec_log(cwd, spec_ref);
+    let recorded = log.as_ref().map(spec_state::qa).filter(|qa| qa.criteria == 0 || qa.ran > 0);
     if qa_mode != GateMode::Off {
-        let (found, overall, failed_count, criteria_count, qa_ts) =
-            find_last_qa_result(cwd, spec_ref);
-        if !found {
+        let failed_count = recorded.as_ref().map_or(0, |qa| qa.failed);
+        let criteria_count = recorded.as_ref().map_or(0, |qa| qa.criteria);
+        let unrun = recorded.as_ref().map_or(0, |qa| qa.criteria - qa.ran);
+        let stale_count = recorded.as_ref().map_or(0, |qa| qa.stale);
+        let passed = recorded.as_ref().is_some_and(spec_state::Qa::passed_all);
+        if recorded.is_none() {
             let reason = format_gate_message(
                 "Close Gate",
                 &spec_ref.map_or_else(
@@ -1261,34 +1095,26 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                 return Verdict::Deny { reason };
             }
             // warn → fall through.
-        } else if overall.as_deref() == Some("skip") {
-            // A skip is never a verification, so BOTH shapes are refused. They
-            // are still told apart by the criteria the run recorded, because the
-            // operator's next move is opposite in each case:
-            // - `criteria` empty → the spec declares nothing to verify, so it
-            //   has nothing to claim. The remedy is to AUTHOR a criterion.
-            // - `criteria` non-empty → criteria exist but none was attempted
-            //   (timeout, spawn failure, or a run inside the very binary they
-            //   target). The remedy is to FIX them, or to record the verdict
-            //   from an external run that can attempt them.
+        } else if failed_count == 0 && !passed {
+            // A criterion with no run is never a verification, so BOTH shapes
+            // are refused. They are still told apart, because the operator's
+            // next move is opposite in each case:
+            // - no criterion at all → the spec declares nothing to verify, so
+            //   it has nothing to claim. The remedy is to AUTHOR a criterion.
+            // - criteria exist and some never ran → the remedy is to FIX and
+            //   run them.
             //
-            // The empty shape used to fall through here — "the historical
-            // advisory contract holds". Every other door (`emit-pipeline`,
-            // `complete-spec`, `close-pipeline`, `close-orchestrate`) had since
-            // stopped honouring it, leaving this adapter as the last
-            // disagreement; the shipped rituals already describe the strict
-            // rule. One rule enforced everywhere but here is not a rule.
             // All THREE fields differ per shape, not just the remedy: the two
             // are refused for different reasons, so a merged principle would
             // hand one shape the other's explanation.
             let (problem, principle, remedy) = if criteria_count > 0 {
                 (
                     spec_ref.map_or_else(
-                        || format!("QA skipped all {criteria_count} acceptance criteria"),
+                        || format!("QA left {unrun} of {criteria_count} acceptance criteria without a run"),
                         |s| {
                             format!(
-                                "QA for spec \"{s}\" skipped all {criteria_count} acceptance \
-                                 criteria (timeout or spawn failure)"
+                                "QA for spec \"{s}\" left {unrun} of {criteria_count} acceptance \
+                                 criteria without a run"
                             )
                         },
                     ),
@@ -1300,11 +1126,11 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
             } else {
                 (
                     spec_ref.map_or_else(
-                        || "QA recorded a skip and the spec declares no acceptance criteria"
+                        || "QA has nothing to run: the spec declares no acceptance criteria"
                             .to_string(),
                         |s| {
                             format!(
-                                "QA for spec \"{s}\" recorded a skip and the spec declares no \
+                                "QA for spec \"{s}\" has nothing to run: the spec declares no \
                                  acceptance criteria at all"
                             )
                         },
@@ -1333,12 +1159,8 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
             }
             // warn → fall through, both shapes alike: the mode is the operator's
             // deliberate override and keeps the meaning it always had.
-        } else if overall.as_deref() != Some("pass") {
-            let failed_str = if failed_count > 0 {
-                format!("{failed_count} criteria failed")
-            } else {
-                format!("overall={}", overall.as_deref().unwrap_or("unknown"))
-            };
+        } else if !passed {
+            let failed_str = format!("{failed_count} criteria failed");
             let reason = format_gate_message(
                 "Close Gate",
                 &spec_ref.map_or_else(
@@ -1358,28 +1180,24 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                         "mode": mode_str(mode),
                         "qaMode": mode_str(qa_mode),
                         "spec": spec_ref,
-                        "qaOverall": overall,
+                        "failedCount": failed_count,
                     }),
                 );
                 return Verdict::Deny { reason };
             }
             // warn → fall through.
-        } else if let Some(stale_file) = qa_ts.as_deref().and_then(|ts| {
-            spec_edited_after(cwd, spec_ref, ts, last_qa_code_state(cwd, spec_ref).as_deref())
-        }) {
-            // QA passed, but something moved AFTER the run — the spec's
-            // acceptance source (a mid-pipeline change request folded into a new
-            // AC), or the SOURCE TREE itself. Either way the green was never
-            // observed against what is here now. Hold CLOSE until `qa-run`
-            // re-runs.
+        } else if stale_count > 0 {
+            // QA passed, but a criterion was revised AFTER its last run: the
+            // green was observed against the text of before. Hold CLOSE until
+            // the criteria run again.
             let reason = format_gate_message(
                 "Close Gate",
                 &spec_ref.map_or_else(
-                    || format!("QA pass is stale — {stale_file} changed after the last QA run"),
+                    || format!("QA pass is stale — {stale_count} acceptance criteria were revised after their last run"),
                     |s| {
                         format!(
-                            "QA pass for spec \"{s}\" is stale — {stale_file} changed after \
-                             the last QA run"
+                            "QA pass for spec \"{s}\" is stale — {stale_count} acceptance criteria \
+                             were revised after their last run"
                         )
                     },
                 ),
@@ -1397,8 +1215,7 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                         "mode": mode_str(mode),
                         "qaMode": mode_str(qa_mode),
                         "spec": spec_ref,
-                        "staleFile": stale_file,
-                        "qaTs": qa_ts,
+                        "staleCount": stale_count,
                     }),
                 );
                 return Verdict::Deny { reason };
@@ -1409,18 +1226,17 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
     }
 
     // ── QA composition gate — unaddressed mid-spec change requests ────────
-    // A `pipeline.change.request` recorded AFTER the last `qa.result` is a
-    // mid-spec request the verified criteria may not cover (a behaviour change
-    // not yet folded into an AC). Surface it at CLOSE so it is consciously
-    // triaged. Default `warn` (telemetry + dashboard only — a natural-language
-    // close prompt is itself recorded as a request, so a strict default could
-    // deadlock the close); `strict` blocks. Only meaningful once a QA pass
-    // exists (`qa_ts`); a missing QA is already caught by the QA gate above.
+    // A `request` recorded AFTER the last run of the criteria is a mid-spec
+    // request the verified criteria may not cover (a behaviour change not yet
+    // folded into a criterion). Surface it at CLOSE so it is consciously
+    // triaged. Default `warn` (telemetry + dashboard only); `strict` blocks.
+    // Only meaningful once a run exists; a missing QA is already caught by the
+    // QA gate above.
     let composition_mode = resolve_mode("MUSTARD_QA_COMPOSITION_GATE_MODE", None, GateMode::Warn);
     if composition_mode != GateMode::Off {
-        let (_, _, _, _, qa_ts) = find_last_qa_result(cwd, spec_ref);
-        if let Some(qa_ts) = qa_ts {
-            let pending = unaddressed_change_requests(cwd, spec_ref, &qa_ts);
+        let last_run = recorded.as_ref().and_then(|qa| qa.last_run);
+        if let (Some(log), Some(last_run)) = (log.as_ref(), last_run) {
+            let pending = unaddressed_change_requests(log, last_run);
             if !pending.is_empty() {
                 let list = pending.iter().take(5).cloned().collect::<Vec<_>>().join(" | ");
                 let reason = format_gate_message(
@@ -1608,10 +1424,7 @@ mod tests {
         assert!(find_symptom_findings(cwd, None).is_empty());
     }
     use super::*;
-    // `qa.result` events seed straight into the per-spec
-    // NDJSON dir, mirroring `qa-run`'s production write path through
-    // `route::emit`.
-    use crate::shared::events::route;
+    use crate::shared::spec_state::{seed_event, seed_request, seed_run, seed_runs};
     use tempfile::tempdir;
 
     /// Build a project dir with the standard `.claude` subtree.
@@ -1619,7 +1432,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let paths = ClaudePaths::for_project(dir.path()).unwrap();
         std::fs::create_dir_all(paths.harness_dir()).unwrap();
-        std::fs::create_dir_all(paths.pipeline_states_dir()).unwrap();
         std::fs::create_dir_all(paths.spec_dir())
             .unwrap();
         dir
@@ -1633,50 +1445,6 @@ mod tests {
 
     fn write_mustard_json(cwd: &Path, fields: Value) {
         std::fs::write(cwd.join("mustard.json"), fields.to_string()).unwrap();
-    }
-
-    fn write_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: Value) {
-        // Route a `qa.result` through the event router — it lands in the
-        // per-spec NDJSON sink, same path `qa-run` uses in production.
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-05-19T00:00:00.000Z".to_string(),
-            session_id: "s-test".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Cli,
-                id: Some("qa-run".to_string()),
-                actor_type: None,
-            },
-            event: "qa.result".to_string(),
-            payload: json!({ "spec": spec, "overall": overall, "criteria": criteria }),
-            spec: Some(spec.to_string()),
-        };
-        assert!(
-            route::emit(cwd.to_str().unwrap(), &event),
-            "router must land qa.result for {spec}"
-        );
-    }
-
-    fn write_change_request_event(cwd: &Path, spec: &str, ts: &str, prompt: &str) {
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: ts.to_string(),
-            session_id: "s-test".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Hook,
-                id: Some("change_request_log".to_string()),
-                actor_type: None,
-            },
-            event: "pipeline.change.request".to_string(),
-            payload: json!({ "spec": spec, "stage": "Execute", "prompt": prompt }),
-            spec: Some(spec.to_string()),
-        };
-        assert!(
-            route::emit(cwd.to_str().unwrap(), &event),
-            "router must land change.request for {spec}"
-        );
     }
 
     /// The strict-cmd commands that exit non-zero / zero, cross-platform.
@@ -1715,71 +1483,105 @@ mod tests {
         }
     }
 
-    /// Item-3 regression: a `spec.md` modified AFTER the recorded QA timestamp is
-    /// detected as stale; one that predates QA is not; no spec → fail-open None.
-    #[test]
-    fn spec_edited_after_flags_post_qa_spec_change() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        let sp = ClaudePaths::for_project(cwd).unwrap().for_spec("feat").unwrap();
-        std::fs::create_dir_all(sp.dir()).unwrap();
-        std::fs::write(sp.spec_md_path(), "# Spec\n## Acceptance Criteria\n- AC-1\n").unwrap();
-        let cwd_str = cwd.to_string_lossy().into_owned();
-        // QA ran in the distant past → the just-written spec.md is newer → stale.
-        assert_eq!(
-            spec_edited_after(&cwd_str, Some("feat"), "2000-01-01T00:00:00.000Z", None).as_deref(),
-            Some("spec.md"),
-        );
-        // QA ran in the distant future → spec.md predates it → fresh.
-        assert!(
-            spec_edited_after(&cwd_str, Some("feat"), "2999-01-01T00:00:00.000Z", None).is_none()
-        );
-        // No spec known → fail-open None.
-        assert!(spec_edited_after(&cwd_str, None, "2000-01-01T00:00:00.000Z", None).is_none());
+    /// Only the QA sub-gate on. With no `mustard.json`, the build/test stage
+    /// fail-open skips, so a verdict here is the QA's alone.
+    fn only_qa() -> CloseGateModes {
+        CloseGateModes {
+            debt: GateMode::Off,
+            checklist: GateMode::Off,
+            findings: GateMode::Off,
+            ..all_strict()
+        }
     }
 
-    /// **The hole this unit closes.** A record whose fingerprint no longer
-    /// matches the tree is STALE even when the spec has not been touched since —
-    /// the case that used to close a unit on a green observed before the change
-    /// under review.
+    /// Cada porta que pergunta "o QA passou?" dá a mesma resposta, lado a
+    /// lado, lendo o `spec.ndjson`: o portão do fechamento, o `emit-pipeline`,
+    /// o `complete-spec`, o fechamento composto, o aviso do pull request e a
+    /// retomada. Sem arquivo, com um critério reprovado, com um critério sem
+    /// execução e com todos aprovados. O `close-pipeline` não entra: ele roda
+    /// os critérios e decide pelo que acabou de rodar.
     #[test]
-    fn code_moved_after_qa_is_stale_even_with_an_untouched_spec() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        let sp = ClaudePaths::for_project(cwd).unwrap().for_spec("feat").unwrap();
-        std::fs::create_dir_all(sp.dir()).unwrap();
-        std::fs::write(sp.spec_md_path(), "# Spec\n## Acceptance Criteria\n- AC-1\n").unwrap();
-        let cwd_str = cwd.to_string_lossy().into_owned();
-        // Far-future timestamp, so the spec-mtime half can never be what fires.
-        let future = "2999-01-01T00:00:00.000Z";
-
-        // A fingerprint that describes no tree → the record does not describe
-        // this one → stale, and the reason names the tree, not a file.
-        assert_eq!(
-            spec_edited_after(&cwd_str, Some("feat"), future, Some("deadbeefdeadbeef")).as_deref(),
-            Some("the source tree"),
-        );
-
-        // A record carrying NO fingerprint keeps the old behaviour rather than
-        // blocking every close on upgrade — the degradation, stated as a test so
-        // it is a choice and not an accident.
-        assert!(
-            spec_edited_after(&cwd_str, Some("feat"), future, None).is_none(),
-            "a record written before the field existed must not be invalidated for that alone"
-        );
+    fn every_close_gate_reads_the_same_qa_from_the_spec_file() {
+        // The pull-request door names the spec by the ladder; an inherited
+        // override would answer first.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        // (caso, resultados semeados, o QA passa)
+        type Case<'a> = (&'a str, Option<&'a [Option<&'a str>]>, bool);
+        let cases: [Case; 4] = [
+            ("no spec file", None, false),
+            ("a failed criterion", Some(&[Some("pass"), Some("fail")]), false),
+            ("a criterion never run", Some(&[Some("pass"), None]), false),
+            ("every criterion passed", Some(&[Some("pass"), Some("pass")]), true),
+        ];
+        for (case, results, passes) in cases {
+            let dir = make_project();
+            let root = dir.path();
+            let cwd = root.to_str().unwrap();
+            let spec = "lado";
+            crate::shared::spec_state::stand_on_spec_branch(root, spec);
+            if let Some(results) = results {
+                seed_runs(root, spec, results);
+            }
+            let doors = [
+                ("close-gates", !run_close_gates(cwd, Some(spec), only_qa()).is_blocking()),
+                ("emit-pipeline", crate::commands::event::emit_pipeline::qa_result_passed(root, spec)),
+                ("complete-spec", crate::commands::spec::complete_spec::close_admission(root, spec).is_ok()),
+                ("close-orchestrate", crate::commands::pipeline::close_orchestrate::qa_gate_passes(root, spec)),
+                ("pr-qa-gate", crate::hooks::bash::pr_qa_gate::pr_qa_gate("gh pr merge 80", cwd).is_none()),
+                (
+                    "resume",
+                    crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state(root, spec).0,
+                ),
+            ];
+            for (door, answer) in doors {
+                assert_eq!(answer, passes, "the {door} door disagrees with {case}");
+            }
+        }
     }
 
-    /// Item-#1 regression: only change requests recorded AFTER the QA timestamp
-    /// count as unaddressed by the QA-composition gate.
+    /// Um critério revisto depois da última execução dele deixa o QA velho: o
+    /// fechamento barra até o critério rodar de novo, e a execução nova solta.
     #[test]
-    fn unaddressed_change_requests_filters_by_qa_ts() {
+    fn a_criterion_revised_after_its_run_makes_the_pass_stale() {
         let dir = make_project();
-        let cwd = dir.path().to_str().unwrap();
-        write_change_request_event(dir.path(), "feat", "2026-01-01T00:00:00.000Z", "antes do QA");
-        write_change_request_event(dir.path(), "feat", "2026-03-01T00:00:00.000Z", "depois do QA");
-        let pending = unaddressed_change_requests(cwd, Some("feat"), "2026-02-01T00:00:00.000Z");
-        assert_eq!(pending.len(), 1, "only the post-QA request is pending: {pending:?}");
-        assert!(pending[0].contains("depois do QA"), "got {pending:?}");
+        let root = dir.path();
+        let cwd = root.to_str().unwrap();
+        let criteria = seed_runs(root, "feat", &[Some("pass")]);
+        assert!(!run_close_gates(cwd, Some("feat"), only_qa()).is_blocking(), "a fresh pass closes");
+
+        let revised = seed_event(
+            root,
+            "feat",
+            "criterion",
+            json!({ "when": "a obra roda", "then": "o critério novo confere", "proof": "cargo test", "replaces": criteria[0] }),
+        );
+        match run_close_gates(cwd, Some("feat"), only_qa()) {
+            Verdict::Deny { reason } => assert!(reason.contains("stale"), "{reason}"),
+            other => panic!("a pass older than its criterion must not close, got {other:?}"),
+        }
+
+        seed_run(root, "feat", revised, "pass");
+        assert!(!run_close_gates(cwd, Some("feat"), only_qa()).is_blocking(), "the new run closes again");
+    }
+
+    /// Um pedido gravado depois da última execução dos critérios é nomeado no
+    /// fechamento; o de antes, não.
+    #[test]
+    fn a_request_after_the_last_run_is_named_at_close() {
+        let dir = make_project();
+        let root = dir.path();
+        seed_request(root, "feat", "antes do QA");
+        seed_runs(root, "feat", &[Some("pass")]);
+        seed_request(root, "feat", "depois do QA");
+
+        let log = spec_log(root.to_str().unwrap(), Some("feat")).expect("the spec file is there");
+        let last_run = spec_state::qa(&log).last_run.expect("a run was recorded");
+        let pending = unaddressed_change_requests(&log, last_run);
+        assert_eq!(pending.len(), 1, "only the request after the run is named: {pending:?}");
+        assert!(pending[0].contains("depois do QA"), "{pending:?}");
+        assert!(pending[0].contains("adjust_waves"), "the effect travels with it: {pending:?}");
     }
 
     // --- debt-marker gate ---------------------------------------------------
@@ -1841,12 +1643,7 @@ mod tests {
     fn run_close_gates_allows_when_everything_passes() {
         let dir = make_project();
         write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
-        write_qa_event(
-            dir.path(),
-            "spec-ok",
-            "pass",
-            json!([{ "id": "AC-1", "status": "pass" }]),
-        );
+        seed_runs(dir.path(), "spec-ok", &[Some("pass")]);
         let verdict = run_close_gates(
             dir.path().to_str().unwrap(),
             Some("spec-ok"),
@@ -1884,8 +1681,8 @@ mod tests {
     /// that both are denied.
     #[test]
     fn the_two_skip_shapes_are_refused_with_their_own_remedy() {
-        let empty = deny_reason_for_skip(json!([]));
-        let with_acs = deny_reason_for_skip(json!([{ "id": "AC-1", "status": "skip" }]));
+        let empty = deny_reason_for_skip(&[]);
+        let with_acs = deny_reason_for_skip(&[Some("pass"), None]);
 
         assert!(
             empty.contains("author"),
@@ -2046,14 +1843,17 @@ mod tests {
         );
     }
 
-    /// Run the close gates over a spec whose only recorded verdict is a `skip`
-    /// carrying `criteria`, and return the refusal reason. Panics when the gate
-    /// does NOT deny — which is the other half of the assertion.
-    fn deny_reason_for_skip(criteria: Value) -> String {
+    /// Run the close gates over a spec whose `spec.ndjson` carries one
+    /// criterion per item of `results` (`None` = never run) and no failure, and
+    /// return the refusal reason. Panics when the gate does NOT deny — which is
+    /// the other half of the assertion.
+    fn deny_reason_for_skip(results: &[Option<&str>]) -> String {
         let dir = make_project();
         write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
         let spec = "skip-shape-spec";
-        write_qa_event(dir.path(), spec, "skip", criteria);
+        // The spec file exists even with no criterion in it.
+        seed_event(dir.path(), spec, "message", json!({ "author": "user", "text": "oi" }));
+        seed_runs(dir.path(), spec, results);
         match run_close_gates(dir.path().to_str().unwrap(), Some(spec), all_strict()) {
             Verdict::Deny { reason } => reason,
             other => panic!("a skip must never open the close, got {other:?}"),

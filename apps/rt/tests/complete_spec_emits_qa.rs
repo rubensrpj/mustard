@@ -74,13 +74,10 @@ fn complete_spec_emits_qa_result_event() {
     seed_spec(project, spec_name);
     let out = run_complete_spec(project, spec_name);
 
-    // The command must exit 0 regardless of QA outcome (fail-open contract).
-    assert!(
-        out.status.success(),
-        "complete-spec must exit 0 (fail-open). stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
+    // The QA run is fail-open and records its `qa.result` whatever the close
+    // decides next. The close itself reads the criteria runs of the spec's
+    // `spec.ndjson`, which the admission tests cover; this test is about the
+    // run's own record.
     // W5: qa.result lives in per-spec NDJSON, not SQLite.
     let events_dir = project
         .join(".claude")

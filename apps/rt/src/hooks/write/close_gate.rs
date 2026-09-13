@@ -160,9 +160,7 @@ mod tests {
     // NDJSON dir, mirroring `qa-run`'s production write path through
     // `route::emit`.
     use crate::commands::pipeline::close_gates::find_unmarked_checklist;
-    use crate::shared::events::route;
     use mustard_core::ClaudePaths;
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
     use std::path::Path;
     use tempfile::tempdir;
@@ -205,27 +203,24 @@ mod tests {
         std::fs::write(cwd.join("mustard.json"), fields.to_string()).unwrap();
     }
 
-    fn write_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: Value) {
-        // Route a `qa.result` through the event router — W5 lands it in the
-        // per-spec NDJSON sink, same path `qa-run` uses in production.
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-05-19T00:00:00.000Z".to_string(),
-            session_id: "s-test".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Cli,
-                id: Some("qa-run".to_string()),
-                actor_type: None,
-            },
-            event: "qa.result".to_string(),
-            payload: json!({ "spec": spec, "overall": overall, "criteria": criteria }),
-            spec: Some(spec.to_string()),
-        };
-        assert!(
-            route::emit(cwd.to_str().unwrap(), &event),
-            "router must land qa.result for {spec}"
-        );
+    /// O QA gravado mora no `spec.ndjson` da spec: um critério por item de
+    /// `criteria`, com uma execução do status dele; `skip` fica sem execução.
+    fn write_qa_event(cwd: &Path, spec: &str, _overall: &str, criteria: Value) {
+        crate::shared::spec_state::seed_event(cwd, spec, "message", json!({ "author": "user", "text": "oi" }));
+        let results: Vec<Option<&str>> = criteria
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| match item["status"].as_str() {
+                        Some("pass") => Some("pass"),
+                        Some("fail") => Some("fail"),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::shared::spec_state::seed_runs(cwd, spec, &results);
     }
 
     /// Every sub-gate strict — the production default.
@@ -457,9 +452,9 @@ mod tests {
         }
     }
 
-    /// The dangerous skip shape: acceptance criteria EXIST but every one
-    /// skipped at run time (timeout / spawn failure). Strict must route the
-    /// decision to the user instead of closing on a green that verified nothing.
+    /// The dangerous skip shape: acceptance criteria EXIST but one was never
+    /// run. Strict must route the decision to the user instead of closing on a
+    /// green that verified only part of the spec.
     #[test]
     fn close_gate_denies_when_qa_skipped_with_criteria() {
         let dir = make_project();
@@ -469,14 +464,14 @@ mod tests {
             "skip-ac-spec",
             "skip",
             json!([
-                { "id": "AC-1", "status": "skip" },
+                { "id": "AC-1", "status": "pass" },
                 { "id": "AC-2", "status": "skip" },
             ]),
         );
         let input = close_input(dir.path(), "skip-ac-spec");
         match close_gate_with_modes(&input, dir.path().to_str().unwrap(), all_strict()) {
             Verdict::Deny { reason } => {
-                assert!(reason.contains("skipped all 2"), "reason names the count: {reason}");
+                assert!(reason.contains("left 1 of 2"), "reason names the count: {reason}");
                 assert!(
                     reason.contains("never exercised"),
                     "reason explains the principle: {reason}"

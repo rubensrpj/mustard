@@ -152,8 +152,9 @@ fn qa_overall(stdout: &str) -> Option<String> {
 
 /// Whether the QA gate passes for this close.
 ///
-/// Reads the verdict where it is RECORDED, through the same predicate
-/// `emit-pipeline` and `complete-spec` consult — one fact, three doors.
+/// Reads the verdict where it is RECORDED — the last run of each criterion in
+/// the spec's `spec.ndjson` — through the same predicate `emit-pipeline` and
+/// `complete-spec` consult: one fact, three doors.
 ///
 /// Deliberately NOT the subprocess's exit code, and not a string parsed off its
 /// stdout. `qa-run` exits 0 on `skip`, so "it ran" is not "it verified"; and the
@@ -163,7 +164,7 @@ fn qa_overall(stdout: &str) -> Option<String> {
 /// `skip` chain the close and write `pipeline.complete` with nothing verified —
 /// found by review, reproduced live. `close-pipeline` already refuses `skip` for
 /// exactly this reason; this is the two composites agreeing.
-fn qa_gate_passes(cwd: &Path, spec: &str) -> bool {
+pub(crate) fn qa_gate_passes(cwd: &Path, spec: &str) -> bool {
     crate::commands::event::emit_pipeline::qa_result_passed(cwd, spec)
 }
 
@@ -466,40 +467,17 @@ mod tests {
         // Nothing recorded at all → shut.
         assert!(!qa_gate_passes(cwd, spec), "no verdict is not a pass");
 
-        // A recorded `skip` → still shut. The exact shape that used to chain.
-        emit_qa_result(cwd, spec, "skip");
+        // A criterion never run → still shut. The shape of a run that
+        // verified nothing.
+        let criteria = crate::shared::spec_state::seed_runs(cwd, spec, &[None]);
         assert!(
             !qa_gate_passes(cwd, spec),
             "a run that verified nothing must not open the close"
         );
 
         // A recorded `pass` → open, so the gate cannot pass by refusing always.
-        emit_qa_result(cwd, spec, "pass");
+        crate::shared::spec_state::seed_run(cwd, spec, criteria[0], "pass");
         assert!(qa_gate_passes(cwd, spec), "a recorded pass must open it");
-    }
-
-    /// Write one `qa.result` for `spec` through the production router, so the
-    /// gate reads a real event row rather than a hand-built fixture.
-    fn emit_qa_result(cwd: &Path, spec: &str, overall: &str) {
-        emit_qa_result_at(cwd, spec, overall, "2026-07-26T00:00:00.000Z");
-    }
-
-    /// The same, with the verdict's timestamp named — the CLOSE gates refuse a
-    /// QA pass older than the `spec.md` it claims to have verified, so a test
-    /// that seeds both files has to say when the run happened.
-    fn emit_qa_result_at(cwd: &Path, spec: &str, overall: &str, ts: &str) {
-        use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: ts.to_string(),
-            session_id: "s-test".to_string(),
-            wave: 0,
-            actor: Actor { kind: ActorKind::Cli, id: Some("test".to_string()), actor_type: None },
-            event: "qa.result".to_string(),
-            payload: serde_json::json!({ "spec": spec, "overall": overall, "criteria": [] }),
-            spec: Some(spec.to_string()),
-        };
-        let _ = crate::shared::events::route::emit(&cwd.to_string_lossy(), &event);
     }
 
     /// Seed a project whose spec carries one finding nobody has decided
@@ -596,9 +574,7 @@ mod tests {
             ),
         )
         .expect("the door records the destination");
-        // Dated ahead of the seeded `spec.md` on purpose: the QA gate refuses a
-        // pass that predates the spec it claims to have verified.
-        emit_qa_result_at(cwd, "found", "pass", "2099-01-01T00:00:00.000Z");
+        crate::shared::spec_state::seed_runs(cwd, "found", &[Some("pass")]);
 
         let reopened = close_gates_gate(cwd, "found");
         assert!(

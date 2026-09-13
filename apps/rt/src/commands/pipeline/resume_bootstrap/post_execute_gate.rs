@@ -8,6 +8,8 @@
 //! path → `ReviewPending`.
 
 use super::ResumeBootstrap;
+use crate::shared::spec_state::DiskSpecState;
+use mustard_core::domain::spec_state::{self, SpecState as _};
 use mustard_core::io::fs as mfs;
 use std::path::Path;
 
@@ -21,70 +23,22 @@ pub(super) fn execute_complete(out: &ResumeBootstrap) -> bool {
     }
 }
 
-/// Read the spec's per-spec NDJSON event log and return `(qa_pass, has_review,
-/// review_rejected)`.
+/// O QA e a revisão da spec `spec`, lidos do `spec.ndjson` dela pela
+/// interface [`SpecState`]: `(qa_pass, has_review, review_rejected)`.
 ///
-/// - `qa_pass` — last `qa.result` has `overall == "pass"`.
-/// - `has_review` — at least one `review.result` event exists for the spec.
-/// - `review_rejected` — ANY subproject's most recent `review.result` has
-///   `verdict == "rejected"` (grouped by the payload `subproject`; absent/null
-///   → `"."`). Per-subproject, NOT a single global-latest verdict: a rejected
-///   review of subproject B reviewed before an approved A must still report a
-///   rejection, otherwise a later approval of one subproject would mask an
-///   earlier rejection of another and the spec would sail into QA/CLOSE with an
-///   unaddressed rejection. The untagged `.` (whole-project) group — the 1a
-///   SubagentStop hook records it per review return, alongside the authoritative
-///   `review-result --subproject` records — is ignored when real
-///   subproject-tagged reviews exist (it is hook noise then, mirroring
-///   `wave_advance` which ignores `.` as never-touched), and honored only as the
-///   SOLE group (a genuine root/whole-project review).
-fn read_review_qa_state(spec_dir: &Path) -> (bool, bool, bool) {
-    let events_dir = spec_dir.join(".events");
-    let mut events =
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-
-    let mut last_qa_overall: Option<String> = None;
-    let mut has_review = false;
-    // Latest verdict per subproject (later `ts` overwrites, events are sorted).
-    let mut latest_verdict_by_sub: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for ev in &events {
-        match ev.event.as_str() {
-            "qa.result" => {
-                last_qa_overall = ev
-                    .payload
-                    .get("overall")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
-            }
-            "review.result" => {
-                has_review = true;
-                let sub = ev
-                    .payload
-                    .get("subproject")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(".")
-                    .to_string();
-                if let Some(verdict) = ev.payload.get("verdict").and_then(|v| v.as_str()) {
-                    latest_verdict_by_sub.insert(sub, verdict.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    let qa_pass = last_qa_overall.as_deref() == Some("pass");
-    // When real (subproject-tagged) reviews exist, the untagged `.` group is the
-    // 1a hook's per-return noise — exclude it (mirror `wave_advance`, which never
-    // treats `.` as a touched subproject). `.` counts only as the sole group.
-    let has_real_sub = latest_verdict_by_sub.keys().any(|k| k != ".");
-    let review_rejected = latest_verdict_by_sub
-        .iter()
-        .filter(|(sub, _)| !(has_real_sub && sub.as_str() == "."))
-        .any(|(_, v)| v == "rejected");
-    (qa_pass, has_review, review_rejected)
+/// - `qa_pass` — cada critério tem a última execução aprovada.
+/// - `has_review` — alguma onda tem veredito.
+/// - `review_rejected` — o último veredito de alguma onda reprovou: a
+///   aprovação de uma onda não esconde a reprovação de outra, e a spec não
+///   segue para o QA com uma reprovação sem resposta.
+///
+/// Sem arquivo de eventos, nada passou e nada foi revisto.
+pub(crate) fn read_review_qa_state(project: &Path, spec: &str) -> (bool, bool, bool) {
+    let Some(log) = DiskSpecState::new(project).log(spec) else {
+        return (false, false, false);
+    };
+    let review = spec_state::review(&log);
+    (spec_state::qa(&log).passed_all(), review.any, review.rejected)
 }
 
 /// Roles to dispatch REVIEW agents for. Order of preference:
@@ -314,7 +268,7 @@ pub(super) fn signal_approved_plan_ready(
 /// false this is a no-op — the orchestrator is still mid-execute and no signal
 /// is needed.
 pub(super) fn apply_post_execute_gate(
-    _project: &Path,
+    project: &Path,
     spec: &str,
     spec_dir: &Path,
     out: &mut ResumeBootstrap,
@@ -322,8 +276,8 @@ pub(super) fn apply_post_execute_gate(
     if !execute_complete(out) {
         return;
     }
-    // Read REVIEW + QA state from the per-spec NDJSON log.
-    let (qa_pass, has_review, review_rejected) = read_review_qa_state(spec_dir);
+    // Read REVIEW + QA state from the spec's `spec.ndjson`.
+    let (qa_pass, has_review, review_rejected) = read_review_qa_state(project, spec);
 
     if qa_pass {
         // Everything green — safe to close.
@@ -349,18 +303,7 @@ mod tests {
     use super::super::ResumeBootstrap;
     use super::*;
 
-    /// Seed a `.events/<sid>.ndjson` line under the spec dir directly — bypasses
-    /// the writer so tests stay hermetic.
-    fn write_event_line(spec_dir: &Path, kind: &str, payload: &str, ts: &str) {
-        let events_dir = spec_dir.join(".events");
-        std::fs::create_dir_all(&events_dir).unwrap();
-        let line = format!(
-            "{{\"ts\":\"{ts}\",\"event\":\"{kind}\",\"kind\":\"qa\",\"spec\":\"demo\",\"payload\":{payload}}}\n"
-        );
-        let path = events_dir.join("test.ndjson");
-        let prev = std::fs::read_to_string(&path).unwrap_or_default();
-        std::fs::write(&path, prev + &line).unwrap();
-    }
+    use crate::shared::spec_state::{seed_runs, seed_verdict};
 
     /// `execute_complete` is `true` once `currentWave >= totalWaves` in a
     /// wave-plan spec.
@@ -401,29 +344,14 @@ mod tests {
         assert!(out.qa_command.is_none());
     }
 
-    /// Regression: the events `/review` emits today — `review.start` +
-    /// `review.complete`, but NO `review.result` — do NOT satisfy the gate.
-    /// This reproduces the false-positive `ReviewPending` the fix targets: only
-    /// a `review.result` verdict advances past REVIEW, so a review that finished
-    /// without emitting one still (correctly) reports pending.
+    /// A spec file with criteria and no verdict is still `ReviewPending`: only
+    /// a recorded verdict advances past REVIEW.
     #[test]
-    fn post_execute_gate_review_start_complete_without_result_is_review_pending() {
+    fn post_execute_gate_without_a_verdict_is_review_pending() {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
         std::fs::create_dir_all(spec_dir.join("wave-0-mixed")).unwrap();
-        // The two events `/review` emits today — neither is a `review.result`.
-        write_event_line(
-            spec_dir,
-            "review.start",
-            r#"{"spec":"demo","target":"dev"}"#,
-            "2026-05-25T10:00:00.000Z",
-        );
-        write_event_line(
-            spec_dir,
-            "review.complete",
-            r#"{"spec":"demo","target":"dev"}"#,
-            "2026-05-25T10:01:00.000Z",
-        );
+        seed_runs(dir.path(), "demo", &[None]);
 
         let mut out = ResumeBootstrap {
             is_wave_plan: true,
@@ -442,12 +370,8 @@ mod tests {
     fn post_execute_gate_signals_qa_pending_after_approved_review() {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"approved","spec":"demo"}"#,
-            "2026-05-25T10:00:00.000Z",
-        );
+        let criteria = seed_runs(dir.path(), "demo", &[None]);
+        seed_verdict(dir.path(), "demo", 1, "approved", criteria[0]);
 
         let mut out = ResumeBootstrap {
             is_wave_plan: true,
@@ -471,18 +395,8 @@ mod tests {
     fn post_execute_gate_allows_close_when_qa_passed() {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"approved","spec":"demo"}"#,
-            "2026-05-25T10:00:00.000Z",
-        );
-        write_event_line(
-            spec_dir,
-            "qa.result",
-            r#"{"overall":"pass","spec":"demo","criteria":[]}"#,
-            "2026-05-25T10:05:00.000Z",
-        );
+        let criteria = seed_runs(dir.path(), "demo", &[Some("pass")]);
+        seed_verdict(dir.path(), "demo", 1, "approved", criteria[0]);
 
         let mut out = ResumeBootstrap {
             is_wave_plan: true,
@@ -502,12 +416,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
         std::fs::create_dir_all(spec_dir.join("wave-0-mixed")).unwrap();
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"rejected","spec":"demo"}"#,
-            "2026-05-25T10:00:00.000Z",
-        );
+        let criteria = seed_runs(dir.path(), "demo", &[None]);
+        seed_verdict(dir.path(), "demo", 1, "rejected", criteria[0]);
 
         let mut out = ResumeBootstrap {
             is_wave_plan: true,
@@ -522,27 +432,17 @@ mod tests {
         assert_eq!(out.review_roles, vec!["mixed".to_string()]);
     }
 
-    /// Pilar 1b (per-subproject): a rejected review of subproject `b` reviewed
-    /// BEFORE an approved `a` is NOT masked by the later approval — the gate must
-    /// still route back to REVIEW, not sail to QA. The old global-latest check
-    /// saw `a: approved` last and wrongly proceeded.
+    /// A rejected verdict of wave 2 recorded BEFORE an approved wave 1 is NOT
+    /// masked by the later approval — the gate must still route back to
+    /// REVIEW, not sail to QA.
     #[test]
-    fn post_execute_gate_rejected_subproject_not_masked_by_later_approval() {
+    fn post_execute_gate_rejected_wave_not_masked_by_another_waves_approval() {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
         std::fs::create_dir_all(spec_dir.join("wave-0-rt")).unwrap();
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"rejected","subproject":"b","spec":"demo"}"#,
-            "2026-05-25T10:00:00.000Z",
-        );
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"approved","subproject":"a","spec":"demo"}"#,
-            "2026-05-25T10:01:00.000Z",
-        );
+        let criteria = seed_runs(dir.path(), "demo", &[None]);
+        seed_verdict(dir.path(), "demo", 2, "rejected", criteria[0]);
+        seed_verdict(dir.path(), "demo", 1, "approved", criteria[0]);
         let mut out = ResumeBootstrap {
             is_wave_plan: true,
             current_wave: 1,
@@ -554,30 +454,16 @@ mod tests {
         assert_eq!(out.next_action.as_deref(), Some("dispatch-review"));
     }
 
-    /// Per-subproject: once EVERY subproject's LATEST review is approved (here
-    /// `b` was rejected then fixed → approved last), the gate proceeds to QA.
+    /// Once EVERY wave's LATEST verdict is approved (here wave 2 was rejected
+    /// then fixed → approved last), the gate proceeds to QA.
     #[test]
-    fn post_execute_gate_all_subprojects_approved_runs_qa() {
+    fn post_execute_gate_all_waves_approved_runs_qa() {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"rejected","subproject":"b","spec":"demo"}"#,
-            "2026-05-25T10:00:00.000Z",
-        );
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"approved","subproject":"a","spec":"demo"}"#,
-            "2026-05-25T10:01:00.000Z",
-        );
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"approved","subproject":"b","spec":"demo"}"#,
-            "2026-05-25T10:02:00.000Z",
-        );
+        let criteria = seed_runs(dir.path(), "demo", &[None]);
+        seed_verdict(dir.path(), "demo", 2, "rejected", criteria[0]);
+        seed_verdict(dir.path(), "demo", 1, "approved", criteria[0]);
+        seed_verdict(dir.path(), "demo", 2, "approved", criteria[0]);
         let mut out = ResumeBootstrap {
             is_wave_plan: true,
             current_wave: 1,
@@ -586,48 +472,6 @@ mod tests {
         };
         apply_post_execute_gate(dir.path(), "demo", spec_dir, &mut out);
         assert_eq!(out.stage.as_deref(), Some("QaPending"));
-        assert_eq!(out.next_action.as_deref(), Some("run-qa"));
-    }
-
-    /// Pilar 1b — the untagged `.` (whole-project) record the 1a hook writes per
-    /// review return must NOT block QA when every real subproject-tagged review
-    /// is approved. A stale `.`=rejected (e.g. a missed final re-review) is hook
-    /// noise here, ignored — mirroring `wave_advance`.
-    #[test]
-    fn post_execute_gate_ignores_dot_hook_noise_when_real_subs_approved() {
-        let dir = tempfile::tempdir().unwrap();
-        let spec_dir = dir.path();
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"approved","subproject":"a","spec":"demo"}"#,
-            "2026-05-25T10:00:00.000Z",
-        );
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"approved","subproject":"b","spec":"demo"}"#,
-            "2026-05-25T10:01:00.000Z",
-        );
-        // A hook `.` record (no subproject) is rejected — noise, must be ignored.
-        write_event_line(
-            spec_dir,
-            "review.result",
-            r#"{"verdict":"rejected","spec":"demo"}"#,
-            "2026-05-25T10:02:00.000Z",
-        );
-        let mut out = ResumeBootstrap {
-            is_wave_plan: true,
-            current_wave: 1,
-            total_waves: 1,
-            ..Default::default()
-        };
-        apply_post_execute_gate(dir.path(), "demo", spec_dir, &mut out);
-        assert_eq!(
-            out.stage.as_deref(),
-            Some("QaPending"),
-            "the '.' hook noise must not block QA when real subprojects are approved"
-        );
         assert_eq!(out.next_action.as_deref(), Some("run-qa"));
     }
 

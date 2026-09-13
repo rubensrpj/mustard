@@ -47,14 +47,15 @@ use mustard_core::domain::model::contract::Verdict;
 
 use super::pr_detect::classify_pr;
 
-/// Warn when a PR is opened/merged for a spec with no passing `qa.result`.
+/// Warn when a PR is opened/merged for a spec whose criteria have not all
+/// passed in its `spec.ndjson`.
 ///
 /// `None` = pass through. Reuses [`classify_pr`] (the same conservative
 /// `gh pr` classifier the DORA telemetry uses, `rtk`-wrapper tolerant) and
 /// [`crate::commands::event::emit_pipeline::qa_result_passed`] (the same
 /// single source of truth the `pipeline.complete` hard gate consults), so the
 /// advisory can never disagree with the gate that actually blocks.
-pub(super) fn pr_qa_gate(command: &str, cwd: &str) -> Option<Verdict> {
+pub(crate) fn pr_qa_gate(command: &str, cwd: &str) -> Option<Verdict> {
     let kind = classify_pr(command)?;
     let spec = crate::shared::context::current_spec(cwd)?;
     if crate::commands::event::emit_pipeline::qa_result_passed(Path::new(cwd), &spec) {
@@ -67,7 +68,8 @@ pub(super) fn pr_qa_gate(command: &str, cwd: &str) -> Option<Verdict> {
     };
     Some(Verdict::Warn {
         message: format!(
-            "[qa-coupling] {moment} `{spec}` — no `qa.result` with overall=pass exists yet. \
+            "[qa-coupling] {moment} `{spec}` — not every acceptance criterion in its \
+             `spec.ndjson` has a passing last run yet. \
              The canonical order runs QA BEFORE integration (close-pipeline fires while the unit \
              is still live on its work branch). Run `mustard-rt run qa-run --spec {spec}` first, \
              or accept \

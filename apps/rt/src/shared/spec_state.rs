@@ -171,6 +171,78 @@ pub(crate) fn approve_in(spec_dir: &Path) {
     }
 }
 
+/// O `spec.ndjson` da spec `spec` do projeto em `root`, com a pasta criada.
+#[cfg(test)]
+fn seed_file(root: &Path, spec: &str) -> PathBuf {
+    let path = store::spec_file(&store::spec_root(root), spec).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    path
+}
+
+/// Grava um evento `event_type` com `fields` na spec `spec` do projeto em
+/// `root` e devolve o número dele. O critério e o pedido apontam para uma
+/// mensagem gravada antes, de onde vieram.
+#[cfg(test)]
+pub(crate) fn seed_event(root: &Path, spec: &str, event_type: &str, fields: Value) -> u64 {
+    let path = seed_file(root, spec);
+    let mut draft = fields.as_object().cloned().unwrap();
+    if matches!(event_type, "criterion" | "request") {
+        let message = serde_json::json!({ "author": "user", "text": "combinado" });
+        let origin = store::write(&path, "message", message.as_object().cloned().unwrap(), &[]).unwrap();
+        draft.insert("origin".to_string(), serde_json::json!(origin.id));
+    }
+    store::write(&path, event_type, draft, &[]).unwrap().id
+}
+
+/// Grava na spec `spec` um critério por item de `results` e, para cada
+/// `Some`, uma execução com esse resultado; `None` deixa o critério sem
+/// execução. Devolve os números dos critérios, na ordem.
+#[cfg(test)]
+pub(crate) fn seed_runs(root: &Path, spec: &str, results: &[Option<&str>]) -> Vec<u64> {
+    let mut criteria = Vec::new();
+    for result in results {
+        let criterion = seed_event(
+            root,
+            spec,
+            "criterion",
+            serde_json::json!({ "when": "a obra roda", "then": "o critério confere", "proof": "cargo test" }),
+        );
+        if let Some(result) = result {
+            seed_run(root, spec, criterion, result);
+        }
+        criteria.push(criterion);
+    }
+    criteria
+}
+
+/// Grava uma execução do critério `criterion` com o resultado `result`.
+#[cfg(test)]
+pub(crate) fn seed_run(root: &Path, spec: &str, criterion: u64, result: &str) -> u64 {
+    let exit = u64::from(result != "pass");
+    let run = serde_json::json!({ "criterion": criterion, "result": result, "exit": exit, "ms": 5 });
+    seed_event(root, spec, "criterion_run", run)
+}
+
+/// Grava o veredito `result` da onda `wave`, conferindo o critério
+/// `criterion`.
+#[cfg(test)]
+pub(crate) fn seed_verdict(root: &Path, spec: &str, wave: u64, result: &str, criterion: u64) -> u64 {
+    let verdict = serde_json::json!({
+        "wave": wave,
+        "result": result,
+        "text": "revisão da onda",
+        "criteria": [{ "criterion": criterion, "tests_rule": "confere a regra" }],
+    });
+    seed_event(root, spec, "verdict", verdict)
+}
+
+/// Grava um pedido de mudança com o texto `text`.
+#[cfg(test)]
+pub(crate) fn seed_request(root: &Path, spec: &str, text: &str) -> u64 {
+    let request = serde_json::json!({ "text": text, "keys": ["pedido"], "effect": "adjust_waves" });
+    seed_event(root, spec, "request", request)
+}
+
 /// Stand the checkout at `root` on the branch of `spec` — a `.git/HEAD` naming
 /// `feature/<spec>` and the spec's folder — so the branch rung answers `spec`
 /// without touching the process environment.
