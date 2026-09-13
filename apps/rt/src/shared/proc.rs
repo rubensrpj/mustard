@@ -361,6 +361,11 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
     // O comando roda no próprio grupo de processos, para o prazo matar o grupo
     // inteiro: o shell nem sempre cede o lugar ao comando (o `sh` do Debian não
     // cede), e o comando de verdade fica neto dele.
+    //
+    // Troca aceita: fora do grupo do terminal, o Ctrl-C de quem roda num
+    // terminal mata o `mustard-rt`, e o comando segue órfão até acabar.
+    // Pelo agente, que roda sem terminal, isso quase não pesa. Passar o sinal
+    // adiante pediria `unsafe` ou uma dependência nova, e nenhum dos dois entra.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -425,6 +430,11 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
 /// out behind it. The child runs in its own process group on Unix, and
 /// [`kill_tree`] kills the whole group (the whole tree on Windows). With it
 /// dead, the pipes close and the readers finish.
+///
+/// The readers are waited for only [`READER_GRACE`]: a process that left the
+/// group (see [`kill_tree`]) can still hold the pipes open, and waiting for it
+/// would hold this call past the deadline. A reader still running then is let
+/// go; its thread ends on its own when that process closes the pipe.
 fn reap(
     child: &mut std::process::Child,
     out_reader: std::thread::JoinHandle<Vec<u8>>,
@@ -433,9 +443,19 @@ fn reap(
     kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    let _ = out_reader.join();
-    let _ = err_reader.join();
+    let grace = Instant::now() + READER_GRACE;
+    while !(out_reader.is_finished() && err_reader.is_finished()) && Instant::now() < grace {
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    for reader in [out_reader, err_reader] {
+        if reader.is_finished() {
+            let _ = reader.join();
+        }
+    }
 }
+
+/// How long [`reap`] waits for the output readers once the group is dead.
+const READER_GRACE: Duration = Duration::from_secs(1);
 
 /// Kill the process group `pid` leads (Unix: `kill -KILL -<pid>` through the
 /// shell, since the crate forbids `unsafe`) or the process tree rooted at
@@ -445,6 +465,11 @@ fn reap(
 /// of Debian and Ubuntu, refuses it ("Illegal number"), and the group would
 /// live on. With the signal named first, the negative number can only be the
 /// group, in `dash`, `bash` and `zsh` alike.
+///
+/// Accepted gap: a process that opens its own session (`setsid`, a service
+/// that detaches itself) leaves the group, and on Windows a process whose
+/// parent already exited leaves the tree; neither dies here. [`reap`] does not
+/// wait for them past a short grace.
 fn kill_tree(pid: u32) {
     #[cfg(windows)]
     let mut cmd = {
@@ -827,6 +852,19 @@ mod tests {
             }
         });
         assert!(gone, "the grandchild {pid} outlived the deadline");
+    }
+
+    /// Um processo que abre a própria sessão escapa do grupo e segura a saída
+    /// aberta; mesmo assim a função volta logo depois do prazo, sem esperar
+    /// por ele.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_outside_the_group_does_not_hold_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let outcome = run_shell_with_deadline("setsid sleep 5 & sleep 7", dir.path(), Duration::from_secs(1));
+        assert!(matches!(outcome, ShellOutcome::TimedOut { .. }), "{outcome:?}");
+        assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
     }
 
     #[test]
