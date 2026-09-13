@@ -6,20 +6,25 @@
 //! the PR verb, and spec attribution read a directory the harness stopped
 //! writing.
 //!
-//! Um `gh pr merge` digitado no terminal também é um merge: quando a branch de
-//! origem do pull request é a branch gravada no estado de uma spec, a ponte
-//! grava a fase `delivered` nela e arma a cobrança das pendências, como o
-//! `pr-merge` faz ([`delivered_spec`]).
+//! Um `gh pr merge` digitado no terminal também é um merge. Depois de um
+//! comando com ele que terminou bem, em qualquer forma, o gancho não tenta
+//! descobrir a branch pelo texto do comando (número, endereço, `-R`, `--auto`,
+//! `--delete-branch`): pergunta ao `gh` o estado do pull request de cada spec
+//! candidata, pela branch gravada no estado dela. Só com o estado `MERGED` e a
+//! branch de origem igual à da spec, a ponte grava a fase `delivered` e arma a
+//! cobrança das pendências, como o `pr-merge` faz ([`delivered_specs`]).
 
 use mustard_core::domain::model::contract::HookInput;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::spec_state::{is_approved_phase, SpecState};
+use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::time::now_iso8601;
-use serde_json::json;
-use std::path::Path;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use super::lex::truncate;
+use crate::shared::spec_state::DiskSpecState;
 
 /// Classify a command as a PR event.
 ///
@@ -56,70 +61,103 @@ fn classify_pr_segment(segment: &str) -> Option<&'static str> {
     None
 }
 
-/// As flags do `gh pr merge` que levam um valor: o valor não é o pull request.
-const MERGE_VALUED_FLAGS: &[&str] = &[
-    "-b",
-    "--body",
-    "-F",
-    "--body-file",
-    "-t",
-    "--subject",
-    "--match-head-commit",
-    "-A",
-    "--author-email",
-    "-R",
-    "--repo",
-];
-
-/// A branch que um `gh pr merge` nomeia, quando nomeia uma: o primeiro
-/// argumento solto depois de `merge`. `None` quando o comando escolhe o pull
-/// request pelo número ou pelo endereço, ou não escolhe (é o da branch atual).
-fn merge_selector(command: &str) -> Option<String> {
-    let masked = super::lex::mask_quoted_operators(command);
-    let segment = masked
-        .split(super::lex::is_cmd_separator)
-        .find(|segment| classify_pr_segment(segment) == Some("pr.merged"))?;
-    let cleaned = super::lex::strip_leading_rtk(segment.trim()).trim_start();
-    let mut tokens = cleaned.split_whitespace().skip(3);
-    while let Some(token) = tokens.next() {
-        if MERGE_VALUED_FLAGS.contains(&token) {
-            tokens.next();
-            continue;
-        }
-        if token.starts_with('-') {
-            continue;
-        }
-        let number = token.trim_start_matches('#');
-        if (!number.is_empty() && number.chars().all(|c| c.is_ascii_digit())) || token.contains("://") {
-            return None;
-        }
-        return Some(token.trim_matches(['"', '\'']).to_string());
-    }
-    None
+/// O que o `gh` diz do pull request de uma branch: o estado (`OPEN`, `MERGED`
+/// ou `CLOSED`) e a branch de origem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrOfBranch {
+    pub(crate) state: String,
+    pub(crate) head: String,
 }
 
-/// A spec que um `gh pr merge` entregou: a da branch de origem do pull
-/// request — a nomeada no comando ou, sem nome, a do checkout —, e só quando
-/// essa é a branch gravada no estado da spec. A promoção de `dev` para `main`
-/// sai de uma base, que não é a branch de spec nenhuma, então nada é gravado
-/// na spec que a sessão estiver seguindo.
-///
-/// Um `gh pr merge --delete-branch` sem nome de branch volta o checkout para a
-/// base antes de o gancho rodar: a branch de origem não é mais vista, e nada é
-/// gravado. A porta que sempre grava é o `mustard-rt run pr-merge`.
-fn delivered_spec(
-    project_dir: &str,
-    session_id: Option<&str>,
-    command: &str,
-    branch: Option<&str>,
-) -> Option<String> {
-    let head = merge_selector(command).or_else(|| branch.map(str::to_string))?;
-    let project = Path::new(project_dir);
-    let config = mustard_core::ProjectConfig::load(project);
-    let spec = crate::commands::event::work_branch::slug_of_work_branch(&head, &config)
-        .or_else(|| detect_recent_spec(project_dir, session_id))?;
-    let state = crate::shared::spec_state::DiskSpecState::new(project).state(&spec)?;
-    (state.branch.as_deref() == Some(head.as_str())).then_some(spec)
+/// Pergunta ao `gh`, no repositório de `root`, pelo pull request da branch
+/// `branch`, do mesmo jeito que o `pr-merge` pergunta. `None` quando o `gh`
+/// não responde ou a branch não tem pull request.
+fn ask_gh(root: &Path, branch: &str) -> Option<PrOfBranch> {
+    let args = ["pr", "view", branch, "--json", "state,headRefName,mergedAt"];
+    let value = crate::commands::review::pr_door::gh_json(root, &args).ok()?;
+    Some(PrOfBranch {
+        state: value.get("state")?.as_str()?.to_string(),
+        head: value.get("headRefName")?.as_str()?.to_string(),
+    })
+}
+
+/// Quantas specs candidatas, no máximo, são perguntadas ao `gh` depois de um
+/// merge: as mais recentes. Cada pergunta é uma chamada ao `gh`.
+const MAX_CANDIDATES: usize = 5;
+
+/// As specs que podem ter acabado de entrar no merge, das mais recentes para
+/// as mais antigas: as que têm arquivo de eventos, uma branch gravada no
+/// estado e uma fase aprovada que ainda não é `delivered`. Os nomes saem do
+/// índice das specs; sem índice, das pastas.
+fn candidates(project: &Path) -> Vec<(String, String)> {
+    let main = mustard_core::io::spec_events::spec_root(project);
+    let Ok(paths) = ClaudePaths::for_project(&main) else {
+        return Vec::new();
+    };
+    let names = names_from_index(&paths.spec_index_path()).unwrap_or_else(|| names_from_folders(&paths.spec_dir()));
+    let disk = DiskSpecState::new(project);
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let state = disk.state(&name)?;
+            let phase = state.phase?;
+            if !is_approved_phase(phase) || phase == "delivered" {
+                return None;
+            }
+            Some((name, state.branch?))
+        })
+        .take(MAX_CANDIDATES)
+        .collect()
+}
+
+/// Os nomes das specs do índice, da atualização mais nova para a mais velha,
+/// já sem as que o índice mostra entregues ou não aprovadas. `None` quando o
+/// índice não existe ou não se lê.
+fn names_from_index(index: &Path) -> Option<Vec<String>> {
+    let body = mustard_core::io::fs::read_to_string(index).ok()?;
+    let mut lines: Vec<(String, String)> = body
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| {
+            line.get("phase").and_then(Value::as_str).is_some_and(|p| is_approved_phase(p) && p != "delivered")
+        })
+        .filter_map(|line| {
+            let name = line.get("name")?.as_str()?.to_string();
+            let updated = line.get("updated").and_then(Value::as_str).unwrap_or_default().to_string();
+            Some((updated, name))
+        })
+        .collect();
+    lines.sort_by(|a, b| b.0.cmp(&a.0));
+    Some(lines.into_iter().map(|(_, name)| name).collect())
+}
+
+/// Os nomes das pastas de spec que têm arquivo de eventos, do arquivo
+/// mudado por último para o mais velho.
+fn names_from_folders(spec_dir: &Path) -> Vec<String> {
+    let Ok(entries) = mustard_core::io::fs::read_dir(spec_dir) else {
+        return Vec::new();
+    };
+    let mut specs: Vec<(Option<std::time::SystemTime>, String)> = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let file: PathBuf = entry.path.join("spec.ndjson");
+            file.is_file().then(|| (mustard_core::io::fs::modified(&file).ok(), entry.file_name.clone()))
+        })
+        .collect();
+    specs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    specs.into_iter().map(|(_, name)| name).collect()
+}
+
+/// As specs que um merge acabou de entregar: cada candidata cujo pull request,
+/// perguntado por `ask` pela branch da spec, está `MERGED` e tem como branch
+/// de origem a da spec. Um `--auto` ainda não mergeou; a promoção de `dev`
+/// para `main` não mergeia a branch de spec nenhuma.
+fn delivered_specs(project: &Path, ask: &dyn Fn(&Path, &str) -> Option<PrOfBranch>) -> Vec<String> {
+    candidates(project)
+        .into_iter()
+        .filter(|(_, branch)| ask(project, branch).is_some_and(|pr| pr.state == "MERGED" && pr.head == *branch))
+        .map(|(spec, _)| spec)
+        .collect()
 }
 
 /// The git branch via `git rev-parse --abbrev-ref HEAD`. Fail-open `None`.
@@ -165,6 +203,18 @@ pub(super) fn emit_pr_event(
     event: &str,
     command: &str,
 ) {
+    emit_pr_event_with(project_dir, session_id, event, command, &ask_gh);
+}
+
+/// [`emit_pr_event`] com a pergunta ao `gh` dada por quem chama: os testes
+/// passam uma resposta pronta.
+fn emit_pr_event_with(
+    project_dir: &str,
+    session_id: Option<&str>,
+    event: &str,
+    command: &str,
+    ask: &dyn Fn(&Path, &str) -> Option<PrOfBranch>,
+) {
     let branch = detect_branch(project_dir);
     let spec = detect_recent_spec(project_dir, session_id);
     let command_field = if command.len() > 200 {
@@ -192,18 +242,21 @@ pub(super) fn emit_pr_event(
     };
     // `pr.detect` family events go to the per-spec NDJSON sink through the router.
     let _ = crate::shared::events::route::emit(project_dir, &harness_event);
-    // A ponte do merge, como no `pr-merge`: a fase `delivered` na spec cuja
-    // branch foi mergeada, e a cobrança das pendências armada.
-    if event == "pr.merged"
-        && let Some(delivered) = delivered_spec(project_dir, session_id, command, branch.as_deref())
-    {
-        let _ = crate::commands::spec_events::write::record_phase(Path::new(project_dir), &delivered, "delivered");
+    // A ponte do merge, como no `pr-merge`: a fase `delivered` em cada spec cujo
+    // pull request o `gh` diz mergeado, e a cobrança das pendências armada para
+    // a sessão que mergeou.
+    if event == "pr.merged" {
+        let project = Path::new(project_dir);
+        for delivered in delivered_specs(project, ask) {
+            let _ = crate::commands::spec_events::write::record_phase_by(project, &delivered, "delivered", session_id);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     /// `gh pr create` / `gh pr merge` classify to the right DORA events.
     #[test]
@@ -246,26 +299,15 @@ mod tests {
         assert_eq!(classify_pr("echo run && echo gh pr create"), None);
     }
 
-    /// O argumento solto do `gh pr merge` é a branch só quando não é número
-    /// nem endereço, e o valor de uma flag não conta.
-    #[test]
-    fn the_merge_selector_is_a_branch_only_when_it_names_one() {
-        assert_eq!(merge_selector("gh pr merge feature/trava --merge").as_deref(), Some("feature/trava"));
-        assert_eq!(merge_selector("cd x && rtk gh pr merge --squash -t \"titulo\" fix/y").as_deref(), Some("fix/y"));
-        assert_eq!(merge_selector("gh pr merge 42 --squash"), None);
-        assert_eq!(merge_selector("gh pr merge #42"), None);
-        assert_eq!(merge_selector("gh pr merge https://github.com/o/r/pull/42"), None);
-        assert_eq!(merge_selector("gh pr merge --merge --delete-branch"), None);
-    }
-
-    fn git(dir: &std::path::Path, args: &[&str]) {
+    fn git(dir: &Path, args: &[&str]) {
         let ok = Command::new("git").args(args).current_dir(dir).output().map(|o| o.status.success()).unwrap_or(false);
         assert!(ok, "git {args:?} failed in {}", dir.display());
     }
 
     /// Um projeto do fluxo `dev`/`main`, parado em `branch`, com a spec `trava`
-    /// gravada na branch `feature/trava`, uma pendência nascida nela e a sessão
-    /// `s-pr` ligada a ela.
+    /// em andamento na branch `feature/trava`, uma pendência nascida nela e a
+    /// sessão `s-pr` ligada a ela; e a spec `plano`, ainda em plano, com a
+    /// branch `feature/plano`.
     fn project_on(branch: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
@@ -282,42 +324,77 @@ mod tests {
         });
         assert_eq!(added["ok"], json!(true), "{added}");
         crate::hooks::task::pending_gate::seed_spec(root, "trava", &[1], "s-pr");
-        let path = mustard_core::io::spec_events::spec_file(root, "trava").expect("spec file");
-        let branch = json!({ "phase": "running", "branch": "feature/trava" }).as_object().cloned().expect("object");
-        mustard_core::io::spec_events::write(&path, "state", branch, &[]).expect("state");
+        let state = |fields: Value| fields.as_object().cloned().expect("object");
+        let trava = mustard_core::io::spec_events::spec_file(root, "trava").expect("spec file");
+        mustard_core::io::spec_events::write(&trava, "state", state(json!({ "phase": "running", "branch": "feature/trava" })), &[])
+            .expect("state");
+        let plano = mustard_core::io::spec_events::spec_file(root, "plano").expect("spec file");
+        std::fs::create_dir_all(plano.parent().expect("parent")).expect("spec folder");
+        mustard_core::io::spec_events::write(&plano, "state", state(json!({ "phase": "plan", "branch": "feature/plano" })), &[])
+            .expect("state");
         dir
     }
 
-    fn phase(root: &std::path::Path) -> Option<&'static str> {
-        crate::shared::spec_state::DiskSpecState::new(root).state("trava").and_then(|state| state.phase)
+    fn phase(root: &Path) -> Option<&'static str> {
+        DiskSpecState::new(root).state("trava").and_then(|state| state.phase)
     }
 
-    /// Um `gh pr merge` digitado na branch da spec grava a fase `delivered`
-    /// e arma a cobrança das pendências nascidas nela; nomear a branch da spec
-    /// no comando vale do mesmo jeito, mesmo parado na base.
-    #[test]
-    fn a_merge_typed_for_the_spec_branch_records_delivered_and_arms_the_charge() {
-        let on_spec = project_on("feature/trava");
-        let root = on_spec.path();
-        emit_pr_event(&root.to_string_lossy(), Some("s-pr"), "pr.merged", "gh pr merge 42 --merge");
-        assert_eq!(phase(root), Some("delivered"), "the merge of the spec branch is recorded");
-        let armed = crate::commands::event::pending::armed_charges(root);
-        assert_eq!(armed.iter().map(|c| c.spec.as_str()).collect::<Vec<_>>(), vec!["trava"], "{armed:?}");
-
-        let named = project_on("dev");
-        emit_pr_event(&named.path().to_string_lossy(), None, "pr.merged", "gh pr merge feature/trava --merge");
-        assert_eq!(phase(named.path()), Some("delivered"), "the named branch is the spec's");
+    /// Um `gh` falso que responde `state` para o pull request da branch da
+    /// spec `trava` e anota cada branch perguntada.
+    fn fake_gh<'a>(state: &'a str, asked: &'a RefCell<Vec<String>>) -> impl Fn(&Path, &str) -> Option<PrOfBranch> + 'a {
+        move |_: &Path, branch: &str| {
+            asked.borrow_mut().push(branch.to_string());
+            (branch == "feature/trava").then(|| PrOfBranch { state: state.to_string(), head: branch.to_string() })
+        }
     }
 
-    /// A promoção de `dev` para `main`, digitada na base com a sessão ainda
-    /// ligada à spec, não grava nada na spec: a branch de origem é uma base.
+    /// O merge digitado confere o fato no `gh`, pela branch da spec, e não o
+    /// texto do comando. Pelo número, pelo endereço e com `--delete-branch`
+    /// sem nome, parado já na base, grava `delivered` e arma a cobrança para a
+    /// sessão; com `--auto`, o pull request ainda não mergeou, e nada é
+    /// gravado; na promoção de `dev` para `main`, o pull request da spec segue
+    /// aberto, e nada é gravado. Só a spec aprovada e ainda não entregue é
+    /// perguntada.
     #[test]
-    fn a_promotion_typed_on_a_base_records_nothing_on_the_spec() {
-        let dir = project_on("dev");
+    fn a_typed_merge_is_checked_against_the_pull_request_of_the_spec() {
+        let cases = [
+            ("gh pr merge 42 --merge", "feature/trava", "MERGED", Some("delivered")),
+            ("gh pr merge https://github.com/o/r/pull/42 --squash", "feature/trava", "MERGED", Some("delivered")),
+            ("gh pr merge --auto --merge", "feature/trava", "OPEN", Some("running")),
+            ("gh pr merge --merge --delete-branch", "dev", "MERGED", Some("delivered")),
+            ("gh pr merge 50 --merge", "dev", "OPEN", Some("running")),
+        ];
+        for (command, checkout, answer, expected) in cases {
+            let dir = project_on(checkout);
+            let root = dir.path();
+            let asked = RefCell::new(Vec::new());
+            emit_pr_event_with(&root.to_string_lossy(), Some("s-pr"), "pr.merged", command, &fake_gh(answer, &asked));
+            assert_eq!(phase(root), expected, "{command} on {checkout} answered {answer}");
+            assert_eq!(*asked.borrow(), vec!["feature/trava".to_string()], "{command}: only the approved spec is asked");
+            let armed = crate::commands::event::pending::armed_charges(root);
+            if expected == Some("delivered") {
+                assert_eq!(armed.len(), 1, "{command}: the charge is armed: {armed:?}");
+                assert_eq!(armed[0].session.as_deref(), Some("s-pr"), "{command}: for the session that merged");
+            } else {
+                assert!(armed.is_empty(), "{command}: nothing is armed: {armed:?}");
+            }
+        }
+    }
+
+    /// Uma spec já entregue não é perguntada de novo, e um `gh pr create` não
+    /// pergunta nada.
+    #[test]
+    fn a_delivered_spec_is_not_asked_again_and_an_opened_pr_asks_nothing() {
+        let dir = project_on("feature/trava");
         let root = dir.path();
-        assert_eq!(detect_recent_spec(&root.to_string_lossy(), Some("s-pr")).as_deref(), Some("trava"));
-        emit_pr_event(&root.to_string_lossy(), Some("s-pr"), "pr.merged", "gh pr merge 50 --merge");
-        assert_eq!(phase(root), Some("running"), "the promotion leaves the spec as it was");
-        assert!(crate::commands::event::pending::armed_charges(root).is_empty(), "nothing is armed");
+        let asked = RefCell::new(Vec::new());
+        let gh = fake_gh("MERGED", &asked);
+        emit_pr_event_with(&root.to_string_lossy(), Some("s-pr"), "pr.opened", "gh pr create --fill", &gh);
+        assert!(asked.borrow().is_empty(), "opening a pull request asks nothing");
+        emit_pr_event_with(&root.to_string_lossy(), Some("s-pr"), "pr.merged", "gh pr merge 42", &gh);
+        assert_eq!(phase(root), Some("delivered"));
+        asked.borrow_mut().clear();
+        emit_pr_event_with(&root.to_string_lossy(), Some("s-pr"), "pr.merged", "gh pr merge 43", &gh);
+        assert!(asked.borrow().is_empty(), "a delivered spec is no candidate: {:?}", asked.borrow());
     }
 }
