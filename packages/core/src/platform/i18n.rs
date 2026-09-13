@@ -669,12 +669,11 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("approval.witness.not_affirmative", Locale::PtBr) => {
             "[Mustard] A spec {spec} espera aprovação, e nada foi gravado: a opção escolhida \
-             {selected} não começa por \"Aprovar\". Se era uma recusa, está tudo certo."
+             {selected} não é \"Aprovar\". Se era uma recusa, está tudo certo."
         }
         ("approval.witness.not_affirmative", Locale::EnUs) => {
             "[Mustard] The spec {spec} awaits approval, and nothing was recorded: the chosen \
-             option {selected} does not start with \"Approve\". If it was a refusal, nothing is \
-             wrong."
+             option {selected} is not \"Approve\". If it was a refusal, nothing is wrong."
         }
         ("approval.witness.no_plan", Locale::PtBr) => {
             "[Mustard] Uma aprovação foi escolhida, e nada foi gravado: nenhuma spec desta sessão \
@@ -686,6 +685,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("approval.question", Locale::PtBr) => "Aprovar esta spec?",
         ("approval.question", Locale::EnUs) => "Approve this spec?",
+        ("approval.option", Locale::PtBr) => "Aprovar",
+        ("approval.option", Locale::EnUs) => "Approve",
         ("approval.witness.unmet", Locale::PtBr) => {
             "[Mustard] A spec {spec} ainda não pode ser aprovada, e nada foi gravado. Resolva o que \
              falta e faça a pergunta de novo:\n{unmet}"
@@ -1261,14 +1262,17 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("spec_events.no_spec_file", Locale::PtBr) => "A spec {spec} ainda não tem arquivo de eventos.",
         ("spec_events.no_spec_file", Locale::EnUs) => "The spec {spec} has no event file yet.",
-        ("spec_events.approval_by_witness_only", Locale::PtBr) => {
-            "A aprovação da spec {spec} não se grava à mão: ela nasce só quando o usuário escolhe \
-             \"Aprovar\" na pergunta \"Aprovar esta spec?\", e a testemunha grava. Nada foi gravado."
+        ("spec_events.phase_change_refused", Locale::PtBr) => {
+            "A spec {spec} não passa da fase {from} para {to} por esta porta, e nada foi gravado. \
+             A aprovação nasce só quando o usuário escolhe \"Aprovar\" na pergunta \"Aprovar esta \
+             spec?\", pela testemunha; as fases depois dela, só pelo binário; e o `run write` \
+             nunca grava uma fase aprovada."
         }
-        ("spec_events.approval_by_witness_only", Locale::EnUs) => {
-            "The approval of the spec {spec} is never written by hand: it is born only when the \
-             user chooses \"Approve\" in the question \"Approve this spec?\", and the witness \
-             records it. Nothing was written."
+        ("spec_events.phase_change_refused", Locale::EnUs) => {
+            "The spec {spec} does not go from the phase {from} to {to} through this door, and \
+             nothing was written. The approval is born only when the user chooses \"Approve\" in \
+             the question \"Approve this spec?\", through the witness; the phases after it, only \
+             through the binary; and `run write` never writes an approved phase."
         }
         ("spec_events.drafted_spec", Locale::PtBr) => {
             "A spec {spec} tem o spec.md escrito pelo spec-draft: a página e o .md não são refeitos \
@@ -2378,6 +2382,8 @@ mod tests {
         // A pergunta de aprovação, a única em que a testemunha age.
         assert_eq!(translate("approval.question", Locale::PtBr), "Aprovar esta spec?");
         assert_eq!(translate("approval.question", Locale::EnUs), "Approve this spec?");
+        assert_eq!(translate("approval.option", Locale::PtBr), "Aprovar");
+        assert_eq!(translate("approval.option", Locale::EnUs), "Approve");
         for gone in ["workbranch.dirty.note", "workbranch.reconcile.warn"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(gone, lang), "<missing-key>", "{gone} left with the branch hook");
@@ -2431,7 +2437,7 @@ mod tests {
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
             ("spec_events.no_spec_file", &["{spec}"][..]),
-            ("spec_events.approval_by_witness_only", &["{spec}"][..]),
+            ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
             ("spec_events.drafted_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),

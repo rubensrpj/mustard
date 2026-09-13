@@ -14,19 +14,22 @@
 //! Três fatos, todos juntos; na dúvida, nada é gravado.
 //!
 //! 1. **A spec espera aprovação.** A spec atual, pela escada única, está na
-//!    fase `plan`. É isso que diz qual spec é e que há uma aprovação
-//!    pendente; os arquivos da spec só o binário grava, então o modelo não
-//!    muda esse estado à mão.
-//! 2. **Uma escolha de verdade.** A resposta é exatamente um dos rótulos que
-//!    a pergunta ofereceu. Texto livre, digitado na linha "Outro" ou nas
-//!    notas, chega no mesmo lugar da resposta e nunca aprova, diga o que
-//!    disser: uma mensagem que só falava da aprovação já forjou uma. Quando
-//!    as opções oferecidas não se leem, nada foi oferecido e nada aprova.
-//! 3. **A opção aprova.** Alguma palavra do rótulo começa por `approv` ou
-//!    `aprov`. Por palavra, e não por pedaço: "Desaprovar", "Reprovar",
-//!    "Ajustar" e "Reject" não aprovam; "Aprovar" e "Approve" aprovam. A
-//!    raiz só separa aprovar de recusar dentro de uma escolha de verdade; o
-//!    peso está nos fatos 1 e 2.
+//!    fase `plan`, ou ainda não nasceu. É isso que diz qual spec é e que há
+//!    uma aprovação pendente; a regra única da mudança de fase não deixa o
+//!    modelo gravar essa aprovação à mão.
+//! 2. **Uma escolha de verdade.** A resposta é exatamente um dos rótulos que a
+//!    própria pergunta de aprovação ofereceu, e nunca os de outra pergunta da
+//!    mesma chamada. Texto livre, digitado na linha "Outro" ou nas notas,
+//!    chega no mesmo lugar da resposta e nunca aprova, diga o que disser: uma
+//!    mensagem que só falava da aprovação já forjou uma. Quando as opções
+//!    oferecidas não se leem, nada foi oferecido e nada aprova.
+//! 3. **A opção é a de aprovar.** O rótulo é, por inteiro, o do catálogo:
+//!    "Aprovar" ou "Approve". "Não aprovar", "Don't approve" e "Aprovar
+//!    depois" não aprovam.
+//!
+//! Um ajuste tático mora na branch da spec-mãe, então a escada nomeia a mãe.
+//! Quando a spec da branch não espera aprovação, a testemunha olha a spec
+//! ligada à sessão e aprova o ajuste que espera.
 //!
 //! ## Só a pergunta de aprovação
 //!
@@ -44,9 +47,12 @@
 //! motivo vai ao assistente: a trava do código só abre quando a spec pode de
 //! fato ser aprovada.
 //!
-//! Uma spec aberta pelo `spec-draft` antes de haver arquivo de eventos tem a
-//! pasta e o `meta.json`, e nenhum estado. Nela, o "Aprovar" grava primeiro o
-//! nascimento, em plano, e depois a aprovação.
+//! As conferências leem a spec no checkout principal, onde moram o `spec.md`
+//! e o `meta.json`, também quando a pergunta é respondida num worktree.
+//!
+//! Uma spec ainda sem nascimento — aberta pelo `spec-draft` antes de haver
+//! arquivo de eventos, ou com o arquivo e nenhum `state` — recebe no "Aprovar"
+//! primeiro o nascimento, em plano, e depois a aprovação.
 //!
 //! ## Nunca barra, nunca cala
 //!
@@ -61,52 +67,69 @@
 use std::path::Path;
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::io::spec_events::spec_root;
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
 use crate::hooks::write::write_gate::say;
+use crate::shared::context;
 use crate::shared::spec_state::DiskSpecState;
 
 /// A testemunha da aprovação, no `PostToolUse` da pergunta com opções.
 pub struct ApprovalWitness;
 
-/// As raízes da aprovação nos idiomas do projeto. Uma opção com uma palavra
-/// que começa por uma delas aprova.
-const APPROVAL_STEMS: &[&str] = &["approv", "aprov"];
-
-/// Onde a spec atual está diante da aprovação.
+/// Onde a spec está diante da aprovação.
 #[derive(Debug, PartialEq, Eq)]
 enum Standing {
     /// Na fase de plano: a aprovação está pendente.
     Awaiting(String),
-    /// Aberta pelo `spec-draft` antes de haver arquivo de eventos: a pasta e
-    /// o `meta.json`, e nenhum estado. Espera aprovação como uma em plano.
+    /// Ainda sem nascimento: aberta pelo `spec-draft` antes de haver arquivo
+    /// de eventos, ou com o arquivo e nenhuma fase. Espera aprovação como uma
+    /// em plano.
     Unborn(String),
     /// Já aprovada.
     Approved(String),
-    /// Sem spec atual, sem estado, ou numa fase em que nada espera
-    /// aprovação.
+    /// Sem spec atual, ou numa fase em que nada espera aprovação.
     NoPlan,
 }
 
-/// A spec atual da sessão, pela escada única, e onde ela está diante da
-/// aprovação.
+impl Standing {
+    fn awaits(&self) -> bool {
+        matches!(self, Self::Awaiting(_) | Self::Unborn(_))
+    }
+}
+
+/// A spec que a pergunta de aprovação decide, e onde ela está: a spec atual,
+/// pela escada única; quando ela não espera aprovação, a spec ligada à
+/// sessão, se essa espera. É o caso do ajuste tático, que mora na branch da
+/// spec-mãe: a escada nomeia a mãe.
 fn standing(root: &str, session: Option<&str>) -> Standing {
     let disk = DiskSpecState::new(Path::new(root));
-    let Some(spec) = disk.active(session) else {
-        return Standing::NoPlan;
-    };
-    let home = mustard_core::io::spec_events::spec_root(Path::new(root));
-    match disk.state(&spec) {
+    let home = spec_root(Path::new(root));
+    let judge = |spec: String| match disk.state(&spec) {
         Some(state) if state.phase == Some("plan") => Standing::Awaiting(spec),
         Some(state) if state.approved => Standing::Approved(spec),
+        Some(state) if state.phase.is_none() => Standing::Unborn(spec),
         None if crate::commands::spec_events::pages::drafted_by_spec_draft(&home, &spec) => {
             Standing::Unborn(spec)
         }
         _ => Standing::NoPlan,
+    };
+    let Some(spec) = disk.active(session) else {
+        return Standing::NoPlan;
+    };
+    let current = judge(spec.clone());
+    if current.awaits() {
+        return current;
     }
+    session
+        .and_then(|sid| context::spec_for_session(root, sid))
+        .filter(|bound| *bound != spec)
+        .map(judge)
+        .filter(Standing::awaits)
+        .unwrap_or(current)
 }
 
 /// A pergunta é a de aprovação, com o texto do catálogo em um dos idiomas.
@@ -116,41 +139,27 @@ fn is_approval_question(question: &str) -> bool {
         .any(|lang| translate("approval.question", lang).trim() == question.trim())
 }
 
-/// Todos os rótulos que a pergunta ofereceu, lidos do `tool_input`, que o
-/// harness devolve como o modelo escreveu.
-///
-/// Anda pelo documento atrás de toda lista `options` e pega o `label` de
-/// cada opção, ou a própria opção quando ela é só texto; assim não importa
-/// onde a lista mora. Vazio quando nada se lê: nada foi oferecido, e nada
-/// aprova.
-fn offered_labels(input: &HookInput) -> Vec<String> {
-    fn walk(node: &Value, out: &mut Vec<String>) {
-        match node {
-            Value::Object(map) => {
-                for (key, value) in map {
-                    if key == "options"
-                        && let Some(items) = value.as_array()
-                    {
-                        for item in items {
-                            let label = match item {
-                                Value::String(s) => Some(s.as_str()),
-                                other => other.get("label").and_then(Value::as_str),
-                            };
-                            if let Some(l) = label.filter(|l| !l.trim().is_empty()) {
-                                out.push(l.to_string());
-                            }
-                        }
-                    }
-                    walk(value, out);
-                }
-            }
-            Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    walk(&input.tool_input, &mut out);
-    out
+/// Os rótulos que a pergunta `question` ofereceu, lidos do `tool_input`, que
+/// o harness devolve como o modelo escreveu: só as opções dessa pergunta,
+/// nunca as de outra pergunta da mesma chamada. Cada opção é o `label` dela,
+/// ou ela mesma quando é só texto. Vazio quando nada se lê: nada foi
+/// oferecido, e nada aprova.
+fn offered_for(input: &HookInput, question: &str) -> Vec<String> {
+    input
+        .tool_input
+        .get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|q| q.get("question").and_then(Value::as_str).is_some_and(|text| text.trim() == question.trim()))
+        .flat_map(|q| q.get("options").and_then(Value::as_array).into_iter().flatten())
+        .filter_map(|option| match option {
+            Value::String(s) => Some(s.as_str()),
+            other => other.get("label").and_then(Value::as_str),
+        })
+        .filter(|label| !label.trim().is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// A resposta é exatamente um dos rótulos oferecidos, sem os espaços das
@@ -160,23 +169,23 @@ fn is_offered(answer: &str, offered: &[String]) -> bool {
     offered.iter().any(|o| o.trim() == answer.trim())
 }
 
-/// Alguma palavra do rótulo, em minúsculas, começa por uma raiz da
-/// aprovação. Só é perguntado de uma resposta que já passou por
-/// [`is_offered`].
-fn is_affirmative(label: &str) -> bool {
-    label
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
-        .any(|w| APPROVAL_STEMS.iter().any(|&stem| w.starts_with(stem)))
+/// A opção é a de aprovar: o rótulo do catálogo, "Aprovar" ou "Approve", por
+/// inteiro.
+fn is_approve_option(label: &str) -> bool {
+    [Locale::PtBr, Locale::EnUs]
+        .into_iter()
+        .any(|lang| translate("approval.option", lang).trim() == label.trim())
 }
 
 /// Aprova a spec `spec`, que esperava aprovação: roda as conferências do
 /// `approve-spec` e, se nenhuma barra, grava o nascimento quando a spec ainda
-/// não tem estado (`unborn`) e depois a aprovação. Devolve o que dizer ao
+/// não tem fase (`unborn`) e depois a aprovação. Devolve o que dizer ao
 /// assistente; `None` quando uma gravação foi recusada.
 fn approve(root: &str, spec: &str, question: &str, answer: &str, unborn: bool, lang: Locale) -> Option<String> {
-    if let Some(unmet) = crate::commands::spec::approve_spec::unmet_before_approval(root, spec) {
+    // As conferências leem a spec no checkout principal, também vista de um
+    // worktree, onde não há `spec.md` nem `meta.json`.
+    let home = spec_root(Path::new(root));
+    if let Some(unmet) = crate::commands::spec::approve_spec::unmet_before_approval(&home.to_string_lossy(), spec) {
         return Some(say("approval.witness.unmet", lang, &[("{spec}", spec), ("{unmet}", &unmet)]));
     }
     if unborn && crate::commands::spec_events::write::record_birth(Path::new(root), spec, None).is_err() {
@@ -197,14 +206,15 @@ fn record_approval(root: &str, spec: &str, question: &str, answer: &str) -> bool
     }) else {
         return false;
     };
-    crate::commands::spec_events::write::record(Path::new(root), spec, "state", draft).is_ok()
+    crate::commands::spec_events::write::record(Path::new(root), spec, "state", draft, PhaseWriter::Witness)
+        .is_ok()
 }
 
 /// Por que nada foi gravado, quando a spec esperava aprovação e a resposta
 /// não aprovou. `None` numa pergunta cancelada, que não respondeu nada.
 ///
 /// Uma resposta que não é nenhuma das opções é texto livre, e o remédio é
-/// escolher a opção; uma opção escolhida sem a raiz da aprovação é outra
+/// escolher a opção; uma opção escolhida que não é a de aprovar é outra
 /// coisa, e pode ser uma recusa de verdade.
 fn decline_notice(spec: &str, labels: &[String], offered: &[String], lang: Locale) -> Option<String> {
     if labels.is_empty() {
@@ -254,8 +264,8 @@ impl Check for ApprovalWitness {
         };
         let root = ctx.project_dir_or_cwd(input);
         let lang = ctx.config.language().text_or_default();
-        let offered = offered_labels(input);
-        let chosen = answer.labels.iter().find(|l| is_offered(l, &offered) && is_affirmative(l));
+        let offered = offered_for(input, &answer.question);
+        let chosen = answer.labels.iter().find(|l| is_offered(l, &offered) && is_approve_option(l));
         let context = match (standing(&root, input.session_id.as_deref()), chosen) {
             (Standing::Awaiting(spec), Some(label)) => approve(&root, &spec, &answer.question, label, false, lang),
             (Standing::Unborn(spec), Some(label)) => approve(&root, &spec, &answer.question, label, true, lang),
@@ -323,9 +333,13 @@ mod tests {
     }
 
     fn record(root: &Path, fields: Value) {
-        let path = store::spec_file(root, "epic").unwrap();
+        record_for(root, "epic", "state", fields);
+    }
+
+    fn record_for(root: &Path, spec: &str, event_type: &str, fields: Value) {
+        let path = store::spec_file(root, spec).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        store::write(&path, "state", fields.as_object().cloned().unwrap(), &[]).unwrap();
+        store::write(&path, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
     }
 
     /// Uma spec `epic` ligada à sessão, com os estados `states`.
@@ -354,18 +368,45 @@ mod tests {
         ApprovalWitness.evaluate(input, &ctx(root)).expect("never errors")
     }
 
+    /// Só o rótulo do catálogo, por inteiro, é a opção de aprovar.
     #[test]
-    fn affirmative_matches_approve_words_across_languages() {
-        for yes in ["Aprovar", "Aprovar e implementar agora", "Approve", "Approve only", "APROVAR"] {
-            assert!(is_affirmative(yes), "should be affirmative: {yes}");
+    fn only_the_catalog_label_is_the_approve_option() {
+        for yes in ["Aprovar", "Approve", " Aprovar "] {
+            assert!(is_approve_option(yes), "{yes}");
+        }
+        for no in ["Não aprovar", "Don't approve", "Aprovar depois", "APROVAR", "Desaprovar", "Ajustar"] {
+            assert!(!is_approve_option(no), "{no}");
         }
     }
 
+    /// "Não aprovar" não aprova, e numa chamada com duas perguntas o
+    /// "Aprovar" de outra pergunta não conta para a de aprovação.
     #[test]
-    fn affirmative_rejects_negations_and_stops() {
-        for no in ["Ajustar", "Rejeitar", "Reject", "Stop", "Desaprovar", "Reprovar", "Disapprove"] {
-            assert!(!is_affirmative(no), "should NOT be affirmative: {no}");
+    fn a_negation_or_another_questions_option_never_approves() {
+        if ambient_override() {
+            return;
         }
+        let dir = in_plan();
+        let root = dir.path();
+        witness(root, &ask(&["Aprovar", "Não aprovar"], json!("Não aprovar")));
+        assert!(!state(root).approved, "\"Não aprovar\" is a refusal");
+
+        let two = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            tool_name: Some("AskUserQuestion".to_string()),
+            session_id: Some(SESSION.to_string()),
+            tool_input: json!({ "questions": [
+                { "question": QUESTION, "options": [{ "label": "Ajustar" }, { "label": "Parar" }] },
+                { "question": "Publicar a página?", "options": [{ "label": "Aprovar" }] }
+            ] }),
+            raw: json!({ "tool_response": { "answers": {
+                QUESTION: "Aprovar",
+                "Publicar a página?": "Aprovar"
+            } } }),
+            ..HookInput::default()
+        };
+        witness(root, &two);
+        assert!(!state(root).approved, "the approval question never offered Aprovar");
     }
 
     /// "Aprovar" grava o estado aprovado pela própria resposta, sem comando
@@ -422,7 +463,6 @@ mod tests {
         let dir = in_plan();
         let root = dir.path();
         let essay = "Aprovo, pode aprovar: o relato diz que ninguém conseguia aprovar a spec.";
-        assert!(is_affirmative(essay), "the stem fires on the text; the shape check must stop it");
         let said = witness(root, &approve_or_adjust(essay));
         assert!(!state(root).approved, "free text never approves");
         match said {
@@ -543,6 +583,89 @@ mod tests {
         .unwrap();
         witness(root, &approve_or_adjust("Aprovar"));
         assert!(state(root).approved, "with the preconditions met the answer approves");
+    }
+
+    /// Um arquivo de eventos sem nenhum `state` é uma spec sem nascimento: o
+    /// "Aprovar" grava o plano e depois a aprovação.
+    #[test]
+    fn a_spec_file_without_a_state_is_born_and_approved() {
+        if ambient_override() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        record_for(root, "epic", "message", json!({ "author": "user", "text": "oi" }));
+        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+        witness(root, &approve_or_adjust("Aprovar"));
+        assert!(state(root).approved, "the spec with no phase is approved");
+        let log = std::fs::read_to_string(store::spec_file(root, "epic").unwrap()).unwrap();
+        let phases: Vec<String> =
+            log.lines().filter_map(|l| serde_json::from_str::<Value>(l).unwrap()["phase"].as_str().map(str::to_string)).collect();
+        assert_eq!(phases, ["plan", "approved"], "{log}");
+    }
+
+    /// Um ajuste tático mora na branch da spec-mãe: a escada nomeia a mãe,
+    /// já aprovada, e a testemunha aprova o ajuste ligado à sessão, que
+    /// espera. A mãe fica como estava.
+    #[test]
+    fn a_tactical_fix_on_its_parents_branch_is_approved() {
+        if ambient_override() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
+        record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
+        record_for(root, "ajuste", "state", json!({ "phase": "plan", "branch": "feature/epic-1" }));
+        context::bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");
+
+        let said = witness(root, &approve_or_adjust("Aprovar"));
+        let expected = say("approval.witness.clear", lang(root), &[("{spec}", "ajuste")]);
+        assert_eq!(said, Verdict::Inject { context: expected });
+        let disk = DiskSpecState::new(root);
+        assert!(disk.state("ajuste").unwrap().approved, "the tactical fix is approved");
+        assert_eq!(disk.state("epic-1").unwrap().phase, Some("running"), "the parent is untouched");
+    }
+
+    /// Respondida num worktree, a pergunta confere a spec no checkout
+    /// principal: uma spec Full sem o `.clarified` fica em plano.
+    #[test]
+    fn in_a_worktree_the_preconditions_read_the_main_checkout() {
+        if ambient_override() || std::env::var_os("MUSTARD_APPROVAL_MODE").is_some() {
+            return;
+        }
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&main, &["init", "-q"]);
+        git(&main, &["config", "user.email", "t@example.com"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-q", "-b", "dev"]);
+        std::fs::write(main.join("README.md"), "oi\n").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-q", "-m", "init"]);
+        std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
+        let spec_dir = main.join(".claude").join("spec").join("epic");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"full (wave plan)","stage":"Plan"}"#).unwrap();
+        record(&main, json!({ "phase": "plan", "branch": "feature/epic" }));
+        let wt = tmp.path().join("wt");
+        git(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/epic"]);
+
+        match witness(&wt, &approve_or_adjust("Aprovar")) {
+            Verdict::Inject { context } => assert!(context.contains(".clarified"), "{context}"),
+            other => panic!("the main checkout's spec is Full and unclarified, got {other:?}"),
+        }
+        assert!(!state(&main).approved, "nothing was recorded");
     }
 
     /// Uma spec aberta pelo `spec-draft` antes de haver arquivo de eventos

@@ -103,6 +103,66 @@ impl State {
     }
 }
 
+/// A fase é a de uma spec aprovada. A lista é uma só: a que o [`State`] dobra
+/// e a que o portão de escrita lê.
+#[must_use]
+pub fn is_approved_phase(phase: &str) -> bool {
+    APPROVED_PHASES.contains(&phase.trim())
+}
+
+/// Quem grava uma mudança de fase no `spec.ndjson`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseWriter {
+    /// O modelo, pelo `run write`.
+    Hand,
+    /// A testemunha da aprovação, com a resposta do usuário.
+    Witness,
+    /// O próprio binário: o nascimento da spec e a ponte do fechamento e do
+    /// merge.
+    Binary,
+}
+
+/// A regra única da mudança de fase, para toda porta que grava no
+/// `spec.ndjson`: uma gravação que leva o estado de `before` a `after`,
+/// trazendo no próprio evento a fase `carried` quando ele é um `state`, feita
+/// por `by`, é permitida?
+///
+/// - O modelo, pelo `run write`, nunca grava uma fase aprovada, nem leva a
+///   spec a uma, por `replaces` ou por remoção.
+/// - `approved` só pela testemunha, e só de nenhuma fase ou de `plan`.
+/// - As fases depois da aprovação (`running`, `closed`, `pr_open`,
+///   `delivered`) só pelo binário, e só a partir de uma fase aprovada.
+/// - Uma fase que não aprova (`survey`, `plan`, `discarded`, ou nenhuma) só
+///   fecha a trava, e o modelo e o binário a gravam.
+///
+/// Uma gravação que não muda a fase passa, a não ser a que traz uma fase que
+/// a porta não grava.
+#[must_use]
+pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>, by: PhaseWriter) -> bool {
+    if let Some(carried) = carried.map(str::trim) {
+        if by == PhaseWriter::Hand && is_approved_phase(carried) {
+            return false;
+        }
+        if carried == "approved" && by != PhaseWriter::Witness {
+            return false;
+        }
+    }
+    if before.phase == after.phase {
+        return true;
+    }
+    let Some(to) = after.phase else {
+        return by != PhaseWriter::Witness;
+    };
+    if !is_approved_phase(to) {
+        return by != PhaseWriter::Witness;
+    }
+    match by {
+        PhaseWriter::Witness => to == "approved" && matches!(before.phase, None | Some("plan")),
+        PhaseWriter::Binary => to != "approved" && before.approved,
+        PhaseWriter::Hand => false,
+    }
+}
+
 /// O número do item que `event` revê: segue os `replaces` para trás até a
 /// primeira versão. Um evento que não revê nada é o próprio item.
 fn original_of(log: &SpecLog, event: &SpecEvent) -> u64 {
@@ -163,6 +223,46 @@ mod tests {
     fn log(lines: &[Value]) -> SpecLog {
         let body: Vec<String> = lines.iter().map(Value::to_string).collect();
         parse_log(&body.join("\n"))
+    }
+
+    fn at(phase: Option<&'static str>) -> State {
+        State { phase, approved: phase.is_some_and(is_approved_phase), ..State::default() }
+    }
+
+    /// Cada fase tem a sua porta: a aprovação só pela testemunha, a partir do
+    /// plano; as fases depois dela só pelo binário, a partir de uma aprovada;
+    /// o modelo só fecha a trava.
+    #[test]
+    fn the_phase_rule_has_one_door_per_phase() {
+        use PhaseWriter::{Binary, Hand, Witness};
+        let allowed = |from, to, by| phase_write_allowed(&at(from), &at(to), to, by);
+
+        assert!(allowed(Some("plan"), Some("approved"), Witness));
+        assert!(allowed(None, Some("approved"), Witness));
+        assert!(!allowed(Some("survey"), Some("approved"), Witness), "no approval before the plan");
+        for by in [Hand, Binary] {
+            assert!(!allowed(Some("plan"), Some("approved"), by), "{by:?} never approves");
+        }
+
+        for later in ["running", "closed", "pr_open", "delivered"] {
+            assert!(allowed(Some("approved"), Some(later), Binary), "{later} after the approval");
+            assert!(!allowed(Some("plan"), Some(later), Binary), "{later} never skips the approval");
+            assert!(!allowed(Some("approved"), Some(later), Hand), "the model never writes {later}");
+            assert!(!allowed(Some("approved"), Some(later), Witness));
+        }
+
+        for locking in ["survey", "plan", "discarded"] {
+            assert!(allowed(Some("running"), Some(locking), Hand), "{locking} only locks");
+            assert!(allowed(None, Some(locking), Binary));
+        }
+
+        // Uma revisão que não muda a fase passa, a não ser a que traz uma
+        // fase aprovada pela mão do modelo.
+        assert!(phase_write_allowed(&at(Some("approved")), &at(Some("approved")), Some("plan"), Hand));
+        assert!(!phase_write_allowed(&at(Some("approved")), &at(Some("approved")), Some("approved"), Hand));
+        // Tirar o `state` que fechou a trava de novo e voltar a uma fase
+        // aprovada é abrir a trava: o modelo não faz.
+        assert!(!phase_write_allowed(&at(Some("plan")), &at(Some("approved")), None, Hand));
     }
 
     #[test]

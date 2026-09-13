@@ -37,16 +37,20 @@
 //! Quem grava por dentro do binário, como a testemunha da aprovação e o
 //! `spec-draft`, usa [`record`], a mesma gravação deste comando.
 //!
-//! Um `state` com a fase `approved` é recusado aqui: a aprovação nasce só da
-//! resposta do usuário à pergunta de aprovação, e quem a grava é a
-//! testemunha, pelo [`record`].
+//! Toda gravação passa pela regra única da mudança de fase
+//! (`mustard_core::domain::spec_state::phase_write_allowed`), conferida com a
+//! trava presa, no arquivo como ele ficaria: o modelo, por este comando, nunca
+//! grava uma fase aprovada nem leva a spec a uma; a aprovação é da
+//! testemunha; as fases depois dela, do binário. As portas que gravam `state`
+//! são quatro, todas aqui: este comando, o [`record`] da testemunha, o
+//! [`record_birth`] e o [`record_phase`].
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::LESSON;
-use mustard_core::domain::spec_events::{type_spec, Refusal, PHASES};
+use mustard_core::domain::spec_events::{type_spec, Refusal, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
-use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::spec_state::{phase_write_allowed, PhaseWriter, SpecState, State};
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
@@ -92,12 +96,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             Refusal::UnknownType { found: event_type.to_string() }
         });
     };
-    if event_type == "state"
-        && draft.get("phase").and_then(Value::as_str).map(str::trim) == Some("approved")
-    {
-        return refuse(Refusal::ApprovalByWitnessOnly { spec: spec.trim().to_string() });
-    }
-    match record_in(&project, &opts.root, spec, event_type, draft) {
+    match record_in(&project, &opts.root, spec, event_type, draft, PhaseWriter::Hand) {
         Ok(Recorded { written, pages }) => {
             let mut report = json!({
                 "ok": true,
@@ -144,36 +143,72 @@ pub(crate) struct Recorded {
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
 /// `run write`: a linha no arquivo de eventos, a linha da spec no índice e a
-/// página e o `.md`, quando a spec não é um rascunho do `spec-draft`.
+/// página e o `.md`, quando a spec não é um rascunho do `spec-draft`. `by`
+/// diz quem grava, para a regra da mudança de fase.
 pub(crate) fn record(
     start: &Path,
     spec: &str,
     event_type: &str,
     draft: Map<String, Value>,
+    by: PhaseWriter,
 ) -> Result<Recorded, Refusal> {
-    record_in(&super::project(start), start, spec, event_type, draft)
+    record_in(&super::project(start), start, spec, event_type, draft, by)
 }
 
+/// A única gravação no arquivo de eventos de uma spec: toda porta chega
+/// aqui, e a regra da mudança de fase confere o arquivo antes e depois, com a
+/// trava presa.
 fn record_in(
     project: &super::Project,
     start: &Path,
     spec: &str,
     event_type: &str,
     draft: Map<String, Value>,
+    by: PhaseWriter,
 ) -> Result<Recorded, Refusal> {
     let path = store::spec_file(&project.root, spec)?;
     let roots = store::citation_roots(start, &project.root);
     let drafted = super::pages::drafted_by_spec_draft(&project.root, spec);
+    let carried = (event_type == "state")
+        .then(|| draft.get("phase").and_then(Value::as_str).map(|phase| phase.trim().to_string()))
+        .flatten();
+    let name = spec.trim().to_string();
     // A página e o `.md` acompanham cada gravação e são refeitos antes de a
     // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
     // outra sessão, só entra depois, e refaz os dois por último.
     let mut pages = None;
-    let written = store::write_then(&path, event_type, draft, &roots, |log| {
-        if !drafted {
-            pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
-        }
-    })?;
+    let written = store::write_guarded(
+        &path,
+        event_type,
+        draft,
+        &roots,
+        |before, after| phase_rule(&name, before, after, carried.as_deref(), by),
+        |log| {
+            if !drafted {
+                pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
+            }
+        },
+    )?;
     Ok(Recorded { written, pages })
+}
+
+/// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
+fn phase_rule(
+    spec: &str,
+    before: &SpecLog,
+    after: &SpecLog,
+    carried: Option<&str>,
+    by: PhaseWriter,
+) -> Result<(), Refusal> {
+    let (was, now) = (State::from_log(before), State::from_log(after));
+    if phase_write_allowed(&was, &now, carried, by) {
+        return Ok(());
+    }
+    Err(Refusal::PhaseChangeRefused {
+        spec: spec.to_string(),
+        from: was.phase.unwrap_or("-").to_string(),
+        to: carried.or(now.phase).unwrap_or("-").to_string(),
+    })
 }
 
 /// A ponte até os gravadores definitivos do fechamento e do merge: grava no
@@ -203,7 +238,7 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str) -> bool {
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!(phase));
     draft.insert("author".to_string(), json!("binary"));
-    match record(start, spec, "state", draft) {
+    match record(start, spec, "state", draft, PhaseWriter::Binary) {
         Ok(recorded) => {
             let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id);
             true
@@ -228,7 +263,9 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
         return Ok(false);
     }
     let branch = branch.map(str::to_string).or_else(|| branch_of_spec(start, spec));
-    let base = ClaudePaths::for_project(start)
+    // O `meta.json` mora na pasta da spec do checkout principal, também vista
+    // de um worktree; a branch é a do checkout em `start`.
+    let base = ClaudePaths::for_project(store::spec_root(start))
         .and_then(|paths| paths.for_spec(spec.trim()))
         .ok()
         .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()))
@@ -242,7 +279,7 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
     if let Some(base) = base {
         draft.insert("base".to_string(), json!(base));
     }
-    record(start, spec, "state", draft).map(|_| true)
+    record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
 }
 
 /// A branch do checkout em `start`, quando ela é a da spec `spec`.
@@ -411,9 +448,24 @@ mod tests {
         assert!(index.contains("\"teste\""), "{index}");
     }
 
+    fn witness_approves(root: &std::path::Path) {
+        let draft = json!({
+            "phase": "approved",
+            "author": "user",
+            "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
+        });
+        record(root, "teste", "state", draft.as_object().cloned().unwrap(), PhaseWriter::Witness)
+            .expect("the witness approves a spec in plan");
+    }
+
+    fn lines(root: &std::path::Path) -> usize {
+        let events = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        std::fs::read_to_string(events).unwrap().lines().count()
+    }
+
     /// A aprovação não se grava à mão: um `state` com a fase `approved` é
-    /// recusado pelo `run write`, e nada é gravado; a porta da testemunha, o
-    /// `record`, grava.
+    /// recusado pelo `run write`, e nada é gravado; a porta da testemunha
+    /// grava.
     #[test]
     fn an_approval_is_never_written_by_hand() {
         let dir = tempdir().unwrap();
@@ -422,20 +474,81 @@ mod tests {
         let forged = write(
             root,
             "state",
-            r#"{"phase":" approved","author":"user","witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}}"#,
+            r#"{"phase":"approved","author":"user","witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}}"#,
         );
-        assert_eq!(forged["reason"], json!("approval-by-witness-only"), "{forged}");
+        assert_eq!(forged["reason"], json!("phase-change-refused"), "{forged}");
         assert!(forged["hint"].as_str().unwrap().contains("teste"), "{forged}");
-        let events = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
-        assert_eq!(std::fs::read_to_string(&events).unwrap().lines().count(), 1, "nothing was written");
+        assert_eq!(lines(root), 1, "nothing was written");
+        witness_approves(root);
+        assert_eq!(lines(root), 2);
+    }
 
-        let draft = json!({
-            "phase": "approved",
-            "author": "user",
-            "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
-        });
-        assert!(record(root, "teste", "state", draft.as_object().cloned().unwrap()).is_ok());
-        assert_eq!(std::fs::read_to_string(&events).unwrap().lines().count(), 2);
+    /// Nenhuma fase que o portão lê como aprovada entra à mão: cada uma é
+    /// recusada pelo `run write`. As que só fecham a trava entram.
+    #[test]
+    fn every_phase_that_opens_the_lock_is_refused_by_hand() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "state", r#"{"phase":"plan"}"#);
+        for phase in ["approved", "running", "closed", "pr_open", "delivered"] {
+            // O formato certo em tudo, para que só a regra da fase responda.
+            let json = json!({
+                "phase": phase,
+                "pr": { "url": "u" },
+                "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
+            })
+            .to_string();
+            let out = write(root, "state", &json);
+            assert_eq!(out["reason"], json!("phase-change-refused"), "{phase}: {out}");
+        }
+        assert_eq!(lines(root), 1, "nothing was written");
+        for phase in ["survey", "plan"] {
+            let json = json!({ "phase": phase }).to_string();
+            assert_eq!(write(root, "state", &json)["ok"], json!(true), "{phase} only locks");
+        }
+    }
+
+    /// Nem por revisão nem por remoção o modelo abre a trava: um `state` com
+    /// `replaces` que traz a fase aprovada é recusado, e tirar o `state` que
+    /// fechou a trava de novo também.
+    #[test]
+    fn a_revision_or_a_removal_never_opens_the_lock() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "state", r#"{"phase":"plan"}"#);
+        witness_approves(root);
+        let relock = write(root, "state", r#"{"phase":"plan"}"#);
+        assert_eq!(relock["ok"], json!(true), "closing the lock again is allowed: {relock}");
+        let id = relock["id"].as_u64().unwrap();
+
+        let revised = write(
+            root,
+            "state",
+            &json!({
+                "phase": "approved",
+                "replaces": id,
+                "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
+            })
+            .to_string(),
+        );
+        assert_eq!(revised["reason"], json!("phase-change-refused"), "{revised}");
+        let removed = write(root, "remove", &json!({ "targets": [id], "reason": "engano" }).to_string());
+        assert_eq!(removed["reason"], json!("phase-change-refused"), "{removed}");
+        let revise_branch = write(root, "state", &json!({ "phase": "plan", "branch": "b", "replaces": id }).to_string());
+        assert_eq!(revise_branch["ok"], json!(true), "a revision that keeps the phase passes: {revise_branch}");
+    }
+
+    /// A ponte do fechamento não fecha uma spec em plano: o fechamento só vem
+    /// depois da aprovação.
+    #[test]
+    fn the_bridge_never_closes_a_spec_in_plan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "state", r#"{"phase":"plan"}"#);
+        assert!(!record_phase(root, "teste", "closed"), "no closing before the approval");
+        assert_eq!(lines(root), 1);
+        witness_approves(root);
+        assert!(record_phase(root, "teste", "closed"), "the approved spec closes");
     }
 
     #[test]

@@ -153,8 +153,9 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         return report;
     }
     // A spec nasce na fase de plano, pela mesma gravação do `spec-draft`, na
-    // branch da spec-mãe, em que o tactical fix vai junto: a testemunha a acha
-    // esperando aprovação, e o portão barra o código dela até lá.
+    // branch da spec-mãe, em que o tactical fix vai junto. Ali a escada nomeia
+    // a mãe: a testemunha acha o ajuste pela sessão e o aprova, e o portão de
+    // escrita continua julgando a mãe.
     let parent_branch = DiskSpecState::new(cwd).state(&opts.parent).and_then(|state| state.branch);
     if let Err(refusal) =
         crate::commands::spec_events::write::record_birth(cwd, &slug, parent_branch.as_deref())
@@ -267,8 +268,7 @@ mod tests {
         assert_eq!(r2.error.as_deref(), Some("dir_exists"));
     }
 
-    /// O tactical fix nasce na fase de plano, na branch da spec-mãe: a
-    /// testemunha o acha esperando aprovação, e o portão barra o código dele.
+    /// O tactical fix nasce na fase de plano, na branch da spec-mãe.
     #[test]
     fn the_tactical_fix_is_born_in_plan_on_its_parents_branch() {
         let dir = tempdir().unwrap();

@@ -12,8 +12,9 @@
 //!    o `spec.html` de uma spec, o índice das specs e o banco de lições são
 //!    gravados só pelo binário. A leitura passa.
 //! 3. **Aprovação** ([`ApprovalRule`]): o código do projeto não muda enquanto
-//!    a spec atual não foi aprovada: fase `survey` ou `plan`, ou um arquivo de
-//!    eventos sem nenhum `state` visível.
+//!    a spec atual não está numa fase aprovada, pela mesma lista do `State`:
+//!    em levantamento, em plano, descartada, ou com um arquivo de eventos sem
+//!    nenhum `state` visível.
 //! 4. **Branch da spec** ([`BranchRule`]): uma edição fora da branch em que a
 //!    spec mora só avisa, nomeando as duas.
 //! 5. **Base** ([`BaseRule`]): nenhuma edição direta numa base que o
@@ -217,7 +218,7 @@ impl WriteRule for ApprovalRule {
         }
         let spec = at.spec.as_deref()?;
         let state = at.state.as_ref()?;
-        if !matches!(state.phase, None | Some("survey" | "plan")) {
+        if state.approved {
             return None;
         }
         if let (Some(home), Some(current)) = (state.branch.as_deref(), at.current_branch.as_deref())

@@ -135,6 +135,35 @@ pub fn write_at_then(
     at: &str,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
+    write_inner(path, event_type, draft, cite_roots, at, |_, _| Ok(()), then)
+}
+
+/// Grava um evento com a hora de agora, depois de `guard` aceitar o arquivo
+/// como ele ficaria, e entrega a `then` o arquivo como ficou. `guard` recebe o
+/// arquivo antes e depois da gravação, com a trava presa, e a recusa dele
+/// deixa o arquivo como estava. Veja [`write_at_then`].
+pub fn write_guarded(
+    path: &Path,
+    event_type: &str,
+    draft: Map<String, Value>,
+    cite_roots: &[PathBuf],
+    guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
+    then: impl FnOnce(&SpecLog),
+) -> Result<Written, Refusal> {
+    write_inner(path, event_type, draft, cite_roots, &now(), guard, then)
+}
+
+/// A gravação de [`write_at_then`], com a conferência de [`write_guarded`]
+/// antes de escrever.
+fn write_inner(
+    path: &Path,
+    event_type: &str,
+    draft: Map<String, Value>,
+    cite_roots: &[PathBuf],
+    at: &str,
+    guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
+    then: impl FnOnce(&SpecLog),
+) -> Result<Written, Refusal> {
     let mut event = model::normalize(draft, event_type);
     model::validate(&event)?;
     check_citations(cite_roots, &event)?;
@@ -148,13 +177,13 @@ pub fn write_at_then(
     let code = model::code_after(&log, &event);
     let line = model::render_line(&model::stamp(event, id, code.as_deref(), at));
 
-    let written = if effects.purged.is_empty() {
+    // O arquivo como ficaria, conferido antes de qualquer escrita.
+    let (next, appended) = if effects.purged.is_empty() {
         // Uma última linha pela metade fica sozinha na linha dela, e a
         // gravação começa numa linha nova.
         let clean = content.is_empty() || content.ends_with('\n');
         let added = if clean { line } else { format!("\n{line}") };
-        file.append_line(&added).map_err(io_refusal)?;
-        format!("{content}{added}\n")
+        (format!("{content}{added}\n"), Some(added))
     } else {
         let mut body = model::purge_lines(&content, &effects.purged, id);
         if !body.is_empty() && !body.ends_with('\n') {
@@ -162,10 +191,15 @@ pub fn write_at_then(
         }
         body.push_str(&line);
         body.push('\n');
-        file.replace(body.as_bytes()).map_err(io_refusal)?;
-        body
+        (body, None)
     };
-    let log = model::parse_log(&written);
+    let after = model::parse_log(&next);
+    guard(&log, &after)?;
+    match appended {
+        Some(added) => file.append_line(&added).map_err(io_refusal)?,
+        None => file.replace(next.as_bytes()).map_err(io_refusal)?,
+    }
+    let log = after;
     // Primeiro a trava da spec, depois a do índice: sempre nessa ordem.
     let index_warning = crate::io::spec_index::index_for(path)
         .and_then(|(index, name)| crate::io::spec_index::refresh_line(&index, &name, &log).err());

@@ -455,9 +455,9 @@ fn the_approval_question_names_the_gesture_before_asking_for_it() {
     // --- 2. The witness still declines the way the line claims --------------
     let witness = read("apps/rt/src/hooks/observe/approval_witness.rs");
     assert!(
-        witness.contains(r#"APPROVAL_STEMS: &[&str] = &["approv", "aprov"]"#),
-        "the witness's stems changed — the question now teaches a label it no longer \
-         accepts",
+        witness.contains(r#"translate("approval.option", lang)"#),
+        "the witness no longer takes the approve option from the catalog — the question \
+         now teaches a label it may not accept",
     );
     assert!(
         witness.contains("fn is_offered"),

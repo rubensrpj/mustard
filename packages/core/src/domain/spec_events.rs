@@ -618,9 +618,9 @@ pub enum Refusal {
     UnknownLesson { id: u64 },
     /// A lição não diz onde nasceu.
     LessonOriginMissing,
-    /// Um `state` aprovado gravado à mão: a aprovação nasce só da resposta
-    /// do usuário, pela testemunha.
-    ApprovalByWitnessOnly { spec: String },
+    /// Uma gravação que muda a fase da spec por uma porta que não grava essa
+    /// mudança: a regra única da mudança de fase recusou.
+    PhaseChangeRefused { spec: String, from: String, to: String },
     /// A página pedida de uma spec cujo `spec.md` é o documento do
     /// `spec-draft`, que refazer do arquivo de eventos apagaria.
     DraftedSpec { spec: String },
@@ -651,7 +651,7 @@ impl Refusal {
             Self::SpecRequired { .. } => "spec-required",
             Self::UnknownLesson { .. } => "unknown-lesson",
             Self::LessonOriginMissing => "lesson-origin-missing",
-            Self::ApprovalByWitnessOnly { .. } => "approval-by-witness-only",
+            Self::PhaseChangeRefused { .. } => "phase-change-refused",
             Self::DraftedSpec { .. } => "drafted-spec",
             Self::Io { .. } => "io-failed",
         }
@@ -748,9 +748,10 @@ impl Refusal {
             }
             Self::UnknownLesson { id } => fill("lessons.unknown_lesson", &[("{id}", id.to_string())]),
             Self::LessonOriginMissing => fill("lessons.origin_missing", &[]),
-            Self::ApprovalByWitnessOnly { spec } => {
-                fill("spec_events.approval_by_witness_only", &[("{spec}", spec.clone())])
-            }
+            Self::PhaseChangeRefused { spec, from, to } => fill(
+                "spec_events.phase_change_refused",
+                &[("{spec}", spec.clone()), ("{from}", from.clone()), ("{to}", to.clone())],
+            ),
             Self::DraftedSpec { spec } => fill("spec_events.drafted_spec", &[("{spec}", spec.clone())]),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }

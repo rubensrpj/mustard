@@ -170,6 +170,44 @@ fn text_files(dir: &Path, out: &mut Vec<(std::path::PathBuf, String)>) {
     }
 }
 
+/// Toda gravação no arquivo de eventos de uma spec passa pela regra única da
+/// mudança de fase: no código de produção, só o `commands/spec_events/write.rs`
+/// chama o gravador do núcleo, e é lá que a regra confere cada gravação.
+#[test]
+fn every_state_write_goes_through_the_phase_rule() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    for dir in ["apps/rt/src", "apps/cli/src", "packages/core/src", "apps/dashboard/server/src"] {
+        text_files(&repo.join(dir), &mut files);
+    }
+    let home = Path::new("apps/rt/src/commands/spec_events/write.rs");
+    let writer = Path::new("packages/core/src/io/spec_events.rs");
+    let mut hits = Vec::new();
+    for (path, body) in &files {
+        let relative = path.strip_prefix(&repo).unwrap_or(path);
+        if relative == home || relative == writer || path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let production = body.split("#[cfg(test)]").next().unwrap_or_default();
+        for call in [
+            "spec_events::write(",
+            "spec_events::write_at(",
+            "store::write(",
+            "store::write_at(",
+            "write_then(",
+            "write_at_then(",
+            "write_guarded(",
+        ] {
+            if production.contains(call) {
+                hits.push(format!("{} — {call}", relative.display()));
+            }
+        }
+    }
+    assert!(hits.is_empty(), "a spec event is written outside the phase rule:\n{}", hits.join("\n"));
+    let rule = std::fs::read_to_string(repo.join(home)).unwrap();
+    assert!(rule.contains("phase_write_allowed"), "the one writer no longer asks the phase rule");
+}
+
 /// A marca de aprovação saiu do código: nenhum arquivo de produção a grava
 /// nem a lê, e nem a prosa do plugin nem o painel a ensinam. Cada arquivo
 /// Rust é cortado no primeiro módulo de teste.
