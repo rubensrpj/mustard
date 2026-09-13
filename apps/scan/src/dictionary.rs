@@ -7,14 +7,14 @@
 //! side of a dictionary a later step aliases to the request language to anchor a
 //! query translation.
 //!
-//! ## Why this is a SCAN STAGE, not a projection from the finished model
+//! ## Harvested when a file is read, built from the map
 //!
-//! Comments live ONLY in the in-memory `content` map during a scan; the model's
-//! [`Decl`](crate::model::Decl) keeps `kind/name/line/supertypes` and NEVER
-//! the comment text. So the "everything, including
-//! comments" requirement forces this to run INSIDE `analyze` — alongside `mine`,
-//! over `modules` + `content` — not as a `digest`-style projection
-//! that reads only the finished `ProjectModel`.
+//! Comments exist only while a file is read; the model's
+//! [`Decl`](crate::model::Decl) keeps `kind/name/line/supertypes` and never the
+//! comment text. So each file's comment words are harvested when the scan reads
+//! it ([`comment_terms`]) and kept on its module, and [`build`] works from the
+//! modules alone. A pass that reads only the files that changed therefore
+//! rebuilds the same dictionary a pass reading every file would.
 //!
 //! ## Two sources, one corpus
 //!
@@ -52,10 +52,10 @@
 //! `BTreeMap`/`BTreeSet` throughout (stable iteration), fixed-point specificity
 //! (no float ever enters a comparison), a total-order sort, and NO `unwrap`/
 //! `expect` outside tests. Integer-only end to end, so two runs over the same
-//! inputs serialize to identical bytes on ANY machine. Fail-open: empty/absent
-//! `content` or no modules yields an empty dictionary, never a panic.
+//! inputs serialize to identical bytes on ANY machine. Fail-open: no comment
+//! words or no modules yields an empty dictionary, never a panic.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -137,58 +137,37 @@ struct TermAgg {
     tf: BTreeMap<String, usize>,
 }
 
-/// Build the dictionary: harvest comment segments per eligible module, detect
-/// (and count) the non-English ones, then accumulate identifier + raw comment
-/// tokens into the ranked vocabulary. Pure given its inputs; no process is
-/// ever spawned.
-pub fn build(modules: &[Module], content: &HashMap<String, String>, roles: &[RoleStat]) -> Dictionary {
+/// Build the dictionary from the modules: accumulate the identifier words and
+/// the comment words each eligible module carries into the ranked vocabulary,
+/// and sum the comments counted as not English. Pure given its inputs; no
+/// process is ever spawned.
+pub fn build(modules: &[Module], roles: &[RoleStat]) -> Dictionary {
     let ident_glue = crate::digest::stopwords(); // identifier glue (stopwords.toml)
     let ladder = Ladder::new(); // en natural-language glue via query_stopword
     let nl_glue = natural_language_glue(); // en + pt stoplists, accent-folded
     let role_glue = role_glue(roles); // mined structural affixes (Repository, …)
-    let en_stop = stoplist_words("en");
-    let pt_stop = stoplist_words("pt");
 
-    // Pass 1 — per eligible module (a machine-written or test module is
-    // never domain vocabulary you would anchor a query on), harvest the comment segments and flag the
-    // non-English ones (detection only — the raw tokens are the bridge keys).
-    let mut per_module: Vec<(&Module, Vec<(String, bool)>)> = Vec::new();
-    for m in modules {
-        if mustard_core::domain::ast::is_test_path(&m.path) || !crate::classify::anchor_eligible(&m.file_class) {
-            continue;
-        }
-        let flagged: Vec<(String, bool)> = content
-            .get(&m.path)
-            .map(|src| comment_segments(src))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|seg| {
-                let foreign = is_non_english(&seg, &en_stop, &pt_stop);
-                (seg, foreign)
-            })
-            .collect();
-        per_module.push((m, flagged));
-    }
-
-    // Pass 2 — accumulate per-term signals and count the documents (for IDF).
-    // BTreeMap → deterministic term iteration. A foreign segment tokenizes RAW
-    // and bumps the non_english_comments telemetry.
+    // Only hand-written, non-test modules are domain vocabulary you would
+    // anchor a query on. Their comment words were harvested when each file was
+    // read ([`comment_terms`]) and kept on the module, so the dictionary is
+    // rebuilt from the map alone — the same on a pass that read every file and
+    // on one that read only what changed. BTreeMap → deterministic iteration.
+    let eligible: Vec<&Module> = modules
+        .iter()
+        .filter(|m| !mustard_core::domain::ast::is_test_path(&m.path) && crate::classify::anchor_eligible(&m.file_class))
+        .collect();
     let mut agg: BTreeMap<String, TermAgg> = BTreeMap::new();
     let mut non_english_comments = 0usize;
-    let n_docs = per_module.len();
-    for (m, segments) in &per_module {
+    let n_docs = eligible.len();
+    for m in &eligible {
         for d in &m.declarations {
             for tok in crate::digest::tokenize(&d.name) {
-                bump(&mut agg, tok, &m.path, true);
+                bump(&mut agg, tok, &m.path, true, 1);
             }
         }
-        for (seg, foreign) in segments {
-            if *foreign {
-                non_english_comments += 1;
-            }
-            for tok in segment_tokens(seg) {
-                bump(&mut agg, tok, &m.path, false);
-            }
+        non_english_comments += m.foreign_comments as usize;
+        for (tok, &n) in &m.comment_terms {
+            bump(&mut agg, tok.clone(), &m.path, false, n as usize);
         }
     }
 
@@ -281,10 +260,10 @@ fn is_non_english(seg: &str, en_stop: &BTreeSet<String>, pt_stop: &BTreeSet<Stri
 
 /// Record one occurrence of `term` in module `path` from identifiers (`ident`)
 /// or comments (`!ident`).
-fn bump(agg: &mut BTreeMap<String, TermAgg>, term: String, path: &str, ident: bool) {
+fn bump(agg: &mut BTreeMap<String, TermAgg>, term: String, path: &str, ident: bool, times: usize) {
     let e = agg.entry(term).or_default();
-    e.count += 1;
-    *e.tf.entry(path.to_string()).or_insert(0) += 1;
+    e.count += times;
+    *e.tf.entry(path.to_string()).or_insert(0) += times;
     if ident {
         e.from_ident = true;
     } else {
@@ -336,6 +315,40 @@ fn role_glue(roles: &[RoleStat]) -> BTreeSet<String> {
 /// domain tokens: non-alphanumeric boundaries, a 3-char floor, and at least one
 /// alphabetic char (drops pure numbers) — the same shape
 /// [`crate::digest::tokenize`] lands identifiers in.
+/// The comment words of one file, with how many times each appears, and how
+/// many of its comments read as not English. Harvested once, when the file is
+/// read, and kept on the module. The words that are glue for every project
+/// (identifier glue, English and Portuguese stop words) are left out here,
+/// exactly as [`build`] would drop them, so the map stays small.
+pub(crate) fn comment_terms(src: &str) -> (BTreeMap<String, u32>, u32) {
+    struct Glue {
+        nl: BTreeSet<String>,
+        en: BTreeSet<String>,
+        pt: BTreeSet<String>,
+    }
+    static GLUE: std::sync::OnceLock<Glue> = std::sync::OnceLock::new();
+    let glue = GLUE.get_or_init(|| Glue {
+        nl: natural_language_glue(),
+        en: stoplist_words("en"),
+        pt: stoplist_words("pt"),
+    });
+    let ident_glue = crate::digest::stopwords();
+    let mut terms: BTreeMap<String, u32> = BTreeMap::new();
+    let mut foreign = 0u32;
+    for seg in comment_segments(src) {
+        if is_non_english(&seg, &glue.en, &glue.pt) {
+            foreign += 1;
+        }
+        for tok in segment_tokens(&seg) {
+            if ident_glue.contains(&tok) || glue.nl.contains(&tok) || glue.nl.contains(&fold(&tok)) {
+                continue;
+            }
+            *terms.entry(tok).or_insert(0) += 1;
+        }
+    }
+    (terms, foreign)
+}
+
 fn segment_tokens(seg: &str) -> Vec<String> {
     seg.split(|c: char| !c.is_alphanumeric())
         .map(str::to_lowercase)
@@ -444,6 +457,27 @@ fn push_segment(out: &mut Vec<String>, src: &str, start: usize, end: usize) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    /// Build the dictionary the way a scan does: each file's comment words
+    /// are harvested from its content first, then the dictionary is built from
+    /// the modules alone.
+    fn build_from(modules: &[Module], content: &HashMap<String, String>, roles: &[RoleStat]) -> Dictionary {
+        let filled: Vec<Module> = modules
+            .iter()
+            .cloned()
+            .map(|mut m| {
+                if let Some(src) = content.get(&m.path) {
+                    let (terms, foreign) = comment_terms(src);
+                    m.comment_terms = terms;
+                    m.foreign_comments = foreign;
+                }
+                m
+            })
+            .collect();
+        build(&filled, roles)
+    }
+
     use super::*;
     use crate::model::Decl;
 
@@ -488,7 +522,7 @@ mod tests {
         // module) → source "both". "statement" is comment-only, in two modules.
         content.insert("src/ledger/reconcile.rs".to_string(), "// the statement covers each payable".to_string());
         content.insert("src/ledger/report.rs".to_string(), "// export the statement to the ledger".to_string());
-        let dict = build(&modules, &content, &[]);
+        let dict = build_from(&modules, &content, &[]);
 
         let payable = find(&dict, "payable").expect("`payable` mined from identifiers");
         assert_eq!(payable.source, "both", "payable is in an identifier AND a comment");
@@ -516,7 +550,7 @@ mod tests {
             module("src/g.rs", &["WidgetSeven"]),
             module("src/h.rs", &["WidgetEight"]),
         ];
-        let dict = build(&modules, &HashMap::new(), &[]);
+        let dict = build_from(&modules, &HashMap::new(), &[]);
         assert!(find(&dict, "widget").is_none(), "ubiquitous term dropped: {:?}", terms(&dict));
         let payable = find(&dict, "payable").expect("payable kept");
         let escrow = find(&dict, "escrow").expect("escrow kept");
@@ -546,7 +580,7 @@ mod tests {
         content.insert("src/b.rs".to_string(), "// para o order com o repository from the list".to_string());
         let roles = vec![RoleStat { affix: "Repository".to_string(), ..Default::default() }];
 
-        let dict = build(&modules, &content, &roles);
+        let dict = build_from(&modules, &content, &roles);
         assert!(find(&dict, "order").is_some(), "the domain term survives alongside the glue: {:?}", terms(&dict));
         assert!(find(&dict, "repository").is_none(), "mined role affix dropped");
         assert!(find(&dict, "para").is_none() && find(&dict, "com").is_none(), "pt glue dropped");
@@ -562,8 +596,8 @@ mod tests {
         ];
         let mut content = HashMap::new();
         content.insert("src/a.rs".to_string(), "/* renew the contract each period */".to_string());
-        let one = serde_json::to_string(&build(&modules, &content, &[])).expect("serialize");
-        let two = serde_json::to_string(&build(&modules, &content, &[])).expect("serialize");
+        let one = serde_json::to_string(&build_from(&modules, &content, &[])).expect("serialize");
+        let two = serde_json::to_string(&build_from(&modules, &content, &[])).expect("serialize");
         assert_eq!(one, two, "two runs are byte-identical");
     }
 
@@ -571,7 +605,7 @@ mod tests {
     /// dictionary, never a panic.
     #[test]
     fn fails_open_on_empty_inputs() {
-        let empty = build(&[], &HashMap::new(), &[]);
+        let empty = build_from(&[], &HashMap::new(), &[]);
         assert_eq!(empty.version, VERSION);
         assert!(empty.terms.is_empty(), "no modules → empty dictionary");
 
@@ -583,7 +617,7 @@ mod tests {
             module("src/m3.rs", &["GammaThing"]),
             module("src/m4.rs", &["DeltaBox"]),
         ];
-        let dict = build(&modules, &HashMap::new(), &[]);
+        let dict = build_from(&modules, &HashMap::new(), &[]);
         assert!(find(&dict, "reconcile").is_some(), "identifiers mine without any content");
         assert!(dict.terms.iter().all(|e| e.source == "ident"), "no comment source when content is absent");
     }
@@ -600,7 +634,7 @@ mod tests {
         content.insert("src/a.rs".to_string(), "// valida o contrato do parceiro".to_string());
         content.insert("src/b.rs".to_string(), "// atualiza o contrato existente\n// plain english comment of the module".to_string());
 
-        let dict = build(&modules, &content, &[]);
+        let dict = build_from(&modules, &content, &[]);
         assert_eq!(dict.non_english_comments, 2, "both PT occurrences counted, the English one not");
         assert!(find(&dict, "contrato").is_some(), "raw PT tokens stay — they are the bridge keys: {:?}", terms(&dict));
     }

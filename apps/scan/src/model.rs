@@ -8,6 +8,7 @@
 use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -178,6 +179,18 @@ pub struct Module {
     /// that does not read the file again still infers the same stacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<String>,
+    /// The words of this file's comments, with how many times each appears
+    /// (hand-written, non-test files only), kept so the dictionary is rebuilt
+    /// from the map on every pass without reading the file again.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub comment_terms: BTreeMap<String, u32>,
+    /// How many of this file's comments read as not English.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub foreign_comments: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// serde helper for additive numeric fields (mirrors `String::is_empty` above).

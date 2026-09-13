@@ -27,7 +27,7 @@ mod testmap;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -228,12 +228,14 @@ fn main() -> Result<()> {
                 std::fs::write(&out, &model_json)?;
             }
             // The distinctive-vocabulary sidecar lands NEXT TO the model
-            // (`grain.dictionary.json` beside `grain.model.json`). It is built
-            // from every file's comments, so only a pass that read every file
-            // rewrites it; an incremental pass leaves it as it was.
+            // (`grain.dictionary.json` beside `grain.model.json`). It is rebuilt
+            // from the map on every pass and rewritten only when it changed, so
+            // `dictionary: true` in the report means "the vocabulary moved".
             let dict_out = out.with_file_name("grain.dictionary.json");
-            if let Some(dictionary) = &analysis.dictionary {
-                std::fs::write(&dict_out, serde_json::to_string_pretty(dictionary)?)?;
+            let dict_json = serde_json::to_string_pretty(&analysis.dictionary)?;
+            let dictionary_written = std::fs::read_to_string(&dict_out).ok().as_deref() != Some(dict_json.as_str());
+            if dictionary_written {
+                std::fs::write(&dict_out, &dict_json)?;
             }
             if json {
                 let report = serde_json::json!({
@@ -242,7 +244,7 @@ fn main() -> Result<()> {
                     "read": analysis.read,
                     "files": analysis.model.modules.len(),
                     "head": analysis.model.state.head,
-                    "dictionary": analysis.dictionary.is_some(),
+                    "dictionary": dictionary_written,
                 });
                 println!("{report}");
             } else {
@@ -253,14 +255,14 @@ fn main() -> Result<()> {
                     analysis.read.len(),
                     if analysis.full { " (every file)" } else { " (only what changed)" }
                 );
-                if let Some(dictionary) = &analysis.dictionary {
-                    println!("Dictionary written to {} ({} terms)", dict_out.display(), dictionary.terms.len());
-                    if dictionary.non_english_comments > 0 {
-                        println!(
-                            "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
-                            dictionary.non_english_comments
-                        );
-                    }
+                let dictionary = &analysis.dictionary;
+                let verb = if dictionary_written { "written" } else { "unchanged" };
+                println!("Dictionary {verb}: {} ({} terms)", dict_out.display(), dictionary.terms.len());
+                if dictionary.non_english_comments > 0 {
+                    println!(
+                        "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
+                        dictionary.non_english_comments
+                    );
                 }
             }
         }
@@ -375,9 +377,8 @@ fn main() -> Result<()> {
 /// What one pass produced.
 struct Analysis {
     model: ProjectModel,
-    /// The distinctive-vocabulary dictionary, built only when every file was
-    /// read: it comes from every file's comments.
-    dictionary: Option<dictionary::Dictionary>,
+    /// The distinctive-vocabulary dictionary, rebuilt from the modules.
+    dictionary: dictionary::Dictionary,
     /// The files whose content this pass read, sorted.
     read: Vec<String>,
     /// Every file was read (no usable previous model).
@@ -423,7 +424,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     let overrides = classify::Overrides::load(&ing.root);
 
     let mut modules: Vec<Module> = Vec::with_capacity(ing.files.len());
-    let mut content: HashMap<String, String> = HashMap::new();
     for walked in ing.files {
         match walked {
             ingest::Walked::Kept(mut kept) => {
@@ -443,6 +443,12 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                 let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
                     .map(|c| (c.class, c.marker))
                     .unwrap_or_default();
+                // The comment words feed the dictionary, which only takes
+                // hand-written, non-test files.
+                let eligible = !mustard_core::domain::ast::is_test_path(&sf.rel_path)
+                    && classify::anchor_eligible(&file_class);
+                let (comment_terms, foreign_comments) =
+                    if eligible { dictionary::comment_terms(&sf.content) } else { (BTreeMap::new(), 0) };
                 let module = Module {
                     path: sf.rel_path.clone(),
                     language: sf.language,
@@ -457,10 +463,9 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                     tests: Vec::new(),
                     has_tests: testmap::has_inline_tests(&sf.content),
                     signals: code_signals(&sf.content),
+                    comment_terms,
+                    foreign_comments,
                 };
-                if full {
-                    content.insert(sf.rel_path, sf.content);
-                }
                 modules.push(module);
             }
         }
@@ -489,9 +494,9 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     }
     let mined = mine::mine(&modules, &degrees);
     // Distinctive-vocabulary dictionary: a stage right after mining, over the
-    // same `modules` + in-memory `content` (the only place comments survive),
-    // reusing the mined role affixes to demote structural glue.
-    let dictionary = full.then(|| dictionary::build(&modules, &content, &mined.roles));
+    // comment words each module keeps, reusing the mined role affixes to demote
+    // structural glue. Built on every pass, from the map alone.
+    let dictionary = dictionary::build(&modules, &mined.roles);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     // The git history: only the commits since the previous pass, when that
