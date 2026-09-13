@@ -717,14 +717,6 @@ struct Refused {
     exit_nonzero: bool,
 }
 
-/// Decide the approval against `root` and, only if it passes, feed every event
-/// of the sequence to `emit`.
-///
-/// The seam that makes the gate testable: on a refusal `emit` is NEVER called,
-/// which is the entire point of a gate, and a test can assert exactly that by
-/// passing a recorder. `run` passes the canonical
-/// [`crate::commands::event::emit_pipeline::run`].
-///
 /// The approval preconditions besides the user's own gesture — the clarify
 /// marker of a Full spec, the recorded proof of the criteria and the authored
 /// narrative — judged once for every door that approves: `approve-spec`, and
@@ -771,6 +763,14 @@ pub(crate) fn unmet_before_approval(root: &str, spec: &str) -> Option<String> {
         .and_then(|(message, gate)| (gate == ApprovalGate::Block).then_some(message))
 }
 
+/// Decide the approval against `root` and, only if it passes, feed every event
+/// of the sequence to `emit`.
+///
+/// The seam that makes the gate testable: on a refusal `emit` is NEVER called,
+/// which is the entire point of a gate, and a test can assert exactly that by
+/// passing a recorder. `run` passes the canonical
+/// [`crate::commands::event::emit_pipeline::run`].
+///
 /// Approval gate — refuse (strict) to emit the approval signal until BOTH
 /// preconditions hold. Clarify precedes approval and applies only to Full
 /// specs; user approval applies to every spec. Both are born from acts the
