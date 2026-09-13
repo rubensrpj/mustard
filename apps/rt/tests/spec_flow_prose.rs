@@ -168,6 +168,30 @@ fn resume_prose_asks_one_question_and_suggests_clear() {
     assert_superseded_gone("plugin/refs/spec/resume-loop.md", &loop_ref);
 }
 
+/// O caminho leve do `/feature` faz a mesma pergunta de aprovação de todo
+/// tamanho de pedido, "Aprovar esta spec?", com "Aprovar" e "Ajustar". A
+/// resposta "Aprovar" termina em `/clear`, e a execução continua pela
+/// retomada, numa janela limpa, nunca na janela que perguntou.
+#[test]
+fn the_light_path_asks_the_one_approval_question_and_resumes() {
+    let feature = read("plugin/commands/feature.md");
+    let at = feature.find("## 3. Light").expect("/feature no longer has its light section");
+    let section = &feature[at..];
+    let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+
+    let ask = line_with(section, "*\"Aprovar esta spec?\"*").expect("the light path asks no approval question");
+    for needle in ["**Aprovar**", "**Ajustar**", "`/clear`", "STOP"] {
+        assert!(ask.contains(needle), "the light approval misses {needle}: {ask}");
+    }
+    let resume = line_with(section, "The execution continues through the resume")
+        .expect("the light path no longer says where the execution continues");
+    for needle in ["/mustard:spec {slug}", "emit-phase --to Execute"] {
+        assert!(resume.contains(needle), "the light execution misses {needle}: {resume}");
+    }
+
+    assert_superseded_gone("plugin/commands/feature.md", &feature);
+}
+
 /// The Full plan materialises in ONE call, and `plan-materialize` is
 /// named as the RE-materialisation door.
 ///
@@ -504,6 +528,11 @@ fn the_bare_r_names_the_unit_and_approves_nothing() {
 /// A page may state the new contract and still carry one of these two
 /// paragraphs away; the reader who arrives at the survivor is instructed by it.
 const SUPERSEDED: &[(&str, &str)] = &[
+    // The light path of `/feature` asked a question of its own and executed
+    // in the window that asked.
+    ("plugin/commands/feature.md", "Approve and implement?"),
+    ("plugin/commands/feature.md", "Save for later (stop)"),
+    ("plugin/commands/feature.md", "- On approve: `emit-phase --to Execute`"),
     // The picker: `r` grants nothing / bypasses nothing.
     ("plugin/commands/spec.md", "it never grants or skips the approval itself"),
     ("plugin/commands/spec.md", "pre-answers the §3 EXECUTE continuation"),
