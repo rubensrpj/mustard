@@ -621,6 +621,9 @@ pub enum Refusal {
     /// Uma gravação que muda a fase da spec por uma porta que não grava essa
     /// mudança: a regra única da mudança de fase recusou.
     PhaseChangeRefused { spec: String, from: String, to: String },
+    /// O `run write` com o tipo `state`, ou uma gravação dele que mudaria o
+    /// estado: o estado é gravado pelos comandos do fluxo e pela testemunha.
+    StateByFlowOnly { spec: String },
     /// A página pedida de uma spec cujo `spec.md` é o documento do
     /// `spec-draft`, que refazer do arquivo de eventos apagaria.
     DraftedSpec { spec: String },
@@ -652,6 +655,7 @@ impl Refusal {
             Self::UnknownLesson { .. } => "unknown-lesson",
             Self::LessonOriginMissing => "lesson-origin-missing",
             Self::PhaseChangeRefused { .. } => "phase-change-refused",
+            Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::DraftedSpec { .. } => "drafted-spec",
             Self::Io { .. } => "io-failed",
         }
@@ -753,6 +757,9 @@ impl Refusal {
                 &[("{spec}", spec.clone()), ("{from}", from.clone()), ("{to}", to.clone())],
             ),
             Self::DraftedSpec { spec } => fill("spec_events.drafted_spec", &[("{spec}", spec.clone())]),
+            Self::StateByFlowOnly { spec } => {
+                fill("spec_events.state_by_flow_only", &[("{spec}", spec.clone())])
+            }
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

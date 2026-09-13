@@ -349,7 +349,8 @@ fn finalize_and_verify(cwd: &Path, spec: &str) -> (bool, Option<bool>) {
     // strict: until it was fixed it accepted `skip`, and this line asserted a
     // verification that had not happened. `finalize` is the qa-less terminal path
     // `close-pipeline` already uses for exactly this reason.
-    let _ = crate::commands::spec::complete_spec::finalize(cwd, spec);
+    let session = crate::shared::spec_state::session_from_env();
+    let _ = crate::commands::spec::complete_spec::finalize(cwd, spec, session.as_deref());
     let verified = crate::commands::event::verify_emit::verify_event_landed(
         cwd,
         "pipeline.complete",

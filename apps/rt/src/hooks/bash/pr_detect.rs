@@ -269,7 +269,7 @@ fn emit_pr_event_with(
         return;
     };
     for delivered in delivered_specs(&candidates, &merged, now) {
-        let _ = crate::commands::spec_events::write::record_phase_by(project, &delivered, "delivered", session_id);
+        let _ = crate::commands::spec_events::write::record_phase(project, &delivered, "delivered", session_id);
     }
 }
 

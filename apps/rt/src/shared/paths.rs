@@ -44,8 +44,10 @@ pub fn same_declared_file(a: &str, b: &str) -> bool {
     mustard_core::platform::project_seed::same_declared_path(a, b)
 }
 
-/// Os arquivos da pasta de uma spec que só o binário grava.
-const SPEC_FILES: &[&str] = &["spec.ndjson", "spec.md", "spec.html"];
+/// Os arquivos da pasta de uma spec que só o binário grava. O `meta.json` da
+/// raiz da spec entra também: é ele que diz se um rascunho antigo, sem
+/// arquivo de eventos, ainda trava, e nenhum passo manda editá-lo à mão.
+const SPEC_FILES: &[&str] = &["spec.ndjson", "spec.md", "spec.html", "meta.json"];
 
 /// Os arquivos de `.claude/spec/` fora da pasta de uma spec que só o binário
 /// grava: o índice das specs e o banco de lições.
@@ -399,7 +401,8 @@ mod tests {
             (".claude/spec/x/spec.html", spec("x")),
             ("/p/.claude/spec/index.ndjson", PathClass::SpecFile { spec: None }),
             ("/p/.claude/spec/lessons.ndjson", PathClass::SpecFile { spec: None }),
-            ("/p/.claude/spec/x/meta.json", PathClass::Artifact),
+            ("/p/.claude/spec/x/meta.json", spec("x")),
+            ("/p/.claude/spec/x/wave-1/meta.json", PathClass::Artifact),
             ("/p/.claude/plans/plano.md", PathClass::Harness),
             ("/p/.claude/scratch/probe.sh", PathClass::Harness),
             ("/p/.claude/.cache/spec-material.json", PathClass::Harness),

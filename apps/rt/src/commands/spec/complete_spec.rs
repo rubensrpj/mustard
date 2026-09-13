@@ -204,7 +204,11 @@ fn is_terminal_status(status: Option<&str>) -> bool {
 /// through [`verify_then_admit`] — NOT here, because the composite closes
 /// (`close-pipeline`, `close-orchestrate`) reach this through [`finalize`] after
 /// already running the verification and gating on it.
-fn mark_complete(cwd: &Path, spec: &str) -> Value {
+///
+/// `session` é a de quem fecha, dita por quem chama: a ponte do fechamento
+/// arma a cobrança das pendências para ela, e só ela é desligada da spec que
+/// terminou. Só a entrada `run` a lê do ambiente.
+fn mark_complete(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     let affected = collect_affected_files(cwd, spec);
 
     // Read current projection status so we can record `from` and short-circuit
@@ -256,14 +260,14 @@ fn mark_complete(cwd: &Path, spec: &str) -> Value {
     // A ponte até o gravador definitivo do fechamento: o estado da spec passa
     // à fase `closed`, e é esse estado que arma a cobrança das pendências no
     // fim da resposta.
-    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed");
+    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed", session);
 
     // Desliga a spec da sessão agora que ela terminou: os eventos depois do
-    // fechamento não herdam a spec que acabou. Só a sessão que o ambiente
-    // entrega; sem ela, nada é desligado, porque um palpite pela pasta de
-    // sessão mais nova desligaria a spec de outra sessão.
-    if let Some(sid) = session_from_env() {
-        crate::shared::context::unbind_session_spec(&cwd.to_string_lossy(), &sid);
+    // fechamento não herdam a spec que acabou. Só a sessão de quem fecha;
+    // sem ela, nada é desligado, porque um palpite pela pasta de sessão mais
+    // nova desligaria a spec de outra sessão.
+    if let Some(sid) = session {
+        crate::shared::context::unbind_session_spec(&cwd.to_string_lossy(), sid);
     }
 
     json!({
@@ -544,7 +548,7 @@ fn emit_capability_event(cwd: &Path, spec: &str, ts: &str, event_name: &str, pay
 /// [`mark_complete`] (a no-op flip when the spec is already terminal). No
 /// filesystem move.
 fn archive(cwd: &Path, spec: &str) -> bool {
-    let _ = mark_complete(cwd, spec);
+    let _ = mark_complete(cwd, spec, session_from_env().as_deref());
     true
 }
 
@@ -654,7 +658,7 @@ fn verify_then_admit(cwd: &Path, spec: &str) -> Result<(), String> {
 /// criterion and gate the same fact twice.
 pub(crate) fn run_complete(cwd: &Path, spec: &str) -> Result<Value, String> {
     verify_then_admit(cwd, spec)?;
-    Ok(finalize(cwd, spec))
+    Ok(finalize(cwd, spec, session_from_env().as_deref()))
 }
 
 /// The QA-less tail of [`run_complete`]: the coupled terminal complete
@@ -662,8 +666,11 @@ pub(crate) fn run_complete(cwd: &Path, spec: &str) -> Result<Value, String> {
 /// `close-pipeline`, which has ALREADY run QA itself (and gated on
 /// `overall == pass`) — calling `run_complete` there would re-execute every AC
 /// command a second time.
-pub(crate) fn finalize(cwd: &Path, spec: &str) -> Value {
-    let complete_value = mark_complete(cwd, spec);
+///
+/// `session` é a de quem fecha, lida do ambiente pela entrada `run` que
+/// chama; um teste passa a dele.
+pub(crate) fn finalize(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
+    let complete_value = mark_complete(cwd, spec, session);
     rebuild_one_fail_open(cwd, spec);
     complete_value
 }
@@ -807,7 +814,7 @@ mod tests {
             "# Invoicing\n\nNarrative.\n\n## Capabilities\n- [[cap.invoicing]]\n",
         );
 
-        mark_complete(cwd, spec);
+        mark_complete(cwd, spec, None);
 
         // 1. The capability doc gained the spec backlink (dedup + sorted).
         let cap_md = std::fs::read_to_string(
@@ -1006,7 +1013,7 @@ mod tests {
         // Link a capability whose doc was never authored.
         seed_spec_md(cwd, spec, "# Ghost\n\n## Capabilities\n- [[cap.ghost]]\n");
 
-        let out = mark_complete(cwd, spec);
+        let out = mark_complete(cwd, spec, None);
         assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true), "close succeeds");
 
         // No doc was invented.
@@ -1038,7 +1045,7 @@ mod tests {
 
         seed_spec_md(cwd, spec, "# Plain\n\nJust narrative, no capabilities.\n");
 
-        let out = mark_complete(cwd, spec);
+        let out = mark_complete(cwd, spec, None);
         assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
 
         let events = read_events_for_spec(cwd, spec);
@@ -1077,7 +1084,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
 
-        let out = mark_complete(cwd, "demo");
+        let out = mark_complete(cwd, "demo", None);
         assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
         assert_eq!(out.get("mode").and_then(Value::as_str), Some("complete"));
 
@@ -1106,7 +1113,7 @@ mod tests {
         );
 
         // Idempotency: a second flip keeps the same terminal status.
-        let _ = mark_complete(cwd, "demo");
+        let _ = mark_complete(cwd, "demo", None);
         let events2 = read_events_for_spec(cwd, "demo");
         let view2 = crate::commands::event::event_projections::pipeline_state_from_events(
             &events2, "demo", None,
@@ -1135,7 +1142,7 @@ mod tests {
         )
         .unwrap();
 
-        mark_complete(cwd, spec);
+        mark_complete(cwd, spec, None);
 
         // Event projection → completed.
         let events = read_events_for_spec(cwd, spec);
@@ -1187,7 +1194,7 @@ mod tests {
         )
         .unwrap();
 
-        super::mark_complete(cwd, spec);
+        super::mark_complete(cwd, spec, None);
 
         // The terminal status event landed.
         let events = read_events_for_spec(cwd, spec);
@@ -1406,7 +1413,7 @@ mod tests {
         assert!(close_admission(cwd, proven).is_err(), "no verdict yet");
         seed_qa_result(cwd, proven, "pass");
         assert!(close_admission(cwd, proven).is_ok(), "a recorded pass admits");
-        let _ = finalize(cwd, proven);
+        let _ = finalize(cwd, proven, None);
         assert!(completed(cwd, proven), "the admitted close must actually complete");
     }
 

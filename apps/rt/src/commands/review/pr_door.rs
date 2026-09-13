@@ -685,7 +685,11 @@ pub(crate) struct PrMergeReport {
 /// The checks are read on EVERY path, including the confirmed one that ignores
 /// the answer: one call site instead of two, and the report then carries what
 /// the provider said even when the operator overrode it.
+///
+/// `session` é a de quem pediu o merge, lida do ambiente pela entrada `run`:
+/// é ela que a cobrança das pendências do merge espera.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 fn merge_core(
     root: &Path,
     facts: &PrFacts,
@@ -694,6 +698,7 @@ fn merge_core(
     checks: &dyn Fn(&Path, u64) -> Result<PrChecks, String>,
     merge: &dyn Fn(&Path, u64) -> Result<(), String>,
     settle: &dyn Fn(&Path, &str) -> Value,
+    session: Option<&str>,
 ) -> PrMergeReport {
     let spec = spec_of_branch(&facts.head, flow);
     let verdict = spec.as_deref().and_then(|slug| recorded_verdict(root, slug));
@@ -801,7 +806,7 @@ fn merge_core(
 
     // Mergeado — o fechamento se registra ANTES de qualquer outro passo, nos dois
     // caminhos abaixo: a promoção também é um pull request mergeado.
-    let (pending_closed, pending_open) = after_merge(root, facts, spec.as_deref());
+    let (pending_closed, pending_open) = after_merge(root, facts, spec.as_deref(), session);
 
     // **A promotion has no unit, so it has nothing to settle.** `dev` → `main`
     // is the ordinary end of a cycle and its HEAD is a declared BASE; handing
@@ -867,8 +872,13 @@ fn merge_core(
 /// Roda também na promoção `dev` → `main`: o `pr.merged` fica registrado. Uma
 /// promoção não tem spec, então não grava estado, não arma a cobrança e não
 /// pergunta de nenhuma pendência.
-fn after_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) -> (Option<String>, Vec<OpenPending>) {
-    record_merge(root, facts, spec);
+fn after_merge(
+    root: &Path,
+    facts: &PrFacts,
+    spec: Option<&str>,
+    session: Option<&str>,
+) -> (Option<String>, Vec<OpenPending>) {
+    record_merge(root, facts, spec, session);
     let reason = format!("PR #{} mergeado", facts.number);
     // A nota "virou a spec X" da lista liga a pendência à spec. Uma unidade
     // aberta antes de a nota existir só tem a ligação no evento da abertura.
@@ -905,12 +915,12 @@ fn linked_pending(root: &Path, spec: &str) -> Option<String> {
 /// merges quando o git não responde e o pareamento aberto → mergeado. Os merges
 /// feitos por esta porta, antes invisíveis ali, passam a contar. Não contam em
 /// dobro: o `pr_detect` só grava o `gh pr merge` digitado no Bash.
-fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) {
+fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>, session: Option<&str>) {
     use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::spec_state::session_from_env().unwrap_or_default(),
+        session_id: session.unwrap_or_default().to_string(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,
@@ -926,7 +936,7 @@ fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) {
     // fase `delivered`, e é esse estado que arma a cobrança das pendências no
     // fim da resposta.
     if let Some(spec) = spec {
-        let _ = crate::commands::spec_events::write::record_phase(root, spec, "delivered");
+        let _ = crate::commands::spec_events::write::record_phase(root, spec, "delivered", session);
     }
 }
 
@@ -980,7 +990,8 @@ pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
             // finish?" is the same question on every provider, and the door
             // must not learn a second provider's vocabulary to ask it.
             let checks = |r: &Path, number: u64| provider_for(r).checks(number);
-            emit(&merge_core(&repo, &facts, &flow, confirm, &checks, &gh_merge, &settle));
+            let session = crate::shared::spec_state::session_from_env();
+            emit(&merge_core(&repo, &facts, &flow, confirm, &checks, &gh_merge, &settle, session.as_deref()));
         }
         Err(e) => emit(&serde_json::json!({ "ok": false, "reason": e, "pr": pr })),
     }
@@ -1116,7 +1127,7 @@ mod tests {
         // the missing verdict.
         let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
 
-        let asked = merge_core(root, &facts, &bases, false, &green, &merge, &settle);
+        let asked = merge_core(root, &facts, &bases, false, &green, &merge, &settle, None);
         assert!(asked.ok, "an ASK is an instruction, never a failure");
         assert_eq!(asked.action, "confirm");
         assert_eq!(asked.reason, Some("no-review-verdict"));
@@ -1132,7 +1143,7 @@ mod tests {
 
         // The operator's answer comes back as `--confirm`: now it merges and
         // settles. Still not a refusal at any point.
-        let confirmed = merge_core(root, &facts, &bases, true, &green, &merge, &settle);
+        let confirmed = merge_core(root, &facts, &bases, true, &green, &merge, &settle, None);
         assert!(confirmed.ok);
         assert_eq!(confirmed.action, "merged");
         assert_eq!(merges.get(), 1);
@@ -1172,7 +1183,7 @@ mod tests {
         };
 
         let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
-        let done = merge_core(root, &facts, &bases, true, &green, &merge, &settle);
+        let done = merge_core(root, &facts, &bases, true, &green, &merge, &settle, None);
 
         assert!(done.ok, "a promotion is a success, not a refusal: {done:?}");
         assert_eq!(done.action, "merged");
@@ -1254,7 +1265,7 @@ mod tests {
         };
         let running = |_: &Path, _: u64| Ok(PrChecks::Running);
 
-        let asked = merge_core(root, &facts, &bases, false, &running, &merge, &settle);
+        let asked = merge_core(root, &facts, &bases, false, &running, &merge, &settle, None);
         assert!(asked.ok, "an ASK is an instruction, never a failure: {asked:?}");
         assert_eq!(asked.action, "confirm");
         assert_eq!(asked.reason, Some("provider-checks-running"));
@@ -1265,7 +1276,7 @@ mod tests {
         assert!(asked.settle.is_none());
 
         // `--confirm` remains the operator's deliberate way through the gate.
-        let confirmed = merge_core(root, &facts, &bases, true, &running, &merge, &settle);
+        let confirmed = merge_core(root, &facts, &bases, true, &running, &merge, &settle, None);
         assert_eq!(confirmed.action, "merged");
         assert_eq!(merges.get(), 1);
         assert_eq!(confirmed.checks, "running", "the override is recorded, not hidden");
@@ -1293,7 +1304,7 @@ mod tests {
         };
         let failed = |_: &Path, _: u64| Ok(PrChecks::Failed);
 
-        let asked = merge_core(root, &facts, &bases, false, &failed, &merge, &settle);
+        let asked = merge_core(root, &facts, &bases, false, &failed, &merge, &settle, None);
         assert_eq!(asked.action, "confirm");
         assert_eq!(asked.reason, Some("provider-checks-failed"));
         assert_eq!(asked.checks, "failed");
@@ -1314,7 +1325,7 @@ mod tests {
         // An unreadable answer takes the same branch: "the provider could not
         // be asked" is not evidence that its runs passed.
         let unreadable = |_: &Path, _: u64| Err("gh-not-found".to_string());
-        let blind = merge_core(root, &facts, &bases, false, &unreadable, &merge, &settle);
+        let blind = merge_core(root, &facts, &bases, false, &unreadable, &merge, &settle, None);
         assert_eq!(blind.action, "confirm");
         assert_eq!(blind.reason, Some("provider-checks-unreadable"));
         assert_eq!(blind.checks, "gh-not-found", "the reason travels verbatim into the report");
@@ -1389,7 +1400,7 @@ mod tests {
         let merge = |_: &Path, _: u64| Ok(());
         let settle = |_: &Path, _: &str| json!({ "ok": true });
         let facts = PrFacts { number: 271, head: "feature/trava-pendencias".to_string() };
-        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle);
+        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, None);
 
         assert_eq!(done.action, "merged");
         assert_eq!(done.pending_closed.as_deref(), Some("P-1"), "the linked item is closed");
@@ -1404,7 +1415,7 @@ mod tests {
 
         // Controle: uma unidade SEM ligação mergeia sem fechar nada.
         let loose = PrFacts { number: 272, head: "feature/outra-coisa".to_string() };
-        let plain = merge_core(root, &loose, &door_flow(), true, &green, &merge, &settle);
+        let plain = merge_core(root, &loose, &door_flow(), true, &green, &merge, &settle, None);
         assert_eq!(plain.pending_closed, None, "no link, nothing closed");
         assert_eq!(plain.pending_open, Some(vec![]));
     }
@@ -1435,7 +1446,7 @@ mod tests {
         let merge = |_: &Path, _: u64| Ok(());
         let settle = |_: &Path, _: &str| json!({ "ok": true });
         let facts = PrFacts { number, head: head.to_string() };
-        merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle)
+        merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, None)
     }
 
     /// A entrega pergunta só das pendências nascidas na spec do merge; a
@@ -1602,7 +1613,7 @@ mod tests {
         let charged = |message: &str| run_rules(&[&PendingRule], &stop(message), &ctx);
         let state = || crate::shared::spec_state::DiskSpecState::new(root).state("trava").expect("state");
 
-        let _ = crate::commands::spec::complete_spec::finalize(root, "trava");
+        let _ = crate::commands::spec::complete_spec::finalize(root, "trava", None);
         assert_eq!(state().phase, Some("closed"), "closing records the closed state");
         assert!(charged("Spec fechada.").is_blocking(), "the close charges");
         assert_eq!(charged("Spec fechada; segue o Humanize."), Verdict::Allow);
@@ -1611,7 +1622,7 @@ mod tests {
         let merge = |_: &Path, _: u64| Ok(());
         let settle = |_: &Path, _: &str| json!({ "ok": true });
         let facts = PrFacts { number: 300, head: "feature/trava".to_string() };
-        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle);
+        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, None);
         assert_eq!(done.action, "merged");
         assert_eq!(state().phase, Some("delivered"), "the merge records the delivered state");
         assert!(charged("PR mergeado.").is_blocking(), "the merge charges again");

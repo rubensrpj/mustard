@@ -1265,16 +1265,24 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("spec_events.phase_change_refused", Locale::PtBr) => {
             "Esta gravação na spec {spec}, da fase {from} para {to}, não passa por esta porta, e \
              nada foi gravado. A aprovação nasce só quando o usuário escolhe \"Aprovar\" na \
-             pergunta \"Aprovar esta spec?\", pela testemunha; as fases depois dela, só pelo \
-             binário; a branch e a base, só no nascimento da spec; e o `run write` nunca grava \
-             uma fase aprovada."
+             pergunta \"Aprovar esta spec?\", pela testemunha; as fases depois dela, e a branch \
+             e a base, só pelo binário."
         }
         ("spec_events.phase_change_refused", Locale::EnUs) => {
             "This write to the spec {spec}, from the phase {from} to {to}, does not go through \
              this door, and nothing was written. The approval is born only when the user chooses \
              \"Approve\" in the question \"Approve this spec?\", through the witness; the phases \
-             after it, only through the binary; the branch and the base, only at the spec's \
-             birth; and `run write` never writes an approved phase."
+             after it, and the branch and the base, only through the binary."
+        }
+        ("spec_events.state_by_flow_only", Locale::PtBr) => {
+            "O estado da spec {spec} não é gravado pelo `run write`, e nada foi gravado: ele é \
+             gravado pelos comandos do fluxo e pela testemunha da aprovação, quando o usuário \
+             escolhe \"Aprovar\" na pergunta \"Aprovar esta spec?\"."
+        }
+        ("spec_events.state_by_flow_only", Locale::EnUs) => {
+            "The state of the spec {spec} is not written by `run write`, and nothing was \
+             written: the flow's commands write it, and so does the approval witness, when the \
+             user chooses \"Approve\" in the question \"Approve this spec?\"."
         }
         ("spec_events.drafted_spec", Locale::PtBr) => {
             "A spec {spec} tem o spec.md escrito pelo spec-draft: a página e o .md não são refeitos \
@@ -2440,6 +2448,7 @@ mod tests {
             ("spec_events.bad_spec_name", &["{spec}"][..]),
             ("spec_events.no_spec_file", &["{spec}"][..]),
             ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
+            ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.drafted_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),

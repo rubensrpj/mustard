@@ -114,9 +114,7 @@ fn standing(root: &str, session: Option<&str>) -> Standing {
         Some(state) if state.phase == Some("plan") => Standing::Awaiting(spec),
         Some(state) if state.approved => Standing::Approved(spec),
         Some(state) if state.phase.is_none() => Standing::Unborn(spec),
-        None if crate::commands::spec_events::pages::drafted_by_spec_draft(&home, &spec) => {
-            Standing::Unborn(spec)
-        }
+        None if crate::shared::spec_state::unborn_draft(Path::new(root), &spec) => Standing::Unborn(spec),
         _ => Standing::NoPlan,
     };
     let Some(spec) = disk.active(session) else {
@@ -128,7 +126,7 @@ fn standing(root: &str, session: Option<&str>) -> Standing {
     }
     session
         .and_then(|sid| context::spec_for_session(root, sid))
-        .filter(|bound| *bound != spec && parent_of(&home, bound).as_deref() == Some(spec.as_str()))
+        .filter(|bound| *bound != spec && parent_of(&home, bound).is_some_and(|parent| same_spec(&parent, &spec)))
         .map(judge)
         .filter(Standing::awaits)
         .unwrap_or(current)
@@ -138,6 +136,13 @@ fn standing(root: &str, session: Option<&str>) -> Standing {
 fn parent_of(home: &Path, spec: &str) -> Option<String> {
     let paths = mustard_core::ClaudePaths::for_project(home).ok()?.for_spec(spec).ok()?;
     mustard_core::read_meta(&paths.meta_json_path())?.parent
+}
+
+/// Os dois nomes são a mesma spec: aparados, sem a barra do fim e sem
+/// distinguir maiúsculas. Um ajuste antigo pode ter gravado a mãe como veio.
+fn same_spec(a: &str, b: &str) -> bool {
+    let bare = |name: &str| name.trim().trim_end_matches(['/', '\\']).trim().to_ascii_lowercase();
+    bare(a) == bare(b)
 }
 
 /// A pergunta é a de aprovação, com o texto do catálogo em um dos idiomas.
@@ -196,7 +201,10 @@ fn approve(root: &str, spec: &str, question: &str, answer: &str, unborn: bool, l
     if let Some(unmet) = crate::commands::spec::approve_spec::unmet_before_approval(&home.to_string_lossy(), spec) {
         return Some(say("approval.witness.unmet", lang, &[("{spec}", spec), ("{unmet}", &unmet)]));
     }
-    if unborn && crate::commands::spec_events::write::record_birth(Path::new(root), spec, None).is_err() {
+    // O nascimento, numa spec que ainda não nasceu; numa que já nasceu, a
+    // branch e a base que faltam, quando a branch do checkout é a da spec.
+    let born = crate::commands::spec_events::write::record_birth(Path::new(root), spec, None);
+    if unborn && born.is_err() {
         return None;
     }
     record_approval(root, spec, question, answer)
@@ -627,7 +635,8 @@ mod tests {
         record_for(root, "ajuste", "state", json!({ "phase": "plan", "branch": "feature/epic-1" }));
         std::fs::write(
             root.join(".claude").join("spec").join("ajuste").join("meta.json"),
-            r#"{"scope":"light","stage":"Analyze","parent":"epic-1"}"#,
+            // A mãe gravada como veio, com espaço, barra e maiúscula.
+            r#"{"scope":"light","stage":"Analyze","parent":" Epic-1/ "}"#,
         )
         .unwrap();
         context::bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");

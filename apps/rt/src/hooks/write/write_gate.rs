@@ -8,9 +8,9 @@
 //!
 //! 1. **Segredo** ([`SecretRule`]): credenciais, chaves e a configuração do
 //!    git não são lidas nem escritas, dentro ou fora do projeto.
-//! 2. **Arquivos da spec** ([`SpecFileRule`]): o `spec.ndjson`, o `spec.md` e
-//!    o `spec.html` de uma spec, o índice das specs e o banco de lições são
-//!    gravados só pelo binário. A leitura passa.
+//! 2. **Arquivos da spec** ([`SpecFileRule`]): o `spec.ndjson`, o `spec.md`, o
+//!    `spec.html` e o `meta.json` da raiz de uma spec, o índice das specs e o
+//!    banco de lições são gravados só pelo binário. A leitura passa.
 //! 3. **Aprovação** ([`ApprovalRule`]): o código do projeto não muda enquanto
 //!    a spec atual não está numa fase aprovada, pela mesma lista do `State`:
 //!    em levantamento, em plano, descartada, ou com um arquivo de eventos sem
@@ -22,11 +22,12 @@
 //!    descartável. Sem `git.flow`, nenhuma branch é base; o portão nunca
 //!    pergunta ao git qual é a branch padrão.
 //!
-//! Uma spec sem `spec.ndjson` e sem o `meta.json` do `spec-draft` não tem
-//! estado: é uma branch que o Mustard não abriu, e as regras da aprovação e
-//! da branch se calam. Uma spec do `spec-draft` que ainda não tem o arquivo,
-//! aberta antes dele ou com ele apagado, conta como em plano, e trava. O
-//! portão não corta branch nenhuma: o único corte é o que o `spec-draft` faz.
+//! Uma spec sem `spec.ndjson` não tem estado, e as regras da aprovação e da
+//! branch se calam, com uma exceção: uma spec do `spec-draft` parada antes da
+//! execução, aberta antes do arquivo de eventos ou com ele apagado, conta
+//! como em plano, e trava. A spec antiga que já executou ou fechou pelo fluxo
+//! velho, e a branch que o Mustard não abriu, ficam livres. O portão não
+//! corta branch nenhuma: o único corte é o que o `spec-draft` faz.
 //!
 //! ## Duas raízes
 //!
@@ -67,8 +68,8 @@ pub struct WriteGate;
 pub(crate) struct WriteContext {
     /// A spec atual, pela escada única.
     pub(crate) spec: Option<String>,
-    /// O estado da spec atual; `None` quando ela não tem `spec.ndjson`, ou
-    /// quando não há spec atual.
+    /// O estado da spec atual, pela trava ([`lock_state`]); `None` quando não
+    /// há spec atual, ou numa branch que o Mustard não abriu.
     pub(crate) state: Option<State>,
     /// A branch da árvore que recebe a edição; `None` sem git ou com a
     /// cabeça solta.
@@ -412,6 +413,7 @@ mod tests {
             (".claude/spec/x/spec.ndjson", "x"),
             (".claude/spec/x/spec.md", "x"),
             (".claude/spec/x/spec.html", "x"),
+            (".claude/spec/x/meta.json", "x"),
             (".claude/spec/index.ndjson", "<spec>"),
             (".claude/spec/lessons.ndjson", "<spec>"),
         ] {
@@ -671,6 +673,24 @@ mod tests {
             .expect("meta");
         let expected = say("write_gate.not_approved", lang(root), &[("{spec}", "x"), ("{file}", "src/main.rs")]);
         assert_eq!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Deny { reason: expected });
+    }
+
+    /// Uma spec antiga do `spec-draft` que já executou ou fechou pelo fluxo
+    /// velho, sem `spec.ndjson`, não trava: só a parada antes da execução
+    /// conta como em plano.
+    #[test]
+    fn an_old_spec_that_ran_or_closed_is_never_locked() {
+        for meta in [
+            r#"{"scope":"light","stage":"Close","outcome":"Completed","phase":"CLOSE"}"#,
+            r#"{"scope":"full","stage":"Execute","outcome":"Active"}"#,
+            r#"{"scope":"light","stage":"Close","outcome":"Cancelled"}"#,
+        ] {
+            let dir = project("{}");
+            let root = dir.path();
+            stand_on_spec_branch(root, "x");
+            std::fs::write(root.join(".claude").join("spec").join("x").join("meta.json"), meta).expect("meta");
+            assert_eq!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Allow, "{meta}");
+        }
     }
 
     /// Uma pasta de spec sem `spec.ndjson` e sem `meta.json` é uma branch que

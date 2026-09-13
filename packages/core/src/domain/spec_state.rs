@@ -12,9 +12,11 @@
 //!   anterior, e o ausente herda. Uma versão revista de um `state` entra na
 //!   dobra no lugar do item que ela substitui, e não no fim.
 //!
-//! Uma spec sem `spec.ndjson` não tem estado nenhum: é uma branch que o
-//! Mustard não abriu, e nenhuma trava vale para ela. Uma spec com o arquivo e
-//! sem nenhum `state` visível tem estado, sem fase, e não está aprovada.
+//! Uma spec sem `spec.ndjson` não tem estado nenhum aqui. Fora do núcleo, uma
+//! spec do `spec-draft` parada antes da execução conta como em plano, e
+//! trava; só uma branch que o Mustard não abriu fica livre. Uma spec com o
+//! arquivo e sem nenhum `state` visível tem estado, sem fase, e não está
+//! aprovada.
 //!
 //! Quem decide (o portão de escrita, a testemunha da aprovação, a cobrança das
 //! pendências) recebe os valores já lidos e se testa sem disco, com uma
@@ -110,11 +112,11 @@ pub fn is_approved_phase(phase: &str) -> bool {
     APPROVED_PHASES.contains(&phase.trim())
 }
 
-/// Quem grava uma mudança de fase no `spec.ndjson`.
+/// Quem grava uma mudança de fase no `spec.ndjson`. O modelo não está aqui:
+/// o `run write` nunca grava o estado, que é dos comandos do fluxo e da
+/// testemunha da aprovação.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseWriter {
-    /// O modelo, pelo `run write`.
-    Hand,
     /// A testemunha da aprovação, com a resposta do usuário.
     Witness,
     /// O próprio binário: o nascimento da spec e a ponte do fechamento e do
@@ -122,39 +124,29 @@ pub enum PhaseWriter {
     Binary,
 }
 
-/// A regra única da mudança de fase, para toda porta que grava no
+/// A regra única da mudança de fase, para as portas do binário que gravam no
 /// `spec.ndjson`: uma gravação que leva o estado de `before` a `after`,
 /// trazendo no próprio evento a fase `carried` quando ele é um `state`, feita
 /// por `by`, é permitida?
 ///
-/// - O modelo, pelo `run write`, nunca grava uma fase aprovada, nem leva a
-///   spec a uma, por `replaces` ou por remoção.
 /// - `approved` só pela testemunha, e só de nenhuma fase ou de `plan`.
 /// - As fases depois da aprovação (`running`, `closed`, `pr_open`,
 ///   `delivered`) só pelo binário, e só a partir de uma fase aprovada.
-/// - Uma fase que não aprova (`survey`, `plan`, `discarded`, ou nenhuma) só
-///   fecha a trava, e o modelo e o binário a gravam.
-/// - A branch e a base nascem com a spec, no primeiro `state`; depois dele,
-///   só o binário as grava. O portão deixa de travar numa branch diferente da
-///   gravada, então mudar a branch à mão abriria a trava.
-/// - A fase nunca some: tirar o último `state` voltaria a spec ao nascimento,
-///   e um nascimento novo poderia trazer outra branch.
+/// - Uma fase que não aprova (`survey`, `plan`, `discarded`) só fecha a
+///   trava, e só o binário a grava.
+/// - A branch e a base, só o binário: no nascimento, ou completando a que
+///   falta. O portão deixa de travar numa branch diferente da gravada.
+/// - A fase nunca some: tirar o último `state` voltaria a spec ao nascimento.
 ///
-/// Uma gravação que não muda a fase passa, a não ser a que traz uma fase que
-/// a porta não grava ou muda a branch ou a base.
+/// O modelo não passa por aqui: o `run write` recusa o tipo `state`, e
+/// nenhuma outra gravação dele pode mudar o estado.
 #[must_use]
 pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>, by: PhaseWriter) -> bool {
-    let birth = before.phase.is_none();
-    if !birth && by != PhaseWriter::Binary && (before.branch != after.branch || before.base != after.base) {
+    if by != PhaseWriter::Binary && (before.branch != after.branch || before.base != after.base) {
         return false;
     }
-    if let Some(carried) = carried.map(str::trim) {
-        if by == PhaseWriter::Hand && is_approved_phase(carried) {
-            return false;
-        }
-        if carried == "approved" && by != PhaseWriter::Witness {
-            return false;
-        }
+    if carried.map(str::trim) == Some("approved") && by != PhaseWriter::Witness {
+        return false;
     }
     if before.phase == after.phase {
         return true;
@@ -163,13 +155,22 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
         return false;
     };
     if !is_approved_phase(to) {
-        return by != PhaseWriter::Witness;
+        return by == PhaseWriter::Binary;
     }
     match by {
         PhaseWriter::Witness => to == "approved" && matches!(before.phase, None | Some("plan")),
         PhaseWriter::Binary => to != "approved" && before.approved,
-        PhaseWriter::Hand => false,
     }
+}
+
+/// O `state` do nascimento: o primeiro na ordem da dobra, já com a revisão
+/// dele no lugar, quando houver. `None` num arquivo sem `state` visível.
+#[must_use]
+pub fn birth_event(log: &SpecLog) -> Option<&SpecEvent> {
+    log.block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|event| event.event_type == "state")
+        .min_by_key(|event| (original_of(log, event), event.id))
 }
 
 /// O número do item que `event` revê: segue os `replaces` para trás até a
@@ -216,7 +217,8 @@ pub trait SpecState {
     /// A spec atual, pela escada de [`resolve`], para a sessão `session`.
     fn active(&self, session: Option<&str>) -> Option<String>;
     /// O estado da spec `spec`; `None` só quando ela não tem arquivo de
-    /// eventos, que é uma branch que o Mustard não abriu.
+    /// eventos. Quem trava decide o que isso quer dizer: uma spec do
+    /// `spec-draft` parada antes da execução conta como em plano.
     fn state(&self, spec: &str) -> Option<State>;
     /// O arquivo de eventos da spec inteiro, para quem precisa de outro bloco;
     /// `None` quando ele não existe.
@@ -240,61 +242,50 @@ mod tests {
 
     /// Cada fase tem a sua porta: a aprovação só pela testemunha, a partir do
     /// plano; as fases depois dela só pelo binário, a partir de uma aprovada;
-    /// o modelo só fecha a trava.
+    /// a branch e a base só pelo binário.
     #[test]
     fn the_phase_rule_has_one_door_per_phase() {
-        use PhaseWriter::{Binary, Hand, Witness};
+        use PhaseWriter::{Binary, Witness};
         let allowed = |from, to, by| phase_write_allowed(&at(from), &at(to), to, by);
 
         assert!(allowed(Some("plan"), Some("approved"), Witness));
         assert!(allowed(None, Some("approved"), Witness));
         assert!(!allowed(Some("survey"), Some("approved"), Witness), "no approval before the plan");
-        for by in [Hand, Binary] {
-            assert!(!allowed(Some("plan"), Some("approved"), by), "{by:?} never approves");
-        }
+        assert!(!allowed(Some("plan"), Some("approved"), Binary), "the binary never approves");
 
         for later in ["running", "closed", "pr_open", "delivered"] {
             assert!(allowed(Some("approved"), Some(later), Binary), "{later} after the approval");
             assert!(!allowed(Some("plan"), Some(later), Binary), "{later} never skips the approval");
-            assert!(!allowed(Some("approved"), Some(later), Hand), "the model never writes {later}");
             assert!(!allowed(Some("approved"), Some(later), Witness));
         }
 
         for locking in ["survey", "plan", "discarded"] {
-            assert!(allowed(Some("running"), Some(locking), Hand), "{locking} only locks");
+            assert!(allowed(Some("running"), Some(locking), Binary), "{locking} only locks");
             assert!(allowed(None, Some(locking), Binary));
+            assert!(!allowed(None, Some(locking), Witness), "the witness only approves");
         }
 
-        // Uma revisão que não muda a fase passa, a não ser a que traz uma
-        // fase aprovada pela mão do modelo.
-        assert!(phase_write_allowed(&at(Some("approved")), &at(Some("approved")), Some("plan"), Hand));
-        assert!(!phase_write_allowed(&at(Some("approved")), &at(Some("approved")), Some("approved"), Hand));
-        // Tirar o `state` que fechou a trava de novo e voltar a uma fase
-        // aprovada é abrir a trava: o modelo não faz.
-        assert!(!phase_write_allowed(&at(Some("plan")), &at(Some("approved")), None, Hand));
+        // A fase nunca some: tirar o último `state` não é gravação de porta
+        // nenhuma.
+        for by in [Witness, Binary] {
+            assert!(!phase_write_allowed(&at(Some("plan")), &at(None), None, by), "{by:?}");
+        }
 
-        // A branch e a base nascem com a spec, pelo binário; ninguém mais as
-        // muda.
-        let on = |branch: &str, base: &str| State {
+        // A branch e a base, só o binário: no nascimento, ou completando a
+        // que falta.
+        let on = |branch: Option<&str>, base: &str| State {
             phase: Some("plan"),
-            branch: Some(branch.to_string()),
+            branch: branch.map(str::to_string),
             base: Some(base.to_string()),
             ..State::default()
         };
-        assert!(phase_write_allowed(&at(None), &on("feature/x", "dev"), Some("plan"), Binary), "the birth");
+        assert!(phase_write_allowed(&at(None), &on(Some("feature/x"), "dev"), Some("plan"), Binary), "the birth");
         assert!(
-            phase_write_allowed(&at(None), &on("feature/x", "dev"), Some("plan"), Hand),
-            "the model's first state is the birth, with the branch",
+            phase_write_allowed(&on(None, "dev"), &on(Some("feature/x"), "dev"), Some("plan"), Binary),
+            "completing the missing branch",
         );
-        // A fase nunca some: tirar o último `state` não é gravação de porta
-        // nenhuma.
-        for by in [Hand, Witness, Binary] {
-            assert!(!phase_write_allowed(&at(Some("plan")), &at(None), None, by), "{by:?}");
-        }
-        for by in [Hand, Witness] {
-            assert!(!phase_write_allowed(&on("feature/x", "dev"), &on("outra", "dev"), Some("plan"), by), "{by:?}");
-            assert!(!phase_write_allowed(&on("feature/x", "dev"), &on("feature/x", "main"), Some("plan"), by), "{by:?}");
-        }
+        assert!(!phase_write_allowed(&on(Some("feature/x"), "dev"), &on(Some("outra"), "dev"), Some("plan"), Witness));
+        assert!(!phase_write_allowed(&on(Some("feature/x"), "dev"), &on(Some("feature/x"), "main"), Some("plan"), Witness));
     }
 
     #[test]

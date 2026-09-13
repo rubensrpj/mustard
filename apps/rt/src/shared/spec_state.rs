@@ -29,17 +29,11 @@ const SESSION_VARS: &[&str] = &["MUSTARD_SESSION_ID", "CLAUDE_CODE_SESSION_ID", 
 
 /// The session id the `run` face was handed through the environment, by the
 /// order of [`SESSION_VARS`]. Never a guess from the newest session folder,
-/// which could name another session's spec.
-///
-/// Nos testes unitários, a sessão do ambiente de quem roda a suíte nunca
-/// entra: o Claude Code põe a dele no ambiente dos comandos, e um teste que
-/// fecha uma spec ganharia um dono que não escolheu. A ordem das variáveis é
-/// provada pela função pura [`session_from`].
+/// which could name another session's spec. Só as entradas `run` perguntam
+/// aqui e passam a sessão para baixo; o que elas chamam recebe a sessão como
+/// argumento, e os testes passam a deles.
 #[must_use]
 pub(crate) fn session_from_env() -> Option<String> {
-    if cfg!(test) {
-        return None;
-    }
     session_from(|key| std::env::var(key).ok())
 }
 
@@ -103,16 +97,37 @@ pub(crate) fn approved(root: &Path, spec: &str) -> bool {
     DiskSpecState::new(root).state(spec).is_some_and(|state| state.approved)
 }
 
-/// O estado que a trava da aprovação lê: o do `spec.ndjson`; numa spec aberta
-/// pelo `spec-draft` que ainda não tem o arquivo, aberta antes dele ou com ele
-/// apagado, a fase de plano, sem branch. `None` só numa branch que o Mustard
-/// não abriu: sem arquivo de eventos e sem o `meta.json` do rascunho.
+/// O estado que a trava da aprovação lê: o do `spec.ndjson`; numa spec do
+/// `spec-draft` que ainda não tem o arquivo e está parada antes da execução
+/// ([`unborn_draft`]), a fase de plano, sem branch. `None` numa branch que o
+/// Mustard não abriu, e numa spec antiga que já executou ou fechou pelo fluxo
+/// velho.
 #[must_use]
 pub(crate) fn lock_state(root: &Path, spec: &str) -> Option<State> {
-    DiskSpecState::new(root).state(spec).or_else(|| {
-        crate::commands::spec_events::pages::drafted_by_spec_draft(&store::spec_root(root), spec)
-            .then(|| State { phase: Some("plan"), ..State::default() })
-    })
+    DiskSpecState::new(root)
+        .state(spec)
+        .or_else(|| unborn_draft(root, spec).then(|| State { phase: Some("plan"), ..State::default() }))
+}
+
+/// Uma spec do `spec-draft` parada antes da execução: o `meta.json` dela está
+/// em análise ou em plano, e ativo. Uma encerrada, ou em execução pelo fluxo
+/// velho, não trava nem espera aprovação. Não pergunta se há `spec.ndjson`:
+/// quem chama já sabe que não há.
+#[must_use]
+pub(crate) fn unborn_draft(root: &Path, spec: &str) -> bool {
+    let Some(meta) = mustard_core::ClaudePaths::for_project(store::spec_root(root))
+        .and_then(|paths| paths.for_spec(spec.trim()))
+        .ok()
+        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()))
+    else {
+        return false;
+    };
+    let before_run = meta
+        .stage
+        .as_deref()
+        .is_none_or(|stage| ["Analyze", "Plan"].iter().any(|s| stage.trim().eq_ignore_ascii_case(s)));
+    let active = meta.outcome.as_deref().is_none_or(|outcome| outcome.trim().eq_ignore_ascii_case("Active"));
+    before_run && active
 }
 
 /// A aprovação que vale de uma spec: a pergunta, a opção que o usuário

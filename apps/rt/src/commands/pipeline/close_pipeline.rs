@@ -172,7 +172,8 @@ pub(crate) fn close(cwd: &Path, spec: &str) -> Value {
         });
     }
 
-    let complete_value = complete_spec::finalize(cwd, spec);
+    let session = crate::shared::spec_state::session_from_env();
+    let complete_value = complete_spec::finalize(cwd, spec, session.as_deref());
     let completed = complete_value
         .get("ok")
         .and_then(Value::as_bool)

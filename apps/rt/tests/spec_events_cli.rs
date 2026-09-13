@@ -29,6 +29,15 @@ fn write(root: &Path, event_type: &str, fields: &Value) -> u64 {
     stdout_json(&out)["id"].as_u64().expect("the write reports its number")
 }
 
+/// O `state` da spec, pela gravação do núcleo: o `run write` não grava o
+/// estado, que é dos comandos do fluxo e da testemunha.
+fn seed_state(root: &Path, fields: &Value) {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+    let draft = fields.as_object().cloned().expect("an object");
+    mustard_core::io::spec_events::write(&path, "state", draft, &[]).expect("state");
+}
+
 fn read(root: &Path, block: &str) -> Value {
     let out = rt(root, &["read", block, "--spec", "teste"]).output().expect("run read");
     assert!(out.status.success(), "read {block}: {}", String::from_utf8_lossy(&out.stdout));
@@ -105,7 +114,7 @@ fn two_processes_writing_at_once_leave_both_items_on_the_page_and_the_md() {
 fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    write(root, "state", &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
+    seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = write(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
     write(root, "context", &json!({"text": "O contexto.", "origin": msg}));
     let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": msg}));
@@ -155,7 +164,7 @@ fn index_file(root: &Path) -> std::path::PathBuf {
 fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    write(root, "state", &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
+    seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = write(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
     write(root, "context", &json!({"text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
     write(root, "rule", &json!({"text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));

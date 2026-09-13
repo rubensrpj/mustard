@@ -965,7 +965,8 @@ fn mark_pending_work_branch(
 fn finalize_complete(cwd: &Path, spec: &str, ts: &str, sid: &str) {
     patch_meta_complete(cwd, spec, ts);
     emit_completed_status_if_needed(cwd, spec, ts, sid);
-    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed");
+    let session = Some(sid).filter(|sid| !sid.is_empty());
+    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed", session);
 }
 
 /// The one deterministic success line — `{ok, kind, spec[, branch][,
@@ -1892,8 +1893,9 @@ fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
         // No QA owed → finalize exactly like `complete-spec`.
         patch_meta_complete(cwd, spec, ts);
         emit_pipeline_complete(cwd, spec, ts);
-        emit_completed_status_if_needed(cwd, spec, ts, &session_from_env().unwrap_or_default());
-        let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed");
+        let session = session_from_env();
+        emit_completed_status_if_needed(cwd, spec, ts, session.as_deref().unwrap_or_default());
+        let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed", session.as_deref());
     }
 }
 
