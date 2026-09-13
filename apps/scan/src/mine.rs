@@ -1031,8 +1031,6 @@ mod tests {
         }
     }
 
-    /// A named type never needed either test, and must not start depending on
-    /// one: a file carrying a type PLUS helpers still yields the type.
     #[test]
     fn the_two_most_frequent_roles_break_ties_by_name() {
         // A fresh map each round: every one hashes in its own order.
@@ -1046,6 +1044,8 @@ mod tests {
         }
     }
 
+    /// A named type never needed either test, and must not start depending on
+    /// one: a file carrying a type PLUS helpers still yields the type.
     #[test]
     fn a_named_type_is_a_unit_even_when_it_shares_its_file() {
         let m = Module {
