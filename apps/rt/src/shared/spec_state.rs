@@ -97,22 +97,38 @@ pub(crate) fn approved(root: &Path, spec: &str) -> bool {
     DiskSpecState::new(root).state(spec).is_some_and(|state| state.approved)
 }
 
-/// O estado que a trava da aprovação lê: o do `spec.ndjson`; numa spec do
-/// `spec-draft` que ainda não tem o arquivo e está parada antes da execução
-/// ([`unborn_draft`]), a fase de plano, sem branch. `None` numa branch que o
-/// Mustard não abriu, e numa spec antiga que já executou ou fechou pelo fluxo
-/// velho.
+/// O estado que a trava da aprovação lê, decidido só aqui. Com algum `state`
+/// visível no `spec.ndjson` (o do checkout principal, num worktree), vale a
+/// dobra deles. Sem nenhum `state`, com ou sem arquivo, vale o `meta.json`:
+/// uma spec do `spec-draft` parada antes da execução ([`unborn_draft`]) conta
+/// como em plano, sem branch; uma que já executou ou fechou pelo fluxo velho,
+/// e uma branch que o Mustard não abriu, dão `None`, e nada trava.
+///
+/// Uma spec antiga só segue o `meta.json` até nascer: toda porta do binário
+/// que avança o estágio dela a faz nascer em plano antes
+/// ([`crate::commands::spec_events::write::birth_before_advance`]). Daí em
+/// diante a trava lê o estado, e a execução só vem depois do "Aprovar".
 #[must_use]
 pub(crate) fn lock_state(root: &Path, spec: &str) -> Option<State> {
+    match DiskSpecState::new(root).log(spec).filter(|log| mustard_core::domain::spec_state::birth_event(log).is_some()) {
+        Some(log) => Some(State::from_log(&log)),
+        None => unborn_draft(root, spec).then(|| State { phase: Some("plan"), ..State::default() }),
+    }
+}
+
+/// A spec ainda não nasceu no arquivo de eventos: não há nenhum `state`
+/// visível, com ou sem arquivo.
+#[must_use]
+pub(crate) fn unborn(root: &Path, spec: &str) -> bool {
     DiskSpecState::new(root)
-        .state(spec)
-        .or_else(|| unborn_draft(root, spec).then(|| State { phase: Some("plan"), ..State::default() }))
+        .log(spec)
+        .is_none_or(|log| mustard_core::domain::spec_state::birth_event(&log).is_none())
 }
 
 /// Uma spec do `spec-draft` parada antes da execução: o `meta.json` dela está
 /// em análise ou em plano, e ativo. Uma encerrada, ou em execução pelo fluxo
-/// velho, não trava nem espera aprovação. Não pergunta se há `spec.ndjson`:
-/// quem chama já sabe que não há.
+/// velho, não trava nem espera aprovação. Não olha o arquivo de eventos: quem
+/// chama já sabe que a spec não tem nenhum `state`.
 #[must_use]
 pub(crate) fn unborn_draft(root: &Path, spec: &str) -> bool {
     let Some(meta) = mustard_core::ClaudePaths::for_project(store::spec_root(root))

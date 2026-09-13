@@ -138,6 +138,9 @@ pub enum PhaseWriter {
 ///   falta. O portão deixa de travar numa branch diferente da gravada.
 /// - A fase nunca some: tirar o último `state` voltaria a spec ao nascimento.
 ///
+/// `carried` é a fase que o evento traz como mudança: numa revisão que
+/// repete a fase do item revisto, quem chama não passa fase nenhuma.
+///
 /// O modelo não passa por aqui: o `run write` recusa o tipo `state`, e
 /// nenhuma outra gravação dele pode mudar o estado.
 #[must_use]

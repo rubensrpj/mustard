@@ -176,6 +176,7 @@ fn record_in(
     let carried = (event_type == "state")
         .then(|| draft.get("phase").and_then(Value::as_str).map(|phase| phase.trim().to_string()))
         .flatten();
+    let replaces = (event_type == "state").then(|| draft.get("replaces").and_then(Value::as_u64)).flatten();
     let name = spec.trim().to_string();
     // A página e o `.md` acompanham cada gravação e são refeitos antes de a
     // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
@@ -186,7 +187,7 @@ fn record_in(
         event_type,
         draft,
         &roots,
-        |before, after| phase_rule(&name, before, after, carried.as_deref(), by),
+        |before, after| phase_rule(&name, before, after, carried.as_deref(), replaces, by),
         |log| {
             if !drafted {
                 pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
@@ -199,14 +200,21 @@ fn record_in(
 /// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
 /// Sem porta do binário (`by` vazio), é o modelo pelo `run write`: nenhuma
 /// gravação dele muda o estado.
+///
+/// Uma revisão (`replaces`) que repete a fase do item revisto não muda a
+/// fase: não traz fase nenhuma para a regra. É o caso da branch que falta,
+/// completada no `state` da própria aprovação.
 fn phase_rule(
     spec: &str,
     before: &SpecLog,
     after: &SpecLog,
     carried: Option<&str>,
+    replaces: Option<u64>,
     by: Option<PhaseWriter>,
 ) -> Result<(), Refusal> {
     let (was, now) = (State::from_log(before), State::from_log(after));
+    let revised = replaces.and_then(|id| before.get(id)).and_then(|event| event.str_field("phase")).map(str::trim);
+    let carried = carried.filter(|phase| revised != Some(*phase));
     let Some(by) = by else {
         return if was == now { Ok(()) } else { Err(Refusal::StateByFlowOnly { spec: spec.to_string() }) };
     };
@@ -276,16 +284,31 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Optio
 /// sabem, revendo o `state` do nascimento: a fase fica como está, e uma
 /// branch ou uma base já gravadas nunca são trocadas. É o caso da spec
 /// rascunhada numa base e cortada depois, e da branch que nasce só no corte.
+///
+/// Um ajuste tático (o `meta.json` com `parent`) mora na branch da mãe: sem
+/// branch dita, vale a gravada da mãe, ou a do checkout quando ela é a da
+/// mãe. O nome do ajuste nunca é o de uma branch.
 pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Result<bool, Refusal> {
     let born = DiskSpecState::new(start).log(spec).filter(|log| State::from_log(log).phase.is_some());
-    let branch = branch.map(str::to_string).or_else(|| branch_of_spec(start, spec));
     // O `meta.json` mora na pasta da spec do checkout principal, também vista
     // de um worktree; a branch é a do checkout em `start`.
-    let base = ClaudePaths::for_project(store::spec_root(start))
+    let meta = ClaudePaths::for_project(store::spec_root(start))
         .and_then(|paths| paths.for_spec(spec.trim()))
         .ok()
-        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()))
-        .and_then(|meta| meta.base);
+        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()));
+    let base = meta.as_ref().and_then(|meta| meta.base.clone());
+    let parent = meta
+        .and_then(|meta| meta.parent)
+        .map(|parent| parent.trim().trim_end_matches(['/', '\\']).trim().to_string())
+        .filter(|parent| !parent.is_empty());
+    let branch = match (branch, parent) {
+        (Some(branch), _) => Some(branch.to_string()),
+        (None, Some(parent)) => DiskSpecState::new(start)
+            .state(&parent)
+            .and_then(|state| state.branch)
+            .or_else(|| branch_of_spec(start, &parent)),
+        (None, None) => branch_of_spec(start, spec),
+    };
     if let Some(log) = born {
         return complete_missing(start, spec, &log, branch, base);
     }
@@ -299,6 +322,18 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
         draft.insert("base".to_string(), json!(base));
     }
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
+}
+
+/// Antes de uma porta do binário avançar o estágio do `meta.json` de uma spec
+/// antiga, parada antes da execução e ainda sem nenhum `state`, a spec nasce
+/// em plano pelo [`record_birth`]. A trava dela deixa de seguir o `meta.json`
+/// e passa a ler o estado: a execução só vem depois do "Aprovar". Nas outras
+/// specs, não faz nada.
+pub(crate) fn birth_before_advance(start: &Path, spec: &str) {
+    use crate::shared::spec_state::{unborn, unborn_draft};
+    if unborn(start, spec) && unborn_draft(start, spec) {
+        let _ = record_birth(start, spec, None);
+    }
 }
 
 /// Completa a branch e a base que faltam no estado de uma spec que já nasceu,
@@ -628,6 +663,85 @@ mod tests {
         git(&["checkout", "-q", "-b", "feature/outra"]);
         assert_eq!(record_birth(root, "teste", Some("feature/zzz")), Ok(false));
         assert_eq!(state().branch.as_deref(), Some("feature/teste"));
+    }
+
+    /// Um repositório em `root`, com o fluxo `dev` → `main`, no checkout
+    /// `branch`.
+    fn repo_on(root: &std::path::Path, branch: &str) {
+        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["checkout", "-q", "-b", "dev"]);
+        std::fs::write(root.join("README.md"), "oi\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        if branch != "dev" {
+            git(&["checkout", "-q", "-b", branch]);
+        }
+    }
+
+    /// Um `state` gravado direto no arquivo da spec, sem regra nenhuma.
+    fn seed_state(root: &std::path::Path, spec: &str, fields: Value) {
+        let path = store::spec_file(root, spec).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        store::write(&path, "state", fields.as_object().cloned().unwrap(), &[]).unwrap();
+    }
+
+    /// Numa spec cujo primeiro `state` é a própria aprovação, a branch que
+    /// falta é completada: a revisão repete a fase aprovada, e isso não é
+    /// mudança de fase.
+    #[test]
+    fn a_missing_branch_is_completed_on_the_approval_itself() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        repo_on(root, "feature/teste");
+        seed_state(
+            root,
+            "teste",
+            json!({ "phase": "approved", "author": "user", "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" } }),
+        );
+        assert_eq!(record_birth(root, "teste", None), Ok(true));
+        let state = DiskSpecState::new(root).state("teste").unwrap();
+        assert_eq!(state.branch.as_deref(), Some("feature/teste"));
+        assert!(state.approved, "the approval stays");
+    }
+
+    /// Um ajuste tático nasce na branch da mãe: a gravada dela, de qualquer
+    /// checkout; sem ela, a do checkout, quando ela é a da mãe.
+    #[test]
+    fn a_tactical_fix_is_born_on_its_parents_branch() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        repo_on(root, "feature/epic");
+        let fix = |name: &str, parent: &str| {
+            let folder = root.join(".claude").join("spec").join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            let meta = json!({ "scope": "light", "stage": "Analyze", "outcome": "Active", "parent": parent });
+            std::fs::write(folder.join("meta.json"), meta.to_string()).unwrap();
+        };
+        let branch = |name: &str| DiskSpecState::new(root).state(name).unwrap().branch;
+
+        // A mãe sem branch gravada: vale a do checkout, que é a dela.
+        seed_state(root, "epic", json!({ "phase": "running" }));
+        fix("ajuste", "epic");
+        assert_eq!(record_birth(root, "ajuste", None), Ok(true));
+        assert_eq!(branch("ajuste").as_deref(), Some("feature/epic"));
+
+        // A mãe com branch gravada: vale a gravada, mesmo em outro checkout.
+        seed_state(root, "mae", json!({ "phase": "running", "branch": "feature/mae" }));
+        fix("outro-ajuste", "mae");
+        assert_eq!(record_birth(root, "outro-ajuste", None), Ok(true));
+        assert_eq!(branch("outro-ajuste").as_deref(), Some("feature/mae"));
     }
 
     #[test]

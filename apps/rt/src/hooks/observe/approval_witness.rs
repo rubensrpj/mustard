@@ -15,8 +15,8 @@
 //!
 //! 1. **A spec espera aprovação.** A spec atual, pela escada única, está na
 //!    fase `plan`, ou ainda não nasceu. É isso que diz qual spec é e que há
-//!    uma aprovação pendente; a regra única da mudança de fase não deixa o
-//!    modelo gravar essa aprovação à mão.
+//!    uma aprovação pendente. O modelo não grava essa aprovação à mão: o
+//!    `run write` recusa o tipo `state`.
 //! 2. **Uma escolha de verdade.** A resposta é exatamente um dos rótulos que a
 //!    própria pergunta de aprovação ofereceu, e nunca os de outra pergunta da
 //!    mesma chamada. Texto livre, digitado na linha "Outro" ou nas notas,
@@ -50,9 +50,9 @@
 //! As conferências leem a spec no checkout principal, onde moram o `spec.md`
 //! e o `meta.json`, também quando a pergunta é respondida num worktree.
 //!
-//! Uma spec ainda sem nascimento — aberta pelo `spec-draft` antes de haver
-//! arquivo de eventos, ou com o arquivo e nenhum `state` — recebe no "Aprovar"
-//! primeiro o nascimento, em plano, e depois a aprovação.
+//! Uma spec ainda sem nascimento — uma spec do `spec-draft` parada antes da
+//! execução, sem nenhum `state`, com ou sem arquivo de eventos — recebe no
+//! "Aprovar" primeiro o nascimento, em plano, e depois a aprovação.
 //!
 //! ## Nunca barra, nunca cala
 //!
@@ -85,9 +85,9 @@ pub struct ApprovalWitness;
 enum Standing {
     /// Na fase de plano: a aprovação está pendente.
     Awaiting(String),
-    /// Ainda sem nascimento: aberta pelo `spec-draft` antes de haver arquivo
-    /// de eventos, ou com o arquivo e nenhuma fase. Espera aprovação como uma
-    /// em plano.
+    /// Ainda sem nascimento: uma spec do `spec-draft` parada antes da
+    /// execução, sem nenhum `state`, com ou sem arquivo de eventos. Espera
+    /// aprovação como uma em plano.
     Unborn(String),
     /// Já aprovada.
     Approved(String),
@@ -110,12 +110,21 @@ impl Standing {
 fn standing(root: &str, session: Option<&str>) -> Standing {
     let disk = DiskSpecState::new(Path::new(root));
     let home = spec_root(Path::new(root));
-    let judge = |spec: String| match disk.state(&spec) {
-        Some(state) if state.phase == Some("plan") => Standing::Awaiting(spec),
-        Some(state) if state.approved => Standing::Approved(spec),
-        Some(state) if state.phase.is_none() => Standing::Unborn(spec),
-        None if crate::shared::spec_state::unborn_draft(Path::new(root), &spec) => Standing::Unborn(spec),
-        _ => Standing::NoPlan,
+    // O estado que a trava lê, pela mesma função do portão: a spec que ainda
+    // não nasceu e segue o `meta.json` espera aprovação como uma em plano.
+    let judge = |spec: String| {
+        let Some(state) = crate::shared::spec_state::lock_state(Path::new(root), &spec) else {
+            return Standing::NoPlan;
+        };
+        if state.phase == Some("plan") && crate::shared::spec_state::unborn(Path::new(root), &spec) {
+            Standing::Unborn(spec)
+        } else if state.phase == Some("plan") {
+            Standing::Awaiting(spec)
+        } else if state.approved {
+            Standing::Approved(spec)
+        } else {
+            Standing::NoPlan
+        }
     };
     let Some(spec) = disk.active(session) else {
         return Standing::NoPlan;
@@ -601,8 +610,9 @@ mod tests {
         assert!(state(root).approved, "with the preconditions met the answer approves");
     }
 
-    /// Um arquivo de eventos sem nenhum `state` é uma spec sem nascimento: o
-    /// "Aprovar" grava o plano e depois a aprovação.
+    /// Uma spec do `spec-draft` parada antes da execução, com um arquivo de
+    /// eventos sem nenhum `state`, é uma spec sem nascimento: o "Aprovar"
+    /// grava o plano e depois a aprovação.
     #[test]
     fn a_spec_file_without_a_state_is_born_and_approved() {
         if ambient_override() {
@@ -611,6 +621,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         record_for(root, "epic", "message", json!({ "author": "user", "text": "oi" }));
+        std::fs::write(root.join(".claude").join("spec").join("epic").join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#)
+            .unwrap();
         context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
         witness(root, &approve_or_adjust("Aprovar"));
         assert!(state(root).approved, "the spec with no phase is approved");
@@ -710,9 +722,9 @@ mod tests {
         assert!(!state(&main).approved, "nothing was recorded");
     }
 
-    /// Uma spec aberta pelo `spec-draft` antes de haver arquivo de eventos
-    /// nasce e é aprovada no mesmo "Aprovar": primeiro o plano, com a base do
-    /// `meta.json`, depois a aprovação.
+    /// Uma spec do `spec-draft` parada antes da execução, sem arquivo de
+    /// eventos, nasce e é aprovada no mesmo "Aprovar": primeiro o plano, com a
+    /// base do `meta.json`, depois a aprovação.
     #[test]
     fn a_spec_opened_before_the_event_file_is_born_and_approved() {
         if ambient_override() {
