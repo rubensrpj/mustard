@@ -92,7 +92,15 @@ pub(crate) fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&s
     // `.session/` directory is not exposed via `ClaudePaths` (it is the
     // sole consumer here, not Mustard-owned), so we reach for
     // `claude_dir()` and append manually.
-    paths.claude_dir().join(".session").join(session_slug).join(".events")
+    paths.claude_dir().join(".session").join(session_folder(session_slug)).join(".events")
+}
+
+/// O id de sessão como nome de pasta. Um id vazio, com barra, com `:` ou que
+/// começa por ponto sairia de `.claude/.session/` (`..`, `/tmp/x`, `C:\x`);
+/// nesse caso o evento cai na pasta `unknown`, a mesma de quem não tem sessão.
+fn session_folder(slug: &str) -> &str {
+    let safe = !slug.is_empty() && !slug.contains(['/', '\\', ':']) && !slug.starts_with('.');
+    if safe { slug } else { "unknown" }
 }
 
 /// One per-process writer file name (`{ts-ns}-{run-id}-{pid}.ndjson`).
@@ -331,6 +339,27 @@ mod tests {
         );
         assert!(!dir.path().join(".claude").join("fora").exists(), "nothing lands beside the specs");
         assert!(dir.path().join(".claude").join(".session").join("s-1").join(".events").is_dir());
+    }
+
+    /// Um id de sessão cru, com `..`, absoluto ou com barra, nunca sai da pasta
+    /// das sessões: o evento cai na pasta `unknown`.
+    #[test]
+    fn a_raw_session_id_never_leaves_the_session_folder() {
+        let project = Path::new("/proj");
+        let unknown = project.join(".claude").join(".session").join("unknown").join(".events");
+        for bad in ["..", "../fora", "/tmp/x", "a/b", "C:\\x", "C:x", ".oculta", ""] {
+            assert_eq!(event_dir(project, None, None, bad), unknown, "session {bad:?}");
+        }
+        assert!(event_dir(project, None, None, "s-42").ends_with("s-42/.events"), "a real id is kept");
+
+        let dir = tempdir().unwrap();
+        let outside = dir.path().join("fora");
+        let _ = write_event(
+            &dir.path().join("proj"), None, None, "../../fora",
+            "tool.use", "tool", None, None, None, None, &json!({}),
+        );
+        assert!(!outside.exists(), "nothing lands outside the project");
+        assert!(dir.path().join("proj").join(".claude").join(".session").join("unknown").join(".events").is_dir());
     }
 
     #[test]
