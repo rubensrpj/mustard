@@ -11,7 +11,7 @@ Law: no code before the approved spec — `write_gate` refuses it anyway. Full s
 
 ## When
 
-Router dispatched a `feature` kind, or (fallback) the user asks to create / add / implement across ≥2 layers or a new entity. The one fork: single-layer, already-located work is a `/mustard:task`, not a feature — route there and stop.
+Router dispatched a `feature` kind, or (fallback) the user asks to create / add / implement across ≥2 layers or a new entity. The one fork: single-layer, already-located work is a `/mustard:task`, not a feature — route there and stop. On an integration base `/task` only analyzes, so a single-layer EDIT stays here, on the light path: the spec is what opens the branch.
 
 ## 1. ANALYZE — understand + research
 
@@ -37,7 +37,7 @@ No stage emit here; the unit's name was minted at the base gate, BEFORE this flo
 
 ## 2. Route + scope (deterministic — never your eye alone)
 
-1. Routing economy: pruned anchors show single-layer work, no new entity → run it as `/mustard:task` on those anchors and STOP.
+1. Routing economy: pruned anchors show single-layer work, no new entity → run it as `/mustard:task` on those anchors and STOP — except on an integration base, where `/task` only analyzes: an edit stays here and takes the light path.
 2. **Assemble the conversation material FIRST — then materialize. Never the other way round.** A flow that drafts first invites the retype-by-hand this channel exists to remove: what the hand does not retype is simply lost. **The base gate comes first, and the order lives in one place — `.claude/mustard/dispatch.md`, which states it for every flow.** The gate is what NAMES the unit, the branch is cut from that name, and the branch is cut by `spec-draft`, never by this write. This write is harness state, not project code: `.claude/.cache/` is ignored by git, and the write gate carves it out of an integration base just like `.claude/plans/` and `.claude/scratch/`, so it lands whether the unit's branch is already out or not. Write everything §1 established into one JSON file (`.claude/.cache/spec-material.json` — a scratch path; the material's permanent home is the spec `spec-draft` is about to write):
    ```json
    { "definitions": [{"term": "wave", "meaning": "one level of the plan"}],

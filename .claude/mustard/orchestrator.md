@@ -15,6 +15,8 @@ Classify intent + coarse scope yourself. There is no pre-spec classifier. Narrat
 | Vibe / spike | prototype, throwaway | `task`, no spec, no phase gates |
 | Simple | config tweak, one-line edit, rename, version bump | direct (no Task) |
 
+**On an integration base `task` only analyzes.** The write gate refuses edits on a base the `git.flow` declares, and `task` opens no branch — a branch is opened only with its spec. So `Analyze` runs as `task` anywhere, while an `Enhancement` or a `Vibe / spike` on a base goes to `feature` in the light mode, which opens the spec and its branch.
+
 **`Simple` dispenses the PIPELINE, never the question.** It means no spec, no waves, no gates — it does not mean writing to whatever branch the checkout happens to be on. Any request that EDITS A FILE opens a work unit, and § Dispatch's opening question is what opens it, one line or five hundred. Measured in the field, 2026-08-26: a one-line fix was read as `Simple` and committed straight onto `release`, and the operator had to ask why nothing was asked. The exemption is for ceremony; where the work is born is not ceremony.
 
 Each kind dispatches the `/mustard:<kind>` flow. **Dispatching means LOADING the flow, not improvising it.** For `feature`/`bugfix`/`task`/`tactical-fix`, invoke `Skill(mustard:<kind>)` FIRST, then follow what it loads. Never your recollection of the commands. `spec-draft` is the ONLY `spec.md` writer; never hand-write it. Skill unavailable: use `commands/<kind>.md`. `/mustard:*` is a direct power-override.
