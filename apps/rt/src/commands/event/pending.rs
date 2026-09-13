@@ -147,6 +147,27 @@ struct PendingItem {
 struct Ledger {
     #[serde(default)]
     items: Vec<PendingItem>,
+    /// O lote da faxina que o usuário ainda não respondeu: os números que o
+    /// `--stale` mostrou. O `--expire` o consome.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sweep: Vec<String>,
+    /// Quantas gravações a lista já teve. Toda gravação conta uma, e o código
+    /// de uma remoção muda com ela: se a lista mudou, nada sai.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    revision: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// A recusa de uma pendência repetida: o mesmo título, sem ligar para
+/// maiúscula nem acento, de uma que já está aberta.
+fn duplicate(open: &PendingItem, lang: Locale) -> Value {
+    let hint = mustard_core::translate("pending.duplicate", lang)
+        .replace("{id}", &open.id)
+        .replace("{title}", &open.title);
+    json!({ "ok": false, "reason": "duplicate", "id": open.id, "hint": hint })
 }
 
 /// O que a chamada pede — exatamente uma ação.
@@ -406,11 +427,23 @@ fn select(ledger: &Ledger, selector: &Selector, lang: Locale) -> Result<Vec<Stri
     Ok(chosen)
 }
 
-/// O código da confirmação: a impressão do conjunto que sairia, com o número e
-/// o título de cada pendência. Uma lista que mudou dá outro código.
-fn token(ledger: &Ledger, chosen: &[String]) -> String {
-    let parts: Vec<String> =
-        ledger.items.iter().filter(|i| chosen.contains(&i.id)).map(|i| format!("{} {}", i.id, i.title)).collect();
+/// O código da confirmação: a impressão da revisão da lista, do motivo, de
+/// cada pendência que sairia (número, estado e título) e da lista aberta
+/// inteira. Outro motivo, qualquer gravação no meio (um `--reopen`, uma
+/// pendência nova) ou qualquer mudança na lista aberta dão outro código.
+fn token(ledger: &Ledger, chosen: &[String], reason: &str) -> String {
+    let mut parts = vec![ledger.revision.to_string(), reason.to_string()];
+    parts.extend(
+        ledger
+            .items
+            .iter()
+            .filter(|i| chosen.contains(&i.id))
+            .map(|i| format!("{} {} {}", i.id, i.status.as_str(), i.title)),
+    );
+    parts.push("--".to_string());
+    parts.extend(
+        ledger.items.iter().filter(|i| i.status == Status::Open).map(|i| format!("{} {}", i.id, i.title)),
+    );
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
     format!("{:08x}", fnv1a64(&refs) >> 32)
 }
@@ -500,12 +533,14 @@ fn item_json(item: &PendingItem) -> Value {
     Value::Object(out)
 }
 
-/// Grava a lista. Antes, todo item sem data ganha a data do dia: é a
-/// primeira gravação dele desde que a data existe.
+/// Grava a lista. Antes, todo item sem data ganha a data do dia (é a
+/// primeira gravação dele desde que a data existe), e a revisão conta mais
+/// uma.
 fn write(path: &Path, ledger: &mut Ledger, today: &str) -> Result<(), Value> {
     for item in ledger.items.iter_mut().filter(|i| i.created.is_none()) {
         item.created = Some(today.to_string());
     }
+    ledger.revision = ledger.revision.saturating_add(1);
     let mut body = serde_json::to_string_pretty(ledger)
         .map_err(|e| refused("write-failed", &e.to_string()))?;
     body.push('\n');
@@ -544,10 +579,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             if let Some(open) =
                 ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key)
             {
-                let hint = mustard_core::translate("pending.duplicate", lang)
-                    .replace("{id}", &open.id)
-                    .replace("{title}", &open.title);
-                return json!({ "ok": false, "reason": "duplicate", "id": open.id, "hint": hint });
+                return duplicate(open, lang);
             }
             let id = next_id(&ledger);
             ledger.items.push(PendingItem {
@@ -589,7 +621,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 Ok(ids) => ids,
                 Err(refusal) => return refusal,
             };
-            let code = token(&ledger, &chosen);
+            let code = token(&ledger, &chosen, &reason);
             match confirm {
                 None => {
                     let items = open_items(&ledger, &chosen);
@@ -617,14 +649,27 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             }
         }
         Action::Reopen { id } => {
-            let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
+            let Some(item) = ledger.items.iter().find(|i| i.id == id) else {
                 return unknown_id(&id);
             };
             if item.status != Status::Dropped {
                 return refused_in("not-dropped", "pending.not_dropped", lang, &[("{id}", &id)]);
             }
-            item.status = Status::Open;
-            item.reason = None;
+            // Reabrir não cria uma repetida: com o mesmo título já aberto, a
+            // reabertura é recusada apontando a que está aberta.
+            let key = text::fold(&item.title);
+            if let Some(open) =
+                ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key)
+            {
+                return duplicate(open, lang);
+            }
+            // A reaberta volta a poder aparecer na faxina.
+            ledger.sweep.retain(|swept| swept != &id);
+            if let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) {
+                item.status = Status::Open;
+                item.reason = None;
+                item.swept = None;
+            }
             if let Err(refusal) = write(&path, &mut ledger, &today) {
                 return refusal;
             }
@@ -640,6 +685,11 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 for item in ledger.items.iter_mut().filter(|i| stale.contains(&i.id)) {
                     item.swept = Some(today.clone());
                 }
+                for id in &stale {
+                    if !ledger.sweep.contains(id) {
+                        ledger.sweep.push(id.clone());
+                    }
+                }
                 if let Err(refusal) = write(&path, &mut ledger, &today) {
                     return refusal;
                 }
@@ -650,14 +700,13 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             extra.insert("stale".into(), Value::Array(shown));
         }
         Action::Expire { keep } => {
-            // O lote é o da última faxina: as abertas que ela mostrou naquele
-            // dia. As que o usuário não marcou saem como vencidas.
-            let last_sweep =
-                ledger.items.iter().filter(|i| i.status == Status::Open).filter_map(|i| i.swept.clone()).max();
+            // O lote é o da faxina que o usuário ainda não respondeu. As que
+            // ele não marcou saem como vencidas, e o lote se consome: um
+            // segundo `--expire` não tira as que ficaram.
             let batch: Vec<String> = ledger
                 .items
                 .iter()
-                .filter(|i| i.status == Status::Open && i.swept.is_some() && i.swept == last_sweep)
+                .filter(|i| i.status == Status::Open && ledger.sweep.contains(&i.id))
                 .map(|i| i.id.clone())
                 .collect();
             if batch.is_empty() {
@@ -673,6 +722,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 item.status = Status::Dropped;
                 item.reason = Some(reason.to_string());
             }
+            ledger.sweep.clear();
             if let Err(refusal) = write(&path, &mut ledger, &today) {
                 return refusal;
             }
@@ -1264,6 +1314,80 @@ mod tests {
             assert_eq!(item["status"], json!("dropped"), "{item}");
             assert_eq!(item["reason"], json!(reason), "{item}");
         }
+
+        // O lote se consome: um segundo `--expire` sem faxina nova não tira a
+        // que o usuário marcou para ficar.
+        let before = ledger_bytes(root);
+        let again = pending_at(&PendingOpts { expire: true, ..opts(root) });
+        assert_eq!(again["reason"], json!("nothing-matches"), "{again}");
+        assert_eq!(ledger_bytes(root), before, "the kept one stays");
+        assert_eq!(ids(&pending_at(&opts(root))["open"]), vec!["P-2", "P-4", "P-5"]);
+    }
+
+    /// O código da remoção muda com o motivo, com qualquer gravação no meio
+    /// (uma reabertura, sem novo sim) e com qualquer mudança na lista aberta,
+    /// mesmo fora do que sairia.
+    #[test]
+    fn the_removal_code_changes_with_the_reason_a_reopen_or_any_change_in_the_list() {
+        let dir = repo();
+        let root = dir.path();
+        add(root, "Humanize", "a");
+        add(root, "Painel", "b");
+        let remove = |reason: &str, confirm: Option<String>| {
+            pending_at(&PendingOpts {
+                remove: true,
+                id: Some("P-1".into()),
+                reason: Some(reason.into()),
+                confirm,
+                ..opts(root)
+            })
+        };
+        let token = |report: &Value| report["token"].as_str().map(str::to_string);
+
+        // Outro motivo na confirmação.
+        let shown = remove("mudou o plano", None);
+        let other = remove("outro motivo", token(&shown));
+        assert_eq!(other["reason"], json!("confirm-mismatch"), "{other}");
+
+        // Depois de tirar e reabrir, o código antigo não vale de novo.
+        let gone = remove("mudou o plano", token(&shown));
+        assert_eq!(gone["removed"], json!(["P-1"]), "{gone}");
+        assert_eq!(pending_at(&PendingOpts { reopen: Some("P-1".into()), ..opts(root) })["reopened"], json!(true));
+        let replayed = remove("mudou o plano", token(&shown));
+        assert_eq!(replayed["reason"], json!("confirm-mismatch"), "a reopen asks for a new yes: {replayed}");
+
+        // Uma pendência nova, fora do que sairia, também muda a lista.
+        let shown = remove("mudou o plano", None);
+        add(root, "Relatorio", "c");
+        let changed = remove("mudou o plano", token(&shown));
+        assert_eq!(changed["reason"], json!("confirm-mismatch"), "{changed}");
+        assert_eq!(ids(&pending_at(&opts(root))["open"]), vec!["P-1", "P-2", "P-3"], "nothing left");
+    }
+
+    /// Reabrir uma pendência com o título de uma já aberta é recusado
+    /// apontando a aberta; a reaberta volta a poder aparecer na faxina.
+    #[test]
+    fn a_reopen_refuses_a_duplicate_and_the_reopened_item_can_be_swept_again() {
+        let dir = repo();
+        let root = dir.path();
+        add_on(root, "Humanize", "2020-01-01");
+        let swept = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(ids(&swept["stale"]), vec!["P-1"], "{swept}");
+        let expired = pending_at(&PendingOpts { expire: true, ..opts(root) });
+        assert_eq!(expired["expired"], json!(["P-1"]), "{expired}");
+
+        add_on(root, "humanize", TODAY);
+        let refused = pending_at(&PendingOpts { reopen: Some("P-1".into()), ..opts(root) });
+        assert_eq!(refused["reason"], json!("duplicate"), "{refused}");
+        assert_eq!(refused["id"], json!("P-2"), "the refusal points at the open one");
+
+        let closed = pending_at(&PendingOpts { close: Some("P-2".into()), reason: Some("feito".into()), ..opts(root) });
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        let back = pending_at(&PendingOpts { reopen: Some("P-1".into()), ..opts(root) });
+        assert_eq!(back["reopened"], json!(true), "{back}");
+        assert_eq!(back["open"][0].get("swept"), None, "the sweep day is cleared: {back}");
+        let again = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(ids(&again["stale"]), vec!["P-1"], "the reopened item comes back to the sweep: {again}");
     }
 
     /// A remoção pelo número, por palavra e por data mostra primeiro o que
