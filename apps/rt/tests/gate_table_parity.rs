@@ -635,8 +635,8 @@ fn table_rows(section: &str) -> Vec<Vec<String>> {
 }
 
 /// The module names the table's first column declares: the FIRST backticked
-/// token of the cell, so a qualifier like `` `close_gate` (QA) `` still reads as
-/// `close_gate`.
+/// token of the cell, so a qualifier like `` `size_gate` (spec size) `` still
+/// reads as `size_gate`.
 fn table_modules(section: &str) -> BTreeSet<String> {
     table_rows(section)
         .iter()

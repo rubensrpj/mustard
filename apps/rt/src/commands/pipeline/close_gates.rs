@@ -26,13 +26,11 @@
 //!
 //! ## Layering
 //!
-//! The engine lives in `commands/` (it is consumed by commands —
-//! `emit-phase --to CLOSE` via [`gate_close_for_spec`], `emit-pipeline`'s
-//! final-wave auto-settle via [`qa_gate_active`]). The thin
-//! `PreToolUse(Write|Edit)` adapter that extracts `(cwd, spec)` from a
-//! `HookInput` and delegates here is [`crate::hooks::write::close_gate`] — the
-//! sane `hooks → commands` direction (a hook is a caller of the engine, never
-//! its home).
+//! The engine lives in `commands/` and only commands consume it —
+//! `emit-phase --to CLOSE` and `close-orchestrate` via
+//! [`gate_close_for_spec`], `emit-pipeline`'s final-wave auto-settle via
+//! [`qa_gate_active`]. No hook calls it: the Write/Edit adapter that fired on
+//! a pipeline-state file left with that file.
 //!
 //! ## Build-runner note
 //!
@@ -818,8 +816,8 @@ fn find_symptom_findings(cwd: &str, spec: Option<&str>) -> Vec<String> {
 
 /// Run every close-gate sub-gate against an already-resolved `(cwd, spec)`
 /// pair — the spec-aware entry point used by `mustard-rt run emit-phase --to
-/// CLOSE` and the thin `PreToolUse(Write|Edit)` adapter. No JSON dependency,
-/// no `HookInput` coupling.
+/// CLOSE` and `close-orchestrate`, through [`gate_close_for_spec`]. No JSON
+/// dependency, no `HookInput` coupling.
 ///
 /// Returns:
 /// - [`Verdict::Allow`] when every gate passes (or every gate is in `off`).
@@ -1364,8 +1362,8 @@ fn mode_str(mode: GateMode) -> &'static str {
 /// only a build/test warning fires (still safe to proceed). Returns
 /// `Err(reason)` with the formatted gate message when any strict gate denies.
 ///
-/// This is the entry point used by `mustard-rt run emit-phase --to CLOSE` to
-/// run the same checks the legacy Write/Edit hook used to perform.
+/// This is the entry point used by `mustard-rt run emit-phase --to CLOSE` and
+/// by `close-orchestrate`.
 pub fn gate_close_for_spec(cwd: &str, spec: &str) -> Result<(), String> {
     let modes = CloseGateModes::resolve(cwd);
     match run_close_gates(cwd, Some(spec), modes) {
@@ -1858,5 +1856,256 @@ mod tests {
             Verdict::Deny { reason } => reason,
             other => panic!("a skip must never open the close, got {other:?}"),
         }
+    }
+
+    // --- build/test modes -----------------------------------------------------
+
+    /// A failing build in `warn` mode is advice, never a refusal.
+    #[test]
+    fn the_build_gate_in_warn_mode_warns_and_never_denies() {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_fail() }));
+        let modes = CloseGateModes { close: GateMode::Warn, ..no_qa() };
+        let verdict = run_close_gates(dir.path().to_str().unwrap(), Some("warn-spec"), modes);
+        assert!(matches!(verdict, Verdict::Warn { .. }), "warn mode must not deny: {verdict:?}");
+    }
+
+    /// The build gate `off` never refuses: a failing command is at most
+    /// reported.
+    #[test]
+    fn the_build_gate_off_never_refuses() {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_fail() }));
+        let modes = CloseGateModes { close: GateMode::Off, ..no_qa() };
+        let verdict = run_close_gates(dir.path().to_str().unwrap(), Some("off-spec"), modes);
+        assert!(!verdict.is_blocking(), "off must not deny: {verdict:?}");
+    }
+
+    /// With no `mustard.json` there is no command to run: the build gate
+    /// fails open.
+    #[test]
+    fn the_build_gate_fails_open_without_mustard_json() {
+        let dir = make_project();
+        assert_eq!(run_close_gates(dir.path().to_str().unwrap(), Some("spec2"), no_qa()), Verdict::Allow);
+    }
+
+    // --- QA modes -------------------------------------------------------------
+
+    /// Under `warn`, both skip shapes fall through: the mode is the operator's
+    /// deliberate override and keeps the meaning it always had.
+    #[test]
+    fn warn_mode_still_lets_both_skip_shapes_through() {
+        let cases: [(&str, &[Option<&str>]); 2] =
+            [("warn-skip-empty", &[]), ("warn-skip-with-acs", &[Some("pass"), None])];
+        for (spec, results) in cases {
+            let dir = make_project();
+            write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+            seed_event(dir.path(), spec, "message", json!({ "author": "user", "text": "oi" }));
+            seed_runs(dir.path(), spec, results);
+            let modes = CloseGateModes { qa: GateMode::Warn, ..all_strict() };
+            let verdict = run_close_gates(dir.path().to_str().unwrap(), Some(spec), modes);
+            assert!(!verdict.is_blocking(), "warn must still let {spec} through: {verdict:?}");
+        }
+    }
+
+    /// With the QA sub-gate off, a missing QA refuses nothing.
+    #[test]
+    fn qa_off_does_not_deny_a_missing_qa() {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_pass() }));
+        assert!(!run_close_gates(dir.path().to_str().unwrap(), Some("off-qa-spec"), no_qa()).is_blocking());
+    }
+
+    // --- checklist gate -------------------------------------------------------
+
+    #[test]
+    fn an_unmarked_checklist_denies_the_close() {
+        let dir = make_project();
+        write_spec(
+            dir.path(),
+            "demo",
+            "# Spec\n\n## Checklist\n\n- [x] first done\n- [ ] second open\n\
+             - [ ] third open\n\n## Notes\n",
+        );
+        match run_close_gates(dir.path().to_str().unwrap(), Some("demo"), no_qa()) {
+            Verdict::Deny { reason } => assert!(reason.contains("2 unmarked"), "{reason}"),
+            other => panic!("expected Deny for unmarked checklist, got {other:?}"),
+        }
+    }
+
+    /// A wave-plan parent has no `## Checklist` of its own, so the gate
+    /// consolidates the WAVE checklists: an unmarked wave item refuses.
+    #[test]
+    fn a_wave_plan_parent_consolidates_its_wave_checklists() {
+        let dir = make_project();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic\n\n## Network\n- coordination only\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":2}"#,
+        )
+        .unwrap();
+        // Wave 1: fully marked. Wave 2: one unmarked item.
+        std::fs::create_dir_all(sp.dir().join("wave-1-general")).unwrap();
+        std::fs::write(sp.dir().join("wave-1-general").join("spec.md"), "# Wave 1\n\n## Checklist\n- [x] done\n")
+            .unwrap();
+        std::fs::create_dir_all(sp.dir().join("wave-2-frontend")).unwrap();
+        std::fs::write(
+            sp.dir().join("wave-2-frontend").join("spec.md"),
+            "# Wave 2\n\n## Checklist\n- [x] one\n- [ ] still open\n",
+        )
+        .unwrap();
+
+        let (found, unmarked) = find_unmarked_checklist(dir.path().to_str().unwrap(), Some("epic"));
+        assert!(found, "wave-plan parent must consolidate wave checklists");
+        assert_eq!(unmarked.len(), 1, "exactly one unmarked wave item: {unmarked:?}");
+        assert!(unmarked[0].contains("still open"));
+        assert!(unmarked[0].contains("wave-2-frontend"), "wave label prefix: {unmarked:?}");
+
+        match run_close_gates(dir.path().to_str().unwrap(), Some("epic"), no_qa()) {
+            Verdict::Deny { reason } => assert!(reason.contains("unmarked"), "{reason}"),
+            other => panic!("expected Deny for unmarked wave checklist, got {other:?}"),
+        }
+    }
+
+    /// The wave's `meta.json#checklist` is the source the gate reads: a
+    /// `done:false` item refuses even under a stale all-marked markdown, and
+    /// flipping every `done` to `true` releases it.
+    #[test]
+    fn a_wave_meta_checklist_blocks_until_every_item_is_done() {
+        let dir = make_project();
+        let cwd = dir.path().to_str().unwrap();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic-meta").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic\n\n## Network\n- coord\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":1}"#,
+        )
+        .unwrap();
+        let wave_dir = sp.dir().join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        // Stale markdown says everything is done — the sidecar must win.
+        std::fs::write(wave_dir.join("spec.md"), "# Wave 1\n\n## Checklist\n- [x] stale markdown item\n").unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"epic-meta","checklist":[{"label":"src/a.rs","path":"src/a.rs","done":true},{"label":"src/b.rs","path":"src/b.rs","done":false}]}"#,
+        )
+        .unwrap();
+
+        let (found, unmarked) = find_unmarked_checklist(cwd, Some("epic-meta"));
+        assert!(found, "wave meta checklist must be consolidated");
+        assert_eq!(unmarked.len(), 1, "one done:false item: {unmarked:?}");
+        assert!(unmarked[0].contains("src/b.rs"), "{unmarked:?}");
+        assert!(unmarked[0].contains("wave-1-rt"), "wave label prefix: {unmarked:?}");
+        match run_close_gates(cwd, Some("epic-meta"), no_qa()) {
+            Verdict::Deny { reason } => assert!(reason.contains("unmarked"), "{reason}"),
+            other => panic!("expected Deny for done:false wave meta item, got {other:?}"),
+        }
+
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"epic-meta","checklist":[{"label":"src/a.rs","path":"src/a.rs","done":true},{"label":"src/b.rs","path":"src/b.rs","done":true}]}"#,
+        )
+        .unwrap();
+        let (found, unmarked) = find_unmarked_checklist(cwd, Some("epic-meta"));
+        assert!(found);
+        assert!(unmarked.is_empty(), "all done:true → release: {unmarked:?}");
+        assert_eq!(run_close_gates(cwd, Some("epic-meta"), no_qa()), Verdict::Allow);
+    }
+
+    /// A wave-plan parent whose waves are all fully marked closes: nothing
+    /// orphaned, no false refusal.
+    #[test]
+    fn a_wave_plan_with_every_wave_marked_closes() {
+        let dir = make_project();
+        let cwd = dir.path().to_str().unwrap();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic2").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic2\n\n## Network\n- coord\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":1}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(sp.dir().join("wave-1-general")).unwrap();
+        std::fs::write(sp.dir().join("wave-1-general").join("spec.md"), "# Wave 1\n\n## Checklist\n- [x] done\n")
+            .unwrap();
+
+        let (found, unmarked) = find_unmarked_checklist(cwd, Some("epic2"));
+        assert!(found);
+        assert!(unmarked.is_empty(), "all waves marked → no unmarked items: {unmarked:?}");
+        assert_eq!(run_close_gates(cwd, Some("epic2"), no_qa()), Verdict::Allow);
+    }
+
+    /// An item dropped on purpose, with a stated reason in the sidecar, is
+    /// settled work: it neither refuses the close nor reads as forgotten.
+    #[test]
+    fn a_dropped_checklist_item_is_not_unmarked_work() {
+        let dir = make_project();
+        let cwd = dir.path().to_str().unwrap();
+        let sp = ClaudePaths::for_project(dir.path()).unwrap().for_spec("epic-drop").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(sp.spec_md_path(), "# Epic\n\n## Network\n- coord\n").unwrap();
+        std::fs::write(
+            sp.dir().join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","isWavePlan":true,"totalWaves":1}"#,
+        )
+        .unwrap();
+        let wave_dir = sp.dir().join("wave-1-rt");
+        std::fs::create_dir_all(&wave_dir).unwrap();
+        std::fs::write(wave_dir.join("spec.md"), "# Wave 1\n").unwrap();
+        std::fs::write(
+            wave_dir.join("meta.json"),
+            r#"{"stage":"Execute","outcome":"Active","parent":"epic-drop","checklist":[{"label":"src/a.rs","path":"src/a.rs","done":true},{"label":"src/b.rs","path":"src/b.rs","done":false,"dropped":"folded into src/a.rs"}]}"#,
+        )
+        .unwrap();
+
+        let (found, unmarked) = find_unmarked_checklist(cwd, Some("epic-drop"));
+        assert!(found, "the gate still has something to enforce");
+        assert!(unmarked.is_empty(), "a dropped item is not unmarked work: {unmarked:?}");
+        assert_eq!(run_close_gates(cwd, Some("epic-drop"), no_qa()), Verdict::Allow);
+    }
+
+    #[test]
+    fn a_fully_marked_checklist_passes() {
+        let dir = make_project();
+        write_spec(dir.path(), "demo", "# Spec\n\n## Checklist\n\n- [x] first\n- [x] second\n\n## Notes\n");
+        // No mustard.json → after the checklist gate passes, the build gate skips.
+        assert_eq!(run_close_gates(dir.path().to_str().unwrap(), Some("demo"), no_qa()), Verdict::Allow);
+    }
+
+    // --- the check event -------------------------------------------------------
+
+    /// Every run of the close gates records its `close-gate.check` event.
+    #[test]
+    fn the_close_gates_record_their_check_event() {
+        let dir = make_project();
+        write_mustard_json(dir.path(), json!({ "testCommand": exit_pass(), "buildCommand": exit_pass() }));
+        let _ = run_close_gates(dir.path().to_str().unwrap(), Some("spec-event"), no_qa());
+
+        // The event lands in the spec's event folder, or in a session folder
+        // when the spec cannot be attributed.
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let spec_events = paths.for_spec("spec-event").unwrap().events_dir();
+        let session_root = paths.claude_dir().join(".session");
+        let candidate_dirs: Vec<std::path::PathBuf> = std::iter::once(spec_events)
+            .chain(
+                std::fs::read_dir(&session_root)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok().map(|e| e.path().join(".events"))),
+            )
+            .collect();
+        let found = candidate_dirs.iter().filter(|d| d.exists()).any(|d| {
+            std::fs::read_dir(d).unwrap().any(|f| {
+                std::fs::read_to_string(f.unwrap().path())
+                    .unwrap_or_default()
+                    .lines()
+                    .any(|l| l.contains("\"event\":\"close-gate.check\""))
+            })
+        });
+        assert!(found, "close-gate.check NDJSON line must be present");
     }
 }

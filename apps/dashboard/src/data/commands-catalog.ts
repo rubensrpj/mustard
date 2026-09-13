@@ -74,7 +74,7 @@ export const COMMANDS: CommandEntry[] = [
     category: 'Pipeline',
     short: 'Fecha o pipeline após QA aprovado',
     simples: 'Finaliza o ciclo de desenvolvimento: arquiva a spec, atualiza o registro e gera o commit de fechamento.',
-    tecnico: 'Executa fase CLOSE. O hook close_gate (mustard-rt) valida: build pass, tsc pass, lint pass, e o evento qa.result=overall=pass no log NDJSON da spec (.claude/spec/{name}/.events/). Se qualquer gate falhar, bloqueia com mensagem de diagnóstico. Em sucesso: arquiva a spec via evento pipeline.status (layout flat — .claude/spec/{name}/ permanece no lugar), atualiza o modelo do repo via mustard-rt run scan (.claude/grain.model.json), anexa um evento close ao log NDJSON.',
+    tecnico: 'Executa fase CLOSE. Os portões do fechamento (mustard-rt, no emit-phase --to CLOSE e no close-orchestrate) validam: build pass, tsc pass, lint pass, e que cada critério tenha a última execução aprovada no spec.ndjson da spec. Se qualquer gate falhar, bloqueia com mensagem de diagnóstico. Em sucesso: arquiva a spec via evento pipeline.status (layout flat — .claude/spec/{name}/ permanece no lugar), atualiza o modelo do repo via mustard-rt run scan (.claude/grain.model.json), anexa um evento close ao log NDJSON.',
     when: 'QA passou, todos os ACs estão verdes, pronto para fechar.',
     notWhen: 'QA ainda rodando. Algum AC falhou. Build ou type-check com erros.',
     examples: ['/mustard:complete'],

@@ -97,9 +97,7 @@ fn success_line(outcome: &PhaseOutcome, spec: &str, to: &str) -> serde_json::Val
 /// `--to CLOSE`, which runs the close-gate sub-gates (debt/checklist/qa/build)
 /// inline before writing the event. A strict gate failure prints the gate
 /// reason on stderr, leaves the event un-written, and exits the process with
-/// status `1` — same user-visible behavior as the legacy `close_gate` hook
-/// that fired on a pipeline-state Write/Edit (the trigger that no longer
-/// exists post-Wave 2).
+/// status `1`.
 pub fn run(spec: &str, to: &str, from: Option<&str>) {
     match run_at(Path::new(&project_dir()), spec, to, from) {
         Ok(outcome) => println!("{}", success_line(&outcome, spec, to)),

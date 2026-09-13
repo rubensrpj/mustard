@@ -16,7 +16,6 @@ use crate::hooks::bash::bash_command_gate::BashCommandGate;
 use crate::hooks::task::context_budget_gate::ContextBudgetGate;
 use crate::hooks::task::delegation_advisory::DelegationAdvisory;
 use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
-use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::mold_gate::MoldGate;
 use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::write_gate::WriteGate;
@@ -260,16 +259,6 @@ impl Registry {
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
                 ],
                 check: Some(Box::new(BoundaryGate)),
-                observer: None,
-            },
-            Module {
-                id: "close_gate",
-                // `close-gate` — PreToolUse(Write|Edit) pipeline-CLOSE sensor.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: Some(Box::new(CloseGate)),
                 observer: None,
             },
             Module {
@@ -763,7 +752,6 @@ mod tests {
             "size_gate",
             "write_gate",
             "boundary_gate",
-            "close_gate",
             "scan_gate",
             "active_spec_limit_gate",
             "delegation_advisory",
@@ -872,7 +860,7 @@ mod tests {
         // The Write/Edit gates fire on PreToolUse(Write) and (Edit).
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "write_gate", "boundary_gate", "close_gate"] {
+            for want in ["size_gate", "write_gate", "boundary_gate"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
         }

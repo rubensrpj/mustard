@@ -41,7 +41,6 @@ fn hook_description(name: &str) -> &'static str {
         "tool_use_counter" => "Blocks Explore agents at 15 tool uses (warn at 12)",
         "main_context_counter" => "Enforces delegation to subagents; warns/denies un-delegated main-context tool calls",
         "context_budget_gate" => "Blocks Task prompts over per-role budget; advisory over 40% model window",
-        "close_gate" => "Closes pipeline only if QA + build pass and checklist complete",
         "scan_gate" => "Blocks /feature, /bugfix until grain.model.json exists (run `mustard-rt run scan`)",
         "size_gate" => "Warns specs > 500 lines; validates skill YAML frontmatter",
         "boundary_gate" => "Flags edits outside the active spec's declared boundary (sensitive-file denies live in settings permissions.deny)",
@@ -69,7 +68,6 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
         "bash_command_gate" => Some("MUSTARD_COMMIT_GATE_MODE"),
         "main_context_counter" => Some("MUSTARD_MAIN_BUDGET_MODE"),
         "context_budget_gate" => Some("CONTEXT_BUDGET_MODE"),
-        "close_gate" => Some("MUSTARD_CHECKLIST_GATE_MODE"),
         // `scan_gate` is always strict (no mode env var).
         "size_gate" => Some("MUSTARD_SPEC_SIZE_MODE"),
         "boundary_gate" => Some("MUSTARD_BOUNDARY_MODE"),
@@ -81,10 +79,10 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
 /// The `mustard.json#gates` field a hook's mode ALSO resolves from, between the
 /// environment and the built-in default.
 ///
-/// The THIRD layer of the cascade, and the one this table used to skip. Four of
-/// the seven gates read it — `boundary_gate` and `main_context_counter` through
-/// their own `or_else(|| config_override)`, `size_gate` and `close_gate`
-/// through `resolve_mode`'s second argument — so a project carrying
+/// The THIRD layer of the cascade, and the one this table used to skip. Three
+/// of the six gates read it — `boundary_gate` and `main_context_counter`
+/// through their own `or_else(|| config_override)`, `size_gate` through
+/// `resolve_mode`'s second argument — so a project carrying
 /// `{"gates":{"boundary":"strict"}}` with the env var unset had the gate resolve
 /// `strict` while this table printed the built-in `warn`. The table named the
 /// right knob and the right default and still reported the wrong level, because
@@ -97,7 +95,6 @@ fn hook_mode_env(name: &str) -> Option<&'static str> {
 fn hook_config_key(hook: &str) -> Option<&'static str> {
     match hook {
         "boundary_gate" => Some("boundary"),
-        "close_gate" => Some("checklist"),
         "main_context_counter" => Some("main_budget"),
         "size_gate" => Some("spec_size"),
         // Every other gate resolves env → built-in default, with no
@@ -116,7 +113,6 @@ fn hook_config_key(hook: &str) -> Option<&'static str> {
 fn gate_config_value<'a>(gates: &'a GateModes, key: &str) -> Option<&'a str> {
     match key {
         "boundary" => gates.boundary.as_deref(),
-        "checklist" => gates.checklist.as_deref(),
         "main_budget" => gates.main_budget.as_deref(),
         "spec_size" => gates.spec_size.as_deref(),
         _ => None,
@@ -129,7 +125,7 @@ fn gate_config_value<'a>(gates: &'a GateModes, key: &str) -> Option<&'a str> {
 ///
 /// This used to be the single word `strict`, for every row, and that was the
 /// second half of the same lie [`hook_mode_env`] carried: the column named the
-/// right knob and reported the wrong level. Four of the seven gates below
+/// right knob and reported the wrong level. Four of the six gates below
 /// default to `warn`, `post_edit` among them
 /// (`hooks/write/post_edit.rs::parse_guard_gate_mode`), so an operator reading
 /// `strict` there believed a Guard violation would be REFUSED when it is
@@ -147,7 +143,6 @@ fn hook_default_mode(env_var: &str) -> &'static str {
     match env_var {
         "CONTEXT_BUDGET_MODE" => "strict",
         "MUSTARD_BOUNDARY_MODE" => "warn",
-        "MUSTARD_CHECKLIST_GATE_MODE" => "strict",
         "MUSTARD_COMMIT_GATE_MODE" => "warn",
         "MUSTARD_GUARD_GATE_MODE" => "warn",
         "MUSTARD_MAIN_BUDGET_MODE" => "warn",
@@ -243,7 +238,7 @@ fn collect_hook_entries(root: &Path) -> Vec<Value> {
 /// Map an event name to the primary enforcement module name it dispatches.
 fn event_to_module(event: &str) -> &'static str {
     match event {
-        "PreToolUse" => "bash_command_gate + tool_use_counter + main_context_counter + context_budget_gate + close_gate + boundary_gate",
+        "PreToolUse" => "bash_command_gate + tool_use_counter + main_context_counter + context_budget_gate + boundary_gate",
         "PostToolUse" => "post_edit",
         "SessionStart" => "spec_hygiene_observer + session_start_inject",
         "SessionEnd" => "session_cleanup_observer",
@@ -735,17 +730,17 @@ mod tests {
     fn build_mode_str_uses_env_map_value() {
         let mut env_map = serde_json::Map::new();
         env_map.insert(
-            "MUSTARD_CHECKLIST_GATE_MODE".to_string(),
+            "MUSTARD_SPEC_SIZE_MODE".to_string(),
             Value::String("warn".to_string()),
         );
         let result = build_mode_str(
-            "close_gate",
-            Some("MUSTARD_CHECKLIST_GATE_MODE"),
+            "size_gate",
+            Some("MUSTARD_SPEC_SIZE_MODE"),
             &env_map,
             &GateModes::default(),
         );
         assert!(result.contains("warn"), "got: {result}");
-        assert!(result.contains("MUSTARD_CHECKLIST_GATE_MODE"), "got: {result}");
+        assert!(result.contains("MUSTARD_SPEC_SIZE_MODE"), "got: {result}");
     }
 
     /// The cell reports what `mustard.json#gates` states when neither env layer
@@ -793,11 +788,11 @@ mod tests {
         assert!(unmapped.contains("warn"), "got: {unmapped}");
 
         // …and a stated value only reaches the cell through the field the HOOK
-        // maps: `close_gate` reads `gates.checklist`, never `gates.boundary`.
+        // maps: `size_gate` reads `gates.spec_size`, never `gates.boundary`.
         let mut crossed = GateModes { boundary: Some("off".to_string()), ..GateModes::default() };
-        assert!(build_mode_str("close_gate", Some(UNSET), &env_map, &crossed).contains("warn"));
-        crossed.checklist = Some("off".to_string());
-        assert!(build_mode_str("close_gate", Some(UNSET), &env_map, &crossed).contains("off"));
+        assert!(build_mode_str("size_gate", Some(UNSET), &env_map, &crossed).contains("warn"));
+        crossed.spec_size = Some("off".to_string());
+        assert!(build_mode_str("size_gate", Some(UNSET), &env_map, &crossed).contains("off"));
     }
 
     /// An unset knob reports the level its OWN gate falls back to, not a
@@ -820,7 +815,6 @@ mod tests {
         assert_eq!(hook_default_mode("MUSTARD_BOUNDARY_MODE"), "warn");
         assert_eq!(hook_default_mode("MUSTARD_MAIN_BUDGET_MODE"), "warn");
         assert_eq!(hook_default_mode("CONTEXT_BUDGET_MODE"), "strict");
-        assert_eq!(hook_default_mode("MUSTARD_CHECKLIST_GATE_MODE"), "strict");
         assert_eq!(hook_default_mode("MUSTARD_SPEC_SIZE_MODE"), "strict");
 
         // …and the rendered cell carries that default, not a blanket `strict`.

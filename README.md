@@ -102,7 +102,7 @@ flowchart LR
 | **Light** | 1-2 camadas, ≤5 arquivos, padrão conhecido | Pula o PLAN: `ANALYZE → EXECUTE → REVIEW → QA → CLOSE` |
 | **Full** | 3+ camadas ou entidade nova | Completo, com **aprovação humana** entre PLAN e EXECUTE |
 
-Cada fase emite eventos; os *gates* bloqueiam o avanço. O **close-gate** não deixa fechar sem um `qa.result` com `overall=pass`; editar a spec depois de um QA aprovado marca o pass como *stale* e re-bloqueia até o QA rodar de novo.
+Cada fase emite eventos; os *gates* bloqueiam o avanço. Os **portões do fechamento** não deixam fechar enquanto algum critério da spec não tiver a última execução aprovada no `spec.ndjson`; um critério revisto depois da execução marca o pass como *stale* e re-bloqueia até o critério rodar de novo.
 
 ---
 

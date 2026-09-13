@@ -13,8 +13,8 @@
 //! - The Write/Edit family — [`size_gate`] (spec/skill size + skill
 //!   validation), `boundary_gate` (the spec-boundary gate),
 //!   [`post_edit`] (auto-format / checklist-auto-mark / guard-verify /
-//!   pipeline-phase), [`close_gate`] (the pipeline-CLOSE sensor), and
-//!   [`scan_gate`] (the pre-pipeline scan gate — blocks until grain.model.json).
+//!   pipeline-phase), and [`scan_gate`] (the pre-pipeline scan gate — blocks
+//!   until grain.model.json).
 //! - The session-lifecycle families — `session_start_inject`
 //!   (harness-init / terrain census / spec-hygiene), `session_cleanup_observer`
 //!   (`SessionEnd` cleanup), `prompt_submit_inject` (the `UserPromptSubmit` follow-up archival gate),

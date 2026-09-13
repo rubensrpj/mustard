@@ -80,7 +80,7 @@ Sequência canônica: `ANALYZE → PLAN → EXECUTE → REVIEW → QA → CLOSE`
 | **Extended-light** | *slice* casado + modifica existente, 6-8 arquivos | Igual ao Light (execução inline) |
 | **Full** | 3+ camadas, entidade nova, ≥2 slices ou >8 arquivos | Completo, com **clarify + aprovação humana** entre PLAN e EXECUTE (via `/mustard:spec`) |
 
-O escopo é decidido **deterministicamente** (`plan-prepare` sobre o censo da spec), nunca só pelo olho da AI. Cada fase emite eventos; os *gates* bloqueiam o avanço. O **close-gate** não deixa fechar sem `qa.result.overall=pass`; editar a spec depois de um QA aprovado marca o pass como *stale* e re-bloqueia até o QA rodar de novo.
+O escopo é decidido **deterministicamente** (`plan-prepare` sobre o censo da spec), nunca só pelo olho da AI. Cada fase emite eventos; os *gates* bloqueiam o avanço. Os **portões do fechamento** não deixam fechar enquanto algum critério da spec não tiver a última execução aprovada no `spec.ndjson`; um critério revisto depois da execução marca o pass como *stale* e re-bloqueia até o critério rodar de novo.
 
 ---
 
