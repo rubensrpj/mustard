@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(derive_review_roles(dir.path()), vec!["mixed".to_string()]);
     }
 
-    // --- D5: entry-into-Execute approval hard-gate -------------------------
+    // --- The entry-into-Execute approval hard-gate ------------------------
 
     /// Seed the spec dir's `meta.json` with a scope.
     fn seed_meta_scope(spec_dir: &Path, scope: &str) {

@@ -247,7 +247,7 @@ pub fn run(spec: &str, json_flag: bool) {
 /// recebe.
 pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
     let project = project.to_path_buf();
-    // Fail-open: the I1 guard rejecting the root OR `spec` failing slug
+    // Fail-open: the `.claude/.claude/` guard rejecting the root OR `spec` failing slug
     // validation folds to `compose_unchecked` inside the resolver, so the
     // spec-dir path always flows through the canonical accessor surface.
     let spec_dir = ClaudePaths::spec_dir_or_unchecked(&project, spec);

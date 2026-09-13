@@ -10,7 +10,7 @@
 //!
 //! 1. `pipeline.stage` → `{"stage":"Plan"}` — records planning complete.
 //! 2. `pipeline.status` → `{"from":"draft","to":"approved"}` — the canonical
-//!    D5 approval signal.
+//!    approval signal.
 //! 3. *(only with `--resume`)* `pipeline.stage` → `{"stage":"Execute"}` — the
 //!    inline-resume case; without `--resume` the flow STOPS at `approved` so a
 //!    fresh session resumes EXECUTE with clean context.
@@ -104,7 +104,7 @@ type Step = (&'static str, Value);
 /// consume it, so there is exactly one definition of the order + payloads.
 ///
 /// - `pipeline.stage {stage:"Plan"}` — planning complete.
-/// - `pipeline.status {from:"draft",to:"approved"}` — the D5 approval signal.
+/// - `pipeline.status {from:"draft",to:"approved"}` — the approval signal.
 /// - `pipeline.stage {stage:"Execute"}` — only when `resume` (inline EXECUTE).
 ///
 /// When `wave_plan`, the two `pipeline.stage` steps additionally carry
@@ -1217,7 +1217,8 @@ mod tests {
         // O centro do teste: SEM marcador → strict FALHA (Block ⇒ exit≠0); COM marcador → procede.
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
-        // Warn surfaces a nudge but never blocks; off restores pre-T5 behaviour.
+        // Warn surfaces a nudge but never blocks; off restores the behaviour
+        // before the approval gate.
         assert_eq!(approval_gate(ApprovalMode::Warn, false), ApprovalGate::Warn);
         assert_eq!(approval_gate(ApprovalMode::Warn, true), ApprovalGate::Proceed);
         assert_eq!(approval_gate(ApprovalMode::Off, false), ApprovalGate::Proceed);
@@ -1252,7 +1253,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // F6 — the clarify gate (clarify precedes approval)
+    // The clarify gate (clarify precedes approval)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1298,7 +1299,7 @@ mod tests {
 
     #[test]
     fn clarify_gate_blocks_full_without_marker_and_proceeds_with_a_record() {
-        // Mirrors the user-approval gate, for the F6 clarify precondition —
+        // Mirrors the user-approval gate, for the clarify precondition —
         // except the clarify marker must CARRY something: absent → Missing, a
         // body that recorded nothing → Hollow, a recorded term → Recorded.
         let dir = tempdir().unwrap();

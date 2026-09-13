@@ -1717,11 +1717,11 @@ pub(crate) fn scaffold_warning_to(
             },
         );
     }
-    // D3: `qa/` and `review/` are pipeline *phases*, not specs — they carry no
+    // `qa/` and `review/` are pipeline *phases*, not specs — they carry no
     // lifecycle, so no `meta.json` sidecar is written for them. Only the root
     // and each `wave-N` directory get a sidecar (above). The result of each
-    // phase is materialised by code into `qa/report.md` / `review/verdict.md`
-    // (D4), not tracked through a dead sidecar.
+    // phase is materialised by code into `qa/report.md` / `review/verdict.md`,
+    // not tracked through a dead sidecar.
 
     let Ledger { created, skipped, mut refreshed, removed, drift, .. } = ledger;
     // A frozen plan says so ONCE — for any kind of divergence, including a wave
@@ -3518,7 +3518,7 @@ mod tests {
         assert!(quiet.unsupportable_claims.is_empty(), "and it supports its claim");
     }
 
-    /// F6 traceability: a wave that does work (`tasks`) but satisfies no AC is a
+    /// Traceability: a wave that does work (`tasks`) but satisfies no AC is a
     /// gap; a well-traced wave (satisfies its own acceptance ids) is clean; and
     /// an AC the plan defines that no wave's `satisfies` claims is an orphan gap.
     #[test]

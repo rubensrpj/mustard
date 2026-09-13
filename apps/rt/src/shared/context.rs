@@ -266,7 +266,7 @@ fn invalidate_session_spec(project_dir_path: &str, session_id: &str) {
 /// # Errors
 ///
 /// Propagates [`WorkspaceError`] from [`workspace_root`] when no ancestor
-/// satisfies the anchor predicate, when the resolved path violates the I1
+/// satisfies the anchor predicate, when the resolved path violates the `.claude/.claude/`
 /// `.claude/.claude/` guard, or when `MUSTARD_WORKSPACE_ROOT` is set to an
 /// invalid path.
 pub fn workspace_root_strict() -> Result<PathBuf, WorkspaceError> {
@@ -602,7 +602,7 @@ pub fn unbind_session_spec(project_dir: &str, session_id: &str) {
 ///
 /// The `.session/` base is not exposed via [`ClaudePaths`] (it is the events
 /// writer's consumer, not Mustard-owned), so compose it from `claude_dir()` the
-/// same way [`session_id`]'s fallback and the NDJSON writer do. `None` on an I1
+/// same way [`session_id`]'s fallback and the NDJSON writer do. `None` on a `.claude/.claude/`
 /// guard rejection of the project root.
 fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathBuf> {
     Some(
@@ -733,7 +733,7 @@ pub fn clear_pending_branch(project_dir: &str, session_id: &str) {
 /// `<project>/.claude/.session/<session_id>/pending-work-branch`.
 ///
 /// Composed from `claude_dir()` the same way [`session_spec_marker`] resolves
-/// the sibling `active-spec` marker. `None` on an I1 guard rejection of the
+/// the sibling `active-spec` marker. `None` on a `.claude/.claude/` guard rejection of the
 /// project root.
 fn pending_branch_marker(project_dir_path: &str, session_id: &str) -> Option<PathBuf> {
     Some(
@@ -860,7 +860,7 @@ pub(crate) const CLARIFIED_MARKER: &str = ".clarified";
 /// REQUIRES it before a Full plan may be approved — clarify precedes approval).
 /// The consumer reads what the marker RECORDS, not merely that it exists: see
 /// [`clarify_marker_body`] and [`MarkerProvenance::records_substance`]. `None`
-/// on an I1 guard rejection of the project root or an invalid spec name.
+/// on a `.claude/.claude/` guard rejection of the project root or an invalid spec name.
 #[must_use]
 pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBuf> {
     Some(
