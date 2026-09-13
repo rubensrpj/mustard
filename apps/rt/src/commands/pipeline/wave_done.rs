@@ -949,21 +949,15 @@ mod tests {
         let spec = "real-chain-three-waves";
         anchored_spec(root, spec);
         let cwd = root.to_string_lossy().to_string();
-        // Bind the session→spec the way a live pipeline does, so the capture
-        // resolves the spec through its own production lookup. The hook resolves
-        // the AMBIENT session id (the value a live hook process carries), so bind
-        // that one — binding an invented id would leave the capture spec-less and
-        // silently no-op, which is the shape of the very defect being fixed.
-        let sid = crate::shared::context::session_id();
-        crate::shared::context::bind_session_spec(&cwd, &sid, spec);
-        // Belt for a host whose ambient session id is `unknown` (which the
-        // binding refuses): the checkout stands on the spec's branch.
+        // The checkout stands on the spec's branch, so the capture resolves the
+        // spec through its own production lookup whatever session the stop
+        // input carries.
         crate::shared::spec_state::stand_on_spec_branch(root, spec);
         // Fail LOUDLY if the capture would resolve no spec (or another one): a
         // spec-less capture is a silent no-op, and a test that silently captured
         // nothing would assert exactly as much as the inert one it replaces.
         assert_eq!(
-            crate::hooks::task::subagent_inject::capture_spec(&cwd, &sid).as_deref(),
+            crate::hooks::task::subagent_inject::capture_spec(&cwd, "").as_deref(),
             Some(spec),
             "the capture's own spec lookup must land on this spec"
         );
@@ -1376,14 +1370,11 @@ mod tests {
         let spec = "parallel-round-record";
         anchored_spec(root, spec);
         let cwd = root.to_string_lossy().to_string();
-        // Bind the AMBIENT session id, the value a live hook process carries —
-        // the capture's own spec lookup keys on it, and an invented id would
-        // leave every capture spec-less and silently no-op.
-        let sid = crate::shared::context::session_id();
-        crate::shared::context::bind_session_spec(&cwd, &sid, spec);
+        // The checkout stands on the spec's branch, so every capture resolves
+        // the spec whatever session its stop input carries.
         crate::shared::spec_state::stand_on_spec_branch(root, spec);
         assert_eq!(
-            crate::hooks::task::subagent_inject::capture_spec(&cwd, &sid).as_deref(),
+            crate::hooks::task::subagent_inject::capture_spec(&cwd, "").as_deref(),
             Some(spec),
             "the capture's own spec lookup must land on this spec"
         );

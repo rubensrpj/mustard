@@ -535,18 +535,11 @@ fn emit_capability_event(cwd: &Path, spec: &str, ts: &str, event_name: &str, pay
 }
 
 /// `--archive` — idempotent alias of the single complete. Re-runs
-/// [`mark_complete`] (a no-op flip when the spec is already terminal) and drops
-/// any legacy `.pipeline-states/{spec}.json` sidecar. No filesystem move.
-fn archive(cwd: &Path, spec: &str) -> (bool, bool) {
+/// [`mark_complete`] (a no-op flip when the spec is already terminal). No
+/// filesystem move.
+fn archive(cwd: &Path, spec: &str) -> bool {
     let _ = mark_complete(cwd, spec);
-    let states_path = ClaudePaths::for_project(cwd)
-        .map(|p| p.pipeline_state_file(spec))
-        .unwrap_or_else(|_| cwd.join(format!("{spec}.json")));
-    let had_legacy_state = fs::exists(&states_path);
-    if had_legacy_state {
-        let _ = fs::remove_file(&states_path);
-    }
-    (true, had_legacy_state)
+    true
 }
 
 /// Idempotently emit `pipeline.phase: CLOSE` when the spec's latest phase is
@@ -705,12 +698,9 @@ pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_
         if let Err(reason) = verify_then_admit(&cwd, spec) {
             refuse_close(spec, "archive", &reason);
         }
-        let (moved_spec, had_state) = archive(&cwd, spec);
+        let moved_spec = archive(&cwd, spec);
         rebuild_one_fail_open(&cwd, spec);
-        println!(
-            "{}",
-            json!({ "ok": true, "mode": "archive", "spec": spec, "movedSpec": moved_spec, "hadState": had_state })
-        );
+        println!("{}", json!({ "ok": true, "mode": "archive", "spec": spec, "movedSpec": moved_spec }));
         return;
     }
 

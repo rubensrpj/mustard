@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn boundary_gate_passes_when_no_active_spec() {
-        // No `.pipeline-states` dir → no state → pass through.
+        // No current spec → pass through.
         let dir = tempdir().unwrap();
         let input = HookInput {
             tool_name: Some("Write".to_string()),

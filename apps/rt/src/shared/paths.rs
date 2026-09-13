@@ -52,9 +52,12 @@ const SPEC_FILES: &[&str] = &["spec.ndjson", "spec.md", "spec.html"];
 const BANK_FILES: &[&str] = &[SPEC_INDEX_FILE, LESSONS_FILE];
 
 /// Estado do harness escrito antes de a unidade existir: os planos do modo de
-/// plano e a evidência descartável que um diagnóstico roda. Nenhum dos dois é
-/// código, e o `.gitignore` semeado ignora os dois.
-const HARNESS_PREFIXES: &[&str] = &[".claude/plans/", ".claude/scratch/"];
+/// plano, a evidência descartável que um diagnóstico roda e o cache do
+/// harness, onde o material do `/feature` e do `/bugfix` espera o
+/// `spec-draft`. Nenhum deles é código, e o `.gitignore` semeado ignora os
+/// três: a trava das bases protege o código do projeto, e não os arquivos do
+/// próprio Mustard que o git não vê.
+const HARNESS_PREFIXES: &[&str] = &[".claude/plans/", ".claude/scratch/", ".claude/.cache/"];
 
 /// Artefatos e infraestrutura, nunca código do projeto.
 const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/", "target/"];
@@ -150,7 +153,7 @@ pub(crate) enum PathClass {
         spec: Option<String>,
     },
     /// Estado do harness escrito antes de a unidade existir:
-    /// `.claude/plans/` e `.claude/scratch/`.
+    /// `.claude/plans/`, `.claude/scratch/` e `.claude/.cache/`.
     Harness,
     /// Artefato ou infraestrutura: o resto de `.claude/`, `dist/`,
     /// `node_modules/`, `.git/` e `target/`.
@@ -306,6 +309,7 @@ mod tests {
             ("/p/.claude/spec/x/meta.json", PathClass::Artifact),
             ("/p/.claude/plans/plano.md", PathClass::Harness),
             ("/p/.claude/scratch/probe.sh", PathClass::Harness),
+            ("/p/.claude/.cache/spec-material.json", PathClass::Harness),
             ("/p/.claude/settings.json", PathClass::Artifact),
             ("/p/target/debug/x", PathClass::Artifact),
             ("/p/src/scratch_notes.rs", PathClass::Production),

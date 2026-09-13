@@ -11,9 +11,9 @@ use crate::commands::spec::spec_sections::is_heading;
 use mustard_core::io::fs;
 use mustard_core::domain::spec;
 use mustard_core::view::summary::SpecSummaryDoc;
-use mustard_core::{ClaudePaths, SupportedLocale};
+use mustard_core::SupportedLocale;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Lifecycle status word + spec name + language for the summary header line.
 /// `pub(crate)` so `close-pipeline` can drive [`build_for_dir`] in-process.
@@ -237,26 +237,8 @@ pub(crate) struct Model {
     follow_ups: Vec<String>,
 }
 
-/// Format a state item (string or `{ id, reason }`).
-fn format_state_item(item: &Value) -> String {
-    match item {
-        Value::String(s) => s.clone(),
-        Value::Object(_) => {
-            let id = item.get("id").and_then(Value::as_str);
-            let reason = item.get("reason").and_then(Value::as_str);
-            match (id, reason) {
-                (Some(i), Some(r)) => format!("{i}: {r}"),
-                (None, Some(r)) => r.to_string(),
-                (Some(i), None) => i.to_string(),
-                _ => item.to_string(),
-            }
-        }
-        other => other.to_string(),
-    }
-}
-
 /// Build the Done/Left/Next/Follow-ups model.
-fn build_model(header: &Header, text: &str, state: &Value) -> Model {
+fn build_model(header: &Header, text: &str) -> Model {
     let pt = header.lang == "pt-BR";
     let ac_list = section_for(text, "acceptanceCriteria").map(|s| parse_ac(&s)).unwrap_or_default();
     let ac_done: Vec<&Ac> = ac_list.iter().filter(|a| a.done).collect();
@@ -301,18 +283,6 @@ fn build_model(header: &Header, text: &str, state: &Value) -> Model {
     }
     for c in &concerns {
         left.push(format!("Concern: {c}"));
-    }
-    let arr = |key: &str| -> Vec<Value> {
-        state.get("metrics").and_then(|m| m.get(key)).and_then(Value::as_array).cloned().unwrap_or_default()
-    };
-    for d in arr("deferred") {
-        left.push(format!("Deferred: {}", format_state_item(&d)));
-    }
-    for p in arr("partial") {
-        left.push(format!("Partial: {}", format_state_item(&p)));
-    }
-    for e in state.get("escalations").and_then(Value::as_array).cloned().unwrap_or_default() {
-        left.push(format!("Escalation: {}", format_state_item(&e)));
     }
 
     // Next Steps.
@@ -474,28 +444,7 @@ pub(crate) fn build_for_dir(spec_dir: &Path) -> Result<(Model, Header), String> 
     // parsed by `parse_header` is the legacy fallback.
     let header = apply_meta_override(parse_header(&text, lang), &spec_file);
 
-    // pipeline-state (fail-open).
-    let mut state = json!({});
-    let spec_base = spec_dir
-        .canonicalize()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| {
-            spec_dir
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
-        });
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let state_file = ClaudePaths::for_project(&cwd)
-        .map(|p| p.pipeline_state_file(&spec_base))
-        .unwrap_or_else(|_| cwd.join(format!("{spec_base}.json")));
-    if let Ok(t) = fs::read_to_string(&state_file)
-        && let Ok(v) = serde_json::from_str::<Value>(&t) {
-            state = v;
-        }
-
-    let model = build_model(&header, &text, &state);
+    let model = build_model(&header, &text);
     Ok((model, header))
 }
 
@@ -542,7 +491,7 @@ mod tests {
     fn happy_path_yields_git_next_steps() {
         let text = "# Spec\n\n### Status: Done\n\n## Acceptance Criteria\n- [x] AC-1: x — Command: `true`\n";
         let header = parse_header(text, SupportedLocale::EnUs);
-        let model = build_model(&header, text, &json!({}));
+        let model = build_model(&header, text);
         assert!(model.left.is_empty());
         assert!(model.next_steps.iter().any(|s| s.contains("git add")));
     }
@@ -551,7 +500,7 @@ mod tests {
     fn failing_ac_lands_in_left() {
         let text = "# Spec\n\n## Acceptance Criteria\n- [ ] AC-2: broken — Command: `false`\n";
         let header = parse_header(text, SupportedLocale::EnUs);
-        let model = build_model(&header, text, &json!({}));
+        let model = build_model(&header, text);
         assert!(model.left.iter().any(|l| l.contains("AC-2")));
     }
 }

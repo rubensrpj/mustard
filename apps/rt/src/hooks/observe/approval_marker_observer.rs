@@ -889,7 +889,7 @@ mod tests {
         seed_spec(root, "epic", "full (wave plan)", "Plan");
 
         // Deterministic guarantee: the resolver finds the single pending Full plan
-        // with no binding, no env override, no pipeline-states hint.
+        // with no binding and no env override.
         assert_eq!(
             unique_pending_full_plan(root_str).as_deref(),
             Some("epic"),
@@ -897,7 +897,7 @@ mod tests {
         );
 
         // End-to-end: an unbound session's genuine approval now mints the marker
-        // via the fallback. `active_spec` still consults `current_spec` first,
+        // via the fallback. `active_spec` walks the current-spec ladder first,
         // which honours `MUSTARD_ACTIVE_SPEC`; skip the mint assertion when that
         // override is inherited so the test never flakes on an ambient env.
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {

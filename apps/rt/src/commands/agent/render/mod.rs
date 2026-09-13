@@ -639,7 +639,9 @@ pub(crate) fn render_prompt_with_census(
     // Spec-keyed scratch lookups. With no spec there is nothing cached; pass an
     // empty key so each helper resolves to a missing path and fail-opens to "".
     let spec_key = spec.unwrap_or("");
-    let context_md = read_cached(&project, spec_key, "context-md");
+    // Nothing writes a cached glossary slice any more, so this section stays
+    // empty and collapses; the renderer's rework decides where it comes from.
+    let context_md = String::new();
     let prior_wave_diff = wave
         .filter(|&w| w > 1)
         .map(|w| read_prior_wave_diff(&project, spec_key, w - 1))
@@ -882,18 +884,6 @@ fn extract_block(template: &str, name: &str) -> Option<String> {
         body.pop();
     }
     Some(body)
-}
-
-/// Read a cached `.claude/.pipeline-states/{spec}.{name}.md` file. Empty on
-/// any IO error. Retained as the lookup for `context-md` and other legacy
-/// per-spec scratch files; per-wave `diff.md` now lives under
-/// `spec/{spec}/wave-N-{role}/diff.md` and goes through
-/// [`read_prior_wave_diff`].
-fn read_cached(project: &Path, spec: &str, name: &str) -> String {
-    let path = ClaudePaths::for_project(project)
-        .map(|p| p.pipeline_states_dir().join(format!("{spec}.{name}.md")))
-        .unwrap_or_else(|_| project.join(format!("{spec}.{name}.md")));
-    mfs::read_to_string(&path).unwrap_or_default()
 }
 
 /// Read the diff captured by wave `wave_num` (per the canonical path catalog: the file

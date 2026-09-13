@@ -2,11 +2,10 @@
 //!
 //! ## Why one router
 //!
-//! Originally the W5 split kept lifecycle (`pipeline.*`) events in SQLite and
-//! everything else in NDJSON. The W6–W8 migration of
-//! `2026-05-26-no-sqlite-git-source-of-truth` collapsed both stores into the
-//! single NDJSON sink under `<spec>/[wave-N-{role}/]events/*.ndjson`, written
-//! by [`crate::shared::events::writer_ndjson`].
+//! Lifecycle (`pipeline.*`) events once lived in SQLite and everything else in
+//! NDJSON; both stores collapsed into the single NDJSON sink under
+//! `<spec>/[wave-N-{role}/]events/*.ndjson`, written by
+//! [`crate::shared::events::writer_ndjson`].
 //!
 //! Before this module landed, every hook + run-face callsite emitting a
 //! non-`pipeline.*` event funnelled through the old SQLite `EventSink`
@@ -33,8 +32,9 @@
 //! spec-less event inherits the spec its session is bound to:
 //!
 //! - **session**: `HarnessEvent.session_id` → env (`MUSTARD_SESSION_ID` /
-//!   `CLAUDE_SESSION_ID`) → newest `.claude/.session/<id>/` by mtime
-//!   ([`crate::shared::context::session_id`]).
+//!   `CLAUDE_SESSION_ID`, [`crate::shared::spec_state::session_from_env`]).
+//!   Never a guess from the newest session folder: a guessed id would bind the
+//!   event's spec to another session.
 //! - **spec**: `HarnessEvent.spec` → the one current-spec ladder
 //!   ([`crate::shared::spec_state::active_spec`]: the environment override,
 //!   the checkout's branch, then the session→spec marker). The marker is written
@@ -45,9 +45,7 @@
 //!   landing unattributed under `.session/<id>/`.
 //! - **wave**: `HarnessEvent.wave` → `MUSTARD_ACTIVE_WAVE`.
 
-use crate::shared::context::{
-    bind_session_spec, session_id,
-};
+use crate::shared::context::bind_session_spec;
 use crate::shared::events::writer_ndjson;
 use mustard_core::domain::model::event::HarnessEvent;
 use std::path::Path;
@@ -150,12 +148,7 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
     // inherits it from the session's recorded `pipeline.scope` binding, so we
     // need the session id in hand first.
     let session_id_owned = if event.session_id.is_empty() || event.session_id == "unknown" {
-        let resolved = session_id();
-        if resolved == "unknown" {
-            None
-        } else {
-            Some(resolved)
-        }
+        crate::shared::spec_state::session_from_env().filter(|s| s != "unknown")
     } else {
         Some(event.session_id.clone())
     };

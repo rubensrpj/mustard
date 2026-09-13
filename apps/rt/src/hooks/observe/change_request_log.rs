@@ -407,8 +407,8 @@ mod tests {
     fn skips_when_no_spec_in_scope() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        // A spec exists on disk but the session is NOT bound to it and no
-        // pipeline-state points at it → resolve_spec yields None.
+        // A spec exists on disk but the session is NOT bound to it and the
+        // checkout stands on no spec branch → resolve_spec yields None.
         let input = prompt_input("sess-3", cwd, "qualquer coisa");
         ChangeRequestLog.observe(&input, &ctx_for(cwd));
         // Nothing created under .claude/spec.

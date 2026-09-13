@@ -576,8 +576,10 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // keep promising a denial and a degrade after either was reverted.
     let paths = read("apps/rt/src/shared/paths.rs");
     assert!(
-        paths.contains("const HARNESS_PREFIXES: &[&str] = &[\".claude/plans/\", \".claude/scratch/\"];"),
-        "the write gate carves more than plans and scratch out of the base again — \
+        paths.contains(
+            "const HARNESS_PREFIXES: &[&str] = &[\".claude/plans/\", \".claude/scratch/\", \".claude/.cache/\"];"
+        ),
+        "the write gate carves more than plans, scratch and the harness cache out of the base again — \
          `.claude/spec/` among them — so the prose promises a denial that never fires",
     );
     let draft = read("apps/rt/src/commands/spec/spec_draft.rs");
@@ -1302,14 +1304,14 @@ fn bugfix_prose_teaches_the_material_channel() {
     // judges it. It used to promise that, once the base gate had NAMED the
     // unit, the pending marker made the auto-branch hook cut the branch on this
     // very write. The write gate cuts nothing — only the cut `spec-draft` takes
-    // reads the marker — so that promise would send the flow at a wall it never
-    // mentions. Both flows name the same wall, each in its own words.
+    // reads the marker. The write lands either way: the write gate carves
+    // `.claude/.cache/` out of a base, and both flows say so in their own words.
     // The anchor is the CLAIM, not a slogan. It used to be the sentence
     // "Order, said out loud: …", which /feature §2.2 carried word for word —
     // one wording maintained in two files is how the two drift apart. Both
     // flows now point at `dispatch.md`, which states the order once, and each
     // states the claim in its own words; what this ratchet still holds is that
-    // the paragraph names BOTH outcomes of the write.
+    // the paragraph says the write lands on a base too.
     let order = line_with(&bugfix, "This write happens AFTER the base gate")
         .expect("the bugfix prose no longer states when the unit's branch is cut");
     assert!(
@@ -1323,8 +1325,9 @@ fn bugfix_prose_teaches_the_material_channel() {
          performs it: {order}",
     );
     assert!(
-        order.contains("REFUSED"),
-        "…and it must still name the case that IS a dead end: {order}",
+        order.contains("carves it out of an integration base") && !order.contains("dead-ends"),
+        "…and it must say the material lands on a base too — `.claude/.cache/` is \
+         harness state the write gate carves out: {order}",
     );
     let kinds = line_with(&bugfix, ".claude/.cache/spec-material.json")
         .expect("checked above");
@@ -1395,7 +1398,9 @@ fn bugfix_prose_teaches_the_material_channel() {
     );
     let paths = read("apps/rt/src/shared/paths.rs");
     assert!(
-        paths.contains("const HARNESS_PREFIXES: &[&str] = &[\".claude/plans/\", \".claude/scratch/\"];"),
+        paths.contains(
+            "const HARNESS_PREFIXES: &[&str] = &[\".claude/plans/\", \".claude/scratch/\", \".claude/.cache/\"];"
+        ),
         "the write gate no longer carves out `.claude/scratch/`, so the prose \
          sends a diagnosis at a path the gate denies",
     );

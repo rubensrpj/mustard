@@ -16,8 +16,9 @@
 //! starts the wave's subagent — exactly the `SubagentStart` trigger this
 //! observer hooks. A `pipeline.task.dispatch` is orchestrator-authored and not
 //! reliably emitted for every wave; an explicit `pipeline.wave.start` keyed off
-//! the same `MUSTARD_ACTIVE_SPEC` + `MUSTARD_ACTIVE_WAVE` env vars the
-//! completion observer uses makes the `in_progress = started-without-complete`
+//! the same lookup the completion observer uses (the spec from the one
+//! current-spec ladder, the wave from `MUSTARD_ACTIVE_WAVE`) makes the
+//! `in_progress = started-without-complete`
 //! derivation precise.
 //!
 //! ## Idempotency
@@ -55,10 +56,11 @@ fn is_off() -> bool {
 }
 
 /// Resolve `(spec, wave_number)` for the active wave, or `None` when no wave is
-/// active or its directory is missing. Reads `MUSTARD_ACTIVE_SPEC` +
+/// active or its directory is missing. The spec comes from the one
+/// current-spec ladder for `session`; only the wave comes from
 /// `MUSTARD_ACTIVE_WAVE`. Pure trigger predicate — no side effects.
-fn active_wave(cwd: &str) -> Option<(String, u32)> {
-    let spec = std::env::var("MUSTARD_ACTIVE_SPEC").ok().filter(|s| !s.is_empty())?;
+fn active_wave(cwd: &str, session: Option<&str>) -> Option<(String, u32)> {
+    let spec = crate::shared::spec_state::active_spec(cwd, session)?;
     let wave = std::env::var("MUSTARD_ACTIVE_WAVE").ok().filter(|s| !s.is_empty())?;
     let claude = ClaudePaths::for_project(Path::new(cwd)).ok()?;
     let spec_paths = claude.for_spec(&spec).ok()?;
@@ -131,7 +133,7 @@ impl Observer for WaveStartObserver {
             return;
         }
         let cwd = ctx.project_dir_or_cwd(input);
-        let Some((spec, wave)) = active_wave(&cwd) else {
+        let Some((spec, wave)) = active_wave(&cwd, input.session_id.as_deref()) else {
             return;
         };
         // Idempotency: a wave starts exactly once, even with parallel children.
@@ -220,7 +222,7 @@ mod tests {
 
     #[test]
     fn observer_no_ops_without_active_wave_env() {
-        // No MUSTARD_ACTIVE_SPEC/WAVE → active_wave None → observe is a no-op.
+        // No current spec, no MUSTARD_ACTIVE_WAVE → active_wave None → no-op.
         let dir = tempdir().unwrap();
         let ctx = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::SubagentStart));
         let input = HookInput {

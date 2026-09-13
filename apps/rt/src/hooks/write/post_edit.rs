@@ -1089,10 +1089,9 @@ fn same_path(a: &str, b: &str) -> bool {
 
 // ===========================================================================
 // pipeline-phase removed — `mustard-rt run emit-phase` is the sole producer of
-// `pipeline.phase` events. SKILL.md no longer writes `phaseName` to the
-// pipeline-state JSON, so the old PostToolUse(Write|Edit) emitter never had a
-// real trigger after the Wave-2 SQLite migration. Kept as a comment so the
-// migration intent is searchable.
+// `pipeline.phase` events. Nothing writes `phaseName` to a state file any more,
+// so the old PostToolUse(Write|Edit) emitter had no real trigger left. Kept as
+// a comment so the removal is searchable.
 // ===========================================================================
 
 // ===========================================================================
@@ -1393,7 +1392,7 @@ mod tests {
         PostEdit.observe(&input, &ctx(dir.path().to_str().unwrap()));
     }
 
-    // --- Wave-3a: fail-open when pipeline-state JSON absent -----------------
+    // --- fail-open when no spec is current ---------------------------------
 
     #[test]
     fn checklist_observe_fail_open_no_pipeline_state() {

@@ -18,9 +18,10 @@
 //! **no red verdict** (consolidation Allowed). The span ledger is the same
 //! deterministic source the regression gate and `close_orchestrate` already
 //! read; a red entry means a child failed the behaviour gate, so the wave is
-//! *not* done and no completion is emitted. The active wave is resolved from the
-//! `MUSTARD_ACTIVE_SPEC` + `MUSTARD_ACTIVE_WAVE` env vars (same lookup
-//! [`crate::hooks::task::subagent_inject`] uses for its span eval).
+//! *not* done and no completion is emitted. The active wave is resolved with the
+//! spec from the one current-spec ladder and the wave from
+//! `MUSTARD_ACTIVE_WAVE` (same lookup [`crate::hooks::task::subagent_inject`]
+//! uses for its span eval).
 //!
 //! ## Idempotency
 //!
@@ -57,10 +58,11 @@ fn is_off() -> bool {
 }
 
 /// Resolve `(spec, wave_dir, wave_number)` for the active wave, or `None` when
-/// no wave is active or the directory is missing. Reads `MUSTARD_ACTIVE_SPEC` +
+/// no wave is active or the directory is missing. The spec comes from the one
+/// current-spec ladder for `session`; only the wave comes from
 /// `MUSTARD_ACTIVE_WAVE`. Pure trigger predicate — no side effects.
-fn active_wave(cwd: &str) -> Option<(String, PathBuf, u32)> {
-    let spec = std::env::var("MUSTARD_ACTIVE_SPEC").ok().filter(|s| !s.is_empty())?;
+fn active_wave(cwd: &str, session: Option<&str>) -> Option<(String, PathBuf, u32)> {
+    let spec = crate::shared::spec_state::active_spec(cwd, session)?;
     let wave = std::env::var("MUSTARD_ACTIVE_WAVE").ok().filter(|s| !s.is_empty())?;
     let claude = ClaudePaths::for_project(Path::new(cwd)).ok()?;
     let spec_paths = claude.for_spec(&spec).ok()?;
@@ -143,7 +145,7 @@ impl Observer for WaveCompleteObserver {
             return;
         }
         let cwd = ctx.project_dir_or_cwd(input);
-        let Some((spec, wave_dir, wave)) = active_wave(&cwd) else {
+        let Some((spec, wave_dir, wave)) = active_wave(&cwd, input.session_id.as_deref()) else {
             return;
         };
         if !wave_is_complete(&wave_dir) {
@@ -280,7 +282,7 @@ mod tests {
 
     #[test]
     fn observer_no_ops_without_active_wave_env() {
-        // No MUSTARD_ACTIVE_SPEC/WAVE → active_wave None → observe is a no-op.
+        // No current spec, no MUSTARD_ACTIVE_WAVE → active_wave None → no-op.
         let dir = tempdir().unwrap();
         let ctx = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::SubagentStop));
         let input = HookInput {

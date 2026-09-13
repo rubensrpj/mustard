@@ -3,8 +3,7 @@
 //! For every `Task` dispatch that does NOT already declare a `SKILL:` block in
 //! its `prompt`, we resolve a minimal slice of:
 //!
-//! - the project's `CONTEXT.md` (when present), keyed against the spec slug
-//!   the dispatch carries via env (`MUSTARD_ACTIVE_SPEC`), and
+//! - the project's `CONTEXT.md` (when present), and
 //! - the top-K skills returned by [`crate::commands::skill::skill_resolve::resolve`] for
 //!   the prompt + role + active-phase.
 //!
@@ -418,15 +417,15 @@ fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> St
     context_inject::render_spec_memory_block(&matches)
 }
 
-/// Resolve the active wave directory for the project. Reads the
-/// `MUSTARD_ACTIVE_SPEC` + `MUSTARD_ACTIVE_WAVE` env vars and joins them
-/// against the project's `.claude/spec/<spec>/wave-<n>(-*)/` directory.
+/// Resolve the active wave directory for the project: the spec from the one
+/// current-spec ladder for `session`, the wave from `MUSTARD_ACTIVE_WAVE`,
+/// joined against the project's `.claude/spec/<spec>/wave-<n>(-*)/` directory.
 ///
-/// Returns `None` when either env var is missing or when no matching wave
-/// directory exists on disk — the SubagentStop branch then skips its
-/// span-level eval (fail-open).
-fn active_wave_dir(project: &Path) -> Option<PathBuf> {
-    let spec = std::env::var("MUSTARD_ACTIVE_SPEC").ok().filter(|s| !s.is_empty())?;
+/// Returns `None` when no spec is current, the wave variable is missing, or no
+/// matching wave directory exists on disk — the SubagentStop branch then skips
+/// its span-level eval (fail-open).
+fn active_wave_dir(project: &Path, session: Option<&str>) -> Option<PathBuf> {
+    let spec = crate::shared::spec_state::active_spec(&project.to_string_lossy(), session)?;
     let wave = std::env::var("MUSTARD_ACTIVE_WAVE").ok().filter(|s| !s.is_empty())?;
     let claude = ClaudePaths::for_project(project).ok()?;
     let spec_paths = claude.for_spec(&spec).ok()?;
@@ -577,7 +576,7 @@ fn extract_verdict_block(text: &str) -> Option<ReviewVerdict> {
 /// path — never called from a `Check`, only from the `Observer`-shaped
 /// `SubagentStop` side effect below.
 fn capture_memory_decision(project: &Path, cwd: &str, input: &HookInput) {
-    capture_memory_decision_with_session(project, cwd, input, &crate::shared::context::session_id());
+    capture_memory_decision_with_session(project, cwd, input, input.session_id.as_deref().unwrap_or(""));
 }
 
 /// The spec a `SubagentStop` capture is attributed to: the one current-spec
@@ -588,8 +587,8 @@ pub(crate) fn capture_spec(cwd: &str, sid: &str) -> Option<String> {
 }
 
 /// Session-explicit variant of [`capture_memory_decision`] — the actual
-/// worker, taking `session_id` as a parameter instead of resolving the
-/// ambient [`crate::shared::context::session_id`] internally. Mirrors this
+/// worker, taking `session_id` as a parameter instead of reading it off the
+/// stop input. Mirrors this
 /// file's own [`span_level_eval_and_append`]/[`span_level_eval_and_append_in`]
 /// split and for the same reason: a test cannot safely mutate
 /// `MUSTARD_SESSION_ID` (`unsafe` under Rust 2024, forbidden in this crate),
@@ -689,12 +688,11 @@ const RETURN_REPORT_MAX_CHARS: usize = 8_000;
 /// which is noise the operator can correct, not a claim the harness never
 /// verified.
 ///
-/// Spec attribution mirrors its [`capture_memory_decision`] twin — the
-/// session-bound `active-spec` marker, then the legacy/env resolution; no spec
-/// resolves ⇒ no-op rather than an orphaned event. Fail-open throughout:
+/// Spec attribution mirrors its [`capture_memory_decision`] twin
+/// ([`capture_spec`]); no spec resolves ⇒ no-op rather than an orphaned event. Fail-open throughout:
 /// telemetry, never a blocking path.
 fn capture_return_report(project: &Path, cwd: &str, input: &HookInput) {
-    capture_return_report_with_session(project, cwd, input, &crate::shared::context::session_id());
+    capture_return_report_with_session(project, cwd, input, input.session_id.as_deref().unwrap_or(""));
 }
 
 /// Session-explicit worker for [`capture_return_report`] — takes `session_id`
@@ -764,7 +762,7 @@ fn role_is_review(role: &str) -> bool {
 /// stays the fallback source of the verdict. Telemetry only, never a blocking
 /// path (called from the `SubagentStop` side effect below, never a `Check`).
 fn capture_review_verdict(project: &Path, cwd: &str, input: &HookInput) {
-    capture_review_verdict_with_session(project, cwd, input, &crate::shared::context::session_id());
+    capture_review_verdict_with_session(project, cwd, input, input.session_id.as_deref().unwrap_or(""));
 }
 
 /// Session-explicit worker for [`capture_review_verdict`] — takes `session_id`
@@ -802,7 +800,7 @@ fn span_level_eval_and_append(
     input: &HookInput,
     cwd: &str,
 ) -> Option<&'static str> {
-    let wave_dir = active_wave_dir(project)?;
+    let wave_dir = active_wave_dir(project, input.session_id.as_deref())?;
     span_level_eval_and_append_in(&wave_dir, input, cwd)
 }
 
@@ -1453,11 +1451,12 @@ mod tests {
     /// consolidation must then be blocked by [`review_spans::check_consolidation`].
     ///
     /// The test drives [`span_level_eval_and_append_in`] directly (passing
-    /// the wave directory as a parameter) so it does NOT need to mutate
-    /// `MUSTARD_ACTIVE_SPEC` / `MUSTARD_ACTIVE_WAVE` — `context::set_var` is
-    /// `unsafe` under Rust 2024 and this crate forbids `unsafe_code`. The
-    /// production caller [`span_level_eval_and_append`] is a thin wrapper
-    /// around the same helper that resolves the wave from the env vars.
+    /// the wave directory as a parameter) so it needs no current spec and no
+    /// `MUSTARD_ACTIVE_WAVE` — `context::set_var` is `unsafe` under Rust 2024
+    /// and this crate forbids `unsafe_code`. The production caller
+    /// [`span_level_eval_and_append`] is a thin wrapper around the same helper
+    /// that resolves the wave directory from the current spec and the wave
+    /// variable.
     #[test]
     fn w5_three_sequential_children_append_per_stop_and_red_blocks_consolidation() {
         let spec = "w5-test-span-eval";

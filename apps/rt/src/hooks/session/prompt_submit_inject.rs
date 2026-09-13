@@ -425,21 +425,18 @@ impl Check for PromptSubmitInject {
 /// Emit a `pipeline.economy.operation.invoked` event via the NDJSON route.
 /// Fail-open: any error degrades to a no-op.
 ///
-/// Routes via `crate::shared::events::route::emit` (NDJSON for
-/// non-`pipeline.*` events, SQLite lifecycle index for `pipeline.*`).
+/// Routes via `crate::shared::events::route::emit`, into the per-spec NDJSON
+/// sink.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build a [`Ctx`] with a unique tempdir project path so the active-spec
-    /// resolver (`current_spec`) cannot accidentally find a real pipeline-state.
+    /// Build a [`Ctx`] with a unique tempdir project path so the current-spec
+    /// ladder (`current_spec`) cannot find a real project's branch or binding.
     fn ctx() -> (tempfile::TempDir, Ctx) {
-        // SAFETY: env mutation is local to the test process; we restore on drop.
-        // Used to neutralise a `MUSTARD_ACTIVE_SPEC` that might be set by the
-        // outer shell.
-        // Note: we cannot call `std::env::remove_var` from safe Rust on stable;
-        // instead, isolate via a unique project_dir (so `current_spec` falls
-        // through to the FS branch and finds nothing).
+        // Env mutation is `unsafe` under edition 2024, so an inherited
+        // `MUSTARD_ACTIVE_SPEC` cannot be cleared here; the unique project dir
+        // is what keeps the branch and session rungs empty.
         let dir = tempfile::tempdir().unwrap();
         let ctx = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         (dir, ctx)

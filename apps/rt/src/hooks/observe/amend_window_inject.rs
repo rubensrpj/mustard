@@ -124,7 +124,8 @@ fn read_window(project_dir: &str, spec_id: &str) -> WindowState {
 /// associated with `project_dir`. Returns `None` when no spec is active or the
 /// window is closed/absent.
 ///
-/// We infer the spec from [`current_spec`] (env var → pipeline-state file).
+/// We infer the spec from [`current_spec`] (the environment override, then
+/// the checkout's branch).
 fn active_window(project_dir: &str) -> Option<(String, WindowState)> {
     let spec_id = current_spec(project_dir)?;
     let win = read_window(project_dir, &spec_id);

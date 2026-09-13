@@ -386,9 +386,7 @@ pub fn run(opts: EmitPipelineOpts) {
         _ => None,
     };
 
-    // Remove the terminal-state marker (keyed on the predicate, so it runs for
-    // every kind), then echo the one deterministic success line.
-    cleanup_terminal_state(&kind, &payload, &spec);
+    // Echo the one deterministic success line.
     // A abertura da unidade mostra o que segue combinado — no relatório e no
     // stderr, onde o operador lê mesmo quando o JSON é só repassado.
     let pending_echo = (kind == EVENT_PIPELINE_KIND).then(|| PendingEcho {
@@ -964,21 +962,6 @@ fn finalize_complete(cwd: &Path, spec: &str, ts: &str, sid: &str) {
     emit_completed_status_if_needed(cwd, spec, ts, sid);
 }
 
-/// Remove the `.pipeline-states/{spec}.json` marker when a terminal event is
-/// emitted, so the readers of that old folder don't resurrect a closed spec in
-/// a later session. Keyed on the terminal predicate (not one kind), so
-/// it runs after the dispatch for EVERY kind. Fail-open: a missing file is fine.
-fn cleanup_terminal_state(kind: &str, payload: &Value, spec: &str) {
-    if !is_terminal_event(kind, payload) {
-        return;
-    }
-    let cwd = effect_cwd();
-    if let Ok(paths) = ClaudePaths::for_project(&cwd) {
-        let state_file = paths.pipeline_states_dir().join(format!("{spec}.json"));
-        let _ = fs::remove_file(&state_file);
-    }
-}
-
 /// The one deterministic success line — `{ok, kind, spec[, branch][,
 /// renamedFrom]}`. No timestamp/session (run outputs are byte-compared in
 /// gates); the NDJSON row carries those. `branch` is present only on
@@ -1078,30 +1061,6 @@ pub(crate) fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
             .map(str::to_string);
     }
     last_overall.as_deref() == Some("pass")
-}
-
-/// Returns `true` when the event kind + payload indicate a terminal pipeline
-/// transition (spec is closed / completed / cancelled / abandoned).
-fn is_terminal_event(kind: &str, payload: &Value) -> bool {
-    if kind == EVENT_PIPELINE_COMPLETE {
-        return true;
-    }
-    // `pipeline.status` or `pipeline.outcome` with a terminal `to`/`outcome`.
-    if kind == EVENT_PIPELINE_STATUS || kind == EVENT_PIPELINE_OUTCOME {
-        let to = payload
-            .get("to")
-            .or_else(|| payload.get("outcome"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let lower = to.trim().to_ascii_lowercase();
-        // The deep refactor (2026-05-25) added `superseded`/`absorbed`
-        // as first-class terminal outcomes — both close the spec.
-        return matches!(
-            lower.as_str(),
-            "completed" | "cancelled" | "abandoned" | "superseded" | "absorbed"
-        );
-    }
-    false
 }
 
 /// Fan out the `pipeline.wave.failed` twin for a `pipeline.status

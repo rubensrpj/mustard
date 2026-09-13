@@ -117,7 +117,7 @@ pub(super) fn emit_pr_event(
         }),
         spec: spec.clone(),
     };
-    // `pr.detect` family events are non-pipeline → NDJSON via W5 router.
+    // `pr.detect` family events go to the per-spec NDJSON sink through the router.
     let _ = crate::shared::events::route::emit(project_dir, &harness_event);
 }
 
