@@ -994,20 +994,20 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // bloqueio pede o título, nunca o número: a regra de escrita barra o
         // código interno ("P-3") na conversa.
         ("pending.gate.block", Locale::PtBr) => {
-            "[Mustard] Uma unidade fechou neste turno, e a mensagem final não cita {count} \
-             pendência(s) aberta(s): {items}. O trabalho combinado sobrevive à unidade que \
-             fechou — reescreva a mensagem de fechamento citando cada uma pelo título, sem o \
+            "[Mustard] A spec {spec} fechou neste turno, e a mensagem final não cita {count} das \
+             pendências abertas que nasceram nela: {items}. O trabalho combinado sobrevive à spec \
+             que fechou: reescreva a mensagem de fechamento citando cada uma pelo título, sem o \
              número. Uma pendência que não vale mais só sai da lista com um motivo: \
-             `mustard-rt run pending --close <id> --reason \"…\"` (entregue) ou \
-             `mustard-rt run pending --drop <id> --reason \"…\"` (desistência)."
+             `mustard-rt run pending --close <id> --reason \"…\"` quando foi entregue, ou \
+             `mustard-rt run pending --drop <id> --reason \"…\"` quando o usuário desistiu."
         }
         ("pending.gate.block", Locale::EnUs) => {
-            "[Mustard] A unit closed in this turn, and the final message does not name {count} \
-             open pending item(s): {items}. Agreed work outlives the unit that closed — rewrite \
-             the closing message naming each one by title, without the number. An item that no \
-             longer stands \
-             leaves the list only with a reason: `mustard-rt run pending --close <id> --reason \
-             \"…\"` (delivered) or `mustard-rt run pending --drop <id> --reason \"…\"` (given up)."
+            "[Mustard] The spec {spec} closed in this turn, and the final message does not name \
+             {count} of the open pending items born in it: {items}. Agreed work outlives the spec \
+             that closed: rewrite the closing message naming each one by title, without the \
+             number. An item that no longer stands leaves the list only with a reason: \
+             `mustard-rt run pending --close <id> --reason \"…\"` when it was delivered, or \
+             `mustard-rt run pending --drop <id> --reason \"…\"` when the user gave it up."
         }
         // Recusa do `run pending --add` (`apps/rt/src/commands/event/pending.rs`):
         // o título repetido, sem ligar para maiúscula nem acento.
@@ -2216,7 +2216,7 @@ mod tests {
             ("doc.section.flow", &[][..]),
             ("pending.count.one", &[][..]),
             ("pending.count.many", &["{count}"][..]),
-            ("pending.gate.block", &["{count}", "{items}"][..]),
+            ("pending.gate.block", &["{spec}", "{count}", "{items}"][..]),
             ("pending.duplicate", &["{id}", "{title}"][..]),
             ("scratch.residue.notice", &["{total}", "{count}"][..]),
         ] {

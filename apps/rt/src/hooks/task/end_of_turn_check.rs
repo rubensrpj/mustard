@@ -5,8 +5,9 @@
 //! que elas acham sai num bloqueio só. Hoje são duas, cada uma no módulo do
 //! assunto:
 //!
-//! - as pendências ([`PendingRule`], `pending_gate.rs`): o turno em que uma
-//!   unidade fechou não termina sem citar cada pendência aberta;
+//! - as pendências ([`PendingRule`], `pending_gate.rs`): o turno em que a
+//!   spec fechou, ou entrou no merge, não termina sem citar cada pendência
+//!   aberta nascida nela;
 //! - a clareza ([`ClarityRule`], `clarity_check.rs`): a resposta segue a regra
 //!   de escrita e sai no idioma que o projeto declarou.
 //!
@@ -357,7 +358,7 @@ mod tests {
         else {
             panic!("both rules have something to say");
         };
-        let pending = reason.find("[Mustard] Uma unidade fechou").unwrap_or_else(|| panic!("{reason}"));
+        let pending = reason.find("[Mustard] A spec trava fechou").unwrap_or_else(|| panic!("{reason}"));
         let clarity = reason.find("[Mustard] A resposta fugiu").unwrap_or_else(|| panic!("{reason}"));
         assert!(pending < clarity, "the rules keep their order: {reason}");
         assert!(reason.contains("Humanize") && reason.contains("- MSTD-RULE-0008 é um código interno"), "{reason}");
@@ -366,7 +367,7 @@ mod tests {
         match EndOfTurnCheck.evaluate(&stop("s-both", rewrite, true), &ctx(root)).expect("never errors") {
             Verdict::Inject { context } => {
                 assert!(context.contains("- MSTD-RULE-0008 é um código interno"), "{context}");
-                assert!(!context.contains("Uma unidade fechou"), "the cited items passed: {context}");
+                assert!(!context.contains("A spec trava fechou"), "the cited items passed: {context}");
             }
             other => panic!("the rewrite only warns, got {other:?}"),
         }

@@ -70,52 +70,29 @@ fn project_is_own_crate(project: &Path) -> bool {
 ///
 /// Falls back to `.claude/.session/{slug}/.events/` when `spec` is empty — the
 /// dashboard's sessions sidebar consumes that directory.
+///
+/// O nome da spec e o papel da onda passam sempre pela conferência de nome:
+/// um nome com `..` ou com barra sairia da pasta das specs. A spec recusada é
+/// ignorada, e o evento cai na pasta da sessão; o papel de onda recusado é
+/// ignorado, e o evento fica na pasta da spec. O gravador segue sem travar o
+/// evento, como em qualquer falha dele.
 #[must_use]
 pub(crate) fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
-    if let Some(spec_name) = spec.filter(|s| !s.is_empty()) {
-        // Prefer the typed ClaudePaths accessor for the canonical
-        // `<project>/.claude/spec/<name>/[<wave>/].events/` layout. On I1
-        // guard rejection (an upstream caller handed us a `.claude`-nested
-        // path) fall back to the manual composition so the writer remains
-        // fail-open — telemetry must never block a real event.
-        let base = ClaudePaths::for_project(project)
-            .and_then(|p| p.for_spec(spec_name))
-            .ok()
-            .map(|sp| {
-                if let Some(wr) = wave_role.filter(|s| !s.is_empty()) {
-                    if let Ok(wp) = sp.for_wave(wr) {
-                        return wp.dir().to_path_buf();
-                    }
-                    // Wave slug failed validation — degrade to spec root +
-                    // raw slug so the writer still produces a stable path.
-                    return sp.dir().join(wr);
-                }
-                sp.dir().to_path_buf()
-            })
-            .unwrap_or_else(|| {
-                // I1 guard rejected the project root — keep telemetry alive
-                // via the unchecked fallback handle so the canonical
-                // accessor surface still materialises the path.
-                let cp = ClaudePaths::compose_unchecked(project);
-                let mut p = cp.spec_dir().join(spec_name);
-                if let Some(wr) = wave_role.filter(|s| !s.is_empty()) {
-                    p = p.join(wr);
-                }
-                p
-            });
-        base.join(".events")
-    } else {
-        // Session fallback: `<project>/.claude/.session/<slug>/.events/`. The
-        // `.session/` directory is not exposed via `ClaudePaths` (it is the
-        // sole consumer here, not Mustard-owned), so we reach for
-        // `claude_dir()` and append manually.
-        ClaudePaths::for_project(project)
-            .map(|p| p.claude_dir())
-            .unwrap_or_else(|_| ClaudePaths::compose_unchecked(project).claude_dir())
-            .join(".session")
-            .join(session_slug)
-            .join(".events")
+    // A raiz aninhada em `.claude` é recusada pela conferência da raiz; aí o
+    // caminho é montado sem ela, para o evento não se perder. Só a raiz: os
+    // nomes abaixo dela são conferidos do mesmo jeito.
+    let paths =
+        ClaudePaths::for_project(project).unwrap_or_else(|_| ClaudePaths::compose_unchecked(project));
+    if let Some(spec_paths) = spec.filter(|s| !s.is_empty()).and_then(|name| paths.for_spec(name).ok()) {
+        let wave = wave_role.filter(|s| !s.is_empty()).and_then(|role| spec_paths.for_wave(role).ok());
+        let dir = wave.map_or_else(|| spec_paths.dir().to_path_buf(), |wave| wave.dir().to_path_buf());
+        return dir.join(".events");
     }
+    // Session fallback: `<project>/.claude/.session/<slug>/.events/`. The
+    // `.session/` directory is not exposed via `ClaudePaths` (it is the
+    // sole consumer here, not Mustard-owned), so we reach for
+    // `claude_dir()` and append manually.
+    paths.claude_dir().join(".session").join(session_slug).join(".events")
 }
 
 /// One per-process writer file name (`{ts-ns}-{run-id}-{pid}.ndjson`).
@@ -300,21 +277,11 @@ pub fn write_event_with_ts(
     payload: &Value,
     ts_override: Option<&str>,
 ) -> Option<()> {
-    let written = write_event_inner(
+    write_event_inner(
         project, spec, wave_role, session_slug, event_name, kind, wave, session_id,
         actor, parent_id, payload, ts_override,
     )
-    .ok();
-    // Um fechamento de unidade deixa a marca da sessão AQUI, e não em cada
-    // gravador: `complete-spec` escreve direto neste módulo, sem passar pelo
-    // roteador, então este é o único ponto que todo fechamento atravessa.
-    if written.is_some()
-        && !project_is_own_crate(project)
-        && crate::shared::context::UNIT_CLOSURE_EVENTS.contains(&event_name)
-        && let Some(sid) = session_id {
-            crate::shared::context::mark_unit_closed(&project.to_string_lossy(), sid);
-        }
-    written
+    .ok()
 }
 
 
@@ -339,6 +306,31 @@ mod tests {
         let d = event_dir(p, Some("auth"), Some("wave-2-rt"), "s-1");
         let s = d.display().to_string().replace('\\', "/");
         assert!(s.contains("/spec/auth/wave-2-rt/.events"));
+    }
+
+    /// Um nome de spec ou de onda com `..` ou com barra nunca sai da pasta das
+    /// specs: a spec recusada cai na pasta da sessão, e a onda recusada fica
+    /// na pasta da spec.
+    #[test]
+    fn an_invalid_spec_or_wave_name_never_leaves_the_spec_folder() {
+        let project = Path::new("/proj");
+        let session = project.join(".claude").join(".session").join("s-1").join(".events");
+        for bad in ["..", "../fora", "a/../../fora", "x/y"] {
+            assert_eq!(event_dir(project, Some(bad), None, "s-1"), session, "spec {bad}");
+            assert_eq!(event_dir(project, Some(bad), Some("wave-1-rt"), "s-1"), session, "spec {bad}");
+        }
+        let spec = project.join(".claude").join("spec").join("auth").join(".events");
+        for bad in ["..", "../../../fora", "wave-1/../../x"] {
+            assert_eq!(event_dir(project, Some("auth"), Some(bad), "s-1"), spec, "wave {bad}");
+        }
+
+        let dir = tempdir().unwrap();
+        let _ = write_event(
+            dir.path(), Some("../fora"), None, "s-1",
+            "tool.use", "tool", None, Some("s-1"), None, None, &json!({}),
+        );
+        assert!(!dir.path().join(".claude").join("fora").exists(), "nothing lands beside the specs");
+        assert!(dir.path().join(".claude").join(".session").join("s-1").join(".events").is_dir());
     }
 
     #[test]

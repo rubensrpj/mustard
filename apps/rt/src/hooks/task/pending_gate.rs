@@ -132,7 +132,7 @@ impl TurnRule for PendingRule {
         if !charge.write(project, session) {
             return None;
         }
-        Some(Finding::Block(block_reason(&omitted, turn.lang)))
+        Some(Finding::Block(block_reason(&charge.spec, &omitted, turn.lang)))
     }
 }
 
@@ -228,11 +228,12 @@ fn occurs_whole(text: &str, needle: &str, joins_after: fn(char) -> bool) -> bool
         })
 }
 
-/// O motivo do bloqueio: nomeia CADA pendência omitida — sem corte, porque o
-/// próximo passo é citá-las todas — e diz as duas saídas honestas. O texto sai
-/// do catálogo, no idioma do projeto.
-fn block_reason(omitted: &[OpenPending], lang: Locale) -> String {
+/// O motivo do bloqueio: nomeia a spec que fechou e CADA pendência omitida —
+/// sem corte, porque o próximo passo é citá-las todas — e diz as duas saídas
+/// honestas. O texto sai do catálogo, no idioma do projeto.
+fn block_reason(spec: &str, omitted: &[OpenPending], lang: Locale) -> String {
     mustard_core::translate("pending.gate.block", lang)
+        .replace("{spec}", spec)
         .replace("{count}", &omitted.len().to_string())
         .replace("{items}", &format_pending_items(omitted, omitted.len()))
 }
@@ -258,10 +259,9 @@ pub(crate) fn seed_spec(root: &Path, spec: &str, born: &[u64], session: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::event::pending::{open_pending, pending_at, PendingOpts};
+    use crate::commands::event::pending::{pending_at, PendingOpts};
     use crate::commands::spec_events::write::record_phase;
     use crate::hooks::task::end_of_turn_check::run_rules;
-    use crate::shared::context::{mark_unit_closed, record_unit_closed_block, take_unit_closed, unit_closed_blocks};
     use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
     use serde_json::json;
     use tempfile::tempdir;
@@ -617,80 +617,44 @@ mod tests {
         assert!(verdict(root, &stop("s-again", omits)).is_blocking(), "the merge charges again");
     }
 
-    /// A regra de antes: armada pela marca que o gravador de eventos deixava
-    /// na sessão, cobrando toda pendência aberta. Existe só para o teste lado
-    /// a lado.
-    struct MarkerRule;
-
-    impl TurnRule for MarkerRule {
-        fn check(&self, turn: &Turn<'_>) -> Option<Finding> {
-            let project_dir = turn.project_dir;
-            let session = turn.session.unwrap_or_default();
-            let blocks = unit_closed_blocks(project_dir, session)?;
-            let omitted: Vec<OpenPending> = if turn.message.trim().is_empty() {
-                Vec::new()
-            } else {
-                open_pending(Path::new(project_dir)).into_iter().filter(|i| !cites(turn.message, i)).collect()
-            };
-            if omitted.is_empty() || blocks >= MAX_BLOCKS {
-                take_unit_closed(project_dir, session);
-                return None;
-            }
-            if !record_unit_closed_block(project_dir, session, blocks + 1) && !take_unit_closed(project_dir, session) {
-                return None;
-            }
-            Some(Finding::Block(block_reason(&omitted, turn.lang)))
-        }
-    }
-
-    /// Lado a lado — o mesmo fechamento, armado pela marca da sessão e pelo
-    /// estado da spec, dá o mesmo bloqueio, com o mesmo texto, e libera do
-    /// mesmo jeito.
+    /// Fechar a spec, e gravar os eventos de fechamento e de merge, não deixa
+    /// marca nenhuma na sessão: quem arma a cobrança é o estado da spec, e o
+    /// bloqueio nomeia a spec que fechou.
     #[test]
-    fn the_state_charges_what_the_session_mark_charged() {
-        let (by_mark, by_state) = (project_with_two_open_items(), project_with_two_open_items());
-        mark_unit_closed(&by_mark.path().to_string_lossy(), "s-lado");
-        closed_spec(by_state.path(), &[1, 2], "s-lado");
-
-        for message in ["Fechei; segue o p-2.", "Fechei; segue o p-2 e o Humanize."] {
-            let old = run_rules(&[&MarkerRule], &stop("s-lado", message), &ctx(by_mark.path()));
-            let new = verdict(by_state.path(), &stop("s-lado", message));
-            assert_eq!(new, old, "one closure, one answer: {message}");
-        }
-    }
-
-    /// O escritor de eventos é quem armava a cobrança de antes: gravar
-    /// `pipeline.complete` ou `pr.merged` marca a sessão que o gravou, e só
-    /// ela. Um evento comum não marca nada.
-    #[test]
-    fn a_recorded_closure_arms_the_gate_for_its_session() {
+    fn closing_a_spec_leaves_no_session_mark() {
         let dir = project_with_two_open_items();
         let root = dir.path();
+        seed_spec(root, SPEC, &[1], "s-marca");
         let project = root.to_string_lossy().into_owned();
-        let event = |name: &str, session: &str| mustard_core::domain::model::event::HarnessEvent {
-            v: mustard_core::domain::model::event::SCHEMA_VERSION,
-            ts: "2026-09-10T12:00:00.000Z".to_string(),
-            session_id: session.to_string(),
-            wave: 0,
-            actor: mustard_core::domain::model::event::Actor {
-                kind: mustard_core::domain::model::event::ActorKind::Orchestrator,
-                id: Some("test".to_string()),
-                actor_type: None,
-            },
-            event: name.to_string(),
-            payload: json!({}),
-            spec: Some("uma-unidade".to_string()),
-        };
+        for name in ["pipeline.complete", "pr.merged"] {
+            let event = mustard_core::domain::model::event::HarnessEvent {
+                v: mustard_core::domain::model::event::SCHEMA_VERSION,
+                ts: "2026-09-10T12:00:00.000Z".to_string(),
+                session_id: "s-marca".to_string(),
+                wave: 0,
+                actor: mustard_core::domain::model::event::Actor {
+                    kind: mustard_core::domain::model::event::ActorKind::Orchestrator,
+                    id: Some("test".to_string()),
+                    actor_type: None,
+                },
+                event: name.to_string(),
+                payload: json!({}),
+                spec: Some(SPEC.to_string()),
+            };
+            assert!(crate::shared::events::route::emit(&project, &event), "{name} recorded");
+        }
+        let _ = crate::commands::spec::complete_spec::finalize(root, SPEC);
 
-        crate::shared::events::route::emit(&project, &event("tool.use", "s-w"));
-        assert!(!take_unit_closed(&project, "s-w"), "an ordinary event is not a closure");
-
-        for closure in ["pipeline.complete", "pr.merged"] {
-            crate::shared::events::route::emit(&project, &event(closure, "s-w"));
-            assert!(!take_unit_closed(&project, "s-other"), "{closure}: only its own session");
-            assert_eq!(unit_closed_blocks(&project, "s-w"), Some(0), "{closure}: a fresh closure");
-            assert!(take_unit_closed(&project, "s-w"), "{closure} must arm the gate");
-            assert!(!take_unit_closed(&project, "s-w"), "{closure}: consumed once");
+        let session_dir = root.join(".claude").join(".session").join("s-marca");
+        let names: Vec<String> = std::fs::read_dir(&session_dir)
+            .map(|entries| entries.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        assert!(!names.iter().any(|name| name == "unit-closed"), "no session mark: {names:?}");
+        match verdict(root, &stop("s-marca", "Fechei.")) {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains(SPEC) && reason.contains("Humanize"), "{reason}");
+            }
+            other => panic!("the closed state arms the charge, got {other:?}"),
         }
     }
 }

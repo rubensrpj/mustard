@@ -54,10 +54,11 @@
 //!   written and already covering the in-place unit and the per-repo report.
 //!   Reimplementing it here would be a second exit ritual to keep in step.
 //!
-//!   Todo merge também grava o evento `pr.merged` (é ele que arma a cobrança
-//!   de pendências no fim do turno) e, quando a unidade nasceu ligada a uma
-//!   pendência (`emit-pipeline --pending`), fecha esse item com o motivo
-//!   `PR #N mergeado`. O relatório devolve `pendingClosed` e `pendingOpen` — as
+//!   Todo merge também grava o evento `pr.merged` e, quando o merge é de uma
+//!   spec com arquivo de eventos, o estado `delivered` dela: é esse estado que
+//!   arma a cobrança das pendências no fim da resposta. Quando a unidade nasceu
+//!   ligada a uma pendência (`emit-pipeline --pending`), o merge fecha esse
+//!   item com o motivo `PR #N mergeado`. O relatório devolve `pendingClosed` e `pendingOpen` — as
 //!   que seguem abertas — para que o fechamento as repasse ao operador.
 //!
 //! ## The unreviewed merge WARNS and ASKS — it never refuses
@@ -850,16 +851,16 @@ fn merge_core(
     }
 }
 
-/// O que um merge deixa registrado além do merge: o evento `pr.merged` e o
-/// fechamento da pendência ligada à unidade. Devolve o id fechado (se houve) e
-/// as pendências que seguem abertas.
+/// O que um merge deixa registrado além do merge: o evento `pr.merged`, o
+/// estado `delivered` da spec e o fechamento da pendência ligada à unidade.
+/// Devolve o id fechado (se houve) e as pendências que seguem abertas.
 ///
 /// O motivo `PR #N mergeado` põe o número do pull request no ledger, para quem
 /// reler a lista saber o que entregou o item.
 ///
-/// Roda também na promoção `dev` → `main`, de propósito: o `pr.merged` gravado
-/// aqui arma a cobrança de pendências do fim de turno, e uma promoção é um
-/// fechamento depois do qual o usuário deve ver o que segue aberto.
+/// Roda também na promoção `dev` → `main`: o `pr.merged` fica registrado. Uma
+/// promoção não tem spec, então não grava estado nem arma a cobrança, que vale
+/// só para as pendências nascidas numa spec.
 fn after_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) -> (Option<String>, Vec<OpenPending>) {
     record_merge(root, facts, spec);
     let reason = format!("PR #{} mergeado", facts.number);
@@ -886,9 +887,10 @@ fn linked_pending(root: &Path, spec: &str) -> Option<String> {
         .find_map(|e| e.payload.get(UNIT_PENDING_KEY).and_then(Value::as_str).map(str::to_string))
 }
 
-/// Grava o `pr.merged` desta porta. O `pr_detect` só enxerga um `gh pr merge`
-/// digitado no Bash, e este merge acontece dentro do processo — sem o evento, a
-/// cobrança de pendências do fim de turno nunca saberia que a unidade fechou.
+/// Grava o `pr.merged` desta porta e, com a spec, a fase `delivered` no estado
+/// dela. O `pr_detect` só enxerga um `gh pr merge` digitado no Bash, e este
+/// merge acontece dentro do processo — sem o estado, a cobrança de pendências
+/// do fim da resposta nunca saberia que a spec entrou no merge.
 ///
 /// Efeito declarado: o evento também alimenta o `pr_metrics` — a contagem de
 /// merges quando o git não responde e o pareamento aberto → mergeado. Os merges
