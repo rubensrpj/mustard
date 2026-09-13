@@ -537,7 +537,7 @@ fn the_approval_fallback_names_the_gesture_before_asking_for_it() {
     );
 
     // --- 2. The recorder still declines the way the paragraph claims --------
-    let recorder = read("apps/rt/src/hooks/observe/approval_marker_observer.rs");
+    let recorder = read("apps/rt/src/hooks/observe/approval_witness.rs");
     assert!(
         recorder.contains(r#"APPROVAL_STEMS: &[&str] = &["approv", "aprov"]"#),
         "the recorder's stems changed — the fallback now teaches labels it no \

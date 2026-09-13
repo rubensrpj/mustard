@@ -8,7 +8,7 @@
 
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
-use crate::hooks::observe::approval_marker_observer::ApprovalMarkerObserver;
+use crate::hooks::observe::approval_witness::ApprovalWitness;
 use crate::hooks::observe::clarification_observer::ClarificationObserver;
 use crate::hooks::observe::picker_approval_observer::PickerApprovalObserver;
 use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
@@ -418,18 +418,18 @@ impl Registry {
                 check: Some(Box::new(SubagentInject)),
                 observer: None,
             },
-            // Forgeable-approval gate — on the user's answer to the PLAN
-            // approval `AskUserQuestion`, record `<spec>/.approved-by-user` when
-            // it is a genuine approval of the active Full spec still awaiting
-            // approval in PLAN. `approve-spec` requires that marker in strict
-            // mode, so the orchestrator cannot self-approve. The marker is born
-            // ONLY from the user's real `tool_response` (which the model does not
-            // author). Pure Observer, fail-closed, never blocks.
+            // A testemunha da aprovação — na resposta do usuário à pergunta
+            // "Aprovar esta spec?", grava no `spec.ndjson` o `state` aprovado,
+            // com a pergunta e a opção escolhida, quando a spec atual está na
+            // fase de plano. A resposta vem do harness, que o modelo não
+            // escreve. Uma trava que nunca barra: devolve `Inject` para sugerir
+            // `/clear` depois da aprovação, ou para dizer por que nada foi
+            // gravado.
             Module {
-                id: "approval_marker_observer",
+                id: "approval_witness",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
-                check: None,
-                observer: Some(Box::new(ApprovalMarkerObserver)),
+                check: Some(Box::new(ApprovalWitness)),
+                observer: None,
             },
             // Gravador de esclarecimentos — na MESMA pergunta, grava pergunta,
             // resposta escolhida e notas como `clarification` no material da
@@ -690,32 +690,36 @@ mod tests {
         );
     }
 
+    /// A testemunha da aprovação roda só no `PostToolUse` da pergunta com
+    /// opções, e é uma trava que devolve veredito, não um observador.
     #[test]
-    fn ask_user_question_post_tool_use_runs_approval_marker_observer() {
+    fn ask_user_question_post_tool_use_runs_approval_witness() {
         let registry = Registry::new();
-        // The approval recorder fires only on PostToolUse(AskUserQuestion).
         assert!(
             applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"))
-                .contains(&"approval_marker_observer")
+                .contains(&"approval_witness")
         );
-        // Never on the Pre side, nor on an unrelated tool.
+        // Nunca no lado Pre, nem numa ferramenta qualquer.
         assert!(
             !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
-                .contains(&"approval_marker_observer")
+                .contains(&"approval_witness")
         );
         assert!(
             !applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
-                .contains(&"approval_marker_observer")
+                .contains(&"approval_witness")
         );
+        let module = registry.by_id("approval_witness").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+        assert!(registry.by_id("approval_marker_observer").is_none(), "the old recorder left");
     }
 
     #[test]
     fn ask_user_question_post_tool_use_runs_clarification_observer() {
         let registry = Registry::new();
-        // Ao lado do gravador de aprovação, na mesma pergunta respondida.
+        // Ao lado da testemunha da aprovação, na mesma pergunta respondida.
         let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"));
         assert!(ids.contains(&"clarification_observer"));
-        assert!(ids.contains(&"approval_marker_observer"));
+        assert!(ids.contains(&"approval_witness"));
         // Nunca no lado Pre, nem numa ferramenta qualquer.
         assert!(
             !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
@@ -763,7 +767,7 @@ mod tests {
             "metrics_observer",
             "skill_usage_observer",
             "tool_result_observer",
-            "approval_marker_observer",
+            "approval_witness",
             "clarification_observer",
             "plan_approval_observer",
             "size_gate",

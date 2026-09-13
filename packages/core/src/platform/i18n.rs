@@ -647,6 +647,50 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "[Mustard] The spec {spec} lives on the branch {branch}, and this edit is on {current}."
         }
 
+        // A testemunha da aprovação: o que ela diz ao assistente depois de
+        // gravar a aprovação, ou quando nada foi gravado.
+        ("approval.witness.clear", Locale::PtBr) => {
+            "[Mustard] O usuário aprovou a spec {spec}. Sugira limpar a conversa com `/clear`: a \
+             execução começa numa janela limpa, e a retomada lê o estado da spec."
+        }
+        ("approval.witness.clear", Locale::EnUs) => {
+            "[Mustard] The user approved the spec {spec}. Suggest clearing the conversation with \
+             `/clear`: execution starts in a clean window, and resuming reads the spec state."
+        }
+        ("approval.witness.free_text", Locale::PtBr) => {
+            "[Mustard] A spec {spec} espera aprovação, e nada foi gravado: a resposta {selected} \
+             não é uma das opções oferecidas. Texto livre nunca aprova. Opções oferecidas: \
+             {offered}. Para aprovar, responda de novo escolhendo a opção."
+        }
+        ("approval.witness.free_text", Locale::EnUs) => {
+            "[Mustard] The spec {spec} awaits approval, and nothing was recorded: the answer \
+             {selected} is not one of the offered options. Free text never approves. Offered \
+             options: {offered}. To approve, answer again by picking the option."
+        }
+        ("approval.witness.not_affirmative", Locale::PtBr) => {
+            "[Mustard] A spec {spec} espera aprovação, e nada foi gravado: a opção escolhida \
+             {selected} não começa por \"Aprovar\". Se era uma recusa, está tudo certo."
+        }
+        ("approval.witness.not_affirmative", Locale::EnUs) => {
+            "[Mustard] The spec {spec} awaits approval, and nothing was recorded: the chosen \
+             option {selected} does not start with \"Approve\". If it was a refusal, nothing is \
+             wrong."
+        }
+        ("approval.witness.no_plan", Locale::PtBr) => {
+            "[Mustard] Uma aprovação foi escolhida, e nada foi gravado: nenhuma spec desta sessão \
+             está na fase de plano."
+        }
+        ("approval.witness.no_plan", Locale::EnUs) => {
+            "[Mustard] An approval was chosen, and nothing was recorded: no spec of this session \
+             is in the plan phase."
+        }
+        ("approval.witness.already", Locale::PtBr) => {
+            "[Mustard] A spec {spec} já estava aprovada; nada a gravar."
+        }
+        ("approval.witness.already", Locale::EnUs) => {
+            "[Mustard] The spec {spec} was already approved; nothing to record."
+        }
+
         // Work-unit SURFACING — the three places the harness says out loud that
         // a work unit is somewhere other than the checkout, or that the exit
         // ritual is still owed. All three are user-facing (a listing legend, a
@@ -2198,8 +2242,8 @@ mod tests {
         }
     }
 
-    /// As mensagens do portão de escrita saem do catálogo nos dois idiomas,
-    /// cada uma com as vagas que o portão preenche.
+    /// As mensagens do portão de escrita e da testemunha da aprovação saem do
+    /// catálogo nos dois idiomas, cada uma com as vagas que o gancho preenche.
     #[test]
     fn i18n_translates_write_gate_and_witness_keys() {
         for (key, slots) in [
@@ -2208,6 +2252,11 @@ mod tests {
             ("write_gate.not_approved", &["{spec}", "{file}"][..]),
             ("write_gate.on_base", &["{branch}"][..]),
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
+            ("approval.witness.clear", &["{spec}"][..]),
+            ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
+            ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),
+            ("approval.witness.no_plan", &[][..]),
+            ("approval.witness.already", &["{spec}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

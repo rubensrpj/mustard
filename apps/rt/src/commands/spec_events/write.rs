@@ -28,8 +28,16 @@
 //! Num worktree, o evento vai para o arquivo do checkout principal. As
 //! citações de arquivo de um ponto são conferidas a partir de onde o comando
 //! roda.
+//!
+//! Uma spec aberta pelo `spec-draft` tem o `spec.md` escrito por ele, ao lado
+//! do `meta.json`. Ali a página e o `.md` não são refeitos: o `.md` é o
+//! documento do rascunho, e refazê-lo do arquivo de eventos apagaria o texto
+//! da spec. O evento e a linha do índice são gravados do mesmo jeito.
+//!
+//! Quem grava por dentro do binário, como a testemunha da aprovação e o
+//! `spec-draft`, usa [`record`], a mesma gravação deste comando.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::LESSON;
 use mustard_core::domain::spec_events::{type_spec, Refusal};
@@ -37,6 +45,8 @@ use mustard_core::domain::spec_index;
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
+
+use super::pages::SpecPages;
 
 /// Options for `mustard-rt run write`.
 pub struct WriteOpts {
@@ -76,20 +86,8 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             Refusal::UnknownType { found: event_type.to_string() }
         });
     };
-    let path = match store::spec_file(&project.root, spec) {
-        Ok(path) => path,
-        Err(refusal) => return refuse(refusal),
-    };
-    let roots = store::citation_roots(&opts.root, &project.root);
-    // A página e o `.md` acompanham cada gravação e são refeitos antes de a
-    // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
-    // outra sessão, só entra depois, e refaz os dois por último.
-    let mut pages = None;
-    let written = store::write_then(&path, event_type, draft, &roots, |log| {
-        pages = Some(super::pages::rebuild(&project.root, spec, log, lang));
-    });
-    match written {
-        Ok(written) => {
+    match record_in(&project, &opts.root, spec, event_type, draft) {
+        Ok(Recorded { written, pages }) => {
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -122,6 +120,57 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         }
         Err(refusal) => refuse(refusal),
     }
+}
+
+/// O que uma gravação deixou: o evento e, quando a página e o `.md` foram
+/// refeitos, onde eles estão ou por que não foram gravados.
+pub(crate) struct Recorded {
+    pub(crate) written: store::Written,
+    /// `None` quando a spec tem o `spec.md` do `spec-draft`, que fica como
+    /// está.
+    pub(crate) pages: Option<Result<SpecPages, Refusal>>,
+}
+
+/// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
+/// `run write`: a linha no arquivo de eventos, a linha da spec no índice e a
+/// página e o `.md`, quando a spec não é um rascunho do `spec-draft`.
+pub(crate) fn record(
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: Map<String, Value>,
+) -> Result<Recorded, Refusal> {
+    record_in(&super::project(start), start, spec, event_type, draft)
+}
+
+fn record_in(
+    project: &super::Project,
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: Map<String, Value>,
+) -> Result<Recorded, Refusal> {
+    let path = store::spec_file(&project.root, spec)?;
+    let roots = store::citation_roots(start, &project.root);
+    let drafted = drafted_by_spec_draft(&project.root, spec);
+    // A página e o `.md` acompanham cada gravação e são refeitos antes de a
+    // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
+    // outra sessão, só entra depois, e refaz os dois por último.
+    let mut pages = None;
+    let written = store::write_then(&path, event_type, draft, &roots, |log| {
+        if !drafted {
+            pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
+        }
+    })?;
+    Ok(Recorded { written, pages })
+}
+
+/// A spec foi aberta pelo `spec-draft`: o `meta.json` dele está na pasta, e o
+/// `spec.md` é o documento que ele escreveu.
+fn drafted_by_spec_draft(root: &Path, spec: &str) -> bool {
+    ClaudePaths::for_project(root)
+        .and_then(|paths| paths.for_spec(spec.trim()))
+        .is_ok_and(|paths| paths.meta_json_path().is_file())
 }
 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
@@ -254,6 +303,31 @@ mod tests {
         assert_eq!(with_code["reason"], json!("binary-only-field"), "{with_code}");
         let after = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
         assert_eq!(after.lines().count(), events.lines().count() + 1, "only the revision was written");
+    }
+
+    /// Numa spec aberta pelo `spec-draft`, o `spec.md` é o documento do
+    /// rascunho: gravar um evento não o refaz, e a página não nasce. O evento
+    /// e a linha do índice são gravados do mesmo jeito.
+    #[test]
+    fn a_spec_drafted_by_spec_draft_keeps_its_md() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = root.join(".claude").join("spec").join("teste");
+        std::fs::create_dir_all(&spec).unwrap();
+        std::fs::write(spec.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
+        std::fs::write(spec.join("spec.md"), "# Rascunho\n\n## Contexto\n\nO texto da spec.\n").unwrap();
+
+        let out = write(root, "state", r#"{"phase":"plan"}"#);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(
+            std::fs::read_to_string(spec.join("spec.md")).unwrap(),
+            "# Rascunho\n\n## Contexto\n\nO texto da spec.\n",
+            "the draft's document is left alone",
+        );
+        assert!(!spec.join("spec.html").exists(), "no page over a draft");
+        assert!(std::fs::read_to_string(spec.join("spec.ndjson")).unwrap().contains("\"plan\""));
+        let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
+        assert!(index.contains("\"teste\""), "{index}");
     }
 
     #[test]

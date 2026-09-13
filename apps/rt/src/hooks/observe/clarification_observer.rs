@@ -24,7 +24,7 @@
 //!
 //! ## Por que texto livre TAMBÉM vale aqui
 //!
-//! O `approval_marker_observer` recusa resposta digitada porque ela destrava um
+//! A testemunha da aprovação (`approval_witness`) recusa resposta digitada porque ela destrava um
 //! portão. Este observador não destrava nada: registra o que o usuário disse.
 //! A resposta vem do harness, não do modelo — é isso que a torna confiável
 //! como registro —, e o que o usuário escreveu pelo `Other` é exatamente o tipo

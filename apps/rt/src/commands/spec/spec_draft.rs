@@ -1200,6 +1200,13 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     }
     written.push(output.join("meta.json").display().to_string());
 
+    // A spec nasce na fase de plano, gravada pelo binário no `spec.ndjson`:
+    // o portão de escrita barra o código do projeto até o usuário escolher
+    // "Aprovar" na pergunta. Só na pasta canônica da spec, onde o estado mora.
+    if auto_output {
+        record_plan_state(project_root, &slug, work_branch.as_deref(), &output, lang_locale);
+    }
+
     // ---- Deterministic ROUTING GATE — the most expensive routing error is the
     // orchestrator asking for `--scope full` when the deterministic signals
     // (single-layer, few files) do not justify it. The machine enforces the
@@ -1312,6 +1319,49 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     }
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     i32::from(refused) * 2
+}
+
+/// Grava o nascimento da spec no `spec.ndjson`: um `state` na fase `plan`,
+/// com a branch da spec e a base de que ela foi cortada, quando se sabem. A
+/// branch é a que o rascunho cortou, ou a do checkout quando ela é a desta
+/// spec; a base é a que o `meta.json` guardou do corte.
+///
+/// Só na primeira vez: uma spec que já tem fase, aprovada ou não, fica como
+/// está, e um novo rascunho com `--force` nunca desfaz uma aprovação. Uma
+/// recusa da gravação só avisa: o rascunho já está no disco.
+fn record_plan_state(
+    project_root: &Path,
+    slug: &str,
+    work_branch: Option<&str>,
+    output: &Path,
+    lang: mustard_core::SupportedLocale,
+) {
+    use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
+    use mustard_core::domain::spec_state::SpecState;
+
+    let disk = crate::shared::spec_state::DiskSpecState::new(project_root);
+    if disk.state(slug).is_some_and(|state| state.phase.is_some()) {
+        return;
+    }
+    let config = mustard_core::ProjectConfig::load(project_root);
+    let branch = work_branch.map(str::to_string).or_else(|| {
+        let vcs = config.vcs()?;
+        let current = current_branch(&vcs, &project_root.to_string_lossy())?;
+        (slug_of_work_branch(&current, &config).as_deref() == Some(slug)).then_some(current)
+    });
+    let base = mustard_core::read_meta(&output.join("meta.json")).and_then(|meta| meta.base);
+    let mut draft = serde_json::Map::new();
+    draft.insert("phase".to_string(), json!("plan"));
+    draft.insert("author".to_string(), json!("binary"));
+    if let Some(branch) = branch {
+        draft.insert("branch".to_string(), json!(branch));
+    }
+    if let Some(base) = base {
+        draft.insert("base".to_string(), json!(base));
+    }
+    if let Err(refusal) = crate::commands::spec_events::write::record(project_root, slug, "state", draft) {
+        eprintln!("spec-draft: WARN: {}", refusal.message(lang));
+    }
 }
 
 /// Cut this session's pending work branch so everything the draft writes lands
