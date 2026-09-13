@@ -232,6 +232,43 @@ mod tests {
         assert!(hits.iter().any(|h| h.id == target.id), "{hits:?}");
     }
 
+    /// Com mais de cinco lições que casam o pedido, quase todas pela "pasta",
+    /// a única gravada com a chave "apagar" continua entre as 5 mais fortes,
+    /// mesmo gravada por último e sem "pasta" no texto: o termo raro pesa mais
+    /// que o comum.
+    #[test]
+    fn the_lesson_keyed_apagar_stays_in_the_top_five_among_many_that_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lessons.ndjson");
+        put(&path, defect("O cargo não está no PATH.", &["cargo"]));
+        for text in [
+            "A pasta temporária some depois do teste.",
+            "Os testes gravam numa pasta temporária.",
+            "Uma pasta de spec tem o arquivo de eventos.",
+            "A pasta do plugin vai inteira para a instalação.",
+            "A pasta de rascunho é da sessão.",
+            "Nenhuma pasta aninhada guarda estado.",
+            "A pasta target fica fora da varredura.",
+        ] {
+            put(&path, defect(text, &["pasta"]));
+        }
+        let target = put(&path, defect("Um rm -rf no diretório errado perde trabalho.", &["apagar", "rm"]));
+        let bank = read(&path).unwrap().unwrap();
+
+        let top = crate::domain::search::TOP;
+        let pasta = &crate::domain::search::query_terms("pasta")[0];
+        let with_pasta = bank
+            .visible()
+            .iter()
+            .filter(|l| l.str_field("search").unwrap_or_default().split(' ').any(|w| w == pasta))
+            .count();
+        assert!(with_pasta > top, "more lessons match than come back: {with_pasta}");
+
+        let hits = matching(&bank, "apagando a pasta");
+        assert_eq!(hits.len(), top, "{hits:?}");
+        assert!(hits.iter().any(|h| h.id == target.id), "the lesson keyed apagar is in the top five: {hits:?}");
+    }
+
     #[test]
     fn the_search_of_the_bank_is_recomputed_only_where_it_is_stale() {
         let dir = tempfile::tempdir().unwrap();

@@ -1134,13 +1134,6 @@ fn check_spec_index(root: &Path, lang: Locale) -> CheckResult {
     }
 }
 
-/// A raiz das specs e o idioma das mensagens, vistos de `cwd`.
-fn spec_root_and_lang(cwd: &Path) -> (PathBuf, Locale) {
-    let root = mustard_core::io::spec_events::spec_root(cwd);
-    let lang = mustard_core::ProjectConfig::load(&root).language().text_or_default();
-    (root, lang)
-}
-
 // ---------------------------------------------------------------------------
 // Check: status-consistency
 // ---------------------------------------------------------------------------
@@ -1452,8 +1445,8 @@ pub fn run(opts: DoctorOpts) {
             "status-consistency" => check_status_consistency(&claude_dir),
             "branch-protection" => check_branch_protection(&cwd),
             "spec-index" => {
-                let (root, lang) = spec_root_and_lang(&cwd);
-                check_spec_index(&root, lang)
+                let project = crate::commands::spec_events::project(&cwd);
+                check_spec_index(&project.root, project.lang)
             }
             other => {
                 eprintln!(
@@ -1494,8 +1487,8 @@ pub fn run(opts: DoctorOpts) {
         check_branch_protection(&cwd),
         // O índice das specs contra os arquivos de eventos: só acusa.
         {
-            let (root, lang) = spec_root_and_lang(&cwd);
-            check_spec_index(&root, lang)
+            let project = crate::commands::spec_events::project(&cwd);
+            check_spec_index(&project.root, project.lang)
         },
     ];
 
@@ -1769,8 +1762,8 @@ fn workspace_leaks_to_check_result(
     CheckResult::warn("workspace-leaks", details)
 }
 
-/// Project a `SupersededReport` onto the legacy `CheckResult` envelope. Roadmap
-/// #6 is a WARN-only linter — surfacing prune candidates never blocks the
+/// Project a `SupersededReport` onto the legacy `CheckResult` envelope. The
+/// superseded check only warns — surfacing prune candidates never blocks the
 /// doctor run. OK when nothing is archivable / stale.
 fn superseded_to_check_result(
     report: &crate::commands::doctor::superseded_check::SupersededReport,

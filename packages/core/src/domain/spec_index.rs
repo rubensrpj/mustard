@@ -12,9 +12,10 @@
 //! refeito do zero sai igual ao que as gravações deixaram.
 //!
 //! O objetivo é a primeira frase do primeiro `context` da spec, na versão
-//! vigente dele. O título de uma regra ou de uma decisão é o trecho em negrito
-//! do começo do texto; sem negrito, a primeira frase, cortada em 120
-//! caracteres.
+//! vigente dele. A linha que é só título (um cabeçalho `#` ou um trecho em
+//! negrito sozinho na linha) não é frase e é pulada, e o negrito sai do texto.
+//! O título de uma regra ou de uma decisão é o trecho em negrito do começo do
+//! texto; sem negrito, a primeira frase, cortada em 120 caracteres.
 //!
 //! Função pura: sem disco e sem relógio. A trava e a gravação moram em
 //! `io::spec_index`.
@@ -93,17 +94,43 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
 }
 
 /// O objetivo da spec numa frase: a primeira frase do primeiro `context`, na
-/// versão vigente dele. `None` sem `context`.
+/// versão vigente dele, depois das linhas que são só título e sem o negrito.
+/// `None` sem `context` ou quando o texto é só título.
 #[must_use]
 pub fn goal_of(log: &SpecLog) -> Option<String> {
-    log.events
+    let text = log
+        .events
         .iter()
         .filter(|e| e.event_type == "context" && e.int("replaces").is_none())
         .find_map(|e| log.current(e.id))
-        .and_then(|e| e.str_field("text"))
-        .map(first_sentence)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .and_then(|e| e.str_field("text"))?;
+    let plain = after_titles(text).replace("**", "");
+    let goal = first_sentence(&plain);
+    (!goal.is_empty()).then(|| goal.to_string())
+}
+
+/// O texto a partir da primeira linha que não é só título: pula as linhas em
+/// branco, os cabeçalhos `#` e as linhas que são só um trecho em negrito.
+fn after_titles(text: &str) -> &str {
+    let mut rest = text.trim_start();
+    while let Some(line) = rest.lines().next() {
+        if !is_title_line(line.trim()) {
+            break;
+        }
+        rest = rest[line.len()..].trim_start();
+    }
+    rest
+}
+
+/// Uma linha que é só título: um cabeçalho `#` ou um trecho em negrito
+/// sozinho na linha.
+fn is_title_line(line: &str) -> bool {
+    let heading = line.starts_with('#') && line.trim_start_matches('#').chars().next().is_none_or(char::is_whitespace);
+    let bold = line
+        .strip_prefix("**")
+        .and_then(|rest| rest.strip_suffix("**"))
+        .is_some_and(|inner| !inner.trim().is_empty() && !inner.contains("**"));
+    heading || bold
 }
 
 /// O título de uma regra ou de uma decisão: o trecho em negrito do começo do
@@ -363,6 +390,28 @@ mod tests {
         for field in ["goal", "titles", "phase", "branch"] {
             assert!(bare.get(field).is_none(), "{field}: {bare}");
         }
+    }
+
+    /// O objetivo de uma spec cujo primeiro contexto tem `text`.
+    fn goal_with(text: &str) -> Option<String> {
+        goal_of(&parse_log(&ev(1, "08:40", "context", json!({"text": text, "origin": 1}))))
+    }
+
+    /// Uma linha que é só título, em negrito ou com `#`, não é frase: o
+    /// objetivo é a frase que vem depois, sem a marcação. Sem título, é a
+    /// primeira frase, como sempre.
+    #[test]
+    fn the_goal_skips_a_title_line_and_drops_the_bold() {
+        assert_eq!(
+            goal_with("**Quem usa e para quê ✓**\n\nQuem programa descreve um desejo. O Mustard conduz o resto."),
+            Some("Quem programa descreve um desejo.".to_string())
+        );
+        assert_eq!(goal_with("## Objetivo\r\nDeixar enxuto. Depois."), Some("Deixar enxuto.".to_string()));
+        assert_eq!(goal_with("Deixar o Mustard enxuto. O resto vem depois."), Some("Deixar o Mustard enxuto.".to_string()));
+        assert_eq!(goal_with("Deixar o **Mustard** enxuto. Depois."), Some("Deixar o Mustard enxuto.".to_string()));
+        assert_eq!(goal_with("**Título.** A frase segue."), Some("Título.".to_string()), "a bold opening followed by text on the same line is not a title line");
+        assert_eq!(goal_with("#hashtag na frase. Depois."), Some("#hashtag na frase.".to_string()), "a `#` glued to a word is not a heading");
+        assert_eq!(goal_with("**Só um título**\n"), None, "a text that is only a title has no sentence");
     }
 
     #[test]
