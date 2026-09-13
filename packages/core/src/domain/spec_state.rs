@@ -365,6 +365,18 @@ pub fn requests_after(log: &SpecLog, after: u64) -> Vec<&SpecEvent> {
         .collect()
 }
 
+/// Algum `state` que a leitura mostra, com a fase `phase`, foi gravado no
+/// instante `since_secs` (segundos desde a época) ou depois. A hora do evento
+/// traz o fuso e vem em segundos; uma hora que não se lê não conta.
+#[must_use]
+pub fn phase_recorded_since(log: &SpecLog, phase: &str, since_secs: i64) -> bool {
+    log.block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|event| event.event_type == "state" && event.str_field("phase").map(str::trim) == Some(phase))
+        .filter_map(|event| chrono::DateTime::parse_from_rfc3339(event.at()).ok())
+        .any(|at| at.timestamp() >= since_secs)
+}
+
 /// A escada de "qual é a spec atual": a variável de ambiente, depois a spec da
 /// branch em que o checkout está, depois a spec ligada à sessão. O primeiro
 /// degrau com um nome vence; um nome em branco não conta.
@@ -688,6 +700,28 @@ mod tests {
         let fixed = review(&log(&[verdict(1, 2, "rejected"), verdict(2, 1, "approved"), verdict(3, 2, "approved")]));
         assert_eq!(fixed, Review { any: true, rejected: false });
         assert_eq!(fixed.word(), Some("approved"));
+    }
+
+    /// Um `state` conta a partir do instante em que foi gravado, lido com o
+    /// fuso dele; outra fase, uma hora ilegível e um `state` removido, não.
+    #[test]
+    fn a_phase_counts_from_the_instant_it_was_recorded() {
+        let closed = log(&[
+            json!({"v":1,"id":1,"at":"2026-09-13T09:00:00-03:00","type":"state","phase":"approved"}),
+            json!({"v":1,"id":2,"at":"2026-09-13T10:00:00-03:00","type":"state","phase":"closed"}),
+            json!({"v":1,"id":3,"at":"ontem","type":"state","phase":"closed"}),
+        ]);
+        // 10:00 em -03:00 é 13:00 UTC.
+        let at_13 = chrono::DateTime::parse_from_rfc3339("2026-09-13T13:00:00Z").unwrap().timestamp();
+        assert!(phase_recorded_since(&closed, "closed", at_13));
+        assert!(!phase_recorded_since(&closed, "closed", at_13 + 1), "the close came before");
+        assert!(!phase_recorded_since(&closed, "delivered", 0), "another phase does not count");
+
+        let removed = log(&[
+            json!({"v":1,"id":1,"at":"2026-09-13T10:00:00-03:00","type":"state","phase":"closed"}),
+            json!({"v":1,"id":2,"type":"remove","targets":[1],"reason":"engano"}),
+        ]);
+        assert!(!phase_recorded_since(&removed, "closed", 0), "a removed state does not count");
     }
 
     /// Só os pedidos gravados depois do evento dado voltam.

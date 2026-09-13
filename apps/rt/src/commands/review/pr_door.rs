@@ -25,8 +25,8 @@
 //!   against the project patterns" means the very molds the work was written
 //!   to, never a second list that can drift. With `--verdict` it RECORDS
 //!   through [`review_result::record_review`], the one recorder `review-result`
-//!   already uses, so the merge step reads what the REVIEW phase has always
-//!   written.
+//!   already uses. The merge step reads the verdicts of the spec's
+//!   `spec.ndjson` instead, one per wave.
 //!
 //! ## The spec is read out of the PR's OWN branch
 //!
@@ -42,12 +42,11 @@
 //! spec is not in this checkout" and "the unit has no spec" are different facts
 //! and must not print the same.
 //!
-//! The recorded verdict is the mirror image and needs no such hop: `.claude/` is
-//! redirected state, resolved to the MAIN checkout from inside any linked
-//! worktree, and `.claude/spec/*/.events/` is gitignored — so the ONE store the
-//! unit reads its own `review.result` back from is the main checkout's, whatever
-//! branch happens to be out. Recording from the base writes exactly the file the
-//! unit reads, and it adds nothing tracked to the base's tree.
+//! The verdict the merge reads needs no such hop: `.claude/` is redirected
+//! state, resolved to the MAIN checkout from inside any linked worktree, so the
+//! `spec.ndjson` the merge reads is the main checkout's, whatever branch
+//! happens to be out, and recording from the base adds nothing tracked to the
+//! base's tree.
 //! - **`pr-merge`** — merges, then hands the pruning to
 //!   [`git_settle::settle_at`]: returning to the base, pulling it, removing the
 //!   worktree and deleting the local + remote branch IS the exit ritual, already
@@ -85,7 +84,6 @@
 //! behind the same port in their own unit; they stay direct shell-outs here
 //! until then.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -94,9 +92,7 @@ use serde_json::Value;
 
 use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
-use crate::commands::event::pending::{
-    became_of, close_pending, open_pending_born_in, OpenPending, UNIT_PENDING_KEY,
-};
+use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
@@ -449,7 +445,8 @@ pub(crate) struct PrReviewReport {
 /// Recording goes through [`review_result::record_review`] — the same path the
 /// `review-result` CLI and the `SubagentStop` verdict capture already take, so
 /// a verdict recorded from this door is indistinguishable from one recorded by
-/// the REVIEW phase, which is exactly what lets `pr-merge` read it.
+/// the REVIEW phase. `pr-merge` reads the per-wave verdicts of the spec's
+/// `spec.ndjson`.
 #[must_use]
 fn review_brief(
     root: &Path,
@@ -586,48 +583,19 @@ pub(crate) fn merge_consent(
     }
 }
 
-/// The review verdict recorded for `spec` — `approved` only when EVERY
-/// subproject that recorded one says so, otherwise the first dissenting verdict
-/// verbatim. `None` = the unit carries no `review.result` at all.
+/// O veredito das revisões da spec `spec`, lido do `spec.ndjson` dela:
+/// `approved` quando o último veredito de cada onda aprovou, `rejected`
+/// quando o de alguma reprovou. `None` = a spec não tem veredito nenhum, ou
+/// não tem arquivo de eventos.
 ///
-/// Grouped per subproject (an absent one buckets as `"."`), because a later
-/// approval of subproject B must not bury an earlier rejection of A. No group
-/// is filtered out here: the merge step's answer to a dissent is a QUESTION, so
-/// an over-cautious group costs one confirmation, while dropping it would cost
-/// a silent merge over a rejection.
+/// Por onda, porque a aprovação de uma onda não pode esconder a reprovação de
+/// outra. A resposta do merge a uma reprovação é uma PERGUNTA: um veredito
+/// cauteloso custa uma confirmação, e ignorá-lo custaria um merge calado sobre
+/// uma reprovação.
 fn recorded_verdict(root: &Path, spec: &str) -> Option<String> {
-    let spec_paths = mustard_core::ClaudePaths::for_project(root).ok()?.for_spec(spec).ok()?;
-    let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(
-        &spec_paths.dir().join(".events"),
-    );
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-
-    let mut latest: BTreeMap<String, String> = BTreeMap::new();
-    for event in &events {
-        if event.event != "review.result" {
-            continue;
-        }
-        let Some(verdict) = event.payload.get("verdict").and_then(Value::as_str) else {
-            continue;
-        };
-        let subproject = event
-            .payload
-            .get("subproject")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(".")
-            .to_string();
-        latest.insert(subproject, verdict.to_string());
-    }
-    if latest.is_empty() {
-        return None;
-    }
-    latest
-        .values()
-        .find(|v| v.as_str() != "approved")
-        .cloned()
-        .or_else(|| Some("approved".to_string()))
+    use mustard_core::domain::spec_state::SpecState as _;
+    let log = crate::shared::spec_state::DiskSpecState::new(root).log(spec)?;
+    mustard_core::domain::spec_state::review(&log).word().map(str::to_string)
 }
 
 /// The `pr-merge` document.
@@ -880,30 +848,12 @@ fn after_merge(
 ) -> (Option<String>, Vec<OpenPending>) {
     record_merge(root, facts, spec, session);
     let reason = format!("PR #{} mergeado", facts.number);
-    // A nota "virou a spec X" da lista liga a pendência à spec. Uma unidade
-    // aberta antes de a nota existir só tem a ligação no evento da abertura.
+    // A nota "virou a spec X" da lista liga a pendência à spec.
     let closed = spec
-        .and_then(|slug| became_of(root, slug).or_else(|| linked_pending(root, slug)))
+        .and_then(|slug| became_of(root, slug))
         .filter(|id| close_pending(root, id, &reason));
     let born = spec.map(|slug| open_pending_born_in(root, slug)).unwrap_or_default();
     (closed, born)
-}
-
-/// A pendência à qual a unidade nasceu ligada: o `pending` do evento
-/// `pipeline.kind` mais recente que o carrega, lido do mesmo armazém de eventos
-/// de onde [`recorded_verdict`] lê o veredito. `None` quando a unidade nasceu
-/// sem ligação.
-fn linked_pending(root: &Path, spec: &str) -> Option<String> {
-    let spec_paths = mustard_core::ClaudePaths::for_project(root).ok()?.for_spec(spec).ok()?;
-    let mut events = mustard_core::view::projection::read_harness_events_from_ndjson_dir(
-        &spec_paths.dir().join(".events"),
-    );
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-    events
-        .iter()
-        .rev()
-        .filter(|e| e.event == mustard_core::domain::model::event::EVENT_PIPELINE_KIND)
-        .find_map(|e| e.payload.get(UNIT_PENDING_KEY).and_then(Value::as_str).map(str::to_string))
 }
 
 /// Grava o `pr.merged` desta porta e, com a spec, a fase `delivered` no estado
@@ -1251,7 +1201,8 @@ mod tests {
         let root = dir.path();
         let bases = door_flow();
         let facts = PrFacts { number: 237, head: "dev_still-running".to_string() };
-        review_result::record_review(root, "still-running", "approved", 0, Some("apps/rt"), None);
+        let criteria = crate::shared::spec_state::seed_runs(root, "still-running", &[None]);
+        crate::shared::spec_state::seed_verdict(root, "still-running", 1, "approved", criteria[0]);
 
         let merges = Cell::new(0u32);
         let settles = Cell::new(0u32);
@@ -1290,7 +1241,8 @@ mod tests {
         let root = dir.path();
         let bases = door_flow();
         let facts = PrFacts { number: 238, head: "dev_red-ci".to_string() };
-        review_result::record_review(root, "red-ci", "approved", 0, Some("apps/rt"), None);
+        let criteria = crate::shared::spec_state::seed_runs(root, "red-ci", &[None]);
+        crate::shared::spec_state::seed_verdict(root, "red-ci", 1, "approved", criteria[0]);
 
         let merges = Cell::new(0u32);
         let settles = Cell::new(0u32);
@@ -1332,92 +1284,43 @@ mod tests {
         assert_eq!(merges.get(), 0);
     }
 
-    /// A recorded verdict is read back through the same store `review-result`
-    /// writes — and a rejection in ANY subproject wins over a later approval of
-    /// another, so the merge step still asks.
+    /// O merge lê o veredito do `spec.ndjson`: a reprovação de uma onda não é
+    /// escondida pela aprovação de outra, e o merge pergunta antes de
+    /// integrar; aprovada de novo a onda reprovada, ele segue.
     #[test]
-    fn pr_merge_reads_the_verdict_review_result_recorded() {
+    fn the_merge_asks_for_confirmation_when_any_wave_verdict_was_rejected() {
+        use crate::shared::spec_state::{seed_runs, seed_verdict};
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         assert_eq!(recorded_verdict(root, "unit-a"), None, "nothing recorded yet");
 
-        review_result::record_review(root, "unit-a", "approved", 0, Some("apps/rt"), None);
+        let criteria = seed_runs(root, "unit-a", &[None]);
+        seed_verdict(root, "unit-a", 1, "approved", criteria[0]);
         assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("approved"));
-
-        review_result::record_review(root, "unit-a", "rejected", 1, Some("packages/core"), None);
+        seed_verdict(root, "unit-a", 2, "rejected", criteria[0]);
         assert_eq!(
             recorded_verdict(root, "unit-a").as_deref(),
             Some("rejected"),
-            "one subproject's rejection is not buried by another's approval"
+            "one wave's rejection is not buried by another's approval"
         );
-    }
 
-    /// O merge do pull request de uma unidade aberta antes da nota "virou a
-    /// spec X", ligada a uma pendência só pelo evento da abertura, ainda fecha
-    /// essa pendência com o número do PR no motivo. A ligação é gravada pelo
-    /// gravador de verdade (`with_pending_link`, o mesmo do `emit-pipeline
-    /// --pending`). Nenhuma pendência nasceu nessas specs, então a entrega não
-    /// pergunta de nenhuma.
-    #[test]
-    fn pr_merge_closes_linked_pending_item() {
-        use crate::commands::event::pending::{pending_at, PendingOpts};
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
-            .expect("cfg");
-        let opts = |add: bool, title: Option<&str>| PendingOpts {
-            root: root.to_path_buf(),
-            add,
-            title: title.map(str::to_string),
-            detail: title.map(|_| "combinado".to_string()),
-            ..PendingOpts::default()
+        let merges = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
         };
-        assert_eq!(pending_at(&opts(true, Some("trava de pendencias")))["id"], json!("P-1"));
-        assert_eq!(pending_at(&opts(true, Some("Humanize")))["id"], json!("P-2"));
-
-        // A abertura da unidade, como o `emit-pipeline --pending P-1` a grava.
-        let payload = crate::commands::event::emit_pipeline::with_pending_link(
-            json!({ "kind": "feature" }),
-            Some("P-1"),
-        );
-        let opened = mustard_core::domain::model::event::HarnessEvent {
-            v: mustard_core::domain::model::event::SCHEMA_VERSION,
-            ts: "2026-09-10T12:00:00.000Z".to_string(),
-            session_id: "s-merge".to_string(),
-            wave: 0,
-            actor: mustard_core::domain::model::event::Actor {
-                kind: mustard_core::domain::model::event::ActorKind::Orchestrator,
-                id: Some("emit-pipeline".to_string()),
-                actor_type: None,
-            },
-            event: "pipeline.kind".to_string(),
-            payload,
-            spec: Some("trava-pendencias".to_string()),
-        };
-        assert!(crate::shared::events::route::emit(&root.to_string_lossy(), &opened));
-
-        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
-        let merge = |_: &Path, _: u64| Ok(());
         let settle = |_: &Path, _: &str| json!({ "ok": true });
-        let facts = PrFacts { number: 271, head: "feature/trava-pendencias".to_string() };
-        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, None);
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let facts = PrFacts { number: 240, head: "dev_unit-a".to_string() };
+        let asked = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        assert_eq!(asked.action, "confirm");
+        assert_eq!(asked.reason, Some("review-not-approved"));
+        assert_eq!(merges.get(), 0, "a rejected wave is never merged without asking");
 
-        assert_eq!(done.action, "merged");
-        assert_eq!(done.pending_closed.as_deref(), Some("P-1"), "the linked item is closed");
-        assert_eq!(done.pending_open, Some(vec![]), "nothing was born in this spec, nothing is asked");
-        let ledger = pending_at(&opts(false, None));
-        assert_eq!(ledger["closed"][0]["id"], json!("P-1"));
-        assert_eq!(ledger["closed"][0]["reason"], json!("PR #271 mergeado"), "{ledger}");
-        assert_eq!(ledger["open"][0]["id"], json!("P-2"), "P-2 stays open: {ledger}");
-        let wire = serde_json::to_value(&done).expect("serialize");
-        assert_eq!(wire["pendingClosed"], json!("P-1"), "{wire}");
-        assert_eq!(wire["pendingOpen"], json!([]), "{wire}");
-
-        // Controle: uma unidade SEM ligação mergeia sem fechar nada.
-        let loose = PrFacts { number: 272, head: "feature/outra-coisa".to_string() };
-        let plain = merge_core(root, &loose, &door_flow(), true, &green, &merge, &settle, None);
-        assert_eq!(plain.pending_closed, None, "no link, nothing closed");
-        assert_eq!(plain.pending_open, Some(vec![]));
+        seed_verdict(root, "unit-a", 2, "approved", criteria[0]);
+        let merged = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        assert_eq!(merged.action, "merged", "every wave approved, nothing to ask");
+        assert_eq!(merges.get(), 1);
     }
 
     /// Um projeto do fluxo `dev`/`main` com as pendências abertas `titles`,
@@ -1688,15 +1591,9 @@ mod tests {
             "the review reads the implementer's own shelf"
         );
         assert!(!brief.recorded, "no --verdict → nothing recorded");
-        assert_eq!(recorded_verdict(root, "my-unit"), None);
 
         let recorded = review_brief(root, &facts, &bases, Some("approved"), 0);
         assert!(recorded.recorded);
         assert_eq!(recorded.verdict.as_deref(), Some("approved"));
-        assert_eq!(
-            recorded_verdict(root, "my-unit").as_deref(),
-            Some("approved"),
-            "the merge step reads exactly what the review step wrote"
-        );
     }
 }

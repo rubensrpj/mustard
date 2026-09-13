@@ -1895,8 +1895,8 @@ fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
 /// Route a `pipeline.complete` audit event for `spec`, matching
 /// [`crate::commands::spec::complete_spec`]'s emit: the payload carries
 /// `closedAt` + the affected-file set (union of harness `target.file` events and
-/// the VCS diff), so the events log / dashboard / `verify_emit` all see the
-/// close. Best-effort — the route write is fire-and-forget.
+/// the VCS diff), so the events log and the dashboard see the close.
+/// Best-effort — the route write is fire-and-forget.
 fn emit_pipeline_complete(cwd: &Path, spec: &str, ts: &str) {
     let affected = crate::commands::spec::complete_spec::collect_affected_files(cwd, spec);
     let event = HarnessEvent {

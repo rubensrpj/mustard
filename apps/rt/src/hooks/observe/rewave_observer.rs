@@ -16,14 +16,14 @@
 //!
 //! Two layers, both deterministic:
 //!
-//! 1. The trigger is **per-spec**: the observer only acts when the spec's
-//!    latest `pipeline.phase` is `EXECUTE` (via
-//!    [`crate::commands::event::emit_phase::last_phase_for_spec`]) and no
+//! 1. The trigger is **per-spec**: the observer only acts when the state of
+//!    the current spec, in its `spec.ndjson`, is in the `running` phase and no
 //!    `wave-plan.md` exists yet — so a second write after decomposition is a
 //!    no-op (the plan now exists).
-//! 2. `decompose_if_signaled` itself re-checks the `wave-plan.md` /
-//!    pipeline-state guards, so even a racing double-fire decomposes at most
-//!    once (`{ action: "skip", reason: "already-decomposed" }`).
+//! 2. `decompose_if_signaled` itself re-checks the `wave-plan.md` guard and
+//!    the user's refusal of the waves, so even a racing double-fire decomposes
+//!    at most once (`{ action: "skip", reason: "already-decomposed" }`), and a
+//!    spec the user joined into one is never split again.
 //!
 //! ## Role — observer, fail-open, NEVER denies
 //!
@@ -34,8 +34,10 @@
 //! restructuring, never a gate.
 
 use crate::shared::events::economy;
+use crate::shared::spec_state::DiskSpecState;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::domain::model::event::ActorKind;
+use mustard_core::domain::spec_state::SpecState as _;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -52,20 +54,19 @@ fn is_off() -> bool {
         .eq_ignore_ascii_case("off")
 }
 
-/// Resolve the active spec's `spec.md` path when the spec is **in EXECUTE** and
-/// **not yet decomposed** (no `wave-plan.md`). Returns `None` (skip) otherwise.
+/// Resolve the current spec's `spec.md` path when the spec is **in execution**
+/// (the `running` phase of its state) and **not yet decomposed** (no
+/// `wave-plan.md`). Returns `None` (skip) otherwise.
 ///
-/// This is the pure trigger predicate, separated from the side-effecting
+/// The spec comes from the one ladder, for the session of the write. This is
+/// the pure trigger predicate, separated from the side-effecting
 /// [`Observer::observe`] so it is unit-testable without invoking the
 /// decomposition. Every step fails open to `None`.
-fn target_spec_md(cwd: &str) -> Option<PathBuf> {
-    let spec = crate::shared::context::current_spec(cwd)?;
-    if spec.is_empty() {
-        return None;
-    }
-    // Only act in EXECUTE — the phase exec-rewave-check is meant to re-evaluate.
-    let phase = crate::commands::event::emit_phase::last_phase_for_spec(cwd, &spec)?;
-    if !phase.eq_ignore_ascii_case("EXECUTE") {
+fn target_spec_md(cwd: &str, session: Option<&str>) -> Option<PathBuf> {
+    let spec = crate::shared::spec_state::active_spec(cwd, session)?;
+    // Only act in execution — the phase exec-rewave-check is meant to re-evaluate.
+    let state = DiskSpecState::new(Path::new(cwd)).state(&spec)?;
+    if state.phase != Some("running") {
         return None;
     }
     let sp = ClaudePaths::for_project(Path::new(cwd))
@@ -99,7 +100,7 @@ impl Observer for RewaveObserver {
         if input.file_path().is_none() {
             return;
         }
-        let Some(spec_md) = target_spec_md(&cwd) else {
+        let Some(spec_md) = target_spec_md(&cwd, input.session_id.as_deref()) else {
             return;
         };
         // Decompose in-process (idempotency layer 2 lives inside the call).
@@ -133,11 +134,18 @@ impl Observer for RewaveObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::events::writer_ndjson::write_event;
+    use mustard_core::io::spec_events as store;
     use tempfile::tempdir;
 
+    /// Record the phase `phase` in the state of the spec's `spec.ndjson`.
+    fn record_phase(project: &Path, spec: &str, phase: &str) {
+        let sp = ClaudePaths::for_project(project).unwrap().for_spec(spec).unwrap();
+        let state = json!({ "phase": phase });
+        store::write(&sp.dir().join("spec.ndjson"), "state", state.as_object().cloned().unwrap(), &[]).unwrap();
+    }
+
     /// Build a project skeleton with a spec dir + spec.md, and (optionally)
-    /// drive its phase via a `pipeline.phase` event into the per-spec NDJSON.
+    /// record its phase in the state of its `spec.ndjson`.
     fn make_spec(project: &Path, spec: &str, files_section: &str, phase: Option<&str>) -> PathBuf {
         std::fs::write(project.join("mustard.json"), b"{}").unwrap();
         let sp = ClaudePaths::for_project(project).unwrap().for_spec(spec).unwrap();
@@ -145,27 +153,32 @@ mod tests {
         let body = format!("# Spec\n\n## Summary\nx\n\n## Files\n{files_section}\n\n## Tasks\n- do it\n");
         std::fs::write(sp.spec_md_path(), body).unwrap();
         if let Some(p) = phase {
-            let payload = json!({ "from": null, "to": p });
-            let _ = write_event(
-                project, Some(spec), None, "s", "pipeline.phase", "pipeline",
-                Some(0), Some("s"), Some("test"), None, &payload,
-            );
+            record_phase(project, spec, p);
         }
         sp.spec_md_path()
     }
 
+    /// O gatilho é o estado da spec atual: em plano, nada; em execução, o
+    /// `spec.md`; já decomposta, nada de novo.
     #[test]
-    fn target_skips_when_not_execute() {
+    fn the_trigger_is_the_running_state_of_the_current_spec() {
+        // An inherited override answers first; the branch rung is what is
+        // under test.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
         let dir = tempdir().unwrap();
         let project = dir.path();
-        make_spec(project, "specA", "- src/a.ts\n- src/b.ts", Some("PLAN"));
-        // MUSTARD_ACTIVE_SPEC not set → current_spec falls back to FS; but with
-        // no pipeline-state file it returns None. Drive via the FS hint instead.
-        let states = project.join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join("specA.json"), "{}").unwrap();
-        // PLAN phase → not EXECUTE → no target.
-        assert!(target_spec_md(project.to_str().unwrap()).is_none());
+        let cwd = project.to_str().unwrap();
+        let spec_md = make_spec(project, "specA", "- src/a.ts\n- src/b.ts", Some("plan"));
+        crate::shared::spec_state::stand_on_spec_branch(project, "specA");
+        assert!(target_spec_md(cwd, None).is_none(), "a plan is not the execution");
+
+        record_phase(project, "specA", "running");
+        assert_eq!(target_spec_md(cwd, None), Some(spec_md.clone()), "in execution, the spec is the target");
+
+        std::fs::write(spec_md.with_file_name("wave-plan.md"), "# Wave Plan\n").unwrap();
+        assert!(target_spec_md(cwd, None).is_none(), "already decomposed");
     }
 
     #[test]
@@ -178,7 +191,7 @@ mod tests {
             project,
             "specB",
             "- src/domain/user.rs\n- src/api/handler.rs",
-            Some("EXECUTE"),
+            Some("running"),
         );
         let first = crate::commands::wave::exec_rewave_check::decompose_if_signaled(&spec_md);
         let first_action = first.get("action").and_then(Value::as_str).unwrap_or("");

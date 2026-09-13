@@ -38,14 +38,14 @@
 //! it calls [`crate::commands::spec::complete_spec::finalize`] **directly**
 //! (module-qualified, in-process — no subprocess), marking the spec
 //! `completed` and emitting `pipeline.complete`. `finalize`, not `run_complete`:
-//! the QA gate above reads the RECORDED `qa.result overall=pass`
-//! ([`qa_gate_passes`]) — the same fact `run_complete`'s admission would read —
-//! so routing there would refuse nothing and only re-execute every criterion.
-//! That equivalence is the whole justification, and it only holds while this
-//! gate stays strict: it once accepted `skip` and chained the close with nothing
-//! verified. It then auto-verifies
-//! that the `pipeline.complete` event landed in the per-spec NDJSON window via
-//! [`crate::commands::event::verify_emit::verify_event_landed`] and folds the
+//! the QA gate above reads the RECORDED runs of the criteria in the spec's
+//! `spec.ndjson` ([`qa_gate_passes`]) — the same fact `run_complete`'s
+//! admission would read — so routing there would refuse nothing and only
+//! re-execute every criterion. That equivalence is the whole justification, and
+//! it only holds while this gate stays strict: it once accepted `skip` and
+//! chained the close with nothing verified. It then auto-verifies that the
+//! `state` with the phase `closed` reached the spec's `spec.ndjson` via
+//! [`crate::commands::event::verify_emit::closed_state_landed`] and folds the
 //! boolean into the report (`verified`). The LLM no longer decides whether to
 //! call `complete-spec`; it is a relay. When **any** gate fails the close is
 //! report-only (`chained: false`, no finalize) exactly as before. The
@@ -337,11 +337,11 @@ fn chain_close(cwd: &Path, spec: &str, gates: &[GateReport], session: Option<&st
 /// `pipeline.complete` (coupled with the root `meta.json` sync). It uses
 /// `finalize`, not `run_complete`, because the qa-run gate already ran every AC
 /// — re-running them in the finalize wastes minutes for no new signal. Then
-/// reuses
-/// [`crate::commands::event::verify_emit::verify_event_landed`] to confirm the
-/// `pipeline.complete` event landed in the per-spec NDJSON window. Both steps
-/// are deterministic; `complete_spec`'s emits are idempotent, so a re-run after
-/// an already-closed spec is a no-op flip. Returns `(chained, Some(verified))`.
+/// [`crate::commands::event::verify_emit::closed_state_landed`] confirms the
+/// `state` with the phase `closed` reached the spec's `spec.ndjson` after the
+/// finalize began. Both steps are deterministic; `complete_spec`'s emits are
+/// idempotent, so a re-run after an already-closed spec is a no-op flip.
+/// Returns `(chained, Some(verified))`.
 ///
 /// `session` é a de quem fecha, lida do ambiente pela entrada `run`.
 fn finalize_and_verify(cwd: &Path, spec: &str, session: Option<&str>) -> (bool, Option<bool>) {
@@ -353,13 +353,9 @@ fn finalize_and_verify(cwd: &Path, spec: &str, session: Option<&str>) -> (bool, 
     // strict: until it was fixed it accepted `skip`, and this line asserted a
     // verification that had not happened. `finalize` is the qa-less terminal path
     // `close-pipeline` already uses for exactly this reason.
+    let since = mustard_core::time::now_unix_millis();
     let _ = crate::commands::spec::complete_spec::finalize(cwd, spec, session);
-    let verified = crate::commands::event::verify_emit::verify_event_landed(
-        cwd,
-        "pipeline.complete",
-        Some(spec),
-        Some("60s"),
-    );
+    let verified = crate::commands::event::verify_emit::closed_state_landed(cwd, spec, since);
     // F4-c item 3 — auto epic-fold. Closing this spec may have been the last
     // child of an epic; detect any epic now ready (all children CLOSE, root
     // not yet CLOSE — same NDJSON source `epic-fold --detect` reads) and fold
@@ -510,7 +506,7 @@ mod tests {
     /// A spec whose reviewer left an undecided finding closed through this door
     /// while `emit-phase --to CLOSE` refused the very same tree. The proof is on
     /// both halves: the gate REFUSES and says which finding, and the finalize is
-    /// not reached — read through the same `verify_event_landed` the chained
+    /// not reached — read through the same `closed_state_landed` the chained
     /// close uses to confirm itself.
     #[test]
     fn close_orchestrate_blocks_on_open_finding() {
@@ -540,12 +536,7 @@ mod tests {
         assert!(!close_overall(&gates), "the vector must fail the close");
         assert_eq!(chain_close(cwd, "found", &gates, None), (false, None));
         assert!(
-            !crate::commands::event::verify_emit::verify_event_landed(
-                cwd,
-                "pipeline.complete",
-                Some("found"),
-                Some("1h"),
-            ),
+            !crate::commands::event::verify_emit::closed_state_landed(cwd, "found", 0),
             "the close must not have been chained over an undecided finding"
         );
 

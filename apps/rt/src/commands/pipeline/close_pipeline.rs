@@ -90,8 +90,6 @@ use crate::commands::pipeline::{dispatch_plan, pipeline_summary};
 use crate::commands::review::ac_negative_check::{self, Confirmation, Verdict};
 use crate::commands::review::qa_run::{self, QaRunOptions};
 use crate::commands::spec::complete_spec;
-use mustard_core::io::claude_paths::ClaudePaths;
-use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -110,7 +108,7 @@ pub fn run(spec: &str) {
 /// mutating the process cwd). Returns the report Value [`run`] prints.
 /// `session` é a de quem fecha, lida do ambiente pela entrada `run`.
 pub(crate) fn close(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
-    // 1. Reviews — advisory listing of every review.result verdict.
+    // 1. Reviews — advisory listing of every verdict in the spec file.
     let reviews = collect_review_verdicts(cwd, spec);
 
     // 2. QA — run the criteria. A pass is an OBSERVED exit code, and a run
@@ -354,42 +352,25 @@ fn confirmation_not_taken(reason: &str) -> Value {
     })
 }
 
-/// Every `review.result` verdict recorded for `spec`, chronological. Advisory
-/// — the composite lists them verbatim (verdict / critical count /
-/// subproject); it never blocks on a rejection. Fail-open: a missing events
-/// dir yields `[]`.
+/// Every verdict recorded in the spec's `spec.ndjson`, in event order — the
+/// wave and its result. Advisory: the composite lists them; it never blocks on
+/// a rejection. A spec with no event file yields `[]`.
 fn collect_review_verdicts(cwd: &Path, spec: &str) -> Vec<Value> {
-    let events_dir = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .ok()
-        .map_or_else(
-            || {
-                ClaudePaths::compose_unchecked(cwd)
-                    .spec_dir()
-                    .join(spec)
-                    .join(".events")
-            },
-            |sp| sp.events_dir(),
-        );
-    let mut events = read_harness_events_from_ndjson_dir(&events_dir);
-    events.sort_by(|a, b| a.ts.cmp(&b.ts));
-    events
+    use mustard_core::domain::spec_events::{Block, BlockQuery};
+    use mustard_core::domain::spec_state::SpecState as _;
+    let Some(log) = crate::shared::spec_state::DiskSpecState::new(cwd).log(spec) else {
+        return Vec::new();
+    };
+    log.block(BlockQuery::Block(Block::Review))
         .into_iter()
-        .filter(|e| e.event == "review.result" && e.spec.as_deref() == Some(spec))
-        .map(|e| {
-            json!({
-                "verdict": e.payload.get("verdict").cloned().unwrap_or(Value::Null),
-                "critical": e.payload.get("criticalCount").cloned().unwrap_or(Value::Null),
-                "subproject": e.payload.get("subproject").cloned().unwrap_or(Value::Null),
-            })
-        })
+        .filter(|event| event.event_type == "verdict")
+        .map(|event| json!({ "wave": event.wave(), "verdict": event.str_field("result") }))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -434,29 +415,10 @@ mod tests {
         assert_eq!(report["completed"], json!(false), "{report}");
     }
 
-    /// Emit a `review.result` event for `spec` (the same shape `review-result`
-    /// records).
-    fn emit_review(project: &Path, spec: &str, verdict: &str, critical: i64, ts: &str) {
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: ts.to_string(),
-            session_id: "test-session".to_string(),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Cli,
-                id: Some("review-result".to_string()),
-                actor_type: None,
-            },
-            event: "review.result".to_string(),
-            payload: json!({
-                "spec": spec,
-                "verdict": verdict,
-                "criticalCount": critical,
-                "subproject": null,
-            }),
-            spec: Some(spec.to_string()),
-        };
-        crate::shared::events::route::emit(project.to_str().unwrap(), &event);
+    /// Record the verdict `verdict` of wave 1 in the spec's `spec.ndjson`.
+    fn emit_review(project: &Path, spec: &str, verdict: &str) {
+        let criteria = crate::shared::spec_state::seed_runs(project, spec, &[None]);
+        crate::shared::spec_state::seed_verdict(project, spec, 1, verdict, criteria[0]);
     }
 
     /// Happy path: a passing AC closes the spec — reviews listed, QA pass,
@@ -470,7 +432,7 @@ mod tests {
         let spec = "close-pass";
         // `echo ok` exits 0 under both `cmd /c` and `sh -c`.
         let spec_dir = seed_spec(project, spec, "echo ok");
-        emit_review(project, spec, "approved", 0, "2026-06-09T00:00:01.000Z");
+        emit_review(project, spec, "approved");
 
         let report = close(project, spec, None);
 
@@ -478,7 +440,7 @@ mod tests {
         assert_eq!(report["completed"], json!(true), "{report}");
         // Reviews listed verbatim, advisory.
         assert_eq!(report["reviews"][0]["verdict"], json!("approved"), "{report}");
-        assert_eq!(report["reviews"][0]["critical"], json!(0), "{report}");
+        assert_eq!(report["reviews"][0]["wave"], json!(1), "{report}");
         // Summary carries the json-format shape.
         assert!(report["summary"]["done"].is_array(), "{report}");
         assert!(report["summary"]["nextSteps"].is_array(), "{report}");
@@ -502,7 +464,7 @@ mod tests {
         let spec = "close-fail";
         // `exit 3` exits non-zero under both `cmd /c` and `sh -c`.
         let spec_dir = seed_spec(project, spec, "exit 3");
-        emit_review(project, spec, "rejected", 2, "2026-06-09T00:00:01.000Z");
+        emit_review(project, spec, "rejected");
 
         let report = close(project, spec, None);
 
@@ -522,13 +484,8 @@ mod tests {
         .unwrap();
         assert_eq!(meta["stage"], json!("Execute"), "{meta}");
         assert_eq!(meta["outcome"], json!("Active"), "{meta}");
-        // And no pipeline.complete event landed.
-        assert!(!crate::commands::event::verify_emit::verify_event_landed(
-            project,
-            "pipeline.complete",
-            Some(spec),
-            Some("1h"),
-        ));
+        // And no close reached the spec file.
+        assert!(!crate::commands::event::verify_emit::closed_state_landed(project, spec, 0));
     }
 
     /// Seed a flat spec with TWO criteria, both running `cmd`.
@@ -985,7 +942,7 @@ mod tests {
         let project = dir.path();
         let spec = "close-keeps-the-tree";
         seed_spec(project, spec, "echo ok");
-        emit_review(project, spec, "approved", 0, "2026-06-09T00:00:01.000Z");
+        emit_review(project, spec, "approved");
 
         // Root files with nothing to do with this spec — the shape of the two
         // that disappeared.

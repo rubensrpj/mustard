@@ -1061,6 +1061,30 @@ mod tests {
         assert_eq!(view.status.as_deref(), Some("completed"));
     }
 
+    /// O fechamento automático se confere pelo estado: fechar uma spec
+    /// aprovada grava o `state` `closed` no `spec.ndjson`, e a conferência o
+    /// acha depois da hora em que o fechamento começou. Uma spec em plano não
+    /// fecha pela ponte, e a conferência diz que nada chegou.
+    #[test]
+    fn the_close_is_verified_by_the_closed_state_in_the_spec_file() {
+        use crate::commands::event::verify_emit::closed_state_landed;
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        crate::shared::spec_state::approve_in(&cwd.join(".claude").join("spec").join("aprovada"));
+        let since = mustard_core::time::now_unix_millis();
+        let _ = mark_complete(cwd, "aprovada", None);
+        assert!(closed_state_landed(cwd, "aprovada", since), "the close reached the spec file");
+        assert!(!closed_state_landed(cwd, "aprovada", since + 60_000), "not a close from the future");
+
+        let plan = cwd.join(".claude").join("spec").join("em-plano");
+        std::fs::create_dir_all(&plan).unwrap();
+        let state = json!({ "phase": "plan" });
+        mustard_core::io::spec_events::write(&plan.join("spec.ndjson"), "state", state.as_object().cloned().unwrap(), &[])
+            .unwrap();
+        let _ = mark_complete(cwd, "em-plano", None);
+        assert!(!closed_state_landed(cwd, "em-plano", since), "a spec in plan never closes by the bridge");
+    }
+
     #[test]
     fn parse_iso_millis_round_trips() {
         let ms = mustard_core::time::parse_iso_millis("2026-05-19T00:00:00.000Z").unwrap();
@@ -1097,14 +1121,11 @@ mod tests {
         .expect("projection exists after mark_complete");
         assert_eq!(view.status.as_deref(), Some("completed"));
 
-        // The pipeline.complete event landed and is verifiable via the same
-        // reusable helper close_orchestrate uses for its auto-verify step.
-        assert!(crate::commands::event::verify_emit::verify_event_landed(
-            cwd,
-            "pipeline.complete",
-            Some("demo"),
-            Some("1h"),
-        ));
+        // The pipeline.complete event landed in the spec's event log.
+        assert!(
+            read_events_for_spec(cwd, "demo").iter().any(|e| e.event == EVENT_PIPELINE_COMPLETE),
+            "pipeline.complete must land"
+        );
 
         // Phase is CLOSE.
         assert_eq!(
