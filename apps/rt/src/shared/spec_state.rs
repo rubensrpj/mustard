@@ -63,8 +63,8 @@ impl SpecState for DiskSpecState {
         active_spec(&self.root.to_string_lossy(), session)
     }
 
-    fn state(&self, spec: &str) -> State {
-        self.log(spec).map_or_else(State::absent, |log| State::from_log(&log))
+    fn state(&self, spec: &str) -> Option<State> {
+        self.log(spec).map(|log| State::from_log(&log))
     }
 
     fn log(&self, spec: &str) -> Option<SpecLog> {
@@ -121,6 +121,7 @@ mod tests {
                 crate::hooks::write::post_edit::find_active_spec(root, Some(SESSION))
                     .map(|(_, name)| name),
             ),
+            ("read", DiskSpecState::new(Path::new(root)).active(Some(SESSION))),
         ]
     }
 
@@ -182,8 +183,30 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude").join("spec").join("sem-arquivo")).unwrap();
         let disk = DiskSpecState::new(dir.path());
-        assert!(disk.state("sem-arquivo").is_absent(), "no event file, no state");
+        assert_eq!(disk.state("sem-arquivo"), None, "no event file, no state");
         assert!(disk.log("sem-arquivo").is_none());
+    }
+
+    /// Tirar o único `state` do arquivo não faz da spec uma branch que o
+    /// Mustard não abriu: o estado continua lá, sem fase e sem aprovação.
+    #[test]
+    fn a_spec_file_whose_only_state_was_removed_still_has_an_unapproved_state() {
+        let dir = tempdir().unwrap();
+        let path = store::spec_file(dir.path(), "sem-state").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let draft = |v: serde_json::Value| v.as_object().cloned().unwrap();
+        let first = store::write(&path, "state", draft(serde_json::json!({"phase": "plan"})), &[]).unwrap();
+        store::write(
+            &path,
+            "remove",
+            draft(serde_json::json!({"targets": [first.id], "reason": "engano"})),
+            &[],
+        )
+        .unwrap();
+
+        let state = DiskSpecState::new(dir.path()).state("sem-state").expect("the file is there");
+        assert_eq!(state.phase, None);
+        assert!(!state.approved);
     }
 
     #[test]
@@ -210,7 +233,7 @@ mod tests {
         )
         .unwrap();
 
-        let state = DiskSpecState::new(dir.path()).state("com-arquivo");
+        let state = DiskSpecState::new(dir.path()).state("com-arquivo").expect("the file is there");
         assert_eq!(state.phase, Some("approved"));
         assert!(state.approved);
         assert_eq!(state.branch.as_deref(), Some("feature/com-arquivo"), "the branch is inherited");

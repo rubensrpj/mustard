@@ -9,7 +9,12 @@
 //!   implementação de [`SpecState`] do lado de fora.
 //! - **Em que estado a spec está.** O [`State`] é a dobra dos eventos `state`
 //!   do `spec.ndjson`, em ordem de número: cada campo presente substitui o
-//!   anterior, e o ausente herda.
+//!   anterior, e o ausente herda. Uma versão revista de um `state` entra na
+//!   dobra no lugar do item que ela substitui, e não no fim.
+//!
+//! Uma spec sem `spec.ndjson` não tem estado nenhum: é uma branch que o
+//! Mustard não abriu, e nenhuma trava vale para ela. Uma spec com o arquivo e
+//! sem nenhum `state` visível tem estado, sem fase, e não está aprovada.
 //!
 //! Quem decide (o portão de escrita, a testemunha da aprovação, a cobrança das
 //! pendências) recebe os valores já lidos e se testa sem disco, com uma
@@ -17,7 +22,7 @@
 
 use serde_json::Value;
 
-use crate::domain::spec_events::{Block, BlockQuery, SpecLog, PHASES};
+use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog, PHASES};
 
 /// As fases em que a spec já foi aprovada pelo usuário.
 const APPROVED_PHASES: &[&str] = &["approved", "running", "closed", "pr_open", "delivered"];
@@ -29,8 +34,8 @@ const CLOSING_PHASES: &[&str] = &["closed", "delivered"];
 /// O estado de uma spec, dobrado dos eventos `state` que a leitura mostra.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
-    /// A fase atual, uma de [`PHASES`]; `None` quando a spec não tem nenhum
-    /// evento `state`, que é o caso de uma spec que o Mustard não abriu.
+    /// A fase atual, uma de [`PHASES`]; `None` quando o arquivo da spec não
+    /// tem nenhum evento `state` visível. Uma spec assim não está aprovada.
     pub phase: Option<&'static str>,
     /// A fase atual é a de uma spec aprovada: `approved`, `running`,
     /// `closed`, `pr_open` ou `delivered`.
@@ -47,28 +52,23 @@ pub struct State {
 }
 
 impl State {
-    /// O estado de uma spec sem arquivo de eventos, ou sem evento `state`.
-    #[must_use]
-    pub fn absent() -> Self {
-        Self::default()
-    }
-
-    /// `true` quando nenhum evento `state` foi lido: a spec não foi aberta
-    /// pelo Mustard, e nenhuma trava vale para ela.
-    #[must_use]
-    pub fn is_absent(&self) -> bool {
-        self.phase.is_none()
-    }
-
-    /// Dobra os eventos `state` visíveis, em ordem de número. Uma fase que
-    /// este binário não conhece é ignorada, e a anterior fica.
+    /// Dobra os eventos `state` visíveis, em ordem de número. Uma versão
+    /// revista entra no lugar do item que ela substitui: corrigir a branch do
+    /// primeiro `state` não traz de volta a fase dele por cima das que vieram
+    /// depois. Uma fase que este binário não conhece é ignorada, e a anterior
+    /// fica.
     #[must_use]
     pub fn from_log(log: &SpecLog) -> Self {
-        let mut state = Self::absent();
-        for event in log.block(BlockQuery::Block(Block::State)) {
-            if event.event_type != "state" {
-                continue;
-            }
+        let mut states: Vec<(u64, &SpecEvent)> = log
+            .block(BlockQuery::Block(Block::State))
+            .into_iter()
+            .filter(|event| event.event_type == "state")
+            .map(|event| (original_of(log, event), event))
+            .collect();
+        states.sort_by_key(|(at, event)| (*at, event.id));
+
+        let mut state = Self::default();
+        for (_, event) in states {
             if let Some(phase) = event.str_field("phase").and_then(known_phase) {
                 state.phase = Some(phase);
                 if state.closed_by.is_none() && CLOSING_PHASES.contains(&phase) {
@@ -88,6 +88,21 @@ impl State {
         state.approved = state.phase.is_some_and(|p| APPROVED_PHASES.contains(&p));
         state
     }
+}
+
+/// O número do item que `event` revê: segue os `replaces` para trás até a
+/// primeira versão. Um evento que não revê nada é o próprio item.
+fn original_of(log: &SpecLog, event: &SpecEvent) -> u64 {
+    let mut at = event.id;
+    // Uma cadeia nunca é maior que o arquivo; o limite só corta um laço feito
+    // à mão.
+    for _ in 0..=log.events.len() {
+        match log.get(at).and_then(|e| e.int("replaces")) {
+            Some(older) if older != at => at = older,
+            _ => break,
+        }
+    }
+    at
 }
 
 /// A fase como a constante de [`PHASES`]; `None` para um nome desconhecido.
@@ -118,9 +133,9 @@ pub fn resolve(
 pub trait SpecState {
     /// A spec atual, pela escada de [`resolve`], para a sessão `session`.
     fn active(&self, session: Option<&str>) -> Option<String>;
-    /// O estado da spec `spec`; [`State::absent`] quando ela não tem arquivo
-    /// de eventos.
-    fn state(&self, spec: &str) -> State;
+    /// O estado da spec `spec`; `None` só quando ela não tem arquivo de
+    /// eventos, que é uma branch que o Mustard não abriu.
+    fn state(&self, spec: &str) -> Option<State>;
     /// O arquivo de eventos da spec inteiro, para quem precisa de outro bloco;
     /// `None` quando ele não existe.
     fn log(&self, spec: &str) -> Option<SpecLog>;
@@ -167,7 +182,37 @@ mod tests {
         assert_eq!(state.base.as_deref(), Some("dev"), "the base is inherited");
         assert_eq!(state.closed_by, Some(5), "the first closing event is the trigger");
         assert_eq!(state.witness, Some(json!({"question":"Aprova?","answer":"Aprovar"})));
-        assert!(!state.is_absent());
+    }
+
+    /// Uma edição à mão pode deixar as linhas fora da ordem dos números; a
+    /// dobra segue o número, e o `state` mais novo continua valendo.
+    #[test]
+    fn the_fold_follows_the_event_number_not_the_line_order() {
+        let log = log(&[
+            json!({"v":1,"id":2,"type":"state","phase":"approved",
+                   "witness":{"question":"Aprova?","answer":"Aprovar"}}),
+            json!({"v":1,"id":1,"type":"state","phase":"plan","branch":"feature/x"}),
+        ]);
+        let state = State::from_log(&log);
+        assert_eq!(state.phase, Some("approved"), "the newer number wins over the later line");
+        assert!(state.approved);
+        assert_eq!(state.branch.as_deref(), Some("feature/x"));
+    }
+
+    /// Corrigir a branch do primeiro `state` não desfaz a aprovação que veio
+    /// depois: a versão revista entra no lugar do item que ela substitui.
+    #[test]
+    fn a_revised_state_folds_where_the_item_it_replaces_stood() {
+        let log = log(&[
+            json!({"v":1,"id":1,"type":"state","phase":"plan","branch":"feature/erro"}),
+            json!({"v":1,"id":2,"type":"state","phase":"approved",
+                   "witness":{"question":"Aprova?","answer":"Aprovar"}}),
+            json!({"v":1,"id":3,"type":"state","phase":"plan","branch":"feature/certa","replaces":1}),
+        ]);
+        let state = State::from_log(&log);
+        assert_eq!(state.phase, Some("approved"), "the revision of the first state stays first");
+        assert!(state.approved);
+        assert_eq!(state.branch.as_deref(), Some("feature/certa"), "the revision still counts");
     }
 
     #[test]
@@ -196,10 +241,18 @@ mod tests {
         assert!(state.approved);
     }
 
+    /// Um arquivo sem nenhum `state` visível dá um estado sem fase e não
+    /// aprovado, e não "spec que o Mustard não abriu": tirar o único `state`
+    /// não destrava a spec.
     #[test]
-    fn a_log_without_state_events_has_no_state() {
-        let log = log(&[json!({"v":1,"id":1,"type":"message","author":"user","text":"oi"})]);
-        assert_eq!(State::from_log(&log), State::absent());
-        assert!(State::absent().is_absent());
+    fn a_log_without_visible_state_events_is_not_approved() {
+        let log = log(&[
+            json!({"v":1,"id":1,"type":"state","phase":"plan","branch":"feature/x"}),
+            json!({"v":1,"id":2,"type":"remove","targets":[1],"reason":"engano"}),
+        ]);
+        let state = State::from_log(&log);
+        assert_eq!(state.phase, None);
+        assert!(!state.approved);
+        assert_eq!(state, State::default());
     }
 }
