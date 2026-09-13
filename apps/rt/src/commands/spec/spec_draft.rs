@@ -1115,10 +1115,6 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
                 );
                 return 0;
             }
-    if let Err(e) = mfs::create_dir_all(&output) {
-        emit_error("could not create output directory", &e.to_string());
-        return 0;
-    }
 
     // ---- Resolve the project build command (AC default) from mustard.json. ----
     // No hardcoded `rtk cargo build`: the AC runs the project's own build, or a
@@ -1158,6 +1154,14 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
             .collect::<Vec<_>>()
             .join("; ");
         emit_error("draft failed contract validation", &detail);
+        return 0;
+    }
+
+    // A pasta da spec nasce só depois da validação: uma recusa antes dela não
+    // deixa uma pasta que ninguém pediu, e que a trava leria como uma spec em
+    // plano.
+    if let Err(e) = mfs::create_dir_all(&output) {
+        emit_error("could not create output directory", &e.to_string());
         return 0;
     }
 
@@ -2137,6 +2141,39 @@ mod tests {
     /// it, with `--intent` keeping only its OTHER job — the spec title. The
     /// fixture is only worth anything because the two differ: the slug the
     /// draft would have derived is asserted absent from disk.
+    /// Um rascunho recusado na validação não deixa pasta nenhuma: a pasta da
+    /// spec só nasce depois dela.
+    #[test]
+    fn a_draft_refused_by_the_validation_leaves_no_folder() {
+        let dir = tempdir().unwrap();
+        let project = dir.path();
+        plant_project(project);
+        let code = run_at(
+            project,
+            SpecDraftOpts {
+                // Sem título, a validação recusa.
+                intent: "   ".to_string(),
+                slug: Some("sem-titulo".to_string()),
+                scope: "light".into(),
+                signals: None,
+                output: None,
+                material: None,
+                material_only: false,
+                no_material_reason: Some("fixture: a validação é o que se prova aqui".into()),
+                waves: 0,
+                plan: None,
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            },
+        );
+        assert_eq!(code, 0, "a refused draft still exits clean");
+        assert!(
+            !project.join(".claude").join("spec").join("sem-titulo").exists(),
+            "no spec folder is left behind",
+        );
+    }
+
     #[test]
     fn spec_draft_consumes_the_slug_it_is_given() {
         let dir = tempdir().unwrap();
