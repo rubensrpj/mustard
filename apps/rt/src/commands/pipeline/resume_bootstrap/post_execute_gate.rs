@@ -401,7 +401,7 @@ mod tests {
         assert!(out.qa_command.is_none());
     }
 
-    /// AC2 (regression): the events `/review` emits today — `review.start` +
+    /// Regression: the events `/review` emits today — `review.start` +
     /// `review.complete`, but NO `review.result` — do NOT satisfy the gate.
     /// This reproduces the false-positive `ReviewPending` the fix targets: only
     /// a `review.result` verdict advances past REVIEW, so a review that finished
