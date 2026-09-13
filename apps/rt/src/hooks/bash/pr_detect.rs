@@ -102,8 +102,11 @@ fn list_merged(root: &Path, command: &str, timeout: Duration) -> Option<Vec<Merg
 }
 
 /// Os pull requests mergeados da lista da API: só os que têm `merged_at` (um
-/// pull request fechado sem merge fica de fora), com a branch de origem em
-/// `head.ref`.
+/// pull request fechado sem merge fica de fora) e que saíram do próprio
+/// repositório, com `head.repo.full_name` igual a `base.repo.full_name`. O de
+/// um fork, com uma branch de mesmo nome, não é a entrega da spec; o de um
+/// fork apagado vem com `head.repo` nulo e também fica de fora. A branch de
+/// origem sai de `head.ref`.
 fn parse_merged(stdout: &str) -> Option<Vec<MergedPr>> {
     let listed: Value = serde_json::from_str(stdout.trim()).ok()?;
     Some(
@@ -111,8 +114,14 @@ fn parse_merged(stdout: &str) -> Option<Vec<MergedPr>> {
             .as_array()?
             .iter()
             .filter_map(|pr| {
+                let head = pr.get("head")?;
+                let origin = head.get("repo")?.get("full_name")?.as_str()?;
+                let target = pr.get("base")?.get("repo")?.get("full_name")?.as_str()?;
+                if origin != target {
+                    return None;
+                }
                 Some(MergedPr {
-                    head: pr.get("head")?.get("ref")?.as_str()?.to_string(),
+                    head: head.get("ref")?.as_str()?.to_string(),
                     merged_ms: mustard_core::time::parse_iso_millis(pr.get("merged_at")?.as_str()?)?,
                 })
             })
@@ -327,10 +336,22 @@ mod tests {
         mustard_core::time::parse_iso_millis("2026-09-13T12:00:00Z").expect("a fixed now")
     }
 
-    /// Um pull request fechado como a API o devolve: a branch de origem e a
-    /// hora do merge, ou `null` quando ele foi fechado sem merge.
+    /// Um pull request fechado como a API o devolve, saído do próprio
+    /// repositório: a branch de origem e a hora do merge, ou `null` quando ele
+    /// foi fechado sem merge.
     fn pr(head: &str, merged_at: Option<&str>) -> Value {
-        json!({ "number": 7, "head": { "ref": head }, "merged_at": merged_at })
+        from_repo(head, merged_at, json!({ "full_name": "o/r" }))
+    }
+
+    /// O mesmo pull request saído do repositório `repo`: outro nome é um fork,
+    /// e `null` é um fork apagado.
+    fn from_repo(head: &str, merged_at: Option<&str>, repo: Value) -> Value {
+        json!({
+            "number": 7,
+            "head": { "ref": head, "repo": repo },
+            "base": { "repo": { "full_name": "o/r" } },
+            "merged_at": merged_at
+        })
     }
 
     /// Uma lista da API com os pull requests `prs`, lida pela mesma leitura
@@ -449,6 +470,23 @@ mod tests {
         assert_eq!(phase(root, "trava"), Some("running"), "an old or unmerged pull request is not this merge");
     }
 
+    /// Um pull request de fork, com uma branch de mesmo nome da spec, não é a
+    /// entrega dela; o de um fork apagado, sem repositório de origem, também
+    /// não.
+    #[test]
+    fn a_pull_request_from_a_fork_is_not_a_delivery() {
+        let dir = project_on("dev");
+        let root = dir.path();
+        let answer = [
+            from_repo("feature/trava", Some("2026-09-13T11:59:00Z"), json!({ "full_name": "alguem/r" })),
+            from_repo("feature/trava", Some("2026-09-13T11:59:30Z"), Value::Null),
+        ];
+        let list = |_: &Path| api(&answer);
+        emit_pr_event_with(&root.to_string_lossy(), Some("s-pr"), "pr.merged", "gh pr merge 80", &list, now());
+        assert_eq!(phase(root, "trava"), Some("running"), "a fork's branch of the same name is not this spec");
+        assert!(crate::commands::event::pending::armed_charges(root).is_empty(), "nothing is armed");
+    }
+
     /// Com o `gh` lento, a pergunta estoura o prazo e nada é gravado.
     #[test]
     fn a_slow_gh_runs_out_of_time_and_records_nothing() {
@@ -482,14 +520,15 @@ mod tests {
     }
 
     /// A lista da API se lê pela branch de origem (`head.ref`) e pela hora do
-    /// merge (`merged_at`); o pull request fechado sem merge e o item sem
-    /// branch são pulados.
+    /// merge (`merged_at`); o pull request fechado sem merge, o item sem
+    /// branch e o de outro repositório são pulados.
     #[test]
     fn the_merged_list_reads_the_branch_and_the_merge_time() {
         let listed = r#"[
-            {"number":7,"head":{"ref":"feature/trava"},"merged_at":"2026-09-13T11:59:00Z"},
-            {"number":8,"head":{"ref":"feature/fechada"},"merged_at":null},
-            {"number":9,"merged_at":"2026-09-13T11:00:00Z"}
+            {"number":7,"head":{"ref":"feature/trava","repo":{"full_name":"o/r"}},"base":{"repo":{"full_name":"o/r"}},"merged_at":"2026-09-13T11:59:00Z"},
+            {"number":8,"head":{"ref":"feature/fechada","repo":{"full_name":"o/r"}},"base":{"repo":{"full_name":"o/r"}},"merged_at":null},
+            {"number":9,"base":{"repo":{"full_name":"o/r"}},"merged_at":"2026-09-13T11:00:00Z"},
+            {"number":10,"head":{"ref":"feature/trava","repo":{"full_name":"x/r"}},"base":{"repo":{"full_name":"o/r"}},"merged_at":"2026-09-13T11:59:00Z"}
         ]"#;
         let merged_ms = now() - 60_000;
         assert_eq!(parse_merged(listed), Some(vec![MergedPr { head: "feature/trava".to_string(), merged_ms }]));
