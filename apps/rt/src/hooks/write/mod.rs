@@ -8,3 +8,4 @@ pub mod scan_gate;
 pub mod scope_guard;
 pub mod secret_files;
 pub mod work_branch_gate;
+pub mod write_gate;

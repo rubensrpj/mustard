@@ -624,6 +624,47 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              work at a base nobody chose."
         }
 
+        // O portão de escrita: uma mensagem por regra, no idioma de
+        // `language.text`. As vagas entre chaves são preenchidas pelo portão.
+        ("write_gate.secret", Locale::PtBr) => {
+            "[Mustard] Arquivo sensível: {file} não pode ser lido nem escrito. Casou com {pattern}."
+        }
+        ("write_gate.secret", Locale::EnUs) => {
+            "[Mustard] Sensitive file: {file} cannot be read or written. It matched {pattern}."
+        }
+        ("write_gate.spec_file", Locale::PtBr) => {
+            "[Mustard] {file} é gravado só pelo binário. Grave o evento com \
+             `mustard-rt run write <tipo> --spec {spec}`."
+        }
+        ("write_gate.spec_file", Locale::EnUs) => {
+            "[Mustard] Only the binary writes {file}. Record the event with \
+             `mustard-rt run write <type> --spec {spec}`."
+        }
+        ("write_gate.not_approved", Locale::PtBr) => {
+            "[Mustard] A spec {spec} ainda não foi aprovada, e {file} é código do projeto. O código \
+             só muda depois de o usuário escolher \"Aprovar\" na pergunta."
+        }
+        ("write_gate.not_approved", Locale::EnUs) => {
+            "[Mustard] The spec {spec} is not approved yet, and {file} is project code. Code \
+             changes only after the user chooses \"Approve\" in the question."
+        }
+        ("write_gate.on_base", Locale::PtBr) => {
+            "[Mustard] Você está na branch de integração {branch}, declarada no `git.flow` do \
+             `mustard.json`. O Mustard não edita direto numa base: abra a spec numa branch de \
+             trabalho antes de editar."
+        }
+        ("write_gate.on_base", Locale::EnUs) => {
+            "[Mustard] You are on the integration branch {branch}, declared in the `git.flow` of \
+             `mustard.json`. Mustard never edits a base directly: open the spec on a work branch \
+             before editing."
+        }
+        ("write_gate.other_branch", Locale::PtBr) => {
+            "[Mustard] A spec {spec} mora na branch {branch}, e esta edição está na {current}."
+        }
+        ("write_gate.other_branch", Locale::EnUs) => {
+            "[Mustard] The spec {spec} lives on the branch {branch}, and this edit is on {current}."
+        }
+
         // Work-unit SURFACING — the three places the harness says out loud that
         // a work unit is somewhere other than the checkout, or that the exit
         // ritual is still owed. All three are user-facing (a listing legend, a
@@ -2171,6 +2212,28 @@ mod tests {
         ] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(key, lang), "<missing-key>", "{key} left with its hook");
+            }
+        }
+    }
+
+    /// As mensagens do portão de escrita saem do catálogo nos dois idiomas,
+    /// cada uma com as vagas que o portão preenche.
+    #[test]
+    fn i18n_translates_write_gate_and_witness_keys() {
+        for (key, slots) in [
+            ("write_gate.secret", &["{file}", "{pattern}"][..]),
+            ("write_gate.spec_file", &["{file}", "{spec}"][..]),
+            ("write_gate.not_approved", &["{spec}", "{file}"][..]),
+            ("write_gate.on_base", &["{branch}"][..]),
+            ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            assert!(pt.starts_with("[Mustard] ") && en.starts_with("[Mustard] "), "{key}");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
     }
