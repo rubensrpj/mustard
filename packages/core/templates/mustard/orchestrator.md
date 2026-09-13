@@ -37,7 +37,7 @@ Delegate: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new
 
 `ANALYZE → PLAN → /approve → EXECUTE → REVIEW → QA → CLOSE`. Light skips PLAN and prefers direct Grep/Glob; the flow reclassifies upward as file count grows, so trust its thresholds. Full runs them all. `qa-run` runs each `## Acceptance Criteria`; the close gate blocks CLOSE without a QA pass (`MUSTARD_QA_GATE_MODE=strict|warn|off`). The flows own the phase, gate and change-request protocol.
 
-**Four doors, and only four: `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`.** Everything else is a flow YOU dispatch. Review, QA and CLOSE are steps of `/mustard:pr merge`. The census refresh is a step of the base gate. Harness off/on and install diagnosis are flags of `/mustard:upsert`. Cancelling an abandoned unit is `/mustard:git delete`. That rule governs what you say to the USER; a command a gate names in its own refusal is YOURS to run, not theirs.
+**Four doors, and only four: `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`.** Everything else is a flow YOU dispatch. Review, QA and CLOSE are steps of `/mustard:pr merge`. The census refresh is the internal `scan` flow. Harness off/on and install diagnosis are flags of `/mustard:upsert`. Cancelling an abandoned unit is `/mustard:git delete`. That rule governs what you say to the USER; a command a gate names in its own refusal is YOURS to run, not theirs.
 
 **A door does what it NAMES and stops there.** `open` opens — it does not validate, and a measurement it takes for the body is REPORTED, never investigated: whether a red suite blocks anything is `merge`'s gate, not its. When the environment refuses — a pre-push hook, a protected branch, an absent provider CLI — quote the refusal, name each choice in one line, and stop. **Never propose carrying an integration base into the operator's unit to make something else go green:** that is work they did not ask for, inside their branch, for a problem that is not theirs; a surgical fix, a skip flag or waiting are all smaller, and the choice is theirs. Measured in the field, 2026-08-31: a bare `/mustard:pr open` produced a full test run, a 328-commit drift analysis, a dry-run merge and a merge proposal — and no pull request. Widening a narrow request into an investigation is the most expensive way to not do it.
 
@@ -45,7 +45,7 @@ Delegate: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new
 
 The terrain census is injected at session start, so don't grep to orient. Known literal token: `grep`/`glob`. Concept with an unknown name: `mustard-rt run feature --intent "..."`, then READ the pointed files.
 
-`base-gate: enrichment stale` on stderr means the census is only half-authored. The deterministic model is fresh; the `## Guards` prose and `{role}-pattern` molds are not. Say so to the operator in ONE sentence and READ THE LINE'S OWN PRESCRIPTION. `dispatch it right here, now` means run it inline: the output is hidden from git, so there is no unit and no commit. `work unit of its OWN on a clean tree` means offer the `scan` flow as its own unit, only once the current unit closes.
+The census is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own.
 
 ## Efficiency
 

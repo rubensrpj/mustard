@@ -602,8 +602,7 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -
 /// tree sits on trails its remote — the ONE refusal left, and it names the pull
 /// that resolves it. There is no "not an integration base" refusal any more.
 /// See [`super::base_gate`] for why a declared list could not answer that
-/// question, why an unmeasurable checkout ABSTAINS instead of passing, and why
-/// the census refresh rides here.
+/// question and why an unmeasurable checkout ABSTAINS instead of passing.
 ///
 /// Every other kind returns immediately: they are transitions INSIDE a unit
 /// that already crossed this gate, and a read-only request that never opens a
@@ -615,8 +614,8 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -
 ///
 /// `kind_base` é a base que esta abertura vai cortar de
 /// ([`resolve_kind_base_or_exit`]) — `Some` exatamente quando `--kind` é
-/// `pipeline.kind`. Ela entra porque a gravação do censo é POSICIONAL: ver
-/// [`super::census_settlement`].
+/// `pipeline.kind`. Ela entra porque é essa base que a abertura atualiza a
+/// partir do `origin`: ver [`super::census_settlement`].
 fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts, kind_base: Option<&str>) -> Vec<String> {
     if opts.kind != EVENT_PIPELINE_KIND {
         return Vec::new();
@@ -626,12 +625,12 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts, kind_base: Option<&str>) -
 }
 
 /// [`enforce_base_gate_or_exit`] com a raiz DADA em vez de descoberta no
-/// processo — o corpo inteiro da porta, para que o par "posição × gravação do
-/// censo" possa ser medido numa árvore de teste em vez de na do repositório.
+/// processo — o corpo inteiro da porta, para que ela possa ser medida numa
+/// árvore de teste em vez de na do repositório.
 ///
-/// `pub(super)` porque o par é medido de onde moram as fixtures do censo
-/// (`base_gate::tests`), ao lado das duas portas de corte que leem a MESMA
-/// condição posicional.
+/// `pub(super)` porque ela é medida de onde moram as fixtures da árvore
+/// (`base_gate::tests`), ao lado das duas portas de corte que fazem a MESMA
+/// pergunta.
 pub(super) fn enforce_base_gate_at(
     root: &Path,
     intent: Option<&str>,
@@ -643,54 +642,26 @@ pub(super) fn enforce_base_gate_at(
             eprintln!("BLOCKED: {reason}");
             std::process::exit(2);
         }
-        // Unmeasured — the gate did not run, so it has nothing to act on
-        // either: a census refresh needs the clean-base premise it just failed
-        // to establish.
+        // Unmeasured — the gate did not run, so it has nothing to act on.
         super::base_gate::BaseVerdict::Abstain => {}
         super::base_gate::BaseVerdict::Open(current) => {
-            // A PERGUNTA INTEIRA, feita uma vez, e nenhum passo executado aqui.
-            //
-            // Esta porta já foi três coisas erradas ao mesmo tempo. Ela mandava
-            // minerar sem saber onde a árvore estava parada; gravava o censo
-            // sem atualizar a base antes, que é a ordem que as duas portas de
-            // corte já tinham consertado; e a gravação do PRÓPRIO mine não
-            // passava por condição nenhuma — era o único escritor do commit do
-            // censo que nenhuma rodada de revisão cobriu. As três somem juntas
-            // porque a porta parou de executar: ela diz o que está acontecendo
-            // e onde a árvore está, e obedece.
-            //
-            // `evaluate` devolve `Open(current)` para QUALQUER nome de branch
-            // desde que ela não esteja atrás do remoto (a checagem de
-            // pertencimento foi removida de propósito), então a posição é um
-            // insumo obrigatório: sem ela um `emit-pipeline --kind
-            // pipeline.kind` disparado de `feature/outra-unidade` commitava o
-            // censo na cabeça DAQUELA unidade.
-            //
-            // E OBEDECE: a única recusa que esta porta pode receber é a da BASE
-            // que não pôde ser avançada até o `origin` (nada é checado out
-            // aqui, então nada viaja). Cortar uma unidade de uma base velha é
-            // exatamente o que este portão existe para recusar — a mesma
-            // sentença que `BaseVerdict::Refuse` já diz, vinda de outra
-            // medição.
+            // A PERGUNTA INTEIRA, feita uma vez, e nenhum passo executado aqui:
+            // a porta diz onde a árvore está e obedece. A única recusa que ela
+            // pode receber é a da BASE que não pôde ser avançada até o
+            // `origin` (nada é checado out aqui, então nada viaja) — cortar
+            // uma unidade de uma base velha é exatamente o que este portão
+            // existe para recusar.
             match super::census_settlement::settle(
                 root,
                 super::census_settlement::CheckoutPosition::at(Some(&current), None, kind_base),
                 &config,
-                super::census_settlement::CensusDoor::ExplicitOpen,
             ) {
                 super::census_settlement::CensusSettlement::Refuse(busy) => {
                     eprintln!("BLOCKED: {}", busy.reason(config.language().text_or_default()));
                     std::process::exit(2);
                 }
-                super::census_settlement::CensusSettlement::Recorded(_)
-                | super::census_settlement::CensusSettlement::Proceed => {}
+                super::census_settlement::CensusSettlement::Proceed => {}
             }
-            // The census refresh only re-mines the DETERMINISTIC half. The
-            // agent-written half — Guards prose, `{role}-pattern` molds — is
-            // measured here and reported on stderr, unconditionally: a gap born
-            // at install time survives any number of fresh censuses, so gating
-            // the notice on the refresh would hide the common case.
-            super::enrichment_gap::report_if_stale(root);
         }
     }
     // Roda para `Open` e para `Abstain` alike: a suspeita se lê nas specs em

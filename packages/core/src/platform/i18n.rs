@@ -564,55 +564,11 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              the second unit."
         }
 
-        // The SAME refusal when the only dirty thing is the CENSUS — the tool's
-        // own output — and the checkout is not the base it is recorded on
-        // (another unit's branch, a protected branch that is not the base, a
-        // detached HEAD). The census must never travel into a unit's branch,
-        // and it has nowhere to land here, so the sentence names the base it
-        // belongs to instead of blaming the operator for a write that is the
-        // tool's. `{current}`/`{target}`/`{base}`/`{paths}`/`{more}` are
-        // interpolated by `work_branch::BusyCheckout::reason`.
-        ("workbranch.busy.census_off_base", Locale::PtBr) => {
-            "O checkout está na branch '{current}' e a única coisa não commitada na árvore são \
-             artefatos do censo que o próprio Mustard escreveu: {paths}{more}. O censo só é \
-             gravado na base '{base}', e criar '{target}' aqui o levaria para dentro da unidade \
-             nova. Volte para '{base}' e abra a unidade de lá, ou commite/guarde (`git stash`) \
-             esses arquivos antes."
-        }
-        ("workbranch.busy.census_off_base", Locale::EnUs) => {
-            "The checkout is on branch '{current}' and the only uncommitted thing in the tree is \
-             census output Mustard itself wrote: {paths}{more}. The census is recorded on the \
-             base '{base}' only, and cutting '{target}' here would carry it into the new unit. \
-             Go back to '{base}' and open the unit from there, or commit/stash (`git stash`) \
-             those files first."
-        }
-
-        // …and when the checkout IS the base, dirty only with the census, but
-        // the base is PROTECTED and the door asking is a cut or a hook — which
-        // may not write a commit on a protected branch behind the operator's
-        // back. The explicit open is the one door that records there, so it is
-        // named as the way through.
-        ("workbranch.busy.census_protected", Locale::PtBr) => {
-            "A base protegida '{current}' está suja só com artefatos do censo que o próprio \
-             Mustard escreveu: {paths}{more}. Esta porta não cria commit numa base protegida, e \
-             criar '{target}' aqui levaria o censo para dentro da unidade nova. Reabra a unidade \
-             pela porta explícita (`emit-pipeline --kind pipeline.kind`), que grava o censo na \
-             base, ou commite esses arquivos você mesmo."
-        }
-        ("workbranch.busy.census_protected", Locale::EnUs) => {
-            "The protected base '{current}' is dirty only with census output Mustard itself \
-             wrote: {paths}{more}. This door does not write a commit on a protected base, and \
-             cutting '{target}' here would carry the census into the new unit. Re-open the unit \
-             through the explicit door (`emit-pipeline --kind pipeline.kind`), which records the \
-             census on the base, or commit those files yourself."
-        }
-
         // The base this move is about TRAILS its remote and could not be
         // fast-forwarded — a diverged base, one checked out elsewhere, a dirty
-        // file in the way that is the operator's. Nothing is cut and nothing is
-        // recorded: a unit cut from a stale base re-does merged work, and a
-        // census commit written on it would make it diverge for good. Git's own
-        // words travel in `{error}`; `{base}` is interpolated by
+        // file in the way that is the operator's. Nothing is cut: a unit cut
+        // from a stale base re-does merged work. Git's own words travel in
+        // `{error}`; `{base}` is interpolated by
         // `work_branch::BusyCheckout::reason`.
         ("workbranch.busy.base_stale", Locale::PtBr) => {
             "A base '{base}' está atrás de origin/{base} e não pôde ser avançada — git disse: \
@@ -666,59 +622,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              several candidates ({candidates}) and nothing recorded the choice, so the branch was \
              NOT created. Re-open the unit with an explicit base (--base) — guessing here aims the \
              work at a base nobody chose."
-        }
-
-        // BASE GATE — o censo que sobrou sujo na árvore e o portão acabou de
-        // gravar por conta própria, em vez de deixá-lo para o corte da próxima
-        // unidade recusar como se fosse trabalho do operador. Frase de usuário
-        // (sai no stderr da abertura do pipeline), então mora no catálogo como
-        // manda a nota do topo deste arquivo, e não embutida no portão em um
-        // idioma só. `{paths}` é interpolado por
-        // `base_gate::commit_census`, chamado só de
-        // `census_settlement::settle`.
-        ("basegate.census.recorded", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) eram a única coisa não commitada na \
-             árvore — foram gravados aqui mesmo, na base, para que o corte da próxima unidade \
-             não cobre de você uma escrita que é da ferramenta."
-        }
-        ("basegate.census.recorded", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) were the only uncommitted thing in the \
-             tree — they were recorded right here, on the base, so the next unit's branch cut \
-             does not charge you for a write that is the tool's."
-        }
-        // …and the three ways the recording can NOT happen, one line each. A
-        // recording that fails in silence leaves the census dirty, and the next
-        // cut then refuses naming it as the operator's uncommitted work with no
-        // prior notice the tool left it there. `Proceed` after a failed
-        // recording is a different fact from `Proceed` with nothing owed, and
-        // these lines are what says which.
-        ("basegate.census.nothing", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) não deixaram nada para o git gravar — \
-             já estão iguais ao que a base tem, ou o git não os enxerga."
-        }
-        ("basegate.census.nothing", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) left nothing for git to record — they \
-             already match what the base has, or git does not see them."
-        }
-        ("basegate.census.not_clean", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) NÃO foram gravados — a árvore carrega \
-             outras mudanças, e um commit aqui as varreria junto. Eles ficam para você commitar \
-             ao lado do seu trabalho."
-        }
-        ("basegate.census.not_clean", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) were NOT recorded — the tree carries other \
-             changes, and a commit here would sweep them up. They are left for you to commit \
-             beside your work."
-        }
-        ("basegate.census.unavailable", Locale::PtBr) => {
-            "base-gate: os artefatos do censo ({paths}) NÃO foram gravados — o git não aceitou o \
-             commit (sem `user.email`, um hook que recusou, um erro ao indexar). Eles ficam sujos \
-             na árvore, e o próximo corte vai nomeá-los; commite-os você mesmo ou conserte o git."
-        }
-        ("basegate.census.unavailable", Locale::EnUs) => {
-            "base-gate: the census artifacts ({paths}) were NOT recorded — git would not take the \
-             commit (no `user.email`, a hook that declined, a staging error). They stay dirty in \
-             the tree and the next cut will name them; commit them yourself or repair git."
         }
 
         // Work-unit SURFACING — the three places the harness says out loud that

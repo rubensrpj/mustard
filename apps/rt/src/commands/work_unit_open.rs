@@ -562,8 +562,7 @@ fn unusable_worktree_name(name: &str) -> Option<String> {
 /// its `{role}-pattern` skills next to the code. This is the ONE place here
 /// that blocks, and it blocks by `Err`: a non-zero exit ABORTS creation with
 /// stderr shown to the user, which IS this event's protocol (the same way a
-/// `Deny` is a gate's). It mirrors `scan_clean_gate`, which already refuses
-/// `/scan` on a dirty tree for the `add -A` reason. Unit worktrees are
+/// `Deny` is a gate's). Unit worktrees are
 /// untouched — nothing outside them depends on their tree. The precondition is
 /// keyed on [`is_unit_worktree_name`], the SAME question the cut below asks, so
 /// the two cannot drift; the earlier `agent-` prefix was a shape the platform

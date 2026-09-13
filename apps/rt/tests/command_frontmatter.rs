@@ -93,7 +93,7 @@ fn exposed_doors_are_exactly_the_four() {
          `{NOT_A_DOOR}` in its frontmatter IS a door — the user sees it and types it. Everything \
          that is not one of the four is a flow the router dispatches: add the key, or fold the \
          command into the door that already owns its subject (review/QA/close -> pr; off/on/doctor \
-         -> upsert; the census refresh -> the base gate; cancelling a unit -> git delete)."
+         -> upsert; cancelling a unit -> git delete)."
     );
 }
 

@@ -82,7 +82,7 @@ pub fn collect(
         // Root-relative read. Still FAIL-OPEN — a hook never blocks on this —
         // but no longer SILENT: a declared injectable that cannot be read is
         // a router half that reaches nobody, and the operator saw a working
-        // harness. Same channel the base gate uses for `enrichment stale`.
+        // harness. Said on stderr, like every other notice a hook gives.
         let text = match fs::read_to_string(root.join(&entry.file)) {
             Ok(text) => text,
             Err(err) => {
@@ -321,7 +321,7 @@ mod tests {
         );
     }
 
-    /// AC-4 — a declared injectable that cannot be read leaves a NAMED trace.
+    /// A declared injectable that cannot be read leaves a NAMED trace.
     ///
     /// Fail-open is right (a hook never blocks a session on this) but silence
     /// was not: the operator saw a working harness while a router half reached

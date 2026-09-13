@@ -4,7 +4,6 @@ pub mod size_gate;
 pub mod boundary_gate;
 pub mod post_edit;
 pub mod close_gate;
-pub mod scan_clean_gate;
 pub mod scan_gate;
 pub mod scope_guard;
 pub mod secret_files;

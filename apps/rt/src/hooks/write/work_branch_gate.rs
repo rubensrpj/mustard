@@ -22,8 +22,7 @@
 //!    decision itself is
 //!    [`crate::commands::event::census_settlement::settle`], shared with
 //!    `spec-draft`'s cut so both doors refuse the same thing in the same words
-//!    — and it also PERFORMS the base refresh and the census commit, so neither
-//!    door can get their order wrong.
+//!    — and it also PERFORMS the base refresh, so neither door can forget it.
 //!    Diverting the second unit into its own worktree was tried and withdrawn:
 //!    such a worktree needed the project's git-ignored environment linked into
 //!    it, and `git worktree remove` DESCENDS a Windows junction, so removing
@@ -129,9 +128,7 @@ use mustard_core::ProjectConfig;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::commands::event::census_settlement::{
-    settle, CensusDoor, CensusSettlement, CheckoutPosition,
-};
+use crate::commands::event::census_settlement::{settle, CensusSettlement, CheckoutPosition};
 use crate::commands::event::work_branch::{
     base_for, checkout_work_branch, current_branch, is_protected, name_dirty_paths,
     recorded_or_derived_base,
@@ -413,9 +410,9 @@ impl Check for WorkBranchGate {
             return Ok(Verdict::Allow);
         }
 
-        // 2.4 WHERE from, resolved ONCE — read by the refusal at 2.5, by the
-        //     census recording at 3.4 and by the checkout at 4, so the three
-        //     cannot disagree about which base this cut has. It returns nothing
+        // 2.4 WHERE from, resolved ONCE — read by the settlement at 2.5 and by
+        //     the checkout at 4, so the two cannot disagree about which base
+        //     this cut has. It returns nothing
         //     by itself, so the ORDER of the refusals below is unchanged: a busy
         //     checkout is still refused before an unknown base is reported.
         let resolved_base: Result<String, Vec<String>> = match nested_base {
@@ -464,30 +461,25 @@ impl Check for WorkBranchGate {
         //     nothing to consume, and the next attempt (after the operator
         //     resolves git) retries the cut.
         //
-        //     There is no step 3 or 3.4 here any more. The base refresh and the
-        //     census commit used to be two further statements in this function,
-        //     each with its own condition, and keeping the two conditions and
-        //     their ORDER in agreement with the two other doors is what failed
-        //     five times. The one call below performs them, in the one order,
-        //     and answers what this gate should do.
+        //     The base refresh is not a step of this gate: the one call below
+        //     performs it and answers what this gate should do.
         //
         //     The root handed over is the LOCAL tree — the edited file's own
         //     directory, which may sit several levels below the toplevel. The
         //     settlement resolves the repository's toplevel from it itself;
         //     this door does not, because a door choosing the root is how the
-        //     recording once ran with pathspecs that matched nothing.
+        //     set-aside once ran with pathspecs that matched nothing.
         let base_hint = resolved_base.as_deref().ok();
         match settle(
             Path::new(&local),
             CheckoutPosition::at(current.as_deref(), Some(target.as_str()), base_hint)
                 .attributable(!in_submodule),
             &config,
-            CensusDoor::WriteHookPass,
         ) {
             CensusSettlement::Refuse(busy) => {
                 return Ok(Verdict::Deny { reason: busy.reason(config.language().text_or_default()) })
             }
-            CensusSettlement::Recorded(_) | CensusSettlement::Proceed => {}
+            CensusSettlement::Proceed => {}
         }
 
         // 2.9 WHERE from — the answer resolved at 2.4 becomes REQUIRED here,
@@ -1088,24 +1080,28 @@ mod tests {
         );
     }
 
-    /// The census settlement lands on the BASE whatever directory the edit is
-    /// in. This door hands the settlement the edited file's directory (the
-    /// local tree), never the toplevel; the settlement resolves the toplevel
-    /// itself. Before it did, an edit three directories deep made every
-    /// pathspec inside the settlement miss (they are CWD-relative, while the
-    /// paths git reported were toplevel-relative): the recording answered
-    /// "nothing to record" and the dirty census rode into the unit's branch.
+    /// A DEEP edit with a tree dirty only with the census cuts the unit's
+    /// branch and writes no commit at all. This door hands the settlement the
+    /// edited file's directory (the local tree), never the toplevel; the
+    /// settlement resolves the toplevel itself, so from any depth the answer is
+    /// the same: nothing refused, nothing recorded.
     #[test]
-    fn a_deep_edit_still_records_the_census_on_the_base() {
-        use crate::commands::event::base_gate::CENSUS_COMMIT_SUBJECT;
+    fn a_deep_edit_with_a_dirty_census_cuts_without_a_commit() {
         use crate::commands::event::work_branch::{checkout_work, CheckoutWork};
         use crate::commands::scan::default_model_path;
+
+        let commit_count = |root: &Path| {
+            let out = Command::new("git")
+                .args(["rev-list", "--count", "--all"])
+                .current_dir(root)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let root_s = root.to_str().unwrap();
-        // Flow only, nothing protected: a protected base would turn this into
-        // the census-on-protected-base refusal, which is another row.
         std::fs::write(
             root.join("mustard.json"),
             r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
@@ -1125,6 +1121,8 @@ mod tests {
             "precondition: only the census is dirty",
         );
 
+        let commits_before = commit_count(root);
+
         // The first edit of the unit, THREE directories below the toplevel.
         let deep = root.join("apps").join("rt").join("src");
         std::fs::create_dir_all(&deep).unwrap();
@@ -1136,20 +1134,14 @@ mod tests {
         assert!(matches!(verdict, Verdict::Allow), "the edit proceeds: {verdict:?}");
         assert_eq!(current_branch("git", root_s).as_deref(), Some("dev_deep"));
 
-        let subject = Command::new("git")
-            .args(["log", "-1", "--format=%s", "dev"])
-            .current_dir(root)
-            .output()
-            .unwrap();
         assert_eq!(
-            String::from_utf8_lossy(&subject.stdout).trim(),
-            CENSUS_COMMIT_SUBJECT,
-            "the census landed on the base, not in the unit",
+            commit_count(root),
+            commits_before,
+            "no commit was written — not on the base, not in the unit",
         );
-        assert_eq!(
-            checkout_work(root),
-            CheckoutWork::ProvenClean,
-            "and nothing of it rode into the new branch",
+        assert!(
+            matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
+            "and the census is still dirty, never recorded",
         );
     }
 
