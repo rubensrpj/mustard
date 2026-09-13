@@ -98,11 +98,11 @@ fn build_body(description: &str, parent: &str, lang: Locale) -> String {
     )
 }
 
-/// A spec-mãe pelo nome de uma pasta de spec que existe em `specs`: o nome
-/// aparado e sem a barra do fim; a pasta com esse nome, ou, sem ela, a única
-/// que só difere em maiúsculas. É o nome da pasta que fica gravado, e é por
-/// ele que a testemunha acha o ajuste na branch da mãe. `None` quando
-/// nenhuma pasta de spec tem o nome.
+/// The parent spec by the name of a spec folder that exists in `specs`: the
+/// name trimmed and without the trailing slash; the folder with that name, or,
+/// without it, the only one that differs only in case. The folder name is what
+/// is recorded, and it is by it that the witness finds the fix on the parent's
+/// branch. `None` when no spec folder has the name.
 fn existing_parent(specs: &Path, given: &str) -> Option<String> {
     let name = given.trim().trim_end_matches(['/', '\\']).trim();
     if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
@@ -139,8 +139,8 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         link_emitted: false,
         error: None,
     };
-    // Só o nome de uma pasta de spec que existe: a mãe gravada como veio, com
-    // espaço, barra ou outra caixa, nunca casaria com a branch dela.
+    // Only the name of a spec folder that exists: the parent recorded as it
+    // came, with a space, a slash or another case, would never match its branch.
     let Some(parent) = parent else {
         report.error = Some("parent_not_found".to_string());
         return report;
@@ -183,10 +183,10 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         report.error = Some(format!("write meta.json failed: {e}"));
         return report;
     }
-    // A spec nasce na fase de plano, pela mesma gravação do `spec-draft`, na
-    // branch da spec-mãe, em que o tactical fix vai junto. Ali a escada nomeia
-    // a mãe: a testemunha acha o ajuste pela sessão e o aprova, e o portão de
-    // escrita continua julgando a mãe.
+    // The spec is born in the plan phase, through the same recording as
+    // `spec-draft`, on the parent spec's branch, where the tactical fix goes
+    // along. There the ladder names the parent: the witness finds the fix by
+    // the session and approves it, and the write gate keeps judging the parent.
     let parent_branch = DiskSpecState::new(cwd).state(&parent).and_then(|state| state.branch);
     if let Err(refusal) =
         crate::commands::spec_events::write::record_birth(cwd, &slug, parent_branch.as_deref())
@@ -270,7 +270,7 @@ mod tests {
         assert!(b.contains("## Arquivos"));
     }
 
-    /// A pasta da spec-mãe `name`, sem mais nada.
+    /// The folder of the parent spec `name`, and nothing else.
     fn parent_folder(root: &Path, name: &str) {
         std::fs::create_dir_all(root.join(".claude").join("spec").join(name)).unwrap();
     }
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(r2.error.as_deref(), Some("dir_exists"));
     }
 
-    /// O tactical fix nasce na fase de plano, na branch da spec-mãe.
+    /// The tactical fix is born in the plan phase, on the parent spec's branch.
     #[test]
     fn the_tactical_fix_is_born_in_plan_on_its_parents_branch() {
         let dir = tempdir().unwrap();
@@ -328,9 +328,9 @@ mod tests {
         assert_eq!(state.branch.as_deref(), Some("feature/epic-1"), "it rides its parent's branch");
     }
 
-    /// A mãe é o nome de uma pasta de spec que existe: com barra no fim, com
-    /// espaço ou em maiúsculas, fica gravado o nome da pasta; um nome que
-    /// nenhuma pasta tem é recusado, e nada é criado.
+    /// The parent is the name of a spec folder that exists: with a trailing
+    /// slash, a space or in upper case, the folder name is recorded; a name no
+    /// folder has is refused, and nothing is created.
     #[test]
     fn the_parent_is_the_name_of_an_existing_spec_folder() {
         let dir = tempdir().unwrap();

@@ -606,8 +606,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              work at a base nobody chose."
         }
 
-        // O portão de escrita: uma mensagem por regra, no idioma de
-        // `language.text`. As vagas entre chaves são preenchidas pelo portão.
+        // The write gate: one message per rule, in the language of
+        // `language.text`. The slots between braces are filled by the gate.
         ("write_gate.secret", Locale::PtBr) => {
             "[Mustard] Arquivo sensível: {file} não pode ser lido nem escrito. Casou com {pattern}."
         }
@@ -647,8 +647,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "[Mustard] The spec {spec} lives on the branch {branch}, and this edit is on {current}."
         }
 
-        // A testemunha da aprovação: o que ela diz ao assistente depois de
-        // gravar a aprovação, ou quando nada foi gravado.
+        // The approval witness: what it tells the assistant after recording
+        // the approval, or when nothing was recorded.
         ("approval.witness.clear", Locale::PtBr) => {
             "[Mustard] O usuário aprovou a spec {spec}. Sugira limpar a conversa com `/clear`: a \
              execução começa numa janela limpa, e a retomada lê o estado da spec."
@@ -984,9 +984,9 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              criteria proof and the pending list."
         }
 
-        // A linha de contagem das pendências abertas, no início da sessão
-        // (`apps/rt/src/hooks/session/session_start_inject.rs`) e na listagem
-        // do `run pending`. `{count}` vem do chamador.
+        // The count line of the open pending items, at the session start
+        // (`apps/rt/src/hooks/session/session_start_inject.rs`) and in the
+        // `run pending` listing. `{count}` comes from the caller.
         ("pending.count.one", Locale::PtBr) => {
             "[Mustard] 1 pendência aberta. A lista inteira sai com `mustard-rt run pending`."
         }
@@ -999,8 +999,9 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("pending.count.many", Locale::EnUs) => {
             "[Mustard] {count} open pending items. The whole list comes from `mustard-rt run pending`."
         }
-        // O complemento da linha de contagem, quando há paradas. Começa por
-        // espaço: vai colado ao fim dela. `{stale}` vem do chamador.
+        // The complement of the count line, when there are idle items. It
+        // starts with a space: it goes glued to its end. `{stale}` comes from
+        // the caller.
         ("pending.count.stale", Locale::PtBr) => {
             " {stale} delas estão paradas há mais de 30 dias: rode `mustard-rt run pending --stale` \
              e pergunte ao usuário, numa pergunta só, quais ficam."
@@ -1009,7 +1010,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             " {stale} of them have been idle for over 30 days: run `mustard-rt run pending --stale` \
              and ask the user, in one question, which ones stay."
         }
-        // A faxina, a remoção em duas chamadas e o desfazer do `run pending`
+        // The sweep, the two-call removal and the undo of `run pending`
         // (`apps/rt/src/commands/event/pending.rs`).
         ("pending.stale.question", Locale::PtBr) => {
             "Estas pendências estão paradas há mais de 30 dias. Marque as que ficam; as outras \
@@ -1069,11 +1070,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The pending item {id} is not dropped: only a dropped item goes back to open. Nothing \
              changed."
         }
-        // A regra das pendências do fim da resposta
-        // (`apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}`
-        // vêm do chamador; a lista usa a grafia de `format_pending_items`. O
-        // bloqueio pede o título, nunca o número: a regra de escrita barra o
-        // código interno ("P-3") na conversa.
+        // The end-of-answer pending rule
+        // (`apps/rt/src/hooks/task/pending_gate.rs`). `{count}` and `{items}`
+        // come from the caller; the list uses the spelling of
+        // `format_pending_items`. The block asks for the title, never the
+        // number: the writing rule bars the internal code ("P-3") in the
+        // conversation.
         ("pending.gate.block", Locale::PtBr) => {
             "[Mustard] A spec {spec} fechou neste turno, e a mensagem final não cita {count} das \
              pendências abertas que nasceram nela: {items}. O trabalho combinado sobrevive à spec \
@@ -1422,8 +1424,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              one. Pass `--spec <name>`."
         }
 
-        // Recusas do banco de lições (`domain::lessons`, `run write lesson`).
-        // As vagas vêm do chamador.
+        // Refusals of the lessons bank (`domain::lessons`, `run write lesson`).
+        // The slots come from the caller.
         ("lessons.unknown_lesson", Locale::PtBr) => {
             "A lição {id} não existe no banco de lições. Nada foi gravado."
         }
@@ -1438,8 +1440,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The lesson must say where it was born, in found_in: `spec`, `branch` and `commit`, \
              or `source` (the file it came from). Nothing was written."
         }
-        // O mapa do projeto (`run map`): recusas, motivos dos exemplos e o
-        // resumo do início da sessão.
+        // The project map (`run map`): refusals, reasons of the examples and
+        // the session-start summary.
         ("map.missing", Locale::PtBr) => "O mapa do projeto ainda não existe. Rode `mustard-rt run scan`.",
         ("map.missing", Locale::EnUs) => "The project map does not exist yet. Run `mustard-rt run scan`.",
         ("map.unreadable", Locale::PtBr) => {
@@ -1512,7 +1514,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests` or \
              `search --query \"<words>\"`."
         }
-        // O `doctor` confere que o que o scan escreve fica fora do git.
+        // The `doctor` checks that what the scan writes stays outside git.
         ("doctor.scan_output.visible", Locale::PtBr) => {
             "O mapa do scan fica visível para o git: {paths}. O scan só escreve fora do git: tire \
              esses arquivos do git (a instalação privada já os exclui)."
@@ -2345,10 +2347,10 @@ mod tests {
         }
     }
 
-    /// Os avisos de pendência saem do catálogo nos dois idiomas, e cada um
-    /// carrega as vagas que o chamador preenche. Os textos dos ganchos do fim
-    /// da resposta que saíram (a entrega do resumo, o QA no `Stop`, o lembrete
-    /// de gravar a conversa) e o aviso da mensagem seguinte saíram com eles.
+    /// The pending advisories come from the catalog in both languages, and
+    /// each carries the slots the caller fills. The texts of the end-of-answer
+    /// hooks that left (the summary delivery, the QA on `Stop`, the reminder to
+    /// record the conversation) and the next-message advisory left with them.
     #[test]
     fn i18n_translates_doc_and_pending_keys() {
         for (key, slots) in [
@@ -2391,8 +2393,8 @@ mod tests {
         }
     }
 
-    /// As mensagens do portão de escrita e da testemunha da aprovação saem do
-    /// catálogo nos dois idiomas, cada uma com as vagas que o gancho preenche.
+    /// The messages of the write gate and of the approval witness come from
+    /// the catalog in both languages, each with the slots the hook fills.
     #[test]
     fn i18n_translates_write_gate_and_witness_keys() {
         for (key, slots) in [
@@ -2510,9 +2512,8 @@ mod tests {
         }
     }
 
-    /// Os avisos do índice das specs e as recusas do banco de lições saem do
-    /// catálogo nos dois idiomas, cada um com as vagas que o chamador
-    /// preenche.
+    /// The spec index advisories and the lessons bank refusals come from the
+    /// catalog in both languages, each with the slots the caller fills.
     #[test]
     fn i18n_translates_spec_index_and_lesson_keys() {
         for (key, slots) in [
@@ -2535,8 +2536,9 @@ mod tests {
         }
     }
 
-    /// As recusas e os textos do mapa do projeto, e o aviso do `doctor` sobre
-    /// o que o scan escreve, saem do catálogo nos dois idiomas, com as vagas.
+    /// The refusals and texts of the project map, and the `doctor` advisory on
+    /// what the scan writes, come from the catalog in both languages, with the
+    /// slots.
     #[test]
     fn i18n_translates_project_map_keys() {
         for (key, slots) in [

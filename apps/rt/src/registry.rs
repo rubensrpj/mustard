@@ -232,10 +232,10 @@ impl Registry {
                 check: Some(Box::new(SizeGate)),
                 observer: None,
             },
-            // `write_gate` — o portão de escrita, nas cinco ferramentas de
-            // arquivo. As regras, na ordem: segredo, arquivos que só o binário
-            // grava, aprovação, branch da spec (só avisa) e base do
-            // `git.flow`. A primeira que responde decide.
+            // `write_gate` — the write gate, on the five file tools. The
+            // rules, in order: secret, files only the binary writes, approval,
+            // the spec's branch (warning only) and the `git.flow` base. The
+            // first one that answers decides.
             Module {
                 id: "write_gate",
                 applies_to: &[
@@ -407,13 +407,13 @@ impl Registry {
                 check: Some(Box::new(SubagentInject)),
                 observer: None,
             },
-            // A testemunha da aprovação — na resposta do usuário à pergunta
-            // "Aprovar esta spec?", grava no `spec.ndjson` o `state` aprovado,
-            // com a pergunta e a opção escolhida, quando a spec atual está na
-            // fase de plano. A resposta vem do harness, que o modelo não
-            // escreve. Uma trava que nunca barra: devolve `Inject` para sugerir
-            // `/clear` depois da aprovação, ou para dizer por que nada foi
-            // gravado.
+            // The approval witness — on the user's answer to the question
+            // "Aprovar esta spec?", it records in `spec.ndjson` the approved
+            // `state`, with the question and the chosen option, when the
+            // current spec is in the plan phase. The answer comes from the
+            // harness, which the model does not write. A lock that never
+            // blocks: it returns `Inject` to suggest `/clear` after the
+            // approval, or to say why nothing was recorded.
             Module {
                 id: "approval_witness",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
@@ -431,10 +431,10 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ClarificationObserver)),
             },
-            // A porta do modo de plano — aceitar um plano não aprova spec
-            // nenhuma, e a aprovação tem uma porta só, a testemunha acima. Fica
-            // registrada, sem nada a fazer, até sair junto com as outras portas
-            // antigas.
+            // The plan-mode door — accepting a plan approves no spec, and the
+            // approval has a single door, the witness above. It stays
+            // registered, with nothing to do, until it leaves with the other
+            // old doors.
             Module {
                 id: "plan_approval_observer",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("ExitPlanMode"))],
@@ -466,9 +466,9 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(PromptObserver)),
             },
-            // A porta do comando de barra da spec — digitar `/mustard:spec a`
-            // só escolhe qual spec abrir, e não aprova nada. Fica registrada,
-            // sem nada a fazer, até sair junto com as outras portas antigas.
+            // The spec slash-command door — typing `/mustard:spec a` only picks
+            // which spec to open, and approves nothing. It stays registered,
+            // with nothing to do, until it leaves with the other old doors.
             Module {
                 id: "picker_approval_observer",
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
@@ -669,8 +669,8 @@ mod tests {
         );
     }
 
-    /// A testemunha da aprovação roda só no `PostToolUse` da pergunta com
-    /// opções, e é uma trava que devolve veredito, não um observador.
+    /// The approval witness runs only on the `PostToolUse` of the question
+    /// with options, and it is a lock that returns a verdict, not an observer.
     #[test]
     fn ask_user_question_post_tool_use_runs_approval_witness() {
         let registry = Registry::new();
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn ask_user_question_post_tool_use_runs_clarification_observer() {
         let registry = Registry::new();
-        // Ao lado da testemunha da aprovação, na mesma pergunta respondida.
+        // Beside the approval witness, on the same answered question.
         let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"));
         assert!(ids.contains(&"clarification_observer"));
         assert!(ids.contains(&"approval_witness"));
@@ -826,8 +826,8 @@ mod tests {
             .contains(&"user_prompt_observer"));
     }
 
-    /// O portão de escrita roda no `PreToolUse` das cinco ferramentas de
-    /// arquivo, e só nelas, no lugar dos três ganchos que ele juntou.
+    /// The write gate runs on the `PreToolUse` of the five file tools, and
+    /// only on them, in place of the three hooks it joined.
     #[test]
     fn the_write_gate_runs_on_the_five_file_tools() {
         let registry = Registry::new();

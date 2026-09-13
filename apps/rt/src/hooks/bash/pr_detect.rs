@@ -6,16 +6,16 @@
 //! the PR verb, and spec attribution read a directory the harness stopped
 //! writing.
 //!
-//! Um `gh pr merge` digitado no terminal também é um merge. Depois de um
-//! comando com ele que terminou bem, em qualquer forma, o gancho não tenta
-//! descobrir a branch pelo texto do comando (número, endereço, `-R`, `--auto`,
-//! `--delete-branch`). Ele faz uma pergunta só, com prazo, direto à API do
-//! GitHub pelo `gh api`: os pull requests fechados, dos atualizados por
-//! último para os mais velhos. O índice de busca do GitHub fica de fora,
-//! porque ele se atualiza com atraso, e o gancho pergunta logo depois do
-//! merge. A resposta é comparada de uma vez com todas as specs candidatas, e
-//! só a spec cuja branch aparece mergeada há pouco ganha, pela ponte, a fase
-//! `delivered` e a cobrança das pendências, como no `pr-merge`
+//! A `gh pr merge` typed in the terminal is a merge too. After a command with
+//! it that ended well, in any form, the hook does not try to find the branch
+//! from the command text (number, address, `-R`, `--auto`,
+//! `--delete-branch`). It asks a single question, with a deadline, straight to
+//! the GitHub API through `gh api`: the closed pull requests, from the most
+//! recently updated to the oldest. GitHub's search index stays out, because it
+//! updates with a delay, and the hook asks right after the merge. The answer
+//! is compared at once with every candidate spec, and only the spec whose
+//! branch shows up merged a moment ago gets, through the bridge, the
+//! `delivered` phase and the pending charge, as in `pr-merge`
 //! ([`delivered_specs`]).
 
 use mustard_core::domain::model::contract::HookInput;
@@ -66,20 +66,21 @@ fn classify_pr_segment(segment: &str) -> Option<&'static str> {
     None
 }
 
-/// A pergunta ao `gh`, direto à API do GitHub e sem o índice de busca: os
-/// pull requests fechados do repositório, dos atualizados por último para os
-/// mais velhos. O `gh` troca `{owner}` e `{repo}` pelo repositório da pasta.
+/// The question to `gh`, straight to the GitHub API and without the search
+/// index: the repository's closed pull requests, from the most recently
+/// updated to the oldest. `gh` replaces `{owner}` and `{repo}` with the
+/// folder's repository.
 const MERGED_LIST: &str =
     r#"gh api "repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50""#;
 
-/// O prazo da pergunta ao `gh`: com a rede lenta, o gancho desiste bem antes
-/// dos 30 segundos que o Claude Code lhe dá, e nada é gravado.
+/// The deadline of the question to `gh`: on a slow network, the hook gives up
+/// well before the 30 seconds Claude Code gives it, and nothing is recorded.
 const GH_DEADLINE: Duration = Duration::from_secs(8);
 
-/// Quanto antes de agora um merge ainda conta como o do comando que acabou de
-/// rodar, em milissegundos. O gancho não sabe a hora em que o comando começou:
-/// a janela cobre a duração dele e mais uns minutos, e um merge mais antigo da
-/// mesma branch não conta.
+/// How long before now a merge still counts as the one of the command that
+/// just ran, in milliseconds. The hook does not know when the command started:
+/// the window covers its duration plus a few minutes, and an older merge of
+/// the same branch does not count.
 const RECENT_MERGE_MS: i64 = 15 * 60 * 1000;
 
 /// Um pull request mergeado, como a API o devolve: a branch de origem e a hora
@@ -90,9 +91,9 @@ pub(crate) struct MergedPr {
     pub(crate) merged_ms: i64,
 }
 
-/// Roda `command` no repositório de `root` com o prazo `timeout` e lê os pull
-/// requests mergeados da resposta. `None` quando o prazo estoura, o `gh` falha
-/// ou a resposta não se lê.
+/// Runs `command` in the repository of `root` with the deadline `timeout` and
+/// reads the merged pull requests from the answer. `None` when the deadline
+/// runs out, `gh` fails or the answer cannot be read.
 fn list_merged(root: &Path, command: &str, timeout: Duration) -> Option<Vec<MergedPr>> {
     match run_shell_with_deadline(command, root, timeout) {
         ShellOutcome::Exited { status, stdout, .. } if status.success() => parse_merged(&stdout),
@@ -100,12 +101,12 @@ fn list_merged(root: &Path, command: &str, timeout: Duration) -> Option<Vec<Merg
     }
 }
 
-/// Os pull requests mergeados da lista da API: só os que têm `merged_at` (um
-/// pull request fechado sem merge fica de fora) e que saíram do próprio
-/// repositório, com `head.repo.full_name` igual a `base.repo.full_name`. O de
-/// um fork, com uma branch de mesmo nome, não é a entrega da spec; o de um
-/// fork apagado vem com `head.repo` nulo e também fica de fora. A branch de
-/// origem sai de `head.ref`.
+/// The merged pull requests of the API list: only those with `merged_at` (a
+/// pull request closed without merge stays out) and that came from the
+/// repository itself, with `head.repo.full_name` equal to
+/// `base.repo.full_name`. One from a fork, with a branch of the same name, is
+/// not the spec's delivery; one from a deleted fork comes with a null
+/// `head.repo` and stays out too. The source branch comes from `head.ref`.
 fn parse_merged(stdout: &str) -> Option<Vec<MergedPr>> {
     let listed: Value = serde_json::from_str(stdout.trim()).ok()?;
     Some(
@@ -135,11 +136,11 @@ fn now_ms() -> i64 {
         .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// As specs que podem ter acabado de entrar no merge, em ordem de nome, com a
-/// branch de cada uma: as da pasta das specs que têm arquivo de eventos, uma
-/// branch gravada no estado e uma fase aprovada que ainda não é `delivered`.
-/// A fase e a branch saem do estado que a trava lê ([`lock_state`]), a regra
-/// única do núcleo.
+/// The specs that may just have been merged, in name order, with each one's
+/// branch: those of the specs folder that have an event file, a branch
+/// recorded in the state and an approved phase that is not `delivered` yet.
+/// The phase and the branch come from the state the lock reads
+/// ([`lock_state`]), the core's one rule.
 fn candidates(project: &Path) -> Vec<(String, String)> {
     let main = mustard_core::io::spec_events::spec_root(project);
     let Ok(paths) = ClaudePaths::for_project(&main) else {
@@ -166,11 +167,11 @@ fn candidates(project: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
-/// As specs que um merge acabou de entregar: cada candidata cuja branch
-/// aparece na lista de mergeados com a hora do merge dentro da janela antes de
-/// `now`. Um `--auto` ainda não mergeou; a promoção de `dev` para `main`
-/// mergeia uma base, que não é a branch de spec nenhuma; e um merge antigo da
-/// mesma branch não conta.
+/// The specs a merge has just delivered: each candidate whose branch shows up
+/// in the merged list with the merge time inside the window before `now`. An
+/// `--auto` has not merged yet; the `dev` to `main` promotion merges a base,
+/// which is no spec's branch; and an old merge of the same branch does not
+/// count.
 fn delivered_specs(candidates: &[(String, String)], merged: &[MergedPr], now: i64) -> Vec<String> {
     let since = now.saturating_sub(RECENT_MERGE_MS);
     candidates
@@ -227,8 +228,8 @@ pub(super) fn emit_pr_event(
     emit_pr_event_with(project_dir, session_id, event, command, &list, now_ms());
 }
 
-/// [`emit_pr_event`] com a lista de mergeados e o relógio dados por quem
-/// chama: os testes passam uma lista pronta e uma hora fixa.
+/// [`emit_pr_event`] with the merged list and the clock given by the caller:
+/// the tests pass a ready list and a fixed time.
 fn emit_pr_event_with(
     project_dir: &str,
     session_id: Option<&str>,
@@ -264,9 +265,10 @@ fn emit_pr_event_with(
     };
     // `pr.detect` family events go to the per-spec NDJSON sink through the router.
     let _ = crate::shared::events::route::emit(project_dir, &harness_event);
-    // A ponte do merge, como no `pr-merge`: a fase `delivered` em cada spec cuja
-    // branch a API mostra mergeada há pouco, e a cobrança das pendências armada
-    // para a sessão que mergeou. Sem spec candidata, o `gh` nem é perguntado.
+    // The merge bridge, as in `pr-merge`: the `delivered` phase on every spec
+    // whose branch the API shows merged a moment ago, and the pending charge
+    // armed for the session that merged. With no candidate spec, `gh` is not
+    // even asked.
     if event != "pr.merged" {
         return;
     }
@@ -336,15 +338,15 @@ mod tests {
         mustard_core::time::parse_iso_millis("2026-09-13T12:00:00Z").expect("a fixed now")
     }
 
-    /// Um pull request fechado como a API o devolve, saído do próprio
-    /// repositório: a branch de origem e a hora do merge, ou `null` quando ele
-    /// foi fechado sem merge.
+    /// A closed pull request as the API returns it, from the repository
+    /// itself: the source branch and the merge time, or `null` when it was
+    /// closed without merge.
     fn pr(head: &str, merged_at: Option<&str>) -> Value {
         from_repo(head, merged_at, json!({ "full_name": "o/r" }))
     }
 
-    /// O mesmo pull request saído do repositório `repo`: outro nome é um fork,
-    /// e `null` é um fork apagado.
+    /// The same pull request from the repository `repo`: another name is a
+    /// fork, and `null` is a deleted fork.
     fn from_repo(head: &str, merged_at: Option<&str>, repo: Value) -> Value {
         json!({
             "number": 7,
@@ -354,8 +356,8 @@ mod tests {
         })
     }
 
-    /// Uma lista da API com os pull requests `prs`, lida pela mesma leitura
-    /// da resposta de verdade.
+    /// An API list with the pull requests `prs`, read through the same reading
+    /// as the real answer.
     fn api(prs: &[Value]) -> Option<Vec<MergedPr>> {
         parse_merged(&Value::Array(prs.to_vec()).to_string())
     }
@@ -373,10 +375,10 @@ mod tests {
             .expect("state");
     }
 
-    /// Um projeto do fluxo `dev`/`main`, parado em `branch`, com a spec `trava`
-    /// em andamento na branch `feature/trava`, uma pendência nascida nela e a
-    /// sessão `s-pr` ligada a ela; e a spec `plano`, ainda em plano, com a
-    /// branch `feature/plano`.
+    /// A `dev`/`main` flow project, standing on `branch`, with the spec `trava`
+    /// running on the branch `feature/trava`, a pending item born in it and the
+    /// session `s-pr` bound to it; and the spec `plano`, still in plan, with
+    /// the branch `feature/plano`.
     fn project_on(branch: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
@@ -402,9 +404,9 @@ mod tests {
         DiskSpecState::new(root).state(spec).and_then(|state| state.phase)
     }
 
-    /// A pergunta vai direto à API do GitHub, pelos pull requests fechados e
-    /// atualizados por último, e nunca pelo índice de busca, que se atualiza
-    /// com atraso.
+    /// The question goes straight to the GitHub API, for the closed and most
+    /// recently updated pull requests, and never through the search index,
+    /// which updates with a delay.
     #[test]
     fn the_merged_list_asks_the_api_and_never_the_search_index() {
         assert!(MERGED_LIST.starts_with("gh api "), "{MERGED_LIST}");
@@ -414,13 +416,13 @@ mod tests {
         assert!(!MERGED_LIST.contains("--search") && !MERGED_LIST.contains("search/"), "{MERGED_LIST}");
     }
 
-    /// O merge digitado confere o fato na lista da API, pela branch da spec, e
-    /// não o texto do comando. Pelo número, pelo endereço e com
-    /// `--delete-branch` sem nome, parado já na base, grava `delivered` e arma
-    /// a cobrança para a sessão; com `--auto`, o pull request ainda está
-    /// aberto e fora da lista de fechados, e nada é gravado; na promoção de
-    /// `dev` para `main`, a branch mergeada é uma base, e nada é gravado. O
-    /// `gh` é perguntado uma vez só.
+    /// The typed merge checks the fact in the API list, by the spec's branch,
+    /// and not the command text. By number, by address and with a nameless
+    /// `--delete-branch`, already standing on the base, it records `delivered`
+    /// and arms the charge for the session; with `--auto`, the pull request is
+    /// still open and out of the closed list, and nothing is recorded; on the
+    /// `dev` to `main` promotion, the merged branch is a base, and nothing is
+    /// recorded. `gh` is asked only once.
     #[test]
     fn a_typed_merge_is_checked_against_the_merged_pull_requests() {
         let recent = || vec![pr("feature/trava", Some("2026-09-13T11:59:00Z"))];
@@ -453,9 +455,9 @@ mod tests {
         }
     }
 
-    /// Um merge antigo da branch da spec não conta, e um pull request dela
-    /// fechado sem merge também não: a spec não vira `delivered` no merge de
-    /// outro pull request.
+    /// An old merge of the spec's branch does not count, and neither does a
+    /// pull request of it closed without merge: the spec does not become
+    /// `delivered` on another pull request's merge.
     #[test]
     fn an_old_merge_of_the_spec_branch_does_not_count() {
         let dir = project_on("dev");
@@ -470,9 +472,8 @@ mod tests {
         assert_eq!(phase(root, "trava"), Some("running"), "an old or unmerged pull request is not this merge");
     }
 
-    /// Um pull request de fork, com uma branch de mesmo nome da spec, não é a
-    /// entrega dela; o de um fork apagado, sem repositório de origem, também
-    /// não.
+    /// A fork's pull request, with a branch named like the spec's, is not its
+    /// delivery; nor is one from a deleted fork, with no source repository.
     #[test]
     fn a_pull_request_from_a_fork_is_not_a_delivery() {
         let dir = project_on("dev");
@@ -487,7 +488,7 @@ mod tests {
         assert!(crate::commands::event::pending::armed_charges(root).is_empty(), "nothing is armed");
     }
 
-    /// Com o `gh` lento, a pergunta estoura o prazo e nada é gravado.
+    /// With a slow `gh`, the question runs out of time and nothing is recorded.
     #[test]
     fn a_slow_gh_runs_out_of_time_and_records_nothing() {
         let dir = project_on("feature/trava");
@@ -501,8 +502,8 @@ mod tests {
         assert!(crate::commands::event::pending::armed_charges(root).is_empty());
     }
 
-    /// Com mais de cinco specs candidatas, todas são comparadas: a mergeada é
-    /// achada mesmo sendo a primeira de sete.
+    /// With more than five candidate specs, all of them are compared: the
+    /// merged one is found even as the first of seven.
     #[test]
     fn more_than_five_candidates_are_all_checked() {
         let dir = project_on("dev");
@@ -519,9 +520,9 @@ mod tests {
         }
     }
 
-    /// A lista da API se lê pela branch de origem (`head.ref`) e pela hora do
-    /// merge (`merged_at`); o pull request fechado sem merge, o item sem
-    /// branch e o de outro repositório são pulados.
+    /// The API list is read by the source branch (`head.ref`) and the merge
+    /// time (`merged_at`); a pull request closed without merge, an item with
+    /// no branch and one from another repository are skipped.
     #[test]
     fn the_merged_list_reads_the_branch_and_the_merge_time() {
         let listed = r#"[
@@ -535,8 +536,8 @@ mod tests {
         assert_eq!(parse_merged("não é json"), None);
     }
 
-    /// Uma spec já entregue não é candidata de novo, e sem candidata o `gh`
-    /// nem é perguntado; um `gh pr create` não pergunta nada.
+    /// A spec already delivered is not a candidate again, and with no
+    /// candidate `gh` is not even asked; a `gh pr create` asks nothing.
     #[test]
     fn a_delivered_spec_is_not_asked_again_and_an_opened_pr_asks_nothing() {
         let dir = project_on("feature/trava");

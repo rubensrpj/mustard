@@ -832,9 +832,9 @@ mod tests {
         })
     }
 
-    /// No prazo, o grupo inteiro morre: o neto que o shell lançou e que dorme
-    /// mais que o prazo não roda mais quando a função volta, e ela volta no
-    /// prazo.
+    /// At the deadline, the whole group dies: the grandchild the shell
+    /// launched, sleeping longer than the deadline, no longer runs when the
+    /// function returns, and it returns on time.
     #[cfg(unix)]
     #[test]
     fn the_deadline_kills_the_grandchild_too() {
@@ -855,9 +855,9 @@ mod tests {
         assert!(gone, "the grandchild {pid} outlived the deadline");
     }
 
-    /// Um processo que abre a própria sessão escapa do grupo e segura a saída
-    /// aberta; mesmo assim a função volta logo depois do prazo, sem esperar
-    /// por ele.
+    /// A process that opens its own session escapes the group and holds the
+    /// output open; even so the function returns right after the deadline,
+    /// without waiting for it.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_process_outside_the_group_does_not_hold_the_deadline() {

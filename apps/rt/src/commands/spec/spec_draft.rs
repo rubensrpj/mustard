@@ -1157,9 +1157,9 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
         return 0;
     }
 
-    // A pasta da spec nasce só depois da validação: uma recusa antes dela não
-    // deixa uma pasta que ninguém pediu, e que a trava leria como uma spec em
-    // plano.
+    // The spec folder is born only after the validation: a refusal before it
+    // leaves no folder nobody asked for, which the lock would read as a spec in
+    // plan.
     if let Err(e) = mfs::create_dir_all(&output) {
         emit_error("could not create output directory", &e.to_string());
         return 0;
@@ -1204,9 +1204,10 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     }
     written.push(output.join("meta.json").display().to_string());
 
-    // A spec nasce na fase de plano, gravada pelo binário no `spec.ndjson`:
-    // o portão de escrita barra o código do projeto até o usuário escolher
-    // "Aprovar" na pergunta. Só na pasta canônica da spec, onde o estado mora.
+    // The spec is born in the plan phase, recorded by the binary in
+    // `spec.ndjson`: the write gate blocks project code until the user chooses
+    // "Aprovar" in the question. Only in the spec's canonical folder, where the
+    // state lives.
     if auto_output
         && let Err(refusal) =
             crate::commands::spec_events::write::record_birth(project_root, &slug, work_branch.as_deref())
@@ -2133,8 +2134,8 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Um rascunho recusado na validação não deixa pasta nenhuma: a pasta da
-    /// spec só nasce depois dela.
+    /// A draft refused by the validation leaves no folder: the spec folder is
+    /// born only after it.
     #[test]
     fn a_draft_refused_by_the_validation_leaves_no_folder() {
         let dir = tempdir().unwrap();
@@ -2143,7 +2144,7 @@ mod tests {
         let code = run_at(
             project,
             SpecDraftOpts {
-                // Sem título, a validação recusa.
+                // No title: the validation refuses.
                 intent: "   ".to_string(),
                 slug: Some("sem-titulo".to_string()),
                 scope: "light".into(),

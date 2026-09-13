@@ -415,8 +415,8 @@ pub(crate) fn patch_root_meta_light(spec_dir: &Path) {
     write_meta_logged(&path, &meta);
 }
 
-/// A chave do `meta.json` em que a recusa das ondas fica gravada, e o valor
-/// dela.
+/// The `meta.json` key the refusal of the waves is recorded under, and its
+/// value.
 const SCOPE_OVERRIDE_KEY: &str = "scopeOverride";
 const USER_REJECTED_WAVES: &str = "user-rejected-waves";
 
@@ -434,9 +434,9 @@ fn set_scope_override(meta: &mut Meta) {
     }
 }
 
-/// O usuário recusou as ondas desta spec: o `meta.json` traz a marca que o
-/// [`set_scope_override`] grava. A decomposição da entrada da execução lê
-/// daqui, para não refazer as ondas que o usuário juntou.
+/// The user refused the waves of this spec: the `meta.json` carries the mark
+/// [`set_scope_override`] writes. The decomposition at the entry into
+/// execution reads it here, so it does not redo the waves the user joined.
 pub(crate) fn user_rejected_waves(meta: &Meta) -> bool {
     meta.raw.get(SCOPE_OVERRIDE_KEY).and_then(Value::as_str) == Some(USER_REJECTED_WAVES)
 }

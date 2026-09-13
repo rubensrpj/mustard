@@ -53,13 +53,14 @@
 //!   written and already covering the in-place unit and the per-repo report.
 //!   Reimplementing it here would be a second exit ritual to keep in step.
 //!
-//!   Todo merge também grava o evento `pr.merged` e, quando o merge é de uma
-//!   spec com arquivo de eventos, o estado `delivered` dela: é esse estado que
-//!   arma a cobrança das pendências no fim da resposta. Quando a unidade nasceu
-//!   de uma pendência (`emit-pipeline --pending`, que deixa nela a nota "virou
-//!   a spec X"), o merge fecha esse item com o motivo `PR #N mergeado`. O
-//!   relatório devolve `pendingClosed` e `pendingOpen` — as pendências nascidas
-//!   na spec que seguem abertas — para que a entrega pergunte só delas.
+//!   Every merge also records the `pr.merged` event and, when the merge is of
+//!   a spec with an event file, its `delivered` state: that state is what arms
+//!   the pending charge at the end of the answer. When the unit was born from
+//!   a pending item (`emit-pipeline --pending`, which leaves on it the note
+//!   "became the spec X"), the merge closes that item with the reason
+//!   `PR #N mergeado`. The report returns `pendingClosed` and `pendingOpen` —
+//!   the pending items born in the spec that stay open — so the delivery asks
+//!   only about them.
 //!
 //! ## The unreviewed merge WARNS and ASKS — it never refuses
 //!
@@ -583,15 +584,14 @@ pub(crate) fn merge_consent(
     }
 }
 
-/// O veredito das revisões da spec `spec`, lido do `spec.ndjson` dela:
-/// `approved` quando o último veredito de cada onda aprovou, `rejected`
-/// quando o de alguma reprovou. `None` = a spec não tem veredito nenhum, ou
-/// não tem arquivo de eventos.
+/// The review verdict of `spec`, read from its `spec.ndjson`: `approved` when
+/// the last verdict of every wave approved, `rejected` when some wave's
+/// rejected. `None` = the spec has no verdict at all, or no event file.
 ///
-/// Por onda, porque a aprovação de uma onda não pode esconder a reprovação de
-/// outra. A resposta do merge a uma reprovação é uma PERGUNTA: um veredito
-/// cauteloso custa uma confirmação, e ignorá-lo custaria um merge calado sobre
-/// uma reprovação.
+/// Per wave, because one wave's approval must not hide another's rejection.
+/// The merge's answer to a rejection is a QUESTION: a cautious verdict costs
+/// one confirmation, and ignoring it would cost a silent merge over a
+/// rejection.
 fn recorded_verdict(root: &Path, spec: &str) -> Option<String> {
     use mustard_core::domain::spec_state::SpecState as _;
     let log = crate::shared::spec_state::DiskSpecState::new(root).log(spec)?;
@@ -631,15 +631,15 @@ pub(crate) struct PrMergeReport {
     pub settle: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
-    /// A pendência que ESTE merge fechou — a que tem na lista a nota "virou a
-    /// spec X" desta spec, gravada na abertura (`emit-pipeline --pending`).
-    /// Ausente quando não havia ligação.
+    /// The pending item THIS merge closed — the one carrying in the list the
+    /// note "became the spec X" of this spec, recorded at the opening
+    /// (`emit-pipeline --pending`). Absent when there was no link.
     #[serde(rename = "pendingClosed", skip_serializing_if = "Option::is_none")]
     pub pending_closed: Option<String>,
-    /// As pendências nascidas na spec do merge que seguem abertas: a entrega
-    /// pergunta só delas. Presente em todo `merged` (vazia quando nada nasceu
-    /// na spec, e na promoção, que não tem spec) e ausente quando nada foi
-    /// mergeado.
+    /// The pending items born in the merge's spec that stay open: the delivery
+    /// asks only about them. Present on every `merged` (empty when nothing was
+    /// born in the spec, and on a promotion, which has no spec) and absent when
+    /// nothing was merged.
     #[serde(rename = "pendingOpen", skip_serializing_if = "Option::is_none")]
     pub pending_open: Option<Vec<OpenPending>>,
 }
@@ -654,8 +654,8 @@ pub(crate) struct PrMergeReport {
 /// the answer: one call site instead of two, and the report then carries what
 /// the provider said even when the operator overrode it.
 ///
-/// `session` é a de quem pediu o merge, lida do ambiente pela entrada `run`:
-/// é ela que a cobrança das pendências do merge espera.
+/// `session` is the one who asked for the merge, read from the environment by
+/// the `run` entry: it is the session the merge's pending charge waits for.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 fn merge_core(
@@ -829,17 +829,18 @@ fn merge_core(
     }
 }
 
-/// O que um merge deixa registrado além do merge: o evento `pr.merged`, o
-/// estado `delivered` da spec e o fechamento da pendência que virou a spec.
-/// Devolve o id fechado (se houve) e as pendências nascidas na spec que
-/// seguem abertas: a entrega pergunta só delas, nunca da lista inteira.
+/// What a merge leaves recorded besides the merge: the `pr.merged` event, the
+/// spec's `delivered` state and the closing of the pending item that became
+/// the spec. Returns the closed id (if any) and the pending items born in the
+/// spec that stay open: the delivery asks only about them, never about the
+/// whole list.
 ///
-/// O motivo `PR #N mergeado` põe o número do pull request no ledger, para quem
-/// reler a lista saber o que entregou o item.
+/// The reason `PR #N mergeado` puts the pull request number in the ledger, so
+/// whoever rereads the list knows what delivered the item.
 ///
-/// Roda também na promoção `dev` → `main`: o `pr.merged` fica registrado. Uma
-/// promoção não tem spec, então não grava estado, não arma a cobrança e não
-/// pergunta de nenhuma pendência.
+/// Also runs on the `dev` → `main` promotion: the `pr.merged` is recorded. A
+/// promotion has no spec, so it records no state, arms no charge and asks
+/// about no pending item.
 fn after_merge(
     root: &Path,
     facts: &PrFacts,
@@ -848,7 +849,8 @@ fn after_merge(
 ) -> (Option<String>, Vec<OpenPending>) {
     record_merge(root, facts, spec, session);
     let reason = format!("PR #{} mergeado", facts.number);
-    // A nota "virou a spec X" da lista liga a pendência à spec.
+    // The note "became the spec X" in the list links the pending item to the
+    // spec.
     let closed = spec
         .and_then(|slug| became_of(root, slug))
         .filter(|id| close_pending(root, id, &reason));
@@ -856,15 +858,15 @@ fn after_merge(
     (closed, born)
 }
 
-/// Grava o `pr.merged` desta porta e, com a spec, a fase `delivered` no estado
-/// dela. O `pr_detect` só enxerga um `gh pr merge` digitado no Bash, e este
-/// merge acontece dentro do processo — sem o estado, a cobrança de pendências
-/// do fim da resposta nunca saberia que a spec entrou no merge.
+/// Records this door's `pr.merged` and, with the spec, the `delivered` phase
+/// in its state. `pr_detect` only sees a `gh pr merge` typed in Bash, and this
+/// merge happens inside the process — without the state, the pending charge at
+/// the end of the answer would never know the spec was merged.
 ///
-/// Efeito declarado: o evento também alimenta o `pr_metrics` — a contagem de
-/// merges quando o git não responde e o pareamento aberto → mergeado. Os merges
-/// feitos por esta porta, antes invisíveis ali, passam a contar. Não contam em
-/// dobro: o `pr_detect` só grava o `gh pr merge` digitado no Bash.
+/// Declared effect: the event also feeds `pr_metrics` — the merge count when
+/// git does not answer and the opened → merged pairing. The merges made by
+/// this door, invisible there before, start counting. They do not count
+/// twice: `pr_detect` only records the `gh pr merge` typed in Bash.
 fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>, session: Option<&str>) {
     use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
     let event = HarnessEvent {
@@ -882,9 +884,9 @@ fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>, session: Optio
         spec: spec.map(str::to_string),
     };
     let _ = crate::shared::events::route::emit(&root.to_string_lossy(), &event);
-    // A ponte até o gravador definitivo do merge: o estado da spec passa à
-    // fase `delivered`, e é esse estado que arma a cobrança das pendências no
-    // fim da resposta.
+    // The bridge until the merge's definitive recorder: the spec's state moves
+    // to the `delivered` phase, and that state is what arms the pending charge
+    // at the end of the answer.
     if let Some(spec) = spec {
         let _ = crate::commands::spec_events::write::record_phase(root, spec, "delivered", session);
     }
@@ -1284,9 +1286,9 @@ mod tests {
         assert_eq!(merges.get(), 0);
     }
 
-    /// O merge lê o veredito do `spec.ndjson`: a reprovação de uma onda não é
-    /// escondida pela aprovação de outra, e o merge pergunta antes de
-    /// integrar; aprovada de novo a onda reprovada, ele segue.
+    /// The merge reads the verdict from `spec.ndjson`: one wave's rejection is
+    /// not hidden by another's approval, and the merge asks before
+    /// integrating; once the rejected wave is approved again, it goes on.
     #[test]
     fn the_merge_asks_for_confirmation_when_any_wave_verdict_was_rejected() {
         use crate::shared::spec_state::{seed_runs, seed_verdict};
@@ -1323,8 +1325,8 @@ mod tests {
         assert_eq!(merges.get(), 1);
     }
 
-    /// Um projeto do fluxo `dev`/`main` com as pendências abertas `titles`,
-    /// numeradas na ordem.
+    /// A `dev`/`main` flow project with the open pending items `titles`,
+    /// numbered in order.
     fn project_with_items(titles: &[&str]) -> tempfile::TempDir {
         use crate::commands::event::pending::{pending_at, PendingOpts};
         let dir = tempdir().expect("tempdir");
@@ -1343,7 +1345,7 @@ mod tests {
         dir
     }
 
-    /// Um merge sem checagem, sem provedor e sem poda, pela porta de verdade.
+    /// A merge with no checks, no provider and no pruning, through the real door.
     fn merged(root: &Path, number: u64, head: &str) -> PrMergeReport {
         let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
         let merge = |_: &Path, _: u64| Ok(());
@@ -1352,8 +1354,8 @@ mod tests {
         merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, None)
     }
 
-    /// A entrega pergunta só das pendências nascidas na spec do merge; a
-    /// promoção, que não tem spec, não pergunta de nenhuma.
+    /// The delivery asks only about the pending items born in the merge's
+    /// spec; the promotion, which has no spec, asks about none.
     #[test]
     fn the_merge_reports_only_the_items_born_in_its_spec() {
         use crate::hooks::task::pending_gate::seed_spec;
@@ -1369,8 +1371,9 @@ mod tests {
         assert_eq!(promotion.pending_open, Some(vec![]), "a promotion has no spec to ask about");
     }
 
-    /// A pendência que virou a spec ganha a nota na lista, e o merge dessa
-    /// spec a fecha com o número do pull request; a nota de outra spec fica.
+    /// The pending item that became the spec gets the note in the list, and
+    /// that spec's merge closes it with the pull request number; another
+    /// spec's note stays.
     #[test]
     fn a_merge_closes_the_item_that_became_its_spec() {
         use crate::commands::event::pending::{mark_became, pending_at, PendingOpts};
@@ -1429,9 +1432,9 @@ mod tests {
         assert!(!read_review_qa_state(root, "unit-j").2);
     }
 
-    /// O veredito do `review-result` chega ao merge pelo arquivo da spec: com
-    /// a revisão reprovada o merge pergunta, e aprovada depois, ele segue sem
-    /// perguntar.
+    /// The `review-result` verdict reaches the merge through the spec file:
+    /// with the review rejected the merge asks, and once approved it goes on
+    /// without asking.
     #[test]
     fn the_review_result_verdict_decides_whether_the_merge_asks() {
         let dir = tempdir().expect("tempdir");
@@ -1470,10 +1473,10 @@ mod tests {
         assert_eq!(merges.get(), 1);
     }
 
-    /// De ponta a ponta, com uma spec aberta pelo `spec-draft`: a aprovação, o
-    /// trabalho da onda, a revisão, o QA, a retomada, o fechamento e o merge
-    /// concordam, sem nada gravado à mão no arquivo da spec além da aprovação,
-    /// que é da testemunha.
+    /// End to end, with a spec opened by `spec-draft`: the approval, the
+    /// wave's work, the review, the QA, the resume, the close and the merge
+    /// agree, with nothing written by hand in the spec file besides the
+    /// approval, which is the witness's.
     #[test]
     fn a_drafted_spec_goes_through_review_qa_close_and_merge() {
         use crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state;
@@ -1554,12 +1557,12 @@ mod tests {
         assert_eq!(disk.state("ponta").and_then(|s| s.phase), Some("delivered"));
     }
 
-    /// O critério das pendências inteiro: doze abertas, duas nascidas na spec
-    /// entregue e três paradas há mais de 30 dias. O início da sessão mostra
-    /// uma linha com a contagem; a entrega pergunta só das duas; a trava do fim
-    /// da resposta cobra só as duas; as três paradas voltam numa pergunta só,
-    /// uma vez, e as não marcadas saem como vencidas; e "Humanize" com uma
-    /// "humanize" aberta é recusada apontando a existente.
+    /// The whole pending criterion: twelve open, two born in the delivered
+    /// spec and three idle for over 30 days. The session start shows one line
+    /// with the count; the delivery asks only about the two; the end-of-answer
+    /// lock charges only the two; the three idle ones come back in one
+    /// question, once, and the unmarked ones leave as expired; and "Humanize"
+    /// with an open "humanize" is refused, pointing at the existing one.
     #[test]
     fn twelve_open_items_follow_the_four_brakes() {
         use crate::commands::event::pending::{pending_at, PendingOpts};
@@ -1590,23 +1593,23 @@ mod tests {
         seed_spec(root, "entrega", &[11, 12], "s-doze");
         let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
 
-        // O início da sessão: uma linha com a contagem, e as paradas contadas.
+        // The session start: one line with the count, and the idle ones counted.
         let notice = crate::hooks::session::session_start_inject::pending_notice(root, lang).expect("twelve open");
         assert!(notice.starts_with("[Mustard] 12 ") && !notice.contains('\n'), "{notice}");
         assert!(notice.contains(" 3 ") && !notice.contains("parada 1"), "{notice}");
 
-        // A duplicata é recusada apontando a existente.
+        // The duplicate is refused, pointing at the existing one.
         let duplicate = add("Humanize", None);
         assert_eq!(duplicate["reason"], json!("duplicate"), "{duplicate}");
         assert_eq!(duplicate["id"], json!("P-11"));
 
-        // A entrega pergunta só das duas.
+        // The delivery asks only about the two.
         let done = merged(root, 400, "feature/entrega");
         assert_eq!(done.action, "merged");
         let asked: Vec<String> = done.pending_open.clone().unwrap_or_default().into_iter().map(|i| i.id).collect();
         assert_eq!(asked, vec!["P-11", "P-12"], "{done:?}");
 
-        // A trava do fim da resposta cobra só as duas.
+        // The end-of-answer lock charges only the two.
         let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::Stop));
         let stop = HookInput {
             hook_event_name: Some("Stop".to_string()),
@@ -1622,8 +1625,8 @@ mod tests {
             other => panic!("the delivery charges the two born in it, got {other:?}"),
         }
 
-        // As três paradas voltam numa pergunta só, uma vez; as não marcadas
-        // saem como vencidas.
+        // The three idle ones come back in one question, once; the unmarked
+        // ones leave as expired.
         let sweep = |stale: bool, keep: Option<&str>| {
             pending_at(&PendingOpts {
                 root: root.to_path_buf(),
@@ -1645,9 +1648,9 @@ mod tests {
         assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{expired}");
     }
 
-    /// A ponte: fechar a spec grava o estado `closed`, o merge grava o
-    /// `delivered`, e cada um arma a cobrança das pendências nascidas nela no
-    /// fim da resposta.
+    /// The bridge: closing the spec records the `closed` state, the merge
+    /// records `delivered`, and each arms the charge of the pending items born
+    /// in it at the end of the answer.
     #[test]
     fn the_bridge_records_closed_and_delivered_and_both_trigger_the_charge() {
         use crate::commands::event::pending::{pending_at, PendingOpts};

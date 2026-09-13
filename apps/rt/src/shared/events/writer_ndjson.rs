@@ -95,9 +95,9 @@ pub(crate) fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&s
     paths.claude_dir().join(".session").join(session_folder(session_slug)).join(".events")
 }
 
-/// O id de sessão como nome de pasta. Um id vazio, com barra, com `:` ou que
-/// começa por ponto sairia de `.claude/.session/` (`..`, `/tmp/x`, `C:\x`);
-/// nesse caso o evento cai na pasta `unknown`, a mesma de quem não tem sessão.
+/// The session id as a folder name. An empty id, one with a slash, a `:` or a
+/// leading dot would leave `.claude/.session/` (`..`, `/tmp/x`, `C:\x`); then
+/// the event falls into the `unknown` folder, the same as one with no session.
 fn session_folder(slug: &str) -> &str {
     let safe = !slug.is_empty() && !slug.contains(['/', '\\', ':']) && !slug.starts_with('.');
     if safe { slug } else { "unknown" }
@@ -316,9 +316,9 @@ mod tests {
         assert!(s.contains("/spec/auth/wave-2-rt/.events"));
     }
 
-    /// Um nome de spec ou de onda com `..` ou com barra nunca sai da pasta das
-    /// specs: a spec recusada cai na pasta da sessão, e a onda recusada fica
-    /// na pasta da spec.
+    /// A spec or wave name with `..` or a slash never leaves the specs folder:
+    /// the refused spec falls into the session folder, and the refused wave
+    /// stays in the spec folder.
     #[test]
     fn an_invalid_spec_or_wave_name_never_leaves_the_spec_folder() {
         let project = Path::new("/proj");
@@ -341,8 +341,8 @@ mod tests {
         assert!(dir.path().join(".claude").join(".session").join("s-1").join(".events").is_dir());
     }
 
-    /// Um id de sessão cru, com `..`, absoluto ou com barra, nunca sai da pasta
-    /// das sessões: o evento cai na pasta `unknown`.
+    /// A raw session id, with `..`, absolute or with a slash, never leaves the
+    /// sessions folder: the event falls into the `unknown` folder.
     #[test]
     fn a_raw_session_id_never_leaves_the_session_folder() {
         let project = Path::new("/proj");

@@ -343,7 +343,7 @@ fn chain_close(cwd: &Path, spec: &str, gates: &[GateReport], session: Option<&st
 /// idempotent, so a re-run after an already-closed spec is a no-op flip.
 /// Returns `(chained, Some(verified))`.
 ///
-/// `session` é a de quem fecha, lida do ambiente pela entrada `run`.
+/// `session` is the one closing, read from the environment by the `run` entry.
 fn finalize_and_verify(cwd: &Path, spec: &str, session: Option<&str>) -> (bool, Option<bool>) {
     // Use `finalize`, NOT `run_complete`: the QA gate above already ran every AC
     // and, crucially, gated on the RECORDED `qa.result overall=pass` — the same

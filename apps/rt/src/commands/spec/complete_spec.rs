@@ -205,9 +205,9 @@ fn is_terminal_status(status: Option<&str>) -> bool {
 /// (`close-pipeline`, `close-orchestrate`) reach this through [`finalize`] after
 /// already running the verification and gating on it.
 ///
-/// `session` é a de quem fecha, dita por quem chama: a ponte do fechamento
-/// arma a cobrança das pendências para ela, e só ela é desligada da spec que
-/// terminou. Só a entrada `run` a lê do ambiente.
+/// `session` is the one closing, given by the caller: the close bridge arms
+/// the pending charge for it, and only it is unbound from the spec that ended.
+/// Only the `run` entry reads it from the environment.
 fn mark_complete(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     let affected = collect_affected_files(cwd, spec);
 
@@ -257,15 +257,15 @@ fn mark_complete(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     // landed above and must succeed regardless.
     merge_capabilities_on_close(cwd, spec, &now);
 
-    // A ponte até o gravador definitivo do fechamento: o estado da spec passa
-    // à fase `closed`, e é esse estado que arma a cobrança das pendências no
-    // fim da resposta.
+    // The bridge until the close's definitive recorder: the spec's state moves
+    // to the `closed` phase, and that state is what arms the pending charge at
+    // the end of the answer.
     let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed", session);
 
-    // Desliga a spec da sessão agora que ela terminou: os eventos depois do
-    // fechamento não herdam a spec que acabou. Só a sessão de quem fecha;
-    // sem ela, nada é desligado, porque um palpite pela pasta de sessão mais
-    // nova desligaria a spec de outra sessão.
+    // Unbind the spec from the session now that it ended: the events after the
+    // close do not inherit the spec that finished. Only the closer's session;
+    // without it, nothing is unbound, because a guess from the newest session
+    // folder would unbind another session's spec.
     if let Some(sid) = session {
         crate::shared::context::unbind_session_spec(&cwd.to_string_lossy(), sid);
     }
@@ -667,8 +667,8 @@ pub(crate) fn run_complete(cwd: &Path, spec: &str) -> Result<Value, String> {
 /// `overall == pass`) — calling `run_complete` there would re-execute every AC
 /// command a second time.
 ///
-/// `session` é a de quem fecha, lida do ambiente pela entrada `run` que
-/// chama; um teste passa a dele.
+/// `session` is the one closing, read from the environment by the calling
+/// `run` entry; a test passes its own.
 pub(crate) fn finalize(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     let complete_value = mark_complete(cwd, spec, session);
     rebuild_one_fail_open(cwd, spec);
@@ -1061,10 +1061,10 @@ mod tests {
         assert_eq!(view.status.as_deref(), Some("completed"));
     }
 
-    /// O fechamento automático se confere pelo estado: fechar uma spec
-    /// aprovada grava o `state` `closed` no `spec.ndjson`, e a conferência o
-    /// acha depois da hora em que o fechamento começou. Uma spec em plano não
-    /// fecha pela ponte, e a conferência diz que nada chegou.
+    /// The automatic close is checked by the state: closing an approved spec
+    /// records the `closed` state in `spec.ndjson`, and the check finds it
+    /// after the time the close began. A spec in plan does not close by the
+    /// bridge, and the check says nothing arrived.
     #[test]
     fn the_close_is_verified_by_the_closed_state_in_the_spec_file() {
         use crate::commands::event::verify_emit::closed_state_landed;
@@ -1085,9 +1085,9 @@ mod tests {
         assert!(!closed_state_landed(cwd, "em-plano", since), "a spec in plan never closes by the bridge");
     }
 
-    /// Com a ponte, o QA que a execução grava é o QA que o fechamento lê: o
-    /// `complete-spec` cujo critério passa fecha, e o cujo critério falha
-    /// recusa. Cada critério é o do AC com o mesmo comando.
+    /// With the bridge, the QA the run records is the QA the close reads: a
+    /// `complete-spec` whose criterion passes closes, and one whose criterion
+    /// fails refuses. Each criterion is its AC's, matched by the AC id.
     #[test]
     fn a_passing_qa_run_lets_complete_spec_close_and_a_failing_one_refuses() {
         for (spec, command, closes) in [("verde", "cd .", true), ("vermelha", "false", false)] {

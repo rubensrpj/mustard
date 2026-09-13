@@ -1107,37 +1107,37 @@ const CENSUS_SKILLS_DIR: &str = "skills";
 /// Ver [`CENSUS_SKILLS_DIR`].
 const CENSUS_SKILL_FILE: &str = "SKILL.md";
 
-/// De quem é um `.claude/skills/<molde>/SKILL.md`, lido do `source:` do
-/// frontmatter dele.
+/// Who owns a `.claude/skills/<mold>/SKILL.md`, read from the `source:` of its
+/// frontmatter.
 ///
-/// O nome do arquivo NÃO responde a pergunta. Os dois moldes curados deste
-/// repositório (`rt-verdict-pattern`, `core-function-pattern`) têm exatamente o
-/// mesmo caminho de um molde gerado e carregam `source: manual` — o marcador
-/// cujo significado documentado é "edições à mão não são sobrescritas". Tratar
-/// todo `SKILL.md` como censo faz a edição à mão do operador deixar de ser
-/// trabalho dele: o corte para de recusar por causa dela e ela viaja para
-/// dentro da unidade nova — a troca que a categoria existe para impedir.
+/// The file name does NOT answer the question. The two curated molds of this
+/// repository (`rt-verdict-pattern`, `core-function-pattern`) have exactly the
+/// same path as a generated mold and carry `source: manual` — the marker whose
+/// documented meaning is "hand edits are not overwritten". Treating every
+/// `SKILL.md` as census makes the operator's hand edit stop being their work:
+/// the cut stops refusing because of it and it travels into the new unit — the
+/// swap the category exists to prevent.
 ///
-/// A chave AUSENTE é o mesmo caso do `manual`, e é o comum: um
-/// `.claude/skills/<algo>/SKILL.md` escrito à mão — o lugar padrão de uma skill
-/// de projeto no Claude Code — quase nunca declara `source:`. Ler a ausência
-/// como censo reabriria a mesma troca por OMISSÃO de chave em vez de por
-/// escrita dela.
+/// The ABSENT key is the same case as `manual`, and it is the common one: a
+/// hand-written `.claude/skills/<something>/SKILL.md` — the standard place of a
+/// project skill in Claude Code — almost never declares `source:`. Reading the
+/// absence as census would reopen the same swap by OMITTING the key instead of
+/// by writing it.
 ///
-/// Por isso a leitura é [`DirtyPathKind::Census`] SÓ quando o `source:` resolve
-/// para `scan`. Todo o resto — `manual`, chave ausente, qualquer outro valor,
-/// arquivo ilegível, frontmatter que não fecha — é [`DirtyPathKind::Work`], a
-/// mesma direção segura que a regra de truncamento acima toma: errar para "tem
-/// trabalho" custa um commit, errar para o outro lado custa o trabalho de
-/// alguém.
+/// That is why the read is [`DirtyPathKind::Census`] ONLY when `source:`
+/// resolves to `scan`. Everything else — `manual`, an absent key, any other
+/// value, an unreadable file, a frontmatter that does not close — is
+/// [`DirtyPathKind::Work`], the same safe direction the truncation rule above
+/// takes: erring towards "there is work" costs a commit, erring the other way
+/// costs someone's work.
 ///
-/// A pergunta inteira vai para
-/// [`crate::commands::scan_patterns::origin::is_mustard_generated`], que É a
-/// regra canônica e já lê pelo parser de frontmatter do core (tolerante a BOM e
-/// a CRLF, e ciente do bloco `metadata:`, então um `source:` indentado ali
-/// dentro nunca é confundido com a chave de topo). Reescrever aqui as duas
-/// linhas equivalentes é exatamente como este portão e a varredura passariam a
-/// discordar sobre quem escreveu o mesmo arquivo — que foi o defeito.
+/// The whole question goes to
+/// [`crate::commands::scan_patterns::origin::is_mustard_generated`], which IS
+/// the canonical rule and already reads through the core's frontmatter parser
+/// (BOM and CRLF tolerant, and aware of the `metadata:` block, so an indented
+/// `source:` in there is never mistaken for the top key). Rewriting the two
+/// equivalent lines here is exactly how this gate and the sweep would come to
+/// disagree about who wrote the same file — which was the defect.
 fn census_skill_kind(root: &Path, path: &str) -> DirtyPathKind {
     let Ok(text) = std::fs::read_to_string(root.join(path)) else {
         return DirtyPathKind::Work;
@@ -1453,16 +1453,16 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         return CutOutcome::AlreadyThere(target);
     }
 
-    // WHERE from, RESOLVIDO PRIMEIRO e uma vez só: é um dos insumos da
-    // pergunta abaixo, que precisa saber qual base atualizar. Resolver aqui não
-    // muda a ORDEM das recusas — `Refused` continua vindo antes de
-    // `BaseUnknown`, porque este passo não retorna nada por si.
+    // WHERE from, RESOLVED FIRST and only once: it is one of the inputs of the
+    // question below, which needs to know which base to update. Resolving it
+    // here does not change the ORDER of the refusals — `Refused` still comes
+    // before `BaseUnknown`, because this step returns nothing by itself.
     let resolved_base = recorded_or_derived_base(&root, session, &target, &config);
     let base_hint = resolved_base.as_deref().ok();
 
-    // A PERGUNTA INTEIRA, feita uma vez: o que está sujo e onde o checkout
-    // está. A resposta já vem com a base atualizada a partir do `origin`, e
-    // esta porta não executa passo nenhum.
+    // THE WHOLE QUESTION, asked once: what is dirty and where the checkout
+    // stands. The answer already comes with the base updated from `origin`,
+    // and this door executes no step.
     match crate::commands::event::census_settlement::settle(
         project,
         crate::commands::event::census_settlement::CheckoutPosition::at(
@@ -1472,8 +1472,8 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         ),
         &config,
     ) {
-        // Trabalho de OUTRA unidade viajaria, ou a base não pôde avançar:
-        // recusar antes de cortar é o que deixa tudo onde o autor deixou.
+        // Work of ANOTHER unit would travel, or the base could not advance:
+        // refusing before cutting leaves everything where the author left it.
         crate::commands::event::census_settlement::CensusSettlement::Refuse(busy) => {
             return CutOutcome::Refused(busy)
         }

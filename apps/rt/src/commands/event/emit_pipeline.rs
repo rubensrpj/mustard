@@ -339,14 +339,15 @@ pub fn run(opts: EmitPipelineOpts) {
         .as_ref()
         .map_or_else(|| opts.spec.clone(), |m| m.slug.clone());
     let ts = now_iso8601();
-    // Só a sessão que o ambiente entrega. Sem ela, o id fica vazio: o roteador
-    // não liga a spec a sessão nenhuma e a branch pendente não é gravada. Um
-    // palpite pela pasta de sessão mais nova gravaria as duas sob outra sessão.
+    // Only the session the environment hands over. Without it, the id stays
+    // empty: the router binds the spec to no session and the pending branch is
+    // not recorded. A guess from the newest session folder would record both
+    // under another session.
     let sid = session_from_env().unwrap_or_default();
     emit_primary_and_alias(&kind, &spec, &payload, &ts, &sid);
-    // A unidade que nasce de uma pendência deixa nela a nota "virou a spec X",
-    // com o nome que a unidade carrega daqui em diante: é por essa nota que o
-    // merge da spec fecha a pendência.
+    // A unit born from a pending item leaves on it the note "became the spec
+    // X", with the name the unit carries from here on: that note is how the
+    // spec's merge closes the pending item.
     if let Some(id) = pending_link.as_deref() {
         let _ = super::pending::mark_became(Path::new(&project_dir()), id, &spec);
     }
@@ -627,13 +628,13 @@ fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts, kind_base: Option<&str>) -
     enforce_base_gate_at(Path::new(&project), opts.intent.as_deref(), kind_base)
 }
 
-/// [`enforce_base_gate_or_exit`] com a raiz DADA em vez de descoberta no
-/// processo — o corpo inteiro da porta, para que ela possa ser medida numa
-/// árvore de teste em vez de na do repositório.
+/// [`enforce_base_gate_or_exit`] with the root GIVEN instead of discovered in
+/// the process — the whole body of the door, so it can be measured in a test
+/// tree instead of the repository's.
 ///
-/// `pub(super)` porque ela é medida de onde moram as fixtures da árvore
-/// (`base_gate::tests`), ao lado das duas portas de corte que fazem a MESMA
-/// pergunta.
+/// `pub(super)` because it is measured from where the tree fixtures live
+/// (`base_gate::tests`), beside the two cutting doors that ask the SAME
+/// question.
 pub(super) fn enforce_base_gate_at(
     root: &Path,
     intent: Option<&str>,
@@ -648,12 +649,11 @@ pub(super) fn enforce_base_gate_at(
         // Unmeasured — the gate did not run, so it has nothing to act on.
         super::base_gate::BaseVerdict::Abstain => {}
         super::base_gate::BaseVerdict::Open(current) => {
-            // A PERGUNTA INTEIRA, feita uma vez, e nenhum passo executado aqui:
-            // a porta diz onde a árvore está e obedece. A única recusa que ela
-            // pode receber é a da BASE que não pôde ser avançada até o
-            // `origin` (nada é checado out aqui, então nada viaja) — cortar
-            // uma unidade de uma base velha é exatamente o que este portão
-            // existe para recusar.
+            // THE WHOLE QUESTION, asked once, and no step executed here: the
+            // door says where the tree is and obeys. The only refusal it can
+            // get is the BASE that could not be advanced to `origin` (nothing
+            // is checked out here, so nothing travels) — cutting a unit from
+            // a stale base is exactly what this gate exists to refuse.
             match super::census_settlement::settle(
                 root,
                 super::census_settlement::CheckoutPosition::at(Some(&current), None, kind_base),
@@ -868,8 +868,8 @@ fn sync_status_transition(cwd: &Path, spec: &str, payload: &Value, ts: &str, sid
     let Some(to) = payload.get("to").and_then(Value::as_str) else {
         return;
     };
-    // A troca de situação também grava o estágio do `meta.json`: uma spec
-    // antiga parada antes da execução nasce em plano antes.
+    // A status change also writes the `meta.json` stage: an old spec parked
+    // before execution is born in plan first.
     crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     // Fix-loop exhaustion twin: a `to: wave-failed` status is the
     // deterministic signal a wave exhausted its fix-loops
@@ -1337,8 +1337,8 @@ pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payl
     let Some(path) = meta_path_for(cwd, spec, payload) else {
         return;
     };
-    // Uma spec antiga parada antes da execução nasce em plano antes de o
-    // estágio andar: a trava passa a ler o estado, e não o `meta.json`.
+    // An old spec parked before execution is born in plan before the stage
+    // moves: the lock then reads the state, and not the `meta.json`.
     crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     // Entering execution moves the spec's state to `running`, from an
     // approved phase only: the automatic re-wave fires on that phase.

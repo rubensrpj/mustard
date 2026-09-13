@@ -602,10 +602,11 @@ mod tests {
         out
     }
 
-    /// Com endereço publicado gravado, o segmento da unidade vira link
-    /// para a página, e o nome não se repete quando o branch já o mostra.
+    /// With a published address recorded, the unit's segment becomes a link
+    /// to the page, and the name is not repeated when the branch already shows
+    /// it.
     ///
-    /// Cada estado usa uma raiz própria, com o seu branch.
+    /// Each state uses a root of its own, with its own branch.
     #[test]
     fn statusline_links_the_published_page_and_drops_the_repeated_slug() {
         let url = "https://claude.ai/code/artifacts/pagina-ligada";
@@ -649,9 +650,9 @@ mod tests {
         assert!(linked.text.ends_with("\u{1b}]8;;\u{1b}\\"), "…and closes it: {:?}", linked.text);
         assert_eq!(visible(&linked.text), "\u{25b8} PLAN", "the link hides nothing and adds nothing");
 
-        // Fora do branch de uma unidade, nada a aponta como atual: só a
-        // variável de ambiente o faria, e um teste não a muda. Um arquivo
-        // que sobrou na pasta de estado velha não conta.
+        // Off a unit's branch, nothing points to it as current: only the
+        // environment variable would, and a test does not change it. A file
+        // left over in the old state folder does not count.
         let away = tempfile::tempdir().unwrap();
         let spec = seed(away.path(), "outra-unidade");
         let states = away.path().join(".claude/.pipeline-states");

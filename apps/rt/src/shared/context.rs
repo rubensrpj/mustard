@@ -451,9 +451,9 @@ pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
     if branch.is_empty() {
         return None;
     }
-    // Num worktree ligado, o Mustard mora no checkout principal: o
-    // `mustard.json` e as pastas das specs ficam fora do git. Só um `.git` que
-    // é arquivo pode ser um worktree, e só então o git é perguntado.
+    // In a linked worktree, the Mustard lives in the main checkout: the
+    // `mustard.json` and the spec folders stay outside git. Only a `.git` that
+    // is a file can be a worktree, and only then is git asked.
     let home = (git_dir != project.join(".git"))
         .then(|| mustard_core::io::workspace::linked_worktree_main(project))
         .flatten()
@@ -471,8 +471,8 @@ pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
         .then_some(slug)
 }
 
-/// A pasta do git do checkout em `project`, só lendo arquivos: `.git` é a
-/// própria pasta, ou, num worktree ligado, um arquivo `gitdir: <caminho>`.
+/// The git folder of the checkout in `project`, reading files only: `.git` is
+/// the folder itself, or, in a linked worktree, a `gitdir: <path>` file.
 fn checkout_git_dir(project: &Path) -> Option<PathBuf> {
     let dot_git = project.join(".git");
     if dot_git.is_dir() {

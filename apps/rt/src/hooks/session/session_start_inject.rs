@@ -37,15 +37,15 @@
 //!   running harness, so a session on an old plugin reads as aligned.
 //! - pending-prune advisory — delivered work units still carrying a live
 //!   branch get one line naming what is owed. Advisory, never blocking.
-//! - aviso de sobras — as cópias descartáveis antigas que o `scratch-gc`
-//!   apagaria, quando passam do limite (5 GiB, ajustável por
-//!   `MUSTARD_SCRATCH_WARN_BYTES`), viram uma linha com o total e o comando
-//!   que limpa. Abaixo do limite, nada. Nunca bloqueia.
-//! - aviso de pendências — o trabalho combinado que segue aberto no ledger
-//!   (`.claude/pending/ledger.json`) entra por último, numa linha só, com a
-//!   contagem e o comando que mostra a lista inteira: uma lista longa no
-//!   início de cada sessão deixaria de ser lida. Nunca bloqueia; a cobrança
-//!   dura mora no `pending_gate` do `Stop`.
+//! - leftovers advisory — the old disposable copies `scratch-gc` would delete,
+//!   when they pass the limit (5 GiB, adjustable through
+//!   `MUSTARD_SCRATCH_WARN_BYTES`), become one line with the total and the
+//!   command that cleans them. Below the limit, nothing. Never blocks.
+//! - pending advisory — the agreed work that stays open in the ledger
+//!   (`.claude/pending/ledger.json`) comes last, in a single line, with the
+//!   count and the command that shows the whole list: a long list at the start
+//!   of every session would stop being read. Never blocks; the hard charge
+//!   lives in the `pending_gate` of `Stop`.
 //!
 //! ## Contract shape
 //!
@@ -650,13 +650,13 @@ pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option
     )
 }
 
-/// Uma linha só com a contagem das pendências abertas e o comando que mostra
-/// a lista inteira ([`count_line`](crate::commands::event::pending::count_line),
-/// a mesma linha da listagem do `run pending`).
+/// A single line with the count of open pending items and the command that
+/// shows the whole list ([`count_line`](crate::commands::event::pending::count_line),
+/// the same line as the `run pending` listing).
 ///
-/// `None` para projeto sem `mustard.json` (nunca instalado — o harness não o
-/// importuna) e quando não há nada aberto. Um ledger ilegível também cala: quem
-/// recusa e explica o conserto é `run pending`.
+/// `None` for a project without `mustard.json` (never installed — the harness
+/// does not bother it) and when nothing is open. An unreadable ledger stays
+/// silent too: `run pending` is the one that refuses and explains the fix.
 pub(crate) fn pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
@@ -968,8 +968,8 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "seed: {out}");
     }
 
-    /// A sessão que abre com pendências abertas recebe uma linha só, com a
-    /// contagem e o comando que mostra a lista; nenhum título entra.
+    /// A session that opens with open pending items gets a single line, with
+    /// the count and the command that shows the list; no title goes in.
     #[test]
     fn the_session_start_shows_one_line_with_the_open_count() {
         let dir = tempdir().unwrap();
@@ -994,8 +994,8 @@ mod tests {
         assert!(!context.contains("Humanize") && !context.contains("P-1"), "no item is listed: {context}");
     }
 
-    /// Uma pendência dá a linha no singular e oito dão a contagem, sem
-    /// nenhum título; sem instalação ou sem nada aberto, cala.
+    /// One pending item gives the line in the singular and eight give the
+    /// count, with no title; with no install or nothing open, it stays silent.
     #[test]
     fn the_pending_notice_counts_and_stays_quiet_when_empty() {
         let lang = SupportedLocale::default();

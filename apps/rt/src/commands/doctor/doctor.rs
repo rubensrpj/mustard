@@ -1032,13 +1032,13 @@ fn check_spec_index(root: &Path, lang: Locale) -> CheckResult {
 // Check: scan-output
 // ---------------------------------------------------------------------------
 
-/// O que o scan escreve, dentro da `.claude/` do projeto.
+/// What the scan writes, inside the project's `.claude/`.
 const SCAN_OUTPUTS: &[&str] = &["grain.model.json", "grain.dictionary.json", "grain.equivalences.json"];
 
-/// O scan só escreve fora do git: o que ele gravou não pode estar rastreado
-/// nem aparecer como arquivo novo. Um arquivo visível vira WARN com a lista,
-/// no idioma `lang`; sem git, ou sem nada gravado ainda, não há o que
-/// conferir. Só lê.
+/// The scan only writes outside git: what it recorded may be neither tracked
+/// nor show up as a new file. A visible file becomes a WARN with the list, in
+/// the language `lang`; with no git, or nothing recorded yet, there is nothing
+/// to check. Read-only.
 fn check_scan_output(root: &Path, lang: Locale) -> CheckResult {
     const NAME: &str = "scan-output";
     let written: Vec<String> = SCAN_OUTPUTS
@@ -1053,8 +1053,8 @@ fn check_scan_output(root: &Path, lang: Locale) -> CheckResult {
     CheckResult::warn(NAME, vec![translate("doctor.scan_output.visible", lang).replace("{paths}", &visible.join(", "))])
 }
 
-/// Os caminhos que o git vê: rastreados, ou novos e não ignorados. `None`
-/// quando o git não responde (sem git, fora de um repositório).
+/// The paths git sees: tracked, or new and not ignored. `None` when git does
+/// not answer (no git, outside a repository).
 fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
     let git_ok = |args: &[&str]| {
         std::process::Command::new("git")
@@ -1435,7 +1435,7 @@ pub fn run(opts: DoctorOpts) {
             let project = crate::commands::spec_events::project(&cwd);
             check_spec_index(&project.root, project.lang)
         },
-        // O que o scan escreve fica fora do git: só acusa.
+        // What the scan writes stays outside git: it is only reported.
         {
             let project = crate::commands::spec_events::project(&cwd);
             check_scan_output(&project.root, project.lang)
@@ -1896,8 +1896,8 @@ mod tests {
 
     // --- scan-output tests ---
 
-    /// O mapa do scan visível para o git é acusado; excluído, passa; fora de
-    /// um repositório, não há o que conferir.
+    /// The scan map visible to git is reported; excluded, it passes; outside a
+    /// repository, there is nothing to check.
     #[test]
     fn the_doctor_flags_a_scan_map_that_git_can_see() {
         let dir = tempdir().unwrap();

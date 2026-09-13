@@ -168,10 +168,10 @@ fn resume_prose_asks_one_question_and_suggests_clear() {
     assert_superseded_gone("plugin/refs/spec/resume-loop.md", &loop_ref);
 }
 
-/// O caminho leve do `/feature` faz a mesma pergunta de aprovação de todo
-/// tamanho de pedido, "Aprovar esta spec?", com "Aprovar" e "Ajustar". A
-/// resposta "Aprovar" termina em `/clear`, e a execução continua pela
-/// retomada, numa janela limpa, nunca na janela que perguntou.
+/// The light path of `/feature` asks the same approval question as every size
+/// of request, "Aprovar esta spec?", with "Aprovar" and "Ajustar". The
+/// "Aprovar" answer ends in `/clear`, and the execution continues through the
+/// resume, in a clean window, never in the window that asked.
 #[test]
 fn the_light_path_asks_the_one_approval_question_and_resumes() {
     let feature = read("plugin/commands/feature.md");
@@ -590,8 +590,8 @@ const SUPERSEDED: &[(&str, &str)] = &[
     ("plugin/commands/spec.md", "the end-of-turn hook speaks only when the page changes"),
     ("plugin/commands/spec.md", "the hook blocks that ending with the order to publish"),
     ("plugin/commands/spec.md", "the `scp` commands the end-of-turn message lists"),
-    // A aprovação ficou com uma porta só, a pergunta: a letra digitada e o
-    // modo de plano deixaram de aprovar, e a marca de aprovação saiu.
+    // The approval kept a single door, the question: the typed letter and plan
+    // mode stopped approving, and the approval marker left.
     ("plugin/commands/spec.md", "**Selecting IS approving:**"),
     ("plugin/commands/spec.md", "A bare letter MINTS"),
     ("plugin/commands/spec.md", "plan mode first, the approve/implement `AskUserQuestion` as fallback"),

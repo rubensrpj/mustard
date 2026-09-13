@@ -15,12 +15,12 @@
 //! comparison — which is why it lives here now instead of being written a
 //! fourth time.
 //!
-//! ## O arquivo que um gancho vai tocar
+//! ## The file a hook is about to touch
 //!
-//! [`WriteTarget::classify`] é o classificador único do portão de escrita: a
-//! ferramenta (leitura ou escrita), o caminho relativo à raiz e a classe do
-//! arquivo ([`PathClass`]). [`relative_to_cwd`] é a única conta de "caminho
-//! relativo à raiz" dos ganchos de escrita.
+//! [`WriteTarget::classify`] is the write gate's one classifier: the tool
+//! (read or write), the path relative to the root and the class of the file
+//! ([`PathClass`]). [`relative_to_cwd`] is the one "path relative to the root"
+//! computation of the write hooks.
 
 use std::path::Path;
 
@@ -44,29 +44,28 @@ pub fn same_declared_file(a: &str, b: &str) -> bool {
     mustard_core::platform::project_seed::same_declared_path(a, b)
 }
 
-/// Os arquivos da pasta de uma spec que só o binário grava. O `meta.json` da
-/// raiz da spec entra também: é ele que diz se um rascunho antigo, sem
-/// arquivo de eventos, ainda trava, e nenhum passo manda editá-lo à mão.
+/// The files of a spec folder only the binary writes. The spec root's
+/// `meta.json` counts too: it is what says whether an old draft, with no event
+/// file, still locks, and no step says to edit it by hand.
 const SPEC_FILES: &[&str] = &["spec.ndjson", "spec.md", "spec.html", "meta.json"];
 
-/// Os arquivos de `.claude/spec/` fora da pasta de uma spec que só o binário
-/// grava: o índice das specs e o banco de lições.
+/// The files of `.claude/spec/` outside a spec folder that only the binary
+/// writes: the spec index and the lessons bank.
 const BANK_FILES: &[&str] = &[SPEC_INDEX_FILE, LESSONS_FILE];
 
-/// Estado do harness escrito antes de a unidade existir: os planos do modo de
-/// plano, a evidência descartável que um diagnóstico roda e o cache do
-/// harness, onde o material do `/feature` e do `/bugfix` espera o
-/// `spec-draft`. Nenhum deles é código, e o `.gitignore` semeado ignora os
-/// três: a trava das bases protege o código do projeto, e não os arquivos do
-/// próprio Mustard que o git não vê.
+/// Harness state written before the unit exists: the plan-mode plans, the
+/// disposable evidence a diagnosis runs and the harness cache, where the
+/// material of `/feature` and `/bugfix` waits for `spec-draft`. None of them is
+/// code, and the seeded `.gitignore` ignores all three: the base lock protects
+/// the project's code, not the Mustard's own files git does not see.
 const HARNESS_PREFIXES: &[&str] = &[".claude/plans/", ".claude/scratch/", ".claude/.cache/"];
 
 /// Artefatos e infraestrutura, nunca código do projeto.
 const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/", "target/"];
 
-/// O caminho de `file_path` relativo a `cwd`, com barras normais. Um caminho
-/// relativo é lido a partir de `cwd`. `None` quando o arquivo fica fora de
-/// `cwd`; `Some("")` para a própria raiz.
+/// The path of `file_path` relative to `cwd`, with forward slashes. A relative
+/// path is read from `cwd`. `None` when the file lies outside `cwd`;
+/// `Some("")` for the root itself.
 #[must_use]
 pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
     let cwd_norm = cwd.replace('\\', "/");
@@ -76,8 +75,8 @@ pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
     } else {
         format!("{}/{}", cwd_norm.trim_end_matches('/'), fp_norm)
     };
-    // `.` e `..` saem antes da comparação: `.claude/../src/x.rs` é código do
-    // projeto, e não um artefato de `.claude/`.
+    // `.` and `..` go away before the comparison: `.claude/../src/x.rs` is
+    // project code, not a `.claude/` artefact.
     let (abs, cwd) = (lexical(&abs), lexical(&cwd_norm));
     if abs == cwd {
         return Some(String::new());
@@ -86,8 +85,8 @@ pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
     abs.strip_prefix(&prefix).map(str::to_string)
 }
 
-/// `path` com `.` e `..` resolvidos só no texto, sem olhar o disco. Um `..`
-/// que passaria da raiz para nela.
+/// `path` with `.` and `..` resolved in the text only, without looking at the
+/// disk. A `..` that would go past the root stops at it.
 fn lexical(path: &str) -> String {
     let (root, rest) = if let Some(rest) = path.strip_prefix('/') {
         ("/", rest)
@@ -109,8 +108,8 @@ fn lexical(path: &str) -> String {
     format!("{root}{}", parts.join("/"))
 }
 
-/// `given` junto da raiz quando é relativo, com barras normais e com `.` e
-/// `..` resolvidos só no texto.
+/// `given` joined to the root when it is relative, with forward slashes and
+/// with `.` and `..` resolved in the text only.
 fn resolved(root: &str, given: &str) -> String {
     let given = given.replace('\\', "/");
     if is_absolute(&given) {
@@ -120,7 +119,7 @@ fn resolved(root: &str, given: &str) -> String {
     }
 }
 
-/// `true` quando um caminho com barras normais é absoluto: `/...` ou `C:/...`.
+/// `true` when a path with forward slashes is absolute: `/...` or `C:/...`.
 fn is_absolute(p: &str) -> bool {
     p.starts_with('/')
         || (p.len() >= 3
@@ -129,10 +128,10 @@ fn is_absolute(p: &str) -> bool {
             && p.as_bytes()[2] == b'/')
 }
 
-/// O padrão de arquivo sensível que `path` casa: credenciais, chaves e a
-/// configuração do git. Sem distinguir maiúsculas e sobre o caminho inteiro,
-/// então uma pasta com o nome também casa (`config/credentials/prod.yaml`) —
-/// o que as regras de `permissions.deny` não conseguem dizer.
+/// The sensitive-file pattern `path` matches: credentials, keys and the git
+/// configuration. Case-insensitive and over the whole path, so a folder with
+/// the name matches too (`config/credentials/prod.yaml`) — which the
+/// `permissions.deny` rules cannot say.
 #[must_use]
 pub(crate) fn sensitive_pattern(path: &str) -> Option<&'static str> {
     let lower = path.replace('\\', "/").to_ascii_lowercase();
@@ -160,8 +159,8 @@ pub(crate) enum Access {
 }
 
 impl Access {
-    /// Como `tool` toca o arquivo; `None` para uma ferramenta que não é de
-    /// arquivo.
+    /// How `tool` touches the file; `None` for a tool that is not a file
+    /// tool.
     #[must_use]
     pub(crate) fn of_tool(tool: &str) -> Option<Self> {
         match tool {
@@ -172,24 +171,24 @@ impl Access {
     }
 }
 
-/// O que o arquivo é, para o portão de escrita.
+/// What the file is, for the write gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PathClass {
-    /// Casou um padrão de arquivo sensível ([`sensitive_pattern`]), dentro ou
-    /// fora do projeto.
+    /// Matched a sensitive-file pattern ([`sensitive_pattern`]), inside or
+    /// outside the project.
     Secret {
-        /// O padrão que casou.
+        /// The pattern that matched.
         pattern: &'static str,
     },
-    /// Um arquivo que só o binário grava: o `spec.ndjson`, o `spec.md` ou o
-    /// `spec.html` de uma spec, o índice das specs ou o banco de lições. Num
-    /// worktree, também os do checkout principal.
+    /// A file only the binary writes: a spec's `spec.ndjson`, `spec.md` or
+    /// `spec.html`, the spec index or the lessons bank. In a worktree, the main
+    /// checkout's ones too.
     SpecFile {
-        /// A spec dona do arquivo, quando ele mora na pasta dela.
+        /// The spec that owns the file, when it lives in its folder.
         spec: Option<String>,
     },
-    /// Estado do harness escrito antes de a unidade existir:
-    /// `.claude/plans/`, `.claude/scratch/` e `.claude/.cache/`.
+    /// Harness state written before the unit exists: `.claude/plans/`,
+    /// `.claude/scratch/` and `.claude/.cache/`.
     Harness,
     /// Artefato ou infraestrutura: o resto de `.claude/`, `dist/`,
     /// `node_modules/`, `.git/` e `target/`.
@@ -200,21 +199,21 @@ pub(crate) enum PathClass {
     Production,
 }
 
-/// O arquivo que uma ferramenta de arquivo vai tocar, já classificado.
+/// The file a file tool is about to touch, already classified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WriteTarget {
     /// Leitura ou escrita.
     pub(crate) access: Access,
-    /// O caminho relativo à raiz quando o arquivo mora nela; senão, o caminho
-    /// como veio, com barras normais.
+    /// The path relative to the root when the file lives in it; otherwise,
+    /// the path as it came, with forward slashes.
     pub(crate) path: String,
-    /// O que o arquivo é.
+    /// What the file is.
     pub(crate) class: PathClass,
 }
 
 impl WriteTarget {
-    /// Classifica o arquivo que `input` vai tocar, visto da raiz `root`.
-    /// `None` quando a ferramenta não é de arquivo ou não traz caminho.
+    /// Classifies the file `input` is about to touch, seen from the root
+    /// `root`. `None` when the tool is not a file tool or carries no path.
     #[must_use]
     pub(crate) fn classify(root: &str, input: &HookInput) -> Option<Self> {
         let access = Access::of_tool(input.tool_name.as_deref()?)?;
@@ -225,15 +224,15 @@ impl WriteTarget {
     }
 }
 
-/// A classe de `given`, que fica em `rel` quando mora na raiz.
+/// The class of `given`, which is `rel` when it lives in the root.
 fn classify_path(root: &str, given: &str, rel: Option<&str>) -> PathClass {
-    // As duas comparações que olham o caminho inteiro recebem-no já junto da
-    // raiz e sem `.`, `..` nem barra dobrada: `/p/.git/./config` e
-    // `/p/.git//config` são a configuração do git, e a pasta das specs do
-    // checkout principal continua achada quando o caminho traz um `./`.
+    // The two comparisons that look at the whole path get it already joined
+    // to the root and without `.`, `..` or a doubled slash: `/p/.git/./config`
+    // and `/p/.git//config` are the git configuration, and the main checkout's
+    // specs folder is still found when the path carries a `./`.
     let full = resolved(root, given);
-    // O caminho inteiro contém o nome do arquivo, então um padrão de nome casa
-    // nele também.
+    // The whole path contains the file name, so a name pattern matches it
+    // too.
     if let Some(pattern) = sensitive_pattern(&full) {
         return PathClass::Secret { pattern };
     }
@@ -254,10 +253,10 @@ fn classify_path(root: &str, given: &str, rel: Option<&str>) -> PathClass {
     PathClass::Production
 }
 
-/// O caminho de `given` relativo ao checkout principal, quando a raiz é um
-/// worktree e `given` aponta a pasta das specs de lá: num worktree, as specs
-/// moram no checkout principal. Só olha o git para um caminho absoluto que
-/// passa por `.claude/spec/`.
+/// The path of `given` relative to the main checkout, when the root is a
+/// worktree and `given` points at the specs folder there: in a worktree, the
+/// specs live in the main checkout. Only asks git for an absolute path that
+/// goes through `.claude/spec/`.
 fn main_checkout_rel(root: &str, given: &str) -> Option<String> {
     if !is_absolute(given) || !given.contains("/.claude/spec/") {
         return None;
@@ -266,7 +265,7 @@ fn main_checkout_rel(root: &str, given: &str) -> Option<String> {
     relative_to_cwd(&main.to_string_lossy(), given)
 }
 
-/// A classe de um arquivo da pasta das specs que só o binário grava.
+/// The class of a file of the specs folder only the binary writes.
 fn spec_file(rel: &str) -> Option<PathClass> {
     let rest = rel.strip_prefix(".claude/spec/")?;
     match rest.split('/').collect::<Vec<_>>().as_slice() {
@@ -320,8 +319,8 @@ mod tests {
         }
     }
 
-    /// A raiz vale para o caminho absoluto e para o relativo, com barras de
-    /// Windows também; fora da raiz não há caminho relativo.
+    /// The root works for an absolute and a relative path, with Windows
+    /// backslashes too; outside the root there is no relative path.
     #[test]
     fn a_path_is_made_relative_to_the_root_once() {
         assert_eq!(relative_to_cwd("/p", "/p/src/a.rs").as_deref(), Some("src/a.rs"));
@@ -330,8 +329,9 @@ mod tests {
         assert_eq!(relative_to_cwd("/p", "/p").as_deref(), Some(""));
         assert_eq!(relative_to_cwd("/p", "/outra/a.rs"), None);
         assert_eq!(relative_to_cwd("/p", "/pp/a.rs"), None, "a sibling folder is outside");
-        // `.` e `..` resolvidos só no texto: o caminho que dá a volta por
-        // `.claude/` chega onde aponta, e um que sai da raiz fica fora.
+        // `.` and `..` resolved in the text only: the path that loops through
+        // `.claude/` lands where it points, and one that leaves the root stays
+        // out.
         assert_eq!(relative_to_cwd("/p", "/p/.claude/../src/x.rs").as_deref(), Some("src/x.rs"));
         assert_eq!(
             relative_to_cwd("/p", ".claude/spec/x/../x/./spec.md").as_deref(),
@@ -340,8 +340,8 @@ mod tests {
         assert_eq!(relative_to_cwd("/p", "/p/../outra/a.rs"), None);
     }
 
-    /// Um `.` ou uma barra dobrada no meio do caminho não escondem a
-    /// configuração do git.
+    /// A `.` or a doubled slash in the middle of the path does not hide the
+    /// git configuration.
     #[test]
     fn a_dot_or_a_double_slash_does_not_hide_a_sensitive_file() {
         for path in ["/p/.git/./config", "/p/.git//config", "/p/src/../.git/config", ".git/./config"] {
@@ -352,9 +352,9 @@ mod tests {
         }
     }
 
-    /// Visto de um worktree, o arquivo de eventos da spec do checkout
-    /// principal continua sendo um arquivo que só o binário grava, mesmo com
-    /// um `./` no meio do caminho.
+    /// Seen from a worktree, the main checkout's spec event file is still a
+    /// file only the binary writes, even with a `./` in the middle of the
+    /// path.
     #[test]
     fn from_a_worktree_a_dot_in_the_main_spec_path_still_names_the_spec_file() {
         let git = |dir: &Path, args: &[&str]| {

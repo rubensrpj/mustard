@@ -106,7 +106,7 @@ pub fn run(spec: &str) {
 
 /// The composite miolo against an explicit `cwd` root (testable without
 /// mutating the process cwd). Returns the report Value [`run`] prints.
-/// `session` é a de quem fecha, lida do ambiente pela entrada `run`.
+/// `session` is the one closing, read from the environment by the `run` entry.
 pub(crate) fn close(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     // 1. Reviews — advisory listing of every verdict in the spec file.
     let reviews = collect_review_verdicts(cwd, spec);
@@ -399,9 +399,9 @@ mod tests {
         spec_dir
     }
 
-    /// Uma execução aprovada gravada no arquivo da spec não fecha nada
-    /// sozinha: o fechamento composto roda os critérios, e um critério que
-    /// falha agora segura a spec, diga o arquivo o que disser.
+    /// A passing run recorded in the spec file closes nothing on its own: the
+    /// composite close runs the criteria, and a criterion that fails now holds
+    /// the spec, whatever the file says.
     #[test]
     fn close_runs_the_criteria_whatever_the_spec_file_recorded() {
         let dir = tempdir().unwrap();
