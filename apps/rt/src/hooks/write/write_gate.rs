@@ -52,6 +52,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 
 use crate::commands::event::work_branch::current_branch;
+use crate::commands::git_settle::main_checkout_root;
 use crate::shared::paths::{Access, PathClass, WriteTarget};
 use crate::shared::spec_state::DiskSpecState;
 
@@ -69,6 +70,9 @@ pub(crate) struct WriteContext {
     /// A branch da árvore que recebe a edição; `None` sem git ou com a
     /// cabeça solta.
     pub(crate) current_branch: Option<String>,
+    /// A árvore que recebe a edição é o repositório do projeto ou um worktree
+    /// dele. Um submódulo é outro repositório; na dúvida, `false`.
+    pub(crate) in_project_repo: bool,
     /// As bases que o `git.flow` declara.
     pub(crate) bases: BTreeSet<String>,
     /// O idioma das mensagens.
@@ -84,6 +88,7 @@ impl WriteContext {
             spec: None,
             state: None,
             current_branch: None,
+            in_project_repo: false,
             bases: ctx.config.git.declared_bases(),
             lang: ctx.config.language().text_or_default(),
         };
@@ -96,13 +101,27 @@ impl WriteContext {
             return at;
         }
         at.state = at.spec.as_deref().and_then(|spec| disk.state(spec));
+        let tree = local_tree_of(input, root);
         at.current_branch = ctx
             .config
             .vcs()
-            .and_then(|vcs| current_branch(&vcs, &local_tree_of(input, root)))
+            .and_then(|vcs| current_branch(&vcs, &tree))
             .filter(|branch| branch != "HEAD");
+        // Só a regra da aprovação pergunta, e só quando há estado e branch.
+        at.in_project_repo =
+            at.state.is_some() && at.current_branch.is_some() && same_repository(&tree, root);
         at
     }
+}
+
+/// `tree` é o repositório do projeto em `root` ou um worktree dele: os dois
+/// têm o mesmo checkout principal. Um submódulo é outro repositório, com o
+/// checkout principal dele. Na dúvida, `false`.
+fn same_repository(tree: &str, root: &str) -> bool {
+    let main = |dir: &str| {
+        main_checkout_root(Path::new(dir)).map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+    };
+    matches!((main(tree), main(root)), (Some(a), Some(b)) if a == b)
 }
 
 /// Uma regra do portão de escrita.
@@ -142,7 +161,7 @@ pub(crate) fn judge(rules: &[&dyn WriteRule], target: &WriteTarget, at: &WriteCo
 }
 
 /// Um texto do catálogo com as vagas preenchidas.
-fn say(key: &str, lang: Locale, slots: &[(&str, &str)]) -> String {
+pub(crate) fn say(key: &str, lang: Locale, slots: &[(&str, &str)]) -> String {
     slots
         .iter()
         .fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
@@ -185,8 +204,10 @@ impl WriteRule for SpecFileRule {
 
 /// O código do projeto não muda antes de a spec atual ser aprovada. Numa
 /// branch que o Mustard não abriu, ele não trava nada: com a branch da spec e
-/// a atual conhecidas e diferentes, e a atual fora das bases, a regra se cala
-/// e só o aviso da branch responde.
+/// a atual conhecidas e diferentes, a atual fora das bases e a edição no
+/// repositório do projeto ou num worktree dele, a regra se cala e só o aviso
+/// da branch responde. Dentro de um submódulo, a trava continua: ali a
+/// branch é a do submódulo, e a base dele pode não estar no `git.flow`.
 pub(crate) struct ApprovalRule;
 
 impl WriteRule for ApprovalRule {
@@ -202,6 +223,7 @@ impl WriteRule for ApprovalRule {
         if let (Some(home), Some(current)) = (state.branch.as_deref(), at.current_branch.as_deref())
             && home != current
             && !at.bases.contains(current)
+            && at.in_project_repo
         {
             return None;
         }
@@ -471,6 +493,7 @@ mod tests {
                 ..State::default()
             }),
             current_branch: Some(current.to_string()),
+            in_project_repo: true,
             bases: ["dev".to_string(), "main".to_string()].into(),
             lang: Locale::PtBr,
         };
@@ -502,6 +525,7 @@ mod tests {
                 ..State::default()
             }),
             current_branch: current.map(str::to_string),
+            in_project_repo: true,
             bases: ["dev".to_string(), "main".to_string()].into(),
             lang: Locale::PtBr,
         };
@@ -519,6 +543,53 @@ mod tests {
         ] {
             assert!(matches!(judge(RULES, &target, &at(current)), Verdict::Deny { .. }), "{why} keeps the lock");
         }
+    }
+
+    /// Num submódulo, a branch é a dele e a base dele pode faltar no
+    /// `git.flow` da raiz: a edição ali, com a spec em plano, é barrada pela
+    /// aprovação, mesmo com a branch do submódulo diferente da branch da spec.
+    #[test]
+    fn inside_a_submodule_the_approval_lock_stays() {
+        let upstream = tempfile::tempdir().expect("tempdir");
+        repo_on(upstream.path(), "master");
+        let dir = project(DEV_MAIN);
+        let root = dir.path();
+        repo_on(root, "feature/x");
+        record_state(root, "x", json!({ "phase": "plan", "branch": "feature/x" }));
+        context::bind_session_spec(&root.to_string_lossy(), "s-sub", "x");
+        let source = upstream.path().to_string_lossy().into_owned();
+        git(root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &source, "libs/sub"]);
+        git(&root.join("libs").join("sub"), &["checkout", "-q", "-B", "master"]);
+        let edit = |file: &str| {
+            let input = call(root, "Write", &abs(root, file), Some("s-sub"));
+            WriteGate.evaluate(&input, &ctx(root)).expect("never errors")
+        };
+
+        let expected = say(
+            "write_gate.not_approved",
+            lang(root),
+            &[("{spec}", "x"), ("{file}", "libs/sub/a.rs")],
+        );
+        assert_eq!(edit("libs/sub/a.rs"), Verdict::Deny { reason: expected });
+
+        // No repositório do projeto, uma branch feita à mão continua só avisando.
+        git(root, &["checkout", "-q", "-b", "minha-branch"]);
+        assert!(matches!(edit("src/a.rs"), Verdict::Warn { .. }), "{:?}", edit("src/a.rs"));
+    }
+
+    /// Uma spec cujo estado não diz a branch continua travada numa branch
+    /// qualquer: sem a branch dela, nada prova que a edição está numa branch
+    /// que o Mustard não abriu.
+    #[test]
+    fn a_spec_without_a_recorded_branch_keeps_the_approval_lock() {
+        let dir = project(DEV_MAIN);
+        let root = dir.path();
+        repo_on(root, "minha-branch");
+        record_state(root, "x", json!({ "phase": "plan" }));
+        context::bind_session_spec(&root.to_string_lossy(), "s-no-branch", "x");
+        let input = call(root, "Write", &abs(root, "src/a.rs"), Some("s-no-branch"));
+        let expected = say("write_gate.not_approved", lang(root), &[("{spec}", "x"), ("{file}", "src/a.rs")]);
+        assert_eq!(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"), Verdict::Deny { reason: expected });
     }
 
     /// Ler um segredo é barrado como escrevê-lo; ler um arquivo da spec, o
