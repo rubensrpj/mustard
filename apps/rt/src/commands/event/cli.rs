@@ -188,8 +188,12 @@ pub enum EventCmd {
     /// yet. It lives OUTSIDE every unit, in `.claude/pending/ledger.json` of the
     /// main checkout, so it is recorded with no unit open, survives a branch
     /// switch and outlives the unit that delivers it. Without a flag it LISTS
-    /// `{ok, open, closed}`; `--add` records one item and prints its `P-{n}` id;
-    /// `--close`/`--drop` settle one, always with a non-blank `--reason`.
+    /// `{ok, open, closed, count_line}`; `--add` records one item and prints
+    /// its `P-{n}` id; `--close` settles one as delivered, always with a
+    /// non-blank `--reason`. A removal (`--remove`, `--drop`) takes two calls:
+    /// the first shows what would leave and prints a code, the second passes
+    /// that code in `--confirm` after the user's yes. `--stale` shows the idle
+    /// items once, and `--expire --keep` drops the ones the user did not keep.
     #[command(display_order = 98)]
     Pending {
         /// Record a new item (needs `--title` and `--detail`).
@@ -204,13 +208,46 @@ pub enum EventCmd {
         /// Settle the item `P-{n}` as DELIVERED.
         #[arg(long, value_name = "ID", conflicts_with = "drop")]
         close: Option<String>,
-        /// Settle the item `P-{n}` as dropped ON PURPOSE.
-        #[arg(long, value_name = "ID")]
+        /// Drop the item `P-{n}` ON PURPOSE: the same removal as `--remove
+        /// --id P-{n}`, shown first and confirmed with `--confirm`.
+        #[arg(long, value_name = "ID", group = "removal")]
         drop: Option<String>,
-        /// Why the item leaves the list. Required by `--close`/`--drop`; a
-        /// blank one is refused and nothing is written.
+        /// Why the item leaves the list. Required by `--close`, `--drop` and
+        /// `--remove`; a blank one is refused and nothing is written.
         #[arg(long)]
         reason: Option<String>,
+        /// Take items out, with ONE selector (`--id`, `--term` or `--before`)
+        /// and a `--reason`. Without `--confirm` it only shows what would
+        /// leave and prints the code to confirm with.
+        #[arg(long, group = "removal")]
+        remove: bool,
+        /// Removal selector: the items `P-{n}`, comma-separated.
+        #[arg(long, value_name = "IDS", requires = "remove")]
+        id: Option<String>,
+        /// Removal selector: words searched in the title and the detail.
+        #[arg(long, requires = "remove")]
+        term: Option<String>,
+        /// Removal selector: the items recorded before this day, `YYYY-MM-DD`.
+        #[arg(long, value_name = "DAY", requires = "remove")]
+        before: Option<String>,
+        /// The code a removal preview printed: removes exactly that set, and
+        /// nothing when the list changed since.
+        #[arg(long, value_name = "CODE", requires = "removal")]
+        confirm: Option<String>,
+        /// Bring a dropped item `P-{n}` back to open.
+        #[arg(long, value_name = "ID")]
+        reopen: Option<String>,
+        /// Show, once, the open items idle for 30 days or more, with the one
+        /// question to ask the user.
+        #[arg(long)]
+        stale: bool,
+        /// Drop as expired the idle items the last `--stale` showed, all but
+        /// the `--keep` ones.
+        #[arg(long)]
+        expire: bool,
+        /// The idle items that stay, comma-separated.
+        #[arg(long, value_name = "IDS", requires = "expire")]
+        keep: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -268,7 +305,24 @@ pub fn dispatch(cmd: EventCmd) {
                 explains_symptom,
             );
         }
-        EventCmd::Pending { add, title, detail, close, drop, reason, root } => {
+        EventCmd::Pending {
+            add,
+            title,
+            detail,
+            close,
+            drop,
+            reason,
+            remove,
+            id,
+            term,
+            before,
+            confirm,
+            reopen,
+            stale,
+            expire,
+            keep,
+            root,
+        } => {
             event::pending::run(&event::pending::PendingOpts {
                 root,
                 add,
@@ -278,6 +332,15 @@ pub fn dispatch(cmd: EventCmd) {
                 drop,
                 reason,
                 now: None,
+                remove,
+                id,
+                term,
+                before,
+                confirm,
+                reopen,
+                stale,
+                expire,
+                keep,
             });
         }
     }

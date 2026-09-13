@@ -34,11 +34,22 @@ A full `--force` re-draft is for a spec whose NARRATIVE changed. Reach for it an
 ```
 mustard-rt run pending --add --title "<what was agreed>" --detail "<scope / why>"
 mustard-rt run pending --close P-{n} --reason "<what delivered it>"
-mustard-rt run pending --drop P-{n} --reason "<why it no longer stands>"
 mustard-rt run pending
 ```
 
-An item leaves the list ONLY with a reason — a blank `--reason` is refused and nothing is written. Without a flag it lists what is open.
+An item leaves the list ONLY with a reason — a blank `--reason` is refused and nothing is written. Without a flag it lists what is open, with the one-line count the session start shows.
+
+**A removal takes two calls.** The first shows what would leave and prints a code; ask the user, and only on their yes run the same call again with `--confirm <code>`. If the list changed in between, nothing leaves. A removed item stays in the list as dropped, with its reason, and `--reopen` brings it back.
+
+```
+mustard-rt run pending --remove --id P-{n} --reason "<why it no longer stands>"
+mustard-rt run pending --remove --term "<word>" --reason "<why>"
+mustard-rt run pending --remove --before 2026-08-01 --reason "<why>" --confirm <code>
+mustard-rt run pending --drop P-{n} --reason "<why>"
+mustard-rt run pending --reopen P-{n}
+```
+
+**Idle items come back once.** When the session start says items have been idle for over 30 days, run `mustard-rt run pending --stale` and ask the user, in ONE question, which ones stay; then `mustard-rt run pending --expire --keep P-{a},P-{b}` drops the others as expired.
 
 ## Where it lands
 

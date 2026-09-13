@@ -320,13 +320,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          the reader meets the flag at the moment it is needed",
     ),
     (
-        "mark-finding",
-        "id",
-        "same shape: `finding_refusal` prints `mark-finding --spec {spec} --id \
-         {id} --to <dest> --reason <why>` once per open finding, with the id \
-         already substituted",
-    ),
-    (
         "pipeline-summary",
         "self-test",
         "a self-check face whose only caller is an acceptance criterion; its help \

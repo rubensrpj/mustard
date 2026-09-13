@@ -988,6 +988,76 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("pending.count.many", Locale::EnUs) => {
             "[Mustard] {count} open pending items. The whole list comes from `mustard-rt run pending`."
         }
+        // O complemento da linha de contagem, quando há paradas. Começa por
+        // espaço: vai colado ao fim dela. `{stale}` vem do chamador.
+        ("pending.count.stale", Locale::PtBr) => {
+            " {stale} delas estão paradas há mais de 30 dias: rode `mustard-rt run pending --stale` \
+             e pergunte ao usuário, numa pergunta só, quais ficam."
+        }
+        ("pending.count.stale", Locale::EnUs) => {
+            " {stale} of them have been idle for over 30 days: run `mustard-rt run pending --stale` \
+             and ask the user, in one question, which ones stay."
+        }
+        // A faxina, a remoção em duas chamadas e o desfazer do `run pending`
+        // (`apps/rt/src/commands/event/pending.rs`).
+        ("pending.stale.question", Locale::PtBr) => {
+            "Estas pendências estão paradas há mais de 30 dias. Marque as que ficam; as outras \
+             saem como vencidas."
+        }
+        ("pending.stale.question", Locale::EnUs) => {
+            "These pending items have been idle for over 30 days. Mark the ones that stay; the \
+             others leave as expired."
+        }
+        ("pending.expired_reason", Locale::PtBr) => "vencida",
+        ("pending.expired_reason", Locale::EnUs) => "expired",
+        ("pending.remove.preview", Locale::PtBr) => {
+            "Sairiam {count} pendências: {items}. Motivo: {reason}. Confirme com o usuário e rode \
+             de novo com `--confirm {token}`."
+        }
+        ("pending.remove.preview", Locale::EnUs) => {
+            "{count} pending items would leave: {items}. Reason: {reason}. Confirm with the user \
+             and run again with `--confirm {token}`."
+        }
+        ("pending.nothing_matches", Locale::PtBr) => {
+            "Nenhuma pendência aberta casa com {selector}. Nada foi removido."
+        }
+        ("pending.nothing_matches", Locale::EnUs) => {
+            "No open pending item matches {selector}. Nothing was removed."
+        }
+        ("pending.confirm_mismatch", Locale::PtBr) => {
+            "A lista mudou desde a prévia: o conjunto de agora não é o que foi confirmado. Rode a \
+             prévia de novo. Nada foi removido."
+        }
+        ("pending.confirm_mismatch", Locale::EnUs) => {
+            "The list changed since the preview: the current set is not the confirmed one. Run \
+             the preview again. Nothing was removed."
+        }
+        ("pending.reason_required", Locale::PtBr) => {
+            "Toda remoção leva um motivo: passe `--reason`. Nada foi removido."
+        }
+        ("pending.reason_required", Locale::EnUs) => {
+            "Every removal needs a reason: pass `--reason`. Nothing was removed."
+        }
+        ("pending.selector_required", Locale::PtBr) => {
+            "Diga o que remover: `--id`, `--term` ou `--before`. Nada foi removido."
+        }
+        ("pending.selector_required", Locale::EnUs) => {
+            "Say what to remove: `--id`, `--term` or `--before`. Nothing was removed."
+        }
+        ("pending.bad_date", Locale::PtBr) => {
+            "A data {date} não se lê: use o formato AAAA-MM-DD, como 2026-08-01. Nada foi removido."
+        }
+        ("pending.bad_date", Locale::EnUs) => {
+            "The date {date} does not parse: use the YYYY-MM-DD form, like 2026-08-01. Nothing \
+             was removed."
+        }
+        ("pending.not_dropped", Locale::PtBr) => {
+            "A pendência {id} não está descartada: só uma descartada volta a aberta. Nada mudou."
+        }
+        ("pending.not_dropped", Locale::EnUs) => {
+            "The pending item {id} is not dropped: only a dropped item goes back to open. Nothing \
+             changed."
+        }
         // A regra das pendências do fim da resposta
         // (`apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}`
         // vêm do chamador; a lista usa a grafia de `format_pending_items`. O
@@ -2216,6 +2286,16 @@ mod tests {
             ("doc.section.flow", &[][..]),
             ("pending.count.one", &[][..]),
             ("pending.count.many", &["{count}"][..]),
+            ("pending.count.stale", &["{stale}"][..]),
+            ("pending.stale.question", &[][..]),
+            ("pending.expired_reason", &[][..]),
+            ("pending.remove.preview", &["{count}", "{items}", "{reason}", "{token}"][..]),
+            ("pending.nothing_matches", &["{selector}"][..]),
+            ("pending.confirm_mismatch", &[][..]),
+            ("pending.reason_required", &[][..]),
+            ("pending.selector_required", &[][..]),
+            ("pending.bad_date", &["{date}"][..]),
+            ("pending.not_dropped", &["{id}"][..]),
             ("pending.gate.block", &["{spec}", "{count}", "{items}"][..]),
             ("pending.duplicate", &["{id}", "{title}"][..]),
             ("scratch.residue.notice", &["{total}", "{count}"][..]),

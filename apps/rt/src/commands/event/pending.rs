@@ -45,12 +45,14 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
+use mustard_core::domain::search::{query_terms, SearchIndex};
+use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, SpecLog};
 use mustard_core::domain::text;
 use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
 
 /// Options for `mustard-rt run pending`.
@@ -68,6 +70,28 @@ pub struct PendingOpts {
     /// O dia de hoje, `AAAA-MM-DD`. `None` lê o relógio; os testes passam um
     /// dia fixo para darem sempre a mesma resposta.
     pub now: Option<String>,
+    /// Tira pendências da lista, com um seletor (`id`, `term` ou `before`) e
+    /// sempre com motivo. Sem `confirm`, só mostra o que sairia e devolve o
+    /// código da confirmação.
+    pub remove: bool,
+    /// Seletor da remoção: os números, separados por vírgula (`P-2,P-5`).
+    pub id: Option<String>,
+    /// Seletor da remoção: as palavras, pela busca sobre título e detalhe.
+    pub term: Option<String>,
+    /// Seletor da remoção: as que entraram antes deste dia, `AAAA-MM-DD`.
+    pub before: Option<String>,
+    /// O código que a prévia devolveu: a remoção tira exatamente aquele
+    /// conjunto.
+    pub confirm: Option<String>,
+    /// Volta a aberta uma pendência descartada.
+    pub reopen: Option<String>,
+    /// A faxina: mostra, uma vez só, as abertas paradas há 30 dias ou mais.
+    pub stale: bool,
+    /// Tira como vencidas as paradas que a última faxina mostrou, menos as de
+    /// `keep`.
+    pub expire: bool,
+    /// As paradas que ficam, na resposta à pergunta da faxina: `P-2,P-5`.
+    pub keep: Option<String>,
 }
 
 /// O estado de um item. Fechado (`closed`) e descartado (`dropped`) ficam
@@ -127,8 +151,34 @@ struct Ledger {
 enum Action {
     List,
     Add { title: String, detail: String },
-    Settle { id: String, status: Status, reason: String },
+    Close { id: String, reason: String },
+    Remove { selector: Selector, reason: String, confirm: Option<String> },
+    Reopen { id: String },
+    Stale,
+    Expire { keep: Vec<String> },
 }
+
+/// O que uma remoção tira: números, palavras ou uma data.
+enum Selector {
+    Ids(Vec<String>),
+    Term(String),
+    Before(String),
+}
+
+impl Selector {
+    /// O seletor como a chamada o escreveu, para a recusa.
+    fn spelled(&self) -> String {
+        match self {
+            Self::Ids(ids) => format!("--id {}", ids.join(",")),
+            Self::Term(term) => format!("--term \"{term}\""),
+            Self::Before(day) => format!("--before {day}"),
+        }
+    }
+}
+
+/// Há quantos dias, no mínimo, uma pendência aberta está parada para a faxina
+/// mostrá-la.
+const STALE_DAYS: i64 = 30;
 
 /// Um texto como o arquivo guarda: uma linha, espaços colapsados. Um detalhe
 /// colado com quebras de linha não pode virar vários itens nem nenhum.
@@ -149,17 +199,88 @@ fn today(now: Option<&str>) -> String {
     )
 }
 
+/// Uma recusa com o texto do catálogo, no idioma do projeto.
+fn refused_in(reason: &str, key: &str, lang: Locale, slots: &[(&str, &str)]) -> Value {
+    let hint = slots
+        .iter()
+        .fold(mustard_core::translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
+    refused(reason, &hint)
+}
+
+/// Os números de uma lista `P-2,p-5`, sem espaço, em maiúsculas e sem
+/// repetição.
+fn parse_ids(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in text.split(',').map(|id| id.trim().to_ascii_uppercase()).filter(|id| !id.is_empty()) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// O número do dia `AAAA-MM-DD` contado desde 1970; `None` para um texto
+/// que não é uma data nesse formato.
+fn day_number(day: &str) -> Option<i64> {
+    let day = day.trim();
+    let shaped = day.len() == 10
+        && day.bytes().enumerate().all(|(at, b)| if at == 4 || at == 7 { b == b'-' } else { b.is_ascii_digit() });
+    if !shaped {
+        return None;
+    }
+    let month: u32 = day.get(5..7)?.parse().ok()?;
+    let date: u32 = day.get(8..10)?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&date) {
+        return None;
+    }
+    mustard_core::time::parse_iso_millis(&format!("{day}T00:00:00Z")).map(|ms| ms.div_euclid(86_400_000))
+}
+
+/// A pendência está aberta, entrou há [`STALE_DAYS`] dias ou mais de `today`
+/// e a faxina ainda não a mostrou.
+fn is_stale(item: &PendingItem, today: Option<i64>) -> bool {
+    let entered = item.created.as_deref().and_then(day_number);
+    item.status == Status::Open
+        && item.swept.is_none()
+        && matches!((today, entered), (Some(today), Some(entered)) if today - entered >= STALE_DAYS)
+}
+
+/// O seletor da remoção: exatamente um de `--id`, `--term` e `--before`.
+fn selector_of(opts: &PendingOpts, lang: Locale) -> Result<Selector, Value> {
+    let text = |value: &Option<String>| value.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let mut given = [
+        text(&opts.id).map(|ids| Selector::Ids(parse_ids(&ids))),
+        text(&opts.term).map(Selector::Term),
+        text(&opts.before).map(Selector::Before),
+    ]
+    .into_iter()
+    .flatten();
+    let required = || refused_in("selector-required", "pending.selector_required", lang, &[]);
+    let (Some(selector), None) = (given.next(), given.next()) else {
+        return Err(required());
+    };
+    match &selector {
+        Selector::Ids(ids) if ids.is_empty() => Err(required()),
+        Selector::Before(day) if day_number(day).is_none() => {
+            Err(refused_in("bad-date", "pending.bad_date", lang, &[("{date}", day)]))
+        }
+        _ => Ok(selector),
+    }
+}
+
 /// Traduz as flags em UMA ação, recusando o que não fecha. Toda validação de
 /// argumento acontece aqui, ANTES de ler o arquivo — uma recusa nunca toca nele.
-fn resolve_action(opts: &PendingOpts) -> Result<Action, Value> {
-    let chosen = [opts.add, opts.close.is_some(), opts.drop.is_some()]
+fn resolve_action(opts: &PendingOpts, lang: Locale) -> Result<Action, Value> {
+    let removing = opts.remove || opts.drop.is_some();
+    let chosen = [opts.add, opts.close.is_some(), removing, opts.reopen.is_some(), opts.stale, opts.expire]
         .iter()
         .filter(|on| **on)
         .count();
-    if chosen > 1 {
+    if chosen > 1 || (opts.remove && opts.drop.is_some()) {
         return Err(refused(
             "conflicting-actions",
-            "pass ONE of `--add`, `--close <id>` or `--drop <id>` per call",
+            "pass ONE of `--add`, `--close <id>`, `--drop <id>`, `--remove`, `--reopen <id>`, \
+             `--stale` or `--expire` per call",
         ));
     }
     if !opts.add && (opts.title.is_some() || opts.detail.is_some()) {
@@ -168,10 +289,11 @@ fn resolve_action(opts: &PendingOpts) -> Result<Action, Value> {
             "`--title` and `--detail` describe a NEW item — pass them with `--add`",
         ));
     }
-    if opts.close.is_none() && opts.drop.is_none() && opts.reason.is_some() {
+    if opts.close.is_none() && !removing && opts.reason.is_some() {
         return Err(refused(
             "stray-flag",
-            "`--reason` explains why an item left the list — pass it with `--close <id>` or `--drop <id>`",
+            "`--reason` explains why an item left the list — pass it with `--close <id>`, \
+             `--drop <id>` or `--remove`",
         ));
     }
 
@@ -187,28 +309,118 @@ fn resolve_action(opts: &PendingOpts) -> Result<Action, Value> {
         return Ok(Action::Add { title, detail });
     }
 
-    let settle = opts
-        .close
-        .as_deref()
-        .map(|id| (id, Status::Closed))
-        .or_else(|| opts.drop.as_deref().map(|id| (id, Status::Dropped)));
-    let Some((id, status)) = settle else {
-        return Ok(Action::List);
-    };
-    let id = id.trim().to_ascii_uppercase();
-    if id.is_empty() {
-        return Err(refused("missing-id", "name the item to settle, e.g. `--close P-1`"));
-    }
     // Motivo em branco é motivo nenhum: `--reason ""` e `--reason "   "` recusam
     // igual à flag ausente.
     let reason = opts.reason.as_deref().map(one_line).unwrap_or_default();
-    if reason.is_empty() {
-        return Err(refused(
-            "reason-required",
-            "closing or dropping an item always carries `--reason \"<what delivered it / why it no longer stands>\"` — nothing was written",
-        ));
+    if let Some(id) = &opts.close {
+        let id = id.trim().to_ascii_uppercase();
+        if id.is_empty() {
+            return Err(refused("missing-id", "name the item to settle, e.g. `--close P-1`"));
+        }
+        if reason.is_empty() {
+            return Err(refused(
+                "reason-required",
+                "closing or dropping an item always carries `--reason \"<what delivered it / why it no longer stands>\"` — nothing was written",
+            ));
+        }
+        return Ok(Action::Close { id, reason });
     }
-    Ok(Action::Settle { id, status, reason })
+    if removing {
+        if opts.drop.as_deref().is_some_and(|id| id.trim().is_empty()) {
+            return Err(refused("missing-id", "name the item to settle, e.g. `--drop P-1`"));
+        }
+        if reason.is_empty() {
+            return Err(refused_in("reason-required", "pending.reason_required", lang, &[]));
+        }
+        // `--drop P-12` é a remoção pelo número, com a mesma prévia.
+        let selector = match &opts.drop {
+            Some(id) => Selector::Ids(vec![id.trim().to_ascii_uppercase()]),
+            None => selector_of(opts, lang)?,
+        };
+        let confirm = opts.confirm.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
+        return Ok(Action::Remove { selector, reason, confirm });
+    }
+    if let Some(id) = &opts.reopen {
+        return Ok(Action::Reopen { id: id.trim().to_ascii_uppercase() });
+    }
+    if opts.stale {
+        return Ok(Action::Stale);
+    }
+    if opts.expire {
+        return Ok(Action::Expire { keep: opts.keep.as_deref().map(parse_ids).unwrap_or_default() });
+    }
+    Ok(Action::List)
+}
+
+/// A recusa de um número que não está na lista.
+fn unknown_id(id: &str) -> Value {
+    refused("unknown-id", &format!("no pending item `{id}` — list the ledger with `mustard-rt run pending`"))
+}
+
+/// A recusa de um número que já saiu da lista.
+fn already_settled(id: &str, status: Status) -> Value {
+    refused("already-settled", &format!("`{id}` is already {} — nothing was written", status.as_str()))
+}
+
+/// O número `n` de `P-n`.
+fn number(id: &str) -> Option<u64> {
+    id.strip_prefix("P-").and_then(|n| n.parse().ok())
+}
+
+/// As pendências abertas que o seletor pega, na ordem da lista. Recusa, com o
+/// arquivo intacto, quando nenhuma casa, e quando um número pedido não é de
+/// uma pendência aberta.
+fn select(ledger: &Ledger, selector: &Selector, lang: Locale) -> Result<Vec<String>, Value> {
+    let open = || ledger.items.iter().filter(|i| i.status == Status::Open);
+    let chosen: Vec<String> = match selector {
+        Selector::Ids(ids) => {
+            for id in ids {
+                let Some(item) = ledger.items.iter().find(|i| &i.id == id) else {
+                    return Err(unknown_id(id));
+                };
+                if item.status != Status::Open {
+                    return Err(already_settled(id, item.status));
+                }
+            }
+            open().filter(|i| ids.contains(&i.id)).map(|i| i.id.clone()).collect()
+        }
+        Selector::Term(term) => {
+            let docs: Vec<(u64, String)> = open()
+                .filter_map(|i| Some((number(&i.id)?, search_field(Some(&format!("{} {}", i.title, i.detail)), &[]))))
+                .collect();
+            let hits = SearchIndex::build(docs.iter().map(|(n, search)| (*n, search.as_str())))
+                .top(&query_terms(term), docs.len());
+            let found: Vec<String> = hits.iter().map(|hit| format!("P-{}", hit.id)).collect();
+            open().filter(|i| found.contains(&i.id)).map(|i| i.id.clone()).collect()
+        }
+        Selector::Before(day) => open()
+            .filter(|i| i.created.as_deref().is_some_and(|entered| entered < day.as_str()))
+            .map(|i| i.id.clone())
+            .collect(),
+    };
+    if chosen.is_empty() {
+        return Err(refused_in("nothing-matches", "pending.nothing_matches", lang, &[("{selector}", &selector.spelled())]));
+    }
+    Ok(chosen)
+}
+
+/// O código da confirmação: a impressão do conjunto que sairia, com o número e
+/// o título de cada pendência. Uma lista que mudou dá outro código.
+fn token(ledger: &Ledger, chosen: &[String]) -> String {
+    let parts: Vec<String> =
+        ledger.items.iter().filter(|i| chosen.contains(&i.id)).map(|i| format!("{} {}", i.id, i.title)).collect();
+    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    format!("{:08x}", fnv1a64(&refs) >> 32)
+}
+
+/// As pendências `ids`, como os leitores de fora as veem, na ordem da lista.
+fn open_items(ledger: &Ledger, ids: &[String]) -> Vec<OpenPending> {
+    ledger
+        .items
+        .iter()
+        .filter(|i| ids.contains(&i.id))
+        .map(|i| OpenPending { id: i.id.clone(), title: i.title.clone() })
+        .collect()
 }
 
 /// O checkout principal, visto de `root`.
@@ -302,11 +514,12 @@ fn write(path: &Path, ledger: &mut Ledger, today: &str) -> Result<(), Value> {
 /// O passe do ledger — o núcleo testável de [`run`]. Nunca entra em pânico.
 #[must_use]
 pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
-    let action = match resolve_action(opts) {
+    let project = ledger_root(&opts.root);
+    let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
+    let action = match resolve_action(opts, lang) {
         Ok(a) => a,
         Err(refusal) => return refusal,
     };
-    let project = ledger_root(&opts.root);
     let paths = match mustard_core::ClaudePaths::for_project(&project) {
         Ok(p) => p,
         Err(e) => return refused("bad-root", &e.to_string()),
@@ -316,7 +529,6 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
         Ok(l) => l,
         Err(refusal) => return refusal,
     };
-    let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
     let today = today(opts.now.as_deref());
 
     let mut extra = Map::new();
@@ -352,26 +564,118 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             extra.insert("id".into(), json!(id));
             extra.insert("added".into(), json!(true));
         }
-        Action::Settle { id, status, reason } => {
+        Action::Close { id, reason } => {
             let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
-                return refused(
-                    "unknown-id",
-                    &format!("no pending item `{id}` — list the ledger with `mustard-rt run pending`"),
-                );
+                return unknown_id(&id);
             };
             if item.status != Status::Open {
-                return refused(
-                    "already-settled",
-                    &format!("`{id}` is already {} — nothing was written", item.status.as_str()),
-                );
+                return already_settled(&id, item.status);
             }
-            item.status = status;
+            item.status = Status::Closed;
             item.reason = Some(reason);
             if let Err(refusal) = write(&path, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("id".into(), json!(id));
-            extra.insert("status".into(), json!(status.as_str()));
+            extra.insert("status".into(), json!(Status::Closed.as_str()));
+        }
+        Action::Remove { selector, reason, confirm } => {
+            // Duas chamadas: a primeira mostra o que sairia e devolve o código;
+            // a segunda, com o código e depois do sim do usuário, tira
+            // exatamente aquele conjunto. Se a lista mudou, nada sai.
+            let chosen = match select(&ledger, &selector, lang) {
+                Ok(ids) => ids,
+                Err(refusal) => return refusal,
+            };
+            let code = token(&ledger, &chosen);
+            match confirm {
+                None => {
+                    let items = open_items(&ledger, &chosen);
+                    let hint = mustard_core::translate("pending.remove.preview", lang)
+                        .replace("{count}", &items.len().to_string())
+                        .replace("{items}", &format_pending_items(&items, items.len()))
+                        .replace("{reason}", &reason)
+                        .replace("{token}", &code);
+                    extra.insert("preview".into(), json!(true));
+                    extra.insert("remove".into(), json!(items));
+                    extra.insert("token".into(), json!(code));
+                    extra.insert("hint".into(), json!(hint));
+                }
+                Some(given) if given == code => {
+                    for item in ledger.items.iter_mut().filter(|i| chosen.contains(&i.id)) {
+                        item.status = Status::Dropped;
+                        item.reason = Some(reason.clone());
+                    }
+                    if let Err(refusal) = write(&path, &mut ledger, &today) {
+                        return refusal;
+                    }
+                    extra.insert("removed".into(), json!(chosen));
+                }
+                Some(_) => return refused_in("confirm-mismatch", "pending.confirm_mismatch", lang, &[]),
+            }
+        }
+        Action::Reopen { id } => {
+            let Some(item) = ledger.items.iter_mut().find(|i| i.id == id) else {
+                return unknown_id(&id);
+            };
+            if item.status != Status::Dropped {
+                return refused_in("not-dropped", "pending.not_dropped", lang, &[("{id}", &id)]);
+            }
+            item.status = Status::Open;
+            item.reason = None;
+            if let Err(refusal) = write(&path, &mut ledger, &today) {
+                return refusal;
+            }
+            extra.insert("id".into(), json!(id));
+            extra.insert("reopened".into(), json!(true));
+        }
+        Action::Stale => {
+            // A faxina mostra cada parada uma vez só: o dia fica gravado nela.
+            let now = day_number(&today);
+            let stale: Vec<String> =
+                ledger.items.iter().filter(|i| is_stale(i, now)).map(|i| i.id.clone()).collect();
+            if !stale.is_empty() {
+                for item in ledger.items.iter_mut().filter(|i| stale.contains(&i.id)) {
+                    item.swept = Some(today.clone());
+                }
+                if let Err(refusal) = write(&path, &mut ledger, &today) {
+                    return refusal;
+                }
+                extra.insert("question".into(), json!(mustard_core::translate("pending.stale.question", lang)));
+            }
+            let shown: Vec<Value> =
+                ledger.items.iter().filter(|i| stale.contains(&i.id)).map(item_json).collect();
+            extra.insert("stale".into(), Value::Array(shown));
+        }
+        Action::Expire { keep } => {
+            // O lote é o da última faxina: as abertas que ela mostrou naquele
+            // dia. As que o usuário não marcou saem como vencidas.
+            let last_sweep =
+                ledger.items.iter().filter(|i| i.status == Status::Open).filter_map(|i| i.swept.clone()).max();
+            let batch: Vec<String> = ledger
+                .items
+                .iter()
+                .filter(|i| i.status == Status::Open && i.swept.is_some() && i.swept == last_sweep)
+                .map(|i| i.id.clone())
+                .collect();
+            if batch.is_empty() {
+                return refused_in("nothing-matches", "pending.nothing_matches", lang, &[("{selector}", "--expire")]);
+            }
+            if let Some(stray) = keep.iter().find(|id| !batch.contains(id)) {
+                let selector = format!("--keep {stray}");
+                return refused_in("nothing-matches", "pending.nothing_matches", lang, &[("{selector}", &selector)]);
+            }
+            let expired: Vec<String> = batch.iter().filter(|id| !keep.contains(id)).cloned().collect();
+            let reason = mustard_core::translate("pending.expired_reason", lang);
+            for item in ledger.items.iter_mut().filter(|i| expired.contains(&i.id)) {
+                item.status = Status::Dropped;
+                item.reason = Some(reason.to_string());
+            }
+            if let Err(refusal) = write(&path, &mut ledger, &today) {
+                return refusal;
+            }
+            extra.insert("expired".into(), json!(expired));
+            extra.insert("kept".into(), json!(keep));
         }
     }
 
@@ -391,20 +695,26 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
     );
     report.insert("open".into(), Value::Array(open.into_iter().map(item_json).collect()));
     report.insert("closed".into(), Value::Array(closed.into_iter().map(item_json).collect()));
-    report.insert("count_line".into(), json!(count_line_of(&ledger, lang)));
+    report.insert("count_line".into(), json!(count_line_of(&ledger, &today, lang)));
     report.extend(extra);
     Value::Object(report)
 }
 
-/// A linha de contagem das pendências abertas; `None` quando não há nenhuma.
-fn count_line_of(ledger: &Ledger, lang: Locale) -> Option<String> {
-    match ledger.items.iter().filter(|i| i.status == Status::Open).count() {
-        0 => None,
-        1 => Some(mustard_core::translate("pending.count.one", lang).to_string()),
-        count => Some(
-            mustard_core::translate("pending.count.many", lang).replace("{count}", &count.to_string()),
-        ),
+/// A linha de contagem das pendências abertas, com o complemento das paradas
+/// há 30 dias ou mais que a faxina ainda não mostrou; `None` quando nada está
+/// aberto.
+fn count_line_of(ledger: &Ledger, today: &str, lang: Locale) -> Option<String> {
+    let mut line = match ledger.items.iter().filter(|i| i.status == Status::Open).count() {
+        0 => return None,
+        1 => mustard_core::translate("pending.count.one", lang).to_string(),
+        count => mustard_core::translate("pending.count.many", lang).replace("{count}", &count.to_string()),
+    };
+    let now = day_number(today);
+    let stale = ledger.items.iter().filter(|i| is_stale(i, now)).count();
+    if stale > 0 {
+        line.push_str(&mustard_core::translate("pending.count.stale", lang).replace("{stale}", &stale.to_string()));
     }
+    Some(line)
 }
 
 /// A linha que o início da sessão mostra: quantas pendências estão abertas e
@@ -415,7 +725,7 @@ pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<String> {
     let project = ledger_root(root);
     let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
     let ledger = load(&paths.pending_ledger_path()).ok()?;
-    count_line_of(&ledger, lang)
+    count_line_of(&ledger, &today(None), lang)
 }
 
 /// A chave, no payload do evento `pipeline.kind`, que liga a unidade a uma
@@ -693,7 +1003,10 @@ mod tests {
         assert_eq!(again["reason"], json!("duplicate"), "{again}");
         assert_eq!(again["id"], json!("P-1"), "the refusal points at the open item");
 
-        let _ = pending_at(&PendingOpts { drop: Some("P-2".into()), reason: Some("x".into()), ..opts(root) });
+        let preview = pending_at(&PendingOpts { drop: Some("P-2".into()), reason: Some("x".into()), ..opts(root) });
+        let token = preview["token"].as_str().map(str::to_string);
+        let dropped = pending_at(&PendingOpts { drop: Some("P-2".into()), reason: Some("x".into()), confirm: token, ..opts(root) });
+        assert_eq!(dropped["removed"], json!(["P-2"]), "{dropped}");
         assert_eq!(add(root, "tres", "c")["id"], json!("P-3"), "a settled id is never reused");
 
         let unknown = pending_at(&PendingOpts { close: Some("P-9".into()), reason: Some("x".into()), ..opts(root) });
@@ -777,5 +1090,186 @@ mod tests {
         let line = pending_at(&opts(root))["count_line"].as_str().unwrap_or_default().to_string();
         assert!(line.starts_with("[Mustard] 2 "), "{line}");
         assert_eq!(count_line(root, Locale::default()).as_deref(), Some(line.as_str()));
+    }
+
+    /// Hoje, nos testes da faxina e da remoção.
+    const TODAY: &str = "2026-09-13";
+
+    /// Uma pendência gravada no dia `day`, pelo mesmo passe do `--add`.
+    fn add_on(root: &Path, title: &str, day: &str) -> Value {
+        let out = pending_at(&PendingOpts {
+            add: true,
+            title: Some(title.into()),
+            detail: Some("combinado".into()),
+            now: Some(day.into()),
+            ..opts(root)
+        });
+        assert_eq!(out["ok"], json!(true), "seed: {out}");
+        out
+    }
+
+    fn ledger_bytes(root: &Path) -> Vec<u8> {
+        std::fs::read(root.join(".claude/pending/ledger.json")).expect("ledger")
+    }
+
+    /// As paradas há 30 dias ou mais aparecem na linha de contagem e voltam
+    /// numa faxina só, uma vez; as que o usuário não marcou saem como
+    /// vencidas, e as marcadas ficam.
+    #[test]
+    fn stale_items_come_back_once_and_the_unmarked_ones_expire() {
+        let dir = repo();
+        let root = dir.path();
+        for title in ["velha um", "velha dois", "velha tres"] {
+            add_on(root, title, "2026-08-01");
+        }
+        for title in ["nova um", "nova dois"] {
+            add_on(root, title, "2026-09-10");
+        }
+        let listed = pending_at(&PendingOpts { now: Some(TODAY.into()), ..opts(root) });
+        let line = listed["count_line"].as_str().unwrap_or_default();
+        assert!(line.contains(" 3 ") && line.contains("--stale"), "the three idle ones are counted: {line}");
+
+        let swept = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(ids(&swept["stale"]), vec!["P-1", "P-2", "P-3"], "{swept}");
+        assert_eq!(swept["question"], json!(mustard_core::translate("pending.stale.question", Locale::default())));
+        let again = pending_at(&PendingOpts { stale: true, now: Some(TODAY.into()), ..opts(root) });
+        assert_eq!(again["stale"], json!([]), "they come back once: {again}");
+        assert!(!again["count_line"].as_str().unwrap_or_default().contains("--stale"), "{again}");
+
+        let before = ledger_bytes(root);
+        let stray = pending_at(&PendingOpts { expire: true, keep: Some("P-4".into()), ..opts(root) });
+        assert_eq!(stray["reason"], json!("nothing-matches"), "a kept item outside the batch: {stray}");
+        assert_eq!(ledger_bytes(root), before, "nothing was removed");
+
+        let expired = pending_at(&PendingOpts { expire: true, keep: Some("p-2".into()), ..opts(root) });
+        assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
+        assert_eq!(ids(&expired["open"]), vec!["P-2", "P-4", "P-5"], "the marked one stays: {expired}");
+        let reason = mustard_core::translate("pending.expired_reason", Locale::default());
+        for item in expired["closed"].as_array().expect("closed list") {
+            assert_eq!(item["status"], json!("dropped"), "{item}");
+            assert_eq!(item["reason"], json!(reason), "{item}");
+        }
+    }
+
+    /// A remoção pelo número, por palavra e por data mostra primeiro o que
+    /// sairia e devolve um código, sem tocar na lista; com o código, tira
+    /// exatamente aquelas; se a lista mudou entre as duas chamadas, nada sai.
+    #[test]
+    fn removing_by_number_word_or_date_shows_first_and_removes_only_what_was_confirmed() {
+        let dir = repo();
+        let root = dir.path();
+        add_on(root, "Humanize o texto", TODAY);
+        add_on(root, "Humanize a pagina", TODAY);
+        add_on(root, "Painel novo", TODAY);
+        add_on(root, "Relatorio antigo", "2026-07-20");
+        let remove = |selector: PendingOpts, confirm: Option<String>| {
+            pending_at(&PendingOpts { remove: true, reason: Some("o usuario pediu".into()), confirm, ..selector })
+        };
+        let by_id = || PendingOpts { id: Some("p-3".into()), ..opts(root) };
+        let by_term = || PendingOpts { term: Some("humanize".into()), ..opts(root) };
+        let by_day = || PendingOpts { before: Some("2026-08-01".into()), ..opts(root) };
+        let token = |report: &Value| report["token"].as_str().map(str::to_string);
+
+        // Pelo número.
+        let before = ledger_bytes(root);
+        let shown = remove(by_id(), None);
+        assert_eq!(shown["preview"], json!(true), "{shown}");
+        assert_eq!(shown["remove"], json!([{ "id": "P-3", "title": "Painel novo" }]));
+        assert!(shown["hint"].as_str().unwrap_or_default().contains(&token(&shown).unwrap_or_default()));
+        assert_eq!(ledger_bytes(root), before, "the preview writes nothing");
+        assert_eq!(remove(by_id(), token(&shown))["removed"], json!(["P-3"]));
+
+        // Por palavra: a lista muda entre as duas chamadas, e nada sai.
+        let shown = remove(by_term(), None);
+        assert_eq!(ids(&shown["remove"]), vec!["P-1", "P-2"], "{shown}");
+        add_on(root, "Humanize de novo", TODAY);
+        let before = ledger_bytes(root);
+        let refused = remove(by_term(), token(&shown));
+        assert_eq!(refused["reason"], json!("confirm-mismatch"), "{refused}");
+        assert_eq!(ledger_bytes(root), before, "nothing was removed");
+        let shown = remove(by_term(), None);
+        assert_eq!(ids(&shown["remove"]), vec!["P-1", "P-2", "P-5"], "{shown}");
+        assert_eq!(remove(by_term(), token(&shown))["removed"], json!(["P-1", "P-2", "P-5"]));
+
+        // Pela data.
+        let shown = remove(by_day(), None);
+        assert_eq!(ids(&shown["remove"]), vec!["P-4"], "{shown}");
+        let gone = remove(by_day(), token(&shown));
+        assert_eq!(gone["removed"], json!(["P-4"]), "{gone}");
+        assert_eq!(gone["open"], json!([]), "only what was confirmed left, and all of it did");
+    }
+
+    /// Uma remoção sem motivo, ou sem dizer o que remover, é recusada com o
+    /// texto do catálogo e a lista fica intacta; um seletor que não pega nada
+    /// e uma data que não se lê também.
+    #[test]
+    fn a_removal_without_a_reason_is_refused_and_nothing_is_written() {
+        let dir = repo();
+        let root = dir.path();
+        add(root, "Humanize", "a");
+        let before = ledger_bytes(root);
+        let lang = Locale::default();
+        let removal = |id: Option<&str>, term: Option<&str>, day: Option<&str>, reason: Option<&str>| {
+            pending_at(&PendingOpts {
+                remove: true,
+                id: id.map(str::to_string),
+                term: term.map(str::to_string),
+                before: day.map(str::to_string),
+                reason: reason.map(str::to_string),
+                ..opts(root)
+            })
+        };
+        for (out, code, key) in [
+            (removal(Some("P-1"), None, None, None), "reason-required", "pending.reason_required"),
+            (removal(Some("P-1"), None, None, Some("   ")), "reason-required", "pending.reason_required"),
+            (removal(None, None, None, Some("x")), "selector-required", "pending.selector_required"),
+            (removal(None, Some("zzz"), Some("2026-08-01"), Some("x")), "selector-required", "pending.selector_required"),
+        ] {
+            assert_eq!(out["ok"], json!(false), "{out}");
+            assert_eq!(out["reason"], json!(code), "{out}");
+            assert_eq!(out["hint"], json!(mustard_core::translate(key, lang)), "{out}");
+            assert_eq!(ledger_bytes(root), before, "nothing was written");
+        }
+        let nothing = removal(None, Some("zzz"), None, Some("x"));
+        assert_eq!(nothing["reason"], json!("nothing-matches"), "{nothing}");
+        assert!(nothing["hint"].as_str().unwrap_or_default().contains("--term \"zzz\""), "{nothing}");
+        let bad = removal(None, None, Some("2026-13-40"), Some("x"));
+        assert_eq!(bad["reason"], json!("bad-date"), "{bad}");
+        assert_eq!(ledger_bytes(root), before, "nothing was written");
+    }
+
+    /// A pendência tirada fica na lista como descartada, com o motivo, e volta
+    /// a aberta pelo `--reopen`; só uma descartada volta.
+    #[test]
+    fn a_removed_item_stays_dropped_with_its_reason_and_can_be_reopened() {
+        let dir = repo();
+        let root = dir.path();
+        add(root, "Humanize", "a");
+        add(root, "Painel", "b");
+        let drop = |confirm: Option<String>| {
+            pending_at(&PendingOpts {
+                drop: Some("P-1".into()),
+                reason: Some("mudou o plano".into()),
+                confirm,
+                ..opts(root)
+            })
+        };
+        let gone = drop(drop(None)["token"].as_str().map(str::to_string));
+        let dropped = &gone["closed"][0];
+        assert_eq!(dropped["id"], json!("P-1"), "{gone}");
+        assert_eq!(dropped["status"], json!("dropped"));
+        assert_eq!(dropped["reason"], json!("mudou o plano"), "the reason stays on the item");
+
+        let back = pending_at(&PendingOpts { reopen: Some("p-1".into()), ..opts(root) });
+        assert_eq!(back["reopened"], json!(true), "{back}");
+        assert_eq!(ids(&back["open"]), vec!["P-1", "P-2"]);
+        assert_eq!(back["open"][0].get("reason"), None, "an open item carries no reason");
+
+        let not = pending_at(&PendingOpts { reopen: Some("P-2".into()), ..opts(root) });
+        assert_eq!(not["reason"], json!("not-dropped"), "{not}");
+        assert_eq!(
+            not["hint"],
+            json!(mustard_core::translate("pending.not_dropped", Locale::default()).replace("{id}", "P-2"))
+        );
     }
 }
