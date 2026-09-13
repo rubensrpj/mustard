@@ -440,42 +440,6 @@ fn read_spec_events(cwd: &str, spec_name: &str) -> Vec<HarnessEvent> {
     read_harness_events_from_ndjson_dir(&sp.events_dir())
 }
 
-/// Determine whether a spec is completed/closed by reading its lifecycle
-/// metadata. Used as a fallback when the NDJSON event log contains no
-/// `pipeline.status` event for the spec.
-///
-/// **`meta.json` is the single source of truth** (`#outcome`); the legacy
-/// `### Stage:` / `### Outcome:` `spec.md` header is the fallback for
-/// un-migrated specs.
-///
-/// Returns `true` when the metadata declares a terminal state (Completed,
-/// Cancelled, Superseded, …). Returns `false` on any read/parse error
-/// (fail-open: the gate continues running rather than silently blocking all
-/// edits).
-fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
-    use mustard_core::domain::spec;
-    let Ok(cp) = ClaudePaths::for_project(cwd) else {
-        return false;
-    };
-    let Ok(sp) = cp.for_spec(spec_name) else {
-        return false;
-    };
-    let spec_md = sp.spec_md_path();
-    // meta.json wins: a non-`Active` outcome is terminal.
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_md)
-        && let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
-            return outcome != mustard_core::Outcome::Active;
-        }
-    // Legacy fallback: read the lifecycle header from the markdown.
-    let Ok(text) = std::fs::read_to_string(&spec_md) else {
-        return false;
-    };
-    match spec::parse_state(&text) {
-        Some(state) => !state.is_active(),
-        None => false,
-    }
-}
-
 /// The boundary check: flag a Write/Edit outside the active spec's declared
 /// `## Files` / `## Boundaries`.
 ///
@@ -485,12 +449,9 @@ fn spec_header_is_terminal(cwd: &str, spec_name: &str) -> bool {
 ///
 /// Since the migration off SQLite, spec pipeline-state fields (`isWavePlan`, `currentWave`,
 /// `status`) are derived from the NDJSON event log via
-/// `pipeline_state_from_events`. The JSON state file is still consulted for
-/// `specName` (filesystem identity) and the mtime freshness gate. When the
-/// NDJSON log contains no `pipeline.status` event, the spec header
-/// (`### Stage:` / `### Outcome:`) is used as a fallback to detect terminal
-/// state. Fail-open: projection `None` → treat status as empty and wave info
-/// as unknown.
+/// `pipeline_state_from_events`. Whether the spec is settled comes from its
+/// state in `spec.ndjson`, through the lock's one rule. Fail-open: projection
+/// `None` → wave info unknown.
 fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     // Cascade override: load the project config once and read gates.boundary.
     let gates = crate::shared::context::project_config_cached(Path::new(cwd)).gates;
@@ -522,20 +483,12 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     let view: Option<PipelineStateView> =
         pipeline_state_from_events(&events, spec_name, spec_dir_opt.as_deref());
 
-    // Skip when the pipeline is closing / completed.
-    // - Phase: from NDJSON `pipeline.phase` events via `emit_phase`.
-    // - Status: from the NDJSON projection; falls back to spec header when the
-    //   projection has no status (e.g. no pipeline.status event yet in NDJSON).
-    let phase = crate::commands::event::emit_phase::last_phase_for_spec(cwd, spec_name)
-        .unwrap_or_default();
-    let status = view
-        .as_ref()
-        .and_then(|v| v.status.as_deref())
-        .unwrap_or("");
-    // Header fallback: if projection yields no status, check spec.md directly.
-    let is_terminal = status == "completed"
-        || (status.is_empty() && spec_header_is_terminal(cwd, spec_name));
-    if phase == "CLOSE" || is_terminal {
+    // Skip when the spec is settled: its state, read by the lock's one rule,
+    // is closed, has its pull request open, was delivered or was discarded.
+    let settled = crate::shared::spec_state::lock_state(Path::new(cwd), spec_name)
+        .and_then(|state| state.phase)
+        .is_some_and(|phase| matches!(phase, "closed" | "pr_open" | "delivered" | "discarded"));
+    if settled {
         return None;
     }
     // The boundary is a LIST because a dispatch round can have several waves
@@ -801,23 +754,27 @@ mod tests {
     }
 
     #[test]
-    fn boundary_gate_reads_terminal_status_from_spec_header() {
-        // Terminal state is detected via spec header fallback (no SQLite).
-        // A spec whose header says `### Outcome: Completed` must skip the gate.
+    fn boundary_gate_skips_a_settled_spec() {
+        // Whether the spec is settled comes from its state in `spec.ndjson`: a
+        // spec in execution is checked, a closed one skips the gate.
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let paths = ClaudePaths::for_project(cwd).unwrap();
         crate::shared::spec_state::stand_on_spec_branch(cwd, "myspec");
-        // Spec with Completed header + Files section.
         let sp = paths.for_spec("myspec").unwrap();
         std::fs::create_dir_all(sp.dir()).unwrap();
-        std::fs::write(
-            sp.spec_md_path(),
-            "# Spec\n### Stage: Close\n### Outcome: Completed\n\n\
-             ## Files\n\n- `src/allowed.ts`\n",
-        )
-        .unwrap();
-        // No NDJSON events seeded → projection yields None; header fallback fires.
+        std::fs::write(sp.spec_md_path(), "# Spec\n\n## Files\n\n- `src/allowed.ts`\n").unwrap();
+        let record = |phase: &str| {
+            let state = serde_json::json!({ "phase": phase });
+            mustard_core::io::spec_events::write(
+                &sp.dir().join("spec.ndjson"),
+                "state",
+                state.as_object().cloned().unwrap(),
+                &[],
+            )
+            .unwrap();
+        };
+        record("running");
 
         let cwd_str = cwd.to_string_lossy().into_owned();
         let input = HookInput {
@@ -827,11 +784,10 @@ mod tests {
             cwd: Some(cwd_str.clone()),
             ..HookInput::default()
         };
-        // Terminal header → skip (None), even though src/forbidden.ts is outside boundary.
-        assert!(
-            boundary_gate(&input, &cwd_str).is_none(),
-            "completed spec header must skip the boundary gate"
-        );
+        assert!(boundary_gate(&input, &cwd_str).is_some(), "a spec in execution is checked");
+        record("closed");
+        // Closed → skip (None), even though src/forbidden.ts is outside the boundary.
+        assert!(boundary_gate(&input, &cwd_str).is_none(), "a closed spec must skip the boundary gate");
     }
 
     /// When the gate checks an edit against a WAVE's file list, the
