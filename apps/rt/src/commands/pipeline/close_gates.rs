@@ -569,17 +569,17 @@ fn finding_refusal(spec: &str, finding: &FindingItem) -> String {
 // QA gate
 // ---------------------------------------------------------------------------
 
-/// O arquivo de eventos da spec, pela interface [`SpecState`]; `None` sem
-/// spec ou sem `spec.ndjson`. É dele que o portão lê as execuções dos
-/// critérios e os pedidos.
+/// The spec's event file, through the [`SpecState`] port; `None` with no spec
+/// or no `spec.ndjson`. The gate reads the criteria runs and the requests from
+/// it.
 fn spec_log(cwd: &str, spec: Option<&str>) -> Option<SpecLog> {
     let spec = spec.map(str::trim).filter(|s| !s.is_empty())?;
     DiskSpecState::new(Path::new(cwd)).log(spec)
 }
 
-/// Os pedidos de mudança gravados depois da última execução dos critérios
-/// (`last_run`): mudanças que os critérios conferidos talvez não cubram. Uma
-/// linha curta por pedido, `(efeito) começo do texto`.
+/// The change requests recorded after the last run of the criteria
+/// (`last_run`): changes the verified criteria may not cover. One short line
+/// per request, `(effect) start of the text`.
 fn unaddressed_change_requests(log: &SpecLog, last_run: u64) -> Vec<String> {
     spec_state::requests_after(log, last_run)
         .iter()
@@ -1048,8 +1048,8 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
     }
 
     // ── QA gate ───────────────────────────────────────────────────────────
-    // O QA gravado vem do `spec.ndjson` da spec: a última execução de cada
-    // critério. Sem arquivo, ou com critérios e nenhuma execução, não há QA.
+    // The recorded QA comes from the spec's `spec.ndjson`: the last run of
+    // each criterion. No file, or criteria and no run at all, is no QA.
     let qa_mode = modes.qa;
     let log = spec_log(cwd, spec_ref);
     let recorded = log.as_ref().map(spec_state::qa).filter(|qa| qa.criteria == 0 || qa.ran > 0);
@@ -1492,12 +1492,12 @@ mod tests {
         }
     }
 
-    /// Cada porta que pergunta "o QA passou?" dá a mesma resposta, lado a
-    /// lado, lendo o `spec.ndjson`: o portão do fechamento, o `emit-pipeline`,
-    /// o `complete-spec`, o fechamento composto, o aviso do pull request e a
-    /// retomada. Sem arquivo, com um critério reprovado, com um critério sem
-    /// execução e com todos aprovados. O `close-pipeline` não entra: ele roda
-    /// os critérios e decide pelo que acabou de rodar.
+    /// Every door that asks "did the QA pass?" gives the same answer, side by
+    /// side, reading the `spec.ndjson`: the close gates, `emit-pipeline`,
+    /// `complete-spec`, the composite close, the pull-request advisory and the
+    /// resume. No file, a failed criterion, a criterion never run, and every
+    /// criterion passed. `close-pipeline` has its own side-by-side test: it
+    /// runs the criteria and decides on the run it just made.
     #[test]
     fn every_close_gate_reads_the_same_qa_from_the_spec_file() {
         // The pull-request door names the spec by the ladder; an inherited
@@ -1505,7 +1505,7 @@ mod tests {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
-        // (caso, resultados semeados, o QA passa)
+        // (case, seeded results, the QA passes)
         type Case<'a> = (&'a str, Option<&'a [Option<&'a str>]>, bool);
         let cases: [Case; 4] = [
             ("no spec file", None, false),
@@ -1539,8 +1539,8 @@ mod tests {
         }
     }
 
-    /// Um critério revisto depois da última execução dele deixa o QA velho: o
-    /// fechamento barra até o critério rodar de novo, e a execução nova solta.
+    /// A criterion revised after its last run makes the QA stale: the close
+    /// refuses until the criterion runs again, and the new run releases it.
     #[test]
     fn a_criterion_revised_after_its_run_makes_the_pass_stale() {
         let dir = make_project();
@@ -1564,8 +1564,8 @@ mod tests {
         assert!(!run_close_gates(cwd, Some("feat"), only_qa()).is_blocking(), "the new run closes again");
     }
 
-    /// Um pedido gravado depois da última execução dos critérios é nomeado no
-    /// fechamento; o de antes, não.
+    /// A request recorded after the last run of the criteria is named at the
+    /// close; one recorded before it is not.
     #[test]
     fn a_request_after_the_last_run_is_named_at_close() {
         let dir = make_project();

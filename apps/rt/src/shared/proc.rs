@@ -358,14 +358,15 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
     if let Some(path) = augmented_path() {
         cmd.env("PATH", path);
     }
-    // O comando roda no próprio grupo de processos, para o prazo matar o grupo
-    // inteiro: o shell nem sempre cede o lugar ao comando (o `sh` do Debian não
-    // cede), e o comando de verdade fica neto dele.
+    // The command runs in its own process group, so the deadline kills the
+    // whole group: the shell does not always hand its place to the command
+    // (Debian's `sh` does not), and the real command ends up its grandchild.
     //
-    // Troca aceita: fora do grupo do terminal, o Ctrl-C de quem roda num
-    // terminal mata o `mustard-rt`, e o comando segue órfão até acabar.
-    // Pelo agente, que roda sem terminal, isso quase não pesa. Passar o sinal
-    // adiante pediria `unsafe` ou uma dependência nova, e nenhum dos dois entra.
+    // Accepted trade-off: outside the terminal's group, a Ctrl-C typed in a
+    // terminal kills `mustard-rt`, and the command runs on, orphaned, until it
+    // ends. Through the agent, which runs with no terminal, this barely
+    // matters. Forwarding the signal would need `unsafe` or a new dependency,
+    // and neither goes in.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

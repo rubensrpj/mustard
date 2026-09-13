@@ -71,16 +71,16 @@ fn project_is_own_crate(project: &Path) -> bool {
 /// Falls back to `.claude/.session/{slug}/.events/` when `spec` is empty — the
 /// dashboard's sessions sidebar consumes that directory.
 ///
-/// O nome da spec e o papel da onda passam sempre pela conferência de nome:
-/// um nome com `..` ou com barra sairia da pasta das specs. A spec recusada é
-/// ignorada, e o evento cai na pasta da sessão; o papel de onda recusado é
-/// ignorado, e o evento fica na pasta da spec. O gravador segue sem travar o
-/// evento, como em qualquer falha dele.
+/// The spec name and the wave role always go through the name check: a name
+/// with `..` or a slash would leave the specs folder. A refused spec is
+/// ignored and the event falls to the session folder; a refused wave role is
+/// ignored and the event stays in the spec folder. The writer carries on
+/// without blocking the event, as on any failure of its own.
 #[must_use]
 pub(crate) fn event_dir(project: &Path, spec: Option<&str>, wave_role: Option<&str>, session_slug: &str) -> PathBuf {
-    // A raiz aninhada em `.claude` é recusada pela conferência da raiz; aí o
-    // caminho é montado sem ela, para o evento não se perder. Só a raiz: os
-    // nomes abaixo dela são conferidos do mesmo jeito.
+    // A root nested inside `.claude` is refused by the root check; then the
+    // path is built without it, so the event is not lost. Only the root: the
+    // names below it are checked the same way.
     let paths =
         ClaudePaths::for_project(project).unwrap_or_else(|_| ClaudePaths::compose_unchecked(project));
     if let Some(spec_paths) = spec.filter(|s| !s.is_empty()).and_then(|name| paths.for_spec(name).ok()) {

@@ -5,11 +5,11 @@
 //! trusting the finalize's fail-open writes blindly. The answer folds into its
 //! report as `verified`.
 
-/// O fechamento da spec `spec` chegou ao `spec.ndjson` dela: um `state` com a
-/// fase `closed`, gravado em `since_ms` (milissegundos desde a época) ou
-/// depois. A hora do `state` vem em segundos, então conta o segundo de
-/// `since_ms`. `false` sem arquivo de eventos ou sem esse `state`. É a
-/// conferência do fechamento automático do `close-orchestrate`.
+/// The close of `spec` reached its `spec.ndjson`: a `state` with the phase
+/// `closed`, recorded at `since_ms` (milliseconds since the epoch) or later.
+/// The `state` time is in seconds, so the second of `since_ms` counts. `false`
+/// with no event file or no such `state`. This is the check of the
+/// `close-orchestrate` automatic close.
 #[must_use]
 pub fn closed_state_landed(cwd: &std::path::Path, spec: &str, since_ms: i64) -> bool {
     use mustard_core::domain::spec_state::SpecState as _;

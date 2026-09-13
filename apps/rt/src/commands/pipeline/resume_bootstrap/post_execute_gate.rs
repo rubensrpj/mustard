@@ -23,16 +23,16 @@ pub(super) fn execute_complete(out: &ResumeBootstrap) -> bool {
     }
 }
 
-/// O QA e a revisão da spec `spec`, lidos do `spec.ndjson` dela pela
-/// interface [`SpecState`]: `(qa_pass, has_review, review_rejected)`.
+/// The QA and the review of `spec`, read from its `spec.ndjson` through the
+/// [`SpecState`] port: `(qa_pass, has_review, review_rejected)`.
 ///
-/// - `qa_pass` — cada critério tem a última execução aprovada.
-/// - `has_review` — alguma onda tem veredito.
-/// - `review_rejected` — o último veredito de alguma onda reprovou: a
-///   aprovação de uma onda não esconde a reprovação de outra, e a spec não
-///   segue para o QA com uma reprovação sem resposta.
+/// - `qa_pass` — every criterion has a passing last run.
+/// - `has_review` — some wave has a verdict.
+/// - `review_rejected` — the last verdict of some wave rejected: one wave's
+///   approval never hides another's rejection, so the spec does not move on to
+///   QA with an unanswered rejection.
 ///
-/// Sem arquivo de eventos, nada passou e nada foi revisto.
+/// With no event file, nothing passed and nothing was reviewed.
 pub(crate) fn read_review_qa_state(project: &Path, spec: &str) -> (bool, bool, bool) {
     let Some(log) = DiskSpecState::new(project).log(spec) else {
         return (false, false, false);
