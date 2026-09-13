@@ -1390,6 +1390,131 @@ mod tests {
         assert_eq!(after["open"][0]["became"], json!("outra"));
     }
 
+    /// O veredito do `review-result` chega ao merge pelo arquivo da spec: com
+    /// a revisão reprovada o merge pergunta, e aprovada depois, ele segue sem
+    /// perguntar.
+    #[test]
+    fn the_review_result_verdict_decides_whether_the_merge_asks() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("unit-r");
+        std::fs::create_dir_all(&spec_dir).expect("spec dir");
+        std::fs::write(spec_dir.join("spec.md"), "# R\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `cd .`\n")
+            .expect("spec");
+        let state = json!({ "phase": "running" });
+        mustard_core::io::spec_events::write(
+            &spec_dir.join("spec.ndjson"),
+            "state",
+            state.as_object().cloned().expect("object"),
+            &[],
+        )
+        .expect("state");
+
+        let merges = Cell::new(0u32);
+        let merge = |_: &Path, _: u64| {
+            merges.set(merges.get() + 1);
+            Ok(())
+        };
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let facts = PrFacts { number: 250, head: "dev_unit-r".to_string() };
+
+        review_result::record_review(root, "unit-r", "rejected", 1, None, None);
+        let asked = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        assert_eq!(asked.action, "confirm");
+        assert_eq!(asked.reason, Some("review-not-approved"));
+        assert_eq!(merges.get(), 0, "a rejected review is never merged without asking");
+
+        review_result::record_review(root, "unit-r", "approved", 0, None, None);
+        let merged = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        assert_eq!(merged.action, "merged", "the review approved everything, nothing to ask");
+        assert_eq!(merges.get(), 1);
+    }
+
+    /// De ponta a ponta, com uma spec aberta pelo `spec-draft`: a aprovação, o
+    /// trabalho da onda, a revisão, o QA, a retomada, o fechamento e o merge
+    /// concordam, sem nada gravado à mão no arquivo da spec além da aprovação,
+    /// que é da testemunha.
+    #[test]
+    fn a_drafted_spec_goes_through_review_qa_close_and_merge() {
+        use crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state;
+        use crate::commands::review::qa_run::{run_qa_with_options, QaRunOptions};
+        use crate::commands::spec::spec_draft::{run_at, SpecDraftOpts};
+        use mustard_core::domain::spec_state::SpecState as _;
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).expect("anchor");
+        std::fs::write(root.join("mustard.json"), br#"{"language":{"text":"en-US"}}"#).expect("cfg");
+        // The criterion is red before the work — the draft takes the proof.
+        let red = "cd feito-pela-onda";
+        let plan = root.join("plan.json");
+        let acceptance = [
+            format!("**AC-1** — when the wave lands, then the folder exists.\n  Command: `{red}`"),
+            "**AC-2** — build green.\n  Command: `cd .`".to_string(),
+        ];
+        let body = json!({
+            "waves": [{
+                "n": 1, "role": "rt", "summary": "wire it", "tasks": ["wire it"],
+                "files": ["apps/rt/src/lib.rs"], "acceptance": acceptance, "satisfies": ["AC-1", "AC-2"],
+            }],
+            "total_waves": 1,
+            "lang": "en-US"
+        });
+        std::fs::write(&plan, body.to_string()).expect("plan");
+        let code = run_at(
+            root,
+            SpecDraftOpts {
+                intent: "Ponta a ponta".into(),
+                slug: Some("ponta".into()),
+                scope: "full".into(),
+                signals: None,
+                output: None,
+                material: None,
+                material_only: false,
+                no_material_reason: Some("fixture: the whole flow is under test".into()),
+                waves: 1,
+                plan: Some(plan),
+                force: false,
+                query_terms: None,
+                force_scope: false,
+            },
+        );
+        assert_eq!(code, 0, "the draft lands");
+        let events = root.join(".claude").join("spec").join("ponta").join("spec.ndjson");
+        assert!(events.is_file(), "the draft is born in the spec file");
+        let approval = json!({
+            "author": "user",
+            "phase": "approved",
+            "witness": { "question": "Approve this spec?", "answer": "Approve" }
+        });
+        mustard_core::io::spec_events::write(&events, "state", approval.as_object().cloned().expect("object"), &[])
+            .expect("approval");
+        let disk = crate::shared::spec_state::DiskSpecState::new(root);
+
+        // The wave does its work, and the review approves it.
+        std::fs::create_dir_all(root.join("feito-pela-onda")).expect("work");
+        review_result::record_review(root, "ponta", "approved", 0, None, None);
+        assert_eq!(read_review_qa_state(root, "ponta"), (false, true, false), "reviewed, QA still owed");
+
+        // The QA passes, and the resume moves on to the close.
+        assert_eq!(run_qa_with_options(root, "ponta", QaRunOptions::default()).overall, "pass");
+        assert_eq!(read_review_qa_state(root, "ponta"), (true, true, false));
+
+        // `complete-spec` closes it.
+        assert!(crate::commands::spec::complete_spec::run_complete(root, "ponta").is_ok(), "the close is admitted");
+        assert_eq!(disk.state("ponta").and_then(|s| s.phase), Some("closed"));
+
+        // The merge reads the approved review and asks nothing.
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let merge = |_: &Path, _: u64| Ok(());
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let facts = PrFacts { number: 260, head: "feature/ponta".to_string() };
+        let done = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
+        assert_eq!(done.action, "merged", "{done:?}");
+        assert_eq!(done.verdict.as_deref(), Some("approved"));
+        assert_eq!(disk.state("ponta").and_then(|s| s.phase), Some("delivered"));
+    }
+
     /// O critério das pendências inteiro: doze abertas, duas nascidas na spec
     /// entregue e três paradas há mais de 30 dias. O início da sessão mostra
     /// uma linha com a contagem; a entrega pergunta só das duas; a trava do fim

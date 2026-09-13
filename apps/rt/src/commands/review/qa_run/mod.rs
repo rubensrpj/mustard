@@ -894,8 +894,10 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     QaResult { overall: overall.to_string(), criteria }
 }
 
-/// The bridge to the spec's `spec.ndjson` until the definitive QA recorder:
-/// every criterion whose `proof` is the command of an AC that just ran gets
+/// The bridge to the spec's `spec.ndjson` until the definitive QA recorder.
+/// A spec with no criterion in the file gets its `spec.md` ACs recorded as
+/// criteria first. Then every criterion whose `proof` is the command of an AC
+/// that just ran gets
 /// that run, `pass` or `fail` (a criterion killed by its deadline verified
 /// nothing, so it records `fail`). An AC no criterion names by its command,
 /// and an AC that was never attempted (`skip`), record nothing. A spec with no
@@ -903,6 +905,9 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
 fn record_runs(state: &Path, spec: &str, items: &[(String, String, Option<String>)], criteria: &[AcResult]) {
     use mustard_core::domain::spec_events::{Block, BlockQuery};
     use mustard_core::domain::spec_state::SpecState as _;
+    // A spec opened by `spec-draft` has its criteria only in `spec.md`: they
+    // are recorded first, once, so each run has a criterion to land on.
+    crate::commands::spec_events::write::materialize_criteria(state, spec);
     let Some(log) = crate::shared::spec_state::DiskSpecState::new(state).log(spec) else {
         return;
     };

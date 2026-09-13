@@ -292,6 +292,129 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Optio
     }
 }
 
+/// Os critérios da spec `spec`, vista de `start`, tirados dos ACs do `spec.md`
+/// quando o `spec.ndjson` ainda não tem nenhum `criterion`: cada AC vira um
+/// `criterion` gravado pelo binário, com o id do AC no `label` e o comando no
+/// `proof`. É a ponte das specs do `spec-draft` até os gravadores definitivos:
+/// a execução dos critérios e o veredito precisam de critérios no arquivo.
+/// Uma spec que já tem critério, ou que não tem arquivo de eventos, fica como
+/// está, e por isso a função nunca grava duas vezes na mesma spec. Devolve
+/// quantos critérios gravou.
+pub(crate) fn materialize_criteria(start: &Path, spec: &str) -> usize {
+    use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items, spec_file_for};
+    let Some(log) = DiskSpecState::new(start).log(spec) else {
+        return 0;
+    };
+    if log.visible().iter().any(|event| event.event_type == "criterion") {
+        return 0;
+    }
+    let Some(items) = spec_file_for(&store::spec_root(start), spec)
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .and_then(|markdown| extract_ac_section(&markdown))
+        .map(|section| parse_ac_items(&section))
+    else {
+        return 0;
+    };
+    let mut written = 0;
+    for item in items {
+        let (when, then) = split_statement(&item.statement, &item.id);
+        let mut draft = Map::new();
+        draft.insert("author".to_string(), json!("binary"));
+        draft.insert("label".to_string(), json!(item.id));
+        draft.insert("when".to_string(), json!(when));
+        draft.insert("then".to_string(), json!(then));
+        draft.insert("proof".to_string(), json!(item.command));
+        if record(start, spec, "criterion", draft, PhaseWriter::Binary).is_ok() {
+            written += 1;
+        }
+    }
+    written
+}
+
+/// A frase de um AC partida em "quando" e "então", pela vírgula antes de
+/// `then` ou de `então`; sem ela, a frase inteira vale para os dois. Uma
+/// frase vazia vira o id do AC.
+fn split_statement(statement: &str, id: &str) -> (String, String) {
+    let text = statement.trim();
+    if text.is_empty() {
+        return (id.to_string(), id.to_string());
+    }
+    for marker in [", then ", ", então ", ", Then ", ", Então "] {
+        if let Some((when, then)) = text.split_once(marker) {
+            return (when.trim().to_string(), then.trim().to_string());
+        }
+    }
+    (text.to_string(), text.to_string())
+}
+
+/// A ponte até o gravador definitivo da revisão: grava o veredito `verdict`
+/// (`approved` ou `rejected`) da revisão do subprojeto `subproject` em cada
+/// onda que ele toca, pelas mesmas ondas e subprojetos do plano de despacho,
+/// ou em todas as ondas quando não há subprojeto ou quando ele não casa com
+/// nenhuma. Uma spec sem ondas tem a onda 1. Antes, tira os critérios do
+/// `spec.md` se ainda faltarem; o veredito leva todos, conferidos quando ele
+/// aprova. Devolve quantas ondas receberam o veredito.
+pub(crate) fn record_verdict(
+    start: &Path,
+    spec: &str,
+    verdict: &str,
+    critical: i64,
+    subproject: Option<&str>,
+) -> usize {
+    use crate::commands::pipeline::dispatch_plan::{build_plan_with_cycle, resolve_spec_dir};
+    if !matches!(verdict, "approved" | "rejected") {
+        return 0;
+    }
+    materialize_criteria(start, spec);
+    let Some(log) = DiskSpecState::new(start).log(spec) else {
+        return 0;
+    };
+    let approved = verdict == "approved";
+    let criteria: Vec<Value> = log
+        .visible()
+        .iter()
+        .filter(|event| event.event_type == "criterion")
+        .map(|event| json!({ "criterion": event.id, "tests_rule": approved }))
+        .collect();
+    if criteria.is_empty() {
+        return 0;
+    }
+    let root = store::spec_root(start);
+    let (plan, _) = build_plan_with_cycle(&root, &resolve_spec_dir(&root, spec), spec, None);
+    let same = |a: &str, b: &str| {
+        let clean = |s: &str| s.trim().trim_start_matches("./").trim_end_matches('/').to_string();
+        clean(a) == clean(b)
+    };
+    let subproject = subproject.map(str::trim).filter(|s| !s.is_empty() && *s != ".");
+    let all: std::collections::BTreeSet<u64> = plan.iter().map(|item| u64::from(item.wave)).collect();
+    let touched: std::collections::BTreeSet<u64> = subproject.map_or_else(
+        || all.clone(),
+        |sub| plan.iter().filter(|item| same(&item.subproject, sub)).map(|item| u64::from(item.wave)).collect(),
+    );
+    let waves = match (touched.is_empty(), all.is_empty()) {
+        (false, _) => touched,
+        (true, false) => all,
+        (true, true) => std::iter::once(1).collect(),
+    };
+    let text = format!(
+        "review-result: {verdict}, {critical} critical, subproject {}",
+        subproject.unwrap_or(".")
+    );
+    let mut written = 0;
+    for wave in waves {
+        let mut draft = Map::new();
+        draft.insert("author".to_string(), json!("review"));
+        draft.insert("wave".to_string(), json!(wave));
+        draft.insert("result".to_string(), json!(verdict));
+        draft.insert("text".to_string(), json!(text));
+        draft.insert("criteria".to_string(), json!(criteria));
+        if record(start, spec, "verdict", draft, PhaseWriter::Binary).is_ok() {
+            written += 1;
+        }
+    }
+    written
+}
+
 /// A ponte até o gravador definitivo do QA: grava na spec `spec`, vista de
 /// `start`, uma execução do critério de número `criterion` (`pass` quando
 /// `passed`), com o código de saída, o tempo e o fim da saída, pela mesma

@@ -83,6 +83,11 @@ pub(crate) fn record_review(
         write_review_findings_md(cwd, spec, subproject, path);
     }
 
+    // The bridge until the definitive review recorder: the verdict also lands
+    // in the spec's `spec.ndjson`, on every wave the reviewed subproject
+    // touches, which is where the resume and the merge read it.
+    crate::commands::spec_events::write::record_verdict(cwd, spec, verdict, critical_count, subproject);
+
     payload
 }
 
