@@ -20,7 +20,12 @@
 //! function name only at the root of an integration-test binary.
 
 use mustard_rt::commands::agent::render::sections::read_guards_block;
-use mustard_rt::commands::scan_claude::{GUARDS_CLOSE, GUARDS_DONE_OPEN, GUARDS_PENDING_OPEN};
+use mustard_rt::commands::scan_claude::GUARDS_PENDING_OPEN;
+
+/// The markers older scans wrote around an authored Guards block — fixture
+/// data of an old file; nothing in Mustard writes them any more.
+const GUARDS_DONE_OPEN: &str = "<!-- mustard:guards -->";
+const GUARDS_CLOSE: &str = "<!-- /mustard:guards -->";
 
 #[test]
 fn dispatch_warns_on_uncurated_rules() {

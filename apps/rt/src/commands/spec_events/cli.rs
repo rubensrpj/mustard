@@ -74,7 +74,7 @@ pub enum SpecEventsCmd {
     /// `write` already refreshes its own spec's line; this is the full repair
     /// the `doctor` names when it flags a divergence. Folders without an event
     /// file are listed in `skipped`.
-    #[command(display_order = 104)]
+    #[command(display_order = 60)]
     Index {
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]

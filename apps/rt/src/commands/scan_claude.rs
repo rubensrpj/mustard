@@ -24,21 +24,18 @@ use mustard_core::{translate, SupportedLocale};
 /// against this (or any) ceiling.
 pub const SCAN_MAP_HARD_CAP_BYTES: usize = 8192;
 
-/// Opening marker of the enrichable `## Guards` block. The literal ` pending`
-/// suffix is the hand-off contract: `scan-guards-list` finds every block
-/// still carrying it, and `scan-guards-apply` swaps it for the enriched guards.
-/// Keep the open marker and its `pending` token byte-stable — downstream tooling
-/// matches on this exact string. `pub` so `scan_guards` reuses it as the single
-/// source of the marker literal (no drift).
+/// Opening marker of a pending `## Guards` block that older scans seeded into
+/// a subproject `CLAUDE.md`. Nothing writes it any more; the doctor's
+/// `guards-scaffold` advisory still recognises it. `pub` so `scan_guards`
+/// reuses it as the single source of the marker literal (no drift).
 pub const GUARDS_PENDING_OPEN: &str = "<!-- mustard:guards pending -->";
-/// Opening marker of an ALREADY-enriched `## Guards` block — the `pending`
-/// token dropped. `scan-guards-apply` swaps [`GUARDS_PENDING_OPEN`] for this on
-/// first enrich so a re-run of `scan-guards-list` no longer matches the block
-/// (idempotence). Defined here, beside its sibling, as the single source.
+/// Opening marker of an authored `## Guards` block — the `pending` token
+/// dropped. Only the tests still write it, as fixtures of old files.
+#[cfg(test)]
 pub const GUARDS_DONE_OPEN: &str = "<!-- mustard:guards -->";
-/// Closing marker of the enrichable `## Guards` block (pairs with
-/// [`GUARDS_PENDING_OPEN`]). The enrich step rewrites the span between the two markers.
-/// `pub` so `scan_guards` reuses it (single source of the literal).
+/// Closing marker of the `## Guards` block (pairs with both opening markers).
+/// Only the tests still write it, as fixtures of old files.
+#[cfg(test)]
 pub const GUARDS_CLOSE: &str = "<!-- /mustard:guards -->";
 
 /// Result of running the scan-map pass over a set of projects.
@@ -162,7 +159,7 @@ pub(crate) fn build_guards_block(
     let mut out = String::from("## Guards\n\n");
     let _ = writeln!(out, "{GUARDS_PENDING_OPEN}");
     // Facts for the enrich agent — kept in a comment so they are context, not
-    // content. The enrich step (`scan-guards-apply`) reads these to ground the guards.
+    // content.
     let _ = writeln!(out, "<!-- facts: {facts} -->");
     out.push_str(GUARDS_CLOSE);
     out.push('\n');

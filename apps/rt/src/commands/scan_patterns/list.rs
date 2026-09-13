@@ -1,8 +1,7 @@
 //! `scan-patterns-list` — derive the missing pattern-skill *mold* worklist from
 //! `grain.model.json` and emit it as a JSON array for the enrich agent.
 //!
-//! This is the pattern-mold twin of `scan-guards-list`. Where Guards walks the
-//! `CLAUDE.md` tree, patterns projects FROM the deterministic model: for each
+//! It projects FROM the deterministic model: for each
 //! mined role cluster (`roles[]`) with at least [`MIN_CLUSTER`] members, it
 //! resolves the cluster's real hand-written exemplars (generated/vendored code
 //! never teaches convention), attributes them to the subprojects they actually

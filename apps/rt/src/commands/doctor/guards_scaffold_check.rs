@@ -9,11 +9,10 @@
 //! rule set that reads exactly like a curated one. This check names those
 //! subprojects so the maintainer can re-run the enrich.
 //!
-//! It reuses the SINGLE pending-scaffold walk `scan-guards-list` already
-//! performs ([`crate::commands::scan_guards::list::collect_pending`]) — one
-//! walk, two projections: that command's enrich worklist and this report. A
-//! second traversal here would be the third copy of the same walk in the crate
-//! and would drift from the other two silently.
+//! It reuses the SINGLE pending-scaffold walk
+//! ([`crate::commands::scan_guards::list::collect_pending`]). A second
+//! traversal here would be another copy of the same walk in the crate and
+//! would drift from it silently.
 //!
 //! **ADVISORY ONLY**: an uncurated scaffold is a WARN line, never a FAIL, and it
 //! never blocks the doctor run. No event is emitted — `mustard-core` publishes
@@ -158,15 +157,11 @@ mod tests {
                 path: "/w/packages/core/CLAUDE.md".into(),
                 subproject: "packages/core".into(),
                 kind: "cargo".into(),
-                frameworks: Vec::new(),
-                stacks: Vec::new(),
             },
             Pending {
                 path: "/w/apps/rt/CLAUDE.md".into(),
                 subproject: "apps/rt".into(),
                 kind: "cargo".into(),
-                frameworks: Vec::new(),
-                stacks: Vec::new(),
             },
         ];
         let out = project_uncurated(&entries);

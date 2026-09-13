@@ -13,7 +13,7 @@
 use clap::Subcommand;
 use std::path::PathBuf;
 
-use crate::commands::{scan, scan_equivalences, scan_guards, scan_patterns};
+use crate::commands::{scan, scan_equivalences, scan_patterns};
 
 /// The `run` subcommands owned by the `/scan` chain (mine and enrich the repo model).
 #[derive(Debug, Subcommand)]
@@ -31,10 +31,8 @@ pub enum ScanCmd {
         #[arg(long)]
         out: Option<PathBuf>,
         /// (Re)generate the mustard-owned `.claude/scan-map.md` for every
-        /// subproject found in the grain model, keeping the project's
-        /// CLAUDE.md footprint to one import line (+ Guards seed + breadcrumb
-        /// heal); curated content is preserved verbatim and never measured.
-        /// Without this flag only the model is written.
+        /// subproject found in the grain model. No `CLAUDE.md` is ever
+        /// written. Without this flag only the model is written.
         #[arg(long)]
         full: bool,
     },
@@ -45,7 +43,7 @@ pub enum ScanCmd {
     /// up to 3 kB) or `skill --path <SKILL.md>` (every cited path exists and
     /// the skill stays under 500 lines). Reads `.claude/grain.model.json`;
     /// prints JSON and exits 1 on a refusal.
-    #[command(display_order = 105)]
+    #[command(display_order = 59)]
     Map {
         /// The question to ask.
         #[arg(value_enum)]
@@ -89,39 +87,6 @@ pub enum ScanCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Enumerate every subproject `CLAUDE.md` whose `## Guards` block is still
-    /// `pending` (the enrich hand-off an older `scan --full` seeded). Emits a
-    /// JSON array `[{path, subproject, kind, frameworks}]` parsed from each
-    /// block's facts comment. Excludes the workspace-root unit. Fail-open: any
-    /// IO error degrades to `[]` and exit 0.
-    #[command(name = "scan-guards-list")]
-    #[command(display_order = 59)]
-    ScanGuardsList {
-        /// Workspace root to walk. Defaults to the current directory.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Splice the enrich agent's authored guards into a subproject
-    /// `CLAUDE.md`'s pending `## Guards` block: non-destructive (only the span
-    /// between the markers changes), line-capped, and idempotent (the marker
-    /// flips to its non-pending form so a re-run of `scan-guards-list` skips
-    /// it). Refuses the workspace-root `CLAUDE.md`.
-    #[command(name = "scan-guards-apply")]
-    #[command(display_order = 60)]
-    ScanGuardsApply {
-        /// Path to the subproject `CLAUDE.md` to enrich.
-        #[arg(long)]
-        path: PathBuf,
-        /// Workspace root the scan ran from. Used to classify whether `path` is
-        /// the root unit (refused) or a nested subproject (spliced), via the
-        /// same `subproject_of` rule `scan-guards-list` uses. Defaults to `.`.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Authored guard text, or `-` to read it from stdin. `allow_hyphen_values`
-        /// so a body starting with a `-` bullet is not mistaken for a flag.
-        #[arg(long, default_value = "-", allow_hyphen_values = true)]
-        guards: String,
-    },
     /// Derive the pattern-skill *mold* worklist from `grain.model.json`: for
     /// each mined role cluster (≥3 members, not under a test/fixture path),
     /// propose a `{subproject}-{role}-pattern` mold with real hand-written
@@ -131,7 +96,7 @@ pub enum ScanCmd {
     /// Hand-edited or `source: manual` molds and slugs recorded in
     /// `.claude/scan-declined.json` are never re-proposed. Uncapped. Emits a
     /// JSON array `[{subproject, label, slug, moldPath, affix, exemplars,
-    /// ...}]`. The mold twin of `scan-guards-list`. Fail-open: a
+    /// ...}]`. Fail-open: a
     /// missing/unparseable model → `[]`.
     /// Print the LAPIDATION KIT: how this project names things — the mined
     /// roles (what a thing is called and where that kind lives), the shapes
@@ -177,8 +142,8 @@ pub enum ScanCmd {
     /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, create-only,
     /// path-shape-guarded, and stamped with the `<!-- mustard:generated -->`
     /// origin notice. An existing mold is left untouched (the sweep already
-    /// removed the generated ones; a survivor is hand-authored). The mold twin
-    /// of `scan-guards-apply`; being a `run` command it sidesteps the
+    /// removed the generated ones; a survivor is hand-authored). Being a `run`
+    /// command it sidesteps the
     /// background-isolation gate that blocks the orchestrator's own Write.
     #[command(name = "scan-patterns-apply")]
     #[command(display_order = 62)]
@@ -274,10 +239,6 @@ pub fn dispatch(cmd: ScanCmd) {
             crate::commands::map::run(&crate::commands::map::MapOpts { root, question, file, task, query, path });
         }
         ScanCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
-        ScanCmd::ScanGuardsList { root } => scan_guards::list::run(&root),
-        ScanCmd::ScanGuardsApply { path, root, guards } => {
-            scan_guards::apply::run(&path, &root, &guards);
-        }
         ScanCmd::ScanLapidation { root } => crate::commands::lapidation::run(&root),
         ScanCmd::ScanPatternsList { root, rejected, subproject } => {
             scan_patterns::list::run(&root, rejected, subproject.as_deref());

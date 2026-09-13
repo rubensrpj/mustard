@@ -1,26 +1,14 @@
-//! `scan-guards-list` — enumerate every subproject `CLAUDE.md` whose `## Guards`
-//! block is still `pending` and emit a JSON worklist for the enrich agent.
+//! The census of pending `## Guards` scaffolds: every subproject instruction
+//! file that still carries [`scan_claude::GUARDS_PENDING_OPEN`], a block older
+//! scans seeded. Nothing seeds it any more; the doctor's `guards-scaffold`
+//! advisory reports what is left. The workspace-root file is excluded.
 //!
-//! A file is *pending* iff it contains [`scan_claude::GUARDS_PENDING_OPEN`]. The
-//! workspace-root `CLAUDE.md` (the unit whose directory is the repo root) is
-//! excluded — Wave 1 never seeds the pending block there. For each pending
-//! file the facts line (`<!-- facts: kind=...; frameworks=... -->`) is parsed so
-//! the agent has grounding context.
-//!
-//! Output: a JSON array `[{path, subproject, kind, frameworks}]` to stdout.
-//! Fail-open: any IO error degrades to `[]` and exit 0.
-//!
-//! The walk itself is NOT owned by this command: [`collect_pending`] performs
-//! it ONCE and returns the raw census ([`PendingScaffolds`]), which two callers
-//! project — this command into the enrich worklist, and
-//! [`crate::commands::doctor::guards_scaffold_check`] into a doctor advisory. A
-//! second traversal with its own ignore list would be the third copy of this
-//! walk in the crate and would drift from the first two silently.
+//! The walk is [`collect_pending`], done ONCE. A second traversal with its own
+//! ignore list would drift from this one silently.
 
 use std::path::Path;
 
 use mustard_core::io::fs;
-use serde_json::{json, Value};
 
 use crate::commands::scan_claude::GUARDS_PENDING_OPEN;
 use crate::commands::scan_patterns::list::TEST_SEGMENTS;
@@ -43,15 +31,8 @@ pub(crate) struct Pending {
     /// Subproject directory relative to `root` (forward-slashed). Empty for the
     /// root unit — but the root is excluded, so this is always non-empty here.
     pub(crate) subproject: String,
-    /// Project kind mined by Wave 1 (e.g. `rust`).
+    /// Project kind from the facts line (e.g. `rust`).
     pub(crate) kind: String,
-    /// Frameworks mined by Wave 1, in caller order. Empty when none.
-    pub(crate) frameworks: Vec<String>,
-    /// Stack detections mined by Wave 1, as the raw `name(confidence)` tokens
-    /// of the facts line (e.g. `laravel(0.95)`). Kept verbatim — no float
-    /// re-parse/re-serialize churn — so the worklist round-trips the generator
-    /// byte-for-byte. Empty when the line predates the segment / none inferred.
-    pub(crate) stacks: Vec<String>,
 }
 
 /// The result of ONE walk of the working copy: every pending subproject
@@ -68,42 +49,19 @@ pub(crate) struct PendingScaffolds {
 }
 
 /// Walk `root` ONCE and collect every subproject `CLAUDE.md` still carrying the
-/// pending sentinel. The shared core of `scan-guards-list` and the doctor
-/// `guards-scaffold` advisory — see the module docs on why there is exactly one
-/// walk. Fail-open: nothing here propagates an error or panics.
+/// pending sentinel, for the doctor `guards-scaffold` advisory — see the module
+/// docs on why there is exactly one walk. Fail-open: nothing here propagates an
+/// error or panics.
 pub(crate) fn collect_pending(root: &Path) -> PendingScaffolds {
     let mut out = PendingScaffolds { entries: Vec::new(), errors: Vec::new() };
-    // Resolved ONCE for the whole walk: the census must recognise exactly the
-    // file `scan --full` produced, which under a private install is
-    // `CLAUDE.local.md`. Not the tolerant reader-side `guards_file` — an entry
-    // here is handed to `scan-guards-apply`, which SPLICES it, and a private
-    // install must never splice the file the host repository versions.
+    // Resolved ONCE for the whole walk: the census recognises exactly the file
+    // older scans produced, which under a private install is `CLAUDE.local.md`.
     let owned = crate::shared::context::guards_file_name(root);
     walk(root, root, owned, &mut out, 0);
     // Stable order so every projection is deterministic across runs.
     out.entries.sort_by(|a, b| a.path.cmp(&b.path));
     out.errors.sort();
     out
-}
-
-/// Run `scan-guards-list`. Prints a JSON array to stdout; exit 0 always.
-pub fn run(root: &Path) {
-    let census = collect_pending(root);
-    let arr: Vec<Value> = census
-        .entries
-        .iter()
-        .map(|p| {
-            json!({
-                "path": p.path,
-                "subproject": p.subproject,
-                "kind": p.kind,
-                "frameworks": p.frameworks,
-                "stacks": p.stacks,
-            })
-        })
-        .collect();
-    // `to_string` cannot fail for this shape; fall back to `[]` defensively.
-    println!("{}", serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string()));
 }
 
 /// Recursively walk `dir`, collecting pending subproject instruction files named
@@ -180,14 +138,8 @@ fn classify(path: &Path, root: &Path, out: &mut PendingScaffolds) {
     if !text.contains(GUARDS_PENDING_OPEN) {
         return;
     }
-    let (kind, frameworks, stacks) = parse_facts(&text);
-    out.entries.push(Pending {
-        path: path.to_string_lossy().into_owned(),
-        subproject,
-        kind,
-        frameworks,
-        stacks,
-    });
+    let (kind, _, _) = parse_facts(&text);
+    out.entries.push(Pending { path: path.to_string_lossy().into_owned(), subproject, kind });
 }
 
 /// `dir` relative to `root`, forward-slashed; `.` for `root` itself. Used for
@@ -225,8 +177,8 @@ pub(crate) fn subproject_of(claude_md: &Path, root: &Path) -> String {
 }
 
 /// Parse the `<!-- facts: kind=...; frameworks=a, b; stacks=x(0.95) -->` line
-/// Wave 1 emits. Returns `(kind, frameworks, stacks)`; missing fields degrade
-/// to `("", vec![], vec![])`. `frameworks=(none)` (Wave 1's empty sentinel)
+/// older scans wrote. Returns `(kind, frameworks, stacks)`; missing fields degrade
+/// to `("", vec![], vec![])`. `frameworks=(none)` (the empty sentinel)
 /// yields an empty vec; an absent `stacks=` segment (legacy line / nothing
 /// inferred) likewise. Stacks come back as the raw `name(confidence)` tokens,
 /// verbatim, so generator → parser round-trips byte-for-byte.
@@ -314,7 +266,6 @@ mod tests {
         let p = &found[0];
         assert_eq!(p.subproject, "apps/rt");
         assert_eq!(p.kind, "rust");
-        assert_eq!(p.frameworks, vec!["serde".to_string(), "clap".to_string()]);
     }
 
     /// AC-1 — a fixture tree is not a subproject. Every conventional test
@@ -368,7 +319,7 @@ mod tests {
 
         let found = collect_pending(root).entries;
         assert_eq!(found.len(), 1);
-        assert!(found[0].frameworks.is_empty(), "(none) sentinel must yield an empty vec");
+        assert!(parse_facts(&pending_block("rust", "(none)")).1.is_empty(), "(none) sentinel must yield an empty vec");
         assert_eq!(found[0].kind, "rust");
     }
 
@@ -416,7 +367,7 @@ mod tests {
     fn stacks_facts_parse_round_trip() {
         use mustard_core::domain::vocabulary::stacks::StackDetection;
 
-        // Generator → parser round-trip on the REAL Wave-1 output (not a
+        // Generator → parser round-trip on the REAL generator output (not a
         // hand-written line), so the two sides can never drift silently.
         let detections = vec![
             StackDetection {
@@ -448,32 +399,4 @@ mod tests {
         assert!(none.is_empty(), "absent stacks segment must yield an empty vec");
     }
 
-    #[test]
-    fn stacks_facts_worklist_carries_stacks() {
-        // End-to-end: a pending CLAUDE.md whose facts line carries `stacks=`
-        // surfaces the tokens on the worklist entry.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let sub = root.join("apps").join("web");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(
-            sub.join("CLAUDE.md"),
-            format!(
-                "# Web\n\n## Guards\n\n{GUARDS_PENDING_OPEN}\n<!-- facts: kind=php; frameworks=laravel/framework; stacks=laravel(0.95) -->\n{GUARDS_CLOSE}\n"
-            ),
-        )
-        .unwrap();
-
-        // A sibling with a legacy facts line (no `stacks=` segment).
-        let old = root.join("apps").join("old");
-        std::fs::create_dir_all(&old).unwrap();
-        std::fs::write(old.join("CLAUDE.md"), pending_block("rust", "serde")).unwrap();
-
-        let found = collect_pending(root).entries;
-        assert_eq!(found.len(), 2);
-        // Sorted by path: apps/old before apps/web.
-        assert!(found[0].stacks.is_empty(), "legacy entry must keep an empty stacks list");
-        assert_eq!(found[1].stacks, vec!["laravel(0.95)".to_string()]);
-        assert_eq!(found[1].frameworks, vec!["laravel/framework".to_string()]);
-    }
 }

@@ -1,7 +1,7 @@
 //! `scan-patterns-apply` — write the enrich agent's authored pattern-skill mold
 //! to `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, create-only.
 //!
-//! The pattern-mold twin of `scan-guards-apply`. Mustard-generated molds are
+//! Mustard-generated molds are
 //! swept before generation ([`super::sweep`]), so by the time apply runs the
 //! target does not exist and this is a plain CREATE. It refuses to overwrite an
 //! existing mold — whatever survived the sweep is hand-authored/adopted and must

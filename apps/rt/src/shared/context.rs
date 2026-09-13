@@ -178,10 +178,10 @@ fn exclude_path_cached(root: &Path) -> Option<PathBuf> {
 /// The instruction-file name this install OWNS at `root`: [`CLAUDE_LOCAL_MD`]
 /// under a private install, [`CLAUDE_MD`] otherwise.
 ///
-/// This is the WRITE-side answer — the file `scan --full` produces and the one a
-/// census of pending Guards scaffolds may hand to `scan-guards-apply`. It never
-/// falls back: a private install must never write into (or splice) the file the
-/// host repository versions, so "owned" here is exact rather than tolerant.
+/// This is the OWNED answer — the file a census of pending Guards scaffolds
+/// looks for. It never falls back: a private install must never be pointed at
+/// the file the host repository versions, so "owned" here is exact rather than
+/// tolerant.
 /// Readers want [`guards_file`] instead.
 #[must_use]
 pub fn guards_file_name(root: &Path) -> &'static str {
@@ -223,8 +223,8 @@ pub fn guards_file(root: &Path, dir: &Path) -> PathBuf {
 
 /// Whether `name` names an instruction file in EITHER layer.
 ///
-/// For the classifiers that receive a path they did not resolve (a
-/// `scan-guards-apply` argv, a doc linter's directory walk) and only need to
+/// For the classifiers that receive a path they did not resolve (a write
+/// gate's target, a doc linter's directory walk) and only need to
 /// know "is this an instruction file at all?". Deliberately mode-blind: a
 /// refusal that only recognised the mode's own name would wave through the other
 /// layer's file, which is the wrong direction for a guard.

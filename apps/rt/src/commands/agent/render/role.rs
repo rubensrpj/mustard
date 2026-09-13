@@ -134,7 +134,7 @@ pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spe
 /// grounded 3-6 line cap, the project locale (the caller reads it from
 /// `mustard.json` through [`mustard_core::ProjectConfig::language`]), the
 /// pending block's deterministic facts, and the delivery contract (return the
-/// lines as text; never write a file — the caller pipes to `scan-guards-apply`).
+/// lines as text; never write a file — nothing writes them into a `CLAUDE.md`).
 fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) -> String {
     let facts = read_guards_facts(project, &project.join(subproject));
     let facts_line = if facts.is_empty() {
@@ -151,8 +151,8 @@ fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) ->
          regenerate via that script, never hand-edit it\"; a detected stack ⇒ the \
          convention that stack enforces here. Write in the project locale \
          ({spec_lang}), in plain words. Be concise; never generic prose. Deliver \
-         ONLY the lines as your final message; do NOT write any file — the caller \
-         pipes your text to scan-guards-apply.{facts_line}"
+         ONLY the lines as your final message; do NOT write any file — nothing \
+         writes them into a CLAUDE.md for you.{facts_line}"
     )
 }
 
@@ -520,7 +520,8 @@ mod tests {
         let dir = tempdir().unwrap();
         anchor(dir.path());
         let block = build_role_block("guards", dir.path(), "apps/rt", "pt-BR");
-        assert!(block.contains("scan-guards-apply"), "delivery contract missing: {block}");
+        assert!(block.contains("final message"), "delivery contract missing: {block}");
+        assert!(!block.contains("scan-guards-apply"), "names a command that no longer exists: {block}");
         assert!(block.contains("do NOT write any file"), "write-restriction missing: {block}");
     }
 

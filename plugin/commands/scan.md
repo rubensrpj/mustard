@@ -1,14 +1,14 @@
 ---
-description: An internal flow — not a door. The map is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own. This flow is the FULL pass (subproject maps + Guards prose + pattern-skill molds) the router runs when the census needs re-authoring after a large change.
+description: An internal flow — not a door. The map is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own. This flow is the FULL pass (subproject maps + pattern-skill molds) the router runs when the census needs re-authoring after a large change. It never writes a `CLAUDE.md`.
 argument-hint: [--root <dir>] [--out <path>]
 user-invocable: false
 ---
 <!-- mustard:generated -->
 # scan — Codebase model
 
-**This is not a door.** The deterministic census is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own. Guards prose and pattern molds are written by agents, so this flow is the FULL pass, and the router reaches it when the census needs re-authoring, never the user typing a command.
+**This is not a door.** The deterministic census is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own. Pattern molds are written by agents, so this flow is the FULL pass, and the router reaches it when the census needs re-authoring, never the user typing a command.
 
-**Enrichment is STANDARD** — no `--full`/`--enrich` flag, no spend prompt. Every run does the deterministic model, the subproject maps, and both enrichment passes (Guards + pattern molds).
+**Enrichment is STANDARD** — no `--full`/`--enrich` flag, no spend prompt. Every run does the deterministic model, the subproject maps, and the pattern-mold enrichment.
 
 **Git — the scan never writes to it.** It stages nothing, commits nothing and needs no clean tree: what it writes stays outside git, so it never mixes with your work. A re-scan over unchanged code is byte-stable.
 
@@ -20,17 +20,9 @@ mustard-rt run scan --full [--root <dir>] [--out <path>]
 
 Writes `.claude/grain.model.json` (the language-agnostic model — modules, declarations, dependency graph, mined roles, vertical slices, shared contracts, touchpoints) AND regenerates the mustard-owned map file `<unit>/.claude/scan-map.md` for EVERY unit — each subproject and the workspace root alike. Only the files that changed since the last pass are read again (`read` in the JSON lists them; `full: true` means every file was read). **No `CLAUDE.md` is ever written** (nor a `CLAUDE.local.md`): those files belong to the project. Downstream asks the map with `mustard-rt run map` and `mustard-rt run feature` — never by reading it directly. Parse the JSON (`{ ok, model, full, read, files, regenerated?, over_cap? }`); a non-empty `over_cap` means a RUNAWAY machine map (generator bug — surface it), never oversized human prose. `ok:false` with `reason: "hollow-submodules"` + `empty_submodules[]` means a submodule is declared but not checked out: the model would silently omit that whole subproject, so nothing was mined and the previous model is intact — run `git submodule update --init --recursive` and re-run. (A worktree cut by the plugin populates them for you; this catches the ones cut out of band.)
 
-Both enrichment passes below are **incremental** (only the delta since the last scan) and **fail-open** (headless / no LLM / empty worklist → skip silently; the model is already complete). One cheap read-only agent per subproject per pass.
+The enrichment pass below is **fail-open** (headless / no LLM / empty worklist → skip silently; the model is already complete). One cheap read-only agent per subproject.
 
-## 2. Guards (do/don't prose)
-
-1. `mustard-rt run scan-guards-list` → JSON `[{path, subproject, kind, frameworks}]` for every subproject `CLAUDE.md` still `pending` (root excluded; error → `[]`). Empty → skip.
-2. Per item: `mustard-rt run agent-prompt-render --role guards --subproject <subproject> --emit ref` (spec-less — the renderer reads the pending block + derives the language from `mustard.json`). Pass the stub to the Task **verbatim**.
-3. Dispatch **one agent per subproject** `subagent_type: mustard:mustard-guards` (read-only), all in ONE message. Relay each agent's lines to `mustard-rt run scan-guards-apply --path <path> --guards -` (stdin). Non-destructive, capped ~6 lines, flips the marker off `pending`.
-
-Critical Guards: a line may open with `[critical]` to be enforced at edit time — the post-edit gate Denies (strict) or advises (warn, the default; `MUSTARD_GUARD_GATE_MODE`) an edit that violates the checkable form `[critical] never <forbidden> in <glob>`. Author sparingly; unmarked Guards stay advisory. See `mustard-guards.md`.
-
-## 3. Pattern skills (the `{role}-pattern` molds)
+## 2. Pattern skills (the `{role}-pattern` molds)
 
 The per-subproject "how we write an X module here" skills that auto-load when an agent edits that folder (`{subproject}/.claude/skills/{role}-pattern/SKILL.md`). **A mustard-generated mold is derived — it is regenerated from scratch on every scan, never preserved.** The origin signal is the frontmatter `source:` field: `source: scan` = mustard-generated (swept and re-authored); `source: manual` (or hand-authored) = human-owned, preserved forever. To adopt a generated mold and stop regenerating it, flip `source: scan` → `source: manual`. The flow is **sweep → list → render → author → apply**, and every step is a command — you never hand-build a prompt or a file in it:
 
@@ -50,7 +42,7 @@ The per-subproject "how we write an X module here" skills that auto-load when an
 
 ## Inviolable
 
-- The deterministic pass NEVER calls AI and NEVER reads source; it always writes `grain.model.json` + every unit's `.claude/scan-map.md` (workspace root included) and never a `CLAUDE.md`. Only the Guards ENRICH excludes the root.
+- The deterministic pass NEVER calls AI and NEVER reads source; it always writes `grain.model.json` + every unit's `.claude/scan-map.md` (workspace root included) and never a `CLAUDE.md`.
 - Enrichment is STANDARD + fail-open — no opt-in flag, no confirmation, no dollar cost EVER. If a pass can run it runs silently; if it cannot it skips silently.
-- An LLM in enrichment writes exactly TWO things: subproject `## Guards` (capped ~6 lines, non-destructive) and `{role}-pattern` molds — swept fresh each scan (every `source: scan` mold is deleted then re-authored; a `source: manual`/hand-authored mold is NEVER touched). Never the root, never source, never system prompts.
+- An LLM in enrichment writes exactly ONE thing: the `{role}-pattern` molds — swept fresh each scan (every `source: scan` mold is deleted then re-authored; a `source: manual`/hand-authored mold is NEVER touched). Never a `CLAUDE.md`, never source, never system prompts.
 - **NEVER write a script to work around a rough edge in this flow** (no prompt builder, no worklist splitter, no envelope transcriber). Every step here is a `mustard-rt run …` command: render the prompt, pipe the envelope on stdin *or forward its file with `--content @<path>`*, count what is left with `scan-patterns-list --subproject <dir>`, one agent per subproject. A script is a SYMPTOM — it hides the defect, and it silently drops the contracts these commands carry (that is how molds come back missing `metadata`, and a mold whose frontmatter is broken is never swept again: it blocks its cluster forever). The two cases that used to force one — a harness-persisted return and a convergence count — now have commands, so the ban lands where it belongs: splitting an envelope at `=== END ===` boundaries is the documented form (step 4), splitting INSIDE a block is still the forbidden one. Hit friction → fix the tool or this file, then re-run.
