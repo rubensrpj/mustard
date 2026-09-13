@@ -406,9 +406,14 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
     })
 }
 
-/// Kill + reap a child whose output no longer matters, then join its readers.
-/// Killing closes the pipes, so the reader threads hit EOF and finish instead
-/// of outliving this call.
+/// Kill + reap a child whose output no longer matters, and let its readers go.
+///
+/// The readers are NOT joined. Killing the shell does not kill what the shell
+/// started: a grandchild (`sh -c "sleep 5"`, or `cmd /C gh …` on Windows)
+/// keeps the pipes open, and joining the readers would wait for it — the
+/// deadline would hold only as long as the grandchild chose to. Dropping the
+/// handles detaches the threads; they hit EOF and finish on their own when the
+/// grandchild exits, and this call returns at the deadline.
 fn reap(
     child: &mut std::process::Child,
     out_reader: std::thread::JoinHandle<Vec<u8>>,
@@ -416,8 +421,8 @@ fn reap(
 ) {
     let _ = child.kill();
     let _ = child.wait();
-    let _ = out_reader.join();
-    let _ = err_reader.join();
+    drop(out_reader);
+    drop(err_reader);
 }
 
 /// Free the given OTLP port: find whatever process is listening on
@@ -738,15 +743,20 @@ mod tests {
     }
 
     /// A command that outlives its deadline is killed and reported as
-    /// `TimedOut` — a class of its own, never a silent success.
+    /// `TimedOut` — a class of its own, never a silent success. The call
+    /// returns at the deadline, not when the command would have ended: the
+    /// sleeping process is a grandchild of the shell, and it holds the pipes
+    /// open after the shell is killed.
     #[test]
     fn shell_reports_timed_out_when_the_deadline_fires_first() {
         let dir = std::env::temp_dir();
+        let started = Instant::now();
         let outcome = run_shell_with_deadline(SLEEPS_SECONDS, &dir, Duration::from_secs(1));
         match outcome {
             ShellOutcome::TimedOut { after } => assert_eq!(after, Duration::from_secs(1)),
             other => panic!("a command past its deadline must report TimedOut, got {other:?}"),
         }
+        assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
     }
 
     #[test]
