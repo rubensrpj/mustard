@@ -98,6 +98,30 @@ fn build_body(description: &str, parent: &str, lang: Locale) -> String {
     )
 }
 
+/// A spec-mãe pelo nome de uma pasta de spec que existe em `specs`: o nome
+/// aparado e sem a barra do fim; a pasta com esse nome, ou, sem ela, a única
+/// que só difere em maiúsculas. É o nome da pasta que fica gravado, e é por
+/// ele que a testemunha acha o ajuste na branch da mãe. `None` quando
+/// nenhuma pasta de spec tem o nome.
+fn existing_parent(specs: &Path, given: &str) -> Option<String> {
+    let name = given.trim().trim_end_matches(['/', '\\']).trim();
+    if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
+        return None;
+    }
+    let folders: Vec<String> = std::fs::read_dir(specs)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|folder| !folder.starts_with('.'))
+        .collect();
+    if let Some(exact) = folders.iter().find(|folder| *folder == name) {
+        return Some(exact.clone());
+    }
+    let mut same: Vec<&String> = folders.iter().filter(|folder| folder.eq_ignore_ascii_case(name)).collect();
+    (same.len() == 1).then(|| same.remove(0).clone())
+}
+
 /// Core routine — pure-ish (writes files), returns a report.
 fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     // The body headings follow the project's text language, as the parent's do.
@@ -105,14 +129,21 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     let today = today_utc();
     let slug = build_slug(&opts.description, lang, &today);
     let spec_dir = ClaudePaths::spec_dir_or_unchecked(cwd, &slug);
+    let parent = spec_dir.parent().and_then(|specs| existing_parent(specs, &opts.parent));
     let mut report = TacticalFixReport {
-        parent: opts.parent.clone(),
+        parent: parent.clone().unwrap_or_else(|| opts.parent.clone()),
         slug: slug.clone(),
         spec_dir: spec_dir.display().to_string(),
         spec_md: spec_dir.join("spec.md").display().to_string(),
         meta_json: spec_dir.join("meta.json").display().to_string(),
         link_emitted: false,
         error: None,
+    };
+    // Só o nome de uma pasta de spec que existe: a mãe gravada como veio, com
+    // espaço, barra ou outra caixa, nunca casaria com a branch dela.
+    let Some(parent) = parent else {
+        report.error = Some("parent_not_found".to_string());
+        return report;
     };
     if spec_dir.exists() {
         report.error = Some("dir_exists".to_string());
@@ -123,7 +154,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         return report;
     }
     let ts = now_iso8601();
-    let body = build_body(&opts.description, &opts.parent, lang);
+    let body = build_body(&opts.description, &parent, lang);
     let spec_path = spec_dir.join("spec.md");
     if let Err(e) = write_atomic(&spec_path, body.as_bytes()) {
         report.error = Some(format!("write spec.md failed: {e}"));
@@ -136,7 +167,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         scope: Some(opts.scope.clone()),
         lang: Some(lang.as_str().to_string()),
         checkpoint: Some(ts.clone()),
-        parent: Some(opts.parent.clone()),
+        parent: Some(parent.clone()),
         // A tactical fix rides its parent's branch — no base of its own.
         base: None,
         is_wave_plan: None,
@@ -156,7 +187,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     // branch da spec-mãe, em que o tactical fix vai junto. Ali a escada nomeia
     // a mãe: a testemunha acha o ajuste pela sessão e o aprova, e o portão de
     // escrita continua julgando a mãe.
-    let parent_branch = DiskSpecState::new(cwd).state(&opts.parent).and_then(|state| state.branch);
+    let parent_branch = DiskSpecState::new(cwd).state(&parent).and_then(|state| state.branch);
     if let Err(refusal) =
         crate::commands::spec_events::write::record_birth(cwd, &slug, parent_branch.as_deref())
     {
@@ -178,7 +209,7 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         },
         event: "spec.link".to_string(),
         payload: json!({
-            "parent": opts.parent,
+            "parent": parent,
             "child": slug,
             "reason": "tactical-fix",
         }),
@@ -239,9 +270,15 @@ mod tests {
         assert!(b.contains("## Arquivos"));
     }
 
+    /// A pasta da spec-mãe `name`, sem mais nada.
+    fn parent_folder(root: &Path, name: &str) {
+        std::fs::create_dir_all(root.join(".claude").join("spec").join(name)).unwrap();
+    }
+
     #[test]
     fn create_writes_spec_and_meta() {
         let dir = tempdir().unwrap();
+        parent_folder(dir.path(), "epic-1");
         let opts = TacticalFixOpts {
             parent: "epic-1".to_string(),
             description: "Fix null guard".to_string(),
@@ -257,6 +294,7 @@ mod tests {
     #[test]
     fn create_aborts_when_dir_exists() {
         let dir = tempdir().unwrap();
+        parent_folder(dir.path(), "epic-1");
         let opts = TacticalFixOpts {
             parent: "epic-1".to_string(),
             description: "Fix one thing".to_string(),
@@ -288,5 +326,36 @@ mod tests {
         assert_eq!(state.phase, Some("plan"));
         assert!(!state.approved);
         assert_eq!(state.branch.as_deref(), Some("feature/epic-1"), "it rides its parent's branch");
+    }
+
+    /// A mãe é o nome de uma pasta de spec que existe: com barra no fim, com
+    /// espaço ou em maiúsculas, fica gravado o nome da pasta; um nome que
+    /// nenhuma pasta tem é recusado, e nada é criado.
+    #[test]
+    fn the_parent_is_the_name_of_an_existing_spec_folder() {
+        let dir = tempdir().unwrap();
+        parent_folder(dir.path(), "epic-1");
+        for (given, description) in [("epic-1/", "Fix one"), (" EPIC-1 ", "Fix two"), ("Epic-1/", "Fix three")] {
+            let opts = TacticalFixOpts {
+                parent: given.to_string(),
+                description: description.to_string(),
+                scope: "light".to_string(),
+            };
+            let report = create(dir.path(), &opts);
+            assert!(report.error.is_none(), "{given:?}: {:?}", report.error);
+            assert_eq!(report.parent, "epic-1", "{given:?}");
+            let meta = mustard_core::read_meta(&dir.path().join(".claude/spec").join(&report.slug).join("meta.json"))
+                .expect("the meta");
+            assert_eq!(meta.parent.as_deref(), Some("epic-1"), "{given:?}");
+        }
+
+        let opts = TacticalFixOpts {
+            parent: "epic-2".to_string(),
+            description: "Fix four".to_string(),
+            scope: "light".to_string(),
+        };
+        let report = create(dir.path(), &opts);
+        assert_eq!(report.error.as_deref(), Some("parent_not_found"));
+        assert!(!dir.path().join(".claude/spec").join(&report.slug).exists(), "nothing was created");
     }
 }

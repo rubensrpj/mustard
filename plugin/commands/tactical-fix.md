@@ -24,7 +24,7 @@ The binary derives the slug (`YYYY-MM-DD-<kebab>`), creates the directory (abort
 
 **The sidecar records `base: null`, and that is deliberate:** a tactical fix has no base of its own because it never cuts a branch of its own — it rides the PARENT's work branch, where the parent's spec, waves and code already live. A sub-spec that recorded a base would be claiming an integration path it does not have.
 
-**What the binary prints is a JSON report**, pretty-printed on stdout: `parent`, `slug`, `spec_dir`, `spec_md`, `meta_json`, `link_emitted`, and `error` (`dir_exists` when the directory was already there — nothing was overwritten). Read it; do not print it raw. The three lines below are what YOU say afterwards, from the fields it returned — they are your report to the user, not the command's output:
+**What the binary prints is a JSON report**, pretty-printed on stdout: `parent`, `slug`, `spec_dir`, `spec_md`, `meta_json`, `link_emitted`, and `error` (`dir_exists` when the directory was already there — nothing was overwritten; `parent_not_found` when no spec folder has the parent's name — nothing was created). The `parent` in the report is the folder's own name. Read it; do not print it raw. The three lines below are what YOU say afterwards, from the fields it returned — they are your report to the user, not the command's output:
 
 ```
 Sub-spec created at .claude/spec/<slug>/spec.md
@@ -34,7 +34,7 @@ Edit the spec (Contexto, Critérios de Aceitação, Arquivos) and run /mustard:s
 
 ## Inviolable
 
-- Fail-open on parent existence — the sub-spec is still created if `<parent>` is missing (only dashboard navigation degrades).
+- The parent must exist — `<parent>` is the name of a spec folder under `.claude/spec/`; spaces, a trailing slash and letter case are forgiven, anything else is refused with `parent_not_found`.
 - Never mutate the parent — the link is one-way (child → parent via `meta.json#parent` + `spec.link`).
 - One call = one sub-spec. No "light mode" pipeline — the sub-spec passes through the normal gates / QA / CLOSE.
 - Do NOT auto-approve — the user reviews the seed and runs `/mustard:spec`.
