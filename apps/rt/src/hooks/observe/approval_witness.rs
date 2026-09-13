@@ -103,8 +103,10 @@ impl Standing {
 
 /// A spec que a pergunta de aprovação decide, e onde ela está: a spec atual,
 /// pela escada única; quando ela não espera aprovação, a spec ligada à
-/// sessão, se essa espera. É o caso do ajuste tático, que mora na branch da
-/// spec-mãe: a escada nomeia a mãe.
+/// sessão, se essa espera e se o `meta.json` dela nomeia como mãe a spec
+/// atual. É o caso do ajuste tático, que mora na branch da spec-mãe: a escada
+/// nomeia a mãe. Qualquer outra spec ligada à sessão fica de fora: a sessão se
+/// liga a toda spec que um evento nomeia.
 fn standing(root: &str, session: Option<&str>) -> Standing {
     let disk = DiskSpecState::new(Path::new(root));
     let home = spec_root(Path::new(root));
@@ -126,10 +128,16 @@ fn standing(root: &str, session: Option<&str>) -> Standing {
     }
     session
         .and_then(|sid| context::spec_for_session(root, sid))
-        .filter(|bound| *bound != spec)
+        .filter(|bound| *bound != spec && parent_of(&home, bound).as_deref() == Some(spec.as_str()))
         .map(judge)
         .filter(Standing::awaits)
         .unwrap_or(current)
+}
+
+/// A spec-mãe que o `meta.json` de `spec` nomeia: a de um ajuste tático.
+fn parent_of(home: &Path, spec: &str) -> Option<String> {
+    let paths = mustard_core::ClaudePaths::for_project(home).ok()?.for_spec(spec).ok()?;
+    mustard_core::read_meta(&paths.meta_json_path())?.parent
 }
 
 /// A pergunta é a de aprovação, com o texto do catálogo em um dos idiomas.
@@ -617,6 +625,11 @@ mod tests {
         crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
         record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
         record_for(root, "ajuste", "state", json!({ "phase": "plan", "branch": "feature/epic-1" }));
+        std::fs::write(
+            root.join(".claude").join("spec").join("ajuste").join("meta.json"),
+            r#"{"scope":"light","stage":"Analyze","parent":"epic-1"}"#,
+        )
+        .unwrap();
         context::bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");
 
         let said = witness(root, &approve_or_adjust("Aprovar"));
@@ -625,6 +638,26 @@ mod tests {
         let disk = DiskSpecState::new(root);
         assert!(disk.state("ajuste").unwrap().approved, "the tactical fix is approved");
         assert_eq!(disk.state("epic-1").unwrap().phase, Some("running"), "the parent is untouched");
+    }
+
+    /// Uma spec ligada à sessão que não é ajuste da spec da branch nunca é
+    /// aprovada por ali: a sessão se liga a toda spec que um evento nomeia.
+    #[test]
+    fn a_bound_spec_that_is_not_a_fix_of_the_branch_spec_is_never_approved() {
+        if ambient_override() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
+        record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
+        record_for(root, "outra", "state", json!({ "phase": "plan", "branch": "feature/outra" }));
+        context::bind_session_spec(&root.to_string_lossy(), SESSION, "outra");
+
+        let said = witness(root, &approve_or_adjust("Aprovar"));
+        let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
+        assert_eq!(said, Verdict::Inject { context: expected }, "the branch spec answers");
+        assert!(!DiskSpecState::new(root).state("outra").unwrap().approved, "the other spec stays in plan");
     }
 
     /// Respondida num worktree, a pergunta confere a spec no checkout
