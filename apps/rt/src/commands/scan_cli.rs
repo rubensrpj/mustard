@@ -39,6 +39,35 @@ pub enum ScanCmd {
         full: bool,
     },
 
+    /// Ask the project map a short question: `examples` for a task
+    /// (`--file <target>` or `--task "<task>"`), `importers --file`,
+    /// `tests --file`, `search --query`, `summary` (the session-start digest,
+    /// up to 3 kB) or `skill --path <SKILL.md>` (every cited path exists and
+    /// the skill stays under 500 lines). Reads `.claude/grain.model.json`;
+    /// prints JSON and exits 1 on a refusal.
+    #[command(display_order = 105)]
+    Map {
+        /// The question to ask.
+        #[arg(value_enum)]
+        question: crate::commands::map::Question,
+        /// The file the question is about (for `examples`, the file the task
+        /// creates or changes, or its folder).
+        #[arg(long)]
+        file: Option<String>,
+        /// The task, in words, when there is no target file (`examples`).
+        #[arg(long)]
+        task: Option<String>,
+        /// The words to look for (`search`).
+        #[arg(long)]
+        query: Option<String>,
+        /// The skill to check (`skill`).
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Any directory inside the project. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+
     /// Persist a CONFIRMED vocabulary bridge into the learned-equivalences
     /// overlay (`.claude/grain.equivalences.learned.json`) — the write-back of
     /// a settled `uncovered` row: the existence gate found which code
@@ -61,7 +90,7 @@ pub enum ScanCmd {
         root: PathBuf,
     },
     /// Enumerate every subproject `CLAUDE.md` whose `## Guards` block is still
-    /// `pending` (the Wave-2 enrich hand-off seeded by `scan --full`). Emits a
+    /// `pending` (the enrich hand-off an older `scan --full` seeded). Emits a
     /// JSON array `[{path, subproject, kind, frameworks}]` parsed from each
     /// block's facts comment. Excludes the workspace-root unit. Fail-open: any
     /// IO error degrades to `[]` and exit 0.
@@ -241,6 +270,9 @@ pub enum ScanCmd {
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
+        ScanCmd::Map { question, file, task, query, path, root } => {
+            crate::commands::map::run(&crate::commands::map::MapOpts { root, question, file, task, query, path });
+        }
         ScanCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
         ScanCmd::ScanGuardsList { root } => scan_guards::list::run(&root),
         ScanCmd::ScanGuardsApply { path, root, guards } => {

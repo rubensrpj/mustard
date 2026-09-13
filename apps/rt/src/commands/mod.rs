@@ -48,6 +48,7 @@ pub mod scan_claude;
 pub mod scan_equivalences;
 pub mod scan_guards;
 pub mod lapidation;
+pub mod map;
 pub mod scan_patterns;
 pub mod feature;
 pub mod orient;
