@@ -325,13 +325,15 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
 }
 
 /// Antes de uma porta do binário avançar o estágio do `meta.json` de uma spec
-/// antiga, parada antes da execução e ainda sem nenhum `state`, a spec nasce
-/// em plano pelo [`record_birth`]. A trava dela deixa de seguir o `meta.json`
-/// e passa a ler o estado: a execução só vem depois do "Aprovar". Nas outras
-/// specs, não faz nada.
+/// sem nenhum `state` que a trava lê em plano — a antiga parada antes da
+/// execução, ou a aberta pelo `run write` sem `meta.json` —, a spec nasce em
+/// plano pelo [`record_birth`]. A trava dela deixa de seguir o `meta.json` e
+/// passa a ler o estado: a execução só vem depois do "Aprovar". O
+/// `emit-pipeline` cria o `meta.json` que falta já no estágio novo, e sem
+/// este nascimento a trava soltaria. Nas outras specs, não faz nada.
 pub(crate) fn birth_before_advance(start: &Path, spec: &str) {
-    use crate::shared::spec_state::{unborn, unborn_draft};
-    if unborn(start, spec) && unborn_draft(start, spec) {
+    use crate::shared::spec_state::{lock_state, unborn};
+    if unborn(start, spec) && lock_state(start, spec).is_some_and(|state| state.phase == Some("plan")) {
         let _ = record_birth(start, spec, None);
     }
 }

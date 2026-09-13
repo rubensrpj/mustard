@@ -13,8 +13,8 @@
 //!    banco de lições são gravados só pelo binário. A leitura passa.
 //! 3. **Aprovação** ([`ApprovalRule`]): o código do projeto não muda enquanto
 //!    a spec atual não está numa fase aprovada, pela mesma lista do `State`:
-//!    em levantamento, em plano ou descartada; sem nenhum `state`, pelo
-//!    `meta.json`.
+//!    em levantamento, em plano ou descartada; sem nenhum `state`, pela
+//!    regra do [`lock_state`].
 //! 4. **Branch da spec** ([`BranchRule`]): uma edição fora da branch em que a
 //!    spec mora só avisa, nomeando as duas.
 //! 5. **Base** ([`BaseRule`]): nenhuma edição direta numa base que o
@@ -22,11 +22,13 @@
 //!    descartável. Sem `git.flow`, nenhuma branch é base; o portão nunca
 //!    pergunta ao git qual é a branch padrão.
 //!
-//! Uma spec sem nenhum `state`, com ou sem `spec.ndjson`, segue o `meta.json`
-//! ([`lock_state`]): parada antes da execução, conta como em plano, e trava;
-//! a que já executou ou fechou pelo fluxo velho, e a branch que o Mustard não
-//! abriu, ficam livres, e as regras da aprovação e da branch se calam. O
-//! portão não corta branch nenhuma: o único corte é o que o `spec-draft` faz.
+//! O estado da spec vem do [`lock_state`], a regra única da trava: com algum
+//! `state`, a dobra deles; sem nenhum, o `meta.json` — parada antes da
+//! execução trava, encerrada ou em execução pelo fluxo velho não; sem os dois
+//! e com o `spec.ndjson`, em plano, e trava. Só a branch que o Mustard não
+//! abriu, sem arquivo de eventos e sem `meta.json`, fica livre, e as regras da
+//! aprovação e da branch se calam. O portão não corta branch nenhuma: o único
+//! corte é o que o `spec-draft` faz.
 //!
 //! ## Duas raízes
 //!
@@ -447,16 +449,13 @@ mod tests {
         }
     }
 
-    /// Tirar o único `state` do arquivo não destrava a spec do `spec-draft`:
-    /// sem `state` visível, a trava segue o `meta.json`, que ainda está em
-    /// plano.
+    /// Tirar o único `state` do arquivo não destrava a spec: sem `state` e sem
+    /// `meta.json`, o arquivo de eventos conta como em plano.
     #[test]
     fn removing_the_only_state_keeps_the_approval_lock() {
         let dir = project("{}");
         let root = dir.path();
         stand_on_spec_branch(root, "x");
-        std::fs::write(root.join(".claude").join("spec").join("x").join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#)
-            .expect("meta");
         let first = record_state(root, "x", json!({ "phase": "plan" }));
         let path = store::spec_file(root, "x").expect("spec file");
         let remove = json!({ "targets": [first], "reason": "engano" });
@@ -700,6 +699,29 @@ mod tests {
                 .expect("message");
             assert_eq!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Allow, "with a note: {meta}");
         }
+    }
+
+    /// Uma spec aberta pelo `run write`, sem `meta.json`, conta como em plano.
+    /// A troca de estágio pelo `emit-pipeline` cria o `meta.json` já em
+    /// execução, e a spec nasce em plano antes: a trava continua fechada.
+    #[test]
+    fn a_spec_opened_by_run_write_stays_locked_when_the_stage_moves() {
+        let dir = project("{}");
+        let root = dir.path();
+        stand_on_spec_branch(root, "x");
+        let events = mustard_core::io::spec_events::spec_file(root, "x").expect("spec file");
+        let note = json!({ "author": "user", "text": "um recado" });
+        mustard_core::io::spec_events::write(&events, "message", note.as_object().cloned().unwrap(), &[])
+            .expect("message");
+        let locked = |root: &Path| matches!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Deny { .. });
+        assert!(locked(root), "a note alone counts as a plan");
+
+        let to = json!({ "stage": "Execute" });
+        crate::commands::event::emit_pipeline::patch_meta_for_transition(root, "x", "pipeline.stage", &to, "2026-09-13T00:00:00Z");
+        let meta = std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("meta.json")).expect("meta");
+        assert!(meta.contains("Execute"), "the emit wrote the meta already in execution: {meta}");
+        assert!(locked(root), "still locked");
+        assert_eq!(lock_state(root, "x").and_then(|state| state.phase), Some("plan"), "born in plan");
     }
 
     /// Numa spec antiga em plano, o binário que avança o estágio para a

@@ -88,32 +88,31 @@ impl SpecState for DiskSpecState {
 }
 
 /// A spec `spec` do projeto em `root` foi aprovada pelo usuário: o estado
-/// dela, lido do `spec.ndjson` (o do checkout principal, num worktree), está
-/// numa fase de spec aprovada. A única resposta a "está aprovada?": o
-/// `approve-spec`, a retomada, o `status`, a página da spec e o
-/// `wave-scaffold` perguntam aqui.
+/// que a trava lê ([`lock_state`]) está numa fase de spec aprovada. A única
+/// resposta a "está aprovada?": o `approve-spec`, a retomada, o `status`, a
+/// página da spec e o `wave-scaffold` perguntam aqui.
 #[must_use]
 pub(crate) fn approved(root: &Path, spec: &str) -> bool {
-    DiskSpecState::new(root).state(spec).is_some_and(|state| state.approved)
+    lock_state(root, spec).is_some_and(|state| state.approved)
 }
 
-/// O estado que a trava da aprovação lê, decidido só aqui. Com algum `state`
-/// visível no `spec.ndjson` (o do checkout principal, num worktree), vale a
-/// dobra deles. Sem nenhum `state`, com ou sem arquivo, vale o `meta.json`:
-/// uma spec do `spec-draft` parada antes da execução ([`unborn_draft`]) conta
-/// como em plano, sem branch; uma que já executou ou fechou pelo fluxo velho,
-/// e uma branch que o Mustard não abriu, dão `None`, e nada trava.
+/// O estado que a trava da aprovação lê, pela regra única do núcleo
+/// ([`mustard_core::domain::spec_state::lock_state_of`]), com o arquivo de
+/// eventos e o `meta.json` da spec, os do checkout principal num worktree. O
+/// portão, a testemunha, o nascimento antes do avanço e [`approved`] passam
+/// por aqui.
 ///
-/// Uma spec antiga só segue o `meta.json` até nascer: toda porta do binário
-/// que avança o estágio dela a faz nascer em plano antes
+/// Uma spec sem `state` só segue o `meta.json` ou o arquivo até nascer: toda
+/// porta do binário que avança o estágio dela a faz nascer em plano antes
 /// ([`crate::commands::spec_events::write::birth_before_advance`]). Daí em
 /// diante a trava lê o estado, e a execução só vem depois do "Aprovar".
 #[must_use]
 pub(crate) fn lock_state(root: &Path, spec: &str) -> Option<State> {
-    match DiskSpecState::new(root).log(spec).filter(|log| mustard_core::domain::spec_state::birth_event(log).is_some()) {
-        Some(log) => Some(State::from_log(&log)),
-        None => unborn_draft(root, spec).then(|| State { phase: Some("plan"), ..State::default() }),
-    }
+    let meta = mustard_core::ClaudePaths::for_project(store::spec_root(root))
+        .and_then(|paths| paths.for_spec(spec.trim()))
+        .ok()
+        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()));
+    mustard_core::domain::spec_state::lock_state_of(DiskSpecState::new(root).log(spec).as_ref(), meta.as_ref())
 }
 
 /// A spec ainda não nasceu no arquivo de eventos: não há nenhum `state`
@@ -123,27 +122,6 @@ pub(crate) fn unborn(root: &Path, spec: &str) -> bool {
     DiskSpecState::new(root)
         .log(spec)
         .is_none_or(|log| mustard_core::domain::spec_state::birth_event(&log).is_none())
-}
-
-/// Uma spec do `spec-draft` parada antes da execução: o `meta.json` dela está
-/// em análise ou em plano, e ativo. Uma encerrada, ou em execução pelo fluxo
-/// velho, não trava nem espera aprovação. Não olha o arquivo de eventos: quem
-/// chama já sabe que a spec não tem nenhum `state`.
-#[must_use]
-pub(crate) fn unborn_draft(root: &Path, spec: &str) -> bool {
-    let Some(meta) = mustard_core::ClaudePaths::for_project(store::spec_root(root))
-        .and_then(|paths| paths.for_spec(spec.trim()))
-        .ok()
-        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()))
-    else {
-        return false;
-    };
-    let before_run = meta
-        .stage
-        .as_deref()
-        .is_none_or(|stage| ["Analyze", "Plan"].iter().any(|s| stage.trim().eq_ignore_ascii_case(s)));
-    let active = meta.outcome.as_deref().is_none_or(|outcome| outcome.trim().eq_ignore_ascii_case("Active"));
-    before_run && active
 }
 
 /// A aprovação que vale de uma spec: a pergunta, a opção que o usuário
@@ -434,9 +412,30 @@ mod tests {
         let root = dir.path();
         let spec_dir = root.join(".claude").join("spec").join("epic");
         std::fs::create_dir_all(&spec_dir).unwrap();
+        let events = spec_dir.join("spec.ndjson");
+
+        // Lado a lado, as specs sem `state`: sem arquivo nem `meta.json`, com
+        // um recado só e com o `meta.json` só. Nenhum leitor lê aprovada, e a
+        // trava diz o que a regra diz.
+        let unapproved = |case: &str| {
+            for (reader, approved) in readers(root, &spec_dir) {
+                assert!(!approved, "{reader} reads {case} as approved");
+            }
+            assert!(!super::approved(root, "epic"), "{case}");
+        };
+        unapproved("no file and no meta");
+        assert_eq!(lock_state(root, "epic"), None, "the branch the Mustard did not open is free");
+        let note = serde_json::json!({ "author": "user", "text": "oi" });
+        store::write(&events, "message", note.as_object().cloned().unwrap(), &[]).unwrap();
+        unapproved("a note");
+        assert_eq!(lock_state(root, "epic").and_then(|state| state.phase), Some("plan"), "a note alone is a plan");
+        std::fs::remove_file(&events).unwrap();
+        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
+        unapproved("a meta");
+        assert_eq!(lock_state(root, "epic").and_then(|state| state.phase), Some("plan"), "a draft is a plan");
+
         let plan = serde_json::json!({ "phase": "plan" });
-        store::write(&spec_dir.join("spec.ndjson"), "state", plan.as_object().cloned().unwrap(), &[])
-            .unwrap();
+        store::write(&events, "state", plan.as_object().cloned().unwrap(), &[]).unwrap();
 
         let readers = || readers(root, &spec_dir);
         let disk = DiskSpecState::new(root);

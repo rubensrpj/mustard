@@ -610,9 +610,9 @@ mod tests {
         assert!(state(root).approved, "with the preconditions met the answer approves");
     }
 
-    /// Uma spec do `spec-draft` parada antes da execução, com um arquivo de
-    /// eventos sem nenhum `state`, é uma spec sem nascimento: o "Aprovar"
-    /// grava o plano e depois a aprovação.
+    /// Um arquivo de eventos sem nenhum `state` e sem `meta.json` é uma spec
+    /// em plano, sem nascimento: o "Aprovar" grava o plano e depois a
+    /// aprovação.
     #[test]
     fn a_spec_file_without_a_state_is_born_and_approved() {
         if ambient_override() {
@@ -621,8 +621,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         record_for(root, "epic", "message", json!({ "author": "user", "text": "oi" }));
-        std::fs::write(root.join(".claude").join("spec").join("epic").join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#)
-            .unwrap();
         context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
         witness(root, &approve_or_adjust("Aprovar"));
         assert!(state(root).approved, "the spec with no phase is approved");
