@@ -51,7 +51,6 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use serde_json::Value;
 use std::path::Path;
 
-use crate::shared::context::{current_spec, spec_for_session};
 
 /// The Full-scope approval hard-gate module.
 pub struct ScopeGuard;
@@ -147,19 +146,9 @@ fn evaluate_write(input: &HookInput, cwd: &str) -> Verdict {
         return Verdict::Allow;
     }
 
-    // Resolve the active spec the SAME way `boundary_gate` does: the session->spec
-    // `active-spec` marker first (the only binding that survives into the shipped
-    // plugin — `current_spec`'s env / `.pipeline-states` sources are not written
-    // there), falling back to `current_spec` for flows with no session binding.
+    // Resolve the active spec by the one current-spec ladder every door shares.
     // Without a spec there is no gate to apply (fail-open).
-    let session = input
-        .session_id
-        .as_deref()
-        .filter(|s| !s.is_empty() && *s != "unknown");
-    let Some(spec) = session
-        .and_then(|sid| spec_for_session(cwd, sid))
-        .or_else(|| current_spec(cwd))
-    else {
+    let Some(spec) = crate::shared::spec_state::active_spec(cwd, input.session_id.as_deref()) else {
         return Verdict::Allow;
     };
     let cwd_path = Path::new(cwd);
@@ -232,11 +221,9 @@ mod tests {
             json!({ "scope": scope, "stage": stage, "outcome": "Active" }).to_string(),
         )
         .unwrap();
-        // Seed a pipeline-state file so `current_spec` resolves this spec via
-        // its FS fallback (no env mutation, which is `unsafe` under 2024).
-        let states = ClaudePaths::for_project(cwd).unwrap().pipeline_states_dir();
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join(format!("{spec}.json")), "{}").unwrap();
+        // Stand the checkout on this spec's branch so the current-spec ladder
+        // resolves it (no env mutation, which is `unsafe` under 2024).
+        crate::shared::spec_state::stand_on_spec_branch(cwd, spec);
     }
 
     /// Emit a `pipeline.status: approved` event into the spec's NDJSON log.

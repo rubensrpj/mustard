@@ -672,11 +672,9 @@ mod tests {
         Ctx::for_test(cwd.to_string(), Some(trigger))
     }
 
-    /// Set the active spec via a pipeline-state file so `current_spec` finds it.
+    /// Stand the checkout on the spec's branch so `current_spec` finds it.
     fn set_active_spec(project: &std::path::Path, spec_id: &str) {
-        let states = project.join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join(format!("{spec_id}.json")), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(project, spec_id);
     }
 
     // ---- in-scope Write → activity written to window ----------------------

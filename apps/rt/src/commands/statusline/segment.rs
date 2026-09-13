@@ -570,17 +570,15 @@ mod tests {
         assert!(unit_segment(idle.path()).is_none(), "no active unit must render nothing");
 
         std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
-        // A unit in PLAN: named, with its stage. The active unit is the newest
-        // pipeline-state file — the same source every other consumer reads.
+        // A unit in PLAN, with the checkout on its branch: the current-spec
+        // ladder every consumer reads names it, and the bar shows its stage
+        // (the branch segment already carries the name).
         let spec = root.join(".claude/spec/roteador-didatico");
         std::fs::create_dir_all(&spec).unwrap();
         std::fs::write(spec.join("meta.json"), r#"{"stage":"Plan","phase":"PLAN"}"#).unwrap();
-        let states = root.join(".claude/.pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join("roteador-didatico.json"), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "roteador-didatico");
 
         let seg = unit_segment(root).expect("an active unit must reach the bar");
-        assert!(seg.text.contains("roteador-didatico"), "the unit is unnamed: {}", seg.text);
         assert!(seg.text.contains("PLAN"), "the stage is missing: {}", seg.text);
 
         // An unreadable meta still leaves the unit NAMED — that is the job.
@@ -607,8 +605,7 @@ mod tests {
     /// Com endereço publicado gravado, o segmento da unidade vira link
     /// para a página, e o nome não se repete quando o branch já o mostra.
     ///
-    /// Cada estado usa uma raiz própria: `current_spec` guarda a resposta por
-    /// processo, e perguntar antes de semear guardaria a resposta vazia.
+    /// Cada estado usa uma raiz própria, com o seu branch.
     #[test]
     fn statusline_links_the_published_page_and_drops_the_repeated_slug() {
         let url = "https://claude.ai/code/artifacts/pagina-ligada";
@@ -652,16 +649,18 @@ mod tests {
         assert!(linked.text.ends_with("\u{1b}]8;;\u{1b}\\"), "…and closes it: {:?}", linked.text);
         assert_eq!(visible(&linked.text), "\u{25b8} PLAN", "the link hides nothing and adds nothing");
 
-        // Fora do branch da unidade o nome volta — nada mais o mostra — e o link fica.
+        // Fora do branch de uma unidade, nada a aponta como atual: só a
+        // variável de ambiente o faria, e um teste não a muda. Um arquivo
+        // que sobrou na pasta de estado velha não conta.
         let away = tempfile::tempdir().unwrap();
         let spec = seed(away.path(), "outra-unidade");
         let states = away.path().join(".claude/.pipeline-states");
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(states.join("outra-unidade.json"), "{}").unwrap();
         std::fs::write(spec.join("published-url"), format!("{url}\n")).unwrap();
-        let seg = unit_segment(away.path()).expect("an active unit off its branch reaches the bar");
-        assert!(seg.text.contains(&format!("\u{1b}]8;;{url}\u{1b}\\")), "{:?}", seg.text);
-        assert_eq!(visible(&seg.text), "\u{25b8} outra-unidade PLAN");
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {
+            assert!(unit_segment(away.path()).is_none(), "a leftover state file names no unit");
+        }
     }
 
     /// The inert flag reads the plugin switch, and never claims health it could

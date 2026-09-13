@@ -430,7 +430,6 @@ impl Check for PromptSubmitInject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::ClaudePaths;
 
     /// Build a [`Ctx`] with a unique tempdir project path so the active-spec
     /// resolver (`current_spec`) cannot accidentally find a real pipeline-state.
@@ -816,7 +815,7 @@ mod tests {
 
     #[test]
     fn non_pipeline_prompt_allows_without_active_spec() {
-        // No `.claude/.pipeline-states/` in our tempdir, so `current_spec`
+        // No spec branch and no binding in our tempdir, so `current_spec`
         // returns None and the pipeline-in-flight banner stays silent.
         let (_dir, c) = ctx();
         // The env-var branch can still inject; guard by checking either Allow
@@ -834,10 +833,7 @@ mod tests {
         // When a spec is active, the user's free-text prompt gets a
         // single-line banner injected.
         let (dir, _) = ctx();
-        let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        let states = paths.pipeline_states_dir();
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(paths.pipeline_state_file("active-feature-xyz"), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(dir.path(), "active-feature-xyz");
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
         let v = PromptSubmitInject
             .evaluate(&prompt_input("how do I do X?"), &c)
@@ -1053,9 +1049,7 @@ mod tests {
         let mustard_dir = root.join(".claude").join("mustard");
         std::fs::create_dir_all(&mustard_dir).unwrap();
         std::fs::write(mustard_dir.join("orchestrator.md"), mustard_core::ORCHESTRATOR_MD).unwrap();
-        let paths = ClaudePaths::for_project(root).unwrap();
-        std::fs::create_dir_all(paths.pipeline_states_dir()).unwrap();
-        std::fs::write(paths.pipeline_state_file("uma-unidade-com-um-nome-bem-comprido"), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "uma-unidade-com-um-nome-bem-comprido");
 
         let verdict =
             PromptSubmitInject.evaluate(&prompt_input_with_session("como eu faço X?", "s1"), &c).unwrap();

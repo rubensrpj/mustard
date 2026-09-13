@@ -45,7 +45,7 @@ use serde_json::json;
 
 use crate::commands::economy::context_slice::{parse_term_blocks, resolve_context_files};
 use crate::shared::context::{
-    clarified_marker_path, clarify_marker_body, current_spec, session_id, spec_for_session,
+    clarified_marker_path, clarify_marker_body, session_id,
 };
 
 /// Resolve the destination `CONTEXT.md` the same way `glossary-coverage` does:
@@ -205,6 +205,18 @@ const NOTHING_TO_RECORD: &str = "nothing-to-record: name what the grill settled 
      (`--term <term>`, once per confirmed term) or state why no grill applied \
      (`--reason \"<sentence>\"`) — a complete glossary is a legitimate reason";
 
+/// The spec a finalize records against: `--spec` when given, else the one
+/// current-spec ladder for `session` (the environment override, then the
+/// checkout's branch, then the session binding).
+pub(crate) fn finalize_spec(root: &str, spec_arg: &str, session: Option<&str>) -> Option<String> {
+    let explicit = spec_arg.trim();
+    if explicit.is_empty() {
+        crate::shared::spec_state::active_spec(root, session)
+    } else {
+        Some(explicit.to_string())
+    }
+}
+
 /// Finalize clarification: RECORD what the clarification settled into
 /// `<spec>/.clarified`. This is the SINGLE deliberate writer of the marker
 /// `approve-spec` requires before a Full plan may be approved (a term capture
@@ -219,8 +231,8 @@ const NOTHING_TO_RECORD: &str = "nothing-to-record: name what the grill settled 
 /// only that this command ran seconds before the approval it unlocks.
 ///
 /// The spec is taken from `--spec` when given (the explicit, robust path the
-/// Full PLAN flow uses, mirroring `approve-spec`); absent that, it falls back to
-/// the session-to-spec binding, then `current_spec`. Fail-open at every step — a
+/// Full PLAN flow uses, mirroring `approve-spec`); absent that, from the one
+/// current-spec ladder ([`finalize_spec`]). Fail-open at every step — a
 /// resolution or write failure reports `{ok:false, reason}` and still exits 0.
 fn run_finalize(spec_arg: &str, terms: &[String], reason: &str, root: &Path) {
     let terms: Vec<String> = terms
@@ -234,16 +246,10 @@ fn run_finalize(spec_arg: &str, terms: &[String], reason: &str, root: &Path) {
         emit_finalize(false, "", &terms, reason, Some("bad-root"));
         return;
     };
-    let spec = if spec_arg.trim().is_empty() {
-        match spec_for_session(root_str, &session_id()).or_else(|| current_spec(root_str)) {
-            Some(s) => s,
-            None => {
-                emit_finalize(false, "", &terms, reason, Some("no-active-spec"));
-                return;
-            }
-        }
-    } else {
-        spec_arg.trim().to_string()
+    let session = crate::shared::spec_state::session_from_env();
+    let Some(spec) = finalize_spec(root_str, spec_arg, session.as_deref()) else {
+        emit_finalize(false, "", &terms, reason, Some("no-active-spec"));
+        return;
     };
     if terms.is_empty() && reason.is_empty() {
         emit_finalize(false, &spec, &terms, reason, Some(NOTHING_TO_RECORD));
@@ -401,10 +407,9 @@ mod tests {
 
     // ── The clarify-marker mint (integration over a tempdir) ─────────────────
 
-    /// Seed `.claude/spec/<spec>/meta.json` (scope/stage) + a pipeline-state
-    /// file so `current_spec` resolves `<spec>` via its FS fallback — the same
-    /// no-env-mutation pattern `scope_guard`'s tests use (mutating process env
-    /// is `unsafe` under edition 2024).
+    /// Seed `.claude/spec/<spec>/meta.json` (scope/stage) and stand the
+    /// checkout on the spec's branch, so the current-spec ladder resolves
+    /// `<spec>` without mutating the process env (`unsafe` under edition 2024).
     fn seed_spec(root: &std::path::Path, spec: &str, scope: &str) {
         let spec_dir = root.join(".claude").join("spec").join(spec);
         std::fs::create_dir_all(&spec_dir).unwrap();
@@ -413,9 +418,7 @@ mod tests {
             format!(r#"{{"scope":"{scope}","stage":"Plan","outcome":"Active"}}"#),
         )
         .unwrap();
-        let states = root.join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join(format!("{spec}.json")), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, spec);
     }
 
     #[test]

@@ -35,9 +35,9 @@
 //! - **session**: `HarnessEvent.session_id` → env (`MUSTARD_SESSION_ID` /
 //!   `CLAUDE_SESSION_ID`) → newest `.claude/.session/<id>/` by mtime
 //!   ([`crate::shared::context::session_id`]).
-//! - **spec**: `HarnessEvent.spec` → env / legacy `.pipeline-states`
-//!   ([`crate::shared::context::current_spec`]) → the session→spec marker
-//!   ([`crate::shared::context::spec_for_session`]). The marker is written
+//! - **spec**: `HarnessEvent.spec` → the one current-spec ladder
+//!   ([`crate::shared::spec_state::active_spec`]: the environment override,
+//!   the checkout's branch, then the session→spec marker). The marker is written
 //!   HERE whenever an event arrives carrying BOTH a spec and a session (the
 //!   `pipeline.scope` / `pipeline.stage` / `pipeline.status` events the
 //!   run-face emits), so subsequent spec-less hook heartbeats
@@ -46,7 +46,7 @@
 //! - **wave**: `HarnessEvent.wave` → `MUSTARD_ACTIVE_WAVE`.
 
 use crate::shared::context::{
-    bind_session_spec, current_spec, session_id, spec_for_session,
+    bind_session_spec, session_id,
 };
 use crate::shared::events::writer_ndjson;
 use mustard_core::domain::model::event::HarnessEvent;
@@ -162,17 +162,10 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
     let session_slug = session_id_owned.clone().unwrap_or_else(|| "unknown".to_string());
     let session_id_ref = session_id_owned.as_deref();
 
-    // Spec resolution chain:
-    //   event.spec → current_spec (env / legacy pipeline-states) →
-    //   the session→spec marker the run-face's `pipeline.scope` events leave.
-    // The marker step is what lets a spec-less `tool.use` heartbeat inherit the
-    // spec its session is executing under.
-    let spec_owned = event
-        .spec
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| current_spec(project_dir_path))
-        .or_else(|| session_id_ref.and_then(|sid| spec_for_session(project_dir_path, sid)));
+    // The event's own spec, else the one current-spec ladder. Its session rung
+    // is what lets a spec-less `tool.use` heartbeat inherit the spec its
+    // session is executing under.
+    let spec_owned = spec_of_event(event.spec.as_deref(), project_dir_path, session_id_ref);
     let spec = spec_owned.as_deref().filter(|s| !s.is_empty());
 
     // When THIS event already carries both a spec and a session id (the
@@ -220,6 +213,20 @@ pub fn emit(project_dir_path: &str, event: &HarnessEvent) -> bool {
         ts_override,
     )
     .is_some()
+}
+
+/// The spec an event is filed under: its own, when it carries one, else the
+/// one current-spec ladder (the environment override, then the checkout's
+/// branch, then the session binding the run-face's `pipeline.scope` events
+/// leave).
+pub(crate) fn spec_of_event(
+    own: Option<&str>,
+    project_dir_path: &str,
+    session: Option<&str>,
+) -> Option<String> {
+    own.filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| crate::shared::spec_state::active_spec(project_dir_path, session))
 }
 
 #[cfg(test)]

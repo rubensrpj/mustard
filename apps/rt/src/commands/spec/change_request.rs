@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use crate::hooks::observe::change_request_log::{
     append_change_log_md, append_change_request, CHANGE_LOG_MD,
 };
-use crate::shared::context::{current_spec, session_id, spec_for_session};
+use crate::shared::context::session_id;
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs as mfs;
 
@@ -84,18 +84,17 @@ pub(crate) struct ChangeRequestReport {
 }
 
 /// Resolve the spec to attribute the request to: the explicit `--spec` first,
-/// then the session→spec marker, then the active-spec fallback (the observer's
-/// order — the two records must never land on different specs).
-fn resolve_spec(project_dir: &str, explicit: Option<&str>) -> Option<String> {
+/// then the one current-spec ladder for `session` (the observer's ladder — the
+/// two records must never land on different specs).
+pub(crate) fn resolve_spec(
+    project_dir: &str,
+    explicit: Option<&str>,
+    session: Option<&str>,
+) -> Option<String> {
     if let Some(s) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         return Some(s.to_string());
     }
-    let sid = session_id();
-    if !sid.is_empty() && sid != "unknown"
-        && let Some(spec) = spec_for_session(project_dir, &sid) {
-            return Some(spec);
-        }
-    current_spec(project_dir)
+    crate::shared::spec_state::active_spec(project_dir, session)
 }
 
 /// The spec's current `meta.json#stage`, so the bullet carries the same stage
@@ -122,7 +121,8 @@ fn record(project: &Path, opts: &ChangeRequestOpts) -> ChangeRequestReport {
         return report;
     }
     let project_dir = project.to_string_lossy().into_owned();
-    let Some(spec) = resolve_spec(&project_dir, opts.spec.as_deref()) else {
+    let session = crate::shared::spec_state::session_from_env();
+    let Some(spec) = resolve_spec(&project_dir, opts.spec.as_deref(), session.as_deref()) else {
         report.error = Some("no_spec".to_string());
         return report;
     };

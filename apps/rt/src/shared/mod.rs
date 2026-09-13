@@ -22,6 +22,9 @@
 //! - [`prompt`] — tells a person's prompt apart from the runtime's own notices,
 //!   which reach the session through the same `UserPromptSubmit` channel. One
 //!   owner for the rule, shared by every observer on that trigger.
+//! - [`spec_state`] — the ONE ladder that names the current spec (the
+//!   environment override, then the checkout's branch, then the session
+//!   binding). Every door that asks "which spec is this" goes through it.
 //! - [`pr_provider`] — the pull-request ACTIONS (open/edit/ready/view) as a
 //!   port, the acting twin of `branch_state`'s read-only `PrLookup`: callers
 //!   depend on the trait, adapters are the only place a provider and its
@@ -63,6 +66,7 @@ pub mod pr_azure;
 pub mod pr_provider;
 pub mod proc;
 pub mod prompt;
+pub mod spec_state;
 // Test-only: cloning git fixture scenery instead of rebuilding it per test.
 #[cfg(test)]
 pub mod test_fixture;

@@ -957,17 +957,13 @@ mod tests {
         let sid = crate::shared::context::session_id();
         crate::shared::context::bind_session_spec(&cwd, &sid, spec);
         // Belt for a host whose ambient session id is `unknown` (which the
-        // binding refuses): the legacy state file `current_spec` reads.
-        let states = root.join(".claude/.pipeline-states");
-        std::fs::create_dir_all(&states).expect("states dir");
-        std::fs::write(states.join(format!("{spec}.json")), b"{}").expect("state file");
+        // binding refuses): the checkout stands on the spec's branch.
+        crate::shared::spec_state::stand_on_spec_branch(root, spec);
         // Fail LOUDLY if the capture would resolve no spec (or another one): a
         // spec-less capture is a silent no-op, and a test that silently captured
         // nothing would assert exactly as much as the inert one it replaces.
         assert_eq!(
-            crate::shared::context::spec_for_session(&cwd, &sid)
-                .or_else(|| crate::shared::context::current_spec(&cwd))
-                .as_deref(),
+            crate::hooks::task::subagent_inject::capture_spec(&cwd, &sid).as_deref(),
             Some(spec),
             "the capture's own spec lookup must land on this spec"
         );
@@ -1385,13 +1381,9 @@ mod tests {
         // leave every capture spec-less and silently no-op.
         let sid = crate::shared::context::session_id();
         crate::shared::context::bind_session_spec(&cwd, &sid, spec);
-        let states = root.join(".claude/.pipeline-states");
-        std::fs::create_dir_all(&states).expect("states dir");
-        std::fs::write(states.join(format!("{spec}.json")), b"{}").expect("state file");
+        crate::shared::spec_state::stand_on_spec_branch(root, spec);
         assert_eq!(
-            crate::shared::context::spec_for_session(&cwd, &sid)
-                .or_else(|| crate::shared::context::current_spec(&cwd))
-                .as_deref(),
+            crate::hooks::task::subagent_inject::capture_spec(&cwd, &sid).as_deref(),
             Some(spec),
             "the capture's own spec lookup must land on this spec"
         );

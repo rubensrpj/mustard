@@ -92,7 +92,7 @@ use mustard_core::ClaudePaths;
 use serde_json::Value;
 use std::path::Path;
 
-use crate::shared::context::{approval_marker_path, current_spec, marker_body, spec_for_session};
+use crate::shared::context::{approval_marker_path, marker_body};
 
 /// The PostToolUse(AskUserQuestion) approval recorder.
 pub struct ApprovalMarkerObserver;
@@ -133,26 +133,24 @@ enum PendingPlan {
 
 /// Walk the resolution ladder and report where it landed.
 ///
-/// The rungs are unchanged and in the same order — the session→spec binding
-/// (precise), then the legacy `.pipeline-states/` hint, then the UNIQUE pending
-/// Full plan (see [`unique_pending_full_plan`]) — but a rung now ENDS the walk
+/// Two rungs — the one current-spec ladder every door shares (the environment
+/// override, the checkout's branch, the session binding), then the UNIQUE
+/// pending plan (see [`unique_pending_full_plan`]) — and a rung ENDS the walk
 /// only when what it named satisfies fact 1.
 ///
-/// That is the whole point. The ladder used to stop at the first rung that
-/// answered ANYTHING, so a stale `.pipeline-states/` file naming a spec long
-/// past PLAN shadowed the third rung — the rung written precisely for the case
-/// where the first two cannot answer — and a genuine user approval then minted
+/// That is the whole point. The walk used to stop at the first rung that
+/// answered ANYTHING, so a stale hint naming a spec long past PLAN shadowed
+/// the last rung — the rung written precisely for the case where the ladder
+/// cannot answer — and a genuine user approval then minted
 /// nothing. A rung's answer is a HINT about which spec is in play, never proof
 /// that an approval is pending for it; only fact 1 is that proof, so fact 1 is
 /// what decides when the walk is over.
 fn resolve_pending_plan(cwd: &str, input: &HookInput) -> PendingPlan {
-    let sid = input.session_id.as_deref().unwrap_or("");
-    // Bound as closures so the ladder stays LAZY: the directory scan behind the
-    // third rung is only paid for when the two cheap ones failed.
-    let session_rung = || spec_for_session(cwd, sid);
-    let current_rung = || current_spec(cwd);
+    // Bound as closures so the walk stays LAZY: the directory scan behind the
+    // last rung is only paid for when the cheap one failed.
+    let current_rung = || crate::shared::spec_state::active_spec(cwd, input.session_id.as_deref());
     let unique_rung = || unique_pending_full_plan(cwd);
-    let rungs: [&dyn Fn() -> Option<String>; 3] = [&session_rung, &current_rung, &unique_rung];
+    let rungs: [&dyn Fn() -> Option<String>; 2] = [&current_rung, &unique_rung];
 
     let mut outside: Option<PendingPlan> = None;
     for rung in rungs {
@@ -172,8 +170,8 @@ fn resolve_pending_plan(cwd: &str, input: &HookInput) -> PendingPlan {
     outside.unwrap_or(PendingPlan::Unresolved)
 }
 
-/// Last-resort spec resolution for [`active_spec`] when neither the session→spec
-/// binding nor the legacy `.pipeline-states/` hint names a spec: the UNIQUE spec
+/// Last-resort spec resolution for [`active_spec`] when the current-spec
+/// ladder names no spec in the approval window: the UNIQUE spec
 /// whose `meta.json` sits in the exact fact-1 window — `scope=full`, `stage=Plan`,
 /// and NOT yet approved. Exactly one such spec is unambiguous and IS the plan
 /// being approved; zero or MORE THAN ONE returns `None` (fail-closed), so a real
@@ -914,19 +912,18 @@ mod tests {
 
     /// **A stale hint no longer shadows the plan that IS pending.**
     ///
-    /// The ladder used to stop at the first rung that answered ANYTHING, and the
-    /// legacy `.pipeline-states/` sink keeps answering long after the spec it
-    /// names has left PLAN. That obsolete guess reached rung two, ended the
-    /// walk, and the third rung — written exactly for the case where the first
-    /// two cannot answer — was never consulted, so a genuine approval minted
-    /// nothing at all.
+    /// The walk used to stop at the first rung that answered ANYTHING, and a
+    /// stale hint — here, a session binding — keeps answering long after the
+    /// spec it names has left PLAN. That obsolete guess ended the walk, and the
+    /// last rung — written exactly for the case where the ladder cannot answer
+    /// — was never consulted, so a genuine approval minted nothing at all.
     ///
     /// Both halves are asserted: the pending plan collects the marker, and the
     /// stale spec collects nothing.
     #[test]
     fn a_stale_hint_never_shadows_the_pending_full_plan() {
-        // The hint is read from `.pipeline-states/` only when no env override
-        // is set; skip rather than flake on an ambient one.
+        // An inherited override would answer first; skip rather than flake on
+        // an ambient one.
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
@@ -934,27 +931,26 @@ mod tests {
         let root = dir.path();
         let root_str = root.to_str().unwrap();
 
-        // The spec the stale hint names is a Full spec long past PLAN…
+        // The spec the stale hint names is a Full spec long past PLAN, still
+        // bound to the session…
         seed_spec(root, "shipped-already", "full", "Execute");
-        let states = root.join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join("shipped-already.json"), "{}").unwrap();
-        // …while the plan actually awaiting approval is another one entirely,
-        // with NO session binding — the shape the third rung exists for.
+        crate::shared::context::bind_session_spec(root_str, "s-stale", "shipped-already");
+        // …while the plan actually awaiting approval is another one entirely —
+        // the shape the last rung exists for.
         seed_spec(root, "epic", "full (wave plan)", "Plan");
 
         assert_eq!(
-            current_spec(root_str).as_deref(),
+            crate::shared::spec_state::active_spec(root_str, Some("s-stale")).as_deref(),
             Some("shipped-already"),
             "the fixture only proves something if the stale hint really answers",
         );
         assert_eq!(
-            active_spec(root_str, &ask_input("s-unbound", json!({}))).as_deref(),
+            active_spec(root_str, &ask_input("s-stale", json!({}))).as_deref(),
             Some("epic"),
             "the ladder walks past a hint that satisfies no fact-1 window",
         );
 
-        let input = ask_input("s-unbound", json!({ "Approve?": "Aprovar e implementar agora" }));
+        let input = ask_input("s-stale", json!({ "Approve?": "Aprovar e implementar agora" }));
         ApprovalMarkerObserver.observe(&input, &ctx(root_str));
         assert!(marker_exists(root, "epic"), "the pending plan is the one approved");
         assert!(

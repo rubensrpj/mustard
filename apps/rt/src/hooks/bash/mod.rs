@@ -1,7 +1,7 @@
 pub mod bash_command_gate;
 mod lex;
 mod native_redirect;
-mod pr_detect;
+pub(crate) mod pr_detect;
 mod pr_body_gate;
 mod pr_qa_gate;
 mod review_gate;

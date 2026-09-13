@@ -65,20 +65,12 @@ fn detect_branch(project_dir: &str) -> Option<String> {
     if branch.is_empty() { None } else { Some(branch) }
 }
 
-/// The spec this PR belongs to, for the DORA pairing key.
-///
-/// The predecessor scanned `.claude/.pipeline-states/*.json` by mtime — a
-/// directory the harness stopped writing, so every `pr.opened` / `pr.merged`
-/// event was born with `spec: null` and the report could only ever pair by
-/// branch. Resolution now goes through the SAME cascade the approval observers
-/// use ([`crate::shared::context::spec_for_session`] then `current_spec`): the
-/// session→spec marker the router persists is precise and O(1), and there is one
-/// definition of "which spec is this session on" rather than two. Fail-open
-/// `None` — a PR with no resolvable spec still pairs by branch.
-fn detect_recent_spec(project_dir: &str, session_id: Option<&str>) -> Option<String> {
-    session_id
-        .and_then(|sid| crate::shared::context::spec_for_session(project_dir, sid))
-        .or_else(|| crate::shared::context::current_spec(project_dir))
+/// The spec this PR belongs to, for the DORA pairing key: the one current-spec
+/// ladder every door shares (the environment override, then the checkout's
+/// branch, then the session binding). Fail-open `None` — a PR with no
+/// resolvable spec still pairs by branch.
+pub(crate) fn detect_recent_spec(project_dir: &str, session_id: Option<&str>) -> Option<String> {
+    crate::shared::spec_state::active_spec(project_dir, session_id)
 }
 
 /// `true` when the Bash tool reported a non-zero exit code. Mirrors the

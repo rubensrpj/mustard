@@ -16,9 +16,9 @@
 //!    pergunta com resposta não vazia. Um diálogo cancelado (`{}`) não
 //!    esclareceu nada. É o teste mais barato (puro, sem IO), então roda
 //!    primeiro: este observador vê TODA pergunta da sessão.
-//! 2. **Uma unidade ativa.** A sessão está ligada a uma spec
-//!    (`spec_for_session`) ou, sem esse vínculo, há uma spec ativa
-//!    (`current_spec`), e ela não está concluída (`meta.json`). O diretório
+//! 2. **Uma unidade ativa.** A escada única da spec atual (a variável de
+//!    ambiente, depois a branch, depois a ligação da sessão) aponta uma spec,
+//!    e ela não está concluída (`meta.json`). O diretório
 //!    dela precisa existir — o `material_add::add` recusa um slug sem
 //!    diretório, e essa recusa é o "sem unidade, nada é gravado".
 //!
@@ -42,7 +42,6 @@ use mustard_core::domain::model::contract::{Ctx, HookInput, Observer};
 use std::path::Path;
 
 use crate::commands::spec::material_add::{add, MaterialAddOpts};
-use crate::shared::context::{current_spec, spec_for_session};
 
 /// O gravador de esclarecimentos do PostToolUse(AskUserQuestion).
 pub struct ClarificationObserver;
@@ -96,12 +95,12 @@ pub(crate) fn spec_is_closed(root: &Path, spec: &str) -> bool {
         .is_some_and(|o| o == mustard_core::Outcome::Completed)
 }
 
-/// Fato 2 — a unidade em que o esclarecimento mora: a ligação da sessão
-/// primeiro (precisa), a spec ativa depois. Uma unidade já concluída não
-/// recebe material novo. `None` em qualquer dúvida.
-fn active_unit(cwd: &str, input: &HookInput) -> Option<String> {
-    let sid = input.session_id.as_deref().unwrap_or("");
-    let spec = spec_for_session(cwd, sid).or_else(|| current_spec(cwd))?;
+/// Fato 2 — a unidade em que o esclarecimento mora: a spec atual, pela escada
+/// única (a variável de ambiente, depois a branch, depois a ligação da
+/// sessão). Uma unidade já concluída não recebe material novo. `None` em
+/// qualquer dúvida.
+pub(crate) fn active_unit(cwd: &str, input: &HookInput) -> Option<String> {
+    let spec = crate::shared::spec_state::active_spec(cwd, input.session_id.as_deref())?;
     let spec = spec.trim();
     if spec.is_empty() || spec_is_closed(Path::new(cwd), spec) {
         return None;

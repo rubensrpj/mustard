@@ -47,10 +47,8 @@ use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use mustard_core::domain::spec;
 use mustard_core::{ClaudePaths, Outcome as SpecOutcome, Stage as SpecStage};
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::SystemTime;
 use crate::commands::scan_guards::apply::{critical_guards, CheckableGuard, CriticalGuard};
 use crate::commands::scan_guards::list::subproject_of;
 use crate::util::format_gate_message;
@@ -838,7 +836,7 @@ fn run_checklist_auto_mark(input: &HookInput, cwd: &str) {
     if file_path.is_empty() {
         return;
     }
-    let Some((spec_path, spec_name)) = find_active_spec(cwd) else {
+    let Some((spec_path, spec_name)) = find_active_spec(cwd, input.session_id.as_deref()) else {
         return;
     };
     // Don't auto-mark when the edited file IS the spec itself (avoid loops).
@@ -1070,71 +1068,14 @@ fn is_checklist_heading(line: &str) -> bool {
         .is_none_or(|&b| !is_word_byte(b))
 }
 
-/// Find the active spec for `cwd`. Strategy: the newest pipeline-state's
-/// `spec`/`specName`, else the newest `.claude/spec/{name}/spec.md` (flat layout).
-/// Port of `findActiveSpec`. Returns `(spec_path, spec_name)`.
-fn find_active_spec(cwd: &str) -> Option<(String, String)> {
-    let paths = ClaudePaths::for_project(Path::new(cwd)).ok()?;
-    let claude = paths.claude_dir();
-    if !claude.exists() {
-        return None;
-    }
-    // Strategy 1: newest pipeline-state.
-    let states = paths.pipeline_states_dir();
-    if let Ok(entries) = fs::read_dir(&states) {
-        let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
-        for entry in entries {
-            if !std::path::Path::new(&entry.file_name)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || entry.file_name.ends_with(".metrics.json") {
-                continue;
-            }
-            let Ok(mtime) = fs::modified(&entry.path) else {
-                continue;
-            };
-            if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-                best = Some((mtime, entry.path));
-            }
-        }
-        if let Some((_, path)) = best
-            && let Ok(text) = fs::read_to_string(&path)
-                && let Ok(obj) = serde_json::from_str::<Value>(&text) {
-                    let name = obj
-                        .get("spec")
-                        .or_else(|| obj.get("specName"))
-                        .and_then(|v| v.as_str());
-                    if let Some(name) = name {
-                        let candidate = paths
-                            .for_spec(name)
-                            .map(|sp| sp.spec_md_path())
-                            .ok()?;
-                        if candidate.exists() {
-                            return Some((
-                                candidate.to_string_lossy().into_owned(),
-                                name.to_string(),
-                            ));
-                        }
-                    }
-                }
-    }
-    // Strategy 2: newest spec dir (flat layout — scan spec/ directly).
-    let active = paths.spec_dir();
-    let entries = fs::read_dir(&active).ok()?;
-    let mut best: Option<(SystemTime, String, String)> = None;
-    for entry in entries.into_iter().filter(|e| e.is_dir) {
-        let dir_name = entry.file_name.clone();
-        let candidate = entry.path.join("spec.md");
-        if !fs::exists(&candidate) {
-            continue;
-        }
-        let Ok(mtime) = fs::modified(&candidate) else {
-            continue;
-        };
-        if best.as_ref().is_none_or(|(t, _, _)| mtime > *t) {
-            best = Some((mtime, candidate.to_string_lossy().into_owned(), dir_name));
-        }
-    }
-    best.map(|(_, path, name)| (path, name))
+/// Find the current spec for `cwd` by the one current-spec ladder (the
+/// environment override, then the checkout's branch, then the session
+/// binding), with its `spec.md`. `None` when no spec is current or it has no
+/// `spec.md`. Returns `(spec_path, spec_name)`.
+pub(crate) fn find_active_spec(cwd: &str, session: Option<&str>) -> Option<(String, String)> {
+    let name = crate::shared::spec_state::active_spec(cwd, session)?;
+    let path = ClaudePaths::for_project(Path::new(cwd)).ok()?.for_spec(&name).ok()?.spec_md_path();
+    fs::exists(&path).then(|| (path.to_string_lossy().into_owned(), name))
 }
 
 /// `true` if two paths resolve to the same file (canonicalised; falls back to
@@ -1257,20 +1198,15 @@ mod tests {
 
     // --- checklist-auto-mark parity (checklist-mark.test.js) ---------------
 
-    /// Write a spec + pipeline-state under `dir`, returning the spec.md path.
+    /// Write a spec under `dir` and stand the checkout on its branch, returning
+    /// the spec.md path.
     fn setup_spec(dir: &Path, spec_name: &str, body: &str) -> std::path::PathBuf {
         let paths = ClaudePaths::for_project(dir).unwrap();
         let sp = paths.for_spec(spec_name).unwrap();
         std::fs::create_dir_all(sp.dir()).unwrap();
         let spec_file = sp.spec_md_path();
         std::fs::write(&spec_file, body).unwrap();
-        let states = paths.pipeline_states_dir();
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(
-            paths.pipeline_state_file(spec_name),
-            json!({ "spec": spec_name, "phase": "EXECUTE" }).to_string(),
-        )
-        .unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(dir, spec_name);
         spec_file
     }
 
@@ -1461,9 +1397,8 @@ mod tests {
 
     #[test]
     fn checklist_observe_fail_open_no_pipeline_state() {
-        // No `.pipeline-states` dir, no SQLite DB → find_active_spec falls
-        // through to strategy 2 (active spec dir) → no spec dir either →
-        // returns None → observe is a silent no-op. Must not panic.
+        // No current spec → find_active_spec returns None → observe is a
+        // silent no-op. Must not panic.
         let dir = tempdir().unwrap();
         let cwd_str = dir.path().to_str().unwrap();
         let input = edit_input(

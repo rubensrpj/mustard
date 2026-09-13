@@ -233,14 +233,6 @@ pub fn is_guards_file_name(name: &str) -> bool {
     name == CLAUDE_MD || name == CLAUDE_LOCAL_MD
 }
 
-/// Per-`project` memo of [`current_spec`] for the life of the process (one hook
-/// dispatch). Its sources (`MUSTARD_ACTIVE_SPEC`, the legacy `.pipeline-states/`
-/// scan) do not change mid-process, so no invalidation is needed.
-fn active_spec_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 /// Per-`(project, session)` memo of [`spec_for_session`]; evicted by
 /// [`invalidate_session_spec`] whenever the `active-spec` marker is (re)written or
 /// removed, so a resolve after a binding change reflects disk.
@@ -360,8 +352,8 @@ fn is_placeholder_session(id: &str) -> bool {
 /// 3. Newest `.claude/.session/<id>/` directory by mtime — the filesystem
 ///    fallback. `run`-face emitters never receive a `HookInput`, so when neither
 ///    env var is set they used to land on `"unknown"`; the `SessionStart` hook
-///    has already created `.claude/.session/<id>/`, so mirror
-///    [`current_spec`]'s newest-by-mtime fallback to recover the real id.
+///    has already created `.claude/.session/<id>/`, so the newest one by
+///    mtime recovers the real id.
 ///    Placeholder buckets ([`PLACEHOLDER_SESSION_IDS`]) never win this scan —
 ///    they are sinks other writers invented, not sessions any hook reads.
 /// 4. `"unknown"` as a last resort.
@@ -396,8 +388,7 @@ pub fn session_id() -> String {
 /// session the hooks read: the collector touches its bucket constantly, so by
 /// mtime alone the bucket used to win and the binding landed where no hook
 /// ever looks. Returns `None` on any IO error or when no eligible directory
-/// exists — never panics. Co-located with [`current_spec`], which uses the
-/// same newest-by-mtime strategy over a sibling directory.
+/// exists — never panics.
 #[must_use]
 fn newest_session_dir(session_dir: &Path) -> Option<String> {
     let entries = fs::read_dir(session_dir).ok()?;
@@ -420,74 +411,14 @@ fn newest_session_dir(session_dir: &Path) -> Option<String> {
     best.map(|(_, name)| name)
 }
 
-/// Resolve the name of the currently active spec, fail-open `None`.
-///
-/// Strategy (in priority order):
-///
-/// 1. `MUSTARD_ACTIVE_SPEC` env var — explicit override set by
-///    `/mustard:feature` and `/mustard:resume` before dispatching hooks.
-/// 2. The most recently modified `.claude/.pipeline-states/*.json` file under
-///    `project_dir` — a **legacy** fallback. The pipeline-states sink is no
-///    longer written (see `scripts/cleanup-legacy-claude.ps1`), so in practice
-///    this branch yields nothing on a live run. The real session→spec binding
-///    is carried by [`spec_for_session`], which the event router consults
-///    before falling back here.
-///
-/// Returns `None` when no spec is active — never panics. Every step fails
-/// open: a missing env var or an absent state directory degrades to the
-/// next strategy instead of erroring.
+/// Resolve the name of the current spec for a caller with no session in hand,
+/// fail-open `None`: the `MUSTARD_ACTIVE_SPEC` override, then the spec of the
+/// branch the checkout stands on ([`spec_of_checkout_branch`]). It is the one
+/// ladder of [`crate::shared::spec_state::active_spec`] without its session
+/// rung. A leftover `.pipeline-states/` file names nothing.
 #[must_use]
 pub fn current_spec(project_dir_path: &str) -> Option<String> {
-    // Per-dispatch memo (process-wide == one hook invocation): the env override
-    // and legacy scan cannot change mid-process, so a cache hit is authoritative.
-    if let Ok(cache) = active_spec_cache().lock()
-        && let Some(hit) = cache.get(project_dir_path) {
-            return hit.clone();
-        }
-    let resolved = current_spec_uncached(project_dir_path);
-    if let Ok(mut cache) = active_spec_cache().lock() {
-        cache.insert(project_dir_path.to_string(), resolved.clone());
-    }
-    resolved
-}
-
-/// Uncached body behind [`current_spec`]'s per-process memo — the real
-/// env-then-`.pipeline-states/` resolution described on the wrapper above.
-fn current_spec_uncached(project_dir_path: &str) -> Option<String> {
-    // 1. Explicit env override.
-    if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC")
-        && !s.is_empty() {
-            return Some(s);
-        }
-
-    // 2. The unit the CHECKOUT is standing on. See
-    //    [`spec_of_checkout_branch`] — the branch is the isolation, so it is
-    //    the strongest statement available about which unit is in progress.
-    if let Some(spec) = spec_of_checkout_branch(project_dir_path) {
-        return Some(spec);
-    }
-
-    // 3. Newest pipeline-state file by mtime — legacy hint used when no
-    //    env override is present.
-    let states = ClaudePaths::for_project(Path::new(project_dir_path))
-        .ok()?
-        .pipeline_states_dir();
-    let entries = fs::read_dir(&states).ok()?;
-    let mut best: Option<(std::time::SystemTime, String)> = None;
-    for entry in entries {
-        let name = &entry.file_name;
-        if !name.ends_with(".json") || name.ends_with(".metrics.json") {
-            continue;
-        }
-        let Ok(mtime) = fs::modified(&entry.path) else {
-            continue;
-        };
-        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            let spec = name.trim_end_matches(".json").to_string();
-            best = Some((mtime, spec));
-        }
-    }
-    best.map(|(_, spec)| spec)
+    crate::shared::spec_state::active_spec(project_dir_path, None)
 }
 
 /// The unit the CHECKOUT is standing on: the slug of the current branch, when a
@@ -528,8 +459,7 @@ pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
 /// Resolve the spec a session is currently bound to, fail-open `None`.
 ///
 /// Hook-emitted events (`tool.use`, `agent.*`, …) are born with no spec — the
-/// PostToolUse hook context never sets `MUSTARD_ACTIVE_SPEC`, and the legacy
-/// `.pipeline-states/` sink [`current_spec`] reads is no longer written. The
+/// PostToolUse hook context never sets `MUSTARD_ACTIVE_SPEC`. The
 /// only reliable binding is the `pipeline.scope` event the CLI run-face emits,
 /// which carries BOTH `session_id` and `spec`. Rather than scan the NDJSON log
 /// on every tool call, the router persists that binding as a small marker file
@@ -1437,20 +1367,25 @@ mod tests {
     }
 
     #[test]
-    fn current_spec_falls_back_to_pipeline_states() {
-        // Only exercises the FS branch — avoids process-env mutation.
-        // Uses a unique spec name unlikely to match any real MUSTARD_ACTIVE_SPEC.
+    fn a_leftover_pipeline_state_file_no_longer_names_the_current_spec() {
+        // An inherited override answers first by design; the leftover file is
+        // what is under test, so skip rather than depend on the shell.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
         let dir = tempdir().unwrap();
-        let states = dir.path().join(".claude").join(".pipeline-states");
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(states.join("my-feature-xyzzy.json"), "{}").unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(claude.join(".pipeline-states")).unwrap();
+        std::fs::write(claude.join(".pipeline-states").join("my-feature-xyzzy.json"), "{}").unwrap();
+        std::fs::create_dir_all(claude.join("spec").join("my-feature-xyzzy")).unwrap();
 
-        // When MUSTARD_ACTIVE_SPEC is not set (the common case in CI), the
-        // filesystem branch fires and returns "my-feature-xyzzy".
-        // When it IS set, the env-var branch takes priority — still no panic.
-        let result = current_spec(dir.path().to_str().unwrap());
-        // Either Some("my-feature-xyzzy") or Some(env-var) — never None here.
-        assert!(result.is_some(), "expected Some(_) when a state file exists");
+        let root = dir.path().to_str().unwrap();
+        assert_eq!(current_spec(root), None, "the leftover file names nothing");
+        assert_eq!(crate::shared::spec_state::active_spec(root, Some("s-unbound")), None);
+
+        // The branch the checkout stands on still does.
+        crate::shared::spec_state::stand_on_spec_branch(dir.path(), "on-the-branch");
+        assert_eq!(current_spec(root).as_deref(), Some("on-the-branch"));
     }
 
     // -----------------------------------------------------------------------

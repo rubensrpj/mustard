@@ -567,10 +567,8 @@ fn extract_verdict_block(text: &str) -> Option<ReviewVerdict> {
 /// old knowledge store and never replaced). This makes capture AUTOMATIC —
 /// a hook, not an instruction the orchestrator has to remember to act on.
 ///
-/// Spec attribution mirrors `emit-event`'s own fallback order: the
-/// session-bound `active-spec` marker first (kept fresh by every
-/// `pipeline.*` event the running pipeline already emits), then the
-/// legacy/env `current_spec` resolution. No spec resolves ⇒ no-op — a
+/// Spec attribution goes through [`capture_spec`], the one current-spec
+/// ladder every door shares. No spec resolves ⇒ no-op — a
 /// decision with no spec to attribute it to is discarded, never emitted
 /// orphaned.
 ///
@@ -580,6 +578,13 @@ fn extract_verdict_block(text: &str) -> Option<ReviewVerdict> {
 /// `SubagentStop` side effect below.
 fn capture_memory_decision(project: &Path, cwd: &str, input: &HookInput) {
     capture_memory_decision_with_session(project, cwd, input, &crate::shared::context::session_id());
+}
+
+/// The spec a `SubagentStop` capture is attributed to: the one current-spec
+/// ladder every door shares (the environment override, then the checkout's
+/// branch, then the session binding).
+pub(crate) fn capture_spec(cwd: &str, sid: &str) -> Option<String> {
+    crate::shared::spec_state::active_spec(cwd, Some(sid))
 }
 
 /// Session-explicit variant of [`capture_memory_decision`] — the actual
@@ -593,8 +598,7 @@ fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookI
     let Some(memory) = extract_memory_block(&final_output_text(input)) else {
         return;
     };
-    let spec = crate::shared::context::spec_for_session(cwd, sid)
-        .or_else(|| crate::shared::context::current_spec(cwd));
+    let spec = capture_spec(cwd, sid);
     let Some(spec) = spec else {
         return;
     };
@@ -712,8 +716,7 @@ fn capture_return_report_with_session(project: &Path, cwd: &str, input: &HookInp
     else {
         return;
     };
-    let spec = crate::shared::context::spec_for_session(cwd, sid)
-        .or_else(|| crate::shared::context::current_spec(cwd));
+    let spec = capture_spec(cwd, sid);
     let Some(spec) = spec else {
         return;
     };
@@ -775,10 +778,8 @@ fn capture_review_verdict_with_session(project: &Path, cwd: &str, input: &HookIn
     let Some(verdict) = extract_verdict_block(&final_output_text(input)) else {
         return;
     };
-    // Spec attribution mirrors the memory twin: the session-bound `active-spec`
-    // marker first, then the legacy/env `current_spec`. No spec ⇒ no-op.
-    let spec = crate::shared::context::spec_for_session(cwd, sid)
-        .or_else(|| crate::shared::context::current_spec(cwd));
+    // Spec attribution mirrors the memory twin (`capture_spec`). No spec ⇒ no-op.
+    let spec = capture_spec(cwd, sid);
     let Some(spec) = spec else {
         return;
     };

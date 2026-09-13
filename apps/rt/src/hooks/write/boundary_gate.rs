@@ -39,7 +39,6 @@ use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use crate::util::glob::glob_match;
 use super::work_branch_gate::relative_to_cwd;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
 
 use crate::commands::{PipelineStateView, pipeline_state_from_events};
 
@@ -83,81 +82,12 @@ fn boundary_mode(config_override: Option<&str>) -> BoundaryMode {
     }
 }
 
-/// Freshness window for the newest pipeline-state — 10 minutes (the JS
-/// `10 * 60 * 1000` ms).
-const STATE_FRESHNESS_MS: u128 = 10 * 60 * 1000;
-
-/// The newest *fresh* pipeline-state JSON value. Mirrors
-/// `readNewestFreshState`: the most recently modified pipeline-state JSON file
-/// under `.claude` (excluding `*.metrics.json`), but only when its mtime is
-/// within the freshness window.
-fn read_newest_fresh_state(cwd: &str) -> Option<serde_json::Value> {
-    let paths = ClaudePaths::for_project(Path::new(cwd)).ok()?;
-    let dir = paths.pipeline_states_dir();
-    let entries = fs::read_dir(&dir).ok()?;
-    let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
-    for entry in entries {
-        if !std::path::Path::new(&entry.file_name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) || entry.file_name.ends_with(".metrics.json") {
-            continue;
-        }
-        let Ok(mtime) = fs::modified(&entry.path) else {
-            continue;
-        };
-        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            best = Some((mtime, entry.path));
-        }
-    }
-    let (mtime, path) = best?;
-    // Freshness: skip a stale state file.
-    let age = SystemTime::now()
-        .duration_since(mtime)
-        .unwrap_or(Duration::ZERO)
-        .as_millis();
-    if age > STATE_FRESHNESS_MS {
-        return None;
-    }
-    let text = fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// Resolve the spec a Write/Edit should be checked against, fail-open `None`.
-///
-/// Priority:
-/// 1. [`crate::shared::context::spec_for_session`] — the
-///    `.session/<id>/active-spec` marker bound to THIS session. This is the
-///    canonical session→spec link the event router maintains; the rest of the
-///    harness already resolves the active spec this way. Using it here means
-///    the boundary check runs against the spec the session is actually
-///    working on.
-/// 2. `MUSTARD_ACTIVE_SPEC` — the explicit env override `/feature` & `/spec` set.
-/// 3. Legacy: the newest *fresh* (`mtime < 10 min`) `.pipeline-states/*.json`
-///    `specName`. Kept only for flows that carry no session binding; the
-///    freshness window stops an ancient leftover from misattributing.
-///
-/// Why not the legacy scan first: picking the newest state file by mtime alone
-/// attributes an edit to whichever spec last touched a `.pipeline-states` file —
-/// which can be a *finished, leftover* spec (a stale `payables-…`), raising a
-/// BOUNDARY WARNING for a spec the current session never touched.
-fn resolve_boundary_spec(cwd: &str, session_id: Option<&str>) -> Option<String> {
-    // The unit the CHECKOUT is on wins over every recorded hint. A session
-    // marker and a `.pipeline-states` file are both records of what was true
-    // when they were written; the branch is what is true now. See
-    // `context::spec_of_checkout_branch` for the session this cost.
-    if let Some(spec) = crate::shared::context::spec_of_checkout_branch(cwd) {
-        return Some(spec);
-    }
-    if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown")
-        && let Some(spec) = crate::shared::context::spec_for_session(cwd, sid) {
-            return Some(spec);
-        }
-    if let Ok(s) = std::env::var("MUSTARD_ACTIVE_SPEC")
-        && !s.is_empty() {
-            return Some(s);
-        }
-    read_newest_fresh_state(cwd)
-        .and_then(|s| s.get("specName").and_then(|v| v.as_str()).map(str::to_string))
+/// Resolve the spec a Write/Edit should be checked against, fail-open `None`:
+/// the one current-spec ladder every door shares (the environment override,
+/// then the checkout's branch, then this session's binding). A leftover
+/// `.pipeline-states/` file names nothing.
+pub(crate) fn resolve_boundary_spec(cwd: &str, session_id: Option<&str>) -> Option<String> {
+    crate::shared::spec_state::active_spec(cwd, session_id)
 }
 
 /// Resolve the spec file(s) whose `## Files` / `## Boundaries` a Write/Edit is
@@ -574,11 +504,8 @@ fn boundary_gate(input: &HookInput, cwd: &str) -> Option<Verdict> {
     if is_meta_path(&rel) {
         return None;
     }
-    // Resolve the spec THIS edit belongs to. Canonical source: the session→spec
-    // binding (`active-spec` marker) the event router maintains — the same link
-    // the rest of the harness uses — falling back to the legacy newest-fresh
-    // `.pipeline-states` scan only for a session with no binding (see
-    // `resolve_boundary_spec`).
+    // Resolve the spec THIS edit belongs to, by the one current-spec ladder
+    // (see `resolve_boundary_spec`).
     let spec_name = resolve_boundary_spec(cwd, input.session_id.as_deref())?;
     let spec_name = spec_name.as_str();
 
@@ -762,16 +689,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let paths = ClaudePaths::for_project(cwd).unwrap();
-        // pipeline-state pointing at spec "demo".
-        let states = paths.pipeline_states_dir();
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(
-            paths.pipeline_state_file("demo"),
-            // Phase derives from NDJSON `pipeline.phase` events, not JSON;
-            // no event seeded here → phase is empty → not CLOSE → gate runs.
-            json!({ "specName": "demo" }).to_string(),
-        )
-        .unwrap();
+        // The checkout stands on spec "demo"'s branch. Phase derives from
+        // NDJSON `pipeline.phase` events; none is seeded here → phase is
+        // empty → not CLOSE → gate runs.
+        crate::shared::spec_state::stand_on_spec_branch(cwd, "demo");
         // spec.md with a Files section (flat layout — no active/ bucket).
         let sp = paths.for_spec("demo").unwrap();
         let spec_dir = sp.dir();
@@ -812,20 +733,14 @@ mod tests {
         // file patterns found because the spec dir doesn't exist).
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        let paths = ClaudePaths::for_project(cwd).unwrap();
-        let states = paths.pipeline_states_dir();
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(
-            paths.pipeline_state_file("ghost"),
-            r#"{"specName":"ghost"}"#,
-        )
-        .unwrap();
         let cwd_str = cwd.to_string_lossy().into_owned();
+        crate::shared::context::bind_session_spec(&cwd_str, "s-ghost", "ghost");
         let input = HookInput {
             tool_name: Some("Edit".to_string()),
             tool_input: serde_json::json!({ "file_path": "src/any.ts" }),
             hook_event_name: Some("PreToolUse".to_string()),
             cwd: Some(cwd_str.clone()),
+            session_id: Some("s-ghost".to_string()),
             ..HookInput::default()
         };
         // No spec dir → no patterns → boundary_gate returns None (Allow).
@@ -892,13 +807,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
         let paths = ClaudePaths::for_project(cwd).unwrap();
-        let states = paths.pipeline_states_dir();
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(
-            paths.pipeline_state_file("myspec"),
-            r#"{"specName":"myspec"}"#,
-        )
-        .unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(cwd, "myspec");
         // Spec with Completed header + Files section.
         let sp = paths.for_spec("myspec").unwrap();
         std::fs::create_dir_all(sp.dir()).unwrap();

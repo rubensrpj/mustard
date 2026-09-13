@@ -966,8 +966,8 @@ fn finalize_complete(cwd: &Path, spec: &str, ts: &str, sid: &str) {
 }
 
 /// Remove the `.pipeline-states/{spec}.json` marker when a terminal event is
-/// emitted, so `current_spec`'s step-3 FS fallback doesn't resurrect a closed
-/// spec in a later session. Keyed on the terminal predicate (not one kind), so
+/// emitted, so the readers of that old folder don't resurrect a closed spec in
+/// a later session. Keyed on the terminal predicate (not one kind), so
 /// it runs after the dispatch for EVERY kind. Fail-open: a missing file is fine.
 fn cleanup_terminal_state(kind: &str, payload: &Value, spec: &str) {
     if !is_terminal_event(kind, payload) {

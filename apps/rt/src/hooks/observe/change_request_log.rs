@@ -33,7 +33,7 @@ use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::io::Write;
 
-use crate::shared::context::{current_spec, current_wave, spec_for_session};
+use crate::shared::context::current_wave;
 use crate::shared::prompt::is_harness_notice;
 
 /// Filename of the per-spec durable change-request log (machine-readable).
@@ -53,16 +53,12 @@ pub(crate) const CHANGE_LOG_MD: &str = "change-log.md";
 pub struct ChangeRequestLog;
 
 
-/// Resolve the spec this session is working on — the canonical session→spec
-/// marker first ([`spec_for_session`]), then the env / legacy fallback
-/// ([`current_spec`]). `None` when no spec is in scope (a chat with no active
+/// Resolve the spec this session is working on, by the one current-spec
+/// ladder (the environment override, then the checkout's branch, then this
+/// session's binding). `None` when no spec is in scope (a chat with no active
 /// pipeline has nothing to attribute a request to).
-fn resolve_spec(project_dir: &str, session_id: Option<&str>) -> Option<String> {
-    if let Some(sid) = session_id.filter(|s| !s.is_empty() && *s != "unknown")
-        && let Some(spec) = spec_for_session(project_dir, sid) {
-            return Some(spec);
-        }
-    current_spec(project_dir)
+pub(crate) fn resolve_spec(project_dir: &str, session_id: Option<&str>) -> Option<String> {
+    crate::shared::spec_state::active_spec(project_dir, session_id)
 }
 
 /// `true` when the spec's `meta.json#outcome` is `Active` — the pipeline is
