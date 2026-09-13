@@ -134,11 +134,12 @@ pub struct ResumeBootstrap {
     /// `true` when the operational spec is a stub (Stage: Plan + no `## Files`/`## Tasks`).
     #[serde(rename = "isStub")]
     pub is_stub: bool,
-    /// `true` when `<spec>/.approved-by-user` already exists — the plan was
-    /// approved in `/feature` (or a prior `/spec`). The `/spec` picker reads
-    /// this to SKIP re-presenting the plan for approval (the `approve-spec` gate
-    /// already passes on the present marker); it then asks only *implement now*
-    /// vs *approve only*. Avoids soliciting the same approval twice.
+    /// `true` when the spec's state is approved — the user chose "Aprovar" in
+    /// the approval question and the witness recorded it in `spec.ndjson`. The
+    /// `/spec` picker reads this to SKIP re-presenting the plan for approval
+    /// (the `approve-spec` gate reads the same state); it then asks only
+    /// *implement now* vs *approve only*. Avoids soliciting the same approval
+    /// twice.
     #[serde(rename = "approvedByUser")]
     pub approved_by_user: bool,
     /// **Advisory, never blocking.** `true` when `<spec>/.clarified` EXISTS but
@@ -345,13 +346,11 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
     out.stage = detect_stage(&op_path, &head, view.as_ref());
     out.is_stub = detect_stub(&op_path, &head);
 
-    // Approval marker: the plan-approval gesture already happened (in /feature
-    // or a prior /spec) when `<spec>/.approved-by-user` exists. The /spec picker
-    // reads this to skip a redundant SECOND approval presentation — the
-    // approve-spec gate already passes on the present marker.
-    out.approved_by_user =
-        crate::shared::context::approval_marker_path(&project.to_string_lossy(), spec)
-            .is_some_and(|p| p.exists());
+    // The plan-approval gesture already happened when the spec's state is
+    // approved. The /spec picker reads this to skip a redundant SECOND
+    // approval presentation, and the two Execute gates below read it too —
+    // the approve-spec gate asks the same question.
+    out.approved_by_user = crate::shared::spec_state::approved(&project, spec);
 
     // Advisory only: a `<spec>/.clarified` that records NOTHING is what
     // `approve-spec` refuses on. Reporting it here (and in `active-specs`) moves
@@ -402,12 +401,11 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
 
     // --- Entry-into-Execute approval hard-gate. ---
     //
-    // A Full-scope spec must NOT begin EXECUTE without an explicit `/spec`
-    // approval event. Runs BEFORE the post-execute gate so an unapproved Full
-    // spec is reset to `Plan` / `await-approval` rather than being routed into
-    // REVIEW/QA. Fail-open inside the helper. This is the resume-engine
-    // complement to the `scope_guard` write hook (which blocks production
-    // edits at PreToolUse).
+    // A Full-scope spec must NOT begin EXECUTE without the approved state.
+    // Runs BEFORE the post-execute gate so an unapproved Full spec is reset to
+    // `Plan` / `await-approval` rather than being routed into REVIEW/QA.
+    // Fail-open inside the helper. This is the resume-engine complement to the
+    // write gate (which blocks production edits at PreToolUse).
     block_unapproved_execute(&spec_dir, &mut out);
 
     // --- Invariant safety-net: Full scope ⇒ ≥1 wave. ---

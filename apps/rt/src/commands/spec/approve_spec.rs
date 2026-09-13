@@ -46,7 +46,6 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 use crate::commands::review::{ac_negative_check, qa_run};
-use crate::shared::context::MarkerProvenance;
 
 /// Options for `mustard-rt run approve-spec`.
 #[derive(Debug, Clone)]
@@ -63,60 +62,29 @@ pub struct ApproveSpecOpts {
 
 /// JSON success report. Mirrors the `tactical-fix-create` style (flat, typed).
 ///
-/// `markerVia` / `markerAt` echo the provenance the approval MARKER records —
-/// the door the approval came through and when. They are named for the marker,
-/// not for this run, because the marker may have been minted in an EARLIER
-/// session: the previous `approvedVia` / `approvedAt` spelling read as *how the
-/// current approval happened* while carrying *how some other session's approval
-/// happened*, which is a silent wrong answer to anyone auditing who approved
-/// what. Both are omitted (not null) when the marker's body is unreadable or
-/// predates those keys: the marker EXISTENCE is what governed the gate above, so
-/// a missing echo degrades the report to silence, never to a failure.
-///
-/// `approvedThisSession` is the separated half — whether the recorded gesture
-/// belongs to the session this run is executing in. It is `false` whenever that
-/// cannot be SHOWN (no marker, an unreadable body, a marker with no session),
-/// so a run that performed no approval gesture never claims one.
+/// `witness` / `witnessAt` echo the approval the spec's state records — the
+/// question, the option the user chose, and when the witness recorded it. The
+/// approval may have happened in an EARLIER session, so the keys name the
+/// witness, never this run. Both are omitted (not null) when nothing reads
+/// back: the approved state is what governed the gate above, so a missing
+/// echo degrades the report to silence, never to a failure.
 #[derive(Debug, Serialize)]
 struct ApproveReport {
     ok: bool,
     spec: String,
     approved: bool,
     resumed: bool,
-    #[serde(rename = "markerVia", skip_serializing_if = "Option::is_none")]
-    marker_via: Option<String>,
-    #[serde(rename = "markerAt", skip_serializing_if = "Option::is_none")]
-    marker_at: Option<String>,
-    #[serde(rename = "approvedThisSession")]
-    approved_this_session: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    witness: Option<Value>,
+    #[serde(rename = "witnessAt", skip_serializing_if = "Option::is_none")]
+    witness_at: Option<String>,
 }
 
-/// `true` only when the approval gesture the marker records happened in `session`
-/// — the session this very run is executing in.
-///
-/// Every uncertainty answers `false`: no marker, a body that does not read back,
-/// a marker minted before the session key existed (empty `session`), or a
-/// session neither side could resolve. Both doors write the literal `unknown`
-/// when the harness gave them no session id, so `unknown == unknown` is NOT a
-/// match — it is two absences, and reading it as one would resurrect exactly the
-/// false claim this split exists to remove. A report may understate what it can
-/// prove; it may never claim a gesture it cannot attribute to this run.
-fn gesture_happened_here(prov: Option<&MarkerProvenance>, session: &str) -> bool {
-    fn known(s: &str) -> bool {
-        !s.trim().is_empty() && s.trim() != "unknown"
-    }
-    known(session) && prov.is_some_and(|p| known(&p.session) && p.session.trim() == session.trim())
-}
-
-/// The approval provenance to echo, read through the single reader in
-/// [`crate::shared::context::read_marker_provenance`].
-///
-/// `None` when the marker is absent OR its body is unreadable — the gate in
-/// [`run`] already decided approval from the marker's EXISTENCE, so this read is
-/// purely informative and can never itself refuse a spec.
-fn approval_provenance(cwd: &str, spec: &str) -> Option<MarkerProvenance> {
-    let path = crate::shared::context::approval_marker_path(cwd, spec)?;
-    crate::shared::context::read_marker_provenance(&path)
+/// `true` when the spec is NOT approved yet: its state, in `spec.ndjson`, is
+/// not in an approved phase. The one reader every door shares
+/// ([`crate::shared::spec_state::approved`]).
+pub(crate) fn approval_missing(root: &str, spec: &str) -> bool {
+    !crate::shared::spec_state::approved(Path::new(root), spec)
 }
 
 /// JSON failure report.
@@ -164,31 +132,31 @@ fn approval_sequence(wave_plan: bool, resume: bool) -> Vec<Step> {
 }
 
 // ---------------------------------------------------------------------------
-// The approval gate — clarify (F6) + user-approval (T5), evaluated together.
+// The approval gate — clarify + user approval, evaluated together.
 //
 // `approve-spec` may emit the `draft→approved` signal ONLY once BOTH preconditions
-// hold: a Full plan is CLARIFIED (`<spec>/.clarified`, F6) and a real user has
-// APPROVED it (`<spec>/.approved-by-user`, T5). Each marker is born from an act the
+// hold: a Full plan is CLARIFIED (`<spec>/.clarified`) and the user has APPROVED it
+// (the spec's state in `spec.ndjson` is approved). Each is born from an act the
 // model cannot author — the deliberate clarification finalize, and the user's own
-// `AskUserQuestion` / `ExitPlanMode` answer echoed in `tool_response`, or the picker
-// form (`/mustard:spec {letter}r`, or `/mustard:spec r` inside the unit's own work
-// branch) submitted as the whole prompt. A gate the gated could open by running this
-// very command is not a gate.
+// choice of "Aprovar" in the approval question, echoed by the harness in
+// `tool_response` and recorded by the approval witness. A gate the gated could open
+// by running this very command is not a gate.
 //
 // The two preconditions are checked in ONE pass so a single refusal names EVERY
-// unmet marker with its minting path — the pre-refactor gate exited on the first
-// miss and hid the second, costing the user a second failed run to discover it.
-// Mode reads exactly like the `MUSTARD_*_GATE_MODE` close-gate family.
+// unmet one with its remedy — the pre-refactor gate exited on the first miss and
+// hid the second, costing the user a second failed run to discover it. Mode reads
+// exactly like the `MUSTARD_*_GATE_MODE` close-gate family.
 // ---------------------------------------------------------------------------
 
 /// Three-state mode for the user-approval requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ApprovalMode {
-    /// Emit approval unconditionally (pre-T5 behaviour).
+    /// Emit approval unconditionally (the behaviour before the user-approval
+    /// gate).
     Off,
-    /// Warn on a missing marker but proceed.
+    /// Warn on a missing approval but proceed.
     Warn,
-    /// Refuse (exit≠0) on a missing marker — the default.
+    /// Refuse (exit≠0) on a missing approval — the default.
     Strict,
 }
 
@@ -596,9 +564,9 @@ fn section_body(body: &str, heading: &str) -> Option<String> {
 }
 
 /// Build the aggregated refusal that names EVERY unmet approval precondition at
-/// once — clarify (F6, `<spec>/.clarified`) and/or user-approval (T5,
-/// `<spec>/.approved-by-user`) — each with the path that mints it. One message so
-/// the user sees everything missing in a single run, instead of the pre-refactor
+/// once — clarify (`<spec>/.clarified`) and/or user approval (the spec's
+/// approved state) — each with the path that satisfies it. One message so the
+/// user sees everything missing in a single run, instead of the pre-refactor
 /// gate's first-miss-only refusal. `spec` is interpolated into the clarify
 /// finalize command. Returns `None` when nothing is missing — the caller then
 /// proceeds silently. Surfaced as the report `error`; the flow relays
@@ -664,15 +632,11 @@ fn unmet_gate_message(
     }
     if approval_missing {
         unmet.push(
-            "approval — no `<spec>/.approved-by-user`: THREE gestures mint it, and the model \
-             can forge none of them — (1) the user accepts the plan in plan mode \
-             (ExitPlanMode); (2) the user SELECTS the approval option of the approval \
-             AskUserQuestion (fallback) — a label carrying `approv`/`aprov`, since free text \
-             typed instead of selected mints nothing; (3) the user types a picker form as the \
-             WHOLE prompt — `/mustard:spec {letter}` (the row letter alone IS the approval), \
-             `/mustard:spec {letter}r` (the same, older alias), `/mustard:spec r`, or \
-             `/mustard:spec` on its own inside the unit's own work branch, where the branch \
-             already names the unit"
+            "approval — the spec is not approved: ONE gesture approves it, and the model \
+             cannot forge it — the user CHOOSES the option \"Aprovar\" (\"Approve\") of the \
+             approval question, and the approval witness records the approved state in \
+             `spec.ndjson`. Free text typed instead of choosing an option approves nothing, \
+             and so does an option that does not start with \"Aprovar\""
                 .to_string(),
         );
     }
@@ -762,25 +726,21 @@ struct Refused {
 /// [`crate::commands::event::emit_pipeline::run`].
 ///
 /// Approval gate — refuse (strict) to emit the approval signal until BOTH
-/// preconditions hold. Clarify (F6) precedes approval and applies only to Full
-/// specs; user-approval (T5) applies to every spec. Both markers are born from
-/// acts the model cannot forge (the deliberate `grill-capture --finalize`, and
-/// the observer recording the user's real AskUserQuestion / ExitPlanMode answer).
-/// A background job (no user, no answer, no marker) halts cleanly here and the
-/// spec stays in PLAN instead of auto-approving. A THIRD precondition joins
-/// them, unconditionally: every non-exempt acceptance criterion must carry a
-/// PROVEN record in `<spec>/ac-proof.json` for the command it carries today (see
-/// [`proof_state`] — fail-CLOSED). All three are evaluated TOGETHER so one
-/// refusal names every unmet precondition with its remedy.
-///
-/// `session` is the session this run executes in, resolved by the caller like
-/// `mode` is, so the report can say whether the recorded gesture happened HERE
-/// without this routine reading process-global state.
+/// preconditions hold. Clarify precedes approval and applies only to Full
+/// specs; user approval applies to every spec. Both are born from acts the
+/// model cannot forge (the deliberate `grill-capture --finalize`, and the
+/// witness recording the user's real choice of "Aprovar" in the approval
+/// question). A background job (no user, no answer, no approved state) halts
+/// cleanly here and the spec stays in PLAN instead of auto-approving. A THIRD
+/// precondition joins them, unconditionally: every non-exempt acceptance
+/// criterion must carry a PROVEN record in `<spec>/ac-proof.json` for the
+/// command it carries today (see [`proof_state`] — fail-CLOSED). All three are
+/// evaluated TOGETHER so one refusal names every unmet precondition with its
+/// remedy.
 fn approve_at(
     root: &str,
     opts: &ApproveSpecOpts,
     mode: ApprovalMode,
-    session: &str,
     emit: &mut dyn FnMut(&str, Value),
 ) -> Result<ApproveReport, Refused> {
     if opts.spec.trim().is_empty() {
@@ -798,17 +758,12 @@ fn approve_at(
 
     // Clarify only gates Full specs, and gates them on what the marker CARRIES,
     // not merely that it is there. The spec is known explicitly here via
-    // `--spec`, so there is no resolution problem (unlike the write-time
-    // `scope_guard`). `off` mutes both marker preconditions; the proof stands.
-    let (clarify, approval_missing) = if mode == ApprovalMode::Off {
+    // `--spec`, so there is no resolution problem. `off` mutes both
+    // preconditions; the proof stands.
+    let (clarify, missing_approval) = if mode == ApprovalMode::Off {
         (ClarifyState::NotGated, false)
     } else {
-        (
-            clarify_state(root, &opts.spec),
-            !crate::shared::context::approval_marker_path(root, &opts.spec)
-                .map(|p| p.exists())
-                .unwrap_or(false),
-        )
+        (clarify_state(root, &opts.spec), approval_missing(root, &opts.spec))
     };
 
     // A single decision over all three preconditions: any unmet one yields the
@@ -822,7 +777,7 @@ fn approve_at(
         unmet_gate_message(
             &opts.spec,
             clarify,
-            approval_missing,
+            missing_approval,
             &proof,
             &scaffold,
             spec_is_full(root, &opts.spec),
@@ -849,22 +804,18 @@ fn approve_at(
         emit(kind, payload);
     }
 
-    // Echo the provenance the approval MARKER recorded — named for the marker,
-    // never for this run. Read AFTER the gate, and independent of it: an
-    // unreadable body yields `None` here but never changes `approved`, which the
-    // gate above already settled.
-    let prov = approval_provenance(root, &opts.spec);
+    // Echo the approval the state records — named for the witness, never for
+    // this run. Read AFTER the gate, and independent of it: nothing read back
+    // yields `None` here but never changes `approved`, which the gate above
+    // already settled.
+    let witness = crate::shared::spec_state::approval(Path::new(root), &opts.spec);
     Ok(ApproveReport {
         ok: true,
         spec: opts.spec.clone(),
         approved: true,
         resumed: opts.resume,
-        marker_via: prov.as_ref().map(|p| p.via.clone()),
-        marker_at: prov
-            .as_ref()
-            .map(|p| p.at.clone())
-            .filter(|s| !s.is_empty()),
-        approved_this_session: gesture_happened_here(prov.as_ref(), session),
+        witness: witness.as_ref().map(|a| json!({ "question": a.question, "answer": a.answer })),
+        witness_at: witness.map(|a| a.at),
     })
 }
 
@@ -895,8 +846,7 @@ pub fn run(opts: ApproveSpecOpts) {
         );
     };
 
-    let session = crate::shared::context::session_id();
-    match approve_at(&root, &opts, resolve_approval_mode(), &session, &mut emit) {
+    match approve_at(&root, &opts, resolve_approval_mode(), &mut emit) {
         Ok(report) => println!(
             "{}",
             serde_json::to_string(&report).unwrap_or_else(|_| "{\"ok\":true}".to_string())
@@ -1276,30 +1226,29 @@ mod tests {
 
     #[test]
     fn background_job_without_user_stops_at_plan() {
-        // A background job poses no AskUserQuestion, so the observer records no
-        // marker; strict `approve-spec` then refuses (Block), and the Full spec
-        // cannot leave PLAN without a human. This is the background-job scenario.
+        // A background job poses no approval question, so the witness records
+        // no approval; strict `approve-spec` then refuses (Block), and the Full
+        // spec cannot leave PLAN without a human.
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
     }
 
+    /// The state `approve-spec` gates on is the one the witness writes: the
+    /// approved state in `spec.ndjson`. Recording it flips the decision.
     #[test]
-    fn approval_marker_presence_toggles_with_the_file() {
-        // The exact path `approve-spec` gates on is the one the observer writes
-        // — `<spec>/.approved-by-user`. Toggling the file flips the decision.
+    fn the_approved_state_toggles_the_decision() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        let root_str = root.to_str().unwrap();
         let spec = "epic";
-        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
-        let marker = crate::shared::context::approval_marker_path(root.to_str().unwrap(), spec)
-            .expect("marker path resolves");
-        assert!(marker.ends_with(".approved-by-user"));
+        let spec_dir = root.join(".claude").join("spec").join(spec);
+        std::fs::create_dir_all(&spec_dir).unwrap();
 
-        assert!(!marker.exists(), "no marker yet");
-        assert_eq!(approval_gate(ApprovalMode::Strict, marker.exists()), ApprovalGate::Block);
+        assert!(approval_missing(root_str, spec), "no state yet");
+        assert_eq!(approval_gate(ApprovalMode::Strict, !approval_missing(root_str, spec)), ApprovalGate::Block);
 
-        std::fs::write(&marker, b"spec=epic\n").unwrap();
-        assert!(marker.exists(), "marker present after the observer writes it");
-        assert_eq!(approval_gate(ApprovalMode::Strict, marker.exists()), ApprovalGate::Proceed);
+        crate::shared::spec_state::approve_in(&spec_dir);
+        assert!(!approval_missing(root_str, spec), "approved once the witness records it");
+        assert_eq!(approval_gate(ApprovalMode::Strict, !approval_missing(root_str, spec)), ApprovalGate::Proceed);
     }
 
     // -----------------------------------------------------------------------
@@ -1420,10 +1369,10 @@ mod tests {
             msg.contains("grill-capture --finalize --spec epic"),
             "names the clarify minting path with the spec: {msg}"
         );
-        assert!(msg.contains(".approved-by-user"), "names the approval marker: {msg}");
+        assert!(msg.contains("\"Aprovar\""), "names the approval gesture: {msg}");
         assert!(
-            msg.contains("ExitPlanMode") && msg.contains("AskUserQuestion"),
-            "names the approval minting path: {msg}"
+            msg.contains("approval question") && msg.contains("spec.ndjson"),
+            "names where the approval comes from: {msg}"
         );
         // Strict refuses (Block ⇒ exit≠0) when a marker is missing.
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
@@ -1441,8 +1390,8 @@ mod tests {
             "names the clarify minting path: {msg}"
         );
         assert!(
-            !msg.contains(".approved-by-user"),
-            "must NOT name the met approval marker: {msg}"
+            !msg.contains("\"Aprovar\""),
+            "must NOT name the met approval: {msg}"
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
     }
@@ -1453,10 +1402,10 @@ mod tests {
         // ONLY the approval requirement.
         let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
             .expect("approval missing → a refusal");
-        assert!(msg.contains(".approved-by-user"), "names the approval marker: {msg}");
+        assert!(msg.contains("\"Aprovar\""), "names the approval gesture: {msg}");
         assert!(
-            msg.contains("ExitPlanMode") && msg.contains("AskUserQuestion"),
-            "names the approval minting path: {msg}"
+            msg.contains("approval question") && msg.contains("spec.ndjson"),
+            "names where the approval comes from: {msg}"
         );
         assert!(
             !msg.contains(".clarified"),
@@ -1466,56 +1415,19 @@ mod tests {
     }
 
     /// The refusal is read by someone who has just discovered their gesture did
-    /// not count, so it is the one place the WORKING gestures have to be written
-    /// down — all of them.
-    ///
-    /// It used to name two doors and there are three: the picker form
-    /// (`crate::hooks::observe::picker_approval_observer`) mints the same marker
-    /// from a prompt the user typed in full, and a refusal that omits it sends
-    /// the operator back through a plan-mode round trip they had a one-line way
-    /// out of. The two conditions the sibling doors decline on silently are
-    /// named too, because the refusal is where they become actionable: an
-    /// approval option whose label carries no `approv`/`aprov` stem, and an
-    /// answer typed as free text rather than selected.
+    /// not count, so it is where the ONE working gesture is written down: the
+    /// user choosing "Aprovar" in the approval question. The doors that stopped
+    /// approving — accepting plan mode and typing the slash command — are not
+    /// taught, and the answers that approve nothing are named.
     #[test]
-    fn the_refusal_names_the_gestures_that_actually_mint() {
+    fn the_refusal_names_the_one_gesture_that_approves() {
         let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
             .expect("approval missing → a refusal");
-
-        // 1. Plan mode.
-        assert!(msg.contains("ExitPlanMode"), "the plan-mode gesture is unnamed: {msg}");
-        // 2. The modal — and the two conditions its recorder declines on.
-        assert!(msg.contains("AskUserQuestion"), "the modal gesture is unnamed: {msg}");
-        assert!(
-            msg.contains("SELECT") && msg.contains("free text"),
-            "the modal gesture must say that only a SELECTED option counts, or the \
-             operator retypes the same free text: {msg}"
-        );
-        assert!(
-            msg.contains("approv") && msg.contains("aprov"),
-            "the modal gesture must name the label stems its recorder matches: {msg}"
-        );
-        // 3. The picker — every spelling, under the whole-prompt rule that is the
-        //    only thing keeping the form unforgeable. The BARE letter is named
-        //    first: it is the cheapest way out and the one this message used to
-        //    omit, sending the operator to a longer form for no reason.
-        assert!(
-            msg.contains("/mustard:spec {letter}")
-                && msg.contains("/mustard:spec {letter}r")
-                && msg.contains("/mustard:spec r"),
-            "the picker gestures are unnamed — the operator's one-line way out is \
-             missing from the message that explains what to do instead: {msg}"
-        );
-        assert!(
-            msg.contains("WHOLE prompt"),
-            "naming the picker form without its whole-prompt rule teaches a gesture \
-             that mints nothing when quoted inside a sentence: {msg}"
-        );
-        assert!(
-            msg.contains("work branch"),
-            "the bare `r` must carry the position it is valid in — outside a unit's \
-             branch it names no spec at all: {msg}"
-        );
+        assert!(msg.contains("CHOOSES") && msg.contains("\"Aprovar\""), "the gesture: {msg}");
+        assert!(msg.contains("Free text"), "free text approves nothing: {msg}");
+        for gone in ["ExitPlanMode", "/mustard:spec", ".approved-by-user"] {
+            assert!(!msg.contains(gone), "the refusal still teaches {gone}: {msg}");
+        }
     }
 
     #[test]
@@ -1550,16 +1462,7 @@ mod tests {
 
         // The user really approved — only the clarification is hollow, so the
         // refusal can come from nothing else.
-        std::fs::write(
-            crate::shared::context::approval_marker_path(root_str, spec).unwrap(),
-            crate::shared::context::marker_body(
-                spec,
-                "ExitPlanMode",
-                "s-1",
-                "2026-07-25T10:00:00.000Z",
-            ),
-        )
-        .unwrap();
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
         let clarified = crate::shared::context::clarified_marker_path(root_str, spec).unwrap();
         std::fs::write(&clarified, b"spec=epic\n").unwrap();
 
@@ -1574,7 +1477,7 @@ mod tests {
         let mut record =
             |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
 
-        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, "s-1", &mut record)
+        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
             .expect_err("a marker that recorded nothing must refuse the approval");
         assert!(refused.exit_nonzero, "a gate refusal exits non-zero");
         assert!(
@@ -1614,7 +1517,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let report = approve_at(root_str, &opts, ApprovalMode::Strict, "s-1", &mut record)
+        let report = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
             .expect("a recorded clarification approves");
         assert!(report.approved);
         assert_eq!(
@@ -1626,157 +1529,50 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Provenance echo — the report surfaces the door + instant the marker holds
+    // The witness echo — the report surfaces what the approval recorded
     // -----------------------------------------------------------------------
 
+    /// The report echoes the witness of the approved state — the question and
+    /// the option the user chose — and when it was recorded, under keys that
+    /// name the witness, never this run. With nothing to echo, both keys are
+    /// omitted, never null.
     #[test]
-    fn approve_spec_echoes_provenance() {
-        // A marker written by the shared body writer reads back as the door and
-        // the instant, and the report serialises both under stable keys.
+    fn approve_spec_echoes_the_witness() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        let root_str = root.to_str().unwrap();
         let spec = "epic";
-        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
-        let marker =
-            crate::shared::context::approval_marker_path(root.to_str().unwrap(), spec).unwrap();
+        seed_full_spec(root, spec);
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
         std::fs::write(
-            &marker,
-            crate::shared::context::marker_body(
+            crate::shared::context::clarified_marker_path(root_str, spec).unwrap(),
+            crate::shared::context::clarify_marker_body(
                 spec,
-                "AskUserQuestion",
                 "s-1",
-                "2026-07-24T10:00:00.000Z",
+                "2026-07-25T10:00:00.000Z",
+                &[],
+                "the glossary already defines every matched term",
             ),
         )
         .unwrap();
+        let opts = ApproveSpecOpts { spec: spec.to_string(), wave_plan: false, resume: false };
 
-        let prov = approval_provenance(root.to_str().unwrap(), spec).expect("provenance reads back");
-        assert_eq!(prov.via, "AskUserQuestion");
-        assert_eq!(prov.at, "2026-07-24T10:00:00.000Z");
-
-        let report = ApproveReport {
-            ok: true,
-            spec: spec.to_string(),
-            approved: true,
-            resumed: false,
-            marker_via: Some(prov.via.clone()),
-            marker_at: Some(prov.at.clone()),
-            approved_this_session: gesture_happened_here(Some(&prov), "s-1"),
-        };
+        let report = approve_at(root_str, &opts, ApprovalMode::Strict, &mut |_, _| {})
+            .expect("an approved and clarified spec approves");
         let json: Value = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
-        // The keys name the MARKER, which is what they hold.
-        assert_eq!(json["markerVia"], "AskUserQuestion");
-        assert_eq!(json["markerAt"], "2026-07-24T10:00:00.000Z");
-        assert_eq!(json["approvedThisSession"], true, "the marker names s-1: {json}");
-    }
+        assert_eq!(json["witness"], json!({ "question": "Aprovar esta spec?", "answer": "Aprovar" }));
+        assert!(json["witnessAt"].as_str().is_some_and(|at| !at.is_empty()), "{json}");
+        for gone in ["markerVia", "markerAt", "approvedThisSession"] {
+            assert!(json.get(gone).is_none(), "{gone} left with the marker: {json}");
+        }
 
-    /// The report must not answer "how did the CURRENT approval happen?"
-    /// with a gesture some EARLIER session performed. The marker's provenance is
-    /// published under keys that name the marker, and the separated
-    /// `approvedThisSession` says plainly that this run performed nothing.
-    ///
-    /// Two-sided: a marker minted by THIS session still reports `true`, so the
-    /// fix cannot pass by making the field permanently false.
-    #[test]
-    fn report_does_not_claim_a_gesture_that_did_not_happen() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let spec = "epic";
-        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
-        let marker =
-            crate::shared::context::approval_marker_path(root.to_str().unwrap(), spec).unwrap();
-        // The user approved in session `s-earlier`; this run is `s-now`.
-        std::fs::write(
-            &marker,
-            crate::shared::context::marker_body(
-                spec,
-                "ExitPlanMode",
-                "s-earlier",
-                "2026-07-20T09:00:00.000Z",
-            ),
-        )
-        .unwrap();
-        let prov = approval_provenance(root.to_str().unwrap(), spec).expect("provenance reads back");
-
-        assert!(
-            !gesture_happened_here(Some(&prov), "s-now"),
-            "an earlier session's gesture is not this run's"
-        );
-        let report = ApproveReport {
-            ok: true,
-            spec: spec.to_string(),
-            approved: true,
-            resumed: false,
-            marker_via: Some(prov.via.clone()),
-            marker_at: Some(prov.at.clone()),
-            approved_this_session: gesture_happened_here(Some(&prov), "s-now"),
-        };
+        // `off` lets an unapproved spec through, with nothing to echo.
+        let bare = tempdir().unwrap();
+        seed_full_spec(bare.path(), spec);
+        let report = approve_at(bare.path().to_str().unwrap(), &opts, ApprovalMode::Off, &mut |_, _| {})
+            .expect("off mutes the approval precondition");
         let json: Value = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
-        assert_eq!(json["approvedThisSession"], false, "{json}");
-        // The provenance is still published — under a key that names the marker,
-        // not one that reads as how this run approved.
-        assert_eq!(json["markerVia"], "ExitPlanMode", "{json}");
-        assert!(
-            json.get("approvedVia").is_none(),
-            "no field claims the current run performed the gesture: {json}"
-        );
-
-        // The other direction — a gesture that DID happen here reports so.
-        assert!(gesture_happened_here(Some(&prov), "s-earlier"));
-        // And every absence answers false, never true by coincidence: two
-        // unresolved sessions are two absences, not a match.
-        assert!(!gesture_happened_here(None, "s-earlier"));
-        let anonymous = crate::shared::context::MarkerProvenance {
-            session: "unknown".to_string(),
-            ..prov.clone()
-        };
-        assert!(
-            !gesture_happened_here(Some(&anonymous), "unknown"),
-            "`unknown` == `unknown` is two absences, not an attribution"
-        );
-    }
-
-    #[test]
-    fn unreadable_marker_body_still_approves() {
-        // The marker EXISTS (so the gate proceeds) but its body has no `via=`
-        // line: the provenance read degrades to `None` and the echoed keys are
-        // omitted — never a rejection, and never a null key.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let spec = "epic";
-        std::fs::create_dir_all(root.join(".claude").join("spec").join(spec)).unwrap();
-        let marker =
-            crate::shared::context::approval_marker_path(root.to_str().unwrap(), spec).unwrap();
-        std::fs::write(&marker, b"garbage with no via line\n").unwrap();
-
-        // Existence still governs the gate.
-        assert!(marker.exists());
-        assert_eq!(
-            approval_gate(ApprovalMode::Strict, marker.exists()),
-            ApprovalGate::Proceed
-        );
-        // But the provenance read degrades to nothing.
-        assert!(approval_provenance(root.to_str().unwrap(), spec).is_none());
-
-        // The report a degraded read produces: approved, with the echo keys
-        // simply absent (skip_serializing_if), not present-and-null.
-        let report = ApproveReport {
-            ok: true,
-            spec: spec.to_string(),
-            approved: true,
-            resumed: false,
-            marker_via: None,
-            marker_at: None,
-            approved_this_session: gesture_happened_here(None, "s-1"),
-        };
-        let json: Value = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
-        assert_eq!(json["approved"], true);
-        assert!(json.get("markerVia").is_none(), "no null key: {json}");
-        assert!(json.get("markerAt").is_none(), "no null key: {json}");
-        assert_eq!(
-            json["approvedThisSession"], false,
-            "a body that does not read back cannot attribute the gesture: {json}"
-        );
+        assert!(json.get("witness").is_none() && json.get("witnessAt").is_none(), "{json}");
     }
 
     // -----------------------------------------------------------------------
@@ -1843,13 +1639,9 @@ mod tests {
         seed_full_spec(root, spec);
         seed_criteria(root, spec, "cargo test -p mustard-rt --lib the_new_unit");
 
-        // Both marker preconditions are genuinely met, so the refusal can come
-        // from nothing but the proof.
-        std::fs::write(
-            crate::shared::context::approval_marker_path(root_str, spec).unwrap(),
-            crate::shared::context::marker_body(spec, "ExitPlanMode", "s-1", "2026-07-25T10:00:00.000Z"),
-        )
-        .unwrap();
+        // Both approval preconditions are genuinely met, so the refusal can
+        // come from nothing but the proof.
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
         std::fs::write(
             crate::shared::context::clarified_marker_path(root_str, spec).unwrap(),
             crate::shared::context::clarify_marker_body(
@@ -1870,7 +1662,7 @@ mod tests {
         let mut record =
             |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
 
-        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, "s-1", &mut record)
+        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
             .expect_err("no proof → the approval refuses");
         assert!(refused.exit_nonzero, "a gate refusal exits non-zero");
         assert!(
@@ -1895,7 +1687,7 @@ mod tests {
         assert!(entries[0].starts_with("AC-1 —"), "names the criterion: {entries:?}");
         assert!(entries[0].contains("NEVER TAKEN"), "and what is wrong: {entries:?}");
 
-        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, "s-1", &mut record)
+        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
             .expect_err("a stale record is not a proof");
         assert!(
             refused.error.contains("AC-1"),
@@ -1917,7 +1709,7 @@ mod tests {
         // The other direction — proving the command it carries TODAY approves.
         seed_proof_ledger(root, spec, "cargo test -p mustard-rt --lib the_new_unit");
         assert_eq!(proof_state(root_str, spec), ProofState::Proven);
-        let report = approve_at(root_str, &opts, ApprovalMode::Strict, "s-1", &mut record)
+        let report = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
             .expect("a proven criterion approves");
         assert!(report.approved);
         assert_eq!(emitted.borrow().len(), 2, "plan + approved: {:?}", emitted.borrow());
@@ -2019,7 +1811,7 @@ mod tests {
 
         // `off` mutes the two MARKER preconditions; the proof still refuses.
         for mode in [ApprovalMode::Off, ApprovalMode::Warn, ApprovalMode::Strict] {
-            let refused = approve_at(root_str, &opts, mode, "s-1", &mut record)
+            let refused = approve_at(root_str, &opts, mode, &mut record)
                 .err()
                 .unwrap_or_else(|| panic!("{mode:?} must not relax the proof"));
             assert!(refused.exit_nonzero, "{mode:?}");
@@ -2046,6 +1838,6 @@ mod tests {
             "a spec with no acceptance criteria must not be refused by this gate"
         );
         // And it approves under `off`, where the two marker preconditions are muted.
-        assert!(approve_at(root_str, &bare_opts, ApprovalMode::Off, "s-1", &mut record).is_ok());
+        assert!(approve_at(root_str, &bare_opts, ApprovalMode::Off, &mut record).is_ok());
     }
 }

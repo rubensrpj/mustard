@@ -15,9 +15,10 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
 use mustard_core::domain::spec_state::{resolve, SpecState, State};
 use mustard_core::io::spec_events as store;
+use serde_json::Value;
 
 use crate::shared::context;
 
@@ -70,6 +71,72 @@ impl SpecState for DiskSpecState {
     fn log(&self, spec: &str) -> Option<SpecLog> {
         let path = store::spec_file(&store::spec_root(&self.root), spec).ok()?;
         store::read(&path).ok().flatten()
+    }
+}
+
+/// A spec `spec` do projeto em `root` foi aprovada pelo usuário: o estado
+/// dela, lido do `spec.ndjson`, está numa fase de spec aprovada. A única
+/// resposta a "está aprovada?": o `approve-spec`, a retomada, o `status`, a
+/// página da spec e o `wave-scaffold` perguntam aqui.
+#[must_use]
+pub(crate) fn approved(root: &Path, spec: &str) -> bool {
+    DiskSpecState::new(root).state(spec).is_some_and(|state| state.approved)
+}
+
+/// O mesmo que [`approved`], lido do `spec.ndjson` da pasta `spec_dir`, para
+/// quem só tem a pasta da spec.
+#[must_use]
+pub(crate) fn approved_in(spec_dir: &Path) -> bool {
+    store::read(&spec_dir.join("spec.ndjson"))
+        .ok()
+        .flatten()
+        .is_some_and(|log| State::from_log(&log).approved)
+}
+
+/// A aprovação que vale de uma spec: a pergunta, a opção que o usuário
+/// escolheu e a hora em que a testemunha gravou.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Approval {
+    pub(crate) question: String,
+    pub(crate) answer: String,
+    pub(crate) at: String,
+}
+
+/// A aprovação da spec `spec`: o `state` visível mais novo que traz a
+/// testemunha, enquanto a spec continua aprovada. `None` numa spec que não
+/// está aprovada ou que não tem arquivo de eventos.
+#[must_use]
+pub(crate) fn approval(root: &Path, spec: &str) -> Option<Approval> {
+    let log = DiskSpecState::new(root).log(spec)?;
+    if !State::from_log(&log).approved {
+        return None;
+    }
+    let event = log
+        .block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|event| event.event_type == "state")
+        .filter(|event| event.fields.get("witness").is_some_and(Value::is_object))
+        .max_by_key(|event| event.id)?;
+    let witness = &event.fields["witness"];
+    let text = |key: &str| witness.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    Some(Approval { question: text("question"), answer: text("answer"), at: event.at().to_string() })
+}
+
+/// Grava na pasta `spec_dir` a spec em plano e, em seguida, aprovada pelo
+/// usuário, como a testemunha grava.
+#[cfg(test)]
+pub(crate) fn approve_in(spec_dir: &Path) {
+    std::fs::create_dir_all(spec_dir).unwrap();
+    let path = spec_dir.join("spec.ndjson");
+    for fields in [
+        serde_json::json!({ "phase": "plan" }),
+        serde_json::json!({
+            "phase": "approved",
+            "author": "user",
+            "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
+        }),
+    ] {
+        store::write(&path, "state", fields.as_object().cloned().unwrap(), &[]).unwrap();
     }
 }
 
@@ -176,6 +243,51 @@ mod tests {
         assert_eq!(active_spec(root, Some(SESSION)).as_deref(), Some("da-sessao"));
         assert_eq!(active_spec(root, Some("outra-sessao")), None);
         assert_eq!(active_spec(root, None), None);
+    }
+
+    /// Os leitores de "está aprovada?" dão a mesma resposta que o estado, lado
+    /// a lado: o `approve-spec`, a retomada, o `status`, a página da spec e o
+    /// `wave-scaffold`, com a spec em plano e depois de aprovada.
+    #[test]
+    fn every_reader_of_the_approval_agrees_with_the_state() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        let spec_dir = root.join(".claude").join("spec").join("epic");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let plan = serde_json::json!({ "phase": "plan" });
+        store::write(&spec_dir.join("spec.ndjson"), "state", plan.as_object().cloned().unwrap(), &[])
+            .unwrap();
+
+        let readers = || -> Vec<(&str, bool)> {
+            vec![
+                ("approve-spec", !crate::commands::spec::approve_spec::approval_missing(root_str, "epic")),
+                (
+                    "resume-bootstrap",
+                    crate::commands::pipeline::resume_bootstrap::bootstrap(root, "epic").approved_by_user,
+                ),
+                ("status", crate::commands::pipeline::status::approval_of(root, "epic").is_some()),
+                ("spec-doc", crate::commands::spec::spec_doc::is_approved(root, "epic")),
+                ("wave-scaffold", crate::commands::wave::wave_scaffold::is_approved(&spec_dir)),
+            ]
+        };
+        let disk = DiskSpecState::new(root);
+        for (reader, approved) in readers() {
+            assert_eq!(approved, disk.state("epic").unwrap().approved, "{reader} disagrees in plan");
+            assert!(!approved, "{reader} reads a plan as approved");
+        }
+
+        let approve = serde_json::json!({
+            "phase": "approved",
+            "author": "user",
+            "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
+        });
+        store::write(&spec_dir.join("spec.ndjson"), "state", approve.as_object().cloned().unwrap(), &[])
+            .unwrap();
+        for (reader, approved) in readers() {
+            assert_eq!(approved, disk.state("epic").unwrap().approved, "{reader} disagrees once approved");
+            assert!(approved, "{reader} misses the approval");
+        }
     }
 
     #[test]

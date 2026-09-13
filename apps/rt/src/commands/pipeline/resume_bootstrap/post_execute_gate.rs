@@ -9,7 +9,6 @@
 
 use super::ResumeBootstrap;
 use mustard_core::io::fs as mfs;
-use serde_json::Value;
 use std::path::Path;
 
 /// True when the spec has finished EXECUTE (all declared waves are done, or
@@ -128,22 +127,22 @@ fn derive_review_roles(spec_dir: &Path) -> Vec<String> {
     roles
 }
 
-/// D5 — the entry-into-Execute hard-gate. A Full-scope spec must NOT begin
-/// EXECUTE without an explicit `/spec` approval event. This complements the
-/// `scope_guard` write hook: the hook blocks production edits, this blocks the
-/// resume engine from *advancing the orchestrator into* Execute in the first
-/// place.
+/// The entry-into-Execute hard-gate. A Full-scope spec must NOT begin EXECUTE
+/// without the approved state. This complements the write gate: the gate
+/// blocks production edits, this blocks the resume engine from *advancing the
+/// orchestrator into* Execute in the first place.
 ///
 /// When the spec is Full scope, its resolved stage would put it at/after
-/// Execute, and no `pipeline.status: approved` event exists, this rewrites the
-/// bootstrap back to a `Plan` / `await-approval` signal so the orchestrator
-/// stops and runs `/spec`. Everything else is a no-op:
+/// Execute, and its state is not approved (`out.approved_by_user`, read once
+/// from `spec.ndjson` by the caller), this rewrites the bootstrap back to a
+/// `Plan` / `await-approval` signal so the orchestrator stops and asks for the
+/// approval. Everything else is a no-op:
 /// - non-Full specs (Light/Touch) — no PLAN approval gate;
 /// - specs still in Plan/Analyze — not trying to execute yet;
-/// - specs with an approval event — the resume-after-approve path.
+/// - approved specs — the resume-after-approve path.
 ///
-/// Fail-open: a missing/unreadable `meta.json` or events dir leaves `out`
-/// untouched (we cannot prove the spec is an unapproved Full spec).
+/// Fail-open: a missing/unreadable `meta.json` leaves `out` untouched (we
+/// cannot prove the spec is an unapproved Full spec).
 pub(super) fn block_unapproved_execute(spec_dir: &Path, out: &mut ResumeBootstrap) {
     // Resolve scope from the spec's meta.json (the single source of truth).
     // Not Full (or unreadable) → this gate is not its business.
@@ -159,7 +158,7 @@ pub(super) fn block_unapproved_execute(spec_dir: &Path, out: &mut ResumeBootstra
         return;
     }
 
-    if approval_event_present(spec_dir) {
+    if out.approved_by_user {
         return; // Resume-after-approve — proceed.
     }
 
@@ -292,11 +291,8 @@ pub(super) fn signal_approved_plan_ready(
     let Some(meta) = full_scope_meta(spec_dir) else {
         return;
     };
-    // Approved = the user's own marker (`<spec>/.approved-by-user`, already
-    // resolved onto `out`) OR the emitted `draft→approved` signal. Either proves
-    // the approval gesture happened; requiring both would re-refuse a spec
-    // approved through the other door.
-    if !(out.approved_by_user || approval_event_present(spec_dir)) {
+    // Approved = the spec's approved state, already resolved onto `out`.
+    if !out.approved_by_user {
         return;
     }
 
@@ -312,18 +308,6 @@ pub(super) fn signal_approved_plan_ready(
     }
     out.next_action = Some("dispatch-wave".to_string());
     out.dispatch_command = Some(format!("mustard-rt run wave-advance --spec {spec}"));
-}
-
-/// `true` when the spec's per-spec NDJSON log carries a `pipeline.status` event
-/// with `to == "approved"` — the canonical `/spec` approval signal (D5).
-fn approval_event_present(spec_dir: &Path) -> bool {
-    let events_dir = spec_dir.join(".events");
-    let events =
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir);
-    events.iter().any(|ev| {
-        ev.event == "pipeline.status"
-            && ev.payload.get("to").and_then(Value::as_str) == Some("approved")
-    })
 }
 
 /// Surface the post-execute next action on `out`. When `execute_complete` is
@@ -698,20 +682,15 @@ mod tests {
         assert_eq!(out.next_action.as_deref(), Some("await-approval"));
     }
 
-    /// ALLOW: an approval event lets the Full spec proceed to Execute.
+    /// ALLOW: the approved state lets the Full spec proceed to Execute.
     #[test]
     fn allows_full_execute_with_approval() {
         let dir = tempfile::tempdir().unwrap();
         let spec_dir = dir.path();
         seed_meta_scope(spec_dir, "full");
-        write_event_line(
-            spec_dir,
-            "pipeline.status",
-            r#"{"to":"approved","spec":"demo"}"#,
-            "2026-06-02T09:00:00.000Z",
-        );
         let mut out = ResumeBootstrap {
             stage: Some("Execute".to_string()),
+            approved_by_user: true,
             ..Default::default()
         };
         block_unapproved_execute(spec_dir, &mut out);
@@ -899,7 +878,7 @@ mod tests {
             "an unapproved Full must not be told to dispatch"
         );
 
-        // Approved (user marker resolved onto `out`) + waves materialised.
+        // Approved (the state resolved onto `out`) + waves materialised.
         let mut out = ResumeBootstrap {
             stage: Some("Plan".to_string()),
             approved_by_user: true,

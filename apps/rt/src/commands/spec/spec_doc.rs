@@ -63,7 +63,7 @@ use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items, AcItem
 use crate::commands::spec::material_add::{read_material, Material, Severity};
 use crate::commands::spec::spec_sections::section_block;
 use crate::report::{escape, Report};
-use crate::shared::context::{approval_marker_path, CLARIFIED_MARKER};
+use crate::shared::context::CLARIFIED_MARKER;
 
 /// O arquivo que o comando escreve, dentro do diretório da spec.
 pub(crate) const DOC_FILE: &str = "resumo.html";
@@ -503,13 +503,16 @@ impl Position {
 // A página
 // ---------------------------------------------------------------------------
 
+/// A página mostra a spec como aprovada: o estado dela, no `spec.ndjson`.
+pub(crate) fn is_approved(root: &Path, slug: &str) -> bool {
+    crate::shared::spec_state::approved(root, slug)
+}
+
 fn render(root: &Path, slug: &str, dir: &Path) -> String {
     let meta = read_meta(dir);
     let i18n = i18n_for(root);
     let t = |key: &str| i18n.render(key);
-    let approved =
-        approval_marker_path(&root.to_string_lossy(), slug).is_some_and(|p| p.is_file());
-    let position = Position::of(&meta, approved);
+    let position = Position::of(&meta, is_approved(root, slug));
     let spec_text = std::fs::read_to_string(dir.join("spec.md")).unwrap_or_default();
     let material = read_material(dir).unwrap_or_default();
     let waves = read_waves(dir, &meta);

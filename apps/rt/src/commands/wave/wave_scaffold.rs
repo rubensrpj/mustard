@@ -75,12 +75,11 @@
 //! Idempotent, in both write modes (see [`WriteMode`]): re-running an UNCHANGED
 //! plan creates, refreshes and removes nothing. Before the user approves the
 //! spec the layout is reconciled onto the plan (a differing file is rewritten,
-//! a wave the plan dropped is deleted); once `.approved-by-user` exists it is
-//! frozen — skip-if-present, with ONE stderr WARN when a file would have
-//! changed. `plan-materialize` reports `created_files` / `skipped` /
-//! `refreshed` / `removed` on stdout.
+//! a wave the plan dropped is deleted); once the user approved the spec (its
+//! state in `spec.ndjson`) it is frozen — skip-if-present, with ONE stderr
+//! WARN when a file would have changed. `plan-materialize` reports
+//! `created_files` / `skipped` / `refreshed` / `removed` on stdout.
 
-use crate::shared::context::APPROVED_BY_USER_MARKER;
 use mustard_core::domain::spec::contract::ChecklistItem;
 use mustard_core::io::fs;
 use mustard_core::{Meta, MetaFlags, read_meta, write_meta};
@@ -1077,8 +1076,8 @@ fn checklist_from_files(files: &[String]) -> Vec<ChecklistItem> {
         .collect()
 }
 
-/// Write mode for one scaffold pass, decided by the canonical per-spec approval
-/// marker (`.approved-by-user`) — never by a flag or an env knob.
+/// Write mode for one scaffold pass, decided by the spec's approved state —
+/// never by a flag or an env knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriteMode {
     /// No approval marker yet: the layout is still the Plan agent's draft, so
@@ -1099,8 +1098,8 @@ enum WriteMode {
 /// inside the PLAN AUTHORING window — all three facts, each read from state the
 /// orchestrator cannot assert by hand:
 ///
-/// 1. No `.approved-by-user` ([`APPROVED_BY_USER_MARKER`]). The marker can only
-///    be born from the user's real approval answer.
+/// 1. The spec is not approved ([`is_approved`]). The approved state is born
+///    only from the user's real answer to the approval question.
 /// 2. The root `meta.json#stage` has not advanced past `Plan`. A spec already in
 ///    EXECUTE has agents editing against these wave dirs and `done` flags the
 ///    auto-mark hook flipped — rewriting them from a plan is never repair there.
@@ -1140,10 +1139,11 @@ fn write_mode(spec_dir: &Path) -> WriteMode {
     }
 }
 
-/// `true` when the user really approved this spec ([`APPROVED_BY_USER_MARKER`]
-/// beside it). The one fact the orchestrator cannot assert by hand.
-fn is_approved(spec_dir: &Path) -> bool {
-    fs::exists(spec_dir.join(APPROVED_BY_USER_MARKER))
+/// `true` when the user really approved this spec: its state, in the
+/// `spec.ndjson` of `spec_dir`, is approved. The one fact the orchestrator
+/// cannot assert by hand.
+pub(crate) fn is_approved(spec_dir: &Path) -> bool {
+    crate::shared::spec_state::approved_in(spec_dir)
 }
 
 /// The exact bytes [`write_meta`] would put on disk for `meta` — pretty JSON
@@ -1342,18 +1342,17 @@ impl<'a> Ledger<'a> {
 /// It names the route that DOES accept a change on an approved spec — stating
 /// it in chat, which the change-request observer records in the spec's
 /// `change-log.md` — because silently re-planning an approved spec is exactly
-/// what the approval marker exists to prevent. Composed here (rather than
-/// inlined at the emission) so the wording is assertable; a test that wants to
-/// pin the EMISSION drives [`scaffold_warning_to`] with its own sink.
+/// what the approval exists to prevent. Composed here (rather than inlined at
+/// the emission) so the wording is assertable; a test that wants to pin the
+/// EMISSION drives [`scaffold_warning_to`] with its own sink.
 fn frozen_plan_warn() -> String {
-    format!(
-        "[wave-scaffold] WARN: the plan does not match the layout on disk, which is FROZEN \
-         ({APPROVED_BY_USER_MARKER} exists, or the spec left PLAN, or the waves were \
-         user-rejected). No existing file was rewritten, no wave was pruned and the wave count \
-         was left as approved; only artefacts missing from disk were restored. Route the change \
-         through a change request (state it in chat; it is recorded in the spec's \
-         change-log.md), never through a silent re-plan."
-    )
+    "[wave-scaffold] WARN: the plan does not match the layout on disk, which is FROZEN (the \
+     spec is approved, or the spec left PLAN, or the waves were user-rejected). No existing \
+     file was rewritten, no wave was pruned and the wave count was left as approved; only \
+     artefacts missing from disk were restored. Route the change through a change request \
+     (state it in chat; it is recorded in the spec's change-log.md), never through a silent \
+     re-plan."
+        .to_string()
 }
 
 /// Os números que FALTAM na numeração das ondas de um plano, em ordem.
@@ -1757,16 +1756,16 @@ pub(crate) fn scaffold_warning_to(
 /// lifecycle field (`stage` / `outcome` / `phase` / `lang` / `checkpoint` /
 /// `flags` / `raw`). Skipping the count reconcile (the old behaviour) left a
 /// stale `totalWaves: 1` on multi-wave epics; skipping the scope upgrade left a
-/// `light` parent (drafted before `plan-prepare` bumped it Full) that
-/// `scope_guard`'s Full gate never recognised.
+/// `light` parent (drafted before `plan-prepare` bumped it Full) that the gates
+/// keyed on a Full scope never recognised.
 ///
-/// Frozen by the APPROVAL MARKER ALONE (`approved`), not by the full
-/// [`write_mode`] window: once the user approved, the stored count is the count
-/// they approved and stays put (returning `true` — drift — instead of writing).
-/// Bumping it there produced a spec whose `wave-plan.md` listed N waves while
-/// the sidecar every consumer reads (`wave-advance`, `status`, the dashboard)
-/// claimed N+1 — an approved spec silently growing a wave, the mirror of what
-/// the marker exists to prevent.
+/// Frozen by the APPROVAL ALONE (`approved`), not by the full [`write_mode`]
+/// window: once the user approved, the stored count is the count they approved
+/// and stays put (returning `true` — drift — instead of writing). Bumping it
+/// there produced a spec whose `wave-plan.md` listed N waves while the sidecar
+/// every consumer reads (`wave-advance`, `status`, the dashboard) claimed N+1 —
+/// an approved spec silently growing a wave, the mirror of what the approval
+/// exists to prevent.
 ///
 /// The narrower gate is deliberate. This reconcile is STRUCTURAL and
 /// non-destructive (two fields; no body, no deletion), and skipping it is itself
@@ -1785,10 +1784,10 @@ fn write_parent_meta(dir: &Path, approved: bool, fresh: Meta) -> bool {
             // A wave-plan parent is Full-scope BY CONSTRUCTION. When the pipeline
             // left a non-Full scope on it — e.g. `spec-draft` drafted `light`
             // before `plan-prepare` bumped the unit to Full — upgrade it, else
-            // `scope_guard`'s Full gate (which matches the `full` /
-            // `full (wave plan)` string) never engages on the parent and the
-            // "no code before /approve" hard-gate silently opens. An already-Full
-            // scope is left untouched — no churn, no false drift.
+            // the gates keyed on a Full scope (which match the `full` /
+            // `full (wave plan)` string: the clarify gate of `approve-spec` and
+            // the resume engine's Execute gates) never engage on the parent. An
+            // already-Full scope is left untouched — no churn, no false drift.
             let scope_upgrade = existing
                 .scope
                 .as_deref()
@@ -2120,10 +2119,10 @@ mod tests {
     /// Regression (light→full recovery): when `spec-draft` drafted the parent at
     /// `light` and `plan-prepare` then classified the unit Full, `plan-materialize`
     /// builds a multi-wave plan onto a `light` parent. The scaffold MUST upgrade
-    /// the parent `scope` to `full (wave plan)` — else `scope_guard`'s Full gate
-    /// (which matches the `full` string) never engages and the "no code before
-    /// /approve" hard-gate silently opens. Other lifecycle fields survive; an
-    /// already-`full` scope is left untouched (covered by the stale-total test).
+    /// the parent `scope` to `full (wave plan)` — else the gates keyed on a Full
+    /// scope (which match the `full` string) never engage. Other lifecycle
+    /// fields survive; an already-`full` scope is left untouched (covered by the
+    /// stale-total test).
     #[test]
     fn upgrades_light_parent_scope_to_full_wave_plan() {
         let dir = tempdir().unwrap();
@@ -2153,7 +2152,7 @@ mod tests {
         let _ = scaffold(&spec_dir, &plan_path);
 
         let root = mustard_core::read_meta(&spec_dir.join("meta.json")).unwrap();
-        // The `light` draft is upgraded so `scope_guard`'s Full gate recognises it.
+        // The `light` draft is upgraded so the gates keyed on a Full scope recognise it.
         assert_eq!(
             root.scope.as_deref(),
             Some("full (wave plan)"),
@@ -2501,7 +2500,7 @@ mod tests {
     /// per target file; the PARENT root meta carries NO checklist (explicit
     /// OUT). The sidecar follows the write mode: reconciled back onto the plan
     /// while the spec is unapproved (EXECUTE cannot have started, so no
-    /// progress is lost), FROZEN once `.approved-by-user` exists — which is
+    /// progress is lost), FROZEN once the user approved the spec — which is
     /// what keeps a `done` flag flipped by the auto-mark hook intact.
     #[test]
     fn scaffold_seeds_wave_meta_checklist_from_files() {
@@ -2558,7 +2557,7 @@ mod tests {
         let mut marked = wave_meta.clone();
         marked.checklist[0].done = true;
         mustard_core::write_meta(&wave_meta_path, &marked).unwrap();
-        std::fs::write(spec_dir.join(APPROVED_BY_USER_MARKER), "").unwrap();
+        crate::shared::spec_state::approve_in(&spec_dir);
         let _ = scaffold(&spec_dir, &plan_path);
         let again = mustard_core::read_meta(&wave_meta_path).unwrap();
         assert!(again.checklist[0].done, "an approved sidecar preserves done state");
@@ -3802,7 +3801,7 @@ mod tests {
         }
     }
 
-    /// A spec that carries NO `.approved-by-user` marker is still the
+    /// A spec the user has NOT approved is still the
     /// Plan agent's draft, so re-running the scaffold after editing `plan.json`
     /// REWRITES what differs and reports it under `refreshed`. This is the
     /// repair path the field report asked for: fix the plan, re-run, done — no
@@ -3856,7 +3855,7 @@ mod tests {
         assert_eq!(wave_meta.checklist[0].path.as_deref(), Some("src/b.rs"));
     }
 
-    /// Once `.approved-by-user` exists the layout is FROZEN: a plan that
+    /// Once the user approved the spec the layout is FROZEN: a plan that
     /// renders something else leaves every file byte-identical, reports nothing
     /// refreshed or removed, and raises the single stderr WARN that names the
     /// change-request route.
@@ -3878,7 +3877,7 @@ mod tests {
             std::fs::read_to_string(spec_dir.join("wave-1-rt").join("meta.json")).unwrap();
 
         // The user approves — and only then does the plan change underneath.
-        std::fs::write(spec_dir.join(APPROVED_BY_USER_MARKER), "").unwrap();
+        crate::shared::spec_state::approve_in(&spec_dir);
         let plan_path = write_plan(
             dir.path(),
             json!([{ "n": 1, "role": "rt", "summary": "a late rewrite",
@@ -3918,7 +3917,7 @@ mod tests {
         let warn = frozen_plan_warn();
         assert!(warn.contains("change request"), "the WARN must name the route: {warn}");
         assert!(warn.contains("change-log.md"), "the WARN must name the record: {warn}");
-        assert!(warn.contains(APPROVED_BY_USER_MARKER), "the WARN must name the marker: {warn}");
+        assert!(warn.contains("the spec is approved"), "the WARN must name the approval: {warn}");
     }
 
     /// The half the freeze first missed: an APPROVED spec must not grow
@@ -3944,7 +3943,7 @@ mod tests {
         let _ = scaffold(&spec_dir, &plan_path);
         assert_eq!(read_meta(&spec_dir.join("meta.json")).unwrap().total_waves, Some(1));
 
-        std::fs::write(spec_dir.join(APPROVED_BY_USER_MARKER), "").unwrap();
+        crate::shared::spec_state::approve_in(&spec_dir);
         let plan_path = write_plan(
             dir.path(),
             json!([

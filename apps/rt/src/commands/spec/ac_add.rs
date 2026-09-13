@@ -1165,7 +1165,6 @@ mod tests {
         use crate::commands::agent::render::{render_prompt_at, RenderMode};
         use crate::commands::spec::ac_amend::{amend, AcAmendOpts};
         use crate::commands::wave::wave_scaffold::scaffold;
-        use crate::shared::context::APPROVED_BY_USER_MARKER;
 
         const OTHER_RED_COMMAND: &str = "cd no-such-directory-xyz";
 
@@ -1214,7 +1213,7 @@ mod tests {
         let _ = scaffold(&spec_dir, &plan_path);
         // APPROVED: from here on the layout is frozen — a copy would never
         // be brought forward again.
-        std::fs::write(spec_dir.join(APPROVED_BY_USER_MARKER), "").unwrap();
+        crate::shared::spec_state::approve_in(&spec_dir);
         let render = |wave: u32| {
             render_prompt_at(
                 root, Some("multi"), Some(wave), "impl", Path::new("."),
