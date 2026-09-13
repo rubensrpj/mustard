@@ -30,17 +30,30 @@
 //! mesmo título, sem ligar para maiúscula nem acento, é recusado apontando o
 //! item que já está aberto.
 //!
+//! ## Datas e notas
+//!
+//! Cada item guarda o dia em que entrou (`created`, `AAAA-MM-DD` em UTC). Um
+//! item gravado antes de a data existir ganha a data do dia na primeira
+//! gravação da lista: assim, trinta dias depois, os antigos não voltam todos de
+//! uma vez. Dois campos vêm depois: `swept`, o dia em que a faxina mostrou o
+//! item, e `became`, a nota "virou a spec X".
+//!
+//! O início da sessão mostra só uma linha, com a contagem ([`count_line`]); a
+//! lista inteira sai da listagem.
+//!
 //! Recusa sai com exit 1 e o JSON `ok: false`, como o `material-add`.
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::text;
+use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::commands::git_settle::main_checkout_root;
 
 /// Options for `mustard-rt run pending`.
+#[derive(Debug, Clone, Default)]
 pub struct PendingOpts {
     /// Qualquer diretório dentro do repositório; o ledger é resolvido no
     /// checkout principal a partir dele.
@@ -51,6 +64,9 @@ pub struct PendingOpts {
     pub close: Option<String>,
     pub drop: Option<String>,
     pub reason: Option<String>,
+    /// O dia de hoje, `AAAA-MM-DD`. `None` lê o relógio; os testes passam um
+    /// dia fixo para darem sempre a mesma resposta.
+    pub now: Option<String>,
 }
 
 /// O estado de um item. Fechado (`closed`) e descartado (`dropped`) ficam
@@ -85,6 +101,15 @@ struct PendingItem {
     /// Por que o item saiu da lista — presente só depois de fechado ou descartado.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// O dia em que o item entrou, `AAAA-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created: Option<String>,
+    /// O dia em que a faxina mostrou o item parado: ele volta uma vez só.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    swept: Option<String>,
+    /// A nota "virou a spec X": o nome da spec que nasceu deste item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    became: Option<String>,
 }
 
 /// O documento inteiro. `deny_unknown_fields` pelo mesmo motivo do
@@ -112,6 +137,15 @@ fn one_line(text: &str) -> String {
 
 fn refused(reason: &str, hint: &str) -> Value {
     json!({ "ok": false, "reason": reason, "hint": hint })
+}
+
+/// O dia de hoje, `AAAA-MM-DD` em UTC: o de `now` quando vem, senão o do
+/// relógio.
+fn today(now: Option<&str>) -> String {
+    now.map(str::trim).filter(|day| !day.is_empty()).map_or_else(
+        || mustard_core::time::now_iso8601().get(..10).unwrap_or_default().to_string(),
+        str::to_string,
+    )
 }
 
 /// Traduz as flags em UMA ação, recusando o que não fecha. Toda validação de
@@ -233,19 +267,30 @@ fn next_id(ledger: &Ledger) -> String {
 }
 
 fn item_json(item: &PendingItem) -> Value {
-    let mut out = json!({
-        "id": item.id,
-        "title": item.title,
-        "detail": item.detail,
-        "status": item.status.as_str(),
-    });
-    if let (Some(reason), Some(map)) = (&item.reason, out.as_object_mut()) {
-        map.insert("reason".into(), json!(reason));
+    let mut out = Map::new();
+    out.insert("id".into(), json!(item.id));
+    out.insert("title".into(), json!(item.title));
+    out.insert("detail".into(), json!(item.detail));
+    out.insert("status".into(), json!(item.status.as_str()));
+    for (key, value) in [
+        ("reason", &item.reason),
+        ("created", &item.created),
+        ("swept", &item.swept),
+        ("became", &item.became),
+    ] {
+        if let Some(value) = value {
+            out.insert(key.into(), json!(value));
+        }
     }
-    out
+    Value::Object(out)
 }
 
-fn write(path: &Path, ledger: &Ledger) -> Result<(), Value> {
+/// Grava a lista. Antes, todo item sem data ganha a data do dia: é a
+/// primeira gravação dele desde que a data existe.
+fn write(path: &Path, ledger: &mut Ledger, today: &str) -> Result<(), Value> {
+    for item in ledger.items.iter_mut().filter(|i| i.created.is_none()) {
+        item.created = Some(today.to_string());
+    }
     let mut body = serde_json::to_string_pretty(ledger)
         .map_err(|e| refused("write-failed", &e.to_string()))?;
     body.push('\n');
@@ -270,6 +315,8 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
         Ok(l) => l,
         Err(refusal) => return refusal,
     };
+    let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
+    let today = today(opts.now.as_deref());
 
     let mut extra = Map::new();
     match action {
@@ -282,7 +329,6 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             if let Some(open) =
                 ledger.items.iter().find(|i| i.status == Status::Open && text::fold(&i.title) == key)
             {
-                let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
                 let hint = mustard_core::translate("pending.duplicate", lang)
                     .replace("{id}", &open.id)
                     .replace("{title}", &open.title);
@@ -295,8 +341,11 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 detail,
                 status: Status::Open,
                 reason: None,
+                created: Some(today.clone()),
+                swept: None,
+                became: None,
             });
-            if let Err(refusal) = write(&path, &ledger) {
+            if let Err(refusal) = write(&path, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("id".into(), json!(id));
@@ -317,7 +366,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             }
             item.status = status;
             item.reason = Some(reason);
-            if let Err(refusal) = write(&path, &ledger) {
+            if let Err(refusal) = write(&path, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("id".into(), json!(id));
@@ -341,8 +390,31 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
     );
     report.insert("open".into(), Value::Array(open.into_iter().map(item_json).collect()));
     report.insert("closed".into(), Value::Array(closed.into_iter().map(item_json).collect()));
+    report.insert("count_line".into(), json!(count_line_of(&ledger, lang)));
     report.extend(extra);
     Value::Object(report)
+}
+
+/// A linha de contagem das pendências abertas; `None` quando não há nenhuma.
+fn count_line_of(ledger: &Ledger, lang: Locale) -> Option<String> {
+    match ledger.items.iter().filter(|i| i.status == Status::Open).count() {
+        0 => None,
+        1 => Some(mustard_core::translate("pending.count.one", lang).to_string()),
+        count => Some(
+            mustard_core::translate("pending.count.many", lang).replace("{count}", &count.to_string()),
+        ),
+    }
+}
+
+/// A linha que o início da sessão mostra: quantas pendências estão abertas e
+/// onde está a lista inteira. `None` quando nada está aberto, ou quando a
+/// lista não se lê: quem recusa e explica o conserto é `run pending`.
+#[must_use]
+pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<String> {
+    let project = ledger_root(root);
+    let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
+    let ledger = load(&paths.pending_ledger_path()).ok()?;
+    count_line_of(&ledger, lang)
 }
 
 /// A chave, no payload do evento `pipeline.kind`, que liga a unidade a uma
@@ -389,12 +461,9 @@ pub(crate) fn open_pending(root: &Path) -> Vec<OpenPending> {
 pub(crate) fn close_pending(root: &Path, id: &str, reason: &str) -> bool {
     pending_at(&PendingOpts {
         root: root.to_path_buf(),
-        add: false,
-        title: None,
-        detail: None,
         close: Some(id.to_string()),
-        drop: None,
         reason: Some(reason.to_string()),
+        ..PendingOpts::default()
     })["ok"]
         == json!(true)
 }
@@ -451,15 +520,7 @@ mod tests {
     }
 
     fn opts(root: &Path) -> PendingOpts {
-        PendingOpts {
-            root: root.to_path_buf(),
-            add: false,
-            title: None,
-            detail: None,
-            close: None,
-            drop: None,
-            reason: None,
-        }
+        PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() }
     }
 
     fn add(root: &Path, title: &str, detail: &str) -> Value {
@@ -648,5 +709,52 @@ mod tests {
         });
         assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(add(root, "Humanize", "c")["id"], json!("P-2"));
+    }
+
+    /// O `--add` grava o dia em que o item entrou, e um item gravado antes de
+    /// a data existir ganha a data do dia na primeira gravação da lista.
+    #[test]
+    fn an_added_item_carries_its_day_and_an_undated_one_gets_today_on_the_next_write() {
+        let dir = repo();
+        let root = dir.path();
+        let ledger = root.join(".claude/pending/ledger.json");
+        std::fs::create_dir_all(ledger.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &ledger,
+            r#"{"items":[{"id":"P-1","title":"antigo","detail":"sem data","status":"open"}]}"#,
+        )
+        .expect("seed");
+
+        let listed = pending_at(&opts(root));
+        assert_eq!(listed["open"][0].get("created"), None, "listing writes nothing: {listed}");
+
+        let added = pending_at(&PendingOpts {
+            add: true,
+            title: Some("novo".into()),
+            detail: Some("com data".into()),
+            now: Some("2026-09-13".into()),
+            ..opts(root)
+        });
+        assert_eq!(added["ok"], json!(true), "{added}");
+        assert_eq!(added["open"][1]["created"], json!("2026-09-13"), "{added}");
+        assert_eq!(added["open"][0]["created"], json!("2026-09-13"), "the undated item got today: {added}");
+    }
+
+    /// A listagem traz a linha de contagem das abertas, no idioma do projeto,
+    /// e nenhuma linha quando nada está aberto.
+    #[test]
+    fn the_listing_carries_the_count_line() {
+        let dir = repo();
+        let root = dir.path();
+        assert_eq!(pending_at(&opts(root))["count_line"], Value::Null, "nothing open");
+        add(root, "um", "a");
+        assert_eq!(
+            pending_at(&opts(root))["count_line"],
+            json!(mustard_core::translate("pending.count.one", Locale::default()))
+        );
+        add(root, "dois", "b");
+        let line = pending_at(&opts(root))["count_line"].as_str().unwrap_or_default().to_string();
+        assert!(line.starts_with("[Mustard] 2 "), "{line}");
+        assert_eq!(count_line(root, Locale::default()).as_deref(), Some(line.as_str()));
     }
 }

@@ -1340,9 +1340,7 @@ mod tests {
             add,
             title: title.map(str::to_string),
             detail: title.map(|_| "combinado".to_string()),
-            close: None,
-            drop: None,
-            reason: None,
+            ..PendingOpts::default()
         };
         assert_eq!(pending_at(&opts(true, Some("trava de pendencias")))["id"], json!("P-1"));
         assert_eq!(pending_at(&opts(true, Some("Humanize")))["id"], json!("P-2"));

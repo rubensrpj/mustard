@@ -206,9 +206,7 @@ mod tests {
                 add: true,
                 title: Some((*title).into()),
                 detail: Some("combinado".into()),
-                close: None,
-                drop: None,
-                reason: None,
+                ..PendingOpts::default()
             });
             assert_eq!(out["ok"], json!(true), "seed: {out}");
         }
@@ -443,9 +441,7 @@ mod tests {
             add: true,
             title: Some("Humanize".into()),
             detail: Some("terceiro trabalho".into()),
-            close: None,
-            drop: None,
-            reason: None,
+            ..PendingOpts::default()
         });
         assert_eq!(out["ok"], json!(true), "seed: {out}");
 

@@ -277,6 +277,7 @@ pub fn dispatch(cmd: EventCmd) {
                 close,
                 drop,
                 reason,
+                now: None,
             });
         }
     }

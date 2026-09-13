@@ -973,28 +973,26 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              criteria proof and the pending list."
         }
 
-        // Pendências abertas (`apps/rt/src/hooks/session/session_start_inject.rs`
-        // e a regra das pendências do fim da resposta,
-        // `apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}` vêm
-        // do chamador; a lista usa a grafia de `format_pending_items`. O
+        // A linha de contagem das pendências abertas, no início da sessão
+        // (`apps/rt/src/hooks/session/session_start_inject.rs`) e na listagem
+        // do `run pending`. `{count}` vem do chamador.
+        ("pending.count.one", Locale::PtBr) => {
+            "[Mustard] 1 pendência aberta. A lista inteira sai com `mustard-rt run pending`."
+        }
+        ("pending.count.one", Locale::EnUs) => {
+            "[Mustard] 1 open pending item. The whole list comes from `mustard-rt run pending`."
+        }
+        ("pending.count.many", Locale::PtBr) => {
+            "[Mustard] {count} pendências abertas. A lista inteira sai com `mustard-rt run pending`."
+        }
+        ("pending.count.many", Locale::EnUs) => {
+            "[Mustard] {count} open pending items. The whole list comes from `mustard-rt run pending`."
+        }
+        // A regra das pendências do fim da resposta
+        // (`apps/rt/src/hooks/task/pending_gate.rs`). `{count}` e `{items}`
+        // vêm do chamador; a lista usa a grafia de `format_pending_items`. O
         // bloqueio pede o título, nunca o número: a regra de escrita barra o
         // código interno ("P-3") na conversa.
-        ("pending.notice", Locale::PtBr) => {
-            "[Mustard] Trabalho combinado ainda aberto ({count}): {items}. Esses itens vivem \
-             fora de toda unidade e sobrevivem à que os entrega: quando uma unidade fecha \
-             (pull request mergeado ou spec concluída), a mensagem final cita cada item aberto \
-             pelo id ou pelo título. Grave trabalho combinado novo com \
-             `mustard-rt run pending --add`; um item só sai da lista com um motivo \
-             (`--close <id>` ou `--drop <id>`, mais `--reason`)."
-        }
-        ("pending.notice", Locale::EnUs) => {
-            "[Mustard] Agreed work still open ({count}): {items}. These items live outside \
-             every unit and outlive the one that delivers them: when a unit closes (pull \
-             request merged or spec completed), the final message names each open item by id \
-             or title. Record new agreed work with `mustard-rt run pending --add`; an item \
-             leaves the list only with a reason (`--close <id>` or `--drop <id>`, plus \
-             `--reason`)."
-        }
         ("pending.gate.block", Locale::PtBr) => {
             "[Mustard] Uma unidade fechou neste turno, e a mensagem final não cita {count} \
              pendência(s) aberta(s): {items}. O trabalho combinado sobrevive à unidade que \
@@ -2216,7 +2214,8 @@ mod tests {
     fn i18n_translates_doc_and_pending_keys() {
         for (key, slots) in [
             ("doc.section.flow", &[][..]),
-            ("pending.notice", &["{count}", "{items}"][..]),
+            ("pending.count.one", &[][..]),
+            ("pending.count.many", &["{count}"][..]),
             ("pending.gate.block", &["{count}", "{items}"][..]),
             ("pending.duplicate", &["{id}", "{title}"][..]),
             ("scratch.residue.notice", &["{total}", "{count}"][..]),
@@ -2235,6 +2234,7 @@ mod tests {
             "stopgate.block.reason",
             "crystallise.nudge",
             "clarity.next.head",
+            "pending.notice",
         ] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(key, lang), "<missing-key>", "{key} left with its hook");

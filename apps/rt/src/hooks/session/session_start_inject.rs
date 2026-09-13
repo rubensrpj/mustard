@@ -42,9 +42,10 @@
 //!   `MUSTARD_SCRATCH_WARN_BYTES`), viram uma linha com o total e o comando
 //!   que limpa. Abaixo do limite, nada. Nunca bloqueia.
 //! - aviso de pendências — o trabalho combinado que segue aberto no ledger
-//!   (`.claude/pending/ledger.json`) entra por último, uma linha com id e
-//!   título de cada item: uma sessão nova abre sabendo o que ficou combinado.
-//!   Nunca bloqueia; a cobrança dura mora no `pending_gate` do `Stop`.
+//!   (`.claude/pending/ledger.json`) entra por último, numa linha só, com a
+//!   contagem e o comando que mostra a lista inteira: uma lista longa no
+//!   início de cada sessão deixaria de ser lida. Nunca bloqueia; a cobrança
+//!   dura mora no `pending_gate` do `Stop`.
 //!
 //! ## Contract shape
 //!
@@ -649,41 +650,18 @@ pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option
     )
 }
 
-/// Quantas pendências o aviso escreve antes de só contar o resto. Uma lista
-/// mais longa que isso deixa de ser lida — o mesmo limite de usabilidade que
-/// [`PRUNE_NOTICE_NAMES`] impõe às branches; o `(+N)` diz que há mais.
-const PENDING_NOTICE_ITEMS: usize = 6;
-
-/// Uma linha com as pendências abertas: id e título, no máximo
-/// [`PENDING_NOTICE_ITEMS`] e depois `(+N)`.
-///
-/// No molde do [`prune_pending_notice`] — um construtor, e cada leitor fala do
-/// item do mesmo jeito: a grafia `P-1 "título"` vem de
-/// [`format_pending_items`](crate::commands::event::pending::format_pending_items),
-/// a mesma que a cobrança do `Stop` e a abertura da unidade usam.
+/// Uma linha só com a contagem das pendências abertas e o comando que mostra
+/// a lista inteira ([`count_line`](crate::commands::event::pending::count_line),
+/// a mesma linha da listagem do `run pending`).
 ///
 /// `None` para projeto sem `mustard.json` (nunca instalado — o harness não o
 /// importuna) e quando não há nada aberto. Um ledger ilegível também cala: quem
 /// recusa e explica o conserto é `run pending`.
-///
-/// O texto sai do catálogo (`pending.notice`), no idioma do projeto — o mesmo
-/// que o aviso de poda ao lado usa.
 pub(crate) fn pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
     }
-    let open = crate::commands::event::pending::open_pending(root);
-    if open.is_empty() {
-        return None;
-    }
-    Some(
-        mustard_core::translate("pending.notice", lang)
-            .replace("{count}", &open.len().to_string())
-            .replace(
-                "{items}",
-                &crate::commands::event::pending::format_pending_items(&open, PENDING_NOTICE_ITEMS),
-            ),
-    )
+    crate::commands::event::pending::count_line(root, lang)
 }
 
 /// Variável que ajusta, em bytes, a partir de quanto o aviso de sobras aparece
@@ -984,18 +962,16 @@ mod tests {
                 add: true,
                 title: Some(title.to_string()),
                 detail: Some("combinado na conversa".to_string()),
-                close: None,
-                drop: None,
-                reason: None,
+                ..crate::commands::event::pending::PendingOpts::default()
             },
         );
         assert_eq!(out["ok"], json!(true), "seed: {out}");
     }
 
-    /// A sessão que abre com pendências abertas recebe, no contexto
-    /// injetado, cada uma com id e título.
+    /// A sessão que abre com pendências abertas recebe uma linha só, com a
+    /// contagem e o comando que mostra a lista; nenhum título entra.
     #[test]
-    fn session_start_lists_open_pending_items() {
+    fn the_session_start_shows_one_line_with_the_open_count() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(
@@ -1012,14 +988,16 @@ mod tests {
         let Verdict::Inject { context } = verdict else {
             panic!("open pending items must reach the session: {verdict:?}");
         };
-        assert!(context.contains(r#"P-1 "HTML padrao da spec""#), "id + title of P-1: {context}");
-        assert!(context.contains(r#"P-2 "Humanize""#), "id + title of P-2: {context}");
+        let line = mustard_core::translate("pending.count.many", SupportedLocale::default())
+            .replace("{count}", "2");
+        assert!(context.contains(&line), "the count line: {context}");
+        assert!(!context.contains("Humanize") && !context.contains("P-1"), "no item is listed: {context}");
     }
 
-    /// O aviso escreve no máximo seis itens e conta o resto; sem instalação ou
-    /// sem nada aberto, cala.
+    /// Uma pendência dá a linha no singular e oito dão a contagem, sem
+    /// nenhum título; sem instalação ou sem nada aberto, cala.
     #[test]
-    fn pending_notice_caps_the_list_and_stays_quiet_when_empty() {
+    fn the_pending_notice_counts_and_stays_quiet_when_empty() {
         let lang = SupportedLocale::default();
         let bare = tempdir().unwrap();
         assert_eq!(pending_notice(bare.path(), lang), None, "not installed");
@@ -1029,14 +1007,14 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
         assert_eq!(pending_notice(root, lang), None, "nothing open");
 
-        for n in 1..=8 {
+        add_pending(root, "trabalho 1");
+        assert_eq!(pending_notice(root, lang).as_deref(), Some(mustard_core::translate("pending.count.one", lang)));
+        for n in 2..=8 {
             add_pending(root, &format!("trabalho {n}"));
         }
         let notice = pending_notice(root, lang).expect("eight open items");
-        assert!(notice.contains("(8)"), "carries the count: {notice}");
-        assert!(notice.contains(r#"P-6 "trabalho 6""#), "the sixth is named: {notice}");
-        assert!(!notice.contains("P-7"), "past the cap only the count shows: {notice}");
-        assert!(notice.contains("(+2)"), "the rest is counted: {notice}");
+        assert!(notice.starts_with("[Mustard] 8 "), "carries the count: {notice}");
+        assert!(!notice.contains("trabalho") && !notice.contains('\n'), "one line, no item: {notice}");
     }
 
     // --- harness-init parity -----------------------------------------------
