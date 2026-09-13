@@ -911,6 +911,12 @@ fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) {
         spec: spec.map(str::to_string),
     };
     let _ = crate::shared::events::route::emit(&root.to_string_lossy(), &event);
+    // A ponte até o gravador definitivo do merge: o estado da spec passa à
+    // fase `delivered`, e é esse estado que arma a cobrança das pendências no
+    // fim da resposta.
+    if let Some(spec) = spec {
+        let _ = crate::commands::spec_events::write::record_phase(root, spec, "delivered");
+    }
 }
 
 /// Ask the provider to merge. The strategy is explicit because it has to be: a
@@ -1392,6 +1398,56 @@ mod tests {
         let plain = merge_core(root, &loose, &door_flow(), true, &green, &merge, &settle);
         assert_eq!(plain.pending_closed, None, "no link, nothing closed");
         assert_eq!(plain.pending_open.map(|o| o.len()), Some(1), "P-2 is still open");
+    }
+
+    /// A ponte: fechar a spec grava o estado `closed`, o merge grava o
+    /// `delivered`, e cada um arma a cobrança das pendências nascidas nela no
+    /// fim da resposta.
+    #[test]
+    fn the_bridge_records_closed_and_delivered_and_both_trigger_the_charge() {
+        use crate::commands::event::pending::{pending_at, PendingOpts};
+        use crate::hooks::task::end_of_turn_check::run_rules;
+        use crate::hooks::task::pending_gate::{seed_spec, PendingRule};
+        use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
+        use mustard_core::domain::spec_state::SpecState;
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("cfg");
+        let added = pending_at(&PendingOpts {
+            root: root.to_path_buf(),
+            add: true,
+            title: Some("Humanize".into()),
+            detail: Some("nasceu na spec".into()),
+            ..PendingOpts::default()
+        });
+        assert_eq!(added["id"], json!("P-1"), "{added}");
+        seed_spec(root, "trava", &[1], "s-ponte");
+
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::Stop));
+        let stop = |message: &str| HookInput {
+            hook_event_name: Some("Stop".to_string()),
+            session_id: Some("s-ponte".to_string()),
+            raw: json!({ "last_assistant_message": message }),
+            ..HookInput::default()
+        };
+        let charged = |message: &str| run_rules(&[&PendingRule], &stop(message), &ctx);
+        let state = || crate::shared::spec_state::DiskSpecState::new(root).state("trava").expect("state");
+
+        let _ = crate::commands::spec::complete_spec::finalize(root, "trava");
+        assert_eq!(state().phase, Some("closed"), "closing records the closed state");
+        assert!(charged("Spec fechada.").is_blocking(), "the close charges");
+        assert_eq!(charged("Spec fechada; segue o Humanize."), Verdict::Allow);
+
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let merge = |_: &Path, _: u64| Ok(());
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let facts = PrFacts { number: 300, head: "feature/trava".to_string() };
+        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle);
+        assert_eq!(done.action, "merged");
+        assert_eq!(state().phase, Some("delivered"), "the merge records the delivered state");
+        assert!(charged("PR mergeado.").is_blocking(), "the merge charges again");
     }
 
     /// The base model of a project declaring the ordinary two-tier flow.

@@ -31,6 +31,10 @@ const APPROVED_PHASES: &[&str] = &["approved", "running", "closed", "pr_open", "
 /// fechou, ou entrou no merge.
 const CLOSING_PHASES: &[&str] = &["closed", "delivered"];
 
+/// As fases de uma spec que continua fechada: fechada, com o pull request
+/// aberto ou entregue.
+const SETTLED_PHASES: &[&str] = &["closed", "pr_open", "delivered"];
+
 /// O estado de uma spec, dobrado dos eventos `state` que a leitura mostra.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
@@ -44,9 +48,9 @@ pub struct State {
     pub branch: Option<String>,
     /// A base de que a branch foi cortada, herdada do mesmo jeito.
     pub base: Option<String>,
-    /// O número do primeiro evento `state` com a fase `closed` ou
-    /// `delivered`: o gatilho da cobrança das pendências.
-    pub closed_by: Option<u64>,
+    /// O número do último evento `state` com a fase `closed` ou `delivered`,
+    /// na ordem da dobra: cada fechamento e cada merge trazem um número novo.
+    pub last_closing: Option<u64>,
     /// A testemunha da última aprovação gravada, `{question, answer}`.
     pub witness: Option<Value>,
 }
@@ -71,8 +75,8 @@ impl State {
         for (_, event) in states {
             if let Some(phase) = event.str_field("phase").and_then(known_phase) {
                 state.phase = Some(phase);
-                if state.closed_by.is_none() && CLOSING_PHASES.contains(&phase) {
-                    state.closed_by = Some(event.id);
+                if CLOSING_PHASES.contains(&phase) {
+                    state.last_closing = Some(event.id);
                 }
             }
             if let Some(branch) = text(event.str_field("branch")) {
@@ -87,6 +91,15 @@ impl State {
         }
         state.approved = state.phase.is_some_and(|p| APPROVED_PHASES.contains(&p));
         state
+    }
+
+    /// O fechamento que a cobrança das pendências confere: o número do último
+    /// `state` de fechamento ou de entrega, enquanto a spec continua fechada.
+    /// Uma spec reaberta não cobra nada até fechar de novo, e então traz um
+    /// número novo.
+    #[must_use]
+    pub fn closing(&self) -> Option<u64> {
+        self.last_closing.filter(|_| self.phase.is_some_and(|p| SETTLED_PHASES.contains(&p)))
     }
 }
 
@@ -180,8 +193,26 @@ mod tests {
         assert!(state.approved, "a delivered spec was approved");
         assert_eq!(state.branch.as_deref(), Some("feature/x"), "the branch is inherited");
         assert_eq!(state.base.as_deref(), Some("dev"), "the base is inherited");
-        assert_eq!(state.closed_by, Some(5), "the first closing event is the trigger");
+        assert_eq!(state.last_closing, Some(6), "the merge after the close is the newest trigger");
+        assert_eq!(state.closing(), Some(6));
         assert_eq!(state.witness, Some(json!({"question":"Aprova?","answer":"Aprovar"})));
+    }
+
+    /// Cada fechamento e cada merge trazem um gatilho novo; uma spec reaberta
+    /// não cobra até fechar de novo, e o pull request aberto não apaga o
+    /// fechamento.
+    #[test]
+    fn every_closing_and_every_merge_bring_a_new_trigger() {
+        let mut lines = vec![json!({"v":1,"id":1,"type":"state","phase":"running"})];
+        let mut closing_after = |line: Value| {
+            lines.push(line);
+            State::from_log(&log(&lines)).closing()
+        };
+        assert_eq!(closing_after(json!({"v":1,"id":2,"type":"state","phase":"closed"})), Some(2));
+        assert_eq!(closing_after(json!({"v":1,"id":3,"type":"state","phase":"running"})), None, "reopened");
+        assert_eq!(closing_after(json!({"v":1,"id":4,"type":"state","phase":"closed"})), Some(4), "closed again");
+        assert_eq!(closing_after(json!({"v":1,"id":5,"type":"state","phase":"pr_open"})), Some(4));
+        assert_eq!(closing_after(json!({"v":1,"id":6,"type":"state","phase":"delivered"})), Some(6), "merged");
     }
 
     /// Uma edição à mão pode deixar as linhas fora da ordem dos números; a
@@ -227,7 +258,7 @@ mod tests {
         assert_eq!(state.phase, Some("plan"));
         assert!(!state.approved);
         assert_eq!(state.witness, None);
-        assert_eq!(state.closed_by, None);
+        assert_eq!(state.last_closing, None);
     }
 
     #[test]

@@ -959,6 +959,7 @@ fn mark_pending_work_branch(
 fn finalize_complete(cwd: &Path, spec: &str, ts: &str, sid: &str) {
     patch_meta_complete(cwd, spec, ts);
     emit_completed_status_if_needed(cwd, spec, ts, sid);
+    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed");
 }
 
 /// The one deterministic success line — `{ok, kind, spec[, branch][,
@@ -1886,6 +1887,7 @@ fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
         patch_meta_complete(cwd, spec, ts);
         emit_pipeline_complete(cwd, spec, ts);
         emit_completed_status_if_needed(cwd, spec, ts, &session_from_env().unwrap_or_default());
+        let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed");
     }
 }
 

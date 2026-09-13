@@ -133,8 +133,9 @@ mod tests {
     use super::*;
     use crate::commands::event::pending::{pending_at, PendingOpts};
     use crate::hook_output::hook_specific_output;
+    use crate::commands::spec_events::write::record_phase;
+    use crate::hooks::task::pending_gate::seed_spec;
     use crate::registry::Registry;
-    use crate::shared::context::mark_unit_closed;
     use mustard_core::domain::model::contract::Outcome;
     use serde_json::{json, Value};
     use std::time::{Duration, Instant};
@@ -195,6 +196,13 @@ mod tests {
         hook_specific_output("Stop", &outcome)
             .map(|json| serde_json::from_str(&json).expect("valid JSON"))
             .unwrap_or(Value::Null)
+    }
+
+    /// Fecha, pela ponte, uma spec em que as duas pendências de
+    /// [`project_with_open_items`] nasceram, com a sessão `session` ligada a ela.
+    fn close_spec_with_both_items(root: &Path, session: &str) {
+        seed_spec(root, "trava", &[1, 2], session);
+        assert!(record_phase(root, "trava", "closed"), "the bridge records the close");
     }
 
     /// Um projeto com as pendências abertas "Humanize" e "HTML padrao da spec".
@@ -320,7 +328,7 @@ mod tests {
         let (alone, inside) = (project_with_open_items(config), project_with_open_items(config));
         let message = "Fechei a unidade; segue o html padrao da spec.";
         for dir in [&alone, &inside] {
-            mark_unit_closed(&dir.path().to_string_lossy(), "s-close");
+            close_spec_with_both_items(dir.path(), "s-close");
         }
 
         let by_rule = run_rules(&[&PendingRule], &stop("s-close", message, false), &ctx(alone.path()));
@@ -341,7 +349,7 @@ mod tests {
     fn pending_and_clarity_share_one_block() {
         let dir = project_with_open_items(PT_PROJECT);
         let root = dir.path();
-        mark_unit_closed(&root.to_string_lossy(), "s-both");
+        close_spec_with_both_items(root, "s-both");
 
         let first = "Fechei a unidade MSTD-RULE-0008; segue o html padrao da spec.";
         let Verdict::Deny { reason } =

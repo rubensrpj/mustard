@@ -40,13 +40,15 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::LESSON;
-use mustard_core::domain::spec_events::{type_spec, Refusal};
+use mustard_core::domain::spec_events::{type_spec, Refusal, PHASES};
 use mustard_core::domain::spec_index;
+use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
 use super::pages::SpecPages;
+use crate::shared::spec_state::DiskSpecState;
 
 /// Options for `mustard-rt run write`.
 pub struct WriteOpts {
@@ -163,6 +165,31 @@ fn record_in(
         }
     })?;
     Ok(Recorded { written, pages })
+}
+
+/// A ponte até os gravadores definitivos do fechamento e do merge: grava no
+/// estado da spec `spec`, vista de `start`, a fase `phase` (`closed` no
+/// fechamento, `delivered` no merge), pela mesma gravação do `run write`.
+///
+/// Só grava quando a spec tem arquivo de eventos (uma branch que o Mustard
+/// não abriu fica como está) e quando a fase de agora vem antes de `phase` na
+/// ordem das fases: repetir um fechamento não grava outro, e uma spec entregue
+/// não volta a fechada. `true` quando gravou.
+pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str) -> bool {
+    let order = |name: &str| PHASES.iter().position(|known| *known == name);
+    let Some(target) = order(phase) else {
+        return false;
+    };
+    let Some(state) = DiskSpecState::new(start).state(spec) else {
+        return false;
+    };
+    if state.phase.and_then(order).is_some_and(|now| now >= target) {
+        return false;
+    }
+    let mut draft = Map::new();
+    draft.insert("phase".to_string(), json!(phase));
+    draft.insert("author".to_string(), json!("binary"));
+    record(start, spec, "state", draft).is_ok()
 }
 
 /// A spec foi aberta pelo `spec-draft`: o `meta.json` dele está na pasta, e o

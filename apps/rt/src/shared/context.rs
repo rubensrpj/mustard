@@ -771,6 +771,7 @@ pub fn mark_unit_closed(project_dir_path: &str, session_id: &str) {
 ///
 /// Só lê — quem consome é [`take_unit_closed`]. Um conteúdo ilegível conta como
 /// `0`: a marca existe, então houve fechamento.
+#[cfg(test)]
 pub fn unit_closed_blocks(project_dir_path: &str, session_id: &str) -> Option<u32> {
     if is_placeholder_session(session_id) {
         return None;
@@ -787,6 +788,7 @@ pub fn unit_closed_blocks(project_dir_path: &str, session_id: &str) -> Option<u3
 
 /// Regrava a marca com o novo total de bloqueios. `true` quando gravou — quem
 /// bloqueia sem conseguir contar precisa saber, senão bloquearia sem limite.
+#[cfg(test)]
 pub fn record_unit_closed_block(project_dir_path: &str, session_id: &str, blocks: u32) -> bool {
     write_unit_closed(project_dir_path, session_id, blocks)
 }
@@ -812,6 +814,7 @@ fn write_unit_closed(project_dir_path: &str, session_id: &str, blocks: u32) -> b
 /// que todas as travas liberaram, então é ali que o fechamento se encerra. Uma
 /// marca que não pôde ser removida responde `false`, porque ela responderia
 /// `true` em todo turno seguinte.
+#[cfg(test)]
 pub fn take_unit_closed(project_dir_path: &str, session_id: &str) -> bool {
     if is_placeholder_session(session_id) {
         return false;

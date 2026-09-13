@@ -253,6 +253,11 @@ fn mark_complete(cwd: &Path, spec: &str) -> Value {
     // landed above and must succeed regardless.
     merge_capabilities_on_close(cwd, spec, &now);
 
+    // A ponte até o gravador definitivo do fechamento: o estado da spec passa
+    // à fase `closed`, e é esse estado que arma a cobrança das pendências no
+    // fim da resposta.
+    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed");
+
     // Desliga a spec da sessão agora que ela terminou: os eventos depois do
     // fechamento não herdam a spec que acabou. Só a sessão que o ambiente
     // entrega; sem ela, nada é desligado, porque um palpite pela pasta de

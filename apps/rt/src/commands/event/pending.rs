@@ -45,6 +45,7 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
 use mustard_core::domain::text;
 use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
@@ -453,6 +454,26 @@ pub(crate) fn open_pending(root: &Path) -> Vec<OpenPending> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Os números das pendências que nasceram na spec: as que um evento
+/// `deferred` visível dela cita no campo `pending`.
+#[must_use]
+pub(crate) fn born_in(log: &SpecLog) -> Vec<String> {
+    log.block(BlockQuery::Block(Block::Notes))
+        .into_iter()
+        .filter(|event| event.event_type == "deferred")
+        .filter_map(|event| event.int("pending"))
+        .map(|n| format!("P-{n}"))
+        .collect()
+}
+
+/// As pendências abertas, na ordem da lista, que nasceram na spec do
+/// arquivo de eventos `log`.
+#[must_use]
+pub(crate) fn open_born_in(root: &Path, log: &SpecLog) -> Vec<OpenPending> {
+    let born = born_in(log);
+    open_pending(root).into_iter().filter(|item| born.contains(&item.id)).collect()
 }
 
 /// Fecha `id` como ENTREGUE com `reason`, pelo mesmo passe de `run pending`
