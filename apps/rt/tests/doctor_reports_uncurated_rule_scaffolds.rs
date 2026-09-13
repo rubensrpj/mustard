@@ -33,7 +33,7 @@ fn seed_census(root: &Path) {
 }
 
 /// Seed a subproject `CLAUDE.md` whose `## Guards` block is the UNCURATED
-/// scaffold Wave 1 emits (body = HTML comments only).
+/// scaffold older scans seeded (body = HTML comments only).
 fn seed_uncurated(root: &Path, subproject: &str) {
     let dir = root.join(subproject);
     std::fs::create_dir_all(&dir).unwrap();

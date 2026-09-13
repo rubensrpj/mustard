@@ -1374,7 +1374,7 @@ mod tests {
         run(root, false, None);
     }
 
-    /// AC-5 — the same normalised filter the prompt renderer already used,
+    /// The same normalised filter the prompt renderer already used,
     /// exposed on the CLI: it narrows BOTH faces (the worklist and the
     /// `--rejected` diagnostic), and an unknown house yields an EMPTY list
     /// rather than everything.

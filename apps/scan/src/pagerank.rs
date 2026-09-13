@@ -189,7 +189,7 @@ pub struct RankConfig {
     /// a leaf/service (fan-in 0–2) is barely touched, a global sink (fan-in in
     /// the tens–hundreds) is pushed down. Model-derived; `0` = off.
     pub fanin_penalty_x1024: u64,
-    /// UNGATE the seeding (Wave-2b fix): when true (default), each glue-filtered
+    /// UNGATE the seeding: when true (default), each glue-filtered
     /// query token ALSO seeds — directly and WITHOUT the dictionary-membership
     /// gate — the eligible modules whose declaration/path identifiers contain it
     /// (prefix-or-equal on the folded token, min side ≥4). This is the English-
@@ -440,7 +440,7 @@ pub fn rank(model: &ProjectModel, dict: &Dictionary, query_terms: &[String], cfg
         }
     }
 
-    // UNGATED direct-identifier MATCH SCORE (the Wave-2b fix). For every
+    // UNGATED direct-identifier MATCH SCORE. For every
     // glue-filtered query token, find the eligible modules whose declaration/path
     // identifiers contain it (prefix-or-equal fold, the SAME `term_matches` rung),
     // with NO dictionary-membership gate, and add that token's inverse-df weight
@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(r.matched_terms.first().map(|m| m.term.as_str()), Some("desdobramento"));
     }
 
-    /// UNGATED DIRECT SEEDING (Wave-2b fix) — an English query token that is NOT
+    /// UNGATED DIRECT SEEDING — an English query token that is NOT
     /// a dictionary term still seeds the file whose IDENTIFIER contains it, and
     /// the direct-match base floor lifts that file above a high-fan-in hub the
     /// walk would otherwise flood. With the gate restored (`direct_seed=false`)

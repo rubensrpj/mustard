@@ -1,13 +1,11 @@
 //! `mustard-rt run doctor --check guards-scaffold` — uncurated-rules advisory.
 //!
-//! `/scan` Wave 1 seeds every SUBPROJECT `CLAUDE.md` with a PENDING `## Guards`
+//! Older scans left, in some SUBPROJECT `CLAUDE.md`, a PENDING `## Guards`
 //! block (`<!-- mustard:guards pending -->` … `<!-- /mustard:guards -->`) whose
-//! whole body is HTML comments. Wave 2 — the enrich pass — is what replaces that
-//! scaffold with authored rules and flips the marker. When the enrich never runs
-//! (an interrupted scan, a subproject added afterwards), the block stays a
-//! placeholder: every agent dispatched into that subproject is handed an EMPTY
-//! rule set that reads exactly like a curated one. This check names those
-//! subprojects so the maintainer can re-run the enrich.
+//! whole body is HTML comments. Nothing fills it any more: while it stays, every
+//! agent dispatched into that subproject is handed an EMPTY rule set that reads
+//! exactly like a curated one. This check names those subprojects so the
+//! maintainer writes the Guards by hand or deletes the empty block.
 //!
 //! It reuses the SINGLE pending-scaffold walk
 //! ([`crate::commands::scan_guards::list::collect_pending`]). A second
@@ -21,8 +19,8 @@
 //! Fail-open: an unreadable directory / `CLAUDE.md` is skipped by the shared
 //! walk and recorded in `scannedErrors`; the scan continues and never panics.
 //! When there is NO scan census (`.claude/grain.model.json` absent) the check is
-//! a **silent no-op** ([`run`] returns `None`): Wave 1 never ran, so nothing
-//! carries the sentinel and "0 uncurated" would be a vacuous green.
+//! a **silent no-op** ([`run`] returns `None`): the project was never scanned,
+//! so nothing carries the sentinel and "0 uncurated" would be a vacuous green.
 //!
 //! Byte-stable: entries are sorted by subproject, every path is repo-relative
 //! and forward-slashed, and there are no timestamps or counts of volatile state.
@@ -37,7 +35,7 @@ pub struct UncuratedScaffold {
     /// Subproject directory relative to the workspace root, forward-slashed
     /// (e.g. `apps/rt`). Never absolute.
     pub subproject: String,
-    /// The project kind Wave 1 mined for it (e.g. `cargo`). Empty when the
+    /// The project kind the facts line records (e.g. `cargo`). Empty when the
     /// facts line is absent — the scaffold is still uncurated either way.
     pub kind: String,
 }
@@ -90,7 +88,7 @@ fn build_report(root: &Path) -> GuardsScaffoldReport {
 /// `.claude/`).
 ///
 /// Returns `None` — a silent no-op — when there is no scan census
-/// (`.claude/grain.model.json`): without a Wave-1 run no `CLAUDE.md` carries the
+/// (`.claude/grain.model.json`): a project never scanned has no `CLAUDE.md` with the
 /// sentinel, so an "all clear" would be vacuous rather than informative.
 /// Otherwise returns the report for the doctor renderer. Advisory only: it
 /// reports, never blocks.
@@ -214,8 +212,8 @@ mod tests {
         );
     }
 
-    /// The workspace-root `CLAUDE.md` is never an enrich unit — Wave 1 does not
-    /// seed a pending block there, and a stray one must not be reported.
+    /// The workspace-root `CLAUDE.md` is never reported — no scan ever seeded
+    /// a pending block there, and a stray one must not be reported.
     #[test]
     fn root_claude_md_is_not_a_subproject() {
         let dir = tempdir().unwrap();

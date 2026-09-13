@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_guards_list_finds_pending_and_excludes_root() {
+    fn the_census_finds_pending_blocks_and_skips_the_root() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
 
@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(p.kind, "rust");
     }
 
-    /// AC-1 — a fixture tree is not a subproject. Every conventional test
+    /// A fixture tree is not a subproject. Every conventional test
     /// segment stops the walk, so the props under it never reach the worklist
     /// and never inflate the pending-guards count the session-start notice
     /// prints. Measured in this repository before the fix: 6 of 14 pendings
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_guards_list_parses_none_frameworks() {
+    fn the_none_sentinel_reads_as_no_frameworks() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let sub = root.join("packages").join("lib");
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_guards_list_empty_when_no_pending() {
+    fn the_census_is_empty_without_a_pending_block() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         // Only the root carries a pending marker → excluded → empty worklist.

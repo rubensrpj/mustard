@@ -7,7 +7,8 @@
 //! The model lands at `<root>/.claude/grain.model.json` (the durable product,
 //! re-run when the codebase changes). Downstream commands consume it through the
 //! [`mustard_core::Scan`] client (`digest --query`, `spec`), never by reading
-//! source. No skills, agents, or `.claude/` subproject artifacts are produced.
+//! source. No skills or agents are produced; with `--full`, the one file
+//! written per subproject is its `.claude/scan-map.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -113,8 +114,8 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
         // tool wrote NEXT TO the model through the local MT sidecar into
         // `grain.equivalences.json` — the PT→EN query-expansion table the
         // `feature` retrieval feeds to `scan rank`. Only when the dictionary
-        // was rewritten (a pass that read every file): otherwise nothing it
-        // is made from changed. Fail-open by contract: a missing
+        // changed: otherwise nothing it is made from changed. Fail-open by
+        // contract: a missing
         // dictionary/translator degrades to `{ok:false, reason}` in the
         // summary and never fails the scan.
         if report.dictionary {

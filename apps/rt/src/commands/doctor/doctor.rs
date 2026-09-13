@@ -1957,7 +1957,10 @@ fn guards_scaffold_to_check_result(
             )
         })
         .collect();
-    details.push("fix: re-run the `/scan` guards enrich for the subprojects above".to_string());
+    details.push(
+        "fix: write the Guards of the subprojects above by hand, or delete the empty `## Guards` block"
+            .to_string(),
+    );
     CheckResult::warn("guards-scaffold", details)
 }
 

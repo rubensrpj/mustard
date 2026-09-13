@@ -18,13 +18,13 @@ Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard
 
 ## Mapa do ecossistema
 
-Como os comandos se encaixam. Tudo entra pela **porta única**, nasce de uma varredura determinística que o **porteiro de base** dispara sozinho, e converge para o merge auditável de `/mustard:pr`.
+Como os comandos se encaixam. Tudo entra pela **porta única**, nasce do mapa do projeto, que `mustard-rt run scan` atualiza lendo só o que mudou, e converge para o merge auditável de `/mustard:pr`.
 
-**São QUATRO portas, e só quatro** — `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`. Todo o resto é fluxo interno: o roteador despacha, o usuário não digita. Revisão, QA e fechamento são passos de `/mustard:pr merge`; a varredura é um passo do porteiro de base; ligar/desligar o harness e diagnosticar a instalação são flags de `/mustard:upsert`; cancelar uma unidade abandonada é `/mustard:git delete`.
+**São QUATRO portas, e só quatro** — `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`. Todo o resto é fluxo interno: o roteador despacha, o usuário não digita. Revisão, QA e fechamento são passos de `/mustard:pr merge`; a varredura é o fluxo interno `scan`; ligar/desligar o harness e diagnosticar a instalação são flags de `/mustard:upsert`; cancelar uma unidade abandonada é `/mustard:git delete`.
 
 ```mermaid
 flowchart TD
-    door["prompt em linguagem natural<br/>(o roteador injetado classifica a intenção)"] --> gate["porteiro de base<br/>(emit-pipeline: exige base do git.flow,<br/>atualizada; re-minera o censo)"]
+    door["prompt em linguagem natural<br/>(o roteador injetado classifica a intenção)"] --> gate["porteiro de base<br/>(emit-pipeline: exige base do git.flow,<br/>atualizada)"]
     gate -->|"feature (≥2 camadas / entidade nova)"| feat["/mustard:feature<br/>(fluxo interno)"]
     gate -->|"erro / quebrado"| bug["/mustard:bugfix<br/>(fluxo interno)"]
     gate -->|"1 camada / análise"| task["/mustard:task<br/>(delegação spec-less)"]
@@ -117,28 +117,25 @@ flowchart TD
 
 ## `scan` — Modelo do código-base *(fluxo interno)*
 
-Minera o repositório para `grain.model.json` (determinístico, agnóstico de linguagem, **sem AI**) e enriquece os mapas por subprojeto — Guards (prosa do/don't) e moldes de padrão. O enriquecimento é **padrão**: roda em silêncio ou pula em silêncio (fail-open), **nunca** pede confirmação de custo.
+Minera o repositório para `grain.model.json` (determinístico, agnóstico de linguagem, **sem AI**) e enriquece os mapas por subprojeto com os moldes de padrão. O enriquecimento é **padrão**: roda em silêncio ou pula em silêncio (fail-open), **nunca** pede confirmação de custo.
 
-**Não é passo que se roda.** O censo determinístico é re-minerado sozinho no **porteiro de base** — a base recém-atualizada, antes da primeira edição, é o único momento em que a árvore está limpa por construção, que é a pré-condição desta varredura (tudo que ela escreve é versionado). O que o porteiro não faz é o enriquecimento: ele é um processo Rust, e Guards e moldes são escritos por agentes. Por isso este fluxo existe, e quem o alcança é o roteador.
+**Não é passo que se roda.** O mapa é atualizado por `mustard-rt run scan`, que lê só o que mudou e nunca escreve no git; nada o dispara sozinho. Os moldes são escritos por agentes, por isso este fluxo existe, e quem o alcança é o roteador. Nenhum `CLAUDE.md` é escrito.
 
 | | |
 |---|---|
 | **Trigger** | despachado pelo roteador (nunca digitado); `[--root <dir>] [--out <path>]` |
-| **Backend** | `scan --full` · `scan-guards-list/apply` · `scan-patterns-sweep/list/relay/apply/decline` · `agent-prompt-render --role guards\|patterns` |
-| **Produz** | `.claude/grain.model.json` · `.claude/scan-map.md` por unidade (+ a linha `@.claude/scan-map.md` no topo do `CLAUDE.md` do projeto) · blocos `## Guards` · moldes `{role}-pattern/SKILL.md` frescos |
-| **Regra** | O passo determinístico nunca lê fonte; a AI do enriquecimento escreve SÓ Guards (~6 linhas) e moldes — todo molde `source: scan` é varrido e re-autorado do zero a cada scan (adoção = `source: manual`); recusa vale UMA rodada |
+| **Backend** | `scan --full` · `scan-patterns-sweep/list/relay/apply/decline` · `agent-prompt-render --role patterns` |
+| **Produz** | `.claude/grain.model.json` · `.claude/scan-map.md` por unidade · moldes `{role}-pattern/SKILL.md` frescos |
+| **Regra** | O passo determinístico nunca lê fonte; a AI do enriquecimento escreve SÓ moldes — todo molde `source: scan` é varrido e re-autorado do zero a cada scan (adoção = `source: manual`); recusa vale UMA rodada |
 
 ```mermaid
 flowchart TD
-    start(["porteiro de base / roteador"]) --> full["mustard-rt run scan --full<br/>(rust — sem AI, sem ler fonte)"]
-    full --> model[("grain.model.json<br/>+ .claude/scan-map.md por unidade<br/>(CLAUDE.md do projeto: só a linha @import;<br/>## Guards preservados)")]
+    start(["roteador"]) --> full["mustard-rt run scan --full<br/>(rust — sem AI, sem ler fonte)"]
+    full --> model[("grain.model.json<br/>+ .claude/scan-map.md por unidade<br/>(nenhum CLAUDE.md é escrito)")]
 
     subgraph enrich["Enriquecimento padrão (fail-open)"]
         model --> sw["scan-patterns-sweep<br/>(apaga moldes source:scan +<br/>ledger de recusas — tudo fresco)"]
-        sw --> gl["scan-guards-list<br/>(subprojetos com Guards pending)"]
-        gl --> gag["Task: 1 agente mustard-guards<br/>por subprojeto (read-only, 1 msg)"]
-        gag --> gap["scan-guards-apply (stdin)<br/>~6 linhas do/don't"]
-        gap --> pl["scan-patterns-list<br/>(clusters de role ≥3, sem teto)"]
+        sw --> pl["scan-patterns-list<br/>(clusters de role ≥3, sem teto)"]
         pl --> pag["Task: 1 agente mustard-patterns<br/>por subprojeto (read-only, 1 msg)"]
         pag --> rel["scan-patterns-relay<br/>(retorno INTEIRO: stdin ou<br/>arquivo persistido via --content @path)"]
         rel --> pap["scan-patterns-apply<br/>(create-only, atômico, etiqueta EN)"]
@@ -516,7 +513,7 @@ flowchart TD
 | `/mustard:pr` | **porta** · PR | `pr-list`, `pr-review`, `pr-merge`, `review-prefetch`, `diff-context`, `close-orchestrate`, `tactical-fix-detect` | não |
 | `/mustard:spec` | **porta** · core | `active-specs`, `resume-bootstrap`, `wave-advance`, `close-pipeline` | indireto |
 | `/mustard:upsert` | **porta** · instalação | `upsert`, `unhook`, `rehook`, `doctor` | não |
-| `scan` | fluxo interno (porteiro de base) | `scan --full`, `scan-guards-*`, `scan-patterns-*` | **produz** |
+| `scan` | fluxo interno | `scan --full`, `scan-patterns-*` | **produz** |
 | `/mustard:feature` | fluxo interno · core | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
 | `/mustard:bugfix` | fluxo interno · core | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |
 | `/mustard:tactical-fix` | fluxo interno · core | `tactical-fix-create` | não |

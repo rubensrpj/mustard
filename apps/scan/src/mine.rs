@@ -386,10 +386,7 @@ fn build_convention(
     // Core = present in a majority; optional = recurs (>=2) but not majority.
     let mut core: Vec<String> = freq.iter().filter(|&(_, &c)| c * 2 >= size && c >= 2).map(|(r, _)| r.clone()).collect();
     if core.len() < 2 {
-        // fall back to the two most frequent roles
-        let mut by_freq: Vec<(&String, &usize)> = freq.iter().filter(|&(_, &c)| c >= 2).collect();
-        by_freq.sort_by(|a, b| b.1.cmp(a.1));
-        core = by_freq.iter().take(2).map(|(r, _)| (*r).clone()).collect();
+        core = two_most_frequent(&freq);
     }
     if core.len() < 2 {
         return None;
@@ -511,6 +508,16 @@ fn build_convention(
             if opt_disp.is_empty() { String::new() } else { format!(" Optional roles: {}.", opt_disp.join(", ")) }
         ),
     })
+}
+
+/// The two most frequent roles that recur (at least twice), the fallback core
+/// of a convention. Ties go by name: the counts come from a hash map, whose
+/// order changes from one run to the next, and a tie broken by that order gave
+/// the same convention a different name on each full read.
+fn two_most_frequent(freq: &HashMap<String, usize>) -> Vec<String> {
+    let mut by_freq: Vec<(&String, &usize)> = freq.iter().filter(|&(_, &c)| c >= 2).collect();
+    by_freq.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    by_freq.iter().take(2).map(|(r, _)| (*r).clone()).collect()
 }
 
 fn order_roles_by_dependency(
@@ -1026,6 +1033,19 @@ mod tests {
 
     /// A named type never needed either test, and must not start depending on
     /// one: a file carrying a type PLUS helpers still yields the type.
+    #[test]
+    fn the_two_most_frequent_roles_break_ties_by_name() {
+        // A fresh map each round: every one hashes in its own order.
+        for _ in 0..64 {
+            let freq: HashMap<String, usize> =
+                [("(core)", 22), ("Report", 5), ("Kind", 5), ("State", 5), ("Mode", 1)]
+                    .into_iter()
+                    .map(|(r, c)| (r.to_string(), c))
+                    .collect();
+            assert_eq!(two_most_frequent(&freq), vec!["(core)".to_string(), "Kind".to_string()]);
+        }
+    }
+
     #[test]
     fn a_named_type_is_a_unit_even_when_it_shares_its_file() {
         let m = Module {
