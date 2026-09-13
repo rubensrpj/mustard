@@ -183,7 +183,10 @@ impl WriteRule for SpecFileRule {
     }
 }
 
-/// O código do projeto não muda antes de a spec atual ser aprovada.
+/// O código do projeto não muda antes de a spec atual ser aprovada. Numa
+/// branch que o Mustard não abriu, ele não trava nada: com a branch da spec e
+/// a atual conhecidas e diferentes, e a atual fora das bases, a regra se cala
+/// e só o aviso da branch responde.
 pub(crate) struct ApprovalRule;
 
 impl WriteRule for ApprovalRule {
@@ -194,6 +197,12 @@ impl WriteRule for ApprovalRule {
         let spec = at.spec.as_deref()?;
         let state = at.state.as_ref()?;
         if !matches!(state.phase, None | Some("survey" | "plan")) {
+            return None;
+        }
+        if let (Some(home), Some(current)) = (state.branch.as_deref(), at.current_branch.as_deref())
+            && home != current
+            && !at.bases.contains(current)
+        {
             return None;
         }
         let reason = say("write_gate.not_approved", at.lang, &[("{spec}", spec), ("{file}", &target.path)]);
@@ -476,6 +485,40 @@ mod tests {
         assert!(matches!(judge(RULES, &target, &at("dev")), Verdict::Deny { .. }), "a base is refused");
         let unopened = WriteContext { state: None, ..at("feature/y") };
         assert_eq!(judge(RULES, &target, &unopened), Verdict::Allow, "no event file, no warning");
+    }
+
+    /// Numa branch criada à mão, a aprovação não trava: com a spec em `plan`,
+    /// só o aviso da branch sai. Na branch da spec, numa base ou com a branch
+    /// desconhecida, a trava continua.
+    #[test]
+    fn a_hand_made_branch_is_never_trapped_by_the_approval() {
+        let target = WriteTarget::classify("/p", &call(Path::new("/p"), "Edit", "/p/src/a.rs", None))
+            .expect("a file tool");
+        let at = |current: Option<&str>| WriteContext {
+            spec: Some("x".to_string()),
+            state: Some(State {
+                phase: Some("plan"),
+                branch: Some("feature/x".to_string()),
+                ..State::default()
+            }),
+            current_branch: current.map(str::to_string),
+            bases: ["dev".to_string(), "main".to_string()].into(),
+            lang: Locale::PtBr,
+        };
+        assert_eq!(
+            judge(RULES, &target, &at(Some("minha-branch"))),
+            Verdict::Warn {
+                message: "[Mustard] A spec x mora na branch feature/x, e esta edição está na minha-branch."
+                    .to_string()
+            },
+        );
+        for (current, why) in [
+            (Some("feature/x"), "the spec's own branch"),
+            (Some("dev"), "a declared base"),
+            (None, "an unknown branch"),
+        ] {
+            assert!(matches!(judge(RULES, &target, &at(current)), Verdict::Deny { .. }), "{why} keeps the lock");
+        }
     }
 
     /// Ler um segredo é barrado como escrevê-lo; ler um arquivo da spec, o
