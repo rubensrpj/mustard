@@ -24,7 +24,11 @@ fn close(root: &Path, spec: &str) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "emit-pipeline", "--kind", "pipeline.complete", "--spec", spec, "--allow-no-qa"])
         .current_dir(root)
+        // O `emit-pipeline` prefere o `CLAUDE_PROJECT_DIR` à pasta atual: sem
+        // fixá-lo, o fechamento cairia no projeto de quem roda a suíte.
+        .env("CLAUDE_PROJECT_DIR", root)
         .env_remove("MUSTARD_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("CLAUDE_SESSION_ID")
         .env_remove("MUSTARD_ACTIVE_SPEC")
         .stdout(Stdio::null())

@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 
 use crate::domain::spec_events::{render_line, search_field, Refusal, SpecEvent, SpecLog, FORMAT_VERSION};
+use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
 /// O tipo da primeira linha, a do projeto.
@@ -58,9 +59,12 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
     let first = log.events.first()?;
     let last = log.events.last()?;
     let visible = log.visible();
-    let states: Vec<&SpecEvent> = visible.iter().copied().filter(|e| e.event_type == "state").collect();
-    let phase = states.last().and_then(|e| e.str_field("phase"));
-    let branch = states.iter().rev().find_map(|e| e.str_field("branch"));
+    // A fase e a branch são as do estado dobrado, a mesma leitura das travas:
+    // um `state` só com a branch, ou uma revisão de um `state` antigo, não
+    // muda a fase que o índice mostra.
+    let state = State::from_log(log);
+    let phase = state.phase;
+    let branch = state.branch;
     let goal = goal_of(log);
     let mut titled: Vec<&SpecEvent> =
         visible.iter().copied().filter(|e| TITLED_TYPES.contains(&e.event_type.as_str())).collect();
@@ -354,6 +358,28 @@ mod tests {
             assert!(search.contains(&search_terms(word)[0].as_str()), "{word}: {search:?}");
         }
         assert!(line.ends_with(&format!(r#","updated":"{}","search":"{}"}}"#, at("08:45"), got["search"].as_str().unwrap())));
+    }
+
+    /// Lado a lado — a fase e a branch do índice são as do estado dobrado: um
+    /// `state` só com a branch e uma revisão de um `state` antigo dão a mesma
+    /// resposta nas duas leituras, e nenhum dos dois muda a fase.
+    #[test]
+    fn the_index_phase_and_branch_are_the_folded_state() {
+        let branch_only = ev(7, "08:46", "state", json!({"author": "binary", "branch": "feature/outra"}));
+        let revision = ev(
+            7,
+            "08:46",
+            "state",
+            json!({"author": "binary", "phase": "survey", "branch": "feature/certa", "replaces": 1}),
+        );
+        for body in [spec(), [spec(), branch_only].concat(), [spec(), revision].concat()] {
+            let log = parse_log(&body);
+            let state = State::from_log(&log);
+            let got = parsed(&spec_line("teste", &log).unwrap());
+            assert_eq!(got.get("phase").and_then(Value::as_str), state.phase, "{body}");
+            assert_eq!(got.get("branch").and_then(Value::as_str), state.branch.as_deref(), "{body}");
+            assert_eq!(got["phase"], json!("running"), "the phase stays: {body}");
+        }
     }
 
     #[test]
