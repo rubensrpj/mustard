@@ -31,8 +31,9 @@
 //! The router resolves the session id first, then the spec, because a
 //! spec-less event inherits the spec its session is bound to:
 //!
-//! - **session**: `HarnessEvent.session_id` → env (`MUSTARD_SESSION_ID` /
-//!   `CLAUDE_SESSION_ID`, [`crate::shared::spec_state::session_from_env`]).
+//! - **session**: `HarnessEvent.session_id` → env (`MUSTARD_SESSION_ID`, then
+//!   `CLAUDE_CODE_SESSION_ID`, then `CLAUDE_SESSION_ID`, through
+//!   [`crate::shared::spec_state::session_from_env`]).
 //!   Never a guess from the newest session folder: a guessed id would bind the
 //!   event's spec to another session.
 //! - **spec**: `HarnessEvent.spec` → the one current-spec ladder

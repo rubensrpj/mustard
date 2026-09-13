@@ -3,7 +3,8 @@
 //! Unlike the enforcement faces, a `run` subcommand never receives a
 //! `HookInput` — it resolves the project directory and session id from the
 //! process environment, mirroring how the JS scripts did (`CLAUDE_PROJECT_DIR`,
-//! `MUSTARD_SESSION_ID` / `CLAUDE_SESSION_ID`).
+//! and the session through `spec_state::session_from_env`: `MUSTARD_SESSION_ID`,
+//! then `CLAUDE_CODE_SESSION_ID`, then `CLAUDE_SESSION_ID`).
 
 use std::fmt::Write as _;
 use mustard_core::io::fs;

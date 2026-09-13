@@ -49,6 +49,7 @@ fn answer(cwd: &Path, session: &str, offered: &[&str], answers: Value) -> String
         .env_remove("MUSTARD_ACTIVE_SPEC")
         .env_remove("MUSTARD_SESSION_ID")
         .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
