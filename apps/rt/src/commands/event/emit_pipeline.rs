@@ -344,6 +344,12 @@ pub fn run(opts: EmitPipelineOpts) {
     // palpite pela pasta de sessão mais nova gravaria as duas sob outra sessão.
     let sid = session_from_env().unwrap_or_default();
     emit_primary_and_alias(&kind, &spec, &payload, &ts, &sid);
+    // A unidade que nasce de uma pendência deixa nela a nota "virou a spec X",
+    // com o nome que a unidade carrega daqui em diante: é por essa nota que o
+    // merge da spec fecha a pendência.
+    if let Some(id) = pending_link.as_deref() {
+        let _ = super::pending::mark_became(Path::new(&project_dir()), id, &spec);
+    }
 
     // --- APPLY the one kind-specific side effect, keyed by `kind` -------------
     //

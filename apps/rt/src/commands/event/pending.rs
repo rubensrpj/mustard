@@ -47,6 +47,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::search::{query_terms, SearchIndex};
 use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, SpecLog};
+use mustard_core::domain::spec_state::SpecState;
 use mustard_core::domain::text;
 use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,7 @@ use serde_json::{json, Map, Value};
 
 use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
+use crate::shared::spec_state::DiskSpecState;
 
 /// Options for `mustard-rt run pending`.
 #[derive(Debug, Clone, Default)]
@@ -784,6 +786,49 @@ pub(crate) fn born_in(log: &SpecLog) -> Vec<String> {
 pub(crate) fn open_born_in(root: &Path, log: &SpecLog) -> Vec<OpenPending> {
     let born = born_in(log);
     open_pending(root).into_iter().filter(|item| born.contains(&item.id)).collect()
+}
+
+/// As pendências abertas que nasceram na spec `spec` do projeto em `root`: é
+/// só delas que a entrega pergunta. Vazio quando a spec não tem arquivo de
+/// eventos.
+#[must_use]
+pub(crate) fn open_pending_born_in(root: &Path, spec: &str) -> Vec<OpenPending> {
+    DiskSpecState::new(root).log(spec).map(|log| open_born_in(root, &log)).unwrap_or_default()
+}
+
+/// Grava na pendência aberta `id` a nota "virou a spec `spec`": a unidade que
+/// nasceu dela se chama `spec`, e o merge dessa spec fecha a pendência.
+/// `true` quando a nota está gravada.
+pub(crate) fn mark_became(root: &Path, id: &str, spec: &str) -> bool {
+    let project = ledger_root(root);
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(&project) else {
+        return false;
+    };
+    let path = paths.pending_ledger_path();
+    let Ok(mut ledger) = load(&path) else {
+        return false;
+    };
+    let Some(item) = ledger.items.iter_mut().find(|i| i.id == id && i.status == Status::Open) else {
+        return false;
+    };
+    if item.became.as_deref() == Some(spec) {
+        return true;
+    }
+    item.became = Some(spec.to_string());
+    write(&path, &mut ledger, &today(None)).is_ok()
+}
+
+/// A pendência aberta que virou a spec `spec`, pela nota da lista.
+#[must_use]
+pub(crate) fn became_of(root: &Path, spec: &str) -> Option<String> {
+    let project = ledger_root(root);
+    let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
+    load(&paths.pending_ledger_path())
+        .ok()?
+        .items
+        .into_iter()
+        .find(|i| i.status == Status::Open && i.became.as_deref() == Some(spec))
+        .map(|i| i.id)
 }
 
 /// Fecha `id` como ENTREGUE com `reason`, pelo mesmo passe de `run pending`

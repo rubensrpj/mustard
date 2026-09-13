@@ -57,9 +57,10 @@
 //!   Todo merge também grava o evento `pr.merged` e, quando o merge é de uma
 //!   spec com arquivo de eventos, o estado `delivered` dela: é esse estado que
 //!   arma a cobrança das pendências no fim da resposta. Quando a unidade nasceu
-//!   ligada a uma pendência (`emit-pipeline --pending`), o merge fecha esse
-//!   item com o motivo `PR #N mergeado`. O relatório devolve `pendingClosed` e `pendingOpen` — as
-//!   que seguem abertas — para que o fechamento as repasse ao operador.
+//!   de uma pendência (`emit-pipeline --pending`, que deixa nela a nota "virou
+//!   a spec X"), o merge fecha esse item com o motivo `PR #N mergeado`. O
+//!   relatório devolve `pendingClosed` e `pendingOpen` — as pendências nascidas
+//!   na spec que seguem abertas — para que a entrega pergunte só delas.
 //!
 //! ## The unreviewed merge WARNS and ASKS — it never refuses
 //!
@@ -93,7 +94,9 @@ use serde_json::Value;
 
 use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
-use crate::commands::event::pending::{close_pending, open_pending, OpenPending, UNIT_PENDING_KEY};
+use crate::commands::event::pending::{
+    became_of, close_pending, open_pending_born_in, OpenPending, UNIT_PENDING_KEY,
+};
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
@@ -660,13 +663,15 @@ pub(crate) struct PrMergeReport {
     pub settle: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
-    /// A pendência que ESTE merge fechou — a que a unidade carregava desde a
-    /// abertura (`emit-pipeline --pending`). Ausente quando não havia ligação.
+    /// A pendência que ESTE merge fechou — a que tem na lista a nota "virou a
+    /// spec X" desta spec, gravada na abertura (`emit-pipeline --pending`).
+    /// Ausente quando não havia ligação.
     #[serde(rename = "pendingClosed", skip_serializing_if = "Option::is_none")]
     pub pending_closed: Option<String>,
-    /// As pendências que seguem abertas depois do merge. Presente em todo
-    /// `merged` (vazia quando nada segue aberto) e ausente quando nada foi
-    /// mergeado: o momento de repassar a lista é o do fechamento.
+    /// As pendências nascidas na spec do merge que seguem abertas: a entrega
+    /// pergunta só delas. Presente em todo `merged` (vazia quando nada nasceu
+    /// na spec, e na promoção, que não tem spec) e ausente quando nada foi
+    /// mergeado.
     #[serde(rename = "pendingOpen", skip_serializing_if = "Option::is_none")]
     pub pending_open: Option<Vec<OpenPending>>,
 }
@@ -852,22 +857,26 @@ fn merge_core(
 }
 
 /// O que um merge deixa registrado além do merge: o evento `pr.merged`, o
-/// estado `delivered` da spec e o fechamento da pendência ligada à unidade.
-/// Devolve o id fechado (se houve) e as pendências que seguem abertas.
+/// estado `delivered` da spec e o fechamento da pendência que virou a spec.
+/// Devolve o id fechado (se houve) e as pendências nascidas na spec que
+/// seguem abertas: a entrega pergunta só delas, nunca da lista inteira.
 ///
 /// O motivo `PR #N mergeado` põe o número do pull request no ledger, para quem
 /// reler a lista saber o que entregou o item.
 ///
 /// Roda também na promoção `dev` → `main`: o `pr.merged` fica registrado. Uma
-/// promoção não tem spec, então não grava estado nem arma a cobrança, que vale
-/// só para as pendências nascidas numa spec.
+/// promoção não tem spec, então não grava estado, não arma a cobrança e não
+/// pergunta de nenhuma pendência.
 fn after_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) -> (Option<String>, Vec<OpenPending>) {
     record_merge(root, facts, spec);
     let reason = format!("PR #{} mergeado", facts.number);
+    // A nota "virou a spec X" da lista liga a pendência à spec. Uma unidade
+    // aberta antes de a nota existir só tem a ligação no evento da abertura.
     let closed = spec
-        .and_then(|slug| linked_pending(root, slug))
+        .and_then(|slug| became_of(root, slug).or_else(|| linked_pending(root, slug)))
         .filter(|id| close_pending(root, id, &reason));
-    (closed, open_pending(root))
+    let born = spec.map(|slug| open_pending_born_in(root, slug)).unwrap_or_default();
+    (closed, born)
 }
 
 /// A pendência à qual a unidade nasceu ligada: o `pending` do evento
@@ -1332,10 +1341,12 @@ mod tests {
         );
     }
 
-    /// O merge do pull request de uma unidade ligada a uma pendência
-    /// fecha essa pendência com o número do PR no motivo, e o relatório lista as
-    /// que seguem abertas. A ligação é gravada pelo gravador de verdade
-    /// (`with_pending_link`, o mesmo do `emit-pipeline --pending`).
+    /// O merge do pull request de uma unidade aberta antes da nota "virou a
+    /// spec X", ligada a uma pendência só pelo evento da abertura, ainda fecha
+    /// essa pendência com o número do PR no motivo. A ligação é gravada pelo
+    /// gravador de verdade (`with_pending_link`, o mesmo do `emit-pipeline
+    /// --pending`). Nenhuma pendência nasceu nessas specs, então a entrega não
+    /// pergunta de nenhuma.
     #[test]
     fn pr_merge_closes_linked_pending_item() {
         use crate::commands::event::pending::{pending_at, PendingOpts};
@@ -1382,24 +1393,178 @@ mod tests {
 
         assert_eq!(done.action, "merged");
         assert_eq!(done.pending_closed.as_deref(), Some("P-1"), "the linked item is closed");
-        assert_eq!(
-            done.pending_open,
-            Some(vec![OpenPending { id: "P-2".into(), title: "Humanize".into() }]),
-            "the report lists what is still open",
-        );
+        assert_eq!(done.pending_open, Some(vec![]), "nothing was born in this spec, nothing is asked");
         let ledger = pending_at(&opts(false, None));
         assert_eq!(ledger["closed"][0]["id"], json!("P-1"));
         assert_eq!(ledger["closed"][0]["reason"], json!("PR #271 mergeado"), "{ledger}");
+        assert_eq!(ledger["open"][0]["id"], json!("P-2"), "P-2 stays open: {ledger}");
         let wire = serde_json::to_value(&done).expect("serialize");
         assert_eq!(wire["pendingClosed"], json!("P-1"), "{wire}");
-        assert_eq!(wire["pendingOpen"], json!([{ "id": "P-2", "title": "Humanize" }]), "{wire}");
+        assert_eq!(wire["pendingOpen"], json!([]), "{wire}");
 
-        // Controle: uma unidade SEM ligação mergeia sem fechar nada, e ainda
-        // assim o relatório lista o que segue aberto.
+        // Controle: uma unidade SEM ligação mergeia sem fechar nada.
         let loose = PrFacts { number: 272, head: "feature/outra-coisa".to_string() };
         let plain = merge_core(root, &loose, &door_flow(), true, &green, &merge, &settle);
         assert_eq!(plain.pending_closed, None, "no link, nothing closed");
-        assert_eq!(plain.pending_open.map(|o| o.len()), Some(1), "P-2 is still open");
+        assert_eq!(plain.pending_open, Some(vec![]));
+    }
+
+    /// Um projeto do fluxo `dev`/`main` com as pendências abertas `titles`,
+    /// numeradas na ordem.
+    fn project_with_items(titles: &[&str]) -> tempfile::TempDir {
+        use crate::commands::event::pending::{pending_at, PendingOpts};
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("cfg");
+        for title in titles {
+            let out = pending_at(&PendingOpts {
+                root: dir.path().to_path_buf(),
+                add: true,
+                title: Some((*title).to_string()),
+                detail: Some("combinado".to_string()),
+                ..PendingOpts::default()
+            });
+            assert_eq!(out["ok"], json!(true), "seed: {out}");
+        }
+        dir
+    }
+
+    /// Um merge sem checagem, sem provedor e sem poda, pela porta de verdade.
+    fn merged(root: &Path, number: u64, head: &str) -> PrMergeReport {
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let merge = |_: &Path, _: u64| Ok(());
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let facts = PrFacts { number, head: head.to_string() };
+        merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle)
+    }
+
+    /// A entrega pergunta só das pendências nascidas na spec do merge; a
+    /// promoção, que não tem spec, não pergunta de nenhuma.
+    #[test]
+    fn the_merge_reports_only_the_items_born_in_its_spec() {
+        use crate::hooks::task::pending_gate::seed_spec;
+        let dir = project_with_items(&["Humanize", "HTML padrao", "Painel"]);
+        let root = dir.path();
+        seed_spec(root, "trava", &[2], "s-entrega");
+
+        let done = merged(root, 310, "feature/trava");
+        assert_eq!(done.action, "merged");
+        assert_eq!(done.pending_open, Some(vec![OpenPending { id: "P-2".into(), title: "HTML padrao".into() }]));
+        let promotion = merged(root, 311, "dev");
+        assert_eq!(promotion.reason, Some("base-to-base-promotion"));
+        assert_eq!(promotion.pending_open, Some(vec![]), "a promotion has no spec to ask about");
+    }
+
+    /// A pendência que virou a spec ganha a nota na lista, e o merge dessa
+    /// spec a fecha com o número do pull request; a nota de outra spec fica.
+    #[test]
+    fn a_merge_closes_the_item_that_became_its_spec() {
+        use crate::commands::event::pending::{mark_became, pending_at, PendingOpts};
+        let dir = project_with_items(&["Humanize", "Painel"]);
+        let root = dir.path();
+        assert!(mark_became(root, "P-1", "trava"), "the note is recorded");
+        assert!(mark_became(root, "P-2", "outra"));
+        let list = || pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        assert_eq!(list()["open"][0]["became"], json!("trava"), "the list shows the note");
+
+        let done = merged(root, 320, "feature/trava");
+        assert_eq!(done.pending_closed.as_deref(), Some("P-1"), "the item that became the spec is closed");
+        let after = list();
+        assert_eq!(after["closed"][0]["id"], json!("P-1"), "{after}");
+        assert_eq!(after["closed"][0]["reason"], json!("PR #320 mergeado"), "{after}");
+        assert_eq!(after["open"][0]["id"], json!("P-2"), "another spec's note stays: {after}");
+        assert_eq!(after["open"][0]["became"], json!("outra"));
+    }
+
+    /// O critério das pendências inteiro: doze abertas, duas nascidas na spec
+    /// entregue e três paradas há mais de 30 dias. O início da sessão mostra
+    /// uma linha com a contagem; a entrega pergunta só das duas; a trava do fim
+    /// da resposta cobra só as duas; as três paradas voltam numa pergunta só,
+    /// uma vez, e as não marcadas saem como vencidas; e "Humanize" com uma
+    /// "humanize" aberta é recusada apontando a existente.
+    #[test]
+    fn twelve_open_items_follow_the_four_brakes() {
+        use crate::commands::event::pending::{pending_at, PendingOpts};
+        use crate::hooks::task::end_of_turn_check::run_rules;
+        use crate::hooks::task::pending_gate::{seed_spec, PendingRule};
+        use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
+
+        let dir = project_with_items(&[]);
+        let root = dir.path();
+        let add = |title: &str, day: Option<&str>| {
+            pending_at(&PendingOpts {
+                root: root.to_path_buf(),
+                add: true,
+                title: Some(title.to_string()),
+                detail: Some("combinado".to_string()),
+                now: day.map(str::to_string),
+                ..PendingOpts::default()
+            })
+        };
+        for n in 1..=3 {
+            assert_eq!(add(&format!("parada {n}"), Some("2020-01-01"))["ok"], json!(true));
+        }
+        for n in 4..=10 {
+            assert_eq!(add(&format!("aberta {n}"), None)["ok"], json!(true));
+        }
+        assert_eq!(add("humanize", None)["id"], json!("P-11"));
+        assert_eq!(add("html padrao", None)["id"], json!("P-12"));
+        seed_spec(root, "entrega", &[11, 12], "s-doze");
+        let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
+
+        // O início da sessão: uma linha com a contagem, e as paradas contadas.
+        let notice = crate::hooks::session::session_start_inject::pending_notice(root, lang).expect("twelve open");
+        assert!(notice.starts_with("[Mustard] 12 ") && !notice.contains('\n'), "{notice}");
+        assert!(notice.contains(" 3 ") && !notice.contains("parada 1"), "{notice}");
+
+        // A duplicata é recusada apontando a existente.
+        let duplicate = add("Humanize", None);
+        assert_eq!(duplicate["reason"], json!("duplicate"), "{duplicate}");
+        assert_eq!(duplicate["id"], json!("P-11"));
+
+        // A entrega pergunta só das duas.
+        let done = merged(root, 400, "feature/entrega");
+        assert_eq!(done.action, "merged");
+        let asked: Vec<String> = done.pending_open.clone().unwrap_or_default().into_iter().map(|i| i.id).collect();
+        assert_eq!(asked, vec!["P-11", "P-12"], "{done:?}");
+
+        // A trava do fim da resposta cobra só as duas.
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::Stop));
+        let stop = HookInput {
+            hook_event_name: Some("Stop".to_string()),
+            session_id: Some("s-doze".to_string()),
+            raw: json!({ "last_assistant_message": "Entrega feita." }),
+            ..HookInput::default()
+        };
+        match run_rules(&[&PendingRule], &stop, &ctx) {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("P-11") && reason.contains("P-12"), "{reason}");
+                assert!(!reason.contains("\"parada") && !reason.contains("\"aberta"), "only those two: {reason}");
+            }
+            other => panic!("the delivery charges the two born in it, got {other:?}"),
+        }
+
+        // As três paradas voltam numa pergunta só, uma vez; as não marcadas
+        // saem como vencidas.
+        let sweep = |stale: bool, keep: Option<&str>| {
+            pending_at(&PendingOpts {
+                root: root.to_path_buf(),
+                stale,
+                expire: !stale,
+                keep: keep.map(str::to_string),
+                ..PendingOpts::default()
+            })
+        };
+        let swept = sweep(true, None);
+        assert_eq!(swept["stale"].as_array().map(Vec::len), Some(3), "{swept}");
+        assert!(swept["question"].is_string(), "one question: {swept}");
+        assert_eq!(sweep(true, None)["stale"], json!([]), "they come back once");
+        let expired = sweep(false, Some("P-2"));
+        assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
+        let reason = mustard_core::translate("pending.expired_reason", lang);
+        let gone: Vec<&Value> = expired["closed"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+        assert_eq!(gone.len(), 2, "{expired}");
+        assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{expired}");
     }
 
     /// A ponte: fechar a spec grava o estado `closed`, o merge grava o
