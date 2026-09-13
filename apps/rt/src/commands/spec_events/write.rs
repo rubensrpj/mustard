@@ -515,9 +515,10 @@ mod tests {
         }
     }
 
-    /// Nem por revisão nem por remoção o modelo abre a trava: um `state` com
-    /// `replaces` que traz a fase aprovada é recusado, e tirar o `state` que
-    /// fechou a trava de novo também.
+    /// Nem por revisão, nem por remoção, nem mudando a branch o modelo abre a
+    /// trava: um `state` com `replaces` que traz a fase aprovada é recusado,
+    /// tirar o `state` que fechou a trava de novo também, e mudar a branch ou
+    /// a base também.
     #[test]
     fn a_revision_or_a_removal_never_opens_the_lock() {
         let dir = tempdir().unwrap();
@@ -541,8 +542,15 @@ mod tests {
         assert_eq!(revised["reason"], json!("phase-change-refused"), "{revised}");
         let removed = write(root, "remove", &json!({ "targets": [id], "reason": "engano" }).to_string());
         assert_eq!(removed["reason"], json!("phase-change-refused"), "{removed}");
-        let revise_branch = write(root, "state", &json!({ "phase": "plan", "branch": "b", "replaces": id }).to_string());
-        assert_eq!(revise_branch["ok"], json!(true), "a revision that keeps the phase passes: {revise_branch}");
+        // Nem mudando a branch: o portão deixa de travar numa branch diferente
+        // da gravada, e a branch só nasce com a spec.
+        let revise_branch =
+            write(root, "state", &json!({ "phase": "plan", "branch": "outra", "replaces": id }).to_string());
+        assert_eq!(revise_branch["reason"], json!("phase-change-refused"), "{revise_branch}");
+        let new_branch = write(root, "state", &json!({ "phase": "plan", "branch": "outra" }).to_string());
+        assert_eq!(new_branch["reason"], json!("phase-change-refused"), "{new_branch}");
+        let new_base = write(root, "state", &json!({ "phase": "plan", "base": "main" }).to_string());
+        assert_eq!(new_base["reason"], json!("phase-change-refused"), "{new_base}");
     }
 
     /// A ponte do fechamento não fecha uma spec em plano: o fechamento só vem

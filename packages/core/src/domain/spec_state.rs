@@ -134,11 +134,20 @@ pub enum PhaseWriter {
 ///   `delivered`) só pelo binário, e só a partir de uma fase aprovada.
 /// - Uma fase que não aprova (`survey`, `plan`, `discarded`, ou nenhuma) só
 ///   fecha a trava, e o modelo e o binário a gravam.
+/// - A branch e a base nascem com a spec, no primeiro `state`; depois dele,
+///   só o binário as grava. O portão deixa de travar numa branch diferente da
+///   gravada, então mudar a branch à mão abriria a trava.
+/// - A fase nunca some: tirar o último `state` voltaria a spec ao nascimento,
+///   e um nascimento novo poderia trazer outra branch.
 ///
 /// Uma gravação que não muda a fase passa, a não ser a que traz uma fase que
-/// a porta não grava.
+/// a porta não grava ou muda a branch ou a base.
 #[must_use]
 pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>, by: PhaseWriter) -> bool {
+    let birth = before.phase.is_none();
+    if !birth && by != PhaseWriter::Binary && (before.branch != after.branch || before.base != after.base) {
+        return false;
+    }
     if let Some(carried) = carried.map(str::trim) {
         if by == PhaseWriter::Hand && is_approved_phase(carried) {
             return false;
@@ -151,7 +160,7 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
         return true;
     }
     let Some(to) = after.phase else {
-        return by != PhaseWriter::Witness;
+        return false;
     };
     if !is_approved_phase(to) {
         return by != PhaseWriter::Witness;
@@ -263,6 +272,29 @@ mod tests {
         // Tirar o `state` que fechou a trava de novo e voltar a uma fase
         // aprovada é abrir a trava: o modelo não faz.
         assert!(!phase_write_allowed(&at(Some("plan")), &at(Some("approved")), None, Hand));
+
+        // A branch e a base nascem com a spec, pelo binário; ninguém mais as
+        // muda.
+        let on = |branch: &str, base: &str| State {
+            phase: Some("plan"),
+            branch: Some(branch.to_string()),
+            base: Some(base.to_string()),
+            ..State::default()
+        };
+        assert!(phase_write_allowed(&at(None), &on("feature/x", "dev"), Some("plan"), Binary), "the birth");
+        assert!(
+            phase_write_allowed(&at(None), &on("feature/x", "dev"), Some("plan"), Hand),
+            "the model's first state is the birth, with the branch",
+        );
+        // A fase nunca some: tirar o último `state` não é gravação de porta
+        // nenhuma.
+        for by in [Hand, Witness, Binary] {
+            assert!(!phase_write_allowed(&at(Some("plan")), &at(None), None, by), "{by:?}");
+        }
+        for by in [Hand, Witness] {
+            assert!(!phase_write_allowed(&on("feature/x", "dev"), &on("outra", "dev"), Some("plan"), by), "{by:?}");
+            assert!(!phase_write_allowed(&on("feature/x", "dev"), &on("feature/x", "main"), Some("plan"), by), "{by:?}");
+        }
     }
 
     #[test]
