@@ -22,6 +22,13 @@
 //! Quem decide (o portão de escrita, a testemunha da aprovação, a cobrança das
 //! pendências) recebe os valores já lidos e se testa sem disco, com uma
 //! [`SpecState`] falsa.
+//!
+//! O resultado dos critérios ([`qa`]), o veredito das ondas ([`review`]) e os
+//! pedidos depois da última execução ([`requests_after`]) também moram aqui:
+//! toda porta que pergunta "o QA passou?" ou "a revisão reprovou?" lê a mesma
+//! resposta do mesmo arquivo.
+
+use std::collections::BTreeMap;
 
 use serde_json::Value;
 
@@ -240,6 +247,122 @@ fn known_phase(name: &str) -> Option<&'static str> {
 /// O texto sem espaços nas pontas, ou `None` quando fica vazio.
 fn text(value: Option<&str>) -> Option<String> {
     value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// Os critérios de uma spec diante das execuções gravadas.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Qa {
+    /// Os critérios que a leitura mostra.
+    pub criteria: usize,
+    /// Os critérios com ao menos uma execução.
+    pub ran: usize,
+    /// Os critérios cuja última execução passou.
+    pub passed: usize,
+    /// Os critérios cuja última execução falhou.
+    pub failed: usize,
+    /// Os critérios revistos depois da última execução deles: a execução
+    /// conferiu o texto de antes.
+    pub stale: usize,
+    /// O número da execução mais nova de um critério que a leitura mostra.
+    pub last_run: Option<u64>,
+}
+
+impl Qa {
+    /// O QA passou: a spec tem critério, e cada critério que a leitura mostra
+    /// tem a última execução aprovada.
+    #[must_use]
+    pub fn passed_all(&self) -> bool {
+        self.criteria > 0 && self.passed == self.criteria
+    }
+}
+
+/// O QA de uma spec, pelas execuções (`criterion_run`) que a leitura mostra: a
+/// mais nova de cada critério decide. Uma execução que nomeia uma versão
+/// anterior de um critério conta para a versão que a substituiu, e o critério
+/// revisto depois dela entra em [`Qa::stale`]. A execução de um critério
+/// removido não conta.
+#[must_use]
+pub fn qa(log: &SpecLog) -> Qa {
+    let block = log.block(BlockQuery::Block(Block::Criteria));
+    let criteria: Vec<u64> = block.iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+    // A execução mais nova de cada critério: (número, passou).
+    let mut last: BTreeMap<u64, (u64, bool)> = BTreeMap::new();
+    for run in block.iter().filter(|e| e.event_type == "criterion_run") {
+        let Some(current) = run.int("criterion").and_then(|named| log.current(named)) else {
+            continue;
+        };
+        let pass = run.str_field("result").map(str::trim) == Some("pass");
+        let entry = last.entry(current.id).or_insert((run.id, pass));
+        if run.id >= entry.0 {
+            *entry = (run.id, pass);
+        }
+    }
+    let mut qa = Qa { criteria: criteria.len(), ..Qa::default() };
+    for id in &criteria {
+        let Some((run, pass)) = last.get(id) else {
+            continue;
+        };
+        qa.ran += 1;
+        if *pass {
+            qa.passed += 1;
+        } else {
+            qa.failed += 1;
+        }
+        if id > run {
+            qa.stale += 1;
+        }
+        qa.last_run = qa.last_run.max(Some(*run));
+    }
+    qa
+}
+
+/// O veredito das revisões de uma spec.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Review {
+    /// Alguma onda tem veredito gravado.
+    pub any: bool,
+    /// O último veredito de alguma onda reprovou.
+    pub rejected: bool,
+}
+
+impl Review {
+    /// A palavra do veredito: `approved` quando o último veredito de cada onda
+    /// aprovou, `rejected` quando o de alguma reprovou; `None` sem veredito.
+    #[must_use]
+    pub fn word(&self) -> Option<&'static str> {
+        self.any.then_some(if self.rejected { "rejected" } else { "approved" })
+    }
+}
+
+/// O veredito de uma spec, pelos eventos `verdict` que a leitura mostra: o
+/// mais novo de cada onda decide, e uma aprovação de uma onda não esconde a
+/// reprovação de outra.
+#[must_use]
+pub fn review(log: &SpecLog) -> Review {
+    // O veredito mais novo de cada onda: (número, reprovou).
+    let mut last: BTreeMap<u64, (u64, bool)> = BTreeMap::new();
+    for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
+        let Some(wave) = verdict.wave() else {
+            continue;
+        };
+        let rejected = verdict.str_field("result").map(str::trim) == Some("rejected");
+        let entry = last.entry(wave).or_insert((verdict.id, rejected));
+        if verdict.id >= entry.0 {
+            *entry = (verdict.id, rejected);
+        }
+    }
+    Review { any: !last.is_empty(), rejected: last.values().any(|(_, rejected)| *rejected) }
+}
+
+/// Os pedidos (`request`) que a leitura mostra e que vieram depois do evento
+/// de número `after`, em ordem: mudanças que a última execução dos critérios
+/// não conferiu.
+#[must_use]
+pub fn requests_after(log: &SpecLog, after: u64) -> Vec<&SpecEvent> {
+    log.block(BlockQuery::Block(Block::Notes))
+        .into_iter()
+        .filter(|event| event.event_type == "request" && event.id > after)
+        .collect()
 }
 
 /// A escada de "qual é a spec atual": a variável de ambiente, depois a spec da
@@ -485,5 +608,97 @@ mod tests {
         assert_eq!(state.phase, None);
         assert!(!state.approved);
         assert_eq!(state, State::default());
+    }
+
+    fn criterion(id: u64) -> Value {
+        json!({"v":1,"id":id,"type":"criterion","when":"w","then":"t","proof":"p","origin":1})
+    }
+
+    fn run(id: u64, criterion: u64, result: &str) -> Value {
+        json!({"v":1,"id":id,"type":"criterion_run","criterion":criterion,"result":result,"exit":0,"ms":1})
+    }
+
+    /// O QA passa só quando cada critério que a leitura mostra tem a última
+    /// execução aprovada; um critério sem execução segura o QA, e uma spec
+    /// sem critério nunca passa.
+    #[test]
+    fn the_qa_passes_only_when_every_criterion_last_ran_green() {
+        let both = log(&[criterion(2), criterion(3), run(4, 2, "pass"), run(5, 3, "pass")]);
+        let qa_both = qa(&both);
+        assert!(qa_both.passed_all(), "{qa_both:?}");
+        assert_eq!((qa_both.criteria, qa_both.ran, qa_both.passed, qa_both.last_run), (2, 2, 2, Some(5)));
+
+        let one_unrun = qa(&log(&[criterion(2), criterion(3), run(4, 2, "pass")]));
+        assert!(!one_unrun.passed_all(), "a criterion with no run holds the QA: {one_unrun:?}");
+        assert_eq!((one_unrun.ran, one_unrun.failed), (1, 0));
+
+        let none = qa(&log(&[json!({"v":1,"id":1,"type":"note","text":"t","keys":[],"origin":1})]));
+        assert_eq!(none, Qa::default());
+        assert!(!none.passed_all(), "a spec with no criterion has nothing to claim");
+    }
+
+    /// A execução mais nova de cada critério decide: um verde depois de um
+    /// vermelho passa, e um vermelho depois de um verde segura a spec aberta.
+    #[test]
+    fn a_criterion_whose_last_run_failed_keeps_the_spec_open() {
+        let fixed = qa(&log(&[criterion(2), run(3, 2, "fail"), run(4, 2, "pass")]));
+        assert!(fixed.passed_all(), "{fixed:?}");
+        let broke = qa(&log(&[criterion(2), run(3, 2, "pass"), run(4, 2, "fail")]));
+        assert!(!broke.passed_all(), "{broke:?}");
+        assert_eq!((broke.passed, broke.failed), (0, 1));
+    }
+
+    /// A execução de um critério revisto depois dela conta para a versão nova,
+    /// mas o critério fica velho; uma execução removida não conta.
+    #[test]
+    fn a_criterion_revised_after_its_run_is_stale_and_a_removed_run_does_not_count() {
+        let revised = log(&[
+            criterion(2),
+            run(3, 2, "pass"),
+            json!({"v":1,"id":4,"type":"criterion","when":"w2","then":"t","proof":"p","origin":1,"replaces":2}),
+        ]);
+        let stale = qa(&revised);
+        assert!(stale.passed_all(), "the run still counts for the revision: {stale:?}");
+        assert_eq!(stale.stale, 1, "the run checked the text before the revision");
+
+        let removed = qa(&log(&[
+            criterion(2),
+            run(3, 2, "pass"),
+            json!({"v":1,"id":4,"type":"remove","targets":[3],"reason":"engano"}),
+        ]));
+        assert_eq!((removed.ran, removed.last_run), (0, None), "{removed:?}");
+        assert!(!removed.passed_all());
+    }
+
+    /// O veredito mais novo de cada onda decide, e a aprovação de uma onda
+    /// não esconde a reprovação de outra.
+    #[test]
+    fn the_review_takes_the_last_verdict_of_each_wave() {
+        let verdict = |id: u64, wave: u64, result: &str| {
+            json!({"v":1,"id":id,"type":"verdict","wave":wave,"result":result,"text":"t",
+                   "criteria":[{"criterion":1,"tests_rule":"r"}]})
+        };
+        assert_eq!(review(&log(&[])), Review::default());
+        assert_eq!(review(&log(&[])).word(), None);
+
+        let other_wave = review(&log(&[verdict(1, 2, "rejected"), verdict(2, 1, "approved")]));
+        assert_eq!(other_wave, Review { any: true, rejected: true });
+        assert_eq!(other_wave.word(), Some("rejected"));
+
+        let fixed = review(&log(&[verdict(1, 2, "rejected"), verdict(2, 1, "approved"), verdict(3, 2, "approved")]));
+        assert_eq!(fixed, Review { any: true, rejected: false });
+        assert_eq!(fixed.word(), Some("approved"));
+    }
+
+    /// Só os pedidos gravados depois do evento dado voltam.
+    #[test]
+    fn only_the_requests_after_the_given_event_come_back() {
+        let request = |id: u64, text: &str| {
+            json!({"v":1,"id":id,"type":"request","text":text,"keys":[],"effect":"adjust_waves","origin":1})
+        };
+        let log = log(&[request(2, "antes"), criterion(3), run(4, 3, "pass"), request(5, "depois")]);
+        let after: Vec<&str> = requests_after(&log, 4).iter().filter_map(|e| e.str_field("text")).collect();
+        assert_eq!(after, ["depois"]);
+        assert_eq!(requests_after(&log, 0).len(), 2);
     }
 }
