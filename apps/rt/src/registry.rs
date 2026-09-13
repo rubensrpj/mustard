@@ -678,7 +678,7 @@ mod tests {
             applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"))
                 .contains(&"approval_witness")
         );
-        // Nunca no lado Pre, nem numa ferramenta qualquer.
+        // Never on the Pre side, nor on any other tool.
         assert!(
             !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
                 .contains(&"approval_witness")
@@ -699,7 +699,7 @@ mod tests {
         let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"));
         assert!(ids.contains(&"clarification_observer"));
         assert!(ids.contains(&"approval_witness"));
-        // Nunca no lado Pre, nem numa ferramenta qualquer.
+        // Never on the Pre side, nor on any other tool.
         assert!(
             !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
                 .contains(&"clarification_observer")

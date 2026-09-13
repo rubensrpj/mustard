@@ -236,8 +236,8 @@ mod tests {
 
     #[test]
     fn read_without_spec_reads_the_spec_of_the_current_branch() {
-        // An inherited override answers first by design; skip rather than
-        // depend on the shell that runs the suite.
+        // Uma sobreposição herdada responde primeiro, por desenho: o teste
+        // pula, em vez de depender do shell que roda a suíte.
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
@@ -245,7 +245,7 @@ mod tests {
         let root = dir.path();
         put(root, "message", json!({"author": "user", "text": "oi"}));
         crate::shared::spec_state::stand_on_spec_branch(root, "teste");
-        // A session bound to another spec does not win over the branch.
+        // Uma sessão ligada a outra spec não vence a branch.
         crate::shared::context::bind_session_spec(root.to_str().unwrap(), "s-leitura", "outra");
 
         let report = read_for(&without_spec(root, "conversation"), Some("s-leitura")).unwrap();

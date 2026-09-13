@@ -367,7 +367,7 @@ mod tests {
         assert!(ok, "git {args:?} failed in {}", dir.display());
     }
 
-    /// Grava na spec `spec` o estado `fields`, criando a pasta dela.
+    /// Records the state `fields` on the spec `spec`, creating its folder.
     fn state(root: &Path, spec: &str, fields: Value) {
         let path = mustard_core::io::spec_events::spec_file(root, spec).expect("spec file");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("spec folder");

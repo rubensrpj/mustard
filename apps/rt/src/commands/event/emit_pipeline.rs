@@ -611,15 +611,15 @@ fn resolve_kind_base_or_exit(opts: &EmitPipelineOpts, kind: Option<&WorkKind>) -
 /// Every other kind returns immediately: they are transitions INSIDE a unit
 /// that already crossed this gate, and a read-only request that never opens a
 /// pipeline never emits `pipeline.kind` at all — so it never reaches it.
-/// Devolve as specs ATIVAS que o `--intent` desta abertura parece repetir —
-/// relatadas em `overlappingSpecs`, nunca bloqueantes (ver
-/// [`super::base_gate::overlapping_active_specs`]). Vazio para todo outro
-/// `--kind`, que não abre unidade nenhuma.
+/// Returns the ACTIVE specs the `--intent` of this opening seems to repeat —
+/// reported in `overlappingSpecs`, never blocking (see
+/// [`super::base_gate::overlapping_active_specs`]). Empty for every other
+/// `--kind`, which opens no unit.
 ///
-/// `kind_base` é a base que esta abertura vai cortar de
-/// ([`resolve_kind_base_or_exit`]) — `Some` exatamente quando `--kind` é
-/// `pipeline.kind`. Ela entra porque é essa base que a abertura atualiza a
-/// partir do `origin`: ver [`super::census_settlement`].
+/// `kind_base` is the base this opening will cut from
+/// ([`resolve_kind_base_or_exit`]) — `Some` exactly when `--kind` is
+/// `pipeline.kind`. It comes in because that is the base the opening updates
+/// from `origin`: see [`super::census_settlement`].
 fn enforce_base_gate_or_exit(opts: &EmitPipelineOpts, kind_base: Option<&str>) -> Vec<String> {
     if opts.kind != EVENT_PIPELINE_KIND {
         return Vec::new();

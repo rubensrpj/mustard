@@ -60,7 +60,7 @@ const BANK_FILES: &[&str] = &[SPEC_INDEX_FILE, LESSONS_FILE];
 /// the project's code, not the Mustard's own files git does not see.
 const HARNESS_PREFIXES: &[&str] = &[".claude/plans/", ".claude/scratch/", ".claude/.cache/"];
 
-/// Artefatos e infraestrutura, nunca código do projeto.
+/// Artefacts and infrastructure, never project code.
 const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/", "target/"];
 
 /// The path of `file_path` relative to `cwd`, with forward slashes. A relative
@@ -149,12 +149,12 @@ pub(crate) fn sensitive_pattern(path: &str) -> Option<&'static str> {
     ["id_rsa", "id_ed25519"].into_iter().find(|name| lower.contains(name))
 }
 
-/// Como a ferramenta toca o arquivo.
+/// How the tool touches the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
     /// `Read`.
     Read,
-    /// `Write`, `Edit`, `MultiEdit` ou `NotebookEdit`.
+    /// `Write`, `Edit`, `MultiEdit` or `NotebookEdit`.
     Write,
 }
 
@@ -190,19 +190,19 @@ pub(crate) enum PathClass {
     /// Harness state written before the unit exists: `.claude/plans/`,
     /// `.claude/scratch/` and `.claude/.cache/`.
     Harness,
-    /// Artefato ou infraestrutura: o resto de `.claude/`, `dist/`,
-    /// `node_modules/`, `.git/` e `target/`.
+    /// An artefact or infrastructure: the rest of `.claude/`, `dist/`,
+    /// `node_modules/`, `.git/` and `target/`.
     Artifact,
-    /// Fora da raiz do projeto.
+    /// Outside the project root.
     OutsideRepo,
-    /// Código do projeto.
+    /// Project code.
     Production,
 }
 
 /// The file a file tool is about to touch, already classified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WriteTarget {
-    /// Leitura ou escrita.
+    /// Read or write.
     pub(crate) access: Access,
     /// The path relative to the root when the file lives in it; otherwise,
     /// the path as it came, with forward slashes.
@@ -386,8 +386,8 @@ mod tests {
         }
     }
 
-    /// Cada classe, pelas cinco ferramentas de arquivo; outra ferramenta não
-    /// é classificada.
+    /// Every class, through the five file tools; another tool is not
+    /// classified.
     #[test]
     fn every_file_tool_gets_one_class_for_its_path() {
         let spec = |name: &str| PathClass::SpecFile { spec: Some(name.to_string()) };

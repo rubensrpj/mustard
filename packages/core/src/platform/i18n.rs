@@ -2419,7 +2419,7 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        // A pergunta de aprovação, a única em que a testemunha age.
+        // The approval question, the only one the witness acts on.
         assert_eq!(translate("approval.question", Locale::PtBr), "Aprovar esta spec?");
         assert_eq!(translate("approval.question", Locale::EnUs), "Approve this spec?");
         assert_eq!(translate("approval.option", Locale::PtBr), "Aprovar");

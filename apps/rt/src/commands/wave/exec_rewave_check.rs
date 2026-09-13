@@ -562,10 +562,10 @@ mod tests {
         assert!(rendered_a.contains("[[wave.epic-x.2-frontend]]"));
     }
 
-    /// Depois de o usuário juntar as ondas numa spec leve, a decomposição da
-    /// entrada da execução não as refaz: ela lê a marca que o `wave-collapse`
-    /// grava no `meta.json`, pelo gravador dele. Sem a marca, a mesma spec não
-    /// ouve essa resposta.
+    /// Once the user joins the waves into a light spec, the decomposition at
+    /// the entry into execution does not redo them: it reads the mark
+    /// `wave-collapse` writes in the `meta.json`, through that command's own
+    /// writer. Without the mark, the same spec does not get that answer.
     #[test]
     fn a_spec_whose_waves_the_user_refused_is_never_decomposed_again() {
         let spec_in = |root: &Path| {
