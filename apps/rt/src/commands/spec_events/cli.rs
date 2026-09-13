@@ -26,9 +26,11 @@ pub enum SpecEventsCmd {
     Read {
         /// The block to read, e.g. `state` or `wave-2`.
         block: String,
-        /// The spec whose file is read.
+        /// The spec whose file is read. Without it, the current spec: the
+        /// `MUSTARD_ACTIVE_SPEC` override, then the spec of the checkout's
+        /// branch, then the spec bound to the session; with none, refused.
         #[arg(long)]
-        spec: String,
+        spec: Option<String>,
         /// Keep only the events whose words or item code match this term —
         /// the conversation searched for a subject, or an item found by the
         /// code the page shows, like `MSTD-CRIT-0016`.

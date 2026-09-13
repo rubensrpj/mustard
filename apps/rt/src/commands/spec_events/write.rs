@@ -230,7 +230,7 @@ mod tests {
 
         let agreed = read_at(&ReadOpts {
             root: root.to_path_buf(),
-            spec: "teste".into(),
+            spec: Some("teste".into()),
             block: "agreed".into(),
             term: None,
         })

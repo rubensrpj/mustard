@@ -1,6 +1,10 @@
-//! `mustard-rt run read <bloco> --spec <nome>` — devolve só o bloco pedido do
-//! arquivo de eventos da spec, sem os itens removidos ou substituídos e sem o
-//! campo `search`.
+//! `mustard-rt run read <bloco> [--spec <nome>]` — devolve só o bloco pedido
+//! do arquivo de eventos da spec, sem os itens removidos ou substituídos e sem
+//! o campo `search`.
+//!
+//! Sem `--spec`, lê a spec atual, pela mesma escada de todas as portas: a
+//! variável `MUSTARD_ACTIVE_SPEC`, depois a branch do checkout, depois a spec
+//! ligada à sessão. Sem nenhuma, recusa.
 //!
 //! A saída é um JSON com um evento por linha, na ordem do arquivo:
 //!
@@ -15,24 +19,33 @@
 //! projeto, e o resto é lido.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{search_terms, shown_line, BlockQuery, Refusal, SpecEvent};
+use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
+
+use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run read`.
 pub struct ReadOpts {
     /// Qualquer pasta dentro do repositório.
     pub root: PathBuf,
-    pub spec: String,
+    /// A spec pedida; sem ela, a spec atual.
+    pub spec: Option<String>,
     pub block: String,
     pub term: Option<String>,
 }
 
-/// O núcleo testável de [`run`]: a saída pronta, ou a recusa. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run`]: a saída pronta, ou a recusa. A sessão vem
+/// do ambiente. Nunca entra em pânico.
 pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
+    read_for(opts, session_from_env().as_deref())
+}
+
+/// [`read_at`] com a sessão recebida, que é como um teste a escolhe.
+pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String, Value> {
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
@@ -41,9 +54,15 @@ pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
     let Some(query) = BlockQuery::parse(block) else {
         return Err(refuse(Refusal::UnknownBlock { found: block.to_string() }));
     };
-    let path = store::spec_file(&project.root, &opts.spec).map_err(refuse)?;
+    let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(spec) => spec.to_string(),
+        None => DiskSpecState::new(&checkout(&opts.root))
+            .active(session)
+            .ok_or_else(|| refuse(Refusal::NoCurrentSpec))?,
+    };
+    let path = store::spec_file(&project.root, &spec).map_err(refuse)?;
     let Some(log) = store::read(&path).map_err(refuse)? else {
-        return Err(refuse(Refusal::NoSpecFile { spec: opts.spec.clone() }));
+        return Err(refuse(Refusal::NoSpecFile { spec }));
     };
     let terms = opts.term.as_deref().map(search_terms).unwrap_or_default();
     let codes = log.codes();
@@ -54,10 +73,16 @@ pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
         .map(|e| shown_with_code(e, &codes))
         .collect();
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
-    Ok(render(&opts.spec, block, &events, &warnings))
+    Ok(render(&spec, block, &events, &warnings))
 }
 
-/// A linha como a leitura mostra, com o código do item (`MSTD-RULE-0005`),
+/// O checkout em que o comando roda, cuja branch diz qual é a spec atual.
+fn checkout(start: &Path) -> PathBuf {
+    let start = std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf());
+    mustard_core::io::workspace::workspace_root_or_self(&start)
+}
+
+/// A linha como a leitura mostra, com o código do item (`MSTD-<sigla>-<NNNN>`),
 /// que é o jeito de citá-lo e o endereço dele na página: o gravado na linha
 /// ou, numa linha sem código, o que a leitura dá a ela.
 fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>) -> String {
@@ -111,10 +136,14 @@ mod tests {
     fn opts(root: &std::path::Path, block: &str, term: Option<&str>) -> ReadOpts {
         ReadOpts {
             root: root.to_path_buf(),
-            spec: "teste".into(),
+            spec: Some("teste".into()),
             block: block.into(),
             term: term.map(str::to_string),
         }
+    }
+
+    fn without_spec(root: &std::path::Path, block: &str) -> ReadOpts {
+        ReadOpts { spec: None, ..opts(root, block, None) }
     }
 
     fn put(root: &std::path::Path, event_type: &str, fields: Value) -> u64 {
@@ -203,5 +232,61 @@ mod tests {
         let parsed: Value = serde_json::from_str(&report).unwrap();
         assert_eq!(parsed["count"], json!(1));
         assert_eq!(parsed["warnings"].as_array().map(Vec::len), Some(1), "{report}");
+    }
+
+    #[test]
+    fn read_without_spec_reads_the_spec_of_the_current_branch() {
+        // An inherited override answers first by design; skip rather than
+        // depend on the shell that runs the suite.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        put(root, "message", json!({"author": "user", "text": "oi"}));
+        crate::shared::spec_state::stand_on_spec_branch(root, "teste");
+        // A session bound to another spec does not win over the branch.
+        crate::shared::context::bind_session_spec(root.to_str().unwrap(), "s-leitura", "outra");
+
+        let report = read_for(&without_spec(root, "conversation"), Some("s-leitura")).unwrap();
+        let parsed: Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(parsed["spec"], json!("teste"), "the resolved name is shown: {report}");
+        assert_eq!(parsed["count"], json!(1), "{report}");
+    }
+
+    #[test]
+    fn read_without_spec_reads_the_spec_bound_to_the_session() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        put(root, "message", json!({"author": "user", "text": "oi"}));
+        crate::shared::context::bind_session_spec(root.to_str().unwrap(), "s-leitura", "teste");
+
+        let report = read_for(&without_spec(root, "conversation"), Some("s-leitura")).unwrap();
+        let parsed: Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(parsed["spec"], json!("teste"), "{report}");
+    }
+
+    #[test]
+    fn read_without_spec_and_without_a_current_spec_is_refused_in_both_languages() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+        let pt = read_for(&without_spec(root, "state"), None).unwrap_err();
+        assert_eq!(pt["ok"], json!(false));
+        assert_eq!(pt["reason"], json!("no-current-spec"));
+        assert!(pt["hint"].as_str().unwrap().starts_with("Nenhuma spec atual"), "{pt}");
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        let en = read_for(&without_spec(root, "state"), None).unwrap_err();
+        assert_eq!(en["reason"], json!("no-current-spec"));
+        assert!(en["hint"].as_str().unwrap().starts_with("No current spec"), "{en}");
     }
 }

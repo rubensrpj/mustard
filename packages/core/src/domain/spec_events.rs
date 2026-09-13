@@ -609,6 +609,9 @@ pub enum Refusal {
     UnknownBlock { found: String },
     BadSpecName { spec: String },
     NoSpecFile { spec: String },
+    /// Uma leitura sem `--spec`, e nem a variável de ambiente, nem a branch,
+    /// nem a sessão apontam uma spec.
+    NoCurrentSpec,
     /// Um tipo de evento da spec gravado sem dizer a spec.
     SpecRequired { event_type: String },
     /// A lição que `replaces` aponta não existe no banco de lições.
@@ -638,6 +641,7 @@ impl Refusal {
             Self::UnknownBlock { .. } => "unknown-block",
             Self::BadSpecName { .. } => "bad-spec-name",
             Self::NoSpecFile { .. } => "no-spec-file",
+            Self::NoCurrentSpec => "no-current-spec",
             Self::SpecRequired { .. } => "spec-required",
             Self::UnknownLesson { .. } => "unknown-lesson",
             Self::LessonOriginMissing => "lesson-origin-missing",
@@ -730,6 +734,7 @@ impl Refusal {
             Self::NoSpecFile { spec } => {
                 fill("spec_events.no_spec_file", &[("{spec}", spec.clone())])
             }
+            Self::NoCurrentSpec => fill("spec_events.no_current_spec", &[]),
             Self::SpecRequired { event_type } => {
                 fill("spec_events.spec_required", &[("{type}", event_type.clone())])
             }

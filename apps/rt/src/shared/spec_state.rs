@@ -9,8 +9,15 @@
 //! Every door that asks "which spec is this" goes through [`active_spec`], so
 //! two doors can never name different specs for the same session. A leftover
 //! `.pipeline-states/` file names nothing.
+//!
+//! [`DiskSpecState`] is the disk side of the core's `SpecState` port: that
+//! ladder, and each spec's state folded from its `spec.ndjson`.
 
-use mustard_core::domain::spec_state::resolve;
+use std::path::{Path, PathBuf};
+
+use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_state::{resolve, SpecState, State};
+use mustard_core::io::spec_events as store;
 
 use crate::shared::context;
 
@@ -33,6 +40,37 @@ pub(crate) fn active_spec(root: &str, session: Option<&str>) -> Option<String> {
     let branch = context::spec_of_checkout_branch(root);
     let bound = session.and_then(|sid| context::spec_for_session(root, sid));
     resolve(env.as_deref(), branch, bound)
+}
+
+/// The disk side of the core's [`SpecState`] port: the ladder of
+/// [`active_spec`] over the checkout at `root`, and each spec's state folded
+/// from its `spec.ndjson` (the main checkout's, when `root` is a linked
+/// worktree).
+pub(crate) struct DiskSpecState {
+    root: PathBuf,
+}
+
+impl DiskSpecState {
+    /// The port over the checkout at `root`.
+    #[must_use]
+    pub(crate) fn new(root: &Path) -> Self {
+        Self { root: root.to_path_buf() }
+    }
+}
+
+impl SpecState for DiskSpecState {
+    fn active(&self, session: Option<&str>) -> Option<String> {
+        active_spec(&self.root.to_string_lossy(), session)
+    }
+
+    fn state(&self, spec: &str) -> State {
+        self.log(spec).map_or_else(State::absent, |log| State::from_log(&log))
+    }
+
+    fn log(&self, spec: &str) -> Option<SpecLog> {
+        let path = store::spec_file(&store::spec_root(&self.root), spec).ok()?;
+        store::read(&path).ok().flatten()
+    }
 }
 
 /// Stand the checkout at `root` on the branch of `spec` — a `.git/HEAD` naming
@@ -137,5 +175,45 @@ mod tests {
         assert_eq!(active_spec(root, Some(SESSION)).as_deref(), Some("da-sessao"));
         assert_eq!(active_spec(root, Some("outra-sessao")), None);
         assert_eq!(active_spec(root, None), None);
+    }
+
+    #[test]
+    fn a_spec_without_its_event_file_has_no_state() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join("sem-arquivo")).unwrap();
+        let disk = DiskSpecState::new(dir.path());
+        assert!(disk.state("sem-arquivo").is_absent(), "no event file, no state");
+        assert!(disk.log("sem-arquivo").is_none());
+    }
+
+    #[test]
+    fn the_disk_state_folds_the_state_events_of_the_spec_file() {
+        let dir = tempdir().unwrap();
+        let path = store::spec_file(dir.path(), "com-arquivo").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let draft = |v: serde_json::Value| v.as_object().cloned().unwrap();
+        store::write(
+            &path,
+            "state",
+            draft(serde_json::json!({"phase": "plan", "branch": "feature/com-arquivo", "base": "dev"})),
+            &[],
+        )
+        .unwrap();
+        store::write(
+            &path,
+            "state",
+            draft(serde_json::json!({
+                "phase": "approved",
+                "witness": {"question": "Aprova?", "answer": "Aprovar"}
+            })),
+            &[],
+        )
+        .unwrap();
+
+        let state = DiskSpecState::new(dir.path()).state("com-arquivo");
+        assert_eq!(state.phase, Some("approved"));
+        assert!(state.approved);
+        assert_eq!(state.branch.as_deref(), Some("feature/com-arquivo"), "the branch is inherited");
+        assert_eq!(state.base.as_deref(), Some("dev"));
     }
 }

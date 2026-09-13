@@ -1209,6 +1209,14 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The spec is missing: a {type} event is written to a spec's event file. Pass \
              `--spec <name>`. Nothing was written."
         }
+        ("spec_events.no_current_spec", Locale::PtBr) => {
+            "Nenhuma spec atual: nem `MUSTARD_ACTIVE_SPEC`, nem a branch, nem a sessão apontam \
+             uma spec. Passe `--spec <nome>`."
+        }
+        ("spec_events.no_current_spec", Locale::EnUs) => {
+            "No current spec: neither `MUSTARD_ACTIVE_SPEC`, the branch nor the session names \
+             one. Pass `--spec <name>`."
+        }
 
         // Recusas do banco de lições (`domain::lessons`, `run write lesson`).
         // As vagas vêm do chamador.
@@ -2213,6 +2221,7 @@ mod tests {
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
             ("spec_events.no_spec_file", &["{spec}"][..]),
+            ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),
             ("spec_events.skipped_line", &["{line}"][..]),
             ("spec_events.duplicate_id", &["{line}", "{id}"][..]),
