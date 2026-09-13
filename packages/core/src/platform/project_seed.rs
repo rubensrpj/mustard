@@ -1487,7 +1487,7 @@ fn commit_path(root: &Path, paths: &[&str], subject: &str) -> bool {
 const ORCHESTRATOR_MARKER: &str = "# Orchestrator Rules";
 
 /// The exact `@import` line older `/scan` passes injected at the top of the
-/// project-root `CLAUDE.md` (mirrors `scan_claude::MAP_IMPORT_LINE`).
+/// project-root `CLAUDE.md`; the scan no longer writes it.
 const SCAN_MAP_IMPORT_LINE: &str = "@.claude/scan-map.md";
 
 /// Prefix of the breadcrumb line older `/scan` passes wrote into the

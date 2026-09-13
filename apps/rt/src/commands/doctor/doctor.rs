@@ -1135,6 +1135,53 @@ fn check_spec_index(root: &Path, lang: Locale) -> CheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// Check: scan-output
+// ---------------------------------------------------------------------------
+
+/// O que o scan escreve, dentro da `.claude/` do projeto.
+const SCAN_OUTPUTS: &[&str] = &["grain.model.json", "grain.dictionary.json", "grain.equivalences.json"];
+
+/// O scan só escreve fora do git: o que ele gravou não pode estar rastreado
+/// nem aparecer como arquivo novo. Um arquivo visível vira WARN com a lista,
+/// no idioma `lang`; sem git, ou sem nada gravado ainda, não há o que
+/// conferir. Só lê.
+fn check_scan_output(root: &Path, lang: Locale) -> CheckResult {
+    const NAME: &str = "scan-output";
+    let written: Vec<String> = SCAN_OUTPUTS
+        .iter()
+        .filter(|name| root.join(".claude").join(name).is_file())
+        .map(|name| format!(".claude/{name}"))
+        .collect();
+    let visible = match visible_to_git(root, &written) {
+        Some(visible) if !visible.is_empty() => visible,
+        _ => return CheckResult::ok(NAME),
+    };
+    CheckResult::warn(NAME, vec![translate("doctor.scan_output.visible", lang).replace("{paths}", &visible.join(", "))])
+}
+
+/// Os caminhos que o git vê: rastreados, ou novos e não ignorados. `None`
+/// quando o git não responde (sem git, fora de um repositório).
+fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .is_ok_and(|out| out.status.success())
+    };
+    if !git_ok(&["rev-parse", "--is-inside-work-tree"]) {
+        return None;
+    }
+    Some(
+        paths
+            .iter()
+            .filter(|p| git_ok(&["ls-files", "--error-unmatch", "--", p]) || !git_ok(&["check-ignore", "-q", "--", p]))
+            .cloned()
+            .collect(),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Check: status-consistency
 // ---------------------------------------------------------------------------
 
@@ -1448,10 +1495,14 @@ pub fn run(opts: DoctorOpts) {
                 let project = crate::commands::spec_events::project(&cwd);
                 check_spec_index(&project.root, project.lang)
             }
+            "scan-output" => {
+                let project = crate::commands::spec_events::project(&cwd);
+                check_scan_output(&project.root, project.lang)
+            }
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, inject-delivery, branch-protection, spec-index"
+                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, inject-delivery, branch-protection, spec-index, scan-output"
                 );
                 std::process::exit(1);
             }
@@ -1489,6 +1540,11 @@ pub fn run(opts: DoctorOpts) {
         {
             let project = crate::commands::spec_events::project(&cwd);
             check_spec_index(&project.root, project.lang)
+        },
+        // O que o scan escreve fica fora do git: só acusa.
+        {
+            let project = crate::commands::spec_events::project(&cwd);
+            check_scan_output(&project.root, project.lang)
         },
     ];
 
@@ -1939,6 +1995,32 @@ mod tests {
             r#"{{ "hooks": {{ "PreToolUse": [{{ "hooks": [{{ "type": "command", "command": "{command}" }}] }}] }} }}"#
         );
         write_file(&hooks_dir.join("settings.json"), &settings);
+    }
+
+    // --- scan-output tests ---
+
+    /// O mapa do scan visível para o git é acusado; excluído, passa; fora de
+    /// um repositório, não há o que conferir.
+    #[test]
+    fn the_doctor_flags_a_scan_map_that_git_can_see() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude").join("grain.model.json"), "{}").unwrap();
+        assert_eq!(check_scan_output(root, Locale::PtBr).status, Status::Ok, "not a repository");
+
+        let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output();
+        if !init.is_ok_and(|o| o.status.success()) {
+            return; // no git here: nothing the check could measure
+        }
+        let visible = check_scan_output(root, Locale::PtBr);
+        assert_eq!(visible.status, Status::Warn, "{:?}", visible.details);
+        assert!(visible.details.join(" ").contains(".claude/grain.model.json"), "{:?}", visible.details);
+        let en = check_scan_output(root, Locale::EnUs);
+        assert!(en.details.join(" ").contains("visible to git"), "{:?}", en.details);
+
+        std::fs::write(root.join(".git").join("info").join("exclude"), "**/.claude/grain.model.json\n").unwrap();
+        assert_eq!(check_scan_output(root, Locale::PtBr).status, Status::Ok);
     }
 
     // --- spec-index tests ---
