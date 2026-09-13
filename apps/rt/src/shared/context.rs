@@ -347,22 +347,19 @@ fn is_placeholder_session(id: &str) -> bool {
 ///
 /// Resolution order:
 ///
-/// 1. `MUSTARD_SESSION_ID` env var — matching the JS scripts' lookup.
-/// 2. `CLAUDE_SESSION_ID` env var.
-/// 3. Newest `.claude/.session/<id>/` directory by mtime — the filesystem
-///    fallback. `run`-face emitters never receive a `HookInput`, so when neither
-///    env var is set they used to land on `"unknown"`; the `SessionStart` hook
-///    has already created `.claude/.session/<id>/`, so the newest one by
-///    mtime recovers the real id.
+/// 1. The session the environment names, through the one reader of the
+///    session variables ([`crate::shared::spec_state::session_from_env`]).
+/// 2. Newest `.claude/.session/<id>/` directory by mtime — the filesystem
+///    fallback. `run`-face emitters never receive a `HookInput`, so when no
+///    session variable is set they used to land on `"unknown"`; the
+///    `SessionStart` hook has already created `.claude/.session/<id>/`, so the
+///    newest one by mtime recovers the real id.
 ///    Placeholder buckets ([`PLACEHOLDER_SESSION_IDS`]) never win this scan —
 ///    they are sinks other writers invented, not sessions any hook reads.
-/// 4. `"unknown"` as a last resort.
+/// 3. `"unknown"` as a last resort.
 #[must_use]
 pub fn session_id() -> String {
-    if let Some(id) = std::env::var("MUSTARD_SESSION_ID").ok().filter(|s| !s.is_empty()) {
-        return id;
-    }
-    if let Some(id) = std::env::var("CLAUDE_SESSION_ID").ok().filter(|s| !s.is_empty()) {
+    if let Some(id) = crate::shared::spec_state::session_from_env() {
         return id;
     }
     // Filesystem fallback: newest `.claude/.session/<id>/` dir. The `.session/`
@@ -438,7 +435,12 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 ///
 /// Reads `.git/HEAD` directly rather than spawning `git`: this runs inside a
 /// PreToolUse hook, once per Write/Edit, and a subprocess per file edit is a
-/// cost the answer does not justify. Fail-open at every step.
+/// cost the answer does not justify. In the main checkout no `git` runs at
+/// all. In a linked worktree, where `.git` is a file, the HEAD is still read
+/// through its `gitdir`, but the main checkout — where the `mustard.json` and
+/// the spec folders live — is asked of `git` through
+/// `workspace::linked_worktree_main`, two or three `git rev-parse` calls per
+/// edit there. Fail-open at every step.
 #[must_use]
 pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
     let project = Path::new(project_dir_path);

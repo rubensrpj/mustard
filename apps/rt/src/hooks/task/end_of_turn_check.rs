@@ -134,7 +134,7 @@ mod tests {
     use super::*;
     use crate::commands::event::pending::{pending_at, PendingOpts};
     use crate::hook_output::hook_specific_output;
-    use crate::commands::spec_events::write::record_phase;
+    use crate::commands::spec_events::write::record_phase_by;
     use crate::hooks::task::pending_gate::seed_spec;
     use crate::registry::Registry;
     use mustard_core::domain::model::contract::Outcome;
@@ -203,7 +203,8 @@ mod tests {
     /// [`project_with_open_items`] nasceram, com a sessão `session` ligada a ela.
     fn close_spec_with_both_items(root: &Path, session: &str) {
         seed_spec(root, "trava", &[1, 2], session);
-        assert!(record_phase(root, "trava", "closed"), "the bridge records the close");
+        // Sem sessão: a do processo de teste, vinda do ambiente, não entra.
+        assert!(record_phase_by(root, "trava", "closed", None), "the bridge records the close");
     }
 
     /// Um projeto com as pendências abertas "Humanize" e "HTML padrao da spec".

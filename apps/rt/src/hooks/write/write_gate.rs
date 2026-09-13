@@ -22,9 +22,11 @@
 //!    descartável. Sem `git.flow`, nenhuma branch é base; o portão nunca
 //!    pergunta ao git qual é a branch padrão.
 //!
-//! Uma spec sem `spec.ndjson` não tem estado: é uma branch que o Mustard não
-//! abriu, e as regras da aprovação e da branch se calam. O portão não corta
-//! branch nenhuma: o único corte é o que o `spec-draft` faz.
+//! Uma spec sem `spec.ndjson` e sem o `meta.json` do `spec-draft` não tem
+//! estado: é uma branch que o Mustard não abriu, e as regras da aprovação e
+//! da branch se calam. Uma spec do `spec-draft` que ainda não tem o arquivo,
+//! aberta antes dele ou com ele apagado, conta como em plano, e trava. O
+//! portão não corta branch nenhuma: o único corte é o que o `spec-draft` faz.
 //!
 //! ## Duas raízes
 //!
@@ -55,7 +57,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use crate::commands::event::work_branch::current_branch;
 use crate::commands::git_settle::main_checkout_root;
 use crate::shared::paths::{Access, PathClass, WriteTarget};
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::{lock_state, DiskSpecState};
 
 /// O portão de escrita: todas as [`RULES`], e a primeira resposta vence.
 pub struct WriteGate;
@@ -101,7 +103,7 @@ impl WriteContext {
         if !is_repo_work(&target.class) {
             return at;
         }
-        at.state = at.spec.as_deref().and_then(|spec| disk.state(spec));
+        at.state = at.spec.as_deref().and_then(|spec| lock_state(Path::new(root), spec));
         let tree = local_tree_of(input, root);
         at.current_branch = ctx
             .config
@@ -658,8 +660,22 @@ mod tests {
         }
     }
 
-    /// Uma spec sem `spec.ndjson` é uma branch que o Mustard não abriu:
-    /// nem a aprovação nem a branch da spec travam nada nela.
+    /// Uma spec do `spec-draft` sem o `spec.ndjson`, aberta antes do arquivo
+    /// de eventos ou com ele apagado, conta como em plano, e trava.
+    #[test]
+    fn a_drafted_spec_without_its_event_file_is_locked() {
+        let dir = project("{}");
+        let root = dir.path();
+        stand_on_spec_branch(root, "x");
+        std::fs::write(root.join(".claude").join("spec").join("x").join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#)
+            .expect("meta");
+        let expected = say("write_gate.not_approved", lang(root), &[("{spec}", "x"), ("{file}", "src/main.rs")]);
+        assert_eq!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Deny { reason: expected });
+    }
+
+    /// Uma pasta de spec sem `spec.ndjson` e sem `meta.json` é uma branch que
+    /// o Mustard não abriu: nem a aprovação nem a branch da spec travam nada
+    /// nela.
     #[test]
     fn a_branch_the_mustard_did_not_open_is_never_trapped() {
         let dir = project(DEV_MAIN);

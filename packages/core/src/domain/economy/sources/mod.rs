@@ -34,7 +34,7 @@ pub mod rtk;
 /// `project_path` is mandatory — it is the key the writer uses to bind the
 /// record to the right `SQLite` database (and the dashboard uses to scope
 /// queries). `session_id` is best-effort: Claude Code provides it in the
-/// `CLAUDE_SESSION_ID` env var when a session is active; adapters set it to
+/// `CLAUDE_CODE_SESSION_ID` env var when a session is active; adapters set it to
 /// the resolved value if available, `None` otherwise.
 ///
 /// Kept deliberately small. Future ingest signals (wave id, spec id) would

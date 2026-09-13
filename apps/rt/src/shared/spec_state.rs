@@ -22,14 +22,33 @@ use serde_json::Value;
 
 use crate::shared::context;
 
-/// The session id the `run` face was handed through the environment:
-/// `MUSTARD_SESSION_ID`, then `CLAUDE_SESSION_ID`. Never a guess from the
-/// newest session folder, which could name another session's spec.
+/// As variáveis de ambiente que dizem a sessão, na ordem em que valem: a do
+/// Mustard, a que o Claude Code põe no ambiente dos comandos, e a antiga. O
+/// único lugar que as lê.
+const SESSION_VARS: &[&str] = &["MUSTARD_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"];
+
+/// The session id the `run` face was handed through the environment, by the
+/// order of [`SESSION_VARS`]. Never a guess from the newest session folder,
+/// which could name another session's spec.
+///
+/// Nos testes unitários, a sessão do ambiente de quem roda a suíte nunca
+/// entra: o Claude Code põe a dele no ambiente dos comandos, e um teste que
+/// fecha uma spec ganharia um dono que não escolheu. A ordem das variáveis é
+/// provada pela função pura [`session_from`].
 #[must_use]
 pub(crate) fn session_from_env() -> Option<String> {
-    ["MUSTARD_SESSION_ID", "CLAUDE_SESSION_ID"].iter().find_map(|key| {
-        std::env::var(key).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
-    })
+    if cfg!(test) {
+        return None;
+    }
+    session_from(|key| std::env::var(key).ok())
+}
+
+/// A sessão que `var` diz, pela ordem de [`SESSION_VARS`]; uma variável em
+/// branco não conta.
+fn session_from(var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    SESSION_VARS
+        .iter()
+        .find_map(|key| var(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
 }
 
 /// The current spec for `session` in the project at `root`, fail-open `None`:
@@ -82,6 +101,18 @@ impl SpecState for DiskSpecState {
 #[must_use]
 pub(crate) fn approved(root: &Path, spec: &str) -> bool {
     DiskSpecState::new(root).state(spec).is_some_and(|state| state.approved)
+}
+
+/// O estado que a trava da aprovação lê: o do `spec.ndjson`; numa spec aberta
+/// pelo `spec-draft` que ainda não tem o arquivo, aberta antes dele ou com ele
+/// apagado, a fase de plano, sem branch. `None` só numa branch que o Mustard
+/// não abriu: sem arquivo de eventos e sem o `meta.json` do rascunho.
+#[must_use]
+pub(crate) fn lock_state(root: &Path, spec: &str) -> Option<State> {
+    DiskSpecState::new(root).state(spec).or_else(|| {
+        crate::commands::spec_events::pages::drafted_by_spec_draft(&store::spec_root(root), spec)
+            .then(|| State { phase: Some("plan"), ..State::default() })
+    })
 }
 
 /// A aprovação que vale de uma spec: a pergunta, a opção que o usuário
@@ -221,6 +252,59 @@ mod tests {
         spec_with_md(root, "da-sessao");
         context::bind_session_spec(root_str, SESSION, "da-sessao");
         assert_all_name(root_str, "da-sessao");
+    }
+
+    /// A sessão do ambiente vem da primeira variável dita, na ordem: a do
+    /// Mustard, a que o Claude Code põe no ambiente dos comandos, e a antiga.
+    /// Uma variável em branco não conta.
+    #[test]
+    fn the_session_comes_from_the_first_variable_set() {
+        fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+            move |key| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| (*v).to_string())
+        }
+        assert_eq!(session_from(env(&[("MUSTARD_SESSION_ID", "m")])).as_deref(), Some("m"));
+        assert_eq!(session_from(env(&[("CLAUDE_CODE_SESSION_ID", "cc")])).as_deref(), Some("cc"));
+        assert_eq!(session_from(env(&[("CLAUDE_SESSION_ID", "old")])).as_deref(), Some("old"));
+        let all = env(&[("MUSTARD_SESSION_ID", "m"), ("CLAUDE_CODE_SESSION_ID", "cc"), ("CLAUDE_SESSION_ID", "old")]);
+        assert_eq!(session_from(all).as_deref(), Some("m"));
+        let claude = env(&[("CLAUDE_CODE_SESSION_ID", "cc"), ("CLAUDE_SESSION_ID", "old")]);
+        assert_eq!(session_from(claude).as_deref(), Some("cc"));
+        let blank = env(&[("MUSTARD_SESSION_ID", "  "), ("CLAUDE_CODE_SESSION_ID", "cc")]);
+        assert_eq!(session_from(blank).as_deref(), Some("cc"));
+        assert_eq!(session_from(env(&[])), None);
+    }
+
+    /// As variáveis de sessão são lidas num lugar só: nenhum outro arquivo de
+    /// produção as nomeia fora de comentário.
+    #[test]
+    fn every_session_variable_is_read_in_one_place() {
+        fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for dir in ["apps/rt/src", "apps/cli/src", "packages/core/src", "apps/dashboard/server/src"] {
+            sources(&repo.join(dir), &mut files);
+        }
+        let home = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("shared").join("spec_state.rs");
+        let mut hits = Vec::new();
+        for path in files.iter().filter(|p| std::fs::canonicalize(p).ok() != std::fs::canonicalize(&home).ok()) {
+            let body = std::fs::read_to_string(path).unwrap_or_default();
+            let production = body.split("#[cfg(test)]").next().unwrap_or_default();
+            for line in production.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                if SESSION_VARS.iter().any(|var| line.contains(var)) {
+                    hits.push(format!("{}: {}", path.display(), line.trim()));
+                }
+            }
+        }
+        assert!(hits.is_empty(), "a session variable is read outside its one reader:\n{}", hits.join("\n"));
     }
 
     #[test]

@@ -221,7 +221,7 @@ pub(crate) fn seed_spec(root: &Path, spec: &str, born: &[u64], session: &str) {
 mod tests {
     use super::*;
     use crate::commands::event::pending::{pending_at, Charge, PendingOpts};
-    use crate::commands::spec_events::write::{record_phase, record_phase_by};
+    use crate::commands::spec_events::write::record_phase_by;
     use crate::hooks::task::end_of_turn_check::run_rules;
     use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
     use serde_json::json;
@@ -278,7 +278,8 @@ mod tests {
     /// `session` e fechada pela ponte.
     fn closed_spec(root: &Path, born: &[u64], session: &str) {
         seed_spec(root, SPEC, born, session);
-        assert!(record_phase(root, SPEC, "closed"), "the bridge records the close");
+        // Sem sessão: a do processo de teste, vinda do ambiente, não entra.
+        assert!(record_phase_by(root, SPEC, "closed", None), "the bridge records the close");
     }
 
     /// A regra das pendências sozinha, como a conferência do fim da resposta
@@ -486,7 +487,7 @@ mod tests {
         repo_on(root, "feature/trava");
         add_items(root, &["Humanize"]);
         seed_spec(root, SPEC, &[1], "");
-        assert!(record_phase(root, SPEC, "delivered"), "the merge is recorded");
+        assert!(record_phase_by(root, SPEC, "delivered", None), "the merge is recorded");
         git(root, &["checkout", "-q", "-b", "dev"]);
         assert_eq!(crate::shared::spec_state::active_spec(&root.to_string_lossy(), Some("s-nova")), None);
 
@@ -504,7 +505,7 @@ mod tests {
         let root = dir.path();
         seed_spec(root, SPEC, &[1], "s-solta");
         crate::shared::context::unbind_session_spec(&root.to_string_lossy(), "s-solta");
-        assert!(record_phase(root, SPEC, "closed"));
+        assert!(record_phase_by(root, SPEC, "closed", None));
 
         match verdict(root, &stop("s-solta", "Spec fechada.")) {
             Verdict::Deny { reason } => assert!(reason.contains("Humanize"), "{reason}"),
@@ -528,7 +529,7 @@ mod tests {
         add_items(&main, &["Humanize"]);
         seed_spec(&main, SPEC, &[1], "");
 
-        assert!(record_phase(&tree, SPEC, "closed"), "the close is recorded from the worktree");
+        assert!(record_phase_by(&tree, SPEC, "closed", None), "the close is recorded from the worktree");
         let omits = "Spec fechada.";
         match verdict(&main, &stop("s-tree", omits)) {
             Verdict::Deny { reason } => assert!(reason.contains("Humanize"), "{reason}"),
@@ -639,11 +640,11 @@ mod tests {
         let running = json!({ "phase": "running" }).as_object().cloned().expect("object");
         mustard_core::io::spec_events::write(&path, "state", running, &[]).expect("reopen");
         assert_eq!(verdict(root, &stop("s-again", omits)), Verdict::Allow, "a reopened spec charges nothing");
-        assert!(record_phase(root, SPEC, "closed"), "closed again");
+        assert!(record_phase_by(root, SPEC, "closed", None), "closed again");
         assert!(verdict(root, &stop("s-again", omits)).is_blocking(), "a second close charges again");
         assert_eq!(verdict(root, &stop("s-again", cites)), Verdict::Allow);
 
-        assert!(record_phase(root, SPEC, "delivered"), "the merge");
+        assert!(record_phase_by(root, SPEC, "delivered", None), "the merge");
         assert!(verdict(root, &stop("s-again", omits)).is_blocking(), "the merge charges again");
     }
 
