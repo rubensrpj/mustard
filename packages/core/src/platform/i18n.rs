@@ -1294,6 +1294,24 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              and nothing was written: the binary writes the criteria runs when it runs the QA, and \
              the verdict when it records the review."
         }
+        ("spec_events.criteria_from_spec_md", Locale::PtBr) => {
+            "Os critérios da spec {spec} vêm do spec.md, e nada foi gravado: o `run write` não \
+             grava, não tira nem revê um critério dela. Para acrescentar um critério, use \
+             `mustard-rt run ac-add`; para trocar o comando de um, `mustard-rt run ac-amend`."
+        }
+        ("spec_events.criteria_from_spec_md", Locale::EnUs) => {
+            "The criteria of the spec {spec} come from its spec.md, and nothing was written: \
+             `run write` does not write, remove or revise one of them. To add a criterion, use \
+             `mustard-rt run ac-add`; to change the command of one, `mustard-rt run ac-amend`."
+        }
+        ("spec_events.binary_author", Locale::PtBr) => {
+            "O autor `binary` fica para as gravações de dentro do binário, e nada foi gravado: o \
+             `run write` grava com o autor de quem escreve, `assistant` (o padrão) ou `user`."
+        }
+        ("spec_events.binary_author", Locale::EnUs) => {
+            "The author `binary` is kept for the writes made inside the binary, and nothing was \
+             written: `run write` records the author who writes, `assistant` (the default) or `user`."
+        }
         ("spec_events.drafted_spec", Locale::PtBr) => {
             "A spec {spec} tem o spec.md escrito pelo spec-draft: a página e o .md não são refeitos \
              do arquivo de eventos, para não apagar o texto da spec."
@@ -2460,6 +2478,8 @@ mod tests {
             ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
+            ("spec_events.criteria_from_spec_md", &["{spec}"][..]),
+            ("spec_events.binary_author", &[][..]),
             ("spec_events.drafted_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),

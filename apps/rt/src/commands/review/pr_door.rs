@@ -1390,6 +1390,45 @@ mod tests {
         assert_eq!(after["open"][0]["became"], json!("outra"));
     }
 
+    /// The verdict of a wave joins the last review of each subproject:
+    /// `apps/a` rejected and then `apps/b` approved leave the wave rejected,
+    /// and an approval with no subproject does not cover a subproject's
+    /// rejection. Once `apps/a` approves too, the wave approves.
+    #[test]
+    fn the_verdict_of_a_wave_joins_the_last_review_of_each_subproject() {
+        use crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state;
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("unit-j");
+        std::fs::create_dir_all(&spec_dir).expect("spec dir");
+        std::fs::write(spec_dir.join("spec.md"), "# J\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `cd .`\n")
+            .expect("spec");
+        let state = json!({ "phase": "running" });
+        mustard_core::io::spec_events::write(
+            &spec_dir.join("spec.ndjson"),
+            "state",
+            state.as_object().cloned().expect("object"),
+            &[],
+        )
+        .expect("state");
+
+        review_result::record_review(root, "unit-j", "rejected", 1, Some("apps/a"), None);
+        review_result::record_review(root, "unit-j", "approved", 0, Some("apps/b"), None);
+        assert_eq!(recorded_verdict(root, "unit-j").as_deref(), Some("rejected"), "b does not hide a");
+        assert!(read_review_qa_state(root, "unit-j").2, "the resume goes back to the review");
+
+        review_result::record_review(root, "unit-j", "approved", 0, None, None);
+        assert_eq!(
+            recorded_verdict(root, "unit-j").as_deref(),
+            Some("rejected"),
+            "an approval with no subproject counts only when it is the only one"
+        );
+
+        review_result::record_review(root, "unit-j", "approved", 0, Some("apps/a"), None);
+        assert_eq!(recorded_verdict(root, "unit-j").as_deref(), Some("approved"));
+        assert!(!read_review_qa_state(root, "unit-j").2);
+    }
+
     /// O veredito do `review-result` chega ao merge pelo arquivo da spec: com
     /// a revisão reprovada o merge pergunta, e aprovada depois, ele segue sem
     /// perguntar.

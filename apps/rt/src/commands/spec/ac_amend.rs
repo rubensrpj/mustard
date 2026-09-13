@@ -1033,6 +1033,10 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         }
     }
     rewritten.sort();
+    // The amended AC gets a new version of its criterion in the spec file,
+    // with the new command, through the one function every door that touches
+    // the ACs goes through.
+    crate::commands::spec_events::write::sync_criteria(root, &opts.spec);
 
     // WHERE the red came from travels on the CRITERION's record, not only in
     // the amendment history — the approval gate reads `criteria`, and a gate

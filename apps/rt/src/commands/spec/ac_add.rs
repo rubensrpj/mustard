@@ -509,6 +509,9 @@ pub(crate) fn add(root: &Path, opts: &AcAddOpts) -> AcAddReport {
             written.push(ac_negative_check::repo_relative(root, &path));
         }
     }
+    // The new AC gets its criterion in the spec file, through the one function
+    // every door that touches the ACs goes through.
+    crate::commands::spec_events::write::sync_criteria(root, &opts.spec);
     // WHICH wave is judged by it — nobody yet, and this door does not decide
     // it. With waves on disk the criterion is in the union QA executes and in
     // no wave's `satisfies:` line, so no dispatched `## ACCEPTANCE` shows it:

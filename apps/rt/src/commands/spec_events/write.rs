@@ -39,7 +39,10 @@
 //!
 //! Este comando também não grava a execução de um critério (`criterion_run`)
 //! nem o veredito (`verdict`), nem tira ou revê um deles: quem os grava é o
-//! binário, quando roda o QA ([`record_run`]) e quando registra a revisão.
+//! binário, quando roda o QA ([`record_run`]) e quando registra a revisão. Numa
+//! spec cujo `spec.md` é o documento, os critérios vêm dos ACs
+//! ([`sync_criteria`]), e ele não grava, não tira nem revê um `criterion`. O
+//! autor `binary` é só das gravações de dentro do binário.
 //!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
 //! fluxo e da testemunha da aprovação. As portas que gravam `state` são três,
@@ -50,10 +53,11 @@
 //! também são conferidas: nenhuma delas muda o estado, nem removendo nem
 //! revendo um `state`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::LESSON;
-use mustard_core::domain::spec_events::{type_spec, Refusal, SpecLog, PHASES};
+use mustard_core::domain::spec_events::{type_spec, Refusal, SpecEvent, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{birth_event, phase_write_allowed, PhaseWriter, SpecState, State};
 use mustard_core::io::{lessons, spec_events as store};
@@ -99,6 +103,9 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         }
         Err(e) => return refuse(Refusal::NotAnObject { detail: e.to_string() }),
     };
+    if draft.get("author").and_then(Value::as_str).map(str::trim) == Some("binary") {
+        return refuse(Refusal::BinaryAuthor);
+    }
     let event_type = opts.event_type.trim();
     if event_type == LESSON {
         return write_lesson(&project, opts.spec.as_deref(), draft);
@@ -116,6 +123,9 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     }
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
+    }
+    if event_type == "criterion" && super::pages::drafted_by_spec_draft(&project.root, spec) {
+        return refuse(Refusal::CriteriaFromSpecMd { spec: spec.trim().to_string() });
     }
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
         Ok(Recorded { written, pages }) => {
@@ -204,7 +214,7 @@ fn record_in(
         event_type,
         draft,
         &roots,
-        |before, after| phase_rule(&name, before, after, carried.as_deref(), replaces, by),
+        |before, after| phase_rule(&name, before, after, carried.as_deref(), replaces, by, drafted),
         |log| {
             if !drafted {
                 pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
@@ -228,6 +238,7 @@ fn phase_rule(
     carried: Option<&str>,
     replaces: Option<u64>,
     by: Option<PhaseWriter>,
+    document: bool,
 ) -> Result<(), Refusal> {
     let (was, now) = (State::from_log(before), State::from_log(after));
     let revised = replaces.and_then(|id| before.get(id)).and_then(|event| event.str_field("phase")).map(str::trim);
@@ -235,6 +246,11 @@ fn phase_rule(
     let Some(by) = by else {
         if let Some(event_type) = BINARY_ONLY.iter().find(|t| visible_of(before, t) != visible_of(after, t)) {
             return Err(Refusal::BinaryOnlyType { event_type: (*event_type).to_string(), spec: spec.to_string() });
+        }
+        // Os critérios de uma spec cujo `spec.md` é o documento vêm dos ACs:
+        // o modelo não os tira nem os revê.
+        if document && visible_of(before, "criterion") != visible_of(after, "criterion") {
+            return Err(Refusal::CriteriaFromSpecMd { spec: spec.to_string() });
         }
         return if was == now { Ok(()) } else { Err(Refusal::StateByFlowOnly { spec: spec.to_string() }) };
     };
@@ -292,31 +308,49 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Optio
     }
 }
 
-/// Os critérios da spec `spec`, vista de `start`, tirados dos ACs do `spec.md`
-/// quando o `spec.ndjson` ainda não tem nenhum `criterion`: cada AC vira um
-/// `criterion` gravado pelo binário, com o id do AC no `label` e o comando no
-/// `proof`. É a ponte das specs do `spec-draft` até os gravadores definitivos:
-/// a execução dos critérios e o veredito precisam de critérios no arquivo.
-/// Uma spec que já tem critério, ou que não tem arquivo de eventos, fica como
-/// está, e por isso a função nunca grava duas vezes na mesma spec. Devolve
-/// quantos critérios gravou.
-pub(crate) fn materialize_criteria(start: &Path, spec: &str) -> usize {
+/// Os critérios da spec `spec`, vista de `start`, acertados com os ACs do
+/// `spec.md` quando ele é o documento da spec: cada AC tem o seu `criterion`,
+/// casado pelo id do AC, que fica no `label`. O AC sem critério ganha um; o AC
+/// cujo comando mudou ganha uma versão nova do critério, com o comando novo;
+/// o critério que não é de nenhum AC sai da leitura. Tudo pelo binário, pela
+/// mesma gravação do `run write`.
+///
+/// É a ponte das specs do `spec-draft` até os gravadores definitivos, e a
+/// função única de quem mexe nos critérios dessas specs: o `qa-run`, o
+/// `review-result`, o `ac-add` e o `ac-amend` passam por aqui. Numa spec já
+/// acertada, não grava nada. Devolve, para cada id de AC (em maiúsculas), o
+/// número do critério vigente; vazio sem arquivo de eventos ou sem ACs.
+pub(crate) fn sync_criteria(start: &Path, spec: &str) -> BTreeMap<String, u64> {
     use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items, spec_file_for};
+    let mut current = BTreeMap::new();
     let Some(log) = DiskSpecState::new(start).log(spec) else {
-        return 0;
+        return current;
     };
-    if log.visible().iter().any(|event| event.event_type == "criterion") {
-        return 0;
-    }
     let Some(items) = spec_file_for(&store::spec_root(start), spec)
         .and_then(|file| std::fs::read_to_string(file).ok())
         .and_then(|markdown| extract_ac_section(&markdown))
         .map(|section| parse_ac_items(&section))
     else {
-        return 0;
+        return current;
     };
-    let mut written = 0;
-    for item in items {
+    let unquoted = |text: &str| text.trim().trim_matches('`').trim().to_string();
+    let criteria: Vec<&SpecEvent> = log.visible().into_iter().filter(|event| event.event_type == "criterion").collect();
+    let recorded: BTreeMap<String, (u64, String)> = criteria
+        .iter()
+        .filter_map(|event| {
+            let proof = unquoted(event.str_field("proof").unwrap_or_default());
+            event.str_field("label").map(|label| (ac_key(label), (event.id, proof)))
+        })
+        .collect();
+    for item in &items {
+        let key = ac_key(&item.id);
+        let found = recorded.get(&key);
+        if let Some((id, proof)) = found
+            && *proof == unquoted(&item.command)
+        {
+            current.insert(key, *id);
+            continue;
+        }
         let (when, then) = split_statement(&item.statement, &item.id);
         let mut draft = Map::new();
         draft.insert("author".to_string(), json!("binary"));
@@ -324,11 +358,46 @@ pub(crate) fn materialize_criteria(start: &Path, spec: &str) -> usize {
         draft.insert("when".to_string(), json!(when));
         draft.insert("then".to_string(), json!(then));
         draft.insert("proof".to_string(), json!(item.command));
-        if record(start, spec, "criterion", draft, PhaseWriter::Binary).is_ok() {
-            written += 1;
+        if let Some((old, _)) = found {
+            draft.insert("replaces".to_string(), json!(old));
+        }
+        if let Ok(written) = record(start, spec, "criterion", draft, PhaseWriter::Binary) {
+            current.insert(key, written.written.id);
         }
     }
-    written
+    // O critério que não é de nenhum AC não tem como receber execução: sai da
+    // leitura, e o QA não fica preso nele.
+    let orphans: Vec<u64> = criteria
+        .iter()
+        .filter(|event| event.str_field("label").is_none_or(|label| !current.contains_key(&ac_key(label))))
+        .map(|event| event.id)
+        .collect();
+    if !orphans.is_empty() {
+        let mut draft = Map::new();
+        draft.insert("author".to_string(), json!("binary"));
+        draft.insert("targets".to_string(), json!(orphans));
+        draft.insert("reason".to_string(), json!("critério fora dos ACs do spec.md"));
+        let _ = record(start, spec, "remove", draft, PhaseWriter::Binary);
+    }
+    current
+}
+
+/// O id de um AC como chave de casamento: sem espaços nas pontas e em
+/// maiúsculas.
+fn ac_key(id: &str) -> String {
+    id.trim().to_ascii_uppercase()
+}
+
+/// O veredito que a revisão de um subprojeto deu, lido de um evento
+/// `verdict`: o da ponte traz o subprojeto no `label` e o veredito dele nos
+/// critérios; um veredito sem `label` vale pelo resultado.
+fn own_approval(event: &SpecEvent) -> bool {
+    if event.str_field("label").is_some()
+        && let Some(items) = event.fields.get("criteria").and_then(Value::as_array)
+    {
+        return !items.is_empty() && items.iter().all(|c| c.get("tests_rule") == Some(&Value::Bool(true)));
+    }
+    event.str_field("result").map(str::trim) == Some("approved")
 }
 
 /// A frase de um AC partida em "quando" e "então", pela vírgula antes de
@@ -347,13 +416,17 @@ fn split_statement(statement: &str, id: &str) -> (String, String) {
     (text.to_string(), text.to_string())
 }
 
-/// A ponte até o gravador definitivo da revisão: grava o veredito `verdict`
-/// (`approved` ou `rejected`) da revisão do subprojeto `subproject` em cada
-/// onda que ele toca, pelas mesmas ondas e subprojetos do plano de despacho,
-/// ou em todas as ondas quando não há subprojeto ou quando ele não casa com
-/// nenhuma. Uma spec sem ondas tem a onda 1. Antes, tira os critérios do
-/// `spec.md` se ainda faltarem; o veredito leva todos, conferidos quando ele
-/// aprova. Devolve quantas ondas receberam o veredito.
+/// A ponte até o gravador definitivo da revisão: grava o veredito da revisão
+/// do subprojeto `subproject` em cada onda que ele toca, pelas mesmas ondas e
+/// subprojetos do plano de despacho, ou em todas as ondas quando não há
+/// subprojeto ou quando ele não casa com nenhuma. Uma spec sem ondas tem a
+/// onda 1. Antes, acerta os critérios com os ACs do `spec.md`.
+///
+/// Em cada onda, o resultado gravado junta o último veredito de cada
+/// subprojeto daquela onda com este: basta um reprovado para a onda ficar
+/// reprovada, e o veredito sem subprojeto só conta quando é o único. O evento
+/// leva o subprojeto no `label` e o veredito dele nos critérios, conferidos
+/// quando ele aprova. Devolve quantas ondas receberam o veredito.
 pub(crate) fn record_verdict(
     start: &Path,
     spec: &str,
@@ -365,7 +438,7 @@ pub(crate) fn record_verdict(
     if !matches!(verdict, "approved" | "rejected") {
         return 0;
     }
-    materialize_criteria(start, spec);
+    sync_criteria(start, spec);
     let Some(log) = DiskSpecState::new(start).log(spec) else {
         return 0;
     };
@@ -396,16 +469,27 @@ pub(crate) fn record_verdict(
         (true, false) => all,
         (true, true) => std::iter::once(1).collect(),
     };
-    let text = format!(
-        "review-result: {verdict}, {critical} critical, subproject {}",
-        subproject.unwrap_or(".")
-    );
+    let key = subproject.unwrap_or(".").to_string();
+    let text = format!("review-result: {verdict}, {critical} critical, subproject {key}");
     let mut written = 0;
     for wave in waves {
+        // O último veredito de cada subprojeto desta onda, e o deste.
+        let mut last: BTreeMap<String, (u64, bool)> = BTreeMap::new();
+        for event in log.visible().into_iter().filter(|e| e.event_type == "verdict" && e.wave() == Some(wave)) {
+            let sub = event.str_field("label").map(str::trim).filter(|s| !s.is_empty()).unwrap_or(".").to_string();
+            let entry = last.entry(sub).or_insert((event.id, own_approval(event)));
+            if event.id >= entry.0 {
+                *entry = (event.id, own_approval(event));
+            }
+        }
+        last.insert(key.clone(), (u64::MAX, approved));
+        let real = last.keys().any(|sub| sub != ".");
+        let joined = last.iter().filter(|(sub, _)| !(real && sub.as_str() == ".")).all(|(_, (_, ok))| *ok);
         let mut draft = Map::new();
         draft.insert("author".to_string(), json!("review"));
+        draft.insert("label".to_string(), json!(key));
         draft.insert("wave".to_string(), json!(wave));
-        draft.insert("result".to_string(), json!(verdict));
+        draft.insert("result".to_string(), json!(if joined { "approved" } else { "rejected" }));
         draft.insert("text".to_string(), json!(text));
         draft.insert("criteria".to_string(), json!(criteria));
         if record(start, spec, "verdict", draft, PhaseWriter::Binary).is_ok() {
@@ -619,6 +703,33 @@ mod tests {
         assert!(root.join(".claude").join("spec").join("teste").join("spec.ndjson").is_file());
     }
 
+    /// O autor `binary` é só das gravações de dentro do binário, e numa spec
+    /// cujo `spec.md` é o documento os critérios vêm dos ACs: o `run write`
+    /// recusa gravar, tirar e rever um `criterion` dela.
+    #[test]
+    fn run_write_refuses_the_binary_author_and_the_criteria_of_a_drafted_spec() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let msg = write(root, "message", r#"{"author":"user","text":"oi"}"#)["id"].as_u64().unwrap();
+        let decision = r#"{"author":"binary","text":"t","keys":["k"],"why":"w"}"#;
+        assert_eq!(write(root, "decision", decision)["reason"], json!("binary-author"));
+
+        let criterion = format!(r#"{{"when":"w","then":"t","proof":"cd .","origin":{msg}}}"#);
+        let accepted = write(root, "criterion", &criterion);
+        assert_eq!(accepted["ok"], json!(true), "a spec rendered from its events takes a criterion: {accepted}");
+        std::fs::write(
+            root.join(".claude").join("spec").join("teste").join("spec.md"),
+            "# T\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `cd .`\n",
+        )
+        .unwrap();
+        let refused = write(root, "criterion", &criterion);
+        assert_eq!(refused["reason"], json!("criteria-from-spec-md"), "{refused}");
+        let removal = write(root, "remove", &format!(r#"{{"targets":[{}],"reason":"engano"}}"#, accepted["id"]));
+        assert_eq!(removal["reason"], json!("criteria-from-spec-md"), "{removal}");
+        let revision = format!(r#"{{"when":"w","then":"t","proof":"cd ..","origin":{msg},"replaces":{}}}"#, accepted["id"]);
+        assert_eq!(write(root, "criterion", &revision)["reason"], json!("criteria-from-spec-md"));
+    }
+
     /// A execução de um critério e o veredito são gravados só pelo binário: o
     /// `run write` recusa os dois, e recusa tirar uma execução gravada. Uma
     /// execução aprovada escrita à mão nunca abre o fechamento.
@@ -630,7 +741,7 @@ mod tests {
         let criteria = seed_runs(root, "teste", &[None]);
         let failing = seed_run(root, "teste", criteria[0], "fail");
 
-        let run = format!(r#"{{"criterion":{},"result":"pass","exit":0,"ms":1,"author":"binary"}}"#, criteria[0]);
+        let run = format!(r#"{{"criterion":{},"result":"pass","exit":0,"ms":1}}"#, criteria[0]);
         let refused = write(root, "criterion_run", &run);
         assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
         let verdict = format!(

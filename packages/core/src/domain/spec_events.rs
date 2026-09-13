@@ -628,6 +628,12 @@ pub enum Refusal {
     /// critério e o veredito da revisão), ou uma gravação dele que tiraria ou
     /// reveria um desses eventos.
     BinaryOnlyType { event_type: String, spec: String },
+    /// O `run write` com um `criterion` numa spec cujos critérios vêm do
+    /// `spec.md`, ou uma gravação dele que tiraria ou reveria um deles.
+    CriteriaFromSpecMd { spec: String },
+    /// O `run write` com o autor `binary`, que fica só para as gravações de
+    /// dentro do binário.
+    BinaryAuthor,
     /// A página pedida de uma spec cujo `spec.md` é o documento do
     /// `spec-draft`, que refazer do arquivo de eventos apagaria.
     DraftedSpec { spec: String },
@@ -661,6 +667,8 @@ impl Refusal {
             Self::PhaseChangeRefused { .. } => "phase-change-refused",
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::BinaryOnlyType { .. } => "binary-only-type",
+            Self::CriteriaFromSpecMd { .. } => "criteria-from-spec-md",
+            Self::BinaryAuthor => "binary-author",
             Self::DraftedSpec { .. } => "drafted-spec",
             Self::Io { .. } => "io-failed",
         }
@@ -769,6 +777,10 @@ impl Refusal {
                 "spec_events.binary_only_type",
                 &[("{type}", event_type.clone()), ("{spec}", spec.clone())],
             ),
+            Self::CriteriaFromSpecMd { spec } => {
+                fill("spec_events.criteria_from_spec_md", &[("{spec}", spec.clone())])
+            }
+            Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
