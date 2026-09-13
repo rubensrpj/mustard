@@ -281,10 +281,10 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o census de orientação injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run feature` (digest) para conceito; depois leia os arquivos apontados — o digest acha onde olhar, não substitui ler."
+            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\"` para conceito; depois leia os arquivos apontados — o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the orientation census injected at session start). To locate: `grep` for a known exact term; `mustard-rt run feature` (digest) for a concept; then read the files it points to — the digest finds where to look, it does not replace reading."
+            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\"` for a concept; then read the files it points to — the map finds where to look, it does not replace reading."
         }
 
         // Spec-draft + section-body placeholders. EN strings use the

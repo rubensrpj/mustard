@@ -18,11 +18,6 @@ use serde_json::{json, Value};
 use super::scan_claude;
 
 /// Default model location under the project's `.claude/` directory.
-///
-/// `pub(crate)` so the base gate's automatic refresh
-/// ([`crate::commands::event::base_gate`]) targets the SAME file this door
-/// writes — two spellings of the model path is how a refresh silently mines
-/// into a place no reader consults.
 pub(crate) fn default_model_path(root: &Path) -> PathBuf {
     root.join(".claude").join("grain.model.json")
 }
@@ -30,11 +25,15 @@ pub(crate) fn default_model_path(root: &Path) -> PathBuf {
 /// Run `grain scan <root> --out <model>`; print a small JSON result. Fail-open:
 /// a spawn/exit error is reported, never panics (matches the other handlers).
 ///
+/// With a model of this project already on disk, only the files that changed
+/// since are read again; the result says which (`read`) and whether every
+/// file was (`full`). Nothing is written to git and nothing runs this on its
+/// own.
+///
 /// When `full` is `true`, (re)generates the mustard-owned
-/// `.claude/scan-map.md` per subproject after the model is written, and keeps
-/// the project's CLAUDE.md footprint minimal (import line + legacy-block
-/// migration + Guards seed + breadcrumb heal — never measured, never
-/// refused). The hard cap guards only the machine map (runaway generator).
+/// `.claude/scan-map.md` per subproject after the model is written; no
+/// `CLAUDE.md` is ever written. The hard cap guards the map against a runaway
+/// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
 
@@ -136,11 +135,7 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
 /// files. Parsing is deliberately dumb (the `path =` entries, nothing else): a
 /// `.gitmodules` we cannot read yields nothing to complain about, which is the
 /// fail-open default for a repo that has no submodules at all.
-///
-/// `pub(crate)` so the base gate's automatic refresh runs the SAME preflight
-/// before mining — a refresh that skipped it would replace a complete model
-/// with a hollow one precisely where nobody is watching.
-pub(crate) fn hollow_submodules(root: &Path) -> Vec<String> {
+fn hollow_submodules(root: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(root.join(".gitmodules")) else {
         return Vec::new(); // no submodules declared — nothing to check.
     };
