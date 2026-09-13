@@ -184,6 +184,11 @@ fn record_in(
 /// não abriu fica como está) e quando a fase de agora vem antes de `phase` na
 /// ordem das fases: repetir um fechamento não grava outro, e uma spec entregue
 /// não volta a fechada. `true` quando gravou.
+///
+/// No mesmo passo, arma a cobrança das pendências nascidas na spec para o
+/// número do `state` gravado, no checkout principal: o fim da resposta a lê
+/// sem perguntar qual é a spec atual, então a arrumação que troca de branch,
+/// a sessão desligada e o worktree não a perdem.
 pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str) -> bool {
     let order = |name: &str| PHASES.iter().position(|known| *known == name);
     let Some(target) = order(phase) else {
@@ -198,7 +203,13 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str) -> bool {
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!(phase));
     draft.insert("author".to_string(), json!("binary"));
-    record(start, spec, "state", draft).is_ok()
+    match record(start, spec, "state", draft) {
+        Ok(recorded) => {
+            let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// O nascimento de uma spec aberta fora do arquivo de eventos — pelo

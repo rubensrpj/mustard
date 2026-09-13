@@ -1,6 +1,6 @@
 //! `pending_gate` — a regra das pendências do fim da resposta ([`PendingRule`],
-//! uma das regras do `end_of_turn_check`): o turno em que a spec fechou, ou
-//! entrou no merge, não termina com uma mensagem que omite uma pendência
+//! uma das regras do `end_of_turn_check`): depois que uma spec fecha, ou entra
+//! no merge, a resposta não termina com uma mensagem que omite uma pendência
 //! aberta nascida nela.
 //!
 //! ## O caso que a fez nascer
@@ -11,85 +11,77 @@
 //! operador só descobriu no dia seguinte, perguntando. Nenhum gancho conferia o
 //! texto final do assistente.
 //!
+//! ## Quem arma a cobrança
+//!
+//! A ponte do fechamento e a do merge (`record_phase`, chamada pelo
+//! `complete-spec`, pelo `pr-merge` e pelo `gh pr merge` da branch da spec)
+//! gravam o `state` e, no mesmo passo, armam um contador por spec e por número
+//! do fechamento, no checkout principal, ao lado da lista de pendências
+//! (`.claude/pending/charges.json`). A regra lê os contadores armados sem
+//! perguntar qual é a spec atual: a arrumação do merge, que volta para a base,
+//! a sessão desligada no fechamento e o worktree, em que o degrau da branch
+//! pode não responder, não apagam a cobrança.
+//!
 //! ## Quando cobra — todos os fatos precisam valer
 //!
 //! 1. É o `Stop` da sessão principal (nunca o de um subagente) — o
-//!    `end_of_turn_check` só chama as regras nele — e ele traz o id da sessão.
-//! 2. A spec atual da sessão, pela escada única, está fechada: o estado dela
-//!    tem um fechamento ou uma entrega ([`State::closing`]) que esta sessão
-//!    ainda não encerrou. Quem grava esse estado é a ponte do fechamento (o
-//!    `complete-spec`) e a do merge (o `pr-merge`).
+//!    `end_of_turn_check` só chama as regras nele.
+//! 2. Há um fechamento armado que ainda não se encerrou.
 //! 3. O `Stop` trouxe `last_assistant_message` (o texto final do turno, campo
 //!    documentado do evento). Sem ele não há o que conferir.
-//! 4. Alguma pendência aberta nascida na spec — a que um evento `deferred`
-//!    dela cita — não é citada nesse texto, pelo título ou pelo id (`P-3`), sem
-//!    diferenciar maiúsculas. Id e título contam só inteiros: `P-1` não cita
-//!    dentro de `P-10`, e o título `um` não cita dentro de `algum`. O bloqueio
-//!    pede o título: a regra de clareza barra o código na conversa.
-//! 5. A regra ainda não bloqueou [`MAX_BLOCKS`] vezes por este fechamento.
+//! 4. Alguma pendência aberta nascida na spec daquele fechamento — a que um
+//!    evento `deferred` dela cita — não é citada nesse texto, pelo título ou
+//!    pelo id (`P-3`), sem diferenciar maiúsculas. Id e título contam só
+//!    inteiros: `P-1` não cita dentro de `P-10`, e o título `um` não cita
+//!    dentro de `algum`. O bloqueio pede o título: a regra de clareza barra o
+//!    código na conversa.
+//! 5. A regra ainda não bloqueou [`MAX_BLOCKS`] vezes por este fechamento, no
+//!    total, em qualquer sessão.
 //!
-//! Qualquer fato que falte libera o turno. Uma pendência que não nasceu na
-//! spec nunca é cobrada aqui: a lista inteira fica na listagem do
-//! `run pending`, e cobrá-la a cada fechamento faria cada resumo recitar tudo.
+//! Qualquer fato que falte libera. Uma pendência que não nasceu na spec nunca
+//! é cobrada aqui: a lista inteira fica na listagem do `run pending`.
 //!
-//! ## Por que só no turno do fechamento
+//! ## O contador
 //!
-//! É o momento exato da perda original. Cobrar em todo turno obrigaria cada
-//! resposta curta a recitar a lista — e um aviso que sempre dispara aprende-se a
-//! ignorar.
-//!
-//! ## O contador da cobrança
-//!
-//! Cada fechamento e cada merge gravam um `state` com número novo, e é esse
-//! número que a regra cobra. O contador mora num arquivo da sessão, no checkout
-//! principal (`.claude/.session/<sessão>/pending-charge`), que só a regra
-//! grava: a spec, o número do fechamento, quantas vezes ela bloqueou e se o
-//! fechamento já se encerrou.
-//!
-//! - **Encerra** quando nada nascido na spec está aberto, quando a mensagem
-//!   cita cada pendência, quando não há texto final, ou quando já bloqueou
-//!   [`MAX_BLOCKS`] vezes por este fechamento.
+//! - **Encerra** o fechamento, e o tira do arquivo, quando nada nascido na
+//!   spec está aberto, quando a mensagem cita cada pendência, quando não há
+//!   texto final, ou quando já bloqueou [`MAX_BLOCKS`] vezes.
 //! - **Bloqueia e conta** nos demais casos.
 //!
-//! Um fechamento novo, ou outra spec, começa a conta de novo. Bloquear sem
-//! conseguir gravar o contador bloquearia sem limite; nesse caso a regra
-//! libera.
+//! Um fechamento encerrado não volta: uma sessão nova depois do `/clear`, parada
+//! na branch da spec, não é cobrada de novo. Um fechamento novo, ou um merge,
+//! arma outro número. Bloquear sem conseguir gravar o contador bloquearia sem
+//! limite; nesse caso a regra libera.
 //!
 //! ## `stop_hook_active` não libera
 //!
 //! Ele não diz QUEM bloqueou. Se a clareza barra o primeiro `Stop` e a
-//! reescrita fecha a spec, o `Stop` seguinte chega com `stop_hook_active` e
-//! um fechamento novo — e é a mensagem que encerra o fechamento. Liberá-lo pelo
+//! reescrita fecha a spec, o `Stop` seguinte chega com `stop_hook_active` e um
+//! fechamento novo — e é a mensagem que encerra o fechamento. Liberá-lo pelo
 //! campo deixaria essa mensagem sem conferência (a perda original). O limite é
 //! o contador: no máximo [`MAX_BLOCKS`] bloqueios por fechamento, longe do teto
 //! de 8 bloqueios seguidos do Claude Code.
 //!
 //! ## Sem modo `MUSTARD_*_MODE`
 //!
-//! A regra não ganha porta de configuração. Ela já se restringe sozinha ao
-//! turno do fechamento, e desligá-la devolveria exatamente a perda que ela
+//! A regra não ganha porta de configuração. Ela já se restringe sozinha aos
+//! fechamentos armados, e desligá-la devolveria exatamente a perda que ela
 //! existe para impedir.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mustard_core::domain::spec_events::SpecLog;
-use mustard_core::domain::spec_state::{SpecState, State};
-use mustard_core::io::claude_paths::ClaudePaths;
-use mustard_core::io::fs;
+use mustard_core::domain::spec_state::SpecState;
 use mustard_core::platform::i18n::Locale;
-use serde::{Deserialize, Serialize};
 
-use crate::commands::event::pending::{format_pending_items, open_born_in, OpenPending};
+use crate::commands::event::pending::{armed_charges, format_pending_items, open_born_in, save_charges, OpenPending};
 use crate::hooks::task::end_of_turn_check::{Finding, Turn, TurnRule};
 use crate::shared::spec_state::DiskSpecState;
 
-/// Quantas vezes, no máximo, a regra bloqueia por fechamento. Dois: um para a
-/// primeira mensagem, outro para a reescrita que ainda omite — e então libera,
-/// sem laço.
+/// Quantas vezes, no máximo, a regra bloqueia por fechamento, no total. Dois:
+/// um para a primeira mensagem, outro para a reescrita que ainda omite — e
+/// então libera, sem laço.
 const MAX_BLOCKS: u32 = 2;
-
-/// O nome do arquivo do contador, na pasta da sessão.
-const CHARGE_FILE: &str = "pending-charge";
 
 /// A regra das pendências do fim da resposta.
 pub struct PendingRule;
@@ -98,84 +90,32 @@ impl TurnRule for PendingRule {
     fn check(&self, turn: &Turn<'_>) -> Option<Finding> {
         // `stop_hook_active` NÃO libera aqui (ver "`stop_hook_active` não
         // libera"): o contador é o limite.
-        let session = turn.session.map(str::trim).filter(|s| !s.is_empty())?;
         let project = Path::new(turn.project_dir);
-
-        // Fato 2 — a spec atual fechou, por um fechamento que esta sessão ainda
-        // não encerrou.
+        let armed = armed_charges(project);
+        if armed.is_empty() {
+            return None;
+        }
         let disk = DiskSpecState::new(project);
-        let spec = disk.active(Some(session))?;
-        let log = disk.log(&spec)?;
-        let closure = State::from_log(&log).closing()?;
-        let blocks = match Charge::read(project, session) {
-            Some(charge) if charge.spec == spec && charge.closure == closure => {
-                if charge.settled {
-                    return None;
-                }
-                charge.blocks
+        let mut still_armed = Vec::new();
+        let mut reasons = Vec::new();
+        for mut charge in armed {
+            // Encerrar tira o fechamento do arquivo; bloquear conta.
+            let omitted = disk
+                .log(&charge.spec)
+                .map(|log| omitted_items(turn.message, project, &log))
+                .unwrap_or_default();
+            if omitted.is_empty() || charge.blocks >= MAX_BLOCKS {
+                continue;
             }
-            _ => 0,
-        };
-
-        // Fatos 3, 4 e 5 — liberar encerra o fechamento.
-        let omitted = omitted_items(turn.message, project, &log);
-        let mut charge = Charge { spec, closure, blocks, settled: false };
-        if omitted.is_empty() || blocks >= MAX_BLOCKS {
-            charge.settled = true;
-            charge.write(project, session);
+            charge.blocks += 1;
+            reasons.push(block_reason(&charge.spec, &omitted, turn.lang));
+            still_armed.push(charge);
+        }
+        // Sem contador gravado, libera — nunca um bloqueio sem limite.
+        if !save_charges(project, &still_armed) || reasons.is_empty() {
             return None;
         }
-
-        // Bloquear conta. Sem contador gravado, libera — nunca um bloqueio sem
-        // limite.
-        charge.blocks = blocks + 1;
-        if !charge.write(project, session) {
-            return None;
-        }
-        Some(Finding::Block(block_reason(&charge.spec, &omitted, turn.lang)))
-    }
-}
-
-/// O contador da cobrança de um fechamento, gravado só pela regra.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Charge {
-    /// A spec que fechou.
-    spec: String,
-    /// O número do `state` de fechamento ou de entrega que está sendo cobrado.
-    closure: u64,
-    /// Quantas vezes a regra já bloqueou por ele.
-    blocks: u32,
-    /// O fechamento se encerrou: a regra liberou o `Stop` dele.
-    settled: bool,
-}
-
-impl Charge {
-    /// `<principal>/.claude/.session/<sessão>/pending-charge`. O checkout
-    /// principal, porque a spec mora nele e um worktree cobra o mesmo
-    /// fechamento. `None` para um id de sessão que sairia da pasta.
-    fn path(project: &Path, session: &str) -> Option<PathBuf> {
-        if session.contains(['/', '\\']) || session.starts_with('.') {
-            return None;
-        }
-        let main = mustard_core::io::spec_events::spec_root(project);
-        Some(ClaudePaths::for_project(&main).ok()?.claude_dir().join(".session").join(session).join(CHARGE_FILE))
-    }
-
-    fn read(project: &Path, session: &str) -> Option<Self> {
-        let body = fs::read_to_string(&Self::path(project, session)?).ok()?;
-        serde_json::from_str(&body).ok()
-    }
-
-    /// `true` quando gravou.
-    fn write(&self, project: &Path, session: &str) -> bool {
-        let Some(path) = Self::path(project, session) else {
-            return false;
-        };
-        let Some(parent) = path.parent() else {
-            return false;
-        };
-        let _ = fs::create_dir_all(parent);
-        serde_json::to_vec(self).is_ok_and(|body| fs::write_atomic(&path, &body).is_ok())
+        Some(Finding::Block(reasons.join("\n\n")))
     }
 }
 
@@ -239,8 +179,8 @@ fn block_reason(spec: &str, omitted: &[OpenPending], lang: Locale) -> String {
 }
 
 /// Semeia a spec `spec` do projeto em `root` em andamento, com um evento
-/// `deferred` para cada pendência de `born`, e liga a sessão `session` a ela.
-/// Fechar é com a ponte, `record_phase`.
+/// `deferred` para cada pendência de `born`, e liga a sessão `session` a ela
+/// (um `session` vazio não liga nada). Fechar é com a ponte, `record_phase`.
 #[cfg(test)]
 pub(crate) fn seed_spec(root: &Path, spec: &str, born: &[u64], session: &str) {
     use mustard_core::io::spec_events as store;
@@ -259,7 +199,7 @@ pub(crate) fn seed_spec(root: &Path, spec: &str, born: &[u64], session: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::event::pending::{pending_at, PendingOpts};
+    use crate::commands::event::pending::{pending_at, Charge, PendingOpts};
     use crate::commands::spec_events::write::record_phase;
     use crate::hooks::task::end_of_turn_check::run_rules;
     use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
@@ -283,12 +223,11 @@ mod tests {
         }
     }
 
-    /// Um projeto instalado com as pendências abertas `titles`, numeradas na
-    /// ordem (`P-1`, `P-2`, …).
-    fn project_with_open_items(titles: &[&str]) -> tempfile::TempDir {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("cfg");
+    const PT: &str = r#"{"language":{"text":"pt-BR"}}"#;
+
+    /// Um projeto instalado em `root` com as pendências abertas `titles`,
+    /// numeradas na ordem (`P-1`, `P-2`, …).
+    fn add_items(root: &Path, titles: &[&str]) {
         for title in titles {
             let out = pending_at(&PendingOpts {
                 root: root.to_path_buf(),
@@ -299,6 +238,12 @@ mod tests {
             });
             assert_eq!(out["ok"], json!(true), "seed: {out}");
         }
+    }
+
+    fn project_with_open_items(titles: &[&str]) -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("mustard.json"), PT).expect("cfg");
+        add_items(dir.path(), titles);
         dir
     }
 
@@ -321,14 +266,29 @@ mod tests {
         run_rules(&[&PendingRule], input, &ctx(root))
     }
 
-    /// O contador da sessão, como a regra o deixou.
-    fn charge(root: &Path, session: &str) -> Option<Charge> {
-        Charge::read(root, session)
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed in {}", dir.display());
     }
 
-    /// O turno em que a spec fechou e cuja mensagem final omite uma pendência
-    /// aberta nascida nela é bloqueado, e o motivo NOMEIA a omitida (e só ela).
-    /// A reescrita que a cita passa e encerra o fechamento.
+    /// Um repositório com um commit, parado na branch `branch`.
+    fn repo_on(dir: &Path, branch: &str) {
+        git(dir, &["init", "-q"]);
+        git(dir, &["checkout", "-q", "-b", branch]);
+        git(
+            dir,
+            &["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root"],
+        );
+    }
+
+    /// O turno depois do fechamento cuja mensagem final omite uma pendência
+    /// aberta nascida na spec é bloqueado, e o motivo NOMEIA a omitida (e só
+    /// ela). A reescrita que a cita passa e encerra o fechamento.
     #[test]
     fn pending_gate_blocks_closing_turn_that_omits_open_item() {
         let dir = project_with_two_open_items();
@@ -351,12 +311,12 @@ mod tests {
         let mut rewrite = stop("s-close", "O dia fechou assim; seguem o P-1 (Humanize) e o p-2.");
         rewrite.raw["stop_hook_active"] = json!(true);
         assert_eq!(verdict(root, &rewrite), Verdict::Allow, "the rewrite that cites passes");
-        assert!(charge(root, "s-close").is_some_and(|c| c.settled), "that Stop settled the closure");
+        assert_eq!(armed_charges(root), vec![], "that Stop settled the closure");
         assert_eq!(verdict(root, &stop("s-close", summary)), Verdict::Allow, "once per closure");
     }
 
-    /// Sem fechamento, a resposta passa mesmo omitindo todas as pendências
-    /// abertas; e o fechamento de uma spec de OUTRA sessão não conta.
+    /// Sem fechamento armado, a resposta passa mesmo omitindo todas as
+    /// pendências abertas.
     #[test]
     fn pending_gate_ignores_turn_without_closure() {
         let dir = project_with_two_open_items();
@@ -367,36 +327,29 @@ mod tests {
             Verdict::Allow,
             "an ordinary turn never recites the list",
         );
-
-        let other = project_with_two_open_items();
-        closed_spec(other.path(), &[1, 2], "s-other");
-        assert_eq!(
-            verdict(other.path(), &stop("s-quiet", "Pronto, ajustei o teste.")),
-            Verdict::Allow,
-            "a spec another session is on is not this turn's",
-        );
     }
 
-    /// O contador fica no bloqueio, então o `Stop` seguinte — a reescrita, com
-    /// `stop_hook_active` — confere de novo, até [`MAX_BLOCKS`] vezes; depois
-    /// libera e encerra, sem laço.
+    /// O contador vale para o fechamento, em qualquer sessão: bloqueia no
+    /// máximo [`MAX_BLOCKS`] vezes no total e depois libera e encerra, sem
+    /// laço.
     #[test]
     fn a_closure_is_charged_at_most_twice_then_released() {
         let dir = project_with_two_open_items();
         let root = dir.path();
         closed_spec(root, &[1, 2], "s-twice");
         let omits = "Fechei a spec; segue o P-2.";
+        let charge = |blocks| vec![Charge { spec: SPEC.to_string(), closure: 4, blocks }];
 
         assert!(verdict(root, &stop("s-twice", omits)).is_blocking(), "first Stop blocks");
-        assert_eq!(charge(root, "s-twice").map(|c| c.blocks), Some(1), "a block is counted");
+        assert_eq!(armed_charges(root), charge(1), "a block is counted");
 
-        let mut again = stop("s-twice", omits);
+        let mut again = stop("s-outra", omits);
         again.raw["stop_hook_active"] = json!(true);
         assert!(verdict(root, &again).is_blocking(), "still omitted: checked and blocked again");
-        assert_eq!(charge(root, "s-twice").map(|c| c.blocks), Some(2));
+        assert_eq!(armed_charges(root), charge(2), "the count is the closure's, not the session's");
 
         assert_eq!(verdict(root, &again), Verdict::Allow, "the third Stop is released");
-        assert!(charge(root, "s-twice").is_some_and(|c| c.settled), "and the closure settled");
+        assert_eq!(armed_charges(root), vec![], "and the closure settled");
         assert_eq!(
             verdict(root, &stop("s-twice", "Pronto, ajustei o teste.")),
             Verdict::Allow,
@@ -411,13 +364,10 @@ mod tests {
         let dir = project_with_two_open_items();
         let root = dir.path();
         closed_spec(root, &[1, 2], "s-cited");
+        assert_eq!(armed_charges(root), vec![Charge { spec: SPEC.to_string(), closure: 4, blocks: 0 }]);
 
         assert_eq!(verdict(root, &stop("s-cited", "Seguem P-1 e P-2.")), Verdict::Allow);
-        assert_eq!(
-            charge(root, "s-cited"),
-            Some(Charge { spec: SPEC.to_string(), closure: 4, blocks: 0, settled: true }),
-            "the allowing Stop settled it",
-        );
+        assert_eq!(armed_charges(root), vec![], "the allowing Stop settled it");
     }
 
     /// Um título curto conta só como palavra inteira: `um` não é citado dentro
@@ -447,30 +397,31 @@ mod tests {
     }
 
     /// Citar pelo título também vale, sem diferenciar maiúsculas nem quebras de
-    /// linha; um subagente nunca é cobrado; e sem o texto final não há o que
-    /// conferir.
+    /// linha; um subagente nunca é cobrado nem gasta o contador; e sem o texto
+    /// final não há o que conferir.
     #[test]
     fn a_title_counts_as_a_citation_and_the_gate_self_restricts() {
         let dir = project_with_two_open_items();
         let root = dir.path();
         closed_spec(root, &[1, 2], "s-title");
-        for session in ["s-sub", "s-bare"] {
-            crate::shared::context::bind_session_spec(&root.to_string_lossy(), session, SPEC);
-        }
-
-        let both = "Seguem abertos: HUMANIZE e o html padrao\nda spec.";
-        assert_eq!(verdict(root, &stop("s-title", both)), Verdict::Allow, "titles cite");
 
         let mut sub = stop("s-sub", "nada");
         sub.agent_id = Some("closure-1".to_string());
         assert_eq!(verdict(root, &sub), Verdict::Allow, "a subagent stop is never gated");
+        assert_eq!(armed_charges(root).len(), 1, "nor does it spend the charge");
 
+        let both = "Seguem abertos: HUMANIZE e o html padrao\nda spec.";
+        assert_eq!(verdict(root, &stop("s-title", both)), Verdict::Allow, "titles cite");
+        assert_eq!(armed_charges(root), vec![]);
+
+        let bare_dir = project_with_two_open_items();
+        closed_spec(bare_dir.path(), &[1, 2], "s-bare");
         let bare = HookInput {
             hook_event_name: Some("Stop".to_string()),
             session_id: Some("s-bare".to_string()),
             ..HookInput::default()
         };
-        assert_eq!(verdict(root, &bare), Verdict::Allow, "no final text, nothing to check");
+        assert_eq!(verdict(bare_dir.path(), &bare), Verdict::Allow, "no final text, nothing to check");
     }
 
     /// O fechamento que acontece na continuação de um bloqueio de OUTRA regra
@@ -488,14 +439,12 @@ mod tests {
             input
         };
 
-        // Omite P-1: cobrada mesmo com `stop_hook_active`.
         closed_spec(root, &[1, 2], "s-cont");
         match verdict(root, &continuation("Fechei a spec; segue o P-2.")) {
             Verdict::Deny { reason } => assert!(reason.contains("P-1"), "names the omitted: {reason}"),
             other => panic!("the closing message of a continuation must be checked, got {other:?}"),
         }
 
-        // A reescrita cita todas: passa, e o fechamento NÃO sobrevive ao turno.
         assert_eq!(verdict(root, &continuation("Seguem P-1 e P-2.")), Verdict::Allow);
         assert_eq!(
             verdict(root, &stop("s-cont", "Pronto, ajustei o teste.")),
@@ -504,59 +453,83 @@ mod tests {
         );
     }
 
-    fn git(dir: &Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed in {}", dir.display());
+    /// Depois do merge, a arrumação volta o checkout para a base e a sessão
+    /// não está ligada à spec: a escada não acha spec nenhuma, e a cobrança
+    /// dispara do mesmo jeito.
+    #[test]
+    fn a_merge_that_switches_back_to_the_base_is_still_charged() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("cfg");
+        repo_on(root, "feature/trava");
+        add_items(root, &["Humanize"]);
+        seed_spec(root, SPEC, &[1], "");
+        assert!(record_phase(root, SPEC, "delivered"), "the merge is recorded");
+        git(root, &["checkout", "-q", "-b", "dev"]);
+        assert_eq!(crate::shared::spec_state::active_spec(&root.to_string_lossy(), Some("s-nova")), None);
+
+        match verdict(root, &stop("s-nova", "PR mergeado, voltei para a dev.")) {
+            Verdict::Deny { reason } => assert!(reason.contains(SPEC) && reason.contains("Humanize"), "{reason}"),
+            other => panic!("the merge is charged after the switch to the base, got {other:?}"),
+        }
     }
 
-    /// Um fechamento gravado de dentro de um worktree arma a cobrança que o
-    /// `Stop` faz no checkout principal: a spec mora no checkout principal, e
-    /// a ponte grava lá.
+    /// O fechamento desliga a sessão da spec antes do `Stop`: a cobrança não
+    /// depende da ligação.
+    #[test]
+    fn a_closure_with_the_session_unbound_is_still_charged() {
+        let dir = project_with_two_open_items();
+        let root = dir.path();
+        seed_spec(root, SPEC, &[1], "s-solta");
+        crate::shared::context::unbind_session_spec(&root.to_string_lossy(), "s-solta");
+        assert!(record_phase(root, SPEC, "closed"));
+
+        match verdict(root, &stop("s-solta", "Spec fechada.")) {
+            Verdict::Deny { reason } => assert!(reason.contains("Humanize"), "{reason}"),
+            other => panic!("an unbound session is still charged, got {other:?}"),
+        }
+    }
+
+    /// Um fechamento gravado de dentro de um worktree arma a cobrança no
+    /// checkout principal, e o contador é um só: o `Stop` do checkout
+    /// principal e o do worktree contam no mesmo fechamento.
     #[test]
     fn a_closure_recorded_in_a_worktree_arms_the_main_checkout() {
         let dir = tempdir().expect("tempdir");
         let main = dir.path().join("main");
         std::fs::create_dir_all(&main).expect("main");
-        std::fs::write(main.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("cfg");
-        for args in [
-            &["init"][..],
-            &[
-                "-c",
-                "user.email=t@example.com",
-                "-c",
-                "user.name=t",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "root",
-            ],
-        ] {
-            git(&main, args);
-        }
+        repo_on(&main, "dev");
+        std::fs::write(main.join("mustard.json"), PT).expect("cfg");
         let tree = dir.path().join("unit");
-        git(&main, &["worktree", "add", "-b", "feature/unit", &tree.to_string_lossy()]);
-        let out = pending_at(&PendingOpts {
-            root: main.clone(),
-            add: true,
-            title: Some("Humanize".into()),
-            detail: Some("terceiro trabalho".into()),
-            ..PendingOpts::default()
-        });
-        assert_eq!(out["ok"], json!(true), "seed: {out}");
-        seed_spec(&main, SPEC, &[1], "s-tree");
+        git(&main, &["worktree", "add", "-q", "-b", "feature/unit", &tree.to_string_lossy()]);
+        std::fs::write(tree.join("mustard.json"), PT).expect("cfg in the worktree");
+        add_items(&main, &["Humanize"]);
+        seed_spec(&main, SPEC, &[1], "");
 
         assert!(record_phase(&tree, SPEC, "closed"), "the close is recorded from the worktree");
-        match verdict(&main, &stop("s-tree", "Spec fechada.")) {
+        let omits = "Spec fechada.";
+        match verdict(&main, &stop("s-tree", omits)) {
             Verdict::Deny { reason } => assert!(reason.contains("Humanize"), "{reason}"),
             other => panic!("a worktree closure must arm the main checkout's Stop, got {other:?}"),
         }
+        assert!(verdict(&tree, &stop("s-tree", omits)).is_blocking(), "the worktree's Stop reads the same charge");
+        assert_eq!(armed_charges(&tree), armed_charges(&main));
+        assert_eq!(verdict(&main, &stop("s-tree", omits)), Verdict::Allow, "two blocks in all, then released");
+    }
+
+    /// Um fechamento encerrado não volta: uma sessão nova depois do `/clear`,
+    /// parada na branch da spec fechada, não é cobrada.
+    #[test]
+    fn a_released_closure_is_never_charged_in_a_new_session() {
+        let dir = project_with_two_open_items();
+        let root = dir.path();
+        closed_spec(root, &[1, 2], "s-antes");
+        assert_eq!(verdict(root, &stop("s-antes", "Seguem P-1 e P-2.")), Verdict::Allow);
+
+        crate::shared::spec_state::stand_on_spec_branch(root, SPEC);
+        crate::shared::context::bind_session_spec(&root.to_string_lossy(), "s-depois", SPEC);
+        assert_eq!(verdict(root, &stop("s-depois", "Oi, vamos continuar.")), Verdict::Allow);
     }
 
     /// Um id conta inteiro: `P-10` não cita `P-1`.
@@ -618,8 +591,8 @@ mod tests {
     }
 
     /// Fechar a spec, e gravar os eventos de fechamento e de merge, não deixa
-    /// marca nenhuma na sessão: quem arma a cobrança é o estado da spec, e o
-    /// bloqueio nomeia a spec que fechou.
+    /// marca nenhuma na sessão: quem arma a cobrança é a ponte, e o bloqueio
+    /// nomeia a spec que fechou.
     #[test]
     fn closing_a_spec_leaves_no_session_mark() {
         let dir = project_with_two_open_items();

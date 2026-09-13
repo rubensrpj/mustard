@@ -910,7 +910,7 @@ fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>) {
     let event = HarnessEvent {
         v: SCHEMA_VERSION,
         ts: mustard_core::time::now_iso8601(),
-        session_id: crate::shared::context::session_id(),
+        session_id: crate::shared::spec_state::session_from_env().unwrap_or_default(),
         wave: 0,
         actor: Actor {
             kind: ActorKind::Orchestrator,

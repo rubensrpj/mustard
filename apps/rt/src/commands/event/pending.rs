@@ -818,6 +818,76 @@ pub(crate) fn mark_became(root: &Path, id: &str, spec: &str) -> bool {
     write(&path, &mut ledger, &today(None)).is_ok()
 }
 
+/// O arquivo dos fechamentos armados, ao lado da lista.
+const CHARGES_FILE: &str = "charges.json";
+
+/// Um fechamento ou um merge que a ponte armou para a cobrança do fim da
+/// resposta: a spec, o número do `state` que fechou e quantas vezes a cobrança
+/// já bloqueou por ele.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Charge {
+    pub(crate) spec: String,
+    pub(crate) closure: u64,
+    pub(crate) blocks: u32,
+}
+
+/// O arquivo dos fechamentos armados.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Charges {
+    #[serde(default)]
+    armed: Vec<Charge>,
+}
+
+/// `<checkout principal>/.claude/pending/charges.json`: ao lado da lista, fora
+/// da pasta da sessão e fora do git. O checkout principal é o mesmo em que a
+/// spec mora, então quem fecha de dentro de um worktree arma o mesmo arquivo
+/// que o fim da resposta lê no checkout principal, e vice-versa.
+fn charges_path(root: &Path) -> Option<PathBuf> {
+    let main = mustard_core::io::spec_events::spec_root(root);
+    let ledger = mustard_core::ClaudePaths::for_project(&main).ok()?.pending_ledger_path();
+    Some(ledger.parent()?.join(CHARGES_FILE))
+}
+
+/// Os fechamentos armados, na ordem em que foram armados. Arquivo ausente ou
+/// ilegível dá lista vazia: a cobrança nunca barra por erro próprio.
+#[must_use]
+pub(crate) fn armed_charges(root: &Path) -> Vec<Charge> {
+    charges_path(root)
+        .and_then(|path| mustard_core::io::fs::read_to_string(&path).ok())
+        .and_then(|body| serde_json::from_str::<Charges>(&body).ok())
+        .map(|charges| charges.armed)
+        .unwrap_or_default()
+}
+
+/// Grava os fechamentos armados; sem nenhum, o arquivo sai. `true` quando
+/// gravou.
+pub(crate) fn save_charges(root: &Path, armed: &[Charge]) -> bool {
+    let Some(path) = charges_path(root) else {
+        return false;
+    };
+    if armed.is_empty() {
+        return !path.exists() || mustard_core::io::fs::remove_file(&path).is_ok();
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let _ = mustard_core::io::fs::create_dir_all(parent);
+    let charges = Charges { armed: armed.to_vec() };
+    serde_json::to_vec_pretty(&charges)
+        .is_ok_and(|body| mustard_core::io::fs::write_atomic(&path, &body).is_ok())
+}
+
+/// Arma a cobrança do fechamento `closure` da spec `spec`, no lugar de um
+/// fechamento anterior da mesma spec. `true` quando gravou.
+pub(crate) fn arm_charge(root: &Path, spec: &str, closure: u64) -> bool {
+    let mut armed = armed_charges(root);
+    armed.retain(|charge| charge.spec != spec);
+    armed.push(Charge { spec: spec.to_string(), closure, blocks: 0 });
+    save_charges(root, &armed)
+}
+
 /// A pendência aberta que virou a spec `spec`, pela nota da lista.
 #[must_use]
 pub(crate) fn became_of(root: &Path, spec: &str) -> Option<String> {
