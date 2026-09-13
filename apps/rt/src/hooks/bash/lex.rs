@@ -18,6 +18,11 @@ const MAX_DEPTH: usize = 16;
 const STRUCTURE_WORDS: &[&str] =
     &["!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until"];
 
+/// The word that opens a function definition. Written plain at the head of a
+/// command it is skipped together with the function's name, so the body is
+/// read (`function f { rm -rf x; }` runs `rm`).
+const FUNCTION_WORD: &str = "function";
+
 /// The redirect operators, longest first so `>>` is never read as `>`.
 const REDIRECT_OPERATORS: &[&str] =
     &["&>>", "&>", "<<<", "<<-", "<<", "<>", "<&", "<", ">>", ">&", ">|", ">"];
@@ -82,12 +87,16 @@ impl Segment {
 
 /// The commands the terminal would run for `cmd`, in the order it meets them.
 ///
-/// Quoted text is never a command, with the two exceptions the terminal
-/// itself makes: what sits inside `$(…)` or backticks (also inside double
-/// quotes), and the line handed to `bash -c`, `sh -c`, `zsh -c`, `dash -c` or
-/// `eval`. Those commands come right after the command that holds them. A
-/// heredoc body and a comment are never commands. The reader walks the text
-/// once, never panics, and stops descending past [`MAX_DEPTH`] levels.
+/// Quoted text is never a command, with the exceptions the terminal itself
+/// makes: what sits inside `$(…)`, backticks or `<(…)` (also inside double
+/// quotes, a `${…}` or a `$((…))`), and the line handed to `bash -c`,
+/// `sh -c`, `zsh -c`, `dash -c` or `eval`. The command of a `find -exec`
+/// (`-execdir`, `-ok`, `-okdir`) is read too, since `find` runs it. Those
+/// commands come right after the command that holds them. A comment is never
+/// a command, and neither is a heredoc body, except the `$(…)` and backticks
+/// of a body whose delimiter has no quote (`<<EOF`), which the terminal runs;
+/// `<<'EOF'` keeps the whole body as text. The reader walks the text once,
+/// never panics, and stops descending past [`MAX_DEPTH`] levels.
 pub(super) fn segments(cmd: &str) -> Vec<Segment> {
     read_line(cmd, 0)
 }
@@ -115,12 +124,29 @@ struct Pending {
     inner: Vec<Segment>,
 }
 
+/// What a `${…}` or `$((…))` is, which tells where it closes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expansion {
+    /// `${…}`, closed by its `}`.
+    Braced,
+    /// `$((…))`, closed by `))`.
+    Arithmetic,
+}
+
+/// A heredoc opened on the current line, waiting for the line to end.
+struct Heredoc {
+    delimiter: String,
+    /// `<<-` drops the leading tabs of each body line.
+    strip_tabs: bool,
+    /// The delimiter has no quote and no backslash, so the terminal runs the
+    /// substitutions of the body.
+    expands: bool,
+}
+
 struct Reader {
     chars: Vec<char>,
     pos: usize,
-    /// Heredocs opened on the current line, waiting for its end: the
-    /// delimiter and whether leading tabs are dropped (`<<-`).
-    heredocs: Vec<(String, bool)>,
+    heredocs: Vec<Heredoc>,
 }
 
 impl Reader {
@@ -159,7 +185,7 @@ impl Reader {
                 '\n' => {
                     self.advance(1);
                     finish(&mut cur, &mut out, depth);
-                    self.skip_heredoc_bodies();
+                    self.heredoc_bodies(&mut out, depth);
                 }
                 '\r' | ';' => {
                     self.advance(1);
@@ -232,7 +258,11 @@ impl Reader {
             || (matches!(self.peek(0), Some('<' | '>')) && self.peek(1) == Some('('));
         let target = if starts_word { self.word(&mut cur.inner, close, depth) } else { Word::default() };
         if op == "<<" || op == "<<-" {
-            self.heredocs.push((target.text.clone(), op == "<<-"));
+            self.heredocs.push(Heredoc {
+                delimiter: target.text.clone(),
+                strip_tabs: op == "<<-",
+                expands: target.is_plain(),
+            });
         }
         cur.redirects.push(Redirect { op: format!("{fd}{op}"), target });
     }
@@ -340,26 +370,15 @@ impl Reader {
         }
     }
 
-    /// `$(…)` is a command; `$((…))` is arithmetic and `${…}` a variable,
-    /// both kept as text; `$'…'` quotes (outside double quotes only).
+    /// `$(…)` is a command. `$((…))` (arithmetic) and `${…}` (a variable)
+    /// are text, but the `$(…)` and backticks inside them run, so their
+    /// commands are read too. `$'…'` quotes (outside double quotes only).
     fn dollar(&mut self, w: &mut Word, inner: &mut Vec<Segment>, depth: usize, in_double: bool) {
         let start = self.pos;
         match (self.peek(1), self.peek(2)) {
             (Some('('), Some('(')) => {
                 self.advance(3);
-                let mut open = 0usize;
-                while let Some(c) = self.peek(0) {
-                    self.advance(1);
-                    match c {
-                        '(' => open += 1,
-                        ')' if open > 0 => open -= 1,
-                        ')' if self.peek(0) == Some(')') => {
-                            self.advance(1);
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
+                self.expansion(Expansion::Arithmetic, inner, depth, in_double);
             }
             (Some('('), _) => {
                 self.advance(2);
@@ -368,16 +387,7 @@ impl Reader {
             }
             (Some('{'), _) => {
                 self.advance(2);
-                let mut open = 0usize;
-                while let Some(c) = self.peek(0) {
-                    self.advance(1);
-                    match c {
-                        '{' => open += 1,
-                        '}' if open == 0 => break,
-                        '}' => open -= 1,
-                        _ => {}
-                    }
-                }
+                self.expansion(Expansion::Braced, inner, depth, in_double);
             }
             (Some('\''), _) if !in_double => {
                 self.advance(2);
@@ -393,6 +403,49 @@ impl Reader {
         let spelled = self.spelled_since(start);
         w.text.push_str(&spelled);
         w.raw.push_str(&spelled);
+    }
+
+    /// The inside of a `${…}` or `$((…))` whose opening was just read, up to
+    /// its closing `}` or `))`. The `$(…)` and backticks met there go to
+    /// `inner`; each level counts toward [`MAX_DEPTH`], and past it the rest
+    /// is only walked through as text.
+    fn expansion(&mut self, kind: Expansion, inner: &mut Vec<Segment>, depth: usize, in_double: bool) {
+        let depth = depth + 1;
+        let reads = depth < MAX_DEPTH;
+        // The spelling is kept by the caller; this word only takes what the
+        // nested readers write.
+        let mut text = Word::default();
+        let mut open = 0usize;
+        while let Some(c) = self.peek(0) {
+            match (kind, c) {
+                (_, '\\') => self.advance(2),
+                (_, '$') if reads => self.dollar(&mut text, inner, depth, in_double),
+                (_, '`') if reads => {
+                    let start = self.pos;
+                    self.advance(1);
+                    self.substitution(start, &mut text, inner, Close::Backtick, depth);
+                }
+                (_, '"') if reads => self.double_quoted(&mut text, inner, depth),
+                (Expansion::Braced, '\'') if !in_double => self.single_quoted(&mut text),
+                (Expansion::Braced, '{') | (Expansion::Arithmetic, '(') => {
+                    open += 1;
+                    self.advance(1);
+                }
+                (Expansion::Braced, '}') | (Expansion::Arithmetic, ')') if open > 0 => {
+                    open -= 1;
+                    self.advance(1);
+                }
+                (Expansion::Braced, '}') => {
+                    self.advance(1);
+                    return;
+                }
+                (Expansion::Arithmetic, ')') if self.peek(1) == Some(')') => {
+                    self.advance(2);
+                    return;
+                }
+                _ => self.advance(1),
+            }
+        }
     }
 
     /// Read the commands of a substitution that opened at `start`, then keep
@@ -434,9 +487,12 @@ impl Reader {
     }
 
     /// After a line break: the bodies of the heredocs opened on that line,
-    /// each up to the line equal to its delimiter. A body is never a command.
-    fn skip_heredoc_bodies(&mut self) {
-        for (delimiter, strip_tabs) in std::mem::take(&mut self.heredocs) {
+    /// each up to the line equal to its delimiter. A body is text; when its
+    /// delimiter has no quote, the commands of its substitutions go to `out`.
+    fn heredoc_bodies(&mut self, out: &mut Vec<Segment>, depth: usize) {
+        for doc in std::mem::take(&mut self.heredocs) {
+            let body_start = self.pos;
+            let mut body_end = self.chars.len();
             while self.pos < self.chars.len() {
                 let start = self.pos;
                 while self.peek(0).is_some_and(|c| c != '\n') {
@@ -445,13 +501,42 @@ impl Reader {
                 let line = self.spelled_since(start);
                 self.advance(1);
                 let line = line.strip_suffix('\r').unwrap_or(&line);
-                let line = if strip_tabs { line.trim_start_matches('\t') } else { line };
-                if line == delimiter {
+                let line = if doc.strip_tabs { line.trim_start_matches('\t') } else { line };
+                if line == doc.delimiter {
+                    body_end = start;
                     break;
                 }
             }
+            if doc.expands {
+                let body: String = self.chars.get(body_start..body_end).unwrap_or(&[]).iter().collect();
+                out.extend(heredoc_commands(&body, depth));
+            }
         }
     }
+}
+
+/// The commands the terminal runs inside a heredoc body whose delimiter has
+/// no quote: its `$(…)` and backticks, also inside a `${…}` or `$((…))`.
+/// The rest of the body is text, quotes included, and a backslash keeps the
+/// next character as text. The body is read on its own, so a quote left open
+/// inside a substitution never reaches past the body.
+fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
+    let mut reader = Reader { chars: body.chars().collect(), pos: 0, heredocs: Vec::new() };
+    let mut inner = Vec::new();
+    let mut text = Word::default();
+    while let Some(c) = reader.peek(0) {
+        match c {
+            '\\' => reader.advance(2),
+            '$' => reader.dollar(&mut text, &mut inner, depth, true),
+            '`' => {
+                let start = reader.pos;
+                reader.advance(1);
+                reader.substitution(start, &mut text, &mut inner, Close::Backtick, depth);
+            }
+            _ => reader.advance(1),
+        }
+    }
+    inner
 }
 
 /// Close the command being read: resolve its program and push it, followed by
@@ -459,11 +544,8 @@ impl Reader {
 fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
     let Pending { words, redirects, inner } = std::mem::take(cur);
     if !words.is_empty() || !redirects.is_empty() {
-        let start = command_start(&words);
-        let mut rest = words.into_iter().skip(start);
-        let program = rest.next().unwrap_or_default();
-        let segment = Segment { program, args: rest.collect(), redirects };
-        let nested = shell_line(&segment, depth);
+        let segment = simple_command(words, redirects);
+        let nested = run_by(&segment, depth);
         out.push(segment);
         out.extend(inner);
         out.extend(nested);
@@ -472,13 +554,27 @@ fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
     }
 }
 
-/// Where the command really starts: past the structure words, the
-/// `NAME=value` assignments and the wrappers with their options.
+/// The command `words` spell: the program found past the structure words,
+/// the assignments and the wrappers, then its arguments.
+fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
+    let start = command_start(&words);
+    let mut rest = words.into_iter().skip(start);
+    let program = rest.next().unwrap_or_default();
+    Segment { program, args: rest.collect(), redirects }
+}
+
+/// Where the command really starts: past the structure words, a function
+/// definition's head, the `NAME=value` assignments and the wrappers with
+/// their options.
 fn command_start(words: &[Word]) -> usize {
     let mut i = 0;
     while let Some(w) = words.get(i) {
         if (w.is_plain() && STRUCTURE_WORDS.contains(&w.text.as_str())) || is_assignment(w) {
             i += 1;
+            continue;
+        }
+        if w.is_plain() && w.text == FUNCTION_WORD {
+            i += 2;
             continue;
         }
         match wrapper_end(words, i) {
@@ -560,9 +656,10 @@ fn skip_options(words: &[Word], mut i: usize, short_values: &str, long_values: &
     i
 }
 
-/// The line a shell is told to run — `bash -c "…"`, `sh -c "…"`, `eval …` —
-/// read as commands, because the terminal runs it.
-fn shell_line(seg: &Segment, depth: usize) -> Vec<Segment> {
+/// The commands a command runs by itself, read as commands: the line a shell
+/// is told to run (`bash -c "…"`, `sh -c "…"`, `eval …`) and the command of
+/// each `find` action.
+fn run_by(seg: &Segment, depth: usize) -> Vec<Segment> {
     if depth >= MAX_DEPTH {
         return Vec::new();
     }
@@ -572,9 +669,39 @@ fn shell_line(seg: &Segment, depth: usize) -> Vec<Segment> {
             Some(line) => line.to_string(),
             None => return Vec::new(),
         },
+        "find" => return find_actions(&seg.args, depth),
         _ => return Vec::new(),
     };
     read_line(&line, depth + 1)
+}
+
+/// The command of each `-exec`, `-execdir`, `-ok` and `-okdir` of a `find`,
+/// up to the `;` (or the `+` right after `{}`) that ends it, each followed by
+/// the commands it runs in turn.
+fn find_actions(args: &[Word], depth: usize) -> Vec<Segment> {
+    let mut out = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if !matches!(arg.text.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
+            continue;
+        }
+        let mut words: Vec<Word> = Vec::new();
+        for w in rest.by_ref() {
+            let ends = w.text == ";" || (w.text == "+" && words.last().is_some_and(|last| last.text == "{}"));
+            if ends {
+                break;
+            }
+            words.push(w.clone());
+        }
+        if words.is_empty() {
+            continue;
+        }
+        let action = simple_command(words, Vec::new());
+        let nested = run_by(&action, depth + 1);
+        out.push(action);
+        out.extend(nested);
+    }
+    out
 }
 
 /// The command string of a shell called with `-c` (alone or in a group like
@@ -606,10 +733,10 @@ fn base_name(text: &str) -> &str {
     text.rsplit('/').next().unwrap_or(text)
 }
 
-/// The word boundaries of the command guard, for
-/// [`mustard_core::domain::text::has_word_sequence`]: a letter or digit is a
-/// word char and `_` is not (`git_push` has a boundary before `push`). With
-/// two words it is the `\bA\s+B\b` shape of `bash-safety.js`.
+/// The word boundaries the commit review uses to find `git commit` in the raw
+/// text, for [`mustard_core::domain::text::has_word_sequence`]: a letter or
+/// digit is a word char and `_` is not (`git_commit` has a boundary before
+/// `commit`), and two words match when only blanks separate them.
 pub(super) const SHELL_WORDS: Boundaries =
     Boundaries { word_chars: WordChars::Alphanumeric, left: true, right: true };
 
@@ -666,13 +793,12 @@ pub(super) fn mask_quoted_operators(cmd: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| cmd.to_string())
 }
 
-/// `true` when `c` separates one shell command from the next: `&`, `|`, `;`,
-/// or a newline. Newlines matter because the Bash tool routinely receives
-/// multi-line `command` strings (a sanity `echo` on line 1, the real `rtk …`
-/// on line 2); bash treats the line break exactly like `;`, so the segment
-/// splitters must too — otherwise an `rtk`-prefixed later line is invisible to
-/// the "already wrapped" short-circuit and the gate wrongly denies the whole
-/// command.
+/// `true` when `c` separates one shell command from the next in the raw text:
+/// `&`, `|`, `;`, or a line break. The Bash tool often receives several lines
+/// in one `command`, and the terminal treats a line break exactly like `;`,
+/// so the gates that split the raw text (the native-tool advice, the commit
+/// review, the pull-request detection) split there too and see the command
+/// of every line.
 pub(super) fn is_cmd_separator(c: char) -> bool {
     c == '&' || c == '|' || c == ';' || c == '\n' || c == '\r'
 }
@@ -790,6 +916,87 @@ mod tests {
     }
 
     #[test]
+    fn a_substitution_inside_a_braced_variable_or_arithmetic_is_read() {
+        for cmd in [
+            "echo ${X:-$(rm -rf x)}",
+            r#"echo "${X:-$(rm -rf x)}""#,
+            "echo ${X:-`rm -rf x`}",
+            "echo ${X:-${Y:-$(rm -rf x)}}",
+            "echo $(( $(rm -rf x) + 1 ))",
+            r#"echo "$(( `rm -rf x` * 2 ))""#,
+        ] {
+            let found = segments(cmd);
+            assert!(found.iter().any(|s| s.name() == "rm" && texts(&s.args) == ["-rf", "x"]), "{cmd}: {found:?}");
+        }
+        // The expansion stays one word of text around the command it holds.
+        let found = segments("echo ${X:-$(a)} b; c");
+        assert_eq!(programs("echo ${X:-$(a)} b; c"), ["echo", "a", "c"]);
+        assert_eq!(texts(&found[0].args), ["${X:-$(a)}", "b"]);
+        // Single quotes keep the substitution as text, inside or around it.
+        assert_eq!(programs("echo ${X:-'$(rm -rf x)'}"), ["echo"]);
+        assert_eq!(programs("echo '${X:-$(rm -rf x)}'"), ["echo"]);
+    }
+
+    #[test]
+    fn a_heredoc_with_an_unquoted_delimiter_runs_its_substitutions() {
+        for cmd in [
+            "cat <<EOF\n$(rm -rf x)\nEOF",
+            "cat <<EOF\nantes `rm -rf x` depois\nEOF",
+            "cat <<-EOF\n\t${X:-$(rm -rf x)}\n\tEOF",
+            "git commit -F - <<EOF\nfix: $(rm -rf x)\nEOF",
+        ] {
+            let found = segments(cmd);
+            assert!(found.iter().any(|s| s.name() == "rm" && texts(&s.args) == ["-rf", "x"]), "{cmd:?}: {found:?}");
+        }
+        // The commands of the body come after the line that opened it.
+        assert_eq!(programs("cat <<EOF; b\n$(a)\nEOF\nc"), ["cat", "b", "a", "c"]);
+        // A quoted or escaped delimiter keeps the whole body as text, and an
+        // escaped `$` is text in any body.
+        for cmd in [
+            "cat <<'EOF'\n$(rm -rf x)\nEOF",
+            "cat <<\"EOF\"\n`rm -rf x`\nEOF",
+            "cat <<\\EOF\n$(rm -rf x)\nEOF",
+            "cat <<EOF\n\\$(rm -rf x)\nEOF",
+            "cat <<EOF\nrm -rf x\nEOF",
+        ] {
+            assert_eq!(programs(cmd), ["cat"], "{cmd:?}");
+        }
+        // A quote left open inside a substitution of the body stays there.
+        assert_eq!(programs("cat <<EOF\n$(echo it's)\nEOF\nls"), ["cat", "echo", "ls"]);
+    }
+
+    #[test]
+    fn a_find_action_is_read_as_its_own_command() {
+        let found = segments("find . -type d -name build -exec rm -rf {} + -print");
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!((found[0].name(), found[1].name()), ("find", "rm"));
+        assert_eq!(texts(&found[1].args), ["-rf", "{}"]);
+        for cmd in [
+            r"find . -execdir rm -rf {} \;",
+            "find . -ok rm -rf {} ';'",
+            "find . -okdir sudo rm -rf {} +",
+            r#"find . -exec bash -c 'rm -rf "$1"' _ {} \;"#,
+            r"find . -exec echo {} \; -exec rm -rf {} +",
+        ] {
+            let found = segments(cmd);
+            assert!(found.iter().any(|s| s.name() == "rm"), "{cmd}: {found:?}");
+        }
+        assert_eq!(programs("find . -name '*.rs' -print"), ["find"]);
+        // A `+` that does not follow `{}` belongs to the command.
+        let plus = segments(r"find . -exec expr 1 + 1 \;");
+        assert_eq!(texts(&plus[1].args), ["1", "+", "1"]);
+    }
+
+    #[test]
+    fn a_function_definition_does_not_hide_its_body() {
+        assert_eq!(programs("function f { rm -rf x; }; f"), ["rm", "", "f"]);
+        let found = segments("function limpa() { rm -rf x; }");
+        assert!(found.iter().any(|s| s.name() == "rm" && texts(&s.args) == ["-rf", "x"]), "{found:?}");
+        // Quoted, the word is a program name like any other.
+        assert_eq!(programs("'function' f"), ["function"]);
+    }
+
+    #[test]
     fn a_comment_is_not_a_command() {
         assert_eq!(programs("ls # rm -rf x"), ["ls"]);
         assert_eq!(programs("# rm -rf x\nls"), ["ls"]);
@@ -852,6 +1059,30 @@ mod tests {
         assert_eq!(found[0].program.text, "echo");
         assert!(found.len() <= MAX_DEPTH + 1, "{}", found.len());
         for odd in ["", "\\", "'", "\"", "$(", "`", "<<", "2>", "&>", ")", "((", "$((", "${", "$'", "cat <<EOF"] {
+            let _ = segments(odd);
+        }
+    }
+
+    /// Braced variables, arithmetic and heredoc bodies nest too; each level
+    /// counts toward the same limit, so a very deep text neither panics nor
+    /// runs out of stack.
+    #[test]
+    fn deep_expansions_and_heredocs_stop_descending_and_never_panic() {
+        let braced = format!("echo {}$(rm -rf x){}", "${X:-".repeat(40), "}".repeat(40));
+        assert_eq!(programs(&braced), ["echo"]);
+        let shallow = format!("echo {}$(rm -rf x){}", "${X:-".repeat(4), "}".repeat(4));
+        assert_eq!(programs(&shallow), ["echo", "rm"]);
+        for deep in [
+            "${".repeat(10_000),
+            "$((".repeat(10_000),
+            "echo \"${X:-\"".repeat(5_000),
+            "cat <<EOF\n$(cat <<EOF\n".repeat(200),
+            "find . -exec ".repeat(1_000),
+            "function ".repeat(1_000),
+        ] {
+            let _ = segments(&deep);
+        }
+        for odd in ["${$(", "$(( $(", "${`", "cat <<EOF\n$(", "cat <<EOF\n`", "cat <<EOF\n${", "find -exec", "function"] {
             let _ = segments(odd);
         }
     }

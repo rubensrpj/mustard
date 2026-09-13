@@ -5,7 +5,8 @@
 //! and looks only at the program and its options. A commit message, a title
 //! or any other quoted text that merely names a dangerous command passes; what
 //! the terminal would really run is judged, including the command inside
-//! `$(…)` and the line handed to `bash -c "…"`.
+//! `$(…)` (also inside `${…}`, `$((…))` and a heredoc whose delimiter has no
+//! quote), the line handed to `bash -c "…"` and the command of `find -exec`.
 //!
 //! Seven dangers, all of them work lost for good: deleting a folder by force,
 //! four ways of discarding changes (`git reset --hard`, `git clean -f`,
@@ -134,18 +135,19 @@ fn clean_force(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
         .then_some(Danger::CleanForce)
 }
 
-/// `git checkout` over the whole tree: the path `.`, after `--` or alone.
+/// `git checkout` over the whole tree (see [`is_whole_tree`]), after `--`
+/// or alone.
 fn checkout_all(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
     let args = git_subcommand(seg, "checkout")?;
-    operands(args).any(|p| p == ".").then_some(Danger::CheckoutAll)
+    operands(args).any(is_whole_tree).then_some(Danger::CheckoutAll)
 }
 
-/// `git restore` of the path `.` that touches the files: `--staged` alone
-/// only takes the changes out of the index, and passes; with `--worktree` it
-/// discards them.
+/// `git restore` of the whole tree (see [`is_whole_tree`]) that touches the
+/// files: `--staged` alone only takes the changes out of the index, and
+/// passes; with `--worktree` it discards them.
 fn restore_all(seg: &Segment, _: &BTreeSet<String>) -> Option<Danger> {
     let args = git_subcommand(seg, "restore")?;
-    if !operands(args).any(|p| p == ".") {
+    if !operands(args).any(is_whole_tree) {
         return None;
     }
     let (mut staged, mut worktree) = (false, false);
@@ -209,6 +211,22 @@ fn git_subcommand<'a>(seg: &'a Segment, name: &str) -> Option<&'a [Word]> {
         }
     }
     None
+}
+
+/// A path that takes in the whole tree, or at least the current folder: `.`,
+/// `./`, `..`, `*`, `**`, any of them joined by `/` (`./*`), and the top of
+/// the repository `:/` (or `:(top)`), alone or followed by one of them. A
+/// named file or folder (`src/a.rs`, `:/src`) is not the whole tree.
+fn is_whole_tree(path: &str) -> bool {
+    let (top, rest) = match path.strip_prefix(":/").or_else(|| path.strip_prefix(":(top)")) {
+        Some(rest) => (true, rest),
+        None => (false, path),
+    };
+    let mut parts = rest.split('/').filter(|part| !part.is_empty()).peekable();
+    if parts.peek().is_none() {
+        return top;
+    }
+    parts.all(|part| matches!(part, "." | ".." | "*" | "**"))
 }
 
 /// The options of a command: the words before `--` that start with `-`.
@@ -319,6 +337,81 @@ mod tests {
         );
         assert_blocked(&[r#"bash -c "git reset --hard""#], &Danger::ResetHard);
         assert_passes(&[r#"git commit -m "tira o rm -rf""#, "echo '$(rm -rf pasta)'"]);
+    }
+
+    #[test]
+    fn a_substitution_inside_an_expansion_is_judged() {
+        assert_blocked(
+            &["echo ${X:-$(rm -rf pasta)}", r#"echo "${X:-$(rm -rf pasta)}""#, "echo $(( $(rm -rf pasta) + 1 ))"],
+            &Danger::RecursiveForceDelete,
+        );
+        assert_blocked(&["echo ${X:-`git reset --hard`}"], &Danger::ResetHard);
+        assert_passes(&["echo ${X:-pasta} $((1 + 2))", "echo '${X:-$(rm -rf pasta)}'"]);
+    }
+
+    /// The terminal runs the substitutions of a heredoc whose delimiter has no
+    /// quote; a quoted delimiter, the usual commit message, keeps it all text.
+    #[test]
+    fn a_heredoc_with_an_unquoted_delimiter_has_its_substitutions_judged() {
+        assert_blocked(
+            &["cat <<EOF\n$(rm -rf pasta)\nEOF", "cat <<-EOF\n\t$(rm -rf pasta)\n\tEOF"],
+            &Danger::RecursiveForceDelete,
+        );
+        assert_blocked(&["cat <<EOF\n`git reset --hard`\nEOF"], &Danger::ResetHard);
+        assert_passes(&[
+            "cat <<'EOF'\n$(rm -rf pasta)\nEOF",
+            "git commit -F - <<'EOF'\nfix: tira o `rm -rf` e o $(git reset --hard)\nEOF",
+            "git commit -m \"$(cat <<'EOF'\nfix: tira o `rm -rf pasta`\nEOF\n)\"",
+            "git commit -F - <<EOF\nrm -rf pasta\ngit reset --hard\nEOF",
+        ]);
+    }
+
+    #[test]
+    fn discarding_the_whole_tree_in_any_spelling_is_blocked() {
+        assert_blocked(
+            &[
+                "git checkout -- ./",
+                "git checkout -- :/",
+                "git checkout -- '*'",
+                "git checkout HEAD -- ./*",
+                "git checkout -- ':(top)'",
+                "git checkout ..",
+            ],
+            &Danger::CheckoutAll,
+        );
+        assert_blocked(
+            &["git restore ./", "git restore :/", r#"git restore "*""#, "git restore -- ..", "git restore -SW :/."],
+            &Danger::RestoreAll,
+        );
+        assert_passes(&[
+            "git restore arquivo.rs",
+            "git restore :/src/a.rs",
+            "git restore 'src/*'",
+            "git checkout -- ./src",
+            "git restore --staged :/",
+            "git restore --staged ./",
+        ]);
+    }
+
+    #[test]
+    fn the_command_of_a_find_action_is_judged() {
+        assert_blocked(
+            &[
+                "find . -type d -name build -exec rm -rf {} +",
+                r"find . -execdir rm -rf {} \;",
+                "find . -ok sudo rm -rf {} ';'",
+            ],
+            &Danger::RecursiveForceDelete,
+        );
+        assert_blocked(&[r"find . -name .git -execdir git reset --hard \;"], &Danger::ResetHard);
+        assert_passes(&["find . -name x -exec rm {} +", "find . -name '*.tmp' -print", r"find . -exec echo 'rm -rf pasta' \;"]);
+    }
+
+    #[test]
+    fn the_body_of_a_function_is_judged() {
+        assert_blocked(&["function f { rm -rf pasta; }; f", "function f() { rm -rf pasta; }"], &Danger::RecursiveForceDelete);
+        assert_blocked(&["function limpa { git reset --hard; }"], &Danger::ResetHard);
+        assert_passes(&["function f { echo 'rm -rf pasta'; }"]);
     }
 
     #[test]

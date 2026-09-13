@@ -167,9 +167,10 @@ mod tests {
         }
     }
 
-    /// End-to-end force-push law through the dispatcher: the reordered force
-    /// push is caught by the residue, while `--force-with-lease` (the safe
-    /// form the product allows) passes the whole chain.
+    /// End-to-end force push through the dispatcher: `--force` written after
+    /// the branch is still a force push and is refused, while
+    /// `--force-with-lease` (the safe form the product allows) passes the
+    /// whole chain.
     #[test]
     fn force_push_denied_lease_allowed_through_chain() {
         assert!(verdict_for("git push origin dev --force").is_blocking());
