@@ -161,7 +161,7 @@ Entende o pedido, pesquisa o repositório via *digest* do scan (nunca lendo font
 | **Despacho** | pelo roteador; atalho: `/mustard:feature <request>` |
 | **Fases** | `ANALYZE → (rota/escopo) → PLAN (só Full) → EXECUTE → REVIEW → QA → CLOSE` |
 | **Backend** | `feature` (digest) · `spec-draft` · `plan-prepare` · `analyze-validation` · `emit-pipeline`/`emit-phase` · `exec-rewave-check` · `dependency-precheck` · `agent-prompt-render` · `qa-run` |
-| **Lei** | Nenhum código antes da spec aprovada (o hook `scope_guard` recusa de qualquer forma); Full para no PLAN — só `/mustard:spec` destrava o EXECUTE |
+| **Lei** | Nenhum código antes da spec aprovada (o portão de escrita, `write_gate`, recusa de qualquer forma); Full para no PLAN — só `/mustard:spec` destrava o EXECUTE |
 
 ```mermaid
 flowchart TD

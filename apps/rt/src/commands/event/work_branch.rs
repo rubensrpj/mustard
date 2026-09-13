@@ -1516,7 +1516,7 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
 #[cfg(test)]
 mod tests {
     // -----------------------------------------------------------------------
-    // Auto-branch name computation (porta-unica)
+    // Auto-branch name computation
     // -----------------------------------------------------------------------
 
     use crate::shared::work_kind::{BaseFlow, WorkKind, CUT_BASE_FILE};

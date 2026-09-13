@@ -109,7 +109,7 @@ const EVENT_ECONOMY_OPERATION_INVOKED: &str = "pipeline.economy.operation.invoke
 /// plus the legacy `pipeline.phase` (alias-only), plus the `pipeline.wave.start`
 /// signal, plus the 4 new canonical state-model kinds, plus the 3
 /// `hygiene.*` kinds, plus the 1 `pipeline.economy.*` kind, plus the
-/// `pipeline.kind` work-type signal (porta-unica). A literal list — no magic
+/// `pipeline.kind` work-type signal. A literal list — no magic
 /// alias resolution (cf. memory `project_emit_pipeline_kind_full_prefix`).
 const KNOWN_KINDS: &[&str] = &[
     EVENT_PIPELINE_SCOPE,
@@ -918,7 +918,7 @@ fn apply_wave_complete(cwd: &Path, spec: &str, payload: &Value, ts: &str) {
     bump_parent_progress(cwd, spec, wave, ts);
 }
 
-/// `pipeline.kind` effect (porta-unica work-type signal): pre-compute the
+/// `pipeline.kind` effect (the work-type signal): pre-compute the
 /// branch name this work unit will be cut on and persist it as the session's
 /// `pending-work-branch` marker (the cut `spec-draft` takes reads it back; a
 /// request that never drafts a spec never consumes it). Returns the branch so `run()` can echo
@@ -2140,7 +2140,7 @@ mod tests {
     fn known_kinds_list_covers_legacy_and_new_kinds() {
         // 9 legacy + 1 legacy phase (alias-only) + 1 wave.start + 2 new
         // canonical + 3 hygiene + 1 economy + 1
-        // pipeline.kind (porta-unica work-type signal).
+        // pipeline.kind (the work-type signal).
         assert_eq!(KNOWN_KINDS.len(), 18);
         // Legacy nine.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_SCOPE));
@@ -2153,7 +2153,7 @@ mod tests {
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PAUSE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_RESUME_MODE));
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_COMPLETE));
-        // Work-type signal (porta-unica).
+        // Work-type signal.
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_KIND));
         // Legacy phase (alias-only).
         assert!(KNOWN_KINDS.contains(&EVENT_PIPELINE_PHASE));

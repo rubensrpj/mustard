@@ -134,8 +134,8 @@ impl Registry {
                 // `context-budget` (PreToolUse(Task) prompt-size gate) +
                 // `output-budget` (PostToolUse(Task) return-size advisory).
                 // Both flow through the `Check` — the over-budget advisory is
-                // an `Inject` verdict, not a raw stdout write (Wave-5 fix of
-                // the Wave-3 `budget::observe` stdout-bypass Concern).
+                // an `Inject` verdict, not a raw stdout write (the old
+                // `budget::observe` wrote to stdout, around the contract).
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Task")),
                     (Trigger::PreToolUse, ToolMatch::Named("Agent")),
@@ -820,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn wave5_session_families_apply_to_their_events() {
+    fn the_session_families_apply_to_their_events() {
         let registry = Registry::new();
         // `session_start_inject` on SessionStart.
         assert!(applicable_ids(&registry, Trigger::SessionStart, None)
@@ -875,7 +875,7 @@ mod tests {
     #[test]
     fn write_edit_family_applies_on_pre_tool_use() {
         let registry = Registry::new();
-        // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
+        // The Write/Edit gates fire on PreToolUse(Write) and (Edit).
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
             for want in ["size_gate", "write_gate", "boundary_gate", "close_gate"] {
