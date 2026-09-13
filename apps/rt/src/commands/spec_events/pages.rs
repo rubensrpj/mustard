@@ -35,10 +35,24 @@ struct SpecFiles {
     html: PathBuf,
 }
 
+/// A spec foi aberta pelo `spec-draft`: o `meta.json` dele está na pasta, e o
+/// `spec.md` é o documento que ele escreveu. Ali a página e o `.md` nunca são
+/// refeitos do arquivo de eventos, que apagaria o texto da spec: o `write` só
+/// grava o evento, e o `page --spec` recusa. A única conferência disso.
+pub(crate) fn drafted_by_spec_draft(root: &Path, spec: &str) -> bool {
+    ClaudePaths::for_project(root)
+        .and_then(|paths| paths.for_spec(spec.trim()))
+        .is_ok_and(|paths| paths.meta_json_path().is_file())
+}
+
 /// Refaz o `spec.md` e o `spec.html` da spec `spec` do projeto `root`, com os
 /// rótulos no idioma `lang`, lendo o arquivo de eventos com a trava presa.
-/// Recusa um nome que não é de spec e uma spec sem arquivo de eventos.
+/// Recusa um nome que não é de spec, uma spec sem arquivo de eventos e uma
+/// spec do `spec-draft`.
 pub(crate) fn refresh(root: &Path, spec: &str, lang: Locale) -> Result<SpecPages, Refusal> {
+    if drafted_by_spec_draft(root, spec) {
+        return Err(Refusal::DraftedSpec { spec: spec.trim().to_string() });
+    }
     let files = spec_files(root, spec)?;
     store::with_locked_log(&files.events, |log| write_pages(root, spec, &files, log, lang))?
         .unwrap_or_else(|| Err(Refusal::NoSpecFile { spec: spec.trim().to_string() }))
@@ -77,4 +91,30 @@ fn write_pages(
 /// caminho da máquina.
 pub(crate) fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Numa spec do `spec-draft`, o `page --spec` recusa e não toca no
+    /// `spec.md` dele, nem cria a página.
+    #[test]
+    fn the_page_is_never_rebuilt_over_a_drafted_spec() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("rascunho");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# Rascunho\n\nO texto da spec.\n").unwrap();
+        let plan = serde_json::json!({ "phase": "plan" });
+        store::write(&spec_dir.join("spec.ndjson"), "state", plan.as_object().cloned().unwrap(), &[])
+            .unwrap();
+
+        let refused = refresh(root, "rascunho", Locale::PtBr).unwrap_err();
+        assert_eq!(refused.reason(), "drafted-spec");
+        assert_eq!(std::fs::read_to_string(spec_dir.join("spec.md")).unwrap(), "# Rascunho\n\nO texto da spec.\n");
+        assert!(!spec_dir.join("spec.html").exists(), "no page over a draft");
+    }
 }

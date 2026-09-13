@@ -75,22 +75,13 @@ impl SpecState for DiskSpecState {
 }
 
 /// A spec `spec` do projeto em `root` foi aprovada pelo usuário: o estado
-/// dela, lido do `spec.ndjson`, está numa fase de spec aprovada. A única
-/// resposta a "está aprovada?": o `approve-spec`, a retomada, o `status`, a
-/// página da spec e o `wave-scaffold` perguntam aqui.
+/// dela, lido do `spec.ndjson` (o do checkout principal, num worktree), está
+/// numa fase de spec aprovada. A única resposta a "está aprovada?": o
+/// `approve-spec`, a retomada, o `status`, a página da spec e o
+/// `wave-scaffold` perguntam aqui.
 #[must_use]
 pub(crate) fn approved(root: &Path, spec: &str) -> bool {
     DiskSpecState::new(root).state(spec).is_some_and(|state| state.approved)
-}
-
-/// O mesmo que [`approved`], lido do `spec.ndjson` da pasta `spec_dir`, para
-/// quem só tem a pasta da spec.
-#[must_use]
-pub(crate) fn approved_in(spec_dir: &Path) -> bool {
-    store::read(&spec_dir.join("spec.ndjson"))
-        .ok()
-        .flatten()
-        .is_some_and(|log| State::from_log(&log).approved)
 }
 
 /// A aprovação que vale de uma spec: a pergunta, a opção que o usuário
@@ -245,6 +236,80 @@ mod tests {
         assert_eq!(active_spec(root, None), None);
     }
 
+    /// Cada leitor de "está aprovada?", chamado como ele se chama, sobre o
+    /// checkout em `root` e a pasta `spec_dir` da spec `epic` vista dali.
+    fn readers(root: &Path, spec_dir: &Path) -> Vec<(&'static str, bool)> {
+        let root_str = root.to_string_lossy();
+        vec![
+            ("approve-spec", !crate::commands::spec::approve_spec::approval_missing(&root_str, "epic")),
+            (
+                "resume-bootstrap",
+                crate::commands::pipeline::resume_bootstrap::bootstrap(root, "epic").approved_by_user,
+            ),
+            ("status", crate::commands::pipeline::status::approval_of(root, "epic").is_some()),
+            ("spec-doc", crate::commands::spec::spec_doc::is_approved(root, "epic")),
+            ("wave-scaffold", crate::commands::wave::wave_scaffold::is_approved(spec_dir)),
+        ]
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed");
+    }
+
+    /// Um repositório com um commit na `dev` e, fora do git como o Mustard
+    /// fica, o `mustard.json` e a pasta da spec `spec`; e um worktree ligado,
+    /// parado na branch `feature/<spec>`, sem nada do Mustard.
+    fn main_and_worktree(tmp: &Path, spec: &str) -> (PathBuf, PathBuf) {
+        let main = tmp.join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["config", "user.email", "t@example.com"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-q", "-b", "dev"]);
+        std::fs::write(main.join("README.md"), "oi\n").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-q", "-m", "init"]);
+        std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
+        std::fs::create_dir_all(main.join(".claude").join("spec").join(spec)).unwrap();
+        let wt = tmp.join("wt");
+        let branch = format!("feature/{spec}");
+        git(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", &branch]);
+        (main, wt)
+    }
+
+    /// Num worktree ligado, o `.git` é um arquivo que aponta a pasta do git
+    /// dele: o degrau da branch lê o `HEAD` por ali, e a pasta da spec no
+    /// checkout principal, sem rodar o git.
+    #[test]
+    fn a_linked_worktree_names_its_spec_by_the_branch() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let tmp = tempdir().unwrap();
+        let (_main, wt) = main_and_worktree(tmp.path(), "x");
+        assert!(wt.join(".git").is_file(), "the fixture is a real linked worktree");
+        assert_eq!(active_spec(&wt.to_string_lossy(), None).as_deref(), Some("x"));
+    }
+
+    /// Vistos de um worktree ligado, os leitores respondem pelo estado do
+    /// checkout principal: uma spec aprovada ali é aprovada para todos.
+    #[test]
+    fn every_reader_agrees_from_a_linked_worktree() {
+        let tmp = tempdir().unwrap();
+        let (main, wt) = main_and_worktree(tmp.path(), "epic");
+        approve_in(&main.join(".claude").join("spec").join("epic"));
+        let seen_from = wt.join(".claude").join("spec").join("epic");
+        for (reader, approved) in readers(&wt, &seen_from) {
+            assert!(approved, "{reader} misses the approval from the worktree");
+        }
+    }
+
     /// Os leitores de "está aprovada?" dão a mesma resposta que o estado, lado
     /// a lado: o `approve-spec`, a retomada, o `status`, a página da spec e o
     /// `wave-scaffold`, com a spec em plano e depois de aprovada.
@@ -252,25 +317,13 @@ mod tests {
     fn every_reader_of_the_approval_agrees_with_the_state() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let root_str = root.to_str().unwrap();
         let spec_dir = root.join(".claude").join("spec").join("epic");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let plan = serde_json::json!({ "phase": "plan" });
         store::write(&spec_dir.join("spec.ndjson"), "state", plan.as_object().cloned().unwrap(), &[])
             .unwrap();
 
-        let readers = || -> Vec<(&str, bool)> {
-            vec![
-                ("approve-spec", !crate::commands::spec::approve_spec::approval_missing(root_str, "epic")),
-                (
-                    "resume-bootstrap",
-                    crate::commands::pipeline::resume_bootstrap::bootstrap(root, "epic").approved_by_user,
-                ),
-                ("status", crate::commands::pipeline::status::approval_of(root, "epic").is_some()),
-                ("spec-doc", crate::commands::spec::spec_doc::is_approved(root, "epic")),
-                ("wave-scaffold", crate::commands::wave::wave_scaffold::is_approved(&spec_dir)),
-            ]
-        };
+        let readers = || readers(root, &spec_dir);
         let disk = DiskSpecState::new(root);
         for (reader, approved) in readers() {
             assert_eq!(approved, disk.state("epic").unwrap().approved, "{reader} disagrees in plan");

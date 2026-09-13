@@ -36,6 +36,10 @@
 //!
 //! Quem grava por dentro do binário, como a testemunha da aprovação e o
 //! `spec-draft`, usa [`record`], a mesma gravação deste comando.
+//!
+//! Um `state` com a fase `approved` é recusado aqui: a aprovação nasce só da
+//! resposta do usuário à pergunta de aprovação, e quem a grava é a
+//! testemunha, pelo [`record`].
 
 use std::path::{Path, PathBuf};
 
@@ -88,6 +92,11 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             Refusal::UnknownType { found: event_type.to_string() }
         });
     };
+    if event_type == "state"
+        && draft.get("phase").and_then(Value::as_str).map(str::trim) == Some("approved")
+    {
+        return refuse(Refusal::ApprovalByWitnessOnly { spec: spec.trim().to_string() });
+    }
     match record_in(&project, &opts.root, spec, event_type, draft) {
         Ok(Recorded { written, pages }) => {
             let mut report = json!({
@@ -154,7 +163,7 @@ fn record_in(
 ) -> Result<Recorded, Refusal> {
     let path = store::spec_file(&project.root, spec)?;
     let roots = store::citation_roots(start, &project.root);
-    let drafted = drafted_by_spec_draft(&project.root, spec);
+    let drafted = super::pages::drafted_by_spec_draft(&project.root, spec);
     // A página e o `.md` acompanham cada gravação e são refeitos antes de a
     // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
     // outra sessão, só entra depois, e refaz os dois por último.
@@ -192,12 +201,46 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str) -> bool {
     record(start, spec, "state", draft).is_ok()
 }
 
-/// A spec foi aberta pelo `spec-draft`: o `meta.json` dele está na pasta, e o
-/// `spec.md` é o documento que ele escreveu.
-fn drafted_by_spec_draft(root: &Path, spec: &str) -> bool {
-    ClaudePaths::for_project(root)
+/// O nascimento de uma spec aberta fora do arquivo de eventos — pelo
+/// `spec-draft`, pelo `tactical-fix-create` ou, numa spec aberta antes dele,
+/// pela testemunha da aprovação: um `state` na fase `plan`, com a branch da
+/// spec e a base de que ela foi cortada, quando se sabem, pela mesma gravação
+/// do `run write`.
+///
+/// A branch é `branch`, quando o chamador a sabe (a que o rascunho cortou, a
+/// da spec-mãe de um tactical fix); senão, a do checkout, quando ela é a
+/// desta spec. A base vem do `meta.json` da spec. Só na primeira vez: uma spec
+/// que já tem fase, aprovada ou não, fica como está, e um rascunho refeito
+/// nunca desfaz uma aprovação. `Ok(true)` quando gravou.
+pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Result<bool, Refusal> {
+    if DiskSpecState::new(start).state(spec).is_some_and(|state| state.phase.is_some()) {
+        return Ok(false);
+    }
+    let branch = branch.map(str::to_string).or_else(|| branch_of_spec(start, spec));
+    let base = ClaudePaths::for_project(start)
         .and_then(|paths| paths.for_spec(spec.trim()))
-        .is_ok_and(|paths| paths.meta_json_path().is_file())
+        .ok()
+        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()))
+        .and_then(|meta| meta.base);
+    let mut draft = Map::new();
+    draft.insert("phase".to_string(), json!("plan"));
+    draft.insert("author".to_string(), json!("binary"));
+    if let Some(branch) = branch {
+        draft.insert("branch".to_string(), json!(branch));
+    }
+    if let Some(base) = base {
+        draft.insert("base".to_string(), json!(base));
+    }
+    record(start, spec, "state", draft).map(|_| true)
+}
+
+/// A branch do checkout em `start`, quando ela é a da spec `spec`.
+fn branch_of_spec(start: &Path, spec: &str) -> Option<String> {
+    use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
+    let config = mustard_core::ProjectConfig::load(start);
+    let vcs = config.vcs()?;
+    let current = current_branch(&vcs, &start.to_string_lossy())?;
+    (slug_of_work_branch(&current, &config).as_deref() == Some(spec.trim())).then_some(current)
 }
 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
@@ -355,6 +398,33 @@ mod tests {
         assert!(std::fs::read_to_string(spec.join("spec.ndjson")).unwrap().contains("\"plan\""));
         let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
         assert!(index.contains("\"teste\""), "{index}");
+    }
+
+    /// A aprovação não se grava à mão: um `state` com a fase `approved` é
+    /// recusado pelo `run write`, e nada é gravado; a porta da testemunha, o
+    /// `record`, grava.
+    #[test]
+    fn an_approval_is_never_written_by_hand() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "state", r#"{"phase":"plan"}"#);
+        let forged = write(
+            root,
+            "state",
+            r#"{"phase":" approved","author":"user","witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}}"#,
+        );
+        assert_eq!(forged["reason"], json!("approval-by-witness-only"), "{forged}");
+        assert!(forged["hint"].as_str().unwrap().contains("teste"), "{forged}");
+        let events = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        assert_eq!(std::fs::read_to_string(&events).unwrap().lines().count(), 1, "nothing was written");
+
+        let draft = json!({
+            "phase": "approved",
+            "author": "user",
+            "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
+        });
+        assert!(record(root, "teste", "state", draft.as_object().cloned().unwrap()).is_ok());
+        assert_eq!(std::fs::read_to_string(&events).unwrap().lines().count(), 2);
     }
 
     #[test]

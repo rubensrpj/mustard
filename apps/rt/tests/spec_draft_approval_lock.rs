@@ -139,6 +139,16 @@ fn a_drafted_spec_blocks_code_until_the_user_approves() {
     answer(root, "Ajustar");
     assert!(edit_is_blocked(root), "adjusting keeps the lock");
 
+    // Com a narrativa ainda semeada, "Aprovar" não grava: as conferências do
+    // `approve-spec` vêm antes, e o motivo vai ao assistente.
+    let said = answer(root, "Aprovar");
+    assert!(!said.contains("/clear"), "an unmet precondition records nothing: {said}");
+    assert!(edit_is_blocked(root), "the lock stays while the spec cannot be approved");
+
+    // A spec escrita, sem texto semeado e sem critério a provar.
+    std::fs::write(spec_dir.join("spec.md"), "# Cadastro de clientes\n\n## Contexto\n\nClientes se cadastram sozinhos.\n")
+        .unwrap();
+
     // "Aprovar" grava a aprovação, e o código passa.
     let said = answer(root, "Aprovar");
     assert!(said.contains("/clear"), "the witness suggests /clear: {said}");
@@ -152,7 +162,7 @@ fn text_files(dir: &Path, out: &mut Vec<(std::path::PathBuf, String)>) {
         let path = entry.path();
         if path.is_dir() {
             text_files(&path, out);
-        } else if matches!(path.extension().and_then(|e| e.to_str()), Some("rs" | "md"))
+        } else if matches!(path.extension().and_then(|e| e.to_str()), Some("rs" | "md" | "ts" | "tsx"))
             && let Ok(body) = std::fs::read_to_string(&path)
         {
             out.push((path, body));
@@ -161,13 +171,20 @@ fn text_files(dir: &Path, out: &mut Vec<(std::path::PathBuf, String)>) {
 }
 
 /// A marca de aprovação saiu do código: nenhum arquivo de produção a grava
-/// nem a lê, e a prosa do plugin não a ensina. Cada arquivo Rust é cortado no
-/// primeiro módulo de teste.
+/// nem a lê, e nem a prosa do plugin nem o painel a ensinam. Cada arquivo
+/// Rust é cortado no primeiro módulo de teste.
 #[test]
 fn the_approval_marker_is_gone_from_the_code() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
-    for dir in ["apps/rt/src", "apps/cli/src", "packages/core/src", "plugin"] {
+    for dir in [
+        "apps/rt/src",
+        "apps/cli/src",
+        "packages/core/src",
+        "plugin",
+        "apps/dashboard/src",
+        "apps/dashboard/server/src",
+    ] {
         text_files(&repo.join(dir), &mut files);
     }
     assert!(files.len() > 100, "the search reached the source tree: {} files", files.len());

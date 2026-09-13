@@ -684,6 +684,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "[Mustard] An approval was chosen, and nothing was recorded: no spec of this session \
              is in the plan phase."
         }
+        ("approval.question", Locale::PtBr) => "Aprovar esta spec?",
+        ("approval.question", Locale::EnUs) => "Approve this spec?",
+        ("approval.witness.unmet", Locale::PtBr) => {
+            "[Mustard] A spec {spec} ainda não pode ser aprovada, e nada foi gravado. Resolva o que \
+             falta e faça a pergunta de novo:\n{unmet}"
+        }
+        ("approval.witness.unmet", Locale::EnUs) => {
+            "[Mustard] The spec {spec} cannot be approved yet, and nothing was recorded. Fix what \
+             is missing and ask the question again:\n{unmet}"
+        }
         ("approval.witness.already", Locale::PtBr) => {
             "[Mustard] A spec {spec} já estava aprovada; nada a gravar."
         }
@@ -1251,6 +1261,23 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("spec_events.no_spec_file", Locale::PtBr) => "A spec {spec} ainda não tem arquivo de eventos.",
         ("spec_events.no_spec_file", Locale::EnUs) => "The spec {spec} has no event file yet.",
+        ("spec_events.approval_by_witness_only", Locale::PtBr) => {
+            "A aprovação da spec {spec} não se grava à mão: ela nasce só quando o usuário escolhe \
+             \"Aprovar\" na pergunta \"Aprovar esta spec?\", e a testemunha grava. Nada foi gravado."
+        }
+        ("spec_events.approval_by_witness_only", Locale::EnUs) => {
+            "The approval of the spec {spec} is never written by hand: it is born only when the \
+             user chooses \"Approve\" in the question \"Approve this spec?\", and the witness \
+             records it. Nothing was written."
+        }
+        ("spec_events.drafted_spec", Locale::PtBr) => {
+            "A spec {spec} tem o spec.md escrito pelo spec-draft: a página e o .md não são refeitos \
+             do arquivo de eventos, para não apagar o texto da spec."
+        }
+        ("spec_events.drafted_spec", Locale::EnUs) => {
+            "The spec {spec} carries the spec.md written by spec-draft: the page and the .md are \
+             not rebuilt from the event file, so the spec's text is not erased."
+        }
         ("spec_events.io_failed", Locale::PtBr) => "Não consegui usar o arquivo da spec: {detail}.",
         ("spec_events.io_failed", Locale::EnUs) => "Could not use the spec file: {detail}.",
         ("spec_events.skipped_line", Locale::PtBr) => {
@@ -2337,6 +2364,7 @@ mod tests {
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),
             ("approval.witness.no_plan", &[][..]),
             ("approval.witness.already", &["{spec}"][..]),
+            ("approval.witness.unmet", &["{spec}", "{unmet}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -2347,6 +2375,9 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
+        // A pergunta de aprovação, a única em que a testemunha age.
+        assert_eq!(translate("approval.question", Locale::PtBr), "Aprovar esta spec?");
+        assert_eq!(translate("approval.question", Locale::EnUs), "Approve this spec?");
         for gone in ["workbranch.dirty.note", "workbranch.reconcile.warn"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(gone, lang), "<missing-key>", "{gone} left with the branch hook");
@@ -2400,6 +2431,8 @@ mod tests {
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
             ("spec_events.no_spec_file", &["{spec}"][..]),
+            ("spec_events.approval_by_witness_only", &["{spec}"][..]),
+            ("spec_events.drafted_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),
             ("spec_events.skipped_line", &["{line}"][..]),

@@ -1139,11 +1139,24 @@ fn write_mode(spec_dir: &Path) -> WriteMode {
     }
 }
 
-/// `true` when the user really approved this spec: its state, in the
-/// `spec.ndjson` of `spec_dir`, is approved. The one fact the orchestrator
-/// cannot assert by hand.
+/// `true` when the user really approved this spec — the one fact the
+/// orchestrator cannot assert by hand. Read through the same reader every
+/// other door uses: the project root and the spec name come off
+/// `<root>/.claude/spec/<name>`, so a spec folder inside a linked worktree is
+/// answered from the main checkout's state. A folder outside that layout is
+/// no project's spec, and is not approved.
 pub(crate) fn is_approved(spec_dir: &Path) -> bool {
-    crate::shared::spec_state::approved_in(spec_dir)
+    fn named<'a>(dir: Option<&'a Path>, name: &str) -> Option<&'a Path> {
+        dir.filter(|d| d.file_name().is_some_and(|n| n == name))
+    }
+    let Some(spec) = spec_dir.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let claude = named(named(spec_dir.parent(), "spec").and_then(Path::parent), ".claude");
+    let Some(root) = claude.and_then(Path::parent) else {
+        return false;
+    };
+    crate::shared::spec_state::approved(root, spec)
 }
 
 /// The exact bytes [`write_meta`] would put on disk for `meta` — pretty JSON
@@ -2505,7 +2518,7 @@ mod tests {
     #[test]
     fn scaffold_seeds_wave_meta_checklist_from_files() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join("epic-checklist");
+        let spec_dir = dir.path().join(".claude").join("spec").join("epic-checklist");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let plan_path = dir.path().join("plan.json");
         std::fs::write(
@@ -3862,7 +3875,7 @@ mod tests {
     #[test]
     fn approved_plan_scaffold_is_frozen() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join("epic-frozen");
+        let spec_dir = dir.path().join(".claude").join("spec").join("epic-frozen");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let plan_path = write_plan(
             dir.path(),
@@ -3934,7 +3947,7 @@ mod tests {
     #[test]
     fn approved_plan_keeps_its_wave_count() {
         let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join("epic-grow");
+        let spec_dir = dir.path().join(".claude").join("spec").join("epic-grow");
         std::fs::create_dir_all(&spec_dir).unwrap();
         let plan_path = write_plan(
             dir.path(),

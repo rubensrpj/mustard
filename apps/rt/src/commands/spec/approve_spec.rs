@@ -725,6 +725,52 @@ struct Refused {
 /// passing a recorder. `run` passes the canonical
 /// [`crate::commands::event::emit_pipeline::run`].
 ///
+/// The approval preconditions besides the user's own gesture — the clarify
+/// marker of a Full spec, the recorded proof of the criteria and the authored
+/// narrative — judged once for every door that approves: `approve-spec`, and
+/// the approval witness before it records the user's choice. With
+/// `check_approval`, the user's approved state joins them.
+///
+/// `None` when nothing is unmet; otherwise the aggregated message and what
+/// the mode makes of it. The acceptance-criteria proof is evaluated OUTSIDE
+/// the mode branch, on purpose: it is unconditional, and an unmet proof always
+/// Blocks. `MUSTARD_APPROVAL_MODE` governs the clarify and approval
+/// preconditions and nothing else — strict Blocks, warn Warns, off mutes both.
+/// Clarify only gates Full specs, and gates them on what the marker CARRIES,
+/// not merely that it is there.
+fn preconditions(
+    root: &str,
+    spec: &str,
+    mode: ApprovalMode,
+    check_approval: bool,
+) -> Option<(String, ApprovalGate)> {
+    let proof = proof_state(root, spec);
+    let (clarify, missing_approval) = if mode == ApprovalMode::Off {
+        (ClarifyState::NotGated, false)
+    } else {
+        (clarify_state(root, spec), check_approval && approval_missing(root, spec))
+    };
+    let scaffold = scaffold_residue(Path::new(root), spec);
+    let message = unmet_gate_message(
+        spec,
+        clarify,
+        missing_approval,
+        &proof,
+        &scaffold,
+        spec_is_full(root, spec),
+    )?;
+    let gate = if proof.refuses() { ApprovalGate::Block } else { approval_gate(mode, false) };
+    Some((message, gate))
+}
+
+/// What still stops the approval witness from recording the user's
+/// "Aprovar": the [`preconditions`] the mode makes blocking, in the words
+/// `approve-spec` would refuse with. `None` when the witness may record.
+pub(crate) fn unmet_before_approval(root: &str, spec: &str) -> Option<String> {
+    preconditions(root, spec, resolve_approval_mode(), false)
+        .and_then(|(message, gate)| (gate == ApprovalGate::Block).then_some(message))
+}
+
 /// Approval gate — refuse (strict) to emit the approval signal until BOTH
 /// preconditions hold. Clarify precedes approval and applies only to Full
 /// specs; user approval applies to every spec. Both are born from acts the
@@ -750,44 +796,10 @@ fn approve_at(
         });
     }
 
-    // The acceptance-criteria proof is evaluated OUTSIDE the mode branch, on
-    // purpose: it is unconditional. `MUSTARD_APPROVAL_MODE` governs the two
-    // marker preconditions and nothing else — a gate blocks with no knob fork,
-    // as the coverage gate in `plan-materialize` already does.
-    let proof = proof_state(root, &opts.spec);
-
-    // Clarify only gates Full specs, and gates them on what the marker CARRIES,
-    // not merely that it is there. The spec is known explicitly here via
-    // `--spec`, so there is no resolution problem. `off` mutes both
-    // preconditions; the proof stands.
-    let (clarify, missing_approval) = if mode == ApprovalMode::Off {
-        (ClarifyState::NotGated, false)
-    } else {
-        (clarify_state(root, &opts.spec), approval_missing(root, &opts.spec))
-    };
-
-    // A single decision over all three preconditions: any unmet one yields the
-    // aggregated message — never a second refusal path. An unmet PROOF always
-    // Blocks; when only the marker preconditions are unmet,
-    // `approval_gate(mode, false)` maps mode → Block (strict, exit 1) or Warn
-    // (stderr nudge, proceed). Nothing unmet → the builder returns `None` and
-    // the flow proceeds silently.
-    let scaffold = scaffold_residue(Path::new(root), &opts.spec);
-    if let Some(message) =
-        unmet_gate_message(
-            &opts.spec,
-            clarify,
-            missing_approval,
-            &proof,
-            &scaffold,
-            spec_is_full(root, &opts.spec),
-        )
-    {
-        let gate = if proof.refuses() {
-            ApprovalGate::Block
-        } else {
-            approval_gate(mode, false)
-        };
+    // A single decision over all the preconditions: any unmet one yields the
+    // aggregated message — never a second refusal path. Nothing unmet → the
+    // flow proceeds silently.
+    if let Some((message, gate)) = preconditions(root, &opts.spec, mode, true) {
         match gate {
             ApprovalGate::Block => {
                 return Err(Refused {

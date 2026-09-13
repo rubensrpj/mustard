@@ -28,23 +28,42 @@
 //!    raiz só separa aprovar de recusar dentro de uma escolha de verdade; o
 //!    peso está nos fatos 1 e 2.
 //!
+//! ## Só a pergunta de aprovação
+//!
+//! A testemunha age numa pergunta só: a de aprovação, feita com o texto do
+//! catálogo, "Aprovar esta spec?" ou "Approve this spec?". Qualquer outra
+//! pergunta passa calada, sem gravar e sem aviso, mesmo com a spec em plano:
+//! uma opção como "Aprovação manual", numa pergunta sobre outra coisa, não é
+//! a aprovação da spec.
+//!
+//! ## As conferências do `approve-spec` vêm antes
+//!
+//! Antes de gravar, a testemunha roda as mesmas conferências do
+//! `approve-spec`, pela mesma função: o `.clarified` de uma spec Full, a prova
+//! dos critérios e a narrativa escrita. Se alguma barra, nada é gravado, e o
+//! motivo vai ao assistente: a trava do código só abre quando a spec pode de
+//! fato ser aprovada.
+//!
+//! Uma spec aberta pelo `spec-draft` antes de haver arquivo de eventos tem a
+//! pasta e o `meta.json`, e nenhum estado. Nela, o "Aprovar" grava primeiro o
+//! nascimento, em plano, e depois a aprovação.
+//!
 //! ## Nunca barra, nunca cala
 //!
 //! A testemunha é uma trava que nunca barra: devolve `Inject`, que chega ao
 //! assistente, ou `Allow`. O texto de um gancho no stderr não chega ao
 //! modelo, então tudo o que ela tem a dizer vai pelo `Inject`: a sugestão de
 //! `/clear` depois de gravar; por que nada foi gravado quando a spec esperava
-//! aprovação e a resposta não aprovou; e, quando uma aprovação foi escolhida
-//! sem spec em plano, ou com a spec já aprovada, que nada foi gravado. Uma
-//! pergunta cancelada, ou uma resposta qualquer sem spec em plano, não diz
-//! nada: a testemunha vê todas as perguntas da sessão.
+//! aprovação e a resposta não aprovou, ou quando uma conferência barrou; e,
+//! quando uma aprovação foi escolhida sem spec em plano, ou com a spec já
+//! aprovada, que nada foi gravado. Uma pergunta cancelada não diz nada.
 
 use std::path::Path;
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::platform::error::Error;
-use mustard_core::platform::i18n::Locale;
+use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
 use crate::hooks::write::write_gate::say;
@@ -62,6 +81,9 @@ const APPROVAL_STEMS: &[&str] = &["approv", "aprov"];
 enum Standing {
     /// Na fase de plano: a aprovação está pendente.
     Awaiting(String),
+    /// Aberta pelo `spec-draft` antes de haver arquivo de eventos: a pasta e
+    /// o `meta.json`, e nenhum estado. Espera aprovação como uma em plano.
+    Unborn(String),
     /// Já aprovada.
     Approved(String),
     /// Sem spec atual, sem estado, ou numa fase em que nada espera
@@ -76,16 +98,22 @@ fn standing(root: &str, session: Option<&str>) -> Standing {
     let Some(spec) = disk.active(session) else {
         return Standing::NoPlan;
     };
+    let home = mustard_core::io::spec_events::spec_root(Path::new(root));
     match disk.state(&spec) {
         Some(state) if state.phase == Some("plan") => Standing::Awaiting(spec),
         Some(state) if state.approved => Standing::Approved(spec),
+        None if crate::commands::spec_events::pages::drafted_by_spec_draft(&home, &spec) => {
+            Standing::Unborn(spec)
+        }
         _ => Standing::NoPlan,
     }
 }
 
-/// Todos os rótulos que o usuário escolheu; vazio numa pergunta cancelada.
-fn selected_labels(input: &HookInput) -> Vec<String> {
-    input.ask_answers().items.into_iter().flat_map(|item| item.labels).collect()
+/// A pergunta é a de aprovação, com o texto do catálogo em um dos idiomas.
+fn is_approval_question(question: &str) -> bool {
+    [Locale::PtBr, Locale::EnUs]
+        .into_iter()
+        .any(|lang| translate("approval.question", lang).trim() == question.trim())
 }
 
 /// Todos os rótulos que a pergunta ofereceu, lidos do `tool_input`, que o
@@ -143,15 +171,19 @@ fn is_affirmative(label: &str) -> bool {
         .any(|w| APPROVAL_STEMS.iter().any(|&stem| w.starts_with(stem)))
 }
 
-/// A pergunta e a opção que aprova, quando o usuário escolheu uma.
-fn chosen_approval(input: &HookInput, offered: &[String]) -> Option<(String, String)> {
-    input.ask_answers().items.into_iter().find_map(|item| {
-        let label = item
-            .labels
-            .into_iter()
-            .find(|l| is_offered(l, offered) && is_affirmative(l))?;
-        Some((item.question, label))
-    })
+/// Aprova a spec `spec`, que esperava aprovação: roda as conferências do
+/// `approve-spec` e, se nenhuma barra, grava o nascimento quando a spec ainda
+/// não tem estado (`unborn`) e depois a aprovação. Devolve o que dizer ao
+/// assistente; `None` quando uma gravação foi recusada.
+fn approve(root: &str, spec: &str, question: &str, answer: &str, unborn: bool, lang: Locale) -> Option<String> {
+    if let Some(unmet) = crate::commands::spec::approve_spec::unmet_before_approval(root, spec) {
+        return Some(say("approval.witness.unmet", lang, &[("{spec}", spec), ("{unmet}", &unmet)]));
+    }
+    if unborn && crate::commands::spec_events::write::record_birth(Path::new(root), spec, None).is_err() {
+        return None;
+    }
+    record_approval(root, spec, question, answer)
+        .then(|| say("approval.witness.clear", lang, &[("{spec}", spec)]))
 }
 
 /// Grava a aprovação: um `state` com a fase `approved`, o autor `user` e a
@@ -214,16 +246,21 @@ impl Check for ApprovalWitness {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return Ok(Verdict::Allow);
         }
+        // Só a pergunta de aprovação conta; qualquer outra passa calada.
+        let Some(answer) =
+            input.ask_answers().items.into_iter().find(|item| is_approval_question(&item.question))
+        else {
+            return Ok(Verdict::Allow);
+        };
         let root = ctx.project_dir_or_cwd(input);
         let lang = ctx.config.language().text_or_default();
-        let session = input.session_id.as_deref();
         let offered = offered_labels(input);
-        let chosen = chosen_approval(input, &offered);
-        let context = match (standing(&root, session), chosen) {
-            (Standing::Awaiting(spec), Some((question, answer))) => record_approval(&root, &spec, &question, &answer)
-                .then(|| say("approval.witness.clear", lang, &[("{spec}", &spec)])),
-            (Standing::Awaiting(spec), None) => {
-                decline_notice(&spec, &selected_labels(input), &offered, lang)
+        let chosen = answer.labels.iter().find(|l| is_offered(l, &offered) && is_affirmative(l));
+        let context = match (standing(&root, input.session_id.as_deref()), chosen) {
+            (Standing::Awaiting(spec), Some(label)) => approve(&root, &spec, &answer.question, label, false, lang),
+            (Standing::Unborn(spec), Some(label)) => approve(&root, &spec, &answer.question, label, true, lang),
+            (Standing::Awaiting(spec) | Standing::Unborn(spec), None) => {
+                decline_notice(&spec, &answer.labels, &offered, lang)
             }
             (Standing::Approved(spec), Some(_)) => {
                 Some(say("approval.witness.already", lang, &[("{spec}", &spec)]))
@@ -262,18 +299,23 @@ mod tests {
         ProjectConfig::load(root).language().text_or_default()
     }
 
-    /// A pergunta com as opções `options` e a resposta `answer`, como o
-    /// harness entrega: o menu no `tool_input` e a resposta à parte.
-    fn ask(options: &[&str], answer: Value) -> HookInput {
+    /// A pergunta `question` com as opções `options` e a resposta `answer`,
+    /// como o harness entrega: o menu no `tool_input` e a resposta à parte.
+    fn ask_on(question: &str, options: &[&str], answer: Value) -> HookInput {
         let options: Vec<Value> = options.iter().map(|l| json!({ "label": l })).collect();
         HookInput {
             hook_event_name: Some("PostToolUse".to_string()),
             tool_name: Some("AskUserQuestion".to_string()),
             session_id: Some(SESSION.to_string()),
-            tool_input: json!({ "questions": [{ "question": QUESTION, "header": "Spec", "options": options }] }),
-            raw: json!({ "tool_response": { "questions": [], "answers": { QUESTION: answer } } }),
+            tool_input: json!({ "questions": [{ "question": question, "header": "Spec", "options": options }] }),
+            raw: json!({ "tool_response": { "questions": [], "answers": { question: answer } } }),
             ..HookInput::default()
         }
+    }
+
+    /// A pergunta de aprovação.
+    fn ask(options: &[&str], answer: Value) -> HookInput {
+        ask_on(QUESTION, options, answer)
     }
 
     fn approve_or_adjust(answer: &str) -> HookInput {
@@ -435,7 +477,7 @@ mod tests {
     }
 
     /// Depois de gravar a aprovação, a testemunha diz ao assistente para
-    /// sugerir `/clear`.
+    /// sugerir `/clear`. A pergunta feita em inglês conta do mesmo jeito.
     #[test]
     fn after_the_approval_the_witness_suggests_clear() {
         if ambient_override() {
@@ -443,10 +485,93 @@ mod tests {
         }
         let dir = in_plan();
         let root = dir.path();
-        let said = witness(root, &ask(&["Approve", "Adjust"], json!(["Approve"])));
+        let said = witness(root, &ask_on("Approve this spec?", &["Approve", "Adjust"], json!(["Approve"])));
         let expected = say("approval.witness.clear", lang(root), &[("{spec}", "epic")]);
         assert_eq!(said, Verdict::Inject { context: expected.clone() });
         assert!(expected.contains("/clear"), "{expected}");
+        assert!(state(root).approved);
+    }
+
+    /// Uma pergunta que não é a de aprovação nunca aprova e nunca fala,
+    /// mesmo com a spec em plano e uma opção com a palavra da aprovação.
+    #[test]
+    fn another_question_never_approves_nor_speaks() {
+        if ambient_override() {
+            return;
+        }
+        let dir = in_plan();
+        let root = dir.path();
+        let before = events(root);
+        for answer in ["Aprovação manual", "Automática"] {
+            let input = ask_on("Como liberar o cadastro?", &["Aprovação manual", "Automática"], json!(answer));
+            assert_eq!(witness(root, &input), Verdict::Allow, "{answer}");
+        }
+        assert_eq!(events(root), before, "nothing was written");
+        assert!(!state(root).approved);
+
+        let none = tempdir().unwrap();
+        let input = ask_on("Como liberar o cadastro?", &["Aprovação manual"], json!("Aprovação manual"));
+        assert_eq!(witness(none.path(), &input), Verdict::Allow, "no notice without a spec either");
+    }
+
+    /// As conferências do `approve-spec` vêm antes da gravação: uma spec Full
+    /// sem o `.clarified` fica em plano, e o motivo vai ao assistente; com o
+    /// esclarecimento gravado, o mesmo "Aprovar" aprova.
+    #[test]
+    fn an_unmet_precondition_keeps_the_spec_in_plan() {
+        if ambient_override() || std::env::var_os("MUSTARD_APPROVAL_MODE").is_some() {
+            return;
+        }
+        let dir = in_plan();
+        let root = dir.path();
+        let root_str = root.to_string_lossy().into_owned();
+        let spec_dir = root.join(".claude").join("spec").join("epic");
+        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"full (wave plan)","stage":"Plan"}"#).unwrap();
+
+        match witness(root, &approve_or_adjust("Aprovar")) {
+            Verdict::Inject { context } => {
+                assert!(context.contains(".clarified"), "names the unmet precondition: {context}");
+            }
+            other => panic!("the unmet precondition is explained, got {other:?}"),
+        }
+        assert!(!state(root).approved, "nothing was recorded");
+
+        std::fs::write(
+            context::clarified_marker_path(&root_str, "epic").unwrap(),
+            context::clarify_marker_body("epic", SESSION, "2026-09-13T10:00:00Z", &[], "o glossário já cobre tudo"),
+        )
+        .unwrap();
+        witness(root, &approve_or_adjust("Aprovar"));
+        assert!(state(root).approved, "with the preconditions met the answer approves");
+    }
+
+    /// Uma spec aberta pelo `spec-draft` antes de haver arquivo de eventos
+    /// nasce e é aprovada no mesmo "Aprovar": primeiro o plano, com a base do
+    /// `meta.json`, depois a aprovação.
+    #[test]
+    fn a_spec_opened_before_the_event_file_is_born_and_approved() {
+        if ambient_override() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("epic");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan","base":"dev"}"#).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# Epic\n").unwrap();
+        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+
+        witness(root, &approve_or_adjust("Aprovar"));
+        let after = state(root);
+        assert!(after.approved, "the old spec is approved");
+        assert_eq!(after.base.as_deref(), Some("dev"), "the birth carries the base");
+        let log = std::fs::read_to_string(spec_dir.join("spec.ndjson")).unwrap();
+        let phases: Vec<String> = log
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["phase"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(phases, ["plan", "approved"], "{log}");
+        assert_eq!(std::fs::read_to_string(spec_dir.join("spec.md")).unwrap(), "# Epic\n", "the draft stays");
     }
 
     /// Uma pergunta cancelada não responde nada e não diz nada.
