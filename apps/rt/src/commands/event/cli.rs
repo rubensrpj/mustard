@@ -62,9 +62,10 @@ pub enum EventCmd {
     /// Append a typed pipeline event (`pipeline.scope`, `pipeline.status`, etc.).
     ///
     /// On `--kind pipeline.complete` the REVIEW/QA gate refuses emission with
-    /// exit 2 unless a `qa.result` event with `overall=pass` exists for the
-    /// spec, or `--allow-no-qa` is passed (escape hatch for trusted callers
-    /// like `qa-run` itself or an explicit user override).
+    /// exit 2 unless every acceptance criterion in the spec's `spec.ndjson` has
+    /// a passing last run (`qa-run` records each run there), or `--allow-no-qa`
+    /// is passed (escape hatch for trusted callers or an explicit user
+    /// override).
     #[command(display_order = 10)]
     EmitPipeline {
         /// Pipeline event kind, e.g. `pipeline.scope`. Must be one of the 8 known kinds.
@@ -77,8 +78,8 @@ pub enum EventCmd {
         #[arg(long)]
         payload: Option<String>,
         /// Bypass the REVIEW/QA gate on `pipeline.complete`. Without this flag,
-        /// `pipeline.complete` is refused (exit 2) unless a passing `qa.result`
-        /// event exists for the spec.
+        /// `pipeline.complete` is refused (exit 2) unless every criterion in the
+        /// spec's `spec.ndjson` has a passing last run.
         #[arg(long = "allow-no-qa")]
         allow_no_qa: bool,
         /// Free-form natural-language request. On `--kind pipeline.kind` it

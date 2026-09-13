@@ -90,7 +90,7 @@ Instead: print the row's `prompt` to the operator verbatim — it names the wave
 | `dispatch-review` | fallback only (resumed/missing verdict) — dispatch one review Task per `reviewRoles`; prefer the in-loop review round |
 | `run-qa` / `emit-complete` | `mustard-rt run close-pipeline --spec {spec}` |
 
-`close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — the **confirmation pass** + `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) without `qa.result overall=pass`**.
+`close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — the **confirmation pass** + `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) unless every criterion in the spec's `spec.ndjson` passed its last run** — `qa-run` records each run there.
 
 **The confirmation is the second half of the criterion proof, and CLOSE is where it comes due.** At PLAN time every criterion had to come back RED (`ac-negative-check`) — the proof it knows how to fail. That half never asks whether it passes NOW, so a command that is BROKEN and a behaviour that is merely ABSENT read exactly alike. So `close-pipeline` runs each red-proven criterion AGAIN, after the work landed, and writes the verdict into the second column of `<spec>/ac-proof.json`. Read the `confirmation` block it returns:
 
