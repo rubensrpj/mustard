@@ -85,9 +85,8 @@ pub struct ApprovalWitness;
 enum Standing {
     /// Na fase de plano: a aprovação está pendente.
     Awaiting(String),
-    /// Ainda sem nascimento: uma spec do `spec-draft` parada antes da
-    /// execução, sem nenhum `state`, com ou sem arquivo de eventos. Espera
-    /// aprovação como uma em plano.
+    /// Ainda sem nascimento: sem nenhum `state`, que a regra da trava lê em
+    /// plano. Espera aprovação como uma em plano.
     Unborn(String),
     /// Já aprovada.
     Approved(String),
@@ -110,8 +109,9 @@ impl Standing {
 fn standing(root: &str, session: Option<&str>) -> Standing {
     let disk = DiskSpecState::new(Path::new(root));
     let home = spec_root(Path::new(root));
-    // O estado que a trava lê, pela mesma função do portão: a spec que ainda
-    // não nasceu e segue o `meta.json` espera aprovação como uma em plano.
+    // O estado que a trava lê, pela mesma função do portão: a spec sem nenhum
+    // `state`, que a regra da trava lê em plano, espera aprovação como uma em
+    // plano.
     let judge = |spec: String| {
         let Some(state) = crate::shared::spec_state::lock_state(Path::new(root), &spec) else {
             return Standing::NoPlan;

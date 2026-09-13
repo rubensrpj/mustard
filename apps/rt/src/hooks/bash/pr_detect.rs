@@ -20,7 +20,6 @@
 
 use mustard_core::domain::model::contract::HookInput;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::domain::spec_state::{is_approved_phase, SpecState};
 use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::time::now_iso8601;
 use serde_json::{json, Value};
@@ -30,7 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::lex::truncate;
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::lock_state;
 
 /// Classify a command as a PR event.
 ///
@@ -139,7 +138,8 @@ fn now_ms() -> i64 {
 /// As specs que podem ter acabado de entrar no merge, em ordem de nome, com a
 /// branch de cada uma: as da pasta das specs que têm arquivo de eventos, uma
 /// branch gravada no estado e uma fase aprovada que ainda não é `delivered`.
-/// A fase e a branch saem do estado dobrado de cada uma.
+/// A fase e a branch saem do estado que a trava lê ([`lock_state`]), a regra
+/// única do núcleo.
 fn candidates(project: &Path) -> Vec<(String, String)> {
     let main = mustard_core::io::spec_events::spec_root(project);
     let Ok(paths) = ClaudePaths::for_project(&main) else {
@@ -154,13 +154,11 @@ fn candidates(project: &Path) -> Vec<(String, String)> {
         .map(|entry| entry.file_name)
         .collect();
     names.sort();
-    let disk = DiskSpecState::new(project);
     names
         .into_iter()
         .filter_map(|name| {
-            let state = disk.state(&name)?;
-            let phase = state.phase?;
-            if !is_approved_phase(phase) || phase == "delivered" {
+            let state = lock_state(project, &name)?;
+            if !state.approved || state.phase == Some("delivered") {
                 return None;
             }
             Some((name, state.branch?))
@@ -288,6 +286,8 @@ fn emit_pr_event_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::spec_state::DiskSpecState;
+    use mustard_core::domain::spec_state::SpecState as _;
     use std::cell::Cell;
 
     /// `gh pr create` / `gh pr merge` classify to the right DORA events.

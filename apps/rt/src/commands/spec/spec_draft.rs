@@ -2133,14 +2133,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// The draft CONSUMES the unit's name instead of minting a second
-    /// one.
-    ///
-    /// The gate names the unit (`emit-pipeline --kind pipeline.kind` reports it
-    /// as `spec`); handing that name here must land the spec directory under
-    /// it, with `--intent` keeping only its OTHER job — the spec title. The
-    /// fixture is only worth anything because the two differ: the slug the
-    /// draft would have derived is asserted absent from disk.
     /// Um rascunho recusado na validação não deixa pasta nenhuma: a pasta da
     /// spec só nasce depois dela.
     #[test]
@@ -2174,6 +2166,14 @@ mod tests {
         );
     }
 
+    /// The draft CONSUMES the unit's name instead of minting a second
+    /// one.
+    ///
+    /// The gate names the unit (`emit-pipeline --kind pipeline.kind` reports it
+    /// as `spec`); handing that name here must land the spec directory under
+    /// it, with `--intent` keeping only its OTHER job — the spec title. The
+    /// fixture is only worth anything because the two differ: the slug the
+    /// draft would have derived is asserted absent from disk.
     #[test]
     fn spec_draft_consumes_the_slug_it_is_given() {
         let dir = tempdir().unwrap();

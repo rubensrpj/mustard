@@ -89,8 +89,9 @@ impl SpecState for DiskSpecState {
 
 /// A spec `spec` do projeto em `root` foi aprovada pelo usuário: o estado
 /// que a trava lê ([`lock_state`]) está numa fase de spec aprovada. A única
-/// resposta a "está aprovada?": o `approve-spec`, a retomada, o `status`, a
-/// página da spec e o `wave-scaffold` perguntam aqui.
+/// resposta a "está aprovada?": o `approve-spec`, a retomada, a página da
+/// spec e o `wave-scaffold` perguntam aqui, e o `status` pergunta pela
+/// [`approval`], que passa por aqui antes de ler a testemunha.
 #[must_use]
 pub(crate) fn approved(root: &Path, spec: &str) -> bool {
     lock_state(root, spec).is_some_and(|state| state.approved)
@@ -134,14 +135,14 @@ pub(crate) struct Approval {
 }
 
 /// A aprovação da spec `spec`: o `state` visível mais novo que traz a
-/// testemunha, enquanto a spec continua aprovada. `None` numa spec que não
-/// está aprovada ou que não tem arquivo de eventos.
+/// testemunha, enquanto a trava a lê aprovada ([`approved`]). `None` numa
+/// spec que não está aprovada ou que não tem arquivo de eventos.
 #[must_use]
 pub(crate) fn approval(root: &Path, spec: &str) -> Option<Approval> {
-    let log = DiskSpecState::new(root).log(spec)?;
-    if !State::from_log(&log).approved {
+    if !approved(root, spec) {
         return None;
     }
+    let log = DiskSpecState::new(root).log(spec)?;
     let event = log
         .block(BlockQuery::Block(Block::State))
         .into_iter()
@@ -476,8 +477,9 @@ mod tests {
     }
 
     /// Os leitores de "está aprovada?" dão a mesma resposta que o estado, lado
-    /// a lado: o `approve-spec`, a retomada, o `status`, a página da spec e o
-    /// `wave-scaffold`, com a spec em plano e depois de aprovada.
+    /// a lado: o `approve-spec`, a retomada, o `status` (pela aprovação que ele
+    /// mostra), a página da spec e o `wave-scaffold`, com a spec em plano e
+    /// depois de aprovada.
     #[test]
     fn every_reader_of_the_approval_agrees_with_the_state() {
         let dir = tempdir().unwrap();
