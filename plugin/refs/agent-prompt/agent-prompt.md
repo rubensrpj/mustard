@@ -4,7 +4,7 @@
 
 ## subagent_type by role
 
-The dispatch planner (`wave-advance` items carry the field) picks the agent per role via `recommended_subagent_type` — read-only roles run tool-restricted so they physically cannot write; writing roles rely on the per-role contract + the `scope_guard` hook. Agents inherit the session model (no routing table).
+The dispatch planner (`wave-advance` items carry the field) picks the agent per role via `recommended_subagent_type` — read-only roles run tool-restricted so they physically cannot write; writing roles rely on the per-role contract + the `write_gate` hook. Agents inherit the session model (no routing table).
 
 | Role | `subagent_type` | Tools |
 |---|---|---|
@@ -13,7 +13,7 @@ The dispatch planner (`wave-advance` items carry the field) picks the agent per 
 | `review` / `qa` | `mustard:mustard-review` | Read/Grep/Glob/Bash (tests only) |
 | `guards` | `mustard:mustard-guards` | Read/Grep/Glob |
 | `patterns` | `mustard:mustard-patterns` | Read/Grep/Glob |
-| `impl` / any other | `general-purpose` | Edit/Write (+ `scope_guard`) |
+| `impl` / any other | `general-purpose` | Edit/Write (+ `write_gate`) |
 
 This is the canonical role→`subagent_type` map — other command refs point here rather than repeat it. Plugin-owned agents carry the `mustard:` namespace (Claude Code registers them under the `plugin.json` `name`; a bare `mustard-review` silently falls back to `general-purpose`). Built-in agents (`Explore`, `Plan`, `general-purpose`) stay unprefixed.
 

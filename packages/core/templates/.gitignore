@@ -35,7 +35,7 @@ pending/
 plans/
 
 # Sanctioned throwaway evidence: the write gate lets a diagnosis write here on a
-# protected integration base (`work_branch_gate`), so it must be ignored by
+# protected integration base (`write_gate`), so it must be ignored by
 # construction — scratch decides between hypotheses, it never joins the unit.
 scratch/
 

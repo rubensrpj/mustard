@@ -19,8 +19,7 @@ use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::close_gate::CloseGate;
 use crate::hooks::write::mold_gate::MoldGate;
 use crate::hooks::write::scan_gate::ScanGate;
-use crate::hooks::write::scope_guard::ScopeGuard;
-use crate::hooks::write::secret_files::SecretFiles;
+use crate::hooks::write::write_gate::WriteGate;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::observe::prompt_observer::PromptObserver;
 use crate::hooks::observe::rewave_observer::RewaveObserver;
@@ -28,7 +27,6 @@ use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
 use crate::hooks::observe::wave_start_observer::WaveStartObserver;
 use crate::hooks::write::boundary_gate::BoundaryGate;
 use crate::hooks::write::post_edit::PostEdit;
-use crate::hooks::write::work_branch_gate::WorkBranchGate;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -236,27 +234,28 @@ impl Registry {
                 check: Some(Box::new(SizeGate)),
                 observer: None,
             },
+            // `write_gate` — o portão de escrita, nas cinco ferramentas de
+            // arquivo. As regras, na ordem: segredo, arquivos que só o binário
+            // grava, aprovação, branch da spec (só avisa) e base do
+            // `git.flow`. A primeira que responde decide.
             Module {
-                id: "secret_files",
-                // `file-guard` — the Rust residue of the secret-file law. The
-                // 24 `permissions.deny` globs are the config-level first line;
-                // this residue restores the OLD semantics globs cannot express
-                // (case-insensitive substring over the FULL path) and is the
-                // one Write-family gate that also covers Read.
+                id: "write_gate",
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Read")),
                     (Trigger::PreToolUse, ToolMatch::Named("Write")),
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
+                    (Trigger::PreToolUse, ToolMatch::Named("MultiEdit")),
+                    (Trigger::PreToolUse, ToolMatch::Named("NotebookEdit")),
                 ],
-                check: Some(Box::new(SecretFiles)),
+                check: Some(Box::new(WriteGate)),
                 observer: None,
             },
             Module {
                 id: "boundary_gate",
                 // `boundary-gate` — PreToolUse(Write|Edit) spec-boundary gate.
                 // The sensitive-file law lives in `permissions.deny` (first
-                // line) + the `secret_files` residue above; boundary itself
-                // never inspects Read.
+                // line) + the `write_gate` above; boundary itself never
+                // inspects Read.
                 applies_to: &[
                     (Trigger::PreToolUse, ToolMatch::Named("Write")),
                     (Trigger::PreToolUse, ToolMatch::Named("Edit")),
@@ -294,33 +293,6 @@ impl Registry {
                 check: Some(Box::new(ActiveSpecLimitGate)),
                 observer: None,
             },
-            // Auto-branch per work unit (porta-unica): on the FIRST file
-            // mutation of a work request, check out the `{work_kind}/{slug}`
-            // branch the router pre-computed (stored as the session's
-            // `pending-work-branch` marker by `emit-pipeline --kind
-            // pipeline.kind`). A `Check` that only ever Allows/Warns — the
-            // branch checkout is the point (precedent: `prompt_submit_inject`).
-            // MultiEdit joins Write|Edit so a first mutation via any editor tool
-            // triggers the branch. Fail-open: any git failure clears the marker
-            // and warns, never blocks. Read-only requests never consume it.
-            Module {
-                id: "work_branch_gate",
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::PreToolUse, ToolMatch::Named("MultiEdit")),
-                ],
-                check: Some(Box::new(WorkBranchGate)),
-                observer: None,
-            },
-            // Full-scope approval hard-gate.
-            // Denies a PreToolUse(Write|Edit) of a PRODUCTION file when the
-            // active spec is `scope=full`, `stage=Plan`, and has no `/spec`
-            // approval event. Registered on Task|Agent too (the prompt's "covers
-            // Task dispatch") — the module itself passes Task through so the
-            // legitimate Full-scope PLAN dispatch is never trapped; the
-            // production-file protection re-fires on the subagent's own
-            // Write/Edit calls. Fail-open inside the module.
             // Skill-usage loop, the "during" hook: on a NEW file whose kind
             // matches a `{role}-pattern` mold of its subproject, a non-blocking
             // advisory points at the SKILL.md before the first byte lands.
@@ -330,17 +302,6 @@ impl Registry {
                 id: "mold_gate",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Write"))],
                 check: Some(Box::new(MoldGate)),
-                observer: None,
-            },
-            Module {
-                id: "scope_guard",
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: Some(Box::new(ScopeGuard)),
                 observer: None,
             },
             Module {
@@ -820,12 +781,10 @@ mod tests {
             "clarification_observer",
             "plan_approval_observer",
             "size_gate",
-            "secret_files",
+            "write_gate",
             "boundary_gate",
             "close_gate",
             "scan_gate",
-            "scope_guard",
-            "work_branch_gate",
             "active_spec_limit_gate",
             "delegation_advisory",
             "post_edit",
@@ -904,27 +863,46 @@ mod tests {
             .contains(&"session_knowledge_observer"));
     }
 
+    /// O portão de escrita roda no `PreToolUse` das cinco ferramentas de
+    /// arquivo, e só nelas, no lugar dos três ganchos que ele juntou.
+    #[test]
+    fn the_write_gate_runs_on_the_five_file_tools() {
+        let registry = Registry::new();
+        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
+            assert!(
+                applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"),
+                "write_gate missing on {tool}"
+            );
+            assert!(
+                !applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"write_gate"),
+                "write_gate never runs after {tool}"
+            );
+        }
+        for tool in ["Bash", "Task", "Agent", "Skill"] {
+            assert!(
+                !applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"),
+                "write_gate is not a gate of {tool}"
+            );
+        }
+        let module = registry.by_id("write_gate").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+        for gone in ["secret_files", "work_branch_gate", "scope_guard"] {
+            assert!(registry.by_id(gone).is_none(), "{gone} left the registry");
+        }
+    }
+
     #[test]
     fn write_edit_family_applies_on_pre_tool_use() {
         let registry = Registry::new();
         // Wave-4 Write/Edit gates fire on PreToolUse(Write) and (Edit).
         for tool in ["Write", "Edit"] {
             let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "secret_files", "boundary_gate", "close_gate", "scope_guard"] {
+            for want in ["size_gate", "write_gate", "boundary_gate", "close_gate"] {
                 assert!(ids.contains(&want), "missing {want} for {tool}");
             }
         }
-        // `scope_guard` also rides PreToolUse(Task|Agent) (covers dispatch).
-        for tool in ["Task", "Agent"] {
-            assert!(
-                applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"scope_guard"),
-                "scope_guard missing for {tool}"
-            );
-        }
-        // The secret-file residue is the ONE Write-family gate that also
-        // covers Read; `boundary_gate` itself stays Write/Edit-only.
+        // `boundary_gate` stays Write/Edit-only: it never inspects Read.
         let read_ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Read"));
-        assert!(read_ids.contains(&"secret_files"));
         assert!(!read_ids.contains(&"boundary_gate"));
         // `post_edit` runs on PostToolUse(Write|Edit).
         for tool in ["Write", "Edit"] {

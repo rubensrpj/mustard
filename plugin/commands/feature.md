@@ -7,7 +7,7 @@ user-invocable: false
 
 This file is the LIGHT path (most runs) plus the shared ANALYZE. Full-scope PLAN machinery lives in `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` — open it ONLY when scope detection returns `full`.
 
-Law: no code before the approved spec — `scope_guard` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. Full CLARIFIES before approval: the clarify-finalize records WHAT was settled into `<spec>/.clarified` — the terms the grill captured, or the stated reason no grill applied — and `approve-spec` REFUSES a Full plan whose marker recorded neither. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research, and never before the conversation material is assembled (§2.2). Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
+Law: no code before the approved spec — `write_gate` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. Full CLARIFIES before approval: the clarify-finalize records WHAT was settled into `<spec>/.clarified` — the terms the grill captured, or the stated reason no grill applied — and `approve-spec` REFUSES a Full plan whose marker recorded neither. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research, and never before the conversation material is assembled (§2.2). Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
 
 ## When
 
@@ -38,7 +38,7 @@ No stage emit here; the unit's name was minted at the base gate, BEFORE this flo
 ## 2. Route + scope (deterministic — never your eye alone)
 
 1. Routing economy: pruned anchors show single-layer work, no new entity → run it as `/mustard:task` on those anchors and STOP.
-2. **Assemble the conversation material FIRST — then materialize. Never the other way round.** A flow that drafts first invites the retype-by-hand this channel exists to remove: what the hand does not retype is simply lost. **The base gate comes first, and the order lives in one place — `.claude/mustard/dispatch.md`, which states it for every flow.** The gate is what NAMES the unit, the branch is cut from that name, and this step is an ordinary write, so it belongs inside the unit's branch and not on an integration base. Saying it costs nothing when the auto-branch hook already cuts the branch on this very write (which is what happens when the gate ran first); when it has not, a write from an integration base is refused and the flow dead-ends here with nothing materialised. Write everything §1 established into one JSON file (`.claude/.cache/spec-material.json` — a scratch path; the material's permanent home is the spec `spec-draft` is about to write):
+2. **Assemble the conversation material FIRST — then materialize. Never the other way round.** A flow that drafts first invites the retype-by-hand this channel exists to remove: what the hand does not retype is simply lost. **The base gate comes first, and the order lives in one place — `.claude/mustard/dispatch.md`, which states it for every flow.** The gate is what NAMES the unit, the branch is cut from that name, and this step is an ordinary write, so it belongs inside the unit's branch and not on an integration base. No hook cuts a branch on a write any more: with the unit's branch already out this write lands, and from an integration base the `git.flow` declares the write gate refuses it and the flow dead-ends here with nothing materialised. Write everything §1 established into one JSON file (`.claude/.cache/spec-material.json` — a scratch path; the material's permanent home is the spec `spec-draft` is about to write):
    ```json
    { "definitions": [{"term": "wave", "meaning": "one level of the plan"}],
      "decisions":   [{"decision": "everything branches off dev", "reason": "the release train cuts from it"}],
@@ -80,7 +80,7 @@ Orientation labels (plan-prepare decides on a populated census): light = 1-2 lay
 
 ## Refs
 
-- Full-scope DECOMPOSE + PLAN (stops-at-PLAN, the `scope_guard` hard-gate, wave-body authoring, `scan spec` for net-new units): `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md`
+- Full-scope DECOMPOSE + PLAN (stops-at-PLAN, the `write_gate` approval rule, wave-body authoring, `scan spec` for net-new units): `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md`
 - Spec headings + narrative language: `${CLAUDE_PLUGIN_ROOT}/refs/feature/spec-language.md`
 - AC cross-shell quirks: `${CLAUDE_PLUGIN_ROOT}/refs/feature/ac-cross-shell.md`
 

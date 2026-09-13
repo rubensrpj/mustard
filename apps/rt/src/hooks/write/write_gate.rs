@@ -22,7 +22,8 @@
 //!    pergunta ao git qual é a branch padrão.
 //!
 //! Uma spec sem `spec.ndjson` não tem estado: é uma branch que o Mustard não
-//! abriu, e as regras da aprovação e da branch se calam.
+//! abriu, e as regras da aprovação e da branch se calam. O portão não corta
+//! branch nenhuma: o único corte é o que o `spec-draft` faz.
 //!
 //! ## Duas raízes
 //!
@@ -605,13 +606,12 @@ mod tests {
         assert_eq!(WriteGate.evaluate(&bash, &ctx(root)).expect("never errors"), Verdict::Allow);
     }
 
-    // --- Lado a lado com os três ganchos que o portão substitui -------------
+    // --- As tabelas dos três ganchos que o portão juntou ---------------------
 
-    /// A tabela do gancho dos segredos: o gancho velho e o portão dão o mesmo
-    /// tipo de veredito para cada caminho.
+    /// A tabela dos segredos: cada caminho sensível é barrado, sem distinguir
+    /// maiúsculas e sobre o caminho inteiro, e o que não é segredo passa.
     #[test]
-    fn the_secret_table_answers_the_same_through_the_old_gate_and_the_new() {
-        use crate::hooks::write::secret_files::SecretFiles;
+    fn the_secret_table_is_kept() {
         let dir = project("{}");
         let root = dir.path();
         for (tool, path, expected) in [
@@ -627,109 +627,63 @@ mod tests {
             ("Read", "certs/KEY.PEM", "deny"),
             ("Write", "config/credentials/prod.yaml", "deny"),
             ("Edit", "backup/ID_RSA.bak", "deny"),
+            ("MultiEdit", "deploy/server.key", "deny"),
+            ("NotebookEdit", "notes/credentials.ipynb", "deny"),
             ("Read", "/project/.env", "allow"),
             ("Write", "/project/.env.local", "allow"),
             ("Edit", "/project/src/main.ts", "allow"),
         ] {
-            let input = call(root, tool, path, None);
-            let old = SecretFiles.evaluate(&input, &ctx(root)).expect("never errors");
-            let new = WriteGate.evaluate(&input, &ctx(root)).expect("never errors");
-            assert_eq!((kind(&old), kind(&new)), (expected, expected), "{tool} {path}");
+            assert_eq!(kind(&gate(root, tool, path)), expected, "{tool} {path}");
         }
     }
 
-    /// Semeia o que o gancho da aprovação lia: o `meta.json` da spec.
-    fn seed_meta(root: &Path, spec: &str, scope: &str, stage: &str) {
-        let folder = root.join(".claude").join("spec").join(spec);
-        std::fs::create_dir_all(&folder).expect("spec folder");
-        let meta = json!({ "scope": scope, "stage": stage, "outcome": "Active" });
-        std::fs::write(folder.join("meta.json"), meta.to_string()).expect("meta");
-    }
-
-    /// Semeia o evento de aprovação que o gancho da aprovação lia.
-    fn seed_approval_event(root: &Path, spec: &str) {
-        use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: "2026-06-02T00:00:00.000Z".to_string(),
-            session_id: "s-test".to_string(),
-            wave: 0,
-            actor: Actor { kind: ActorKind::Cli, id: Some("spec".to_string()), actor_type: None },
-            event: "pipeline.status".to_string(),
-            payload: json!({ "to": "approved" }),
-            spec: Some(spec.to_string()),
-        };
-        crate::shared::events::route::emit(&root.to_string_lossy(), &event);
-    }
-
-    /// A janela da aprovação: o gancho velho lia o `meta.json`, o portão lê o
-    /// `State`; o mesmo momento da spec dá o mesmo tipo de veredito.
+    /// A janela da aprovação, lida do `State`: em levantamento e em plano o
+    /// código é barrado e o que é do harness passa; aprovada, em execução ou
+    /// sem spec atual, passa; a spec que vem só da ligação da sessão barra do
+    /// mesmo jeito.
     #[test]
-    fn the_approval_window_answers_the_same_through_the_old_gate_and_the_new() {
-        use crate::hooks::write::scope_guard::ScopeGuard;
-        let both = |root: &Path, file: &str, session: Option<&str>| {
+    fn the_approval_window_is_read_from_the_state() {
+        let write = |root: &Path, file: &str, session: Option<&str>| {
             let input = call(root, "Write", &abs(root, file), session);
-            let old = ScopeGuard.evaluate(&input, &ctx(root)).expect("never errors");
-            let new = WriteGate.evaluate(&input, &ctx(root)).expect("never errors");
-            (kind(&old), kind(&new))
+            kind(&WriteGate.evaluate(&input, &ctx(root)).expect("never errors"))
         };
 
-        // Em plano, sem aprovação: o código é barrado; `.claude/` passa.
-        let plan = project("{}");
-        stand_on_spec_branch(plan.path(), "epic");
-        seed_meta(plan.path(), "epic", "full (wave plan)", "Plan");
-        record_state(plan.path(), "epic", json!({ "phase": "plan" }));
-        assert_eq!(both(plan.path(), "src/main.rs", None), ("deny", "deny"));
-        assert_eq!(both(plan.path(), ".claude/settings.json", None), ("allow", "allow"));
+        for phase in ["survey", "plan"] {
+            let dir = project("{}");
+            stand_on_spec_branch(dir.path(), "epic");
+            record_state(dir.path(), "epic", json!({ "phase": phase }));
+            assert_eq!(write(dir.path(), "src/main.rs", None), "deny", "{phase}");
+            assert_eq!(write(dir.path(), ".claude/settings.json", None), "allow", "{phase}");
+        }
 
-        // Aprovada: passa.
         let approved = project("{}");
         stand_on_spec_branch(approved.path(), "epic");
-        seed_meta(approved.path(), "epic", "full", "Plan");
-        seed_approval_event(approved.path(), "epic");
         record_state(approved.path(), "epic", json!({ "phase": "plan" }));
         approve(approved.path(), "epic");
-        assert_eq!(both(approved.path(), "src/main.rs", None), ("allow", "allow"));
+        assert_eq!(write(approved.path(), "src/main.rs", None), "allow");
 
-        // Em execução: passa.
         let running = project("{}");
         stand_on_spec_branch(running.path(), "epic");
-        seed_meta(running.path(), "epic", "full", "Execute");
         record_state(running.path(), "epic", json!({ "phase": "plan" }));
         approve(running.path(), "epic");
         record_state(running.path(), "epic", json!({ "phase": "running" }));
-        assert_eq!(both(running.path(), "src/main.rs", None), ("allow", "allow"));
+        assert_eq!(write(running.path(), "src/main.rs", None), "allow");
 
-        // Sem spec atual: passa.
         let none = project("{}");
-        assert_eq!(both(none.path(), "src/main.rs", None), ("allow", "allow"));
+        assert_eq!(write(none.path(), "src/main.rs", None), "allow");
 
-        // A spec vem só da ligação da sessão: barra do mesmo jeito.
         let bound = project("{}");
-        seed_meta(bound.path(), "epic", "full", "Plan");
         record_state(bound.path(), "epic", json!({ "phase": "plan" }));
         context::bind_session_spec(&bound.path().to_string_lossy(), "sess-1", "epic");
-        assert_eq!(both(bound.path(), "src/main.rs", Some("sess-1")), ("deny", "deny"));
+        assert_eq!(write(bound.path(), "src/main.rs", Some("sess-1")), "deny");
     }
 
-    /// Semeia o `mustard.json` que o gancho da branch lia: o fluxo, e as
-    /// mesmas branches declaradas como protegidas.
-    fn protected_flow() -> &'static str {
-        r#"{"git":{"flow":{"*":"dev","dev":"main"},"protected":["dev","main"]}}"#
-    }
-
-    /// Sem marca de branch pendente, o gancho da branch e o portão dão o
-    /// mesmo tipo de veredito: a base barra, os planos, a evidência e o que
-    /// fica fora do projeto passam, e a branch de trabalho edita livre.
+    /// Sem marca de branch pendente, o que o gancho da branch fazia continua:
+    /// a base barra, os planos, a evidência e o que fica fora do projeto
+    /// passam, a branch de trabalho edita livre, e sem git nada é julgado.
     #[test]
-    fn a_bare_base_answers_the_same_through_the_old_gate_and_the_new() {
-        use crate::hooks::write::work_branch_gate::WorkBranchGate;
-        let both = |input: &HookInput, ctx: &Ctx| {
-            let old = WorkBranchGate.evaluate(input, ctx).expect("never errors");
-            let new = WriteGate.evaluate(input, ctx).expect("never errors");
-            (kind(&old), kind(&new))
-        };
-        let dir = project(protected_flow());
+    fn the_bare_base_table_is_kept() {
+        let dir = project(DEV_MAIN);
         let root = dir.path();
         repo_on(root, "dev");
         let outside = tempfile::tempdir().expect("tempdir");
@@ -740,30 +694,14 @@ mod tests {
             (abs(root, "src/scratch_notes.rs"), "deny"),
             (abs(outside.path(), "memo.md"), "allow"),
         ] {
-            let input = call(root, "Write", &path, Some("s-bare"));
-            assert_eq!(both(&input, &ctx(root)), (expected, expected), "{path}");
+            assert_eq!(kind(&gate(root, "Write", &path)), expected, "{path}");
         }
 
-        let work = project(protected_flow());
+        let work = project(DEV_MAIN);
         repo_on(work.path(), "dev_thing");
-        let input = call(work.path(), "Write", &abs(work.path(), "f.txt"), Some("s-work"));
-        assert_eq!(both(&input, &ctx(work.path())), ("allow", "allow"));
+        assert_eq!(gate(work.path(), "Write", &abs(work.path(), "f.txt")), Verdict::Allow);
 
         let bare = tempfile::tempdir().expect("tempdir");
-        let input = call(bare.path(), "Write", &abs(bare.path(), "f.txt"), Some("s-none"));
-        assert_eq!(both(&input, &ctx(bare.path())), ("allow", "allow"));
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let main = tmp.path().join("repo");
-        std::fs::create_dir_all(&main).expect("main");
-        std::fs::write(main.join("mustard.json"), protected_flow()).expect("config");
-        repo_on(&main, "dev");
-        git(&main, &["worktree", "add", "-q", ".claude/worktrees/dev_x", "-b", "dev_x"]);
-        let wt = main.join(".claude").join("worktrees").join("dev_x");
-        let in_worktree = HookInput {
-            cwd: Some(wt.to_string_lossy().into_owned()),
-            ..call(&main, "Write", &abs(&wt, "f.txt"), Some("s-nested"))
-        };
-        assert_eq!(both(&in_worktree, &ctx(&main)), ("allow", "allow"));
+        assert_eq!(gate(bare.path(), "Write", &abs(bare.path(), "f.txt")), Verdict::Allow);
     }
 }

@@ -180,8 +180,8 @@ const DOCUMENTED_DIRS: &[&str] = &[
     // (`work-unit-open`) and retired by `worktree-gc` / `git-settle`.
     "worktrees",
     // Sanctioned scratch evidence — the throwaway a diagnosis RUNS to decide
-    // between two hypotheses. Carved out of branch protection by
-    // `work_branch_gate::is_harness_carve_out`, alongside `plans`.
+    // between two hypotheses. Carved out of branch protection by the write
+    // gate (`shared::paths` in the rt), alongside `plans`.
     "scratch",
     // Rendered agent dispatch stubs (`agent-prompt-render --emit ref`), read
     // back by the PreToolUse hook that expands them.

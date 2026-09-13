@@ -13,11 +13,10 @@
 //! the declared flow ([`crate::shared::work_kind::BaseFlow`]), which is also
 //! the ONE reader of the old shape, so units in flight are never orphaned.
 //!
-//! Both halves live here because three callers must agree about them and a
+//! Both halves live here because two callers must agree about them and a
 //! second spelling is how they stop agreeing:
-//! [`crate::hooks::write::work_branch_gate`] (the first file mutation of a
-//! session), [`crate::commands::spec::spec_draft`] (the draft, which cuts the
-//! branch so the spec is written INSIDE the unit rather than on the base), and
+//! [`crate::commands::spec::spec_draft`] (the draft, which cuts the branch so
+//! the spec is written INSIDE the unit rather than on the base) and
 //! [`super::emit_pipeline`] (which pre-computes the name into the pending
 //! marker). The base set itself is never re-derived here — it comes from
 //! [`mustard_core::domain::config::GitConfig`], the single owner.
@@ -800,12 +799,8 @@ pub(crate) fn slug_of_work_branch(
 ///
 /// The `Err` is the third state, handed to the caller instead of resolved
 /// behind its back: an emergency whose pick nothing carries has no base a
-/// derivation can honestly supply, and every consumer of this — both cut doors —
-/// can refuse or warn in its own shape. Both of them do, and the hook one has
-/// to: it exits 0, so anything it says on stderr is said to nobody.
-///
-/// Shared by both doors — this cut and [`crate::hooks::write::work_branch_gate`]
-/// — so the branch a session ends up on does not depend on which one opened it.
+/// derivation can honestly supply, and the cut that consumes it
+/// can refuse or warn in its own shape, where the operator reads it.
 pub(crate) fn recorded_or_derived_base(
     root: &str,
     session: &str,
@@ -924,7 +919,7 @@ pub(crate) enum CheckoutWork {
 ///    — lives IN the work branch and is integrated into the base at merge time:
 ///    `spec-draft` cuts the branch FIRST and writes the spec afterwards, and a
 ///    spec write on a bare integration base is denied
-///    ([`crate::hooks::write::work_branch_gate`]). So between approval and the
+///    (the write gate). So between approval and the
 ///    merge, a unit's uncommitted work IS its `.claude/spec/…`, and a probe that
 ///    drops those paths reads the NORMAL state of an in-flight unit as an empty
 ///    tree. `dirty_paths`' carve-out was written when `.claude/` was treated as
@@ -1422,8 +1417,8 @@ pub(crate) enum CutOutcome {
 /// Consume this session's `pending-work-branch` marker and check that branch
 /// out in `project`, creating it off its base.
 ///
-/// The non-hook door to the SAME cut [`crate::hooks::write::work_branch_gate`]
-/// performs on the first file mutation. `spec-draft` calls it because the spec
+/// The only cut: no hook cuts a branch on a file mutation. `spec-draft` calls
+/// it because the spec
 /// must be written INSIDE the unit: the draft is the first thing the work
 /// produces, and it used to land on the integration base (a `.claude/spec/`
 /// carve-out existed precisely to let it). Cutting here moves the draft, the
@@ -2476,8 +2471,8 @@ mod tests {
     /// The CUT itself refuses a busy checkout.
     ///
     /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
-    /// `WorkBranchGate::evaluate`: the previous round's tests all went through
-    /// the gate and passed while the real defect sat here. `spec-draft` calls
+    /// the old write-hook gate: the previous round's tests all went through
+    /// that gate and passed while the real defect sat here. `spec-draft` calls
     /// this function at APPROVAL — before any `Write` exists for a PreToolUse
     /// hook to see — so a guard living only in the gate was a guard on the door
     /// that opens second.

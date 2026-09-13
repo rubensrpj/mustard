@@ -358,7 +358,7 @@ fn qualify_plugin_agent(name: &str) -> String {
 /// bare) — without it Claude Code cannot resolve the plugin agent and silently
 /// falls back to `general-purpose`. Writing roles (`impl` and any other) stay
 /// `general-purpose`: they need Edit/Write and rely on the per-role contract +
-/// the `scope_guard` hook instead. Emitted by `dispatch-plan` so the
+/// the `write_gate` hook instead. Emitted by `dispatch-plan` so the
 /// orchestrator never picks the agent by hand.
 #[must_use]
 pub fn recommended_subagent_type(role: &str) -> String {

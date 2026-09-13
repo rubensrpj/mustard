@@ -27,7 +27,7 @@
 //! and without `--force`), so the removal of a worktree destroyed the tree it
 //! pointed at. A worktree therefore lacks whatever git ignores, by design; the
 //! second unit that would need one is REFUSED instead
-//! ([`crate::hooks::write::work_branch_gate`]).
+//! ([`crate::commands::event::work_branch::cut_pending_work_branch`]).
 //!
 //! Error posture: config/user/state errors are LOUD (`ok:false` + exit 1) —
 //! an unknown `--base` here is the same disease `resolve_base` now rejects at

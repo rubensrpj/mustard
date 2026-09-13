@@ -10,8 +10,8 @@
 //!    census artefacts (the tool's own output), the operator's work. Measured by
 //!    [`checkout_work`], EXACTLY ONCE per settlement, and carried from there.
 //! 2. **Where the checkout stands** ([`CheckoutPosition`]) — the branch the tree
-//!    sits on, the branch about to be cut (none at the explicit open), the
-//!    resolved base, and whether the position can be attributed at all.
+//!    sits on, the branch about to be cut (none at the explicit open) and the
+//!    resolved base.
 //!
 //! One answer, of two shapes ([`CensusSettlement`]):
 //!
@@ -34,14 +34,12 @@
 //! of the four axes collapse at the entrance, before any row is taken, and the
 //! collapse is stated here so nobody re-derives it at a door:
 //!
-//! - **root shape** — a door may pass the toplevel, a subdirectory (the write
-//!   hook passes the edited file's directory), a linked worktree or a
-//!   submodule. `settle` resolves `git rev-parse --show-toplevel` ONCE at
-//!   entry and every git call below uses that root. Every row is therefore
-//!   written for ONE shape; a door cannot get it wrong because a door no longer
-//!   chooses. (The submodule keeps its own toplevel: it is a repository of its
-//!   own, and its position is what [`CheckoutPosition::attributable`] declines
-//!   to attribute.)
+//! - **root shape** — a door may pass the toplevel, a subdirectory, a linked
+//!   worktree or a submodule. `settle` resolves `git rev-parse --show-toplevel`
+//!   ONCE at entry and every git call below uses that root. Every row is
+//!   therefore written for ONE shape; a door cannot get it wrong because a door
+//!   no longer chooses. (A submodule keeps its own toplevel: it is a repository
+//!   of its own.)
 //! - **index state** — a dirty path may be unstaged (` M`), staged (`M `,
 //!   `A `), both (`MM`) or untracked (`??`). [`checkout_work`] accepts all four
 //!   into the same reading, and the one step that touches those paths — the
@@ -69,15 +67,13 @@
 //!
 //! ## Why this is ONE function and not a condition at each door
 //!
-//! Three doors take this decision: the explicit `emit-pipeline` open,
-//! `spec-draft`'s cut and the write hook. While each carried a condition of its
-//! own, the next review always found the door that had missed one, or that
-//! took the steps in another order. So the doors stopped deciding AND stopped
-//! acting: a door states where the checkout stands and obeys the answer, and
-//! the base refresh happens HERE, once, in the order this body states. The
-//! doors differ only in the position they state — the explicit open cuts
-//! nothing (no target), and the write hook marks a submodule as a position it
-//! cannot attribute.
+//! Two doors take this decision: the explicit `emit-pipeline` open and
+//! `spec-draft`'s cut. While each carried a condition of its own, the next
+//! review always found the door that had missed one, or that took the steps in
+//! another order. So the doors stopped deciding AND stopped acting: a door
+//! states where the checkout stands and obeys the answer, and the base refresh
+//! happens HERE, once, in the order this body states. The doors differ only in
+//! the position they state: the explicit open cuts nothing (no target).
 //!
 //! ## Fail-open where nothing was measured
 //!
@@ -100,9 +96,8 @@ use super::work_branch::{
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CheckoutPosition<'a> {
     /// The branch the tree really sits on — `None` on a detached HEAD or a
-    /// probe that did not answer. Used BOTH to judge attribution and to drive
-    /// the git steps, which is why it is never masked: see
-    /// [`Self::attributable`].
+    /// probe that did not answer. Used both to judge whose work the tree holds
+    /// and to drive the git steps.
     current: Option<&'a str>,
     /// The branch about to be cut, when one is. `None` at a door that cuts
     /// nothing — the explicit open — where no work can ride anywhere and so
@@ -112,9 +107,6 @@ pub(crate) struct CheckoutPosition<'a> {
     /// establish it: a base nobody knows cannot be refreshed, and nothing is
     /// going to move from it either.
     base: Option<&'a str>,
-    /// Whether the position can be ATTRIBUTED at all — see
-    /// [`Self::attributable`].
-    attributable: bool,
 }
 
 impl<'a> CheckoutPosition<'a> {
@@ -125,39 +117,16 @@ impl<'a> CheckoutPosition<'a> {
         target: Option<&'a str>,
         base: Option<&'a str>,
     ) -> Self {
-        Self {
-            current,
-            target,
-            base,
-            attributable: true,
-        }
-    }
-
-    /// Declare whether "whose work is this?" has an answer in this tree.
-    ///
-    /// `false` for a SUBMODULE reached through the write hook: its HEAD is
-    /// judged against the SUPERproject's bases, which misreads its position
-    /// outright — so it refuses nothing for the tree.
-    ///
-    /// The branch name itself is NOT dropped: the base refresh is a git step
-    /// that never depended on attribution, and it needs to know whether the
-    /// tree is standing on the base it is about to fast-forward.
-    pub(crate) fn attributable(mut self, attributable: bool) -> Self {
-        self.attributable = attributable;
-        self
+        Self { current, target, base }
     }
 
     /// `true` when taking this checkout would carry work that is not this
     /// unit's onto the branch about to be cut — the plain `git checkout -b`
     /// this settlement stands in front of moves everything uncommitted with it.
     ///
-    /// `false` wherever nothing is going to be checked out (no target), and
-    /// wherever the position cannot be attributed.
+    /// `false` wherever nothing is going to be checked out (no target).
     fn would_carry_work_off(&self, root: &Path, config: &ProjectConfig) -> bool {
-        self.attributable
-            && self
-                .target
-                .is_some_and(|target| holds_other_work(root, self.current, target, config))
+        self.target.is_some_and(|target| holds_other_work(root, self.current, target, config))
     }
 }
 

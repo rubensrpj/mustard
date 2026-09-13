@@ -379,7 +379,7 @@ pub fn init_with_templates(
 ///
 /// The recorded line NAMES the branch the commit landed on. A fresh clone is
 /// checked out on the default branch, so the ordinary first install commits
-/// there — the very branch `work_branch_gate` refuses to let the operator work
+/// there — the very branch the `write_gate` refuses to let the operator work
 /// on. That asymmetry is deliberate (the stamp is project configuration, not
 /// the operator's work, and refusing there would hand the dirty tree back in
 /// the commonest case of all), and naming the branch is what keeps it a stated
@@ -1456,7 +1456,7 @@ mod tests {
     /// The stamp commit lands on a PROTECTED branch too, and that is deliberate
     /// — locked here so nobody changes it by accident.
     ///
-    /// `work_branch_gate` denies the OPERATOR an edit that would land on the
+    /// The `write_gate` denies the OPERATOR an edit that would land on the
     /// default branch, so an installer committing there looks like the same
     /// rule broken. It is a different case: the stamp is project configuration
     /// the install itself wrote, not work, and a fresh clone is checked out on

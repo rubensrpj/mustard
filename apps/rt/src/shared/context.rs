@@ -620,9 +620,8 @@ fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathB
 ///
 /// Sibling of [`spec_for_session`]: `emit-pipeline --kind pipeline.kind`
 /// pre-computes the `{work_kind}/{slug}` branch name and drops it here; the
-/// `work_branch_gate` PreToolUse(Write|Edit) hook reads it back on the FIRST
-/// edit, checks the branch out, and clears the marker. A read-only request
-/// never edits, so the marker is simply never consumed.
+/// cut `spec-draft` takes reads it back, checks the branch out, and clears the
+/// marker. A request that never drafts a spec never consumes it.
 ///
 /// Marker location: `.claude/.session/<session_id>/pending-work-branch` — beside
 /// the session's `active-spec` marker. Returns `None` when the session has no
@@ -717,11 +716,8 @@ pub fn set_pending_branch(
 
 /// Remove the pending auto-branch marker, best-effort.
 ///
-/// Called by `work_branch_gate` once it has checked the branch out so the gate
-/// does not re-fire on every subsequent edit of the same session. (A FAILED
-/// checkout no longer clears: the gate reconciles the marker to the branch
-/// actually active via [`set_pending_branch`], so the record matches reality
-/// instead of being destroyed.) A missing marker is a no-op and any IO error
+/// Called by the cut `spec-draft` takes once it has checked the branch out, so
+/// the marker is consumed once. A missing marker is a no-op and any IO error
 /// is swallowed — this teardown must never block a write.
 pub fn clear_pending_branch(project_dir: &str, session_id: &str) {
     if is_placeholder_session(session_id) {

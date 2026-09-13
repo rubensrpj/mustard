@@ -500,7 +500,7 @@ fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
 /// The isolation prose teaches the branch the harness actually cuts.
 ///
 /// This one is here because its absence had a cost, and the cost was paid every
-/// turn. A later change removed the `.claude/spec/` carve-out from `work_branch_gate`
+/// turn. A later change removed the `.claude/spec/` carve-out from the branch hook
 /// and `spec-draft` began cutting the unit's branch in the MAIN checkout at
 /// approval — the branch became the isolation. The orchestrator's own paragraph
 /// kept teaching the opposite ("writes IN-PLACE … on the base branch with NO
@@ -574,11 +574,11 @@ fn isolation_prose_teaches_the_branch_cut_at_approval() {
     // --- 4. The code really behaves the way the prose now promises ---------
     // Without this half the sentences above outlive the mechanism: they would
     // keep promising a denial and a degrade after either was reverted.
-    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    let paths = read("apps/rt/src/shared/paths.rs");
     assert!(
-        !gate.contains("rel.starts_with(\".claude/spec/\") => return Ok(Verdict::Allow)"),
-        "the gate carves `.claude/spec/` out again, so the prose promises a \
-         denial that never fires",
+        paths.contains("const HARNESS_PREFIXES: &[&str] = &[\".claude/plans/\", \".claude/scratch/\"];"),
+        "the write gate carves more than plans and scratch out of the base again — \
+         `.claude/spec/` among them — so the prose promises a denial that never fires",
     );
     let draft = read("apps/rt/src/commands/spec/spec_draft.rs");
     assert!(
@@ -827,16 +827,11 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
         "the spec scaffold overwrites the sidecar wholesale again, which erases \
          the one answer nothing else can reconstruct",
     );
-    for door in [
-        "apps/rt/src/hooks/write/work_branch_gate.rs",
-        "apps/rt/src/commands/event/work_branch.rs",
-    ] {
-        assert!(
-            read(door).contains("record_cut_base"),
-            "{door} cuts the branch without recording the base it cut from, so \
-             the answer depends on which door opened the unit",
-        );
-    }
+    assert!(
+        read("apps/rt/src/commands/event/work_branch.rs").contains("record_cut_base"),
+        "the cut no longer records the base it cut from, so the pick dies with \
+         the pending marker",
+    );
 
     // --- 5. …and it is written where the DRAFT can still write ------------
     // The cut runs FIRST, and a `meta.json` in the unit's directory is exactly
@@ -876,16 +871,10 @@ fn router_prose_teaches_the_kind_named_branch_and_its_one_question() {
         "the base resolver guesses the outermost candidate again, and a guess \
          nobody can see is a fact",
     );
-    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
     assert!(
-        gate.contains("workbranch.base.unknown"),
-        "the gate stopped SAYING it cannot know which base the emergency came \
+        draft.contains("workbranch.base.unknown"),
+        "the cut stopped SAYING it cannot know which base the emergency came \
          from, so the unit is cut somewhere nobody chose",
-    );
-    assert!(
-        gate.contains("recorded_base.as_deref()"),
-        "the reconcile drops the operator's recorded base again while it \
-         corrects the branch — the retried cut then has nothing to read",
     );
 }
 
@@ -1192,7 +1181,6 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
          which is how a second unit took a checkout holding another unit's whole \
          spec, waves and proof while `git status` named all three",
     );
-    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
     // ONE question, asked once per door, and NO door performs a step.
     //
     // This used to demand the opposite: two calls per door — the shared refusal
@@ -1212,11 +1200,7 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
          decision that does not own its measurement is two decisions again",
     );
     let emit = read("apps/rt/src/commands/event/emit_pipeline.rs");
-    for (door, src) in [
-        ("emit-pipeline (the explicit open)", &emit),
-        ("spec-draft's cut", &branch),
-        ("the write hook", &gate),
-    ] {
+    for (door, src) in [("emit-pipeline (the explicit open)", &emit), ("spec-draft's cut", &branch)] {
         assert!(src.contains("settle("), "{door} no longer asks the shared question");
         // The steps the answer performs. `fetch_origin(&vcs` and its siblings
         // are the CALL shapes — `work_branch.rs` still defines the functions.
@@ -1233,9 +1217,10 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
             );
         }
     }
+    let gate = read("apps/rt/src/hooks/write/write_gate.rs");
     assert!(
         !gate.contains("hook_create"),
-        "the gate cuts a worktree again — the divert the prose says is withdrawn",
+        "the write gate cuts a worktree again — the divert the prose says is withdrawn",
     );
     for nudge in ["EnterWorktree path=", "EnterWorktree name="] {
         assert!(
@@ -1313,12 +1298,12 @@ fn bugfix_prose_teaches_the_material_channel() {
          written after the spec it was meant to fill (assemble at {assemble_at}, \
          draft at {draft_at})",
     );
-    // …and the ordering warning must describe the mechanism the way `/feature`
-    // §2.2 does. "Refused, the flow dead-ends" alone warns of a wall the common
-    // path never hits: once the base gate has NAMED the unit, the pending marker
-    // makes the auto-branch hook cut the branch on this very write and it lands.
-    // Two flows describing one mechanism differently is how a reader learns to
-    // trust neither (found in review, 2026-08-11).
+    // …and the ordering warning must describe the write the way the code
+    // judges it. It used to promise that, once the base gate had NAMED the
+    // unit, the pending marker made the auto-branch hook cut the branch on this
+    // very write. The write gate cuts nothing — only the cut `spec-draft` takes
+    // reads the marker — so that promise would send the flow at a wall it never
+    // mentions. Both flows name the same wall, each in its own words.
     // The anchor is the CLAIM, not a slogan. It used to be the sentence
     // "Order, said out loud: …", which /feature §2.2 carried word for word —
     // one wording maintained in two files is how the two drift apart. Both
@@ -1333,9 +1318,9 @@ fn bugfix_prose_teaches_the_material_channel() {
          or the rule gets restated here and drifts: {order}",
     );
     assert!(
-        order.contains("pending marker"),
-        "the ordering warning omits the case that actually happens — the marker \
-         cutting the branch on this write: {order}",
+        order.contains("no hook cuts a branch") && !order.contains("pending marker makes"),
+        "the ordering warning promises a branch cut on this write again — no hook \
+         performs it: {order}",
     );
     assert!(
         order.contains("REFUSED"),
@@ -1408,16 +1393,17 @@ fn bugfix_prose_teaches_the_material_channel() {
         "the draft neither reads the material file nor writes its sections, so \
          the flow would hand over a payload nothing consumes",
     );
-    let gate = read("apps/rt/src/hooks/write/work_branch_gate.rs");
+    let paths = read("apps/rt/src/shared/paths.rs");
     assert!(
-        gate.contains("rel.starts_with(\".claude/scratch/\")"),
+        paths.contains("const HARNESS_PREFIXES: &[&str] = &[\".claude/plans/\", \".claude/scratch/\"];"),
         "the write gate no longer carves out `.claude/scratch/`, so the prose \
          sends a diagnosis at a path the gate denies",
     );
+    let gate = read("apps/rt/src/hooks/write/write_gate.rs");
     assert!(
-        gate.contains("context::pending_branch_for"),
-        "the gate no longer reads a pending marker, so §3's ordering warning \
-         describes a landing nothing performs",
+        !gate.contains("pending_branch_for"),
+        "the write gate reads the pending marker again, so §3's ordering warning \
+         no longer describes what this write meets",
     );
     let ignore = read("packages/core/templates/.gitignore");
     assert!(

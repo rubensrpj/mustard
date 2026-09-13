@@ -318,7 +318,7 @@ fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<PathBuf> {
 /// When `dir` is inside a LINKED git worktree, return the MAIN checkout root;
 /// otherwise `None` (⇒ the caller keeps today's walk result unchanged).
 ///
-/// Detection mirrors `work_branch_gate::is_isolated_worktree`: a linked worktree
+/// Detection: a linked worktree
 /// reports a per-worktree `--git-dir` distinct from the shared `--git-common-dir`,
 /// while the MAIN checkout reports the same path for both. Derivation mirrors
 /// `git_settle::main_checkout_root`: the parent of the absolute `…/.git` common

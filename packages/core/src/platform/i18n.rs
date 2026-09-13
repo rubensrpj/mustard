@@ -502,27 +502,9 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              automatically once `tree-sitter generate` finishes."
         }
 
-        // Work-branch gate — the dirty-tree note appended to a checkout-failure
-        // verdict, and the reconciliation warning when the run continues on the
-        // branch actually active. Config-language: both are user-facing hook
-        // feedback (found in review, 2026-07-30: they shipped hardcoded in one
-        // locale). `{paths}`/`{more}`, `{target}`/`{error}`/`{actual}`/`{note}`
-        // are interpolated by the gate.
-        ("workbranch.dirty.note", Locale::PtBr) => " Árvore suja: {paths}{more}.",
-        ("workbranch.dirty.note", Locale::EnUs) => " Dirty tree: {paths}{more}.",
-        ("workbranch.reconcile.warn", Locale::PtBr) => {
-            "não consegui criar a branch '{target}': {error} — seguindo na branch atual \
-             '{actual}'; registro do work branch reconciliado de '{target}' para '{actual}'.{note}"
-        }
-        ("workbranch.reconcile.warn", Locale::EnUs) => {
-            "could not create branch '{target}': {error} — continuing on the current branch \
-             '{actual}'; the work branch record was reconciled from '{target}' to '{actual}'.{note}"
-        }
-
         // Work-branch REFUSAL — the checkout holds another unit's branch with
         // uncommitted files, so cutting the second unit here would carry them
-        // off. Said by BOTH doors (the write gate and the `spec-draft`
-        // cut), so it lives in the catalogue rather than at either surface.
+        // off. Said by the `spec-draft` cut, in the project's language.
         // `{current}`/`{target}`/`{paths}`/`{more}` are interpolated by
         // `work_branch::BusyCheckout::reason`.
         //
@@ -610,7 +592,7 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // Nothing is cut, and the operator is told: the harness used to take the
         // outermost candidate and mention it on stderr, which a PreToolUse hook
         // says to nobody (it exits 0). `{target}`/`{candidates}` are
-        // interpolated by the gate.
+        // interpolated by the `spec-draft` cut.
         ("workbranch.base.unknown", Locale::PtBr) => {
             "Não dá para saber de qual base '{target}' deve sair: este projeto declara várias \
              candidatas ({candidates}) e nada registrou a escolha, então a branch NÃO foi criada. \
@@ -2234,6 +2216,11 @@ mod tests {
             assert!(pt.starts_with("[Mustard] ") && en.starts_with("[Mustard] "), "{key}");
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+        for gone in ["workbranch.dirty.note", "workbranch.reconcile.warn"] {
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                assert_eq!(translate(gone, lang), "<missing-key>", "{gone} left with the branch hook");
             }
         }
     }

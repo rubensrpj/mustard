@@ -921,10 +921,9 @@ fn apply_wave_complete(cwd: &Path, spec: &str, payload: &Value, ts: &str) {
 }
 
 /// `pipeline.kind` effect (porta-unica work-type signal): pre-compute the
-/// auto-branch name the FIRST file mutation of this work unit will check out and
-/// persist it as the session's `pending-work-branch` marker (`work_branch_gate`
-/// reads it back on the first Write/Edit; a read-only request never edits, so
-/// the marker is simply never consumed). Returns the branch so `run()` can echo
+/// branch name this work unit will be cut on and persist it as the session's
+/// `pending-work-branch` marker (the cut `spec-draft` takes reads it back; a
+/// request that never drafts a spec never consumes it). Returns the branch so `run()` can echo
 /// it for the `EnterWorktree name=…` hand-off, or `None` when no base resolved.
 /// Fail-open — the emit already succeeded.
 fn mark_pending_work_branch(

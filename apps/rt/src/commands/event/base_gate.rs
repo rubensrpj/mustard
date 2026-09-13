@@ -910,34 +910,17 @@ mod tests {
         }
     }
 
-    /// A entrada do hook de escrita, montada aqui porque este é o único teste
-    /// que precisa das TRÊS portas lado a lado.
-    fn write_hook_verdict(root: &Path, sid: &str) {
-        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
-        let root_s = root.to_string_lossy().to_string();
-        let input = HookInput {
-            tool_name: Some("Write".to_string()),
-            tool_input: serde_json::json!({ "file_path": "f.txt", "content": "x" }),
-            hook_event_name: Some("PreToolUse".to_string()),
-            cwd: Some(root_s.clone()),
-            session_id: Some(sid.to_string()),
-            ..HookInput::default()
-        };
-        let ctx = Ctx::for_test(root_s, Some(Trigger::PreToolUse));
-        let _ = crate::hooks::write::work_branch_gate::WorkBranchGate.evaluate(&input, &ctx);
-    }
-
     /// NENHUMA porta cria commit.
     ///
-    /// As três portas que fazem a pergunta — a abertura explícita, o corte do
-    /// `spec-draft` e o hook de escrita — recebem a MESMA árvore suja só com o
-    /// censo, em duas posições, e deixam a mesma coisa: nenhum commit escrito,
+    /// As duas portas que fazem a pergunta — a abertura explícita e o corte do
+    /// `spec-draft` — recebem a MESMA árvore suja só com o censo, em duas
+    /// posições, e deixam a mesma coisa: nenhum commit escrito,
     /// e o censo segue sujo na árvore. Uma porta nova que não passe pela
     /// resposta compartilhada diverge das outras aqui.
     #[test]
     fn no_door_writes_a_commit_for_a_census_only_tree() {
         type Door = fn(&Path, &str);
-        let doors: [(&str, Door); 3] = [
+        let doors: [(&str, Door); 2] = [
             ("emit-pipeline (a porta explícita)", |root, _sid| {
                 let _ = crate::commands::event::emit_pipeline::enforce_base_gate_at(
                     root,
@@ -949,11 +932,6 @@ mod tests {
                 let root_s = root.to_string_lossy().to_string();
                 crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
                 let _ = crate::commands::event::work_branch::cut_pending_work_branch(root, sid);
-            }),
-            ("o hook de escrita", |root, sid| {
-                let root_s = root.to_string_lossy().to_string();
-                crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
-                write_hook_verdict(root, sid);
             }),
         ];
         let expected = DoorAnswerSeen {

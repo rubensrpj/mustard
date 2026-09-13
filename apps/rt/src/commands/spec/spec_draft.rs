@@ -1054,7 +1054,7 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     // The spec, its wave layout and its negative proof are the first things the
     // work produces, and they belong to the unit — which IS the branch. They
     // used to land on the integration base the analysis was approved from (a
-    // `.claude/spec/` carve-out in `work_branch_gate` existed precisely to let
+    // `.claude/spec/` carve-out in the old branch hook existed precisely to let
     // them). Cutting here puts the whole layout inside the branch in this one
     // call, and keeps the proof's premise intact: the branch is cut off a fresh
     // base, before wave 1, so the code the criteria describe still does not
@@ -1206,7 +1206,7 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     // economy already written in the SKILL instead of the orchestrator having
     // to "remember" it: re-classify the spec.md we just wrote and auto-rebaixar
     // a non-justified full (rewriting meta.json — the source-of-truth the
-    // scope_guard / close-gate read). `--force-scope` honours the request but
+    // close gate reads). `--force-scope` honours the request but
     // records the override. Fail-open: an unreadable spec leaves `full`
     // untouched. ----
     let scope_downgraded =
@@ -1315,9 +1315,9 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
 }
 
 /// Cut this session's pending work branch so everything the draft writes lands
-/// INSIDE the unit — the same cut [`crate::hooks::write::work_branch_gate`]
-/// performs on a file mutation, taken here because `spec-draft` writes through
-/// the filesystem and no PreToolUse hook ever sees it.
+/// INSIDE the unit. It is the only cut: no hook cuts a branch on a file
+/// mutation, and `spec-draft` writes through the filesystem, where no
+/// PreToolUse hook ever sees it.
 ///
 /// `Ok(Some(branch))` — the unit's branch is the checkout (cut now, or already
 /// there). `Ok(None)` — no work unit was signalled at all (a hand-run draft, a
@@ -1539,8 +1539,8 @@ fn replace_acceptance_block(body: &str, bullets: &[String]) -> Option<String> {
 /// - **AUTO-REBAIXA** when `requested == Full`, the classifier returns
 ///   `light`/`extended-light`, the census is trustworthy (not an empty/
 ///   placeholder `## Files` section), and `--force-scope` was NOT passed.
-///   The downgrade rewrites `meta.json` (the source-of-truth `scope_guard` /
-///   close-gate read) to the classified scope, emits a
+///   The downgrade rewrites `meta.json` (the source-of-truth the close gate
+///   reads) to the classified scope, emits a
 ///   `pipeline.scope.downgrade` event, and returns the
 ///   `{from,to,reason,signals}` object the caller folds into stdout's
 ///   `scopeDowngraded`.
@@ -1625,7 +1625,7 @@ fn apply_scope_gate(
     }
 
     // AUTO-REBAIXA: rewrite meta.json to the classified scope (the
-    // source-of-truth `scope_guard` / close-gate read). The downgraded scope is
+    // source-of-truth the close gate reads). The downgraded scope is
     // light/extended-light, neither of which carries waves — clear the wave-plan
     // fields so the persisted meta is internally consistent (a Light/ext-light
     // spec is never a wave plan). The spec.md narrative is left as-is (cosmetic:
