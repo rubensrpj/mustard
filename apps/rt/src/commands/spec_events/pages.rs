@@ -35,14 +35,21 @@ struct SpecFiles {
     html: PathBuf,
 }
 
-/// A spec foi aberta pelo `spec-draft`: o `meta.json` dele está na pasta, e o
-/// `spec.md` é o documento que ele escreveu. Ali a página e o `.md` nunca são
-/// refeitos do arquivo de eventos, que apagaria o texto da spec: o `write` só
-/// grava o evento, e o `page --spec` recusa. A única conferência disso.
+/// O `spec.md` da spec é um documento, e não a página refeita do arquivo de
+/// eventos: o `meta.json` do `spec-draft` está na pasta, ou o `spec.md` traz a
+/// seção de critérios de aceitação, de onde o QA lê os ACs. Ali a página e o
+/// `.md` nunca são refeitos do arquivo de eventos, que apagaria o texto da
+/// spec: o `write` e as pontes do binário só gravam o evento, e o
+/// `page --spec` recusa. A única conferência disso.
 pub(crate) fn drafted_by_spec_draft(root: &Path, spec: &str) -> bool {
-    ClaudePaths::for_project(root)
-        .and_then(|paths| paths.for_spec(spec.trim()))
-        .is_ok_and(|paths| paths.meta_json_path().is_file())
+    let Ok(paths) = ClaudePaths::for_project(root).and_then(|paths| paths.for_spec(spec.trim())) else {
+        return false;
+    };
+    paths.meta_json_path().is_file()
+        || std::fs::read_to_string(paths.spec_md_path())
+            .ok()
+            .and_then(|md| crate::commands::review::qa_run::extract_ac_section(&md))
+            .is_some()
 }
 
 /// Refaz o `spec.md` e o `spec.html` da spec `spec` do projeto `root`, com os

@@ -820,7 +820,15 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
         return Err(Refusal::BinaryOnlyField { field: (*field).to_string() });
     }
     check_field(event, spec.name, req("author", Kind::OneOf(AUTHORS)))?;
-    check_field(event, spec.name, Field { name: "origin", kind: Kind::Int, required: spec.needs_origin })?;
+    // O `origin` é obrigatório no que o assistente grava a partir da
+    // conversa; o que o binário grava, como os critérios tirados do
+    // `spec.md`, não tem mensagem de onde veio.
+    let by_assistant = event.get("author").and_then(Value::as_str) == Some(DEFAULT_AUTHOR);
+    check_field(
+        event,
+        spec.name,
+        Field { name: "origin", kind: Kind::Int, required: spec.needs_origin && by_assistant },
+    )?;
     for envelope in [opt("label", Kind::Text), opt("replaces", Kind::Ref)] {
         check_field(event, spec.name, envelope)?;
     }
@@ -1915,6 +1923,20 @@ mod tests {
             Refusal::MissingField { event_type: "note".into(), field: "origin".into() }
         );
         assert!(checked("message", json!({"text": "oi", "author": "user"})).is_ok());
+    }
+
+    /// O que o binário grava não tem mensagem de origem: um critério tirado do
+    /// `spec.md` entra sem `origin`, e o mesmo critério pelo assistente, não.
+    #[test]
+    fn what_the_binary_writes_needs_no_origin() {
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test"});
+        let mut by_binary = criterion.clone();
+        by_binary["author"] = json!("binary");
+        assert!(checked("criterion", by_binary).is_ok());
+        assert_eq!(
+            checked("criterion", criterion).unwrap_err(),
+            Refusal::MissingField { event_type: "criterion".into(), field: "origin".into() }
+        );
     }
 
     /// Uma tarefa que não cita arquivo entra sem o campo; quando o campo vem,
