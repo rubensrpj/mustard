@@ -132,8 +132,7 @@ Uma coisa só: pegar uma unidade que já tem spec e tocar ela adiante. Ele nunca
 | Você digita | O que acontece |
 |---|---|
 | `/mustard:spec` | lista as specs ativas numa tabela e espera a letra |
-| `/mustard:spec a` | age na linha `a`: em PLAN aprova, em EXEC continua de onde parou |
-| `/mustard:spec ar` | **digitado por inteiro**, aprova *e* implementa no mesmo gesto — sem segunda pergunta |
+| `/mustard:spec a` | age na linha `a`: em PLAN mostra a spec e pergunta "Aprovar esta spec?", em EXEC continua de onde parou |
 | `/mustard:spec meu-slug` | vai direto naquela spec, sem tabela |
 
 #### `/mustard:git` — o trabalho local

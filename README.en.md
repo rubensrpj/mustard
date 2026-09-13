@@ -132,8 +132,7 @@ One thing only: take a unit that already has a spec and move it forward. It neve
 | You type | What happens |
 |---|---|
 | `/mustard:spec` | lists the active specs in a table and waits for a letter |
-| `/mustard:spec a` | acts on row `a`: approves it in PLAN, continues it in EXEC |
-| `/mustard:spec ar` | **typed in full**, approves *and* implements in the same gesture — no second question |
+| `/mustard:spec a` | acts on row `a`: in PLAN shows the spec and asks "Aprovar esta spec?", in EXEC continues it |
 | `/mustard:spec my-slug` | jumps straight to that spec, no table |
 
 #### `/mustard:git` — the local work

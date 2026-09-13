@@ -64,13 +64,12 @@ Spec layout — canonical section keys (EN, language-agnostic; heading localises
 
 ## Present + approve — STOP at PLAN
 
-The materialising call (step 2, or step 3 on a re-materialisation) already emitted `pipeline.scope` + PLAN — do not re-emit. Print the spec verbatim + `wave-tree`. NEVER ask about a plan the user cannot see. Primary — plan mode: the wave-plan (+ spec body) IS the plan file; `ExitPlanMode` acceptance mints `<spec>/.approved-by-user` (the marker `approve-spec` requires). Fallback (no plan mode): print the spec, attach `wave-plan.md` as the AskUserQuestion `preview`:
+The materialising call (step 2, or step 3 on a re-materialisation) already emitted `pipeline.scope` + PLAN — do not re-emit. Print the spec verbatim + `wave-tree`. NEVER ask about a plan the user cannot see. Then ask the ONE approval question — `AskUserQuestion` *"Aprovar esta spec?"* with **Aprovar** (attach `wave-plan.md` as its `preview`) and **Ajustar**. Choosing **Aprovar** is the approval: the approval witness records it in `spec.ndjson`, with no command, and the Mustard suggests `/clear` — the execution starts in a clean window, through `/mustard:spec {name}`. Plan mode (`ExitPlanMode`) and a typed `/mustard:spec {letter}` approve nothing. **Ajustar** →:
 
-- "Approve wave plan for later" → STOP; user runs `/mustard:spec {letter}` (new session, which asks for the approval there) or `{letter}r` (the typed form IS the approval — it mints `<spec>/.approved-by-user` and goes straight to wave 1, with no second gesture).
 - "Edit decomposition (hint PLAN)" → user gives a hint (e.g. merge waves 2 and 3); re-decompose once.
 - "Reject decomposition" → `mustard-rt run wave-collapse --spec {spec} --mode full` (the reject path — `${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § A`). NEVER a non-wave Full spec.
 
-PLAN is terminal — the only approval that unlocks EXECUTE is the event `/spec` emits (see Inviolable). On "Approve and implement?", direct the user to `/spec`.
+PLAN is terminal — the only approval that unlocks EXECUTE is the user choosing **Aprovar** in the approval question (see Inviolable); `/mustard:spec {name}` then starts the execution in a clean window.
 
 ## COORDINATE — parent/epic specs
 

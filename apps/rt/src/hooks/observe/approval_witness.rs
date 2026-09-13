@@ -168,20 +168,6 @@ fn record_approval(root: &str, spec: &str, question: &str, answer: &str) -> bool
     crate::commands::spec_events::write::record(Path::new(root), spec, "state", draft).is_ok()
 }
 
-/// Até os leitores passarem ao estado, o mesmo gesto grava também a marca de
-/// aprovação que eles leem.
-fn mint_marker(root: &str, spec: &str, session: Option<&str>) {
-    if let Some(marker) = crate::shared::context::approval_marker_path(root, spec) {
-        let body = crate::shared::context::marker_body(
-            spec,
-            "AskUserQuestion",
-            session.unwrap_or("unknown"),
-            &mustard_core::time::now_iso8601(),
-        );
-        let _ = mustard_core::io::fs::write_atomic(&marker, body.as_bytes());
-    }
-}
-
 /// Por que nada foi gravado, quando a spec esperava aprovação e a resposta
 /// não aprovou. `None` numa pergunta cancelada, que não respondeu nada.
 ///
@@ -234,11 +220,8 @@ impl Check for ApprovalWitness {
         let offered = offered_labels(input);
         let chosen = chosen_approval(input, &offered);
         let context = match (standing(&root, session), chosen) {
-            (Standing::Awaiting(spec), Some((question, answer))) => {
-                let recorded = record_approval(&root, &spec, &question, &answer);
-                mint_marker(&root, &spec, session);
-                recorded.then(|| say("approval.witness.clear", lang, &[("{spec}", &spec)]))
-            }
+            (Standing::Awaiting(spec), Some((question, answer))) => record_approval(&root, &spec, &question, &answer)
+                .then(|| say("approval.witness.clear", lang, &[("{spec}", &spec)])),
             (Standing::Awaiting(spec), None) => {
                 decline_notice(&spec, &selected_labels(input), &offered, lang)
             }
@@ -479,20 +462,5 @@ mod tests {
         cancelled.raw = json!({ "tool_response": { "answers": {} } });
         assert_eq!(witness(root, &cancelled), Verdict::Allow);
         assert!(!state(root).approved);
-    }
-
-    /// O mesmo gesto grava as duas coisas, enquanto os leitores não passaram
-    /// ao estado: o `state` aprovado e a marca que eles leem.
-    #[test]
-    fn the_same_gesture_records_the_state_and_the_marker() {
-        if ambient_override() {
-            return;
-        }
-        let dir = in_plan();
-        let root = dir.path();
-        witness(root, &approve_or_adjust("Aprovar"));
-        assert!(state(root).approved);
-        let marker = context::approval_marker_path(&root.to_string_lossy(), "epic").unwrap();
-        assert!(marker.is_file(), "the marker the readers still read is minted too");
     }
 }

@@ -79,64 +79,31 @@ fn assert_superseded_gone(rel: &str, body: &str) {
     );
 }
 
-/// The picker states that SELECTING is approving.
+/// Choosing a spec is not approving it.
 ///
-/// The picker used to say the opposite in four places, and it was load-bearing
-/// prose: the operator read it and routed a user who had already typed their
-/// consent through a plan-mode round trip to type it again. The marker's whole
-/// property is that the model cannot author it — and the text a user types is
-/// exactly that class of act, so honouring it removes a gesture without
-/// weakening the gate.
-///
-/// This test used to pin the HALFWAY version of that contract: `ar` approved,
-/// a bare letter did not. That half-step was the ceremony, not a safeguard — a
-/// letter reaches the observer through the same channel `ar` does, and the
-/// table's own legend had always called it *act on row — PLAN approve*. So the
-/// assertions below pin the whole contract, and they stay exactly as strict
-/// about the half that carries the security: WHICH gestures mint, and which
-/// still mint nothing.
+/// Three doors used to mint one approval: a letter typed as the whole prompt,
+/// an accepted plan-mode plan and a selected option of the approval question.
+/// Two of them are about something else — a letter picks a row, and accepting
+/// a plan can be about anything — so the approval kept one door: the user
+/// chooses "Aprovar" in the question, and the witness records it. The page
+/// must say so where each reader arrives at the picker, and the sentences of
+/// the old contract must be gone.
 #[test]
-fn picker_prose_states_the_typed_letter_is_the_approval() {
+fn picker_prose_says_selecting_is_not_approving() {
     let picker = read("plugin/commands/spec.md");
 
-    // --- 1. The new contract, where each reader arrives at it -------------
-    // The header line: the first thing anyone opening the command reads.
-    let intro = line_with(&picker, "**Selecting IS approving:**")
-        .expect("the picker header no longer states that selecting a row approves it");
-    assert!(
-        intro.contains(".approved-by-user"),
-        "the header says selecting approves without naming the marker it mints: {intro}",
-    );
-    // Saying it approves is not the whole contract. The header must ALSO carry
-    // the exactness rule, which is the half that keeps the gesture unforgeable,
-    // and must name at least one gesture that still mints nothing — or the page
-    // reads as "the picker always approves".
-    assert!(
-        intro.contains("whole prompt") || intro.contains("WHOLE prompt"),
-        "the header must keep the whole-prompt rule — a substring match would let a \
-         message quoting the form forge the marker: {intro}",
-    );
-    assert!(
-        intro.contains("mints nothing"),
-        "the header must name what does NOT approve, or selecting reads as \
-         unconditional: {intro}",
-    );
+    // --- 1. The one door, where each reader arrives at it ------------------
+    let intro = line_with(&picker, "**Selecting is not approving:**")
+        .expect("the picker header no longer says that selecting a row does not approve it");
+    for needle in ["\"Aprovar\"", "witness", "`/clear`", "approve nothing"] {
+        assert!(intro.contains(needle), "the header misses {needle}: {intro}");
+    }
 
-    // The parse rule: where the letter form is actually decoded.
     let parse = line_with(&picker, "**`^[a-z]r?$`**")
         .expect("the picker no longer documents the letter-mode pattern");
     assert!(
-        parse.contains(".approved-by-user"),
-        "the parse rule does not say the typed letter mints the marker: {parse}",
-    );
-    assert!(
-        parse.contains("A bare letter MINTS"),
-        "the parse rule must state the bare letter approves — the halfway contract \
-         is what made the operator answer the same question twice: {parse}",
-    );
-    assert!(
-        parse.contains(".clarified"),
-        "the parse rule must keep the clarify gate in front of a Full approval: {parse}",
+        parse.contains("SELECTS") && parse.contains("approves nothing"),
+        "the parse rule must say the letter only selects the row: {parse}",
     );
 
     // The `Modo de seleção` block is printed LITERALLY to the user, so it is
@@ -144,76 +111,58 @@ fn picker_prose_states_the_typed_letter_is_the_approval() {
     let modo = line_with(&picker, "**Modo de seleção**")
         .expect("the picker no longer carries the literal Modo de seleção block");
     assert!(
-        modo.contains(".approved-by-user"),
-        "the literal selection legend still describes `r` as a pre-answer: {modo}",
+        modo.contains("Aprovar esta spec?") && modo.contains("\"Aprovar\""),
+        "the literal selection legend must say where the approval happens: {modo}",
     );
 
-    // The route into the approve gate: the paragraph that decides whether a
-    // second gesture is asked for at all.
     let plan_route = line_with(&picker, "resume-loop **§A Approve**")
         .expect("the picker no longer routes a Plan-stage spec to §A");
-    assert!(
-        plan_route.contains("no second question") || plan_route.contains("no second gesture"),
-        "the Plan route must state that `r` costs no further gesture: {plan_route}",
-    );
+    for needle in ["**Aprovar**", "**Ajustar**", "`/clear`", ".clarified", "approvedByUser:true"] {
+        assert!(plan_route.contains(needle), "the Plan route misses {needle}: {plan_route}");
+    }
 
     // --- 2. The superseded sentences are gone -----------------------------
     assert_superseded_gone("plugin/commands/spec.md", &picker);
+    assert_superseded_gone("plugin/pipeline-config.md", &read("plugin/pipeline-config.md"));
 }
 
-/// §A takes the shortcut it already had, for the typed form too.
+/// §A asks one question, and the approval ends the window that asked it.
 ///
-/// §A already skipped the re-approval on `approvedByUser:true`, for exactly the
-/// reason that applies here: the marker exists, so asking again is the
-/// redundant second gesture. The typed form mints the same marker, and the
-/// section had no sentence saying so.
+/// A spec already approved is not asked again, and its resume starts the
+/// execution. A spec not yet approved gets the one question, "Aprovar esta
+/// spec?", with "Aprovar" and "Ajustar"; choosing "Aprovar" is the whole
+/// approval, and the next step is `/clear`, never a dispatch in the window
+/// that asked. The typed letter and plan mode approve nothing.
 #[test]
-fn resume_prose_skips_the_second_gesture_for_the_typed_form() {
+fn resume_prose_asks_one_question_and_suggests_clear() {
     let loop_ref = read("plugin/refs/spec/resume-loop.md");
 
-    // --- 1. The shortcut is written down, inside §A -----------------------
-    let shortcut = line_with(&loop_ref, "Typed `{letter}`")
-        .expect("§A never tells the orchestrator what to do with a typed picker gesture");
-    assert!(
-        shortcut.contains(".approved-by-user"),
-        "the shortcut does not name the marker that is already minted: {shortcut}",
-    );
-    assert!(
-        shortcut.contains("§B"),
-        "the shortcut must send the orchestrator to the dispatch, not back to a \
-         question: {shortcut}",
-    );
-    assert!(
-        shortcut.contains("--resume"),
-        "the shortcut must name the flag that carries `implement now` into the \
-         relay: {shortcut}",
-    );
-    // The counterweight, so the paragraph cannot be read as "the picker always
-    // approves". The limit moved when the bare letter started minting: it is no
-    // longer "a letter without `r`" but the two positions where a gesture names
-    // no spec — a table answer, and the bare command off a unit's branch.
-    assert!(
-        shortcut.contains("mints nothing"),
-        "the shortcut omits its limit — the page must name the gestures that record \
-         no marker, or the picker reads as approving unconditionally: {shortcut}",
-    );
-    assert!(
-        shortcut.contains("integration base"),
-        "the shortcut must say what the bare command does where the tree stands on no \
-         unit; silence there reads as \"approves something\": {shortcut}",
-    );
-
-    // It belongs in §A, beside the approvedByUser shortcut it extends; the §B
-    // loop is not where an approval decision is read.
-    let already = loop_ref
-        .find("**Already approved — skip re-approval")
+    let already = line_with(&loop_ref, "**Already approved — skip re-approval")
         .expect("§A no longer carries the approvedByUser shortcut");
-    let typed = loop_ref.find("Typed `{letter}`").expect("checked above");
+    for needle in ["approvedByUser", "--resume", "§B"] {
+        assert!(already.contains(needle), "the shortcut misses {needle}: {already}");
+    }
+
+    let typed = line_with(&loop_ref, "**A typed picker letter approves nothing.**")
+        .expect("§A never says the typed letter approves nothing");
+    assert!(typed.contains("ExitPlanMode"), "plan mode must be named as no door: {typed}");
+
+    let approve = line_with(&loop_ref, "- **Aprovar** →")
+        .expect("§A no longer says what choosing Aprovar does");
     assert!(
-        typed > already && typed - already < 1500,
-        "the typed-form shortcut must sit with the approvedByUser one it extends \
-         (approvedByUser at {already}, typed form at {typed})",
+        approve.contains("`/clear`") && approve.contains("do not dispatch"),
+        "choosing Aprovar must end in /clear, never in a dispatch here: {approve}",
     );
+    let adjust = line_with(&loop_ref, "- **Ajustar** →").expect("§A no longer handles Ajustar");
+    assert!(adjust.contains("wave-collapse"), "Ajustar keeps the reject path: {adjust}");
+
+    // All of it lives in §A, where the approval is decided.
+    let section = loop_ref.find("## §A").expect("the loop ref no longer has a §A");
+    let loop_at = loop_ref.find("## §B").expect("the loop ref no longer has a §B");
+    for needle in ["- **Aprovar** →", "**A typed picker letter approves nothing.**"] {
+        let at = loop_ref.find(needle).expect("checked above");
+        assert!(section < at && at < loop_at, "{needle} must sit inside §A");
+    }
 
     // --- 2. The superseded sentences are gone -----------------------------
     assert_superseded_gone("plugin/refs/spec/resume-loop.md", &loop_ref);
@@ -470,160 +419,82 @@ fn the_draft_call_carries_the_name_the_gate_minted() {
     );
 }
 
-/// The `AskUserQuestion` fallback names the gesture that counts BEFORE it asks
-/// for one.
+/// The approval question names the gesture that counts BEFORE it asks.
 ///
-/// The paragraph used to say only that "the answer mints the same marker",
-/// which is true of exactly one answer and false of every other one the dialog
-/// accepts: an option whose label carries no approval stem records nothing, and
-/// so does an answer typed as free text. Both declines ARE explained — on
-/// stderr, at a moment the operator reaches only after spending the gesture — so
-/// the explanation arrives after the cost. A gate that accepts one specific
-/// gesture has to name it in the message that asks for it.
-///
-/// Both halves are asserted. Half 1: the naming sits on the fallback line, ahead
-/// of the options it offers — an ordering defect is not fixed by a true sentence
-/// written below the question. Half 2: the recorder still declines the way the
-/// paragraph gives as its reason, or the page teaches a condition nothing
-/// enforces.
+/// A gate that accepts one specific gesture has to name it in the message
+/// that asks for it: choosing the option "Aprovar". Free text typed instead of
+/// choosing, and an option without the approval word, approve nothing — and
+/// the witness can only say so after the gesture is spent. Both halves are
+/// asserted: the naming sits on the line that presents the plan, ahead of the
+/// options; and the witness still declines the way that line says.
 #[test]
-fn the_approval_fallback_names_the_gesture_before_asking_for_it() {
+fn the_approval_question_names_the_gesture_before_asking_for_it() {
     let loop_ref = read("plugin/refs/spec/resume-loop.md");
 
     // --- 1. The gesture is named, on the line that presents the plan --------
-    let fallback = line_with(&loop_ref, "**Fallback (plan mode unavailable):**")
-        .expect("§A no longer carries the plan-mode-unavailable fallback");
+    let ask = line_with(&loop_ref, "Present for approval")
+        .expect("§A no longer presents the plan for approval");
+    for needle in [
+        "Aprovar esta spec?",
+        "**Aprovar**",
+        "**Ajustar**",
+        "free text",
+        "before the question is answered",
+        "preview",
+    ] {
+        assert!(ask.contains(needle), "the approval line misses {needle}: {ask}");
+    }
+    let ask_at = loop_ref.find("Present for approval").expect("checked above");
+    let options_at = loop_ref.find("- **Aprovar** →").expect("§A no longer lists the Aprovar option");
     assert!(
-        fallback.contains("SELECTING"),
-        "the fallback never says that only a SELECTED option mints the marker — an \
-         answer typed as free text is the decline this omission produces: {fallback}",
-    );
-    assert!(
-        fallback.contains("approv") && fallback.contains("aprov"),
-        "the fallback must name the stems the recorder matches, or the author words \
-         the option \"Sim, pode ir\" and the answer records nothing: {fallback}",
-    );
-    assert!(
-        fallback.contains("before the question is answered")
-            || fallback.contains("before the plan is presented"),
-        "the fallback must say the gesture is named BEFORE the answer is spent — \
-         that ordering IS the fix: {fallback}",
-    );
-    // The one-line way out has to be here too: it is the alternative the operator
-    // can still take at this exact moment, and it costs a single prompt.
-    assert!(
-        fallback.contains("/mustard:spec r") && fallback.contains("WHOLE prompt"),
-        "the fallback never names the bare `r` — the one-line way out inside the \
-         unit's own branch — under its whole-prompt rule: {fallback}",
-    );
-    assert!(
-        fallback.contains("work branch"),
-        "the bare `r` must carry the position it is valid in, or it is taught as a \
-         gesture that works anywhere: {fallback}",
+        ask_at < options_at,
+        "the gesture must be named ahead of the options it governs (ask at {ask_at}, \
+         options at {options_at})",
     );
 
-    // …and it precedes the options themselves. A reader who meets the menu first
-    // has already chosen by the time the rule arrives.
-    let fallback_at = loop_ref
-        .find("**Fallback (plan mode unavailable):**")
-        .expect("checked above");
-    let options_at = loop_ref
-        .find("**Approve and implement now — wave 1**")
-        .expect("§A no longer offers the approve-and-implement option");
+    // --- 2. The witness still declines the way the line claims --------------
+    let witness = read("apps/rt/src/hooks/observe/approval_witness.rs");
     assert!(
-        fallback_at < options_at,
-        "the gesture must be named ahead of the options it governs (fallback at \
-         {fallback_at}, options at {options_at})",
-    );
-
-    // --- 2. The recorder still declines the way the paragraph claims --------
-    let recorder = read("apps/rt/src/hooks/observe/approval_witness.rs");
-    assert!(
-        recorder.contains(r#"APPROVAL_STEMS: &[&str] = &["approv", "aprov"]"#),
-        "the recorder's stems changed — the fallback now teaches labels it no \
-         longer accepts",
+        witness.contains(r#"APPROVAL_STEMS: &[&str] = &["approv", "aprov"]"#),
+        "the witness's stems changed — the question now teaches a label it no longer \
+         accepts",
     );
     assert!(
-        recorder.contains("fn is_offered"),
-        "nothing separates a SELECTED label from free text any more, so the \
-         fallback's central instruction explains a rule that stopped existing",
+        witness.contains("fn is_offered"),
+        "nothing separates a chosen option from free text any more",
     );
 }
 
-/// **The picker registers the bare `r`** — the same approval gesture with the
-/// letter left out, valid inside the unit's own work branch.
+/// The bare `r` names the unit the checkout stands in, and approves nothing.
 ///
-/// `picker_approval_observer` mints `<spec>/.approved-by-user` from
-/// `/mustard:spec r` submitted as the whole prompt, resolving the spec through
-/// the branch the checkout stands on. A door the pages never mention is a door
-/// nobody walks through: the operator takes the plan-mode round trip instead,
-/// which is the ceremony the form exists to remove.
-///
-/// The looseness question is asserted deliberately. The form drops the letter,
-/// not the rule — one character less to type is not one condition less to meet —
-/// and a page that presents it without saying so reads as a weakened gate.
+/// Inside the unit's own work branch the branch already names the unit, so the
+/// picker opens it without a table; elsewhere the lone `r` reads as the row
+/// letter it looks like. Either way it only chooses WHICH spec is open — and
+/// the slash-command door that used to record an approval from it records
+/// nothing now.
 #[test]
-fn the_picker_registers_the_bare_r_as_an_approval() {
+fn the_bare_r_names_the_unit_and_approves_nothing() {
     let picker = read("plugin/commands/spec.md");
-
-    // --- 1. §1 parses it, with the rule that keeps it unforgeable ----------
-    let parse = line_with(&picker, "**`^r$`")
-        .expect("§1 never parses the bare `r`, so the picker cannot route the gesture \
-                 the observer already honours");
-    assert!(
-        parse.contains(".approved-by-user"),
-        "the bare form is parsed without naming what it mints: {parse}",
-    );
-    assert!(
-        parse.contains("whole prompt") && parse.contains("ENTIRE prompt"),
-        "the bare form must carry the whole-prompt rule — a substring match would \
-         let a message quoting the form forge the marker: {parse}",
-    );
-    assert!(
-        parse.contains("looser in NOTHING"),
-        "dropping the letter is not dropping a condition, and the page has to say \
-         so or the form reads as a weakened gate: {parse}",
-    );
-    assert!(
-        parse.contains("work branch"),
-        "the bare form must state the ONE position it is valid in: {parse}",
-    );
+    let parse = line_with(&picker, "**`^r$`").expect("§1 never parses the bare `r`");
+    for needle in ["work branch", "approves nothing"] {
+        assert!(parse.contains(needle), "the bare form misses {needle}: {parse}");
+    }
     assert!(
         parse.contains("integration base") || parse.contains("detached HEAD"),
-        "the page must say what happens where the tree shows no unit — silence \
-         there reads as \"approves something\": {parse}",
+        "the page must say what happens where the tree shows no unit: {parse}",
     );
-
-    // The letter rule must not keep teaching the opposite about this one letter.
     let letters = line_with(&picker, "**`^[a-z]r?$`**")
         .expect("the picker no longer documents the letter-mode pattern");
     assert!(
         letters.contains("carve-out"),
-        "letter mode still reads as though a lone `r` were row `r`, which \
-         contradicts the rule one bullet above it: {letters}",
+        "letter mode still reads as though a lone `r` were row `r`: {letters}",
     );
 
-    // --- 2. §3 routes it into the approve gate the same way ----------------
-    let plan_route = line_with(&picker, "resume-loop **§A Approve**")
-        .expect("the picker no longer routes a Plan-stage spec to §A");
-    assert!(
-        plan_route.contains("bare `/mustard:spec r`"),
-        "§3 never says the bare form arrives with the approval already made, so §A \
-         asks for a gesture the user has already given: {plan_route}",
-    );
-
-    // --- 3. And the observer really does honour it -------------------------
+    // And the slash-command door records nothing.
     let observer = read("apps/rt/src/hooks/observe/picker_approval_observer.rs");
-    assert!(
-        observer.contains("ApprovalTarget::Checkout"),
-        "the picker door no longer resolves a bare `r` through the checkout — the \
-         pages now register a gesture nothing mints from",
-    );
-    assert!(
-        observer.contains("slug_of_work_branch"),
-        "the bare form's spec is no longer read off the work branch, so \"the branch \
-         names the unit\" is a reason the code stopped giving",
-    );
+    for writes in ["write_atomic", "spec_events::write", "record("] {
+        assert!(!observer.contains(writes), "the slash-command door still writes: {writes}");
+    }
 }
 
 /// The sentences this wave supersedes, verbatim as the pages carried them
@@ -690,6 +561,19 @@ const SUPERSEDED: &[(&str, &str)] = &[
     ("plugin/commands/spec.md", "the end-of-turn hook speaks only when the page changes"),
     ("plugin/commands/spec.md", "the hook blocks that ending with the order to publish"),
     ("plugin/commands/spec.md", "the `scp` commands the end-of-turn message lists"),
+    // A aprovação ficou com uma porta só, a pergunta: a letra digitada e o
+    // modo de plano deixaram de aprovar, e a marca de aprovação saiu.
+    ("plugin/commands/spec.md", "**Selecting IS approving:**"),
+    ("plugin/commands/spec.md", "A bare letter MINTS"),
+    ("plugin/commands/spec.md", "plan mode first, the approve/implement `AskUserQuestion` as fallback"),
+    ("plugin/commands/spec.md", "<spec>/.approved-by-user"),
+    ("plugin/refs/spec/resume-loop.md", "**Plan mode is PRIMARY**"),
+    ("plugin/refs/spec/resume-loop.md", "the marker is already minted, so go straight to the dispatch"),
+    ("plugin/refs/spec/resume-loop.md", "<spec>/.approved-by-user"),
+    ("plugin/refs/feature/full-plan.md", "`ExitPlanMode` acceptance mints"),
+    ("plugin/refs/feature/full-plan.md", "\"Approve wave plan for later\""),
+    ("plugin/refs/feature/full-plan.md", "<spec>/.approved-by-user"),
+    ("plugin/pipeline-config.md", "no `<spec>/.approved-by-user` marker"),
 ];
 
 /// Em sessão remota, o roteiro do `/mustard:spec` sabe que o `file://`

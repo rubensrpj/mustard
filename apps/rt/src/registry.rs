@@ -442,13 +442,10 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ClarificationObserver)),
             },
-            // Plan-mode approval recorder — the primary source of the same
-            // `<spec>/.approved-by-user` marker. When the user ACCEPTS the
-            // plan-mode plan (`ExitPlanMode` succeeds with the plan payload)
-            // for an unapproved Full spec in PLAN, the marker is minted from
-            // the harness `tool_response` (which the model does not author).
-            // AskUserQuestion above stays as the fallback source. Pure
-            // Observer, fail-closed, never blocks.
+            // A porta do modo de plano — aceitar um plano não aprova spec
+            // nenhuma, e a aprovação tem uma porta só, a testemunha acima. Fica
+            // registrada, sem nada a fazer, até sair junto com as outras portas
+            // antigas.
             Module {
                 id: "plan_approval_observer",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("ExitPlanMode"))],
@@ -480,16 +477,9 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(PromptObserver)),
             },
-            // Picker approval recorder — the THIRD door onto the same
-            // `<spec>/.approved-by-user` marker. When the user's OWN submitted
-            // prompt is the picker's approve-and-implement form
-            // (`/mustard:spec ar`) and a Full spec is awaiting approval in
-            // PLAN, the marker is minted from that gesture instead of asking
-            // for it a second time through plan mode. `UserPromptSubmit` fires
-            // only on a person's submission; the one runtime-authored path onto
-            // this trigger (a subagent's report / a background-task notice) is
-            // refused by the observer's own first fact. Pure Observer,
-            // fail-closed, never blocks the prompt.
+            // A porta do comando de barra da spec — digitar `/mustard:spec a`
+            // só escolhe qual spec abrir, e não aprova nada. Fica registrada,
+            // sem nada a fazer, até sair junto com as outras portas antigas.
             Module {
                 id: "picker_approval_observer",
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],

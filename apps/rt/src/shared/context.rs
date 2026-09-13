@@ -846,31 +846,6 @@ fn unit_closed_marker(project_dir_path: &str, session_id: &str) -> Option<PathBu
     )
 }
 
-/// Filename of the per-spec **user-approval** marker (see
-/// [`approval_marker_path`]).
-pub(crate) const APPROVED_BY_USER_MARKER: &str = ".approved-by-user";
-
-/// Compose the per-spec user-approval marker path:
-/// `<project>/.claude/spec/<spec>/.approved-by-user`.
-///
-/// The single home for this path so its two consumers cannot drift: the
-/// `approval_marker_observer` (which WRITES it on a genuine human PLAN approval)
-/// and `approve-spec` (which REQUIRES it before emitting the `draft→approved`
-/// signal). The marker can only be born from the user's real `AskUserQuestion`
-/// answer — echoed by the harness in `tool_response`, which the model does not
-/// author — so an orchestrator cannot forge the approval it is itself gated by.
-/// `None` on an I1 guard rejection of the project root or an invalid spec name.
-#[must_use]
-pub fn approval_marker_path(project_dir_path: &str, spec: &str) -> Option<PathBuf> {
-    Some(
-        ClaudePaths::for_project(Path::new(project_dir_path))
-            .and_then(|p| p.for_spec(spec))
-            .ok()?
-            .dir()
-            .join(APPROVED_BY_USER_MARKER),
-    )
-}
-
 /// Filename of the per-spec **clarification** marker (see
 /// [`clarified_marker_path`]).
 pub(crate) const CLARIFIED_MARKER: &str = ".clarified";
@@ -878,8 +853,8 @@ pub(crate) const CLARIFIED_MARKER: &str = ".clarified";
 /// Compose the per-spec clarification marker path:
 /// `<project>/.claude/spec/<spec>/.clarified`.
 ///
-/// The clarify-gate sibling of [`approval_marker_path`], with the same
-/// single-home discipline so its producer and consumer cannot drift: the
+/// The single home for this path, so its producer and consumer cannot drift:
+/// the
 /// glossary grill (`grill-capture --finalize`, which WRITES it when a Full
 /// spec's ANALYZE clarification loop completes) and `approve-spec` (which
 /// REQUIRES it before a Full plan may be approved — clarify precedes approval).
@@ -897,8 +872,8 @@ pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathB
     )
 }
 
-/// Provenance recorded INSIDE an approval / clarification marker — the typed
-/// read-back of what [`marker_body`] writes.
+/// Provenance recorded INSIDE the clarification marker — the typed read-back
+/// of what [`marker_body`] writes.
 ///
 /// `session` and `at` may be empty: a marker minted before those keys existed
 /// still names its door, and a partial read is worth more to a reader than no
@@ -907,16 +882,14 @@ pub fn clarified_marker_path(project_dir_path: &str, spec: &str) -> Option<PathB
 pub struct MarkerProvenance {
     /// Spec slug the marker belongs to.
     pub spec: String,
-    /// The door the approval came through (`ExitPlanMode`, `AskUserQuestion`,
-    /// `grill-finalize`).
+    /// The door the marker came through (`grill-finalize`).
     pub via: String,
     /// Session that recorded it, or empty when the marker predates the key.
     pub session: String,
     /// ISO-8601 instant the marker was minted, or empty on a legacy marker.
     pub at: String,
     /// Terms the clarification grill settled, in the order they were recorded.
-    /// Always empty on an approval marker (which grills nothing) and on a
-    /// clarification marker minted before the key existed.
+    /// Empty on a marker minted before the key existed.
     pub terms: Vec<String>,
     /// The stated sentence explaining why no grill applied — the honest decline
     /// (see [`clarify_marker_body`]). Empty when none was stated.
@@ -937,13 +910,10 @@ impl MarkerProvenance {
     }
 }
 
-/// Compose the BODY every approval / clarification marker carries.
+/// Compose the BODY the clarification marker carries.
 ///
-/// The body sibling of [`approval_marker_path`] / [`clarified_marker_path`]:
-/// those two are the single home for the marker PATH, this is the single home
-/// for its TEXT, so the three doors that mint markers cannot drift the way they
-/// already had (the `grill-finalize` door was writing two lines while the other
-/// two wrote three).
+/// The body sibling of [`clarified_marker_path`]: that one is the single home
+/// for the marker PATH, this is the single home for its TEXT.
 ///
 /// Format is `key=value`, one per line, trailing newline — deliberately not
 /// JSON, because the file is read by humans with `cat`. The caller supplies the
@@ -1004,9 +974,8 @@ fn one_line(s: &str) -> String {
 ///
 /// NEVER fails hard — every failure path (absent file, unreadable file, body
 /// with no recognisable `via=` line) collapses to `None`, which every caller
-/// renders as "no provenance". The marker's EXISTENCE is what governs the
-/// approval gate; this read is informative only, so a corrupt body must never
-/// become a new way for an approved spec to be refused.
+/// renders as "no provenance". A corrupt body must never become a new way for
+/// a spec to be refused over something the marker does not record.
 ///
 /// `via` is the one required key — it is what names the door, and without it
 /// the read carries no meaning. `spec`, `session` and `at` degrade to empty
@@ -1049,7 +1018,7 @@ pub fn read_marker_provenance(path: &Path) -> Option<MarkerProvenance> {
 /// `wave-tree`, `wave-size-check`) are driven both by hand and by orchestrator
 /// prompts, where the argument arrives in three shapes. This is the single home
 /// for resolving them, so the four can never drift — the sibling of
-/// [`approval_marker_path`] / [`clarified_marker_path`] for the argument side.
+/// [`clarified_marker_path`] for the argument side.
 ///
 /// Precedence (first match wins):
 ///
@@ -1194,18 +1163,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = clarified_marker_path(dir.path().to_str().unwrap(), "my-spec")
             .expect("a valid project + spec name resolves a marker path");
-        // Ends in the marker filename and lives under the spec's own dir —
-        // beside where `approval_marker_path` drops `.approved-by-user`.
+        // Ends in the marker filename and lives under the spec's own dir.
         assert!(p.ends_with(CLARIFIED_MARKER));
         let shown = p.to_string_lossy().replace('\\', "/");
         assert!(
             shown.contains("/.claude/spec/my-spec/"),
             "marker must live under the spec dir, got {shown}"
         );
-        // Sibling of the approval marker in the SAME directory.
-        let approval =
-            approval_marker_path(dir.path().to_str().unwrap(), "my-spec").unwrap();
-        assert_eq!(p.parent(), approval.parent());
     }
 
 
@@ -1213,16 +1177,15 @@ mod tests {
     // marker_body / read_marker_provenance — the marker BODY seam
     // -----------------------------------------------------------------------
 
-    /// The format contract the three minting doors now share: four `key=value`
-    /// lines, in a fixed order, with the instant the caller supplied. The
-    /// per-door halves of this claim live beside each writer, under the same
-    /// test-name prefix.
+    /// The format contract of the marker body: four `key=value` lines, in a
+    /// fixed order, with the instant the caller supplied. The writer's half of
+    /// this claim lives beside it, under the same test-name prefix.
     #[test]
     fn marker_body_is_the_single_writer_shape() {
-        let body = marker_body("my-spec", "ExitPlanMode", "s-1", "2026-07-24T10:00:00.000Z");
+        let body = marker_body("my-spec", CLARIFY_VIA, "s-1", "2026-07-24T10:00:00.000Z");
         assert_eq!(
             body,
-            "spec=my-spec\nvia=ExitPlanMode\nsession=s-1\nat=2026-07-24T10:00:00.000Z\n"
+            "spec=my-spec\nvia=grill-finalize\nsession=s-1\nat=2026-07-24T10:00:00.000Z\n"
         );
     }
 
@@ -1232,17 +1195,17 @@ mod tests {
     #[test]
     fn read_marker_provenance_round_trips_and_degrades() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join(".approved-by-user");
+        let path = dir.path().join(CLARIFIED_MARKER);
 
         // Round-trip: what `marker_body` wrote comes back typed.
         std::fs::write(
             &path,
-            marker_body("my-spec", "AskUserQuestion", "s-9", "2026-07-24T10:00:00.000Z"),
+            marker_body("my-spec", CLARIFY_VIA, "s-9", "2026-07-24T10:00:00.000Z"),
         )
         .unwrap();
         let p = read_marker_provenance(&path).expect("a well-formed body reads back");
         assert_eq!(p.spec, "my-spec");
-        assert_eq!(p.via, "AskUserQuestion");
+        assert_eq!(p.via, CLARIFY_VIA);
         assert_eq!(p.session, "s-9");
         assert_eq!(p.at, "2026-07-24T10:00:00.000Z");
 

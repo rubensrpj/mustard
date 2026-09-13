@@ -144,3 +144,41 @@ fn a_drafted_spec_blocks_code_until_the_user_approves() {
     assert!(said.contains("/clear"), "the witness suggests /clear: {said}");
     assert!(!edit_is_blocked(root), "after the approval the code is open");
 }
+
+/// Os arquivos de texto de `dir`, com o caminho, em qualquer profundidade.
+fn text_files(dir: &Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            text_files(&path, out);
+        } else if matches!(path.extension().and_then(|e| e.to_str()), Some("rs" | "md"))
+            && let Ok(body) = std::fs::read_to_string(&path)
+        {
+            out.push((path, body));
+        }
+    }
+}
+
+/// A marca de aprovação saiu do código: nenhum arquivo de produção a grava
+/// nem a lê, e a prosa do plugin não a ensina. Cada arquivo Rust é cortado no
+/// primeiro módulo de teste.
+#[test]
+fn the_approval_marker_is_gone_from_the_code() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    for dir in ["apps/rt/src", "apps/cli/src", "packages/core/src", "plugin"] {
+        text_files(&repo.join(dir), &mut files);
+    }
+    assert!(files.len() > 100, "the search reached the source tree: {} files", files.len());
+    let mut hits = Vec::new();
+    for (path, body) in &files {
+        let production = body.split("#[cfg(test)]").next().unwrap_or_default();
+        for needle in [".approved-by-user", "approval_marker_path", "APPROVED_BY_USER_MARKER"] {
+            if production.contains(needle) {
+                hits.push(format!("{} — {needle}", path.display()));
+            }
+        }
+    }
+    assert!(hits.is_empty(), "the approval marker is still in the code:\n{}", hits.join("\n"));
+}
