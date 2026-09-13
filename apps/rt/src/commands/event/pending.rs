@@ -53,6 +53,8 @@ use mustard_core::platform::i18n::Locale;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use mustard_core::io::fs::lock::{read_shared, LockedFile};
+
 use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
 use crate::shared::spec_state::DiskSpecState;
@@ -880,6 +882,10 @@ pub(crate) struct Charge {
     pub(crate) spec: String,
     pub(crate) closure: u64,
     pub(crate) blocks: u32,
+    /// A sessão que armou, quando ela era conhecida: só essa sessão é cobrada.
+    /// Sem sessão conhecida, qualquer sessão principal é.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session: Option<String>,
 }
 
 /// O arquivo dos fechamentos armados.
@@ -905,37 +911,47 @@ fn charges_path(root: &Path) -> Option<PathBuf> {
 #[must_use]
 pub(crate) fn armed_charges(root: &Path) -> Vec<Charge> {
     charges_path(root)
-        .and_then(|path| mustard_core::io::fs::read_to_string(&path).ok())
-        .and_then(|body| serde_json::from_str::<Charges>(&body).ok())
-        .map(|charges| charges.armed)
+        .and_then(|path| read_shared(&path).ok())
+        .map(|body| parse_charges(&body))
         .unwrap_or_default()
 }
 
-/// Grava os fechamentos armados; sem nenhum, o arquivo sai. `true` quando
-/// gravou.
-pub(crate) fn save_charges(root: &Path, armed: &[Charge]) -> bool {
+/// Os fechamentos de um arquivo; vazio ou ilegível dá lista vazia.
+fn parse_charges(body: &str) -> Vec<Charge> {
+    serde_json::from_str::<Charges>(body).map(|charges| charges.armed).unwrap_or_default()
+}
+
+/// Lê, muda com `change` e grava os fechamentos armados, com a trava
+/// exclusiva do arquivo presa do começo ao fim: um fechamento armado por
+/// outro processo no meio não some. Sem nenhum fechamento, o arquivo fica
+/// vazio. `true` quando gravou.
+pub(crate) fn update_charges(root: &Path, change: impl FnOnce(Vec<Charge>) -> Vec<Charge>) -> bool {
     let Some(path) = charges_path(root) else {
         return false;
     };
-    if armed.is_empty() {
-        return !path.exists() || mustard_core::io::fs::remove_file(&path).is_ok();
-    }
-    let Some(parent) = path.parent() else {
+    let Ok(mut file) = LockedFile::exclusive(&path) else {
         return false;
     };
-    let _ = mustard_core::io::fs::create_dir_all(parent);
-    let charges = Charges { armed: armed.to_vec() };
-    serde_json::to_vec_pretty(&charges)
-        .is_ok_and(|body| mustard_core::io::fs::write_atomic(&path, &body).is_ok())
+    let armed = file.read_to_string().map(|body| parse_charges(&body)).unwrap_or_default();
+    let next = change(armed);
+    let body = if next.is_empty() {
+        Ok(Vec::new())
+    } else {
+        serde_json::to_vec_pretty(&Charges { armed: next })
+    };
+    body.is_ok_and(|body| file.replace(&body).is_ok())
 }
 
 /// Arma a cobrança do fechamento `closure` da spec `spec`, no lugar de um
-/// fechamento anterior da mesma spec. `true` quando gravou.
-pub(crate) fn arm_charge(root: &Path, spec: &str, closure: u64) -> bool {
-    let mut armed = armed_charges(root);
-    armed.retain(|charge| charge.spec != spec);
-    armed.push(Charge { spec: spec.to_string(), closure, blocks: 0 });
-    save_charges(root, &armed)
+/// fechamento anterior da mesma spec, guardando a sessão de quem fechou,
+/// quando ela é conhecida. `true` quando gravou.
+pub(crate) fn arm_charge(root: &Path, spec: &str, closure: u64, session: Option<&str>) -> bool {
+    let session = session.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    update_charges(root, |mut armed| {
+        armed.retain(|charge| charge.spec != spec);
+        armed.push(Charge { spec: spec.to_string(), closure, blocks: 0, session });
+        armed
+    })
 }
 
 /// A pendência aberta que virou a spec `spec`, pela nota da lista.

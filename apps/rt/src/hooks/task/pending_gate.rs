@@ -26,7 +26,12 @@
 //!
 //! 1. É o `Stop` da sessão principal (nunca o de um subagente) — o
 //!    `end_of_turn_check` só chama as regras nele.
-//! 2. Há um fechamento armado que ainda não se encerrou.
+//! 2. Há um fechamento armado que ainda não se encerrou, a spec continua
+//!    fechada por ele (uma spec reaberta tira o contador), e ele é desta
+//!    sessão: o contador guarda a sessão de quem fechou, quando ela era
+//!    conhecida, e uma sessão paralela noutro worktree não gasta os bloqueios
+//!    dele. Sem sessão conhecida, qualquer sessão principal é cobrada. O
+//!    arquivo é lido e gravado com a trava presa.
 //! 3. O `Stop` trouxe `last_assistant_message` (o texto final do turno, campo
 //!    documentado do evento). Sem ele não há o que conferir.
 //! 4. Alguma pendência aberta nascida na spec daquele fechamento — a que um
@@ -71,10 +76,10 @@
 use std::path::Path;
 
 use mustard_core::domain::spec_events::SpecLog;
-use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::spec_state::{SpecState, State};
 use mustard_core::platform::i18n::Locale;
 
-use crate::commands::event::pending::{armed_charges, format_pending_items, open_born_in, save_charges, OpenPending};
+use crate::commands::event::pending::{armed_charges, format_pending_items, open_born_in, update_charges, OpenPending};
 use crate::hooks::task::end_of_turn_check::{Finding, Turn, TurnRule};
 use crate::shared::spec_state::DiskSpecState;
 
@@ -91,28 +96,44 @@ impl TurnRule for PendingRule {
         // `stop_hook_active` NÃO libera aqui (ver "`stop_hook_active` não
         // libera"): o contador é o limite.
         let project = Path::new(turn.project_dir);
-        let armed = armed_charges(project);
-        if armed.is_empty() {
+        if armed_charges(project).is_empty() {
             return None;
         }
+        let session = turn.session.map(str::trim).filter(|s| !s.is_empty());
         let disk = DiskSpecState::new(project);
-        let mut still_armed = Vec::new();
         let mut reasons = Vec::new();
-        for mut charge in armed {
-            // Encerrar tira o fechamento do arquivo; bloquear conta.
-            let omitted = disk
-                .log(&charge.spec)
-                .map(|log| omitted_items(turn.message, project, &log))
-                .unwrap_or_default();
-            if omitted.is_empty() || charge.blocks >= MAX_BLOCKS {
-                continue;
+        // Ler, contar e gravar com a trava do arquivo presa: um fechamento
+        // armado por outra sessão no meio não some.
+        let written = update_charges(project, |armed| {
+            let mut still_armed = Vec::new();
+            for mut charge in armed {
+                // O fechamento armado por uma sessão conhecida é só dela: outra
+                // sessão, noutro worktree, não gasta os bloqueios dele.
+                if charge.session.as_deref().is_some_and(|owner| session != Some(owner)) {
+                    still_armed.push(charge);
+                    continue;
+                }
+                // A spec reaberta, ou sem arquivo, não cobra por este
+                // fechamento: o contador sai.
+                let Some(log) = disk.log(&charge.spec) else {
+                    continue;
+                };
+                if State::from_log(&log).closing() != Some(charge.closure) {
+                    continue;
+                }
+                // Encerrar tira o fechamento do arquivo; bloquear conta.
+                let omitted = omitted_items(turn.message, project, &log);
+                if omitted.is_empty() || charge.blocks >= MAX_BLOCKS {
+                    continue;
+                }
+                charge.blocks += 1;
+                reasons.push(block_reason(&charge.spec, &omitted, turn.lang));
+                still_armed.push(charge);
             }
-            charge.blocks += 1;
-            reasons.push(block_reason(&charge.spec, &omitted, turn.lang));
-            still_armed.push(charge);
-        }
+            still_armed
+        });
         // Sem contador gravado, libera — nunca um bloqueio sem limite.
-        if !save_charges(project, &still_armed) || reasons.is_empty() {
+        if !written || reasons.is_empty() {
             return None;
         }
         Some(Finding::Block(reasons.join("\n\n")))
@@ -200,7 +221,7 @@ pub(crate) fn seed_spec(root: &Path, spec: &str, born: &[u64], session: &str) {
 mod tests {
     use super::*;
     use crate::commands::event::pending::{pending_at, Charge, PendingOpts};
-    use crate::commands::spec_events::write::record_phase;
+    use crate::commands::spec_events::write::{record_phase, record_phase_by};
     use crate::hooks::task::end_of_turn_check::run_rules;
     use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
     use serde_json::json;
@@ -338,7 +359,7 @@ mod tests {
         let root = dir.path();
         closed_spec(root, &[1, 2], "s-twice");
         let omits = "Fechei a spec; segue o P-2.";
-        let charge = |blocks| vec![Charge { spec: SPEC.to_string(), closure: 4, blocks }];
+        let charge = |blocks| vec![Charge { spec: SPEC.to_string(), closure: 4, blocks, session: None }];
 
         assert!(verdict(root, &stop("s-twice", omits)).is_blocking(), "first Stop blocks");
         assert_eq!(armed_charges(root), charge(1), "a block is counted");
@@ -364,7 +385,7 @@ mod tests {
         let dir = project_with_two_open_items();
         let root = dir.path();
         closed_spec(root, &[1, 2], "s-cited");
-        assert_eq!(armed_charges(root), vec![Charge { spec: SPEC.to_string(), closure: 4, blocks: 0 }]);
+        assert_eq!(armed_charges(root), vec![Charge { spec: SPEC.to_string(), closure: 4, blocks: 0, session: None }]);
 
         assert_eq!(verdict(root, &stop("s-cited", "Seguem P-1 e P-2.")), Verdict::Allow);
         assert_eq!(armed_charges(root), vec![], "the allowing Stop settled it");
@@ -530,6 +551,42 @@ mod tests {
         crate::shared::spec_state::stand_on_spec_branch(root, SPEC);
         crate::shared::context::bind_session_spec(&root.to_string_lossy(), "s-depois", SPEC);
         assert_eq!(verdict(root, &stop("s-depois", "Oi, vamos continuar.")), Verdict::Allow);
+    }
+
+    /// A spec reaberta antes do `Stop` não é cobrada pelo fechamento de antes:
+    /// o contador sai.
+    #[test]
+    fn a_spec_reopened_before_the_stop_is_not_charged() {
+        let dir = project_with_two_open_items();
+        let root = dir.path();
+        closed_spec(root, &[1, 2], "s-reaberta");
+        let path = mustard_core::io::spec_events::spec_file(root, SPEC).expect("spec file");
+        let running = json!({ "phase": "running" }).as_object().cloned().expect("object");
+        mustard_core::io::spec_events::write(&path, "state", running, &[]).expect("reopen");
+
+        assert_eq!(verdict(root, &stop("s-reaberta", "Voltei a mexer na spec.")), Verdict::Allow);
+        assert_eq!(armed_charges(root), vec![], "the charge of a reopened spec is dropped");
+    }
+
+    /// O fechamento armado por uma sessão conhecida só cobra essa sessão: uma
+    /// sessão paralela não é cobrada nem gasta os bloqueios dele. Sem sessão
+    /// conhecida, qualquer sessão é cobrada.
+    #[test]
+    fn a_closure_armed_by_a_session_charges_only_that_session() {
+        let omits = "Spec fechada.";
+        let dir = project_with_two_open_items();
+        let root = dir.path();
+        seed_spec(root, SPEC, &[1], "");
+        assert!(record_phase_by(root, SPEC, "closed", Some("s-dona")), "the close is recorded");
+        assert_eq!(armed_charges(root).first().and_then(|c| c.session.clone()).as_deref(), Some("s-dona"));
+        assert_eq!(verdict(root, &stop("s-paralela", omits)), Verdict::Allow, "another session is not charged");
+        assert_eq!(armed_charges(root).first().map(|c| c.blocks), Some(0), "nor does it spend a block");
+        assert!(verdict(root, &stop("s-dona", omits)).is_blocking(), "the session that closed is charged");
+
+        let open = project_with_two_open_items();
+        closed_spec(open.path(), &[1], "");
+        assert_eq!(armed_charges(open.path()).first().and_then(|c| c.session.clone()), None);
+        assert!(verdict(open.path(), &stop("s-qualquer", omits)).is_blocking(), "without a known session, any one");
     }
 
     /// Um id conta inteiro: `P-10` não cita `P-1`.

@@ -225,6 +225,13 @@ fn phase_rule(
 /// sem perguntar qual é a spec atual, então a arrumação que troca de branch,
 /// a sessão desligada e o worktree não a perdem.
 pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str) -> bool {
+    record_phase_by(start, spec, phase, crate::shared::spec_state::session_from_env().as_deref())
+}
+
+/// O mesmo que [`record_phase`], com a sessão de quem fecha dita por quem
+/// chama: um gancho a sabe pelo evento que recebeu. O contador guarda essa
+/// sessão, e só ela é cobrada; sem sessão, qualquer sessão principal é.
+pub(crate) fn record_phase_by(start: &Path, spec: &str, phase: &str, session: Option<&str>) -> bool {
     let order = |name: &str| PHASES.iter().position(|known| *known == name);
     let Some(target) = order(phase) else {
         return false;
@@ -240,7 +247,7 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str) -> bool {
     draft.insert("author".to_string(), json!("binary"));
     match record(start, spec, "state", draft, PhaseWriter::Binary) {
         Ok(recorded) => {
-            let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id);
+            let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id, session);
             true
         }
         Err(_) => false,
