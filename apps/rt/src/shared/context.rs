@@ -442,18 +442,53 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 #[must_use]
 pub fn spec_of_checkout_branch(project_dir_path: &str) -> Option<String> {
     let project = Path::new(project_dir_path);
-    let head = fs::read_to_string(project.join(".git").join("HEAD")).ok()?;
+    let git_dir = checkout_git_dir(project)?;
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let branch = head.trim().strip_prefix("ref: refs/heads/")?.trim();
     if branch.is_empty() {
         return None;
     }
-    let config = mustard_core::ProjectConfig::load(project);
+    // Num worktree ligado, o Mustard mora no checkout principal: o
+    // `mustard.json` e as pastas das specs ficam fora do git.
+    let home = main_checkout_of(&git_dir).unwrap_or_else(|| project.to_path_buf());
+    let config_root = if mustard_core::ProjectConfig::exists(project) { project } else { home.as_path() };
+    let config = mustard_core::ProjectConfig::load(config_root);
     let slug = crate::shared::work_kind::BaseFlow::of_at(&config.git, project).slug_of(branch)?;
-    ClaudePaths::for_project(project)
-        .and_then(|p| p.for_spec(&slug))
-        .ok()
-        .filter(|sp| sp.dir().exists())
-        .map(|_| slug)
+    [project, home.as_path()]
+        .into_iter()
+        .any(|root| {
+            ClaudePaths::for_project(root)
+                .and_then(|p| p.for_spec(&slug))
+                .is_ok_and(|sp| sp.dir().exists())
+        })
+        .then_some(slug)
+}
+
+/// A pasta do git do checkout em `project`, só lendo arquivos: `.git` é a
+/// própria pasta, ou, num worktree ligado, um arquivo `gitdir: <caminho>`.
+fn checkout_git_dir(project: &Path) -> Option<PathBuf> {
+    let dot_git = project.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let text = fs::read_to_string(&dot_git).ok()?;
+    let target = text.lines().find_map(|line| line.trim().strip_prefix("gitdir:"))?.trim();
+    let target = Path::new(target);
+    Some(if target.is_absolute() { target.to_path_buf() } else { project.join(target) })
+}
+
+/// O checkout principal de um worktree ligado, lido do `commondir` da pasta
+/// do git dele: a pasta pai do `.git` comum. `None` no checkout principal,
+/// que não tem `commondir`.
+fn main_checkout_of(git_dir: &Path) -> Option<PathBuf> {
+    let common = fs::read_to_string(git_dir.join("commondir")).ok()?;
+    let common = Path::new(common.trim());
+    let common = if common.is_absolute() { common.to_path_buf() } else { git_dir.join(common) };
+    let common = std::fs::canonicalize(&common).unwrap_or(common);
+    if common.file_name().and_then(|n| n.to_str()) != Some(".git") {
+        return None;
+    }
+    common.parent().map(Path::to_path_buf)
 }
 
 /// Resolve the spec a session is currently bound to, fail-open `None`.
