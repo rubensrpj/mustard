@@ -14,7 +14,6 @@
 use serde_json::json;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use crate::shared::context;
-use crate::shared::events::economy;
 use crate::shared::spec_state::DiskSpecState;
 use mustard_core::domain::spec_state::SpecState;
 use crate::commands::spec::spec_scaffold;
@@ -24,7 +23,7 @@ use mustard_core::io::fs::write_atomic;
 use mustard_core::platform::i18n::{slugify, Locale};
 use mustard_core::Meta;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Options for `mustard-rt run tactical-fix-create`.
 #[derive(Debug, Clone)]
@@ -123,6 +122,7 @@ fn existing_parent(specs: &Path, given: &str) -> Option<String> {
 }
 
 /// Core routine — pure-ish (writes files), returns a report.
+#[cfg_attr(not(test), allow(dead_code))]
 fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     // The body headings follow the project's text language, as the parent's do.
     let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
@@ -220,14 +220,16 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
     report
 }
 
-/// CLI entry.
-pub fn run(opts: TacticalFixOpts) {
-    let started = std::time::Instant::now();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let report = create(&cwd, &opts);
-    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
-    println!("{body}");
-    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "tactical-fix-create", started.elapsed().as_millis() as u64, Some(report.slug.as_str()), json!({}));
+/// CLI entry. The tactical fix has left the flow: the command refuses at the
+/// door with exit 1 and creates nothing. [`create`] keeps its body, with its
+/// tests, until the command leaves.
+pub fn run(_opts: TacticalFixOpts) {
+    crate::commands::retired::refuse(
+        Path::new(&context::project_dir()),
+        "tactical-fix-retired",
+        "retired.tactical_fix",
+        &[],
+    );
 }
 
 

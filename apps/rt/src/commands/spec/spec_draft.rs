@@ -971,27 +971,20 @@ fn carry_authored_prose(spec_md: &Path, authored: &[(String, String)]) -> Result
     mfs::write_atomic(spec_md, text.as_bytes()).map_err(|e| format!("{}: {e}", spec_md.display()))
 }
 
-/// Entry point — resolves the project root from the process context and maps
-/// the run's outcome to the process exit code.
-///
-/// Exit 2 belongs to ONE outcome: the fused `--plan` materialisation refused
-/// (see [`run_at`]). Every other failure keeps printing `{"ok": false, …}` and
-/// exiting 0, exactly as it always has.
-pub fn run(opts: SpecDraftOpts) {
-    let project = PathBuf::from(project_dir());
-    let code = run_at(&project, opts);
-    if code != 0 {
-        std::process::exit(code);
-    }
+/// Entry point. `spec-draft` has left the flow: the command refuses at the
+/// door with exit 1, creates nothing and sends to `open`, which creates the
+/// branch and the spec with the same name.
+pub fn run(_opts: SpecDraftOpts) {
+    crate::commands::retired::refuse(Path::new(&project_dir()), "use-open", "retired.spec_draft", &[]);
 }
 
-/// The command's whole body, against an EXPLICIT project root — so a test can
-/// drive the fused `--plan` path end to end without the composite reaching out
-/// of its tempdir into the real checkout the process happens to sit in.
+/// The command's old body, against an EXPLICIT project root. The door
+/// refuses ([`run`]); the body stays, with the tests that call it, until the
+/// command leaves.
 ///
-/// Returns the exit code [`run`] applies: `2` when the fused materialisation
-/// refused, `0` otherwise.
+/// Returns `2` when the fused materialisation refused, `0` otherwise.
 #[must_use]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     let Some(scope) = Scope::parse(&opts.scope) else {
         emit_error("invalid --scope (expected `light` or `full`)", &opts.scope);

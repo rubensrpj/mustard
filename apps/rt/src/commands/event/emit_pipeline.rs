@@ -133,6 +133,34 @@ const KNOWN_KINDS: &[&str] = &[
     EVENT_ECONOMY_OPERATION_INVOKED,
 ];
 
+/// Os tipos que criam ou avançam uma spec. Pela linha de comando, o
+/// `emit-pipeline` os recusa e manda para o `open`; as portas de dentro (a
+/// aprovação, os observadores das ondas e o fim da onda) chamam [`run`]
+/// direto e seguem, gravando só no log velho e num `meta.json` que já existe.
+const SPEC_DOOR_KINDS: &[&str] = &[
+    EVENT_PIPELINE_KIND,
+    EVENT_PIPELINE_STATUS,
+    EVENT_PIPELINE_STAGE,
+    EVENT_PIPELINE_OUTCOME,
+    EVENT_PIPELINE_WAVE_START,
+    EVENT_PIPELINE_WAVE_COMPLETE,
+    EVENT_PIPELINE_COMPLETE,
+];
+
+/// A entrada do `emit-pipeline` pela linha de comando: um tipo que cria ou
+/// avança uma spec ([`SPEC_DOOR_KINDS`]) é recusado antes de qualquer
+/// gravação, com exit 1. Os tipos que só gravam no log velho passam.
+pub(crate) fn refuse_spec_door(kind: &str) {
+    if SPEC_DOOR_KINDS.contains(&kind) {
+        crate::commands::retired::refuse(
+            Path::new(&project_dir()),
+            "pipeline-door-retired",
+            "retired.pipeline_door",
+            &[("{kind}", kind)],
+        );
+    }
+}
+
 /// Options for `mustard-rt run emit-pipeline`.
 pub struct EmitPipelineOpts {
     /// Pipeline event kind — must be one of the `EVENT_PIPELINE_*` constants.
@@ -1304,7 +1332,9 @@ const fn stage_rank(stage: Stage) -> u8 {
 
 /// Resolve the `meta.json` path for a spec — the wave's sidecar when the payload
 /// carries a `wave` field, the top-level spec's sidecar otherwise. Returns
-/// `None` when the spec (or wave) directory does not exist.
+/// `None` when that `meta.json` does not exist yet: no door creates one, so a
+/// spec opened by `open` never gets one, and an old spec that has it keeps
+/// being updated.
 fn meta_path_for(cwd: &Path, spec: &str, payload: &Value) -> Option<std::path::PathBuf> {
     let dir = if let Some(wave) = payload.get("wave").and_then(Value::as_u64) {
         wave_spec_path(cwd, spec, wave)?
@@ -1314,7 +1344,8 @@ fn meta_path_for(cwd: &Path, spec: &str, payload: &Value) -> Option<std::path::P
             .ok()
             .map(|sp| sp.dir().to_path_buf())?
     };
-    dir.is_dir().then(|| dir.join("meta.json"))
+    let meta = dir.join("meta.json");
+    meta.is_file().then_some(meta)
 }
 
 /// Patch a spec's `meta.json` for a `pipeline.stage` / `pipeline.outcome`
@@ -1334,9 +1365,6 @@ fn meta_path_for(cwd: &Path, spec: &str, payload: &Value) -> Option<std::path::P
 /// process-global `run()` entry — it is the same routine `run()` calls after
 /// writing a `pipeline.stage` / `pipeline.outcome` event.
 pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payload: &Value, ts: &str) {
-    let Some(path) = meta_path_for(cwd, spec, payload) else {
-        return;
-    };
     // An old spec parked before execution is born in plan before the stage
     // moves: the lock then reads the state, and not the `meta.json`.
     crate::commands::spec_events::write::birth_before_advance(cwd, spec);
@@ -1347,6 +1375,11 @@ pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payl
     {
         let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "running", None);
     }
+    // Only a `meta.json` that already exists is patched: a spec without one,
+    // like a spec opened by `open`, never gets one here.
+    let Some(path) = meta_path_for(cwd, spec, payload) else {
+        return;
+    };
     let mut meta = read_meta(&path).unwrap_or_default();
 
     match kind {
@@ -1509,17 +1542,11 @@ fn sync_parent_started(cwd: &Path, spec: &str, ts: &str) {
     // A wave starting is the execution too: the state moves to `running`,
     // from an approved phase only.
     let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "running", None);
-    let Some(spec_dir) = ClaudePaths::for_project(cwd)
-        .and_then(|p| p.for_spec(spec))
-        .ok()
-        .map(|sp| sp.dir().to_path_buf())
-    else {
+    // Only a `meta.json` that already exists is advanced: a spec without one,
+    // like a spec opened by `open`, never gets one here.
+    let Some(path) = meta_path_for(cwd, spec, &Value::Null) else {
         return;
     };
-    if !spec_dir.is_dir() {
-        return;
-    }
-    let path = spec_dir.join("meta.json");
     let mut meta = read_meta(&path).unwrap_or_default();
     let advance = match meta.stage.as_deref().and_then(Stage::parse) {
         None => true,
@@ -1761,7 +1788,12 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
     if !spec_dir.is_dir() {
         return;
     }
+    // Only a `meta.json` that already exists is advanced: a spec without one,
+    // like a spec opened by `open`, never gets one here.
     let path = spec_dir.join("meta.json");
+    if !path.is_file() {
+        return;
+    }
     let mut meta = read_meta(&path).unwrap_or_default();
 
     // Decide phase based on `total_waves` (native field).
@@ -2857,6 +2889,57 @@ mod tests {
         let dir = tempdir().unwrap();
         super::patch_meta_complete(dir.path(), "ghost", "2026-06-01T12:00:00Z");
         assert!(!dir.path().join(".claude").join("spec").join("ghost").exists());
+    }
+
+    /// Uma mudança de estágio pela porta de dentro, numa spec aberta pelo
+    /// `open`, não cria `meta.json`: a pasta da spec fica só com os arquivos
+    /// dela, e a spec continua sendo lida pelo estado.
+    #[test]
+    fn an_old_stage_move_on_a_spec_opened_by_open_creates_no_meta_json() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let spec_dir = root.join(".claude").join("spec").join("x");
+        let ts = "2026-09-14T10:00:00Z";
+        super::patch_meta_for_transition(root, "x", EVENT_PIPELINE_STAGE, &json!({ "stage": "Execute" }), ts);
+        super::patch_meta_for_transition(root, "x", EVENT_PIPELINE_OUTCOME, &json!({ "outcome": "completed" }), ts);
+        super::patch_meta_complete(root, "x", ts);
+        assert!(!spec_dir.join("meta.json").exists(), "no door creates a meta.json");
+        let state = crate::shared::spec_state::lock_state(root, "x").expect("the spec has its event file");
+        assert_eq!(state.phase, Some("survey"));
+    }
+
+    /// Depois de uma mudança de estágio pela porta de dentro, a spec aberta
+    /// pelo `open` segue sendo a do arquivo de eventos: o critério gravado é
+    /// aceito, e o `spec.md` é refeito a cada gravação, com a seção dos
+    /// critérios.
+    #[test]
+    fn a_spec_opened_by_open_keeps_its_page_after_criteria_are_written() {
+        use crate::commands::spec_events::write::{write_at, WriteOpts};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
+        super::patch_meta_for_transition(root, "x", EVENT_PIPELINE_STAGE, &json!({ "stage": "Execute" }), "2026-09-14T10:00:00Z");
+        let write = |event_type: &str, body: Value| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".to_string()),
+                event_type: event_type.to_string(),
+                json: body.to_string(),
+            })
+        };
+        let md = root.join(".claude").join("spec").join("x").join("spec.md");
+        let said = write("message", json!({ "author": "user", "text": "Travar o merge." }));
+        assert_eq!(said["ok"], json!(true), "{said}");
+        let before = std::fs::read_to_string(&md).unwrap_or_default();
+        let criterion = write(
+            "criterion",
+            json!({ "when": "o merge roda", "then": "a pendência trava", "proof": "cargo test", "origin": said["id"] }),
+        );
+        assert_eq!(criterion["ok"], json!(true), "the criterion is accepted: {criterion}");
+        let after = std::fs::read_to_string(&md).unwrap();
+        assert_ne!(after, before, "the page is rebuilt on every write");
+        assert!(after.contains("## Critérios"), "{after}");
     }
 
     /// Helper: project status for `spec` from its per-spec NDJSON window.

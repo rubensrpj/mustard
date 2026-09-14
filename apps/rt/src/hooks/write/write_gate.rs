@@ -701,8 +701,8 @@ mod tests {
     }
 
     /// Uma spec aberta pelo `run write`, sem `meta.json`, conta como em plano.
-    /// A troca de estágio pelo `emit-pipeline` cria o `meta.json` já em
-    /// execução, e a spec nasce em plano antes: a trava continua fechada.
+    /// A troca de estágio pela porta de dentro do `emit-pipeline` não cria
+    /// mais o `meta.json`, e a trava continua fechada, em plano.
     #[test]
     fn a_spec_opened_by_run_write_stays_locked_when_the_stage_moves() {
         let dir = project("{}");
@@ -717,10 +717,9 @@ mod tests {
 
         let to = json!({ "stage": "Execute" });
         crate::commands::event::emit_pipeline::patch_meta_for_transition(root, "x", "pipeline.stage", &to, "2026-09-13T00:00:00Z");
-        let meta = std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("meta.json")).expect("meta");
-        assert!(meta.contains("Execute"), "the emit wrote the meta already in execution: {meta}");
+        assert!(!root.join(".claude").join("spec").join("x").join("meta.json").exists(), "no meta.json is born");
         assert!(locked(root), "still locked");
-        assert_eq!(lock_state(root, "x").and_then(|state| state.phase), Some("plan"), "born in plan");
+        assert_eq!(lock_state(root, "x").and_then(|state| state.phase), Some("plan"), "still in plan");
     }
 
     /// Numa spec antiga em plano, o binário que avança o estágio para a

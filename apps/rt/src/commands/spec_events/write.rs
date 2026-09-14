@@ -2667,6 +2667,38 @@ mod tests {
         assert_eq!(revised["point"]["id"], json!(points[1].id), "the other point stays open: {revised}");
     }
 
+    /// Dois fechamentos ao mesmo tempo armam os dois: o arquivo dos
+    /// contadores da cobrança é lido e gravado com a trava presa, e nenhum
+    /// fechamento se perde.
+    #[test]
+    fn two_closings_at_once_arm_both() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let names: Vec<Vec<String>> =
+            (0..10).map(|round| (0..2).map(|w| format!("spec-{round}-{w}")).collect()).collect();
+        for spec in names.iter().flatten() {
+            let folder = root.join(".claude").join("spec").join(spec);
+            std::fs::create_dir_all(&folder).unwrap();
+            let state = json!({"v": 1, "id": 1, "type": "state", "phase": "running", "author": "binary",
+                "at": "2026-09-13T10:00:00Z"});
+            std::fs::write(folder.join("spec.ndjson"), format!("{state}\n")).unwrap();
+        }
+        for pair in &names {
+            std::thread::scope(|scope| {
+                for spec in pair {
+                    scope.spawn(move || assert!(record_phase(root, spec, "closed", None), "{spec}"));
+                }
+            });
+        }
+        let mut armed: Vec<String> =
+            crate::commands::event::pending::armed_charges(root).into_iter().map(|charge| charge.spec).collect();
+        armed.sort();
+        let mut expected: Vec<String> = names.into_iter().flatten().collect();
+        expected.sort();
+        assert_eq!(armed, expected, "no closing armed at the same time was lost");
+    }
+
     /// Uma spec sem nenhum ponto, como as do `spec-draft`, grava e aprova
     /// como antes: sem passo do levantamento e sem recusa nova.
     #[test]

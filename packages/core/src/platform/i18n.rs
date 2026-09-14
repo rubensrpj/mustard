@@ -1496,6 +1496,33 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              {pending}, so the merge will not close it by itself. Call open again with the same \
              arguments to record the note."
         }
+        ("retired.spec_draft", Locale::PtBr) => {
+            "O `spec-draft` saiu do fluxo. Abra a spec com `mustard-rt run open`, que cria a branch e \
+             a spec com o mesmo nome. Nada foi criado."
+        }
+        ("retired.spec_draft", Locale::EnUs) => {
+            "`spec-draft` has left the flow. Open the spec with `mustard-rt run open`, which creates \
+             the branch and the spec with the same name. Nothing was created."
+        }
+        ("retired.tactical_fix", Locale::PtBr) => {
+            "O ajuste tático saiu do fluxo. Para mudar uma spec aprovada, grave o pedido nela com \
+             `mustard-rt run write request`; para um trabalho novo, abra uma spec com `mustard-rt run \
+             open`. Nada foi criado."
+        }
+        ("retired.tactical_fix", Locale::EnUs) => {
+            "The tactical fix has left the flow. To change an approved spec, record the request in it \
+             with `mustard-rt run write request`; for new work, open a spec with `mustard-rt run \
+             open`. Nothing was created."
+        }
+        ("retired.pipeline_door", Locale::PtBr) => {
+            "O `emit-pipeline {kind}` não cria nem avança mais uma spec. Abra a spec com `mustard-rt \
+             run open`; as fases passam pelos comandos do fluxo novo. Nada foi gravado."
+        }
+        ("retired.pipeline_door", Locale::EnUs) => {
+            "`emit-pipeline {kind}` no longer creates or advances a spec. Open the spec with \
+             `mustard-rt run open`; the phases go through the new flow's commands. Nothing was \
+             written."
+        }
         ("grill.goal_missing", Locale::PtBr) => {
             "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
              frase?\" e rode o grill depois da resposta. Nada foi gravado."
@@ -3020,6 +3047,27 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+    }
+
+    /// As recusas dos comandos antigos que saíram do fluxo saem do catálogo
+    /// nos dois idiomas, cada uma com as vagas que o chamador preenche, e
+    /// todas mandam para o comando novo.
+    #[test]
+    fn i18n_translates_retired_keys() {
+        for (key, slots) in [
+            ("retired.spec_draft", &[][..]),
+            ("retired.tactical_fix", &[][..]),
+            ("retired.pipeline_door", &["{kind}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+            assert!(pt.contains("mustard-rt run open") && en.contains("mustard-rt run open"), "{key}");
         }
     }
 

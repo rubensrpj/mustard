@@ -57,6 +57,7 @@ pub mod glossary_coverage;
 pub mod grill_capture;
 pub mod spec_events;
 pub mod flow;
+pub mod retired;
 pub mod statusline;
 // Families whose commands are ported scripts living in flat modules (no
 // `<family>/` directory of their own) keep their clap enum in a `*_cli.rs`

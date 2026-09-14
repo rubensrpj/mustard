@@ -279,6 +279,9 @@ pub fn dispatch(cmd: EventCmd) {
             base,
             pending,
         } => {
+            // Pela linha de comando, os tipos que criam ou avançam uma spec
+            // recusam; as portas de dentro chamam o `run` direto.
+            event::emit_pipeline::refuse_spec_door(&kind);
             event::emit_pipeline::run(event::emit_pipeline::EmitPipelineOpts {
                 kind,
                 spec,
