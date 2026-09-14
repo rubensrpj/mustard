@@ -25,12 +25,13 @@
 //!    menos a do próprio arquivo, que é como ele volta a se ler.
 //!
 //! O estado da spec vem do [`lock_state`], a regra única da trava: com algum
-//! `state`, a dobra deles; sem nenhum, o `meta.json` — parada antes da
-//! execução trava, encerrada ou em execução pelo fluxo velho não; sem os dois
-//! e com o `spec.ndjson`, em plano, e trava. Só a branch que o Mustard não
-//! abriu, sem arquivo de eventos e sem `meta.json`, fica livre, e as regras da
-//! aprovação e da branch se calam. O portão não corta branch nenhuma: o único
-//! corte é o que o `spec-draft` faz.
+//! `state` no arquivo de eventos, vale a dobra deles; sem nenhum e com o
+//! arquivo, a spec conta como em plano, e trava. Só o arquivo de eventos
+//! conta: uma pasta de spec antiga, só com o `meta.json`, fica livre, e um
+//! `meta.json` ao lado de um arquivo de eventos nunca muda o que o estado diz.
+//! Livre também a branch que o Mustard não abriu, sem arquivo de eventos: ali
+//! as regras da aprovação e da branch se calam. O portão não corta branch
+//! nenhuma.
 //!
 //! ## Duas raízes
 //!

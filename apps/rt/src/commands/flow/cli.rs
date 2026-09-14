@@ -1,80 +1,81 @@
-//! The `run` subcommands of the spec flow (`flow/`).
+//! Os comandos `run` do fluxo da spec (`flow/`).
 //!
-//! FOUR registrations per command. Two live in this file: the variant in
-//! [`FlowCmd`] AND its arm in [`dispatch`] below; forgetting the arm still
-//! compiles, but the command vanishes from the CLI. The other two live in the
-//! tests: the name in `tests/run_command_surface.rs`, and a caller (or a
-//! justified `RUNTIME_WHITELIST` line) in `tests/template_parity.rs`.
+//! QUATRO registros por comando. Dois moram neste arquivo: a variante em
+//! [`FlowCmd`] E o braço dela no [`dispatch`] abaixo; esquecer o braço ainda
+//! compila, mas o comando some da linha de comando. Os outros dois moram nos
+//! testes: o nome em `tests/run_command_surface.rs` e um chamador (ou uma
+//! linha justificada no `RUNTIME_WHITELIST`) em `tests/template_parity.rs`.
 //!
-//! [`crate::commands::RunCmd`] hoists this enum with `#[command(flatten)]`, so
-//! every name stays FLAT: `mustard-rt run open`, never `run flow open`.
+//! O [`crate::commands::RunCmd`] junta este enum com `#[command(flatten)]`,
+//! então todo nome fica RASO: `mustard-rt run open`, nunca `run flow open`.
 
 use clap::Subcommand;
 use std::path::PathBuf;
 
 use crate::commands::flow;
 
-/// The `run` subcommands owned by the spec flow (`flow/`).
+/// Os comandos `run` que são do fluxo da spec (`flow/`).
 #[derive(Debug, Subcommand)]
 pub enum FlowCmd {
-    /// Open a spec: the branch `<kind>/<name>` and the spec `<name>`, born in
-    /// the survey phase with its branch and base. The name is used exactly as
-    /// written; what git refuses (a space, an accent, a slash) is adjusted and
-    /// shown for a yes before anything is created. A missing kind, name or
-    /// base is asked back as a step (`choose_kind`, `choose_name`,
-    /// `choose_base`), with the candidates; nothing is created until all three
-    /// are known. The answer ends with the goal question to ask the user.
+    /// Abre uma spec: a branch `<tipo>/<nome>` e a spec `<nome>`, nascida na
+    /// fase de levantamento com a branch e a base dela. O nome vale
+    /// exatamente como foi escrito; o que o git recusa (espaço, acento,
+    /// barra) é ajustado e mostrado para um sim antes de qualquer coisa ser
+    /// criada. O tipo, o nome ou a base que faltam voltam como um passo
+    /// (`choose_kind`, `choose_name`, `choose_base`), com os candidatos; nada
+    /// é criado enquanto os três não forem sabidos. A resposta termina com a
+    /// pergunta do objetivo, para fazer ao usuário.
     #[command(display_order = 104)]
     Open {
-        /// The branch kind, such as `feature` or `fix`. Without it, a name
-        /// written as `<kind>/<name>` is split into both.
+        /// O tipo da branch, como `feature` ou `fix`. Sem ele, um nome
+        /// escrito como `<tipo>/<nome>` é partido nos dois.
         #[arg(long)]
         kind: Option<String>,
-        /// The spec's name, exactly as the user wrote it. It names the branch
-        /// `<kind>/<name>` and the spec folder.
+        /// O nome da spec, exatamente como o usuário escreveu. É ele que
+        /// nomeia a branch `<tipo>/<nome>` e a pasta da spec.
         #[arg(long)]
         name: Option<String>,
-        /// The branch the spec starts from. Without it, the answer lists the
-        /// bases `git.flow` declares, or the repository's branches when it
-        /// declares none.
+        /// A branch de que a spec sai. Sem ela, a resposta lista as bases que
+        /// o `git.flow` declara, ou as branches do repositório quando ele não
+        /// declara nenhuma.
         #[arg(long)]
         base: Option<String>,
-        /// The open pending item this spec comes from, as `P-12`: the item
-        /// gets the note that it became this spec, and the spec's merge
-        /// closes it.
+        /// A pendência aberta de que esta spec veio, como `P-12`: a pendência
+        /// ganha a nota de que virou esta spec, e o merge da spec a fecha.
         #[arg(long)]
         pending: Option<String>,
-        /// Any directory inside the repo. The branch is created in this
-        /// checkout; the spec lives in the main one. Defaults to the current
-        /// dir.
+        /// Qualquer pasta dentro do repositório. A branch é criada neste
+        /// checkout; a spec mora no principal. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Survey a spec: record the work type and build the point list - the
-    /// gaps of each kind (joined without repeats in a mixed request), the
-    /// lessons and the earlier specs that match the goal, and up to three old
-    /// user messages as reminders inside those points. The assistant records
-    /// each point with `write point`; running grill again with the same kinds
-    /// writes nothing and returns the first open point.
+    /// Conduz o levantamento de uma spec: grava o tipo de trabalho e monta a
+    /// lista de pontos — as lacunas de cada tipo (juntas sem repetir num
+    /// pedido misto), as lições e as specs anteriores que casam com o
+    /// objetivo, e até três mensagens antigas do usuário como lembretes
+    /// dentro desses pontos. O assistente grava cada ponto com `write point`;
+    /// rodar o grill de novo com os mesmos tipos não grava nada e devolve o
+    /// primeiro ponto aberto.
     #[command(display_order = 105)]
     Grill {
-        /// The spec surveyed. Without it, the current spec.
+        /// A spec levantada. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
-        /// The work type, comma-separated: `feature`, `fix`, `refactor`.
+        /// O tipo de trabalho, separado por vírgula: `feature`, `fix`,
+        /// `refactor`.
         #[arg(long)]
         kinds: Option<String>,
-        /// A request that fits in one sentence: every point in one block,
-        /// shown at once for a single yes.
+        /// Um pedido que cabe numa frase: todos os pontos num bloco só,
+        /// mostrados de uma vez para um sim só.
         #[arg(long)]
         condensed: bool,
-        /// Any directory inside the repo. Defaults to the current dir.
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
 }
 
-/// Dispatch one `flow`-family `run` subcommand.
+/// Despacha um comando `run` da família do fluxo.
 pub fn dispatch(cmd: FlowCmd) {
     match cmd {
         FlowCmd::Open { kind, name, base, pending, root } => {

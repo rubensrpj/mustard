@@ -267,7 +267,7 @@ fn record_work_type(
     record(start, spec, "work_type", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
 }
 
-/// Run `grill` and print the JSON report; exit 1 on a refusal.
+/// Roda o `grill` e imprime o relatório em JSON; sai com 1 na recusa.
 pub fn run(opts: &GrillOpts) {
     let report = grill_at(opts);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));

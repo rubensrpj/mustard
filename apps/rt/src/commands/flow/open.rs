@@ -584,7 +584,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     report
 }
 
-/// Run `open` and print the JSON report; exit 1 on a refusal.
+/// Roda o `open` e imprime o relatório em JSON; sai com 1 na recusa.
 pub fn run(opts: &OpenOpts) {
     let report = open_at(opts);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
