@@ -29,6 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use rust_stemmers::{Algorithm, Stemmer};
 use serde_json::{Map, Value};
 
+use crate::domain::spec_state::original_of;
+use crate::domain::survey::{self, GapKey};
 use crate::domain::{mustard_id, text};
 use crate::platform::i18n::{translate, Locale};
 
@@ -404,7 +406,7 @@ pub const TYPES: &[TypeSpec] = &[
             req("from", Kind::OneOf(POINT_FROM)),
             req("status", Kind::OneOf(POINT_STATUS)),
             opt("facts", Kind::Objects),
-            opt("closes", Kind::Int),
+            opt("closes", Kind::Ref),
             opt("result", Kind::Ints),
             opt("reason", Kind::Text),
             opt("reminders", Kind::List),
@@ -648,6 +650,25 @@ pub enum Refusal {
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
     WorkTypeByGrill,
+    /// A passagem para o plano, ou a aprovação, de uma spec com pontos do
+    /// levantamento abertos: quantos e quais, com o código, o número e a
+    /// lacuna de cada um.
+    SurveyOpen { spec: String, count: usize, points: String },
+    /// A passagem para o plano de uma spec cujo levantamento não gravou o
+    /// tipo de trabalho.
+    SurveyNotStarted { spec: String },
+    /// A passagem para o plano de uma spec com lacunas do tipo de trabalho
+    /// ainda sem ponto; a mensagem as nomeia no idioma de quem lê.
+    SurveyGapsUnrecorded { spec: String, gaps: Vec<GapKey> },
+    /// Um `point` que fecha (`closes`) o que não é um ponto aberto; a lista
+    /// dos abertos vai junto.
+    PointNotOpen { id: String, open: String },
+    /// Um `point` que fecha outro, mas continua com a situação `open`.
+    ClosingPointOpen,
+    /// Um `point` marcado "não se aplica" sem o motivo.
+    NotApplicableNeedsReason,
+    /// Um `remove` que tiraria um ponto aberto da leitura.
+    OpenPointRemoved { code: String },
     Io { detail: String },
 }
 
@@ -685,6 +706,13 @@ impl Refusal {
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalNotVerbatim { .. } => "goal-not-verbatim",
             Self::WorkTypeByGrill => "work-type-by-grill",
+            Self::SurveyOpen { .. } => "survey-open",
+            Self::SurveyNotStarted { .. } => "survey-not-started",
+            Self::SurveyGapsUnrecorded { .. } => "survey-gaps-unrecorded",
+            Self::PointNotOpen { .. } => "point-not-open",
+            Self::ClosingPointOpen => "closing-point-open",
+            Self::NotApplicableNeedsReason => "not-applicable-needs-reason",
+            Self::OpenPointRemoved { .. } => "open-point-removed",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -807,6 +835,25 @@ impl Refusal {
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
             Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),
+            Self::SurveyOpen { spec, count, points } => fill(
+                "spec_events.survey_open",
+                &[("{spec}", spec.clone()), ("{count}", count.to_string()), ("{points}", points.clone())],
+            ),
+            Self::SurveyNotStarted { spec } => fill("spec_events.survey_not_started", &[("{spec}", spec.clone())]),
+            Self::SurveyGapsUnrecorded { spec, gaps } => fill(
+                "spec_events.survey_gaps_unrecorded",
+                &[
+                    ("{spec}", spec.clone()),
+                    ("{count}", gaps.len().to_string()),
+                    ("{gaps}", gaps.iter().map(|gap| gap.label(lang)).collect::<Vec<_>>().join("; ")),
+                ],
+            ),
+            Self::PointNotOpen { id, open } => {
+                fill("spec_events.point_not_open", &[("{id}", id.clone()), ("{open}", open.clone())])
+            }
+            Self::ClosingPointOpen => fill("spec_events.closing_point_open", &[]),
+            Self::NotApplicableNeedsReason => fill("spec_events.not_applicable_reason", &[]),
+            Self::OpenPointRemoved { code } => fill("spec_events.open_point_removed", &[("{code}", code.clone())]),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
@@ -937,7 +984,8 @@ fn check_nested(event: &Map<String, Value>, event_type: &str) -> Result<(), Refu
 /// Os campos que só são obrigatórios numa situação: a testemunha na
 /// aprovação, o motivo no descarte, o endereço da publicação que deu certo, a
 /// fonte dos fatos do ponto aberto, os exemplos da skill que nasce, o alvo da
-/// remoção.
+/// remoção. O ponto que fecha outro (`closes`) nunca fica aberto, e o que
+/// "não se aplica" leva o motivo.
 fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), Refusal> {
     let has = |f: &str| event.get(f).is_some_and(|v| !is_empty(v));
     let need = |f: &str| if has(f) { Ok(()) } else { Err(missing(event_type, f)) };
@@ -967,10 +1015,17 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                     count: reminders,
                 });
             }
-            if word("status") == "open" {
+            let status = word("status");
+            if status == "open" {
+                if has("closes") {
+                    return Err(Refusal::ClosingPointOpen);
+                }
                 return need("facts");
             }
             need("closes")?;
+            if status == "not_applicable" {
+                return if has("reason") { Ok(()) } else { Err(Refusal::NotApplicableNeedsReason) };
+            }
             if has("result") || has("reason") { Ok(()) } else { Err(missing(event_type, "result")) }
         }
         "skill" if word("action") == "create" => {
@@ -1034,14 +1089,16 @@ pub use crate::domain::citation::file_citation;
 
 /// Troca cada código (`MSTD-RULE-0002`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada
-/// guarde só números: em `replaces`, a versão mais nova do item; nos alvos de
-/// `remove` e `purge`, todas as versões dele. Um código que não existe na spec
-/// recusa o evento. Um evento sem código nenhum sai como entrou.
+/// guarde só números: em `replaces` e no `closes` de um ponto, a versão mais
+/// nova do item; nos alvos de `remove` e `purge`, todas as versões dele. Um
+/// código que não existe na spec recusa o evento. Um evento sem código nenhum
+/// sai como entrou.
 pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<(), Refusal> {
     let is_code = |v: &Value| matches!(EventRef::from_value(v), Some(EventRef::Code(_)));
     let replaces_code = event.get("replaces").is_some_and(is_code);
+    let closes_code = event.get("closes").is_some_and(is_code);
     let targets = event.get("targets").and_then(Value::as_array).cloned().unwrap_or_default();
-    if !replaces_code && !targets.iter().any(is_code) {
+    if !replaces_code && !closes_code && !targets.iter().any(is_code) {
         return Ok(());
     }
     let codes = log.codes();
@@ -1054,9 +1111,11 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
             Ok(ids)
         }
     };
-    if let Some(EventRef::Code(code)) = event.get("replaces").and_then(EventRef::from_value) {
-        let newest = ids_of(&code)?.last().copied().unwrap_or_default();
-        event.insert("replaces".into(), Value::from(newest));
+    for field in ["replaces", "closes"] {
+        if let Some(EventRef::Code(code)) = event.get(field).and_then(EventRef::from_value) {
+            let newest = ids_of(&code)?.last().copied().unwrap_or_default();
+            event.insert(field.into(), Value::from(newest));
+        }
     }
     if targets.iter().any(is_code) {
         let mut resolved: Vec<Value> = Vec::new();
@@ -1088,6 +1147,11 @@ pub struct Effects {
 /// Confere o evento contra o arquivo como está: o número que `replaces`
 /// aponta existe e é do mesmo tipo; os alvos de `remove` e `purge` existem; o
 /// filtro de `remove` acha pelo menos um evento anterior.
+///
+/// No ponto do levantamento: o `closes` aponta um ponto aberto, por qualquer
+/// versão dele (a versão nova de um fechamento continua fechando o mesmo
+/// ponto), e cada número de `result` existe. Um ponto aberto não sai com
+/// `remove`, por nenhuma versão: ele só fecha, com a resposta ou o motivo.
 pub fn check_against(
     log: &SpecLog,
     event: &Map<String, Value>,
@@ -1112,6 +1176,14 @@ pub fn check_against(
     }
     let mut effects = Effects::default();
     match event_type {
+        "point" => {
+            if let Some(unknown) = ints(event.get("result")).into_iter().find(|id| log.get(*id).is_none()) {
+                return Err(Refusal::UnknownTarget { target: EventRef::Id(unknown) });
+            }
+            if let Some(target) = event.get("closes").and_then(Value::as_u64) {
+                check_closes(log, event, target)?;
+            }
+        }
         "remove" => {
             if let Some(filter) = event.get("filter").and_then(TimeFilter::from_value) {
                 let matched = log.filter_matches(&filter, new_id);
@@ -1126,6 +1198,15 @@ pub fn check_against(
             }
             targets.sort_unstable();
             targets.dedup();
+            let open: BTreeSet<u64> = survey::open_points(log).into_iter().map(|p| original_of(log, p)).collect();
+            if let Some(point) = targets
+                .iter()
+                .filter_map(|id| log.get(*id))
+                .find(|e| e.event_type == "point" && open.contains(&original_of(log, e)))
+            {
+                let code = log.codes().get(&point.id).cloned().unwrap_or_else(|| point.id.to_string());
+                return Err(Refusal::OpenPointRemoved { code });
+            }
             effects.removed = targets;
         }
         "purge" => {
@@ -1136,6 +1217,32 @@ pub fn check_against(
         _ => {}
     }
     Ok(effects)
+}
+
+/// O `closes` de um ponto aponta um ponto aberto, por qualquer versão dele. A
+/// versão nova de um fechamento, que aponta o mesmo ponto que o fechamento
+/// revisto, também passa. Senão, a recusa traz o código, o número e a lacuna
+/// dos pontos abertos, para o próximo fechamento acertar.
+fn check_closes(log: &SpecLog, event: &Map<String, Value>, target: u64) -> Result<(), Refusal> {
+    let first_version = |id: u64| log.get(id).filter(|e| e.event_type == "point").map(|e| original_of(log, e));
+    let open = survey::open_points(log);
+    let wanted = first_version(target);
+    if let Some(wanted) = wanted {
+        if open.iter().any(|p| original_of(log, p) == wanted) {
+            return Ok(());
+        }
+        let revised = event
+            .get("replaces")
+            .and_then(Value::as_u64)
+            .and_then(|id| log.get(id))
+            .and_then(|old| old.int("closes"))
+            .and_then(first_version);
+        if revised == Some(wanted) {
+            return Ok(());
+        }
+    }
+    let id = log.codes().get(&target).map_or_else(|| target.to_string(), |code| format!("{code} ({target})"));
+    Err(Refusal::PointNotOpen { id, open: survey::describe(log, &open) })
 }
 
 /// O evento pronto para o arquivo: a versão do formato, o número, o código do
@@ -2255,5 +2362,29 @@ mod tests {
             checked("remove", json!({"targets": ["R2"], "reason": "r"})).unwrap_err(),
             Refusal::InvalidValue { ref field, expected: Kind::Refs, .. } if field == "targets"
         ));
+    }
+
+    /// O ponto que fecha outro nunca fica aberto; o que "não se aplica" leva
+    /// o motivo; o `closes` aceita o número ou o código do ponto.
+    #[test]
+    fn a_closing_point_is_never_open_and_not_applicable_takes_a_reason() {
+        let base = json!({"block": "limits", "gap": "g", "from": "gap", "origin": 1, "closes": 3});
+        let mut open = base.clone();
+        open["status"] = json!("open");
+        open["facts"] = json!([{"text": "f", "source": "mensagem 1"}]);
+        assert_eq!(checked("point", open), Err(Refusal::ClosingPointOpen));
+
+        let mut skipped = base.clone();
+        skipped["status"] = json!("not_applicable");
+        skipped["result"] = json!([1]);
+        assert_eq!(checked("point", skipped.clone()), Err(Refusal::NotApplicableNeedsReason));
+        skipped["reason"] = json!("não vale aqui");
+        assert_eq!(checked("point", skipped), Ok(()));
+
+        let mut by_code = base;
+        by_code["status"] = json!("closed");
+        by_code["result"] = json!([1]);
+        by_code["closes"] = json!("MSTD-POINT-0001");
+        assert_eq!(checked("point", by_code), Ok(()), "the code the page shows is accepted");
     }
 }

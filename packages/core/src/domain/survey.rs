@@ -20,6 +20,11 @@
 //! O pedido que cabe numa frase tem o levantamento condensado: todos os
 //! pontos num bloco só ([`CONDENSED`]), mostrados de uma vez para um "sim".
 //!
+//! Depois de cada gravação, [`next_step`] diz o passo seguinte: o próximo
+//! ponto aberto, a revisão do bloco cujo último ponto fechou e, sem ponto
+//! aberto, o fim, com as mensagens do usuário sem destino. [`leave_survey`] diz
+//! se a spec pode passar para o plano.
+//!
 //! Função pura: sem disco e sem relógio. Quem lê o banco, o índice, as specs
 //! anteriores e o mapa é o comando.
 
@@ -31,9 +36,9 @@ use crate::domain::citation::cited_names;
 use crate::domain::lessons;
 use crate::domain::project_map::{importers, ProjectMap};
 use crate::domain::search::{query_terms, SearchIndex, TOP};
-use crate::domain::spec_events::{search_field, SpecEvent, SpecLog, WORK_KINDS};
+use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
 use crate::domain::spec_index::{title_of, IndexLine};
-use crate::domain::spec_state::original_of;
+use crate::domain::spec_state::{original_of, State};
 use crate::domain::text::fold_accents;
 use crate::platform::i18n::{translate, Locale};
 
@@ -342,6 +347,24 @@ pub fn block_rank(block: &str) -> usize {
 /// mesmo bloco, pela ordem em que o ponto nasceu.
 #[must_use]
 pub fn open_points(log: &SpecLog) -> Vec<&SpecEvent> {
+    let (born, closed) = born_open(log);
+    let mut open: Vec<&SpecEvent> = born.into_iter().filter(|p| !closed.contains(&original_of(log, p))).collect();
+    open.sort_by_key(|p| (block_rank(p.str_field("block").unwrap_or_default()), original_of(log, p), p.id));
+    open
+}
+
+/// Os pontos gravados abertos que um `point` visível já fechou, pela mesma
+/// leitura de [`open_points`]: os dois juntos são todos os pontos que
+/// nasceram abertos. Em ordem de número.
+#[must_use]
+pub fn closed_points(log: &SpecLog) -> Vec<&SpecEvent> {
+    let (born, closed) = born_open(log);
+    born.into_iter().filter(|p| closed.contains(&original_of(log, p))).collect()
+}
+
+/// Os `point` visíveis com a situação `open`, na versão vigente, e a
+/// primeira versão de cada ponto que algum `point` visível fecha.
+fn born_open(log: &SpecLog) -> (Vec<&SpecEvent>, BTreeSet<u64>) {
     let points: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "point").collect();
     let closed: BTreeSet<u64> = points
         .iter()
@@ -349,13 +372,158 @@ pub fn open_points(log: &SpecLog) -> Vec<&SpecEvent> {
         .filter_map(|id| log.get(id))
         .map(|target| original_of(log, target))
         .collect();
-    let mut open: Vec<&SpecEvent> = points
+    let born = points.into_iter().filter(|p| p.str_field("status").map(str::trim) == Some("open")).collect();
+    (born, closed)
+}
+
+/// Os pontos como uma recusa os lista: o código, o número e a lacuna de cada
+/// um, separados por ponto e vírgula; `-` quando não há nenhum.
+#[must_use]
+pub fn describe(log: &SpecLog, points: &[&SpecEvent]) -> String {
+    if points.is_empty() {
+        return "-".to_string();
+    }
+    let codes = log.codes();
+    points
+        .iter()
+        .map(|p| {
+            let gap = p.str_field("gap").map(str::trim).unwrap_or_default();
+            match codes.get(&p.id) {
+                Some(code) => format!("{code} ({}): {gap}", p.id),
+                None => format!("{}: {gap}", p.id),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A recusa de uma mudança de fase com os pontos abertos `points`.
+#[must_use]
+pub fn open_refusal(spec: &str, log: &SpecLog, points: &[&SpecEvent]) -> Refusal {
+    Refusal::SurveyOpen { spec: spec.trim().to_string(), count: points.len(), points: describe(log, points) }
+}
+
+/// O que ainda segura a spec no levantamento.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurveyGap<'a> {
+    /// O tipo de trabalho não foi gravado: o `grill` não rodou.
+    NotStarted,
+    /// Lacunas do tipo de trabalho gravado ainda sem ponto, na ordem dos
+    /// blocos.
+    Unrecorded(Vec<GapKey>),
+    /// Os pontos abertos, na ordem dos blocos.
+    Open(Vec<&'a SpecEvent>),
+}
+
+impl SurveyGap<'_> {
+    /// A recusa da passagem da spec `spec`, cujo arquivo é `log`.
+    #[must_use]
+    pub fn refusal(&self, spec: &str, log: &SpecLog) -> Refusal {
+        match self {
+            Self::NotStarted => Refusal::SurveyNotStarted { spec: spec.trim().to_string() },
+            Self::Unrecorded(gaps) => Refusal::SurveyGapsUnrecorded { spec: spec.trim().to_string(), gaps: gaps.clone() },
+            Self::Open(points) => open_refusal(spec, log, points),
+        }
+    }
+}
+
+/// O levantamento está feito, e a spec pode passar para o plano: o tipo de
+/// trabalho gravado, um ponto para cada lacuna dele e nenhum ponto aberto.
+///
+/// # Errors
+///
+/// O que falta, na ordem em que o levantamento anda: o tipo de trabalho, as
+/// lacunas sem ponto e os pontos abertos.
+pub fn leave_survey(log: &SpecLog) -> Result<(), SurveyGap<'_>> {
+    if work_type(log).is_none() {
+        return Err(SurveyGap::NotStarted);
+    }
+    let unrecorded = missing_gaps(log);
+    if !unrecorded.is_empty() {
+        return Err(SurveyGap::Unrecorded(unrecorded));
+    }
+    let open = open_points(log);
+    if open.is_empty() { Ok(()) } else { Err(SurveyGap::Open(open)) }
+}
+
+/// Um passo do levantamento, que o `write` devolve depois de uma gravação.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurveyStep<'a> {
+    /// O próximo ponto aberto: o mesmo, enquanto ele não fecha.
+    Point(&'a SpecEvent),
+    /// A gravação fechou o último ponto aberto do bloco `block`: a revisão
+    /// dele, com os pontos do bloco (`closed`) e os registros que os
+    /// fechamentos apontam em `result` (`records`). Sem ponto aberto em bloco
+    /// nenhum, a revisão oferece o revisor de fora (`outside_review`).
+    ReviewBlock { block: String, closed: Vec<u64>, records: Vec<u64>, outside_review: bool },
+    /// Não sobra ponto aberto: as mensagens do usuário que nenhum registro
+    /// aponta.
+    Done { unrouted: Vec<&'a SpecEvent> },
+}
+
+/// Os passos do levantamento depois de uma gravação, lidos do arquivo antes
+/// (`before`) e depois (`after`) dela, em ordem:
+///
+/// - nenhum fora do levantamento e do plano, numa spec sem nenhum ponto (as
+///   specs antigas) e enquanto alguma lacuna do tipo de trabalho não tem
+///   ponto, porque a lista do `grill` ainda está sendo gravada;
+/// - a revisão do bloco, quando a gravação fechou o último ponto aberto de um
+///   bloco que não é o do levantamento condensado;
+/// - depois dela, ou sozinho, o próximo ponto aberto, o primeiro na ordem dos
+///   blocos; sem ponto aberto, o fim, com as mensagens do usuário sem
+///   destino. O fim sai na gravação que fecha o último ponto e, depois dela,
+///   em cada gravação que muda a lista dessas mensagens.
+#[must_use]
+pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>> {
+    if !matches!(State::from_log(after).phase, Some("survey" | "plan")) {
+        return Vec::new();
+    }
+    if !after.visible().iter().any(|e| e.event_type == "point") || !missing_gaps(after).is_empty() {
+        return Vec::new();
+    }
+    let (was, now) = (open_points(before), open_points(after));
+    let blocks = |open: &[&SpecEvent]| -> BTreeSet<String> {
+        open.iter().map(|p| p.str_field("block").unwrap_or_default().trim().to_string()).collect()
+    };
+    let still = blocks(&now);
+    let mut emptied: Vec<String> =
+        blocks(&was).into_iter().filter(|block| block != CONDENSED && !still.contains(block)).collect();
+    emptied.sort_by_key(|block| block_rank(block));
+    let mut steps = Vec::new();
+    if let Some(block) = emptied.into_iter().next() {
+        let (closed, records) = block_review(after, &block);
+        steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review: now.is_empty() });
+    }
+    match now.first() {
+        Some(point) => steps.push(SurveyStep::Point(point)),
+        None => {
+            let unrouted = unrouted_messages(after);
+            let changed = unrouted.iter().map(|m| m.id).ne(unrouted_messages(before).iter().map(|m| m.id));
+            if !was.is_empty() || changed {
+                steps.push(SurveyStep::Done { unrouted });
+            }
+        }
+    }
+    steps
+}
+
+/// Os pontos do bloco `block` que nasceram abertos e já fecharam, na versão
+/// vigente, e os registros que os fechamentos deles apontam em `result`, sem
+/// repetir, em ordem de número.
+fn block_review(log: &SpecLog, block: &str) -> (Vec<u64>, Vec<u64>) {
+    let points: Vec<&SpecEvent> =
+        closed_points(log).into_iter().filter(|p| p.str_field("block").map(str::trim) == Some(block)).collect();
+    let originals: BTreeSet<u64> = points.iter().map(|p| original_of(log, p)).collect();
+    let records: BTreeSet<u64> = log
+        .visible()
         .into_iter()
-        .filter(|p| p.str_field("status").map(str::trim) == Some("open"))
-        .filter(|p| !closed.contains(&original_of(log, p)))
+        .filter(|e| e.event_type == "point")
+        .filter(|e| {
+            e.int("closes").and_then(|id| log.get(id)).is_some_and(|target| originals.contains(&original_of(log, target)))
+        })
+        .flat_map(|e| e.ints("result"))
         .collect();
-    open.sort_by_key(|p| (block_rank(p.str_field("block").unwrap_or_default()), original_of(log, p), p.id));
-    open
+    (points.iter().map(|p| p.id).collect(), records.into_iter().collect())
 }
 
 /// O objetivo da spec: o primeiro `context` gravado, na versão vigente dele.
@@ -1117,5 +1285,86 @@ mod tests {
         let left: Vec<Option<GapKey>> = missing(&log, &list).iter().map(|p| p.key).collect();
         assert_eq!(left, [Some(GapKey::Cause), Some(GapKey::DoneProof)]);
         assert_eq!(list[0].recorded_by(&log).map(|p| p.id), Some(3));
+    }
+
+    /// Um ponto aberto, como o assistente grava, com a mensagem 2 de origem.
+    fn open_point(id: u64, block: &str, gap: &str) -> String {
+        ev(id, "point", json!({"block": block, "gap": gap, "from": "gap", "status": "open", "origin": 2,
+            "facts": [{"text": "f", "source": "mensagem 2"}]}))
+    }
+
+    /// O fechamento do ponto `closes`.
+    fn closing(id: u64, closes: u64) -> String {
+        ev(id, "point", json!({"block": "b", "gap": "g", "from": "gap", "status": "closed", "closes": closes,
+            "result": [2], "origin": 2}))
+    }
+
+    /// O levantamento só sai com o tipo de trabalho gravado, um ponto para
+    /// cada lacuna dele e nenhum ponto aberto, e diz o que falta nessa ordem.
+    #[test]
+    fn leaving_the_survey_names_what_still_holds_it() {
+        let mut lines = vec![
+            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
+            ev(2, "message", json!({"author": "user", "text": GOAL})),
+        ];
+        assert_eq!(leave_survey(&log_of(&lines)), Err(SurveyGap::NotStarted));
+        lines.push(ev(3, "work_type", json!({"kinds": ["fix"], "origin": 2})));
+        assert_eq!(leave_survey(&log_of(&lines)), Err(SurveyGap::Unrecorded(gaps(&["fix"]))));
+        for (id, key) in (4u64..).zip(gaps(&["fix"])) {
+            lines.push(open_point(id, key.block(), key.name()));
+        }
+        let log = log_of(&lines);
+        let Err(SurveyGap::Open(open)) = leave_survey(&log) else {
+            panic!("the open points hold the survey");
+        };
+        assert_eq!(open.iter().map(|p| p.id).collect::<Vec<_>>(), [4, 5, 6, 7, 8]);
+        for (id, closes) in (9u64..).zip(4u64..=8) {
+            lines.push(closing(id, closes));
+        }
+        assert_eq!(leave_survey(&log_of(&lines)), Ok(()));
+    }
+
+    /// O passo depois de cada gravação segue os pontos abertos: fechar o
+    /// último ponto de um bloco traz a revisão dele e o próximo ponto;
+    /// fechar o último de todos traz a revisão com o revisor de fora e o fim.
+    /// Depois da aprovação, nenhum passo.
+    #[test]
+    fn the_step_after_each_write_follows_the_open_points() {
+        let mut lines = vec![
+            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
+            ev(2, "message", json!({"author": "user", "text": GOAL})),
+            open_point(3, "rules", "Cada regra"),
+            open_point(4, "proof", "Como provar"),
+        ];
+        let before = log_of(&lines);
+        lines.push(ev(5, "decision", json!({"text": "d", "keys": ["k"], "why": "w", "origin": 2})));
+        let after = log_of(&lines);
+        let steps = next_step(&before, &after);
+        assert!(matches!(&steps[..], [SurveyStep::Point(p)] if p.id == 3), "{steps:?}");
+
+        lines.push(closing(6, 3));
+        let before = log_of(&lines[..lines.len() - 1]);
+        let after = log_of(&lines);
+        let steps = next_step(&before, &after);
+        assert!(
+            matches!(&steps[..], [SurveyStep::ReviewBlock { block, closed, records, outside_review: false }, SurveyStep::Point(p)]
+                if block.as_str() == "rules" && closed == &[3] && records == &[2] && p.id == 4),
+            "{steps:?}"
+        );
+
+        lines.push(closing(7, 4));
+        let before = log_of(&lines[..lines.len() - 1]);
+        let after = log_of(&lines);
+        let steps = next_step(&before, &after);
+        assert!(
+            matches!(&steps[..], [SurveyStep::ReviewBlock { block, outside_review: true, .. }, SurveyStep::Done { unrouted }]
+                if block.as_str() == "proof" && unrouted.is_empty()),
+            "{steps:?}"
+        );
+
+        lines.push(ev(8, "state", json!({"phase": "approved", "author": "user"})));
+        let before = log_of(&lines);
+        lines.push(ev(9, "message", json!({"author": "user", "text": "Mais uma."})));
+        assert!(next_step(&before, &log_of(&lines)).is_empty(), "no step after the approval");
     }
 }

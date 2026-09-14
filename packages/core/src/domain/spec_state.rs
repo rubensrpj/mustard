@@ -217,6 +217,33 @@ pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Re
     })
 }
 
+/// Os pontos do levantamento na mudança de fase, sobre o arquivo antes e
+/// depois de uma gravação. A passagem do levantamento para o plano pede o
+/// levantamento feito ([`crate::domain::survey::leave_survey`]): o tipo de
+/// trabalho gravado, um ponto para cada lacuna dele e nenhum ponto aberto. A
+/// aprovação pede nenhum ponto aberto. As outras mudanças, e a gravação que
+/// não muda a fase, passam; a spec sem nenhum ponto não tem o que conferir.
+///
+/// # Errors
+///
+/// A recusa da passagem ([`crate::domain::survey::SurveyGap::refusal`]) ou,
+/// na aprovação, [`Refusal::SurveyOpen`], com a lista dos pontos abertos.
+pub fn survey_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    use crate::domain::survey::{leave_survey, open_points, open_refusal};
+    let (was, now) = (State::from_log(before).phase, State::from_log(after).phase);
+    if was == now {
+        return Ok(());
+    }
+    match (was, now) {
+        (Some("survey"), Some("plan")) => leave_survey(after).map_err(|gap| gap.refusal(spec, after)),
+        (_, Some("approved")) => {
+            let open = open_points(after);
+            if open.is_empty() { Ok(()) } else { Err(open_refusal(spec, after, &open)) }
+        }
+        _ => Ok(()),
+    }
+}
+
 /// O `meta.json` de uma spec parada antes da execução: em análise ou em plano
 /// (ou sem estágio), e ativa (ou sem desfecho). Uma encerrada, ou em execução
 /// pelo fluxo velho, não.

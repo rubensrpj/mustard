@@ -1265,6 +1265,66 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              their message's text in `text` and its number in `origin`; {origin} is not a user \
              message with that text. Nothing was written."
         }
+        ("spec_events.survey_open", Locale::PtBr) => {
+            "A spec {spec} ainda tem {count} pontos abertos no levantamento: {points}. Feche cada um, \
+             com a resposta ou com \"não se aplica\" e o motivo, antes de passar para o plano. Nada \
+             foi gravado."
+        }
+        ("spec_events.survey_open", Locale::EnUs) => {
+            "Spec {spec} still has {count} open survey points: {points}. Close each one, with the \
+             answer or with \"not applicable\" and the reason, before moving on to the plan. Nothing \
+             was written."
+        }
+        ("spec_events.survey_not_started", Locale::PtBr) => {
+            "A spec {spec} ainda não teve levantamento: rode `mustard-rt run grill` antes de passar \
+             para o plano. Nada foi gravado."
+        }
+        ("spec_events.survey_not_started", Locale::EnUs) => {
+            "Spec {spec} has had no survey yet: run `mustard-rt run grill` before moving on to the \
+             plan. Nothing was written."
+        }
+        ("spec_events.survey_gaps_unrecorded", Locale::PtBr) => {
+            "A spec {spec} ainda tem {count} lacunas do tipo de trabalho sem ponto: {gaps}. Rode \
+             `mustard-rt run grill` e grave os pontos que ele lista antes de passar para o plano. \
+             Nada foi gravado."
+        }
+        ("spec_events.survey_gaps_unrecorded", Locale::EnUs) => {
+            "Spec {spec} still has {count} work-type gaps without a point: {gaps}. Run `mustard-rt \
+             run grill` and record the points it lists before moving on to the plan. Nothing was \
+             written."
+        }
+        ("spec_events.point_not_open", Locale::PtBr) => {
+            "O ponto {id} não está aberto, e só um ponto aberto pode ser fechado. Abertos agora: \
+             {open}. Nada foi gravado."
+        }
+        ("spec_events.point_not_open", Locale::EnUs) => {
+            "Point {id} is not open, and only an open point can be closed. Open now: {open}. Nothing \
+             was written."
+        }
+        ("spec_events.closing_point_open", Locale::PtBr) => {
+            "Um ponto que fecha outro (`closes`) leva a situação `closed` ou `not_applicable`, nunca \
+             `open`. Nada foi gravado."
+        }
+        ("spec_events.closing_point_open", Locale::EnUs) => {
+            "A point that closes another (`closes`) takes the status `closed` or `not_applicable`, \
+             never `open`. Nothing was written."
+        }
+        ("spec_events.not_applicable_reason", Locale::PtBr) => {
+            "Um ponto marcado \"não se aplica\" leva o motivo em `reason`. Nada foi gravado."
+        }
+        ("spec_events.not_applicable_reason", Locale::EnUs) => {
+            "A point marked \"not applicable\" takes the reason in `reason`. Nothing was written."
+        }
+        ("spec_events.open_point_removed", Locale::PtBr) => {
+            "O ponto {code} está aberto e não sai com `remove`: feche-o com um ponto que o aponte em \
+             `closes`, com a resposta ou o motivo. Nada foi gravado."
+        }
+        ("spec_events.open_point_removed", Locale::EnUs) => {
+            "Point {code} is open and does not leave with `remove`: close it with a point that names \
+             it in `closes`, with the answer or the reason. Nothing was written."
+        }
+        ("approve_spec.open_points", Locale::PtBr) => "{count} pontos do levantamento ainda abertos: {points}",
+        ("approve_spec.open_points", Locale::EnUs) => "{count} survey points still open: {points}",
         ("open.choose_kind", Locale::PtBr) => {
             "Falta o tipo. Pergunte ao usuário o tipo da branch, como feature ou fix. Nada foi criado."
         }
@@ -1461,6 +1521,26 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
              points to, and ask what to do with each one; then record the specification, the waves \
              and the tasks."
+        }
+        ("survey.review_step", Locale::PtBr) => {
+            "O bloco {block} fechou. Releia só as decisões dele, aponte o que pode ter ficado de fora \
+             ou se contradiz e faça a pergunta de `question`, com os achados como opções e \
+             \"{continue}\" por último."
+        }
+        ("survey.review_step", Locale::EnUs) => {
+            "Block {block} is closed. Reread only its decisions, point out what may have been left \
+             out or contradicts itself, and ask the question in `question`, with the findings as \
+             options and \"{continue}\" last."
+        }
+        ("survey.review_question", Locale::PtBr) => "Quer ver mais algum ponto ou aprofundar algum?",
+        ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
+        ("survey.continue_option", Locale::PtBr) => "Seguir",
+        ("survey.continue_option", Locale::EnUs) => "Continue",
+        ("survey.outside_review_question", Locale::PtBr) => {
+            "Quer que um revisor de fora confira o levantamento inteiro?"
+        }
+        ("survey.outside_review_question", Locale::EnUs) => {
+            "Would you like an outside reviewer to check the whole survey?"
         }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
@@ -2781,6 +2861,14 @@ mod tests {
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.waves_grew", &["{approved}", "{now}"][..]),
             ("spec_events.goal_not_verbatim", &["{spec}", "{origin}"][..]),
+            ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
+            ("spec_events.survey_not_started", &["{spec}"][..]),
+            ("spec_events.survey_gaps_unrecorded", &["{spec}", "{count}", "{gaps}"][..]),
+            ("spec_events.point_not_open", &["{id}", "{open}"][..]),
+            ("spec_events.closing_point_open", &[][..]),
+            ("spec_events.not_applicable_reason", &[][..]),
+            ("spec_events.open_point_removed", &["{code}"][..]),
+            ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
             ("spec_events.deferred_closed_pending", &["{pending}"][..]),
             ("request.new_waves", &[][..]),
@@ -2874,6 +2962,10 @@ mod tests {
             ("survey.present_all".into(), &[][..]),
             ("survey.record_points".into(), &["{spec}"][..]),
             ("survey.done".into(), &[][..]),
+            ("survey.review_step".into(), &["{block}", "{continue}"][..]),
+            ("survey.review_question".into(), &[][..]),
+            ("survey.continue_option".into(), &[][..]),
+            ("survey.outside_review_question".into(), &[][..]),
             ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
             ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),
         ];
