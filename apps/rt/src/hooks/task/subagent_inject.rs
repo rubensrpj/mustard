@@ -3,7 +3,6 @@
 //! For every `Task` dispatch that does NOT already declare a `SKILL:` block in
 //! its `prompt`, we resolve a minimal slice of:
 //!
-//! - the project's `CONTEXT.md` (when present), and
 //! - the top-K skills returned by [`crate::commands::skill::skill_resolve::resolve`] for
 //!   the prompt + role + active-phase.
 //!
@@ -919,8 +918,8 @@ impl Check for SubagentInject {
         }
         let role = role_from_input(input);
 
-        // CONTEXT.md + regression vocab. No size cap — relevance decides what
-        // enters; nothing is trimmed by char count.
+        // The explore floor and the regression vocab. No size cap — relevance
+        // decides what enters; nothing is trimmed by char count.
         let mut sections: Vec<String> = Vec::new();
 
         // Epistemic-contract FLOOR for investigative read-only dispatches.
@@ -940,17 +939,6 @@ impl Check for SubagentInject {
                 "## Epistemic contract\n{}",
                 crate::commands::agent::agent_prompt_render::EPISTEMIC_FLOOR
             ));
-        }
-        // Relevance-slice CONTEXT.md against the dispatch prompt — the SAME
-        // term-block filter the renderer runs, so the hook injects only the
-        // matching blocks (in full), never the raw whole file. Relevance, not
-        // size, bounds it (fixes the raw-dump regression).
-        let ctx_md = crate::commands::economy::context_slice::slice_text(
-            &read_context_md(&project),
-            &prompt,
-        );
-        if !ctx_md.is_empty() {
-            sections.push(format!("## CONTEXT.md\n{ctx_md}"));
         }
         // Spec memory rides OUTSIDE the size cap: it is relevance-filtered (the
         // gate's approved set, or the recall fallback) and carries no count cap,
@@ -991,35 +979,6 @@ impl Check for SubagentInject {
         };
         Ok(Verdict::Inject { context })
     }
-}
-
-/// Read the project's glossary in full — no size cap. Relevance, not size,
-/// decides what is injected. CONTEXT-MAP-aware: when the project carries a
-/// `CONTEXT-MAP.md`, it is resolved through the SAME map-expanding resolver the
-/// slicer/coverage use (`resolve_context_files`), so the hook sees every
-/// `*context.md` the map links — not just a single root `CONTEXT.md`. The
-/// resolved bodies are concatenated; a project with only a root `CONTEXT.md`
-/// behaves exactly as before. Empty string when nothing resolves.
-///
-/// Lived in `clarity_check` while the clarity measurement also read the
-/// glossary; the end-of-turn check stopped reading it, so it came back to its
-/// only caller.
-fn read_context_md(project: &std::path::Path) -> String {
-    // Resolve the root CONTEXT.md plus a CONTEXT-MAP.md (when present) — the
-    // resolver dedups, expands the map, and silently skips missing files.
-    let mut requested: Vec<String> = Vec::new();
-    let map = project.join("CONTEXT-MAP.md");
-    if map.is_file() {
-        requested.push(map.to_string_lossy().into_owned());
-    }
-    requested.push(project.join("CONTEXT.md").to_string_lossy().into_owned());
-
-    let bodies: Vec<String> =
-        crate::commands::economy::context_slice::resolve_context_files(&requested)
-            .iter()
-            .filter_map(|p| mustard_core::io::fs::read_to_string(p).ok())
-            .collect();
-    bodies.join("\n\n")
 }
 
 #[cfg(test)]
@@ -1253,70 +1212,26 @@ mod tests {
         );
     }
 
+    /// The dispatch hook no longer reads the project's glossary. With a
+    /// `CONTEXT.md` and a `CONTEXT-MAP.md` that share a term with the prompt,
+    /// nothing of them reaches the child; with nothing else to add, the hook
+    /// allows.
     #[test]
-    fn injects_context_md_when_present() {
+    fn the_dispatch_hook_no_longer_reads_the_glossary() {
         let dir = tempdir().unwrap();
-        // The hook now relevance-slices CONTEXT.md against the dispatch prompt —
-        // only blocks sharing a term with the prompt are injected. So the block
-        // must mention something the prompt does ("user"/"module").
         std::fs::write(dir.path().join("CONTEXT.md"), "## User\nThe user module domain.").unwrap();
-        let input = task_input("refactor the user module", "general-purpose");
-        let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
-        match v {
-            Verdict::Inject { context } => {
-                assert!(context.contains("CONTEXT.md"));
-                assert!(context.contains("User"));
-            }
-            other => panic!("expected Inject, got {other:?}"),
-        }
-    }
+        std::fs::write(dir.path().join("domain-context.md"), "## Billing\nThe user billing terms.").unwrap();
+        std::fs::write(dir.path().join("CONTEXT-MAP.md"), "# Map\n- see [domain](domain-context.md)\n").unwrap();
 
-    #[test]
-    fn context_md_is_relevance_sliced_not_raw_dumped() {
-        let dir = tempdir().unwrap();
-        // Two blocks; only one shares a term with the prompt. The off-topic block
-        // must NOT be injected — relevance slices it out (no raw whole-file dump).
-        std::fs::write(
-            dir.path().join("CONTEXT.md"),
-            "## Billing\nInvoice and payment terms.\n## User\nThe user module domain.",
-        )
-        .unwrap();
-        let input = task_input("refactor the user module", "general-purpose");
-        match SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap() {
-            Verdict::Inject { context } => {
-                assert!(context.contains("User"), "relevant block kept");
-                assert!(!context.contains("Billing"), "off-topic block sliced out");
-            }
-            other => panic!("expected Inject, got {other:?}"),
-        }
-    }
+        let reader = task_input("grep the codebase for the user module", "mustard-guards");
+        let v = SubagentInject.evaluate(&reader, &ctx_for(dir.path())).unwrap();
+        assert_eq!(v, Verdict::Allow, "nothing of the glossary rides: {v:?}");
 
-    /// CONTEXT-MAP awareness: a `CONTEXT-MAP.md` pointing at a sub-glossary
-    /// must make that sub-glossary's term blocks reachable to the inject — not
-    /// just a single root `CONTEXT.md`. The relevant block (sharing a term with
-    /// the prompt) rides in; an off-topic one in the same file is sliced out.
-    #[test]
-    fn context_map_pulls_in_referenced_glossary_files() {
-        let dir = tempdir().unwrap();
-        // The sub-glossary lives beside the map; the map links it by name.
-        std::fs::write(
-            dir.path().join("domain-context.md"),
-            "## Billing\nInvoice terms.\n## User\nThe user module domain.",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("CONTEXT-MAP.md"),
-            "# Map\n- see [domain](domain-context.md)\n",
-        )
-        .unwrap();
-        // No root CONTEXT.md at all — the map is the only source.
-        let input = task_input("refactor the user module", "general-purpose");
-        match SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap() {
-            Verdict::Inject { context } => {
-                assert!(context.contains("User"), "map-referenced block must reach the inject");
-                assert!(!context.contains("Billing"), "off-topic block still sliced out");
+        let writer = task_input("refactor the user module", "general-purpose");
+        if let Verdict::Inject { context } = SubagentInject.evaluate(&writer, &ctx_for(dir.path())).unwrap() {
+            for glossary in ["## CONTEXT.md", "The user module domain", "billing terms"] {
+                assert!(!context.contains(glossary), "{glossary}: {context}");
             }
-            other => panic!("expected Inject from a map-referenced glossary, got {other:?}"),
         }
     }
 

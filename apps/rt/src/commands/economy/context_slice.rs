@@ -446,41 +446,6 @@ fn slice_context(context_paths: &[String], spec_path: &str) -> SliceResult {
     }
 }
 
-/// Relevance-slice a `CONTEXT.md` body against free relevance-source text (a
-/// dispatch prompt, say) instead of a spec file — the SAME term-block matching
-/// [`slice_context`] runs, keyed on arbitrary text. Returns the matched blocks
-/// joined (empty when nothing matches). No size cap — relevance is the only
-/// filter, every matched block in full. The shared home so the `subagent_inject`
-/// hook gets the same relevance slice as the renderer, never a raw CONTEXT.md dump.
-#[must_use]
-pub fn slice_text(context_md: &str, relevance_source: &str) -> String {
-    // Terms straight from the source prose (a dispatch prompt). The spec-keyed
-    // `extract_relevance_terms` only reads `## Entities`/`## Files` sections,
-    // which free prompt text lacks — so here significant content tokens (≥
-    // `MIN_TOKEN_LEN` chars, lowercased) are the relevance signal.
-    let terms: BTreeSet<String> = relevance_source
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|t| t.chars().count() >= MIN_TOKEN_LEN)
-        .map(str::to_ascii_lowercase)
-        .collect();
-    if terms.is_empty() {
-        return String::new();
-    }
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut matched: Vec<String> = Vec::new();
-    for block in parse_term_blocks(context_md) {
-        let key = block.term.to_lowercase();
-        if seen.contains(&key) {
-            continue;
-        }
-        if block_matches(&block, &terms) {
-            seen.insert(key);
-            matched.push(block.text);
-        }
-    }
-    matched.join("\n\n")
-}
-
 /// Run `mustard-rt run context-slice`, writing the slice to stdout.
 ///
 /// Exit code is always `0` (fail-graceful).
