@@ -14,7 +14,7 @@
 //! ## Quem arma a cobrança
 //!
 //! A ponte do fechamento e a do merge (`record_phase`, chamada pelo
-//! `complete-spec`, pelo `pr-merge` e pelo `gh pr merge` da branch da spec)
+//! `complete-spec` e pelo `pr-merge`)
 //! gravam o `state` e, no mesmo passo, armam um contador por spec e por número
 //! do fechamento, no checkout principal, ao lado da lista de pendências
 //! (`.claude/pending/charges.json`). A regra lê os contadores armados sem

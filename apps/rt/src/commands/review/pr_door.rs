@@ -859,9 +859,9 @@ fn after_merge(
 }
 
 /// Records this door's `pr.merged` and, with the spec, the `delivered` phase
-/// in its state. `pr_detect` only sees a `gh pr merge` typed in Bash, and this
-/// merge happens inside the process — without the state, the pending charge at
-/// the end of the answer would never know the spec was merged.
+/// in its state. `pr_detect` only records the event of a `gh pr merge` typed
+/// in Bash, never the state — without the state, the pending charge at the end
+/// of the answer would never know the spec was merged.
 ///
 /// Declared effect: the event also feeds `pr_metrics` — the merge count when
 /// git does not answer and the opened → merged pairing. The merges made by
