@@ -39,8 +39,9 @@
 //!    worktree, local branch and remote branch all survive, so the failing path's
 //!    worst outcome is "I did not advance, your unit is still here". Authorised,
 //!    the unit's worktree is removed and its local branch deleted (`-D` — merge
-//!    is already proven), then the remote branch deleted best-effort (GitHub
-//!    auto-delete usually got there first) — all three behind the same floor
+//!    is already proven), then the remote branch deleted best-effort — only
+//!    when `git.deleteRemoteBranch` is on in `mustard.json`; without the key
+//!    the server branch is never touched — all three behind the same floor
 //!    guard, because a settle that could not free the LOCAL floor has no business
 //!    killing the server branch. When the process runs INSIDE the unit's worktree
 //!    it cannot remove its own floor: it verifies + updates and answers
@@ -892,8 +893,12 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
                 None => (false, true), // never removed by us, but already free to delete
             };
             let branch_deleted = floor_clear && git_ok(&main, &["branch", "-D", &unit_branch]);
-            let remote_deleted =
-                floor_clear && git_ok(&main, &["push", "origin", "--delete", &unit_branch]);
+            // The server branch goes only where the project turned
+            // `git.deleteRemoteBranch` on; without the key the delete is never
+            // even issued.
+            let remote_deleted = floor_clear
+                && cfg.git.delete_remote_branch
+                && git_ok(&main, &["push", "origin", "--delete", &unit_branch]);
             // Floor clear → unit fully off the local stage: "settled". A floor
             // this pass could not free → "partial", and nothing was deleted on
             // either side; the per-field booleans tell the true story.
@@ -1564,6 +1569,45 @@ mod tests {
         assert_eq!(local, remote, "base fast-forwarded");
     }
 
+    /// Turns on, in the fixture's `mustard.json`, the deletion of the unit's
+    /// branch on the server.
+    fn delete_remote_branch_on(main: &Path) {
+        std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev"},"deleteRemoteBranch":true}}"#)
+            .expect("cfg");
+    }
+
+    /// The unit's branch on the server stays unless the project turned its
+    /// deletion on in `mustard.json`.
+    ///
+    /// Many teams may not delete a branch on the server: the merge is done by
+    /// another area and the branch is theirs. A settle without the key prunes
+    /// the worktree and the local branch and never issues the delete on the
+    /// server; the same settle with the key on removes the server branch too.
+    #[test]
+    fn the_server_branch_goes_only_with_the_key_on() {
+        let (_dir, main) = fixture();
+        git(&main, &["push", "origin", "dev_done"]);
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
+        assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
+        assert!(
+            !git_out(&main, &["ls-remote", "--heads", "origin", "dev_done"]).unwrap_or_default().is_empty(),
+            "without the key the server branch survives: {v}",
+        );
+
+        let (_dir2, main2) = fixture();
+        git(&main2, &["push", "origin", "dev_done"]);
+        delete_remote_branch_on(&main2);
+        let v = settle_at(&main2, Some("dev_done"));
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["remoteDeleted"], json!(true), "{v}");
+        assert!(
+            git_out(&main2, &["ls-remote", "--heads", "origin", "dev_done"]).unwrap_or_default().is_empty(),
+            "with the key on the server branch is deleted: {v}",
+        );
+    }
+
     /// An exit that could NOT free the local floor (here a LOCKED worktree,
     /// a stand-in for the OS still holding the folder open) leaves the REMOTE
     /// branch alone too.
@@ -1579,6 +1623,7 @@ mod tests {
     #[test]
     fn a_blocked_exit_leaves_the_remote_branch_alone() {
         let (_dir, main) = fixture();
+        delete_remote_branch_on(&main);
         git(&main, &["push", "origin", "dev_done"]);
         let wt = main.join(".claude").join("worktrees").join("dev_done");
         git(&main, &["worktree", "lock", wt.to_string_lossy().as_ref()]);
@@ -2248,6 +2293,7 @@ mod tests {
     #[test]
     fn prune_waits_for_the_base_to_advance() {
         let (_dir, main) = fixture();
+        delete_remote_branch_on(&main);
         git(&main, &["push", "origin", "dev_done"]);
         let wt = main.join(".claude").join("worktrees").join("dev_done");
         block_the_advance(&main);
@@ -2281,6 +2327,7 @@ mod tests {
         // The other half: nothing about the UNIT changed, only the obstacle.
         let (_dir2, main2) = fixture();
         git(&main2, &["push", "origin", "dev_done"]);
+        delete_remote_branch_on(&main2);
         let v = settle_at(&main2, Some("dev_done"));
         assert_eq!(v["ok"], json!(true), "{v}");
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");

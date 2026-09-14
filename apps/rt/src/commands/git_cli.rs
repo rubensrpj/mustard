@@ -25,7 +25,8 @@ pub enum GitCmd {
     /// for squash merges — not merged: hard stop, nothing touched), advances
     /// EVERY local base (ff-only merge on the checked-out one, ff-safe
     /// `fetch base:base` on the rest), then prunes the unit's worktree +
-    /// local branch (remote delete fail-open). Inside the unit's own worktree
+    /// local branch (the remote branch only with `git.deleteRemoteBranch` on
+    /// in `mustard.json`, fail-open). Inside the unit's own worktree
     /// it verifies + updates and answers `exit-and-rerun` — leave, then
     /// finish with `--unit <branch>` from the main checkout. `--report` is the
     /// same ritual's READING face: it classifies every work branch of every

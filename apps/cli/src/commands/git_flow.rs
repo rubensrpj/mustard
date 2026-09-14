@@ -221,6 +221,9 @@ pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path)
         // break the build, not the behaviour.
         protected: Vec::new(),
         provider: choices.provider.clone(),
+        // Not a question the install asks: the deletion of the server branch
+        // stays whatever the project already declared, off when it said nothing.
+        delete_remote_branch: config.git.delete_remote_branch,
     };
 
     let cmds = detect_commands(root);

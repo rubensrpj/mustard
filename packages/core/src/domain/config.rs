@@ -95,6 +95,14 @@ pub struct GitConfig {
     /// every install a permanent override and detection would never run.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provider: String,
+    /// Whether the unit's branch on the SERVER is deleted when the unit leaves
+    /// the stage. Off by default, and an install writes no key.
+    ///
+    /// Many teams may not delete a branch on the server: the merge is done by
+    /// another area and the branch is theirs. So the server branch is never
+    /// touched unless the project turns this on in `mustard.json`.
+    #[serde(rename = "deleteRemoteBranch", default, skip_serializing_if = "std::ops::Not::not")]
+    pub delete_remote_branch: bool,
 }
 
 
