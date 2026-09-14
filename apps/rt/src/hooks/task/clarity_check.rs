@@ -35,9 +35,8 @@
 //! - Na reescrita (`stop_hook_active`), só avisa o usuário: bloquear de novo
 //!   prenderia o turno num laço.
 //! - Guarda em `.claude/.session/<sid>/clarity.json` as siglas e os termos já
-//!   explicados na sessão, para a próxima medição não cobrar de novo.
-//! - Registra um evento `assistant.clarity` com as contagens e o resultado —
-//!   nunca o texto.
+//!   explicados na sessão, para a próxima medição não cobrar de novo. É a
+//!   única coisa que a medição grava: nenhum arquivo de eventos.
 //!
 //! O bloqueio e o aviso listam no máximo [`MAX_LISTED_DEFECTS`] defeitos, cada
 //! um cortado em [`MAX_DEFECT_CHARS`] caracteres; o resto vira uma contagem.
@@ -45,22 +44,16 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::clarity::{measure, ClarityReport};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::clarity::measure;
 use mustard_core::io::fs;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 use crate::hooks::task::end_of_turn_check::{Finding, Turn, TurnRule};
 
 /// O arquivo da sessão onde a medição guarda o que precisa lembrar.
 const RECORD_FILE: &str = "clarity.json";
-
-/// O evento de cada resposta medida.
-const EVENT: &str = "assistant.clarity";
 
 /// O output style que o assistente recebe no prompt de sistema. É dele que sai
 /// a semente dos nomes inventados, para a lista viver num lugar só.
@@ -105,8 +98,8 @@ impl TurnRule for ClarityRule {
 }
 
 /// Todas as medições da escrita, com a memória da sessão: o que esta resposta
-/// explicou fica guardado, e o evento de métricas é registrado. Sem idioma
-/// declarado (`expected` vazio), a medição do idioma não dá veredito.
+/// explicou fica guardado. Sem idioma declarado (`expected` vazio), a medição
+/// do idioma não dá veredito.
 fn writing_defects(root: &Path, turn: &Turn<'_>, expected: Option<Locale>) -> Vec<String> {
     let record_path = record_path(root, turn.session);
     let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
@@ -119,7 +112,6 @@ fn writing_defects(root: &Path, turn: &Turn<'_>, expected: Option<Locale>) -> Ve
     if let Some(path) = &record_path {
         write_record(path, &record);
     }
-    emit_metrics(turn.project_dir, turn.session, &report);
     report.defects(turn.lang)
 }
 
@@ -184,42 +176,6 @@ fn write_record(path: &Path, record: &ClarityRecord) {
     }
 }
 
-/// Registra `assistant.clarity` com as métricas da medição.
-fn emit_metrics(project_dir: &str, session: Option<&str>, report: &ClarityReport) {
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session.unwrap_or_default().to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("end_of_turn_check".to_string()),
-            actor_type: None,
-        },
-        event: EVENT.to_string(),
-        payload: metrics(report),
-        spec: None,
-    };
-    let _ = crate::shared::events::route::emit(project_dir, &event);
-}
-
-/// As métricas de uma medição: contagens e resultado. Nunca o texto, nem os
-/// nomes das siglas, termos e códigos — são pedaços da conversa.
-fn metrics(report: &ClarityReport) -> Value {
-    json!({
-        "passed": report.passed,
-        "long_sentences": report.long_sentences.len(),
-        "unexpanded_acronyms": report.unexpanded_acronyms.len(),
-        "unexplained_terms": report.unexplained_terms.len(),
-        "internal_codes": report.internal_codes.len(),
-        "prose_lines": report.prose_lines,
-        "lines": report.lines,
-        "too_long": report.too_long,
-        "reading_ease": report.reading_ease,
-        "wrong_language": report.wrong_language.is_some(),
-    })
-}
-
 /// Os nomes entre crases do parágrafo dos nomes inventados do output style
 /// (`gate`, `wave`, `slug`…).
 fn style_seed() -> Vec<String> {
@@ -242,6 +198,7 @@ mod tests {
     use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
     use crate::hooks::task::end_of_turn_check::run_rules;
     use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+    use serde_json::json;
     use tempfile::tempdir;
 
     /// Reprova por uma sigla sem as palavras por extenso.
@@ -291,36 +248,35 @@ mod tests {
         root.join(".claude/.session").join(session).join(RECORD_FILE)
     }
 
-    /// Cada linha de evento `assistant.clarity` gravada sob `root/.claude`.
-    fn clarity_rows(root: &Path) -> Vec<String> {
-        fn walk(dir: &Path, rows: &mut Vec<String>) {
+    /// Cada linha de qualquer arquivo de eventos (`.ndjson`) sob `root/.claude`.
+    fn event_rows(root: &Path) -> Vec<String> {
+        files_under(&root.join(".claude"))
+            .into_iter()
+            .filter(|path| path.extension().is_some_and(|ext| ext == "ndjson"))
+            .flat_map(|path| {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                text.lines().map(str::to_string).collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Todos os arquivos sob `dir`, em ordem, com o caminho inteiro.
+    fn files_under(dir: &Path) -> Vec<PathBuf> {
+        fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else { return };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    walk(&path, rows);
-                } else if path.extension().is_some_and(|ext| ext == "ndjson") {
-                    let text = std::fs::read_to_string(&path).unwrap_or_default();
-                    rows.extend(text.lines().filter(|l| l.contains(EVENT)).map(str::to_string));
+                    walk(&path, files);
+                } else {
+                    files.push(path);
                 }
             }
         }
-        let mut rows = Vec::new();
-        walk(&root.join(".claude"), &mut rows);
-        rows
-    }
-
-    /// O objeto das métricas dentro de uma linha de evento, qualquer que seja o
-    /// envelope do gravador.
-    fn find_metrics(value: &Value) -> Option<&Value> {
-        match value {
-            Value::Object(map) if map.contains_key("passed") && map.contains_key("prose_lines") => {
-                Some(value)
-            }
-            Value::Object(map) => map.values().find_map(find_metrics),
-            Value::Array(items) => items.iter().find_map(find_metrics),
-            _ => None,
-        }
+        let mut files = Vec::new();
+        walk(dir, &mut files);
+        files.sort();
+        files
     }
 
     /// A resposta que reprova é barrada, e o assistente recebe os defeitos no
@@ -393,7 +349,7 @@ mod tests {
             let root = dir.path();
             assert!(matches!(check(root, &stop("s1", FAILING)), Verdict::Deny { .. }), "{config}");
             assert!(record_file(root, "s1").is_file(), "{config}: recorded");
-            assert_eq!(clarity_rows(root).len(), 1, "{config}: one event");
+            assert!(event_rows(root).is_empty(), "{config}: no event line: {:?}", event_rows(root));
         }
         let bare = tempdir().unwrap();
         assert_eq!(check(bare.path(), &stop("s1", FAILING)), Verdict::Allow, "no mustard.json, no measurement");
@@ -406,29 +362,41 @@ mod tests {
         assert_eq!(run_rules(&[&ClarityRule], &stop("s1", FAILING), &pre), Verdict::Allow);
     }
 
-    /// O evento traz as contagens e o resultado, e nada do texto.
+    /// A medição não grava arquivo de eventos: depois de um bloqueio e de um
+    /// aviso na mesma sessão, a única coisa debaixo de `.claude/` é a memória
+    /// da sessão. Uma pasta de eventos que já existia fica com os mesmos bytes,
+    /// e nada novo nasce nela.
     #[test]
-    fn clarity_event_records_metrics_not_text() {
+    fn the_clarity_check_writes_no_event_file() {
         let dir = project();
         let root = dir.path();
-        let reply = "O CI falhou com a senha zebra-quartzo-sete no log.";
-        let _ = check(root, &stop("s1", reply));
+        assert!(matches!(check(root, &stop("s1", FAILING)), Verdict::Deny { .. }));
+        assert!(matches!(check(root, &rewrite("s1", FAILING)), Verdict::Inject { .. }));
+        assert_eq!(files_under(&root.join(".claude")), vec![record_file(root, "s1")]);
 
-        let rows = clarity_rows(root);
-        assert_eq!(rows.len(), 1, "one measured reply, one event: {rows:?}");
-        let row: Value = serde_json::from_str(&rows[0]).unwrap();
-        let metrics = find_metrics(&row).unwrap_or_else(|| panic!("no metrics in {row}"));
-        assert_eq!(metrics["passed"], json!(false));
-        assert_eq!(metrics["long_sentences"], json!(0));
-        assert_eq!(metrics["unexpanded_acronyms"], json!(1));
-        assert_eq!(metrics["unexplained_terms"], json!(0));
-        assert_eq!(metrics["internal_codes"], json!(0));
-        assert_eq!(metrics["prose_lines"], json!(1));
-        assert_eq!(metrics["lines"], json!(1));
-        assert_eq!(metrics["too_long"], json!(false));
-        assert_eq!(metrics["reading_ease"], Value::Null);
-        for fragment in ["zebra-quartzo-sete", "falhou", "senha"] {
-            assert!(!rows[0].contains(fragment), "the reply text leaked ({fragment}): {}", rows[0]);
+        let dir = project();
+        let root = dir.path();
+        let old = root.join(".claude/.events/antigo.ndjson");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        let bytes = b"{\"event\":\"uma linha que ja estava aqui\"}\n";
+        std::fs::write(&old, bytes).unwrap();
+        assert!(matches!(check(root, &stop("s1", FAILING)), Verdict::Deny { .. }));
+        assert!(matches!(check(root, &rewrite("s1", FAILING)), Verdict::Inject { .. }));
+        assert_eq!(files_under(&root.join(".claude")), vec![old.clone(), record_file(root, "s1")]);
+        assert_eq!(std::fs::read(&old).unwrap(), bytes, "the old event file is untouched");
+    }
+
+    /// Sem sessão, ou com a sessão `unknown`, a medição não grava nada: nenhuma
+    /// pasta nasce debaixo do projeto. O bloqueio sai do mesmo jeito.
+    #[test]
+    fn without_a_session_the_clarity_check_writes_nothing() {
+        let mut no_session = stop("s1", FAILING);
+        no_session.session_id = None;
+        for input in [no_session, stop("unknown", FAILING)] {
+            let dir = project();
+            let root = dir.path();
+            assert!(matches!(check(root, &input), Verdict::Deny { .. }), "the block still comes out");
+            assert!(!root.join(".claude").exists(), "{:?}", files_under(&root.join(".claude")));
         }
     }
 
