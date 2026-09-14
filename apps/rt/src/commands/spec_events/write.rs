@@ -41,20 +41,19 @@
 //! roda, e os nomes de código citados, no mapa do projeto: o nome que o mapa
 //! não confirma entra em `warnings`, e o ponto é gravado.
 //!
-//! Uma spec aberta pelo `spec-draft` tem o `spec.md` escrito por ele, ao lado
-//! do `meta.json`. Ali a página e o `.md` não são refeitos: o `.md` é o
-//! documento do rascunho, e refazê-lo do arquivo de eventos apagaria o texto
-//! da spec. O evento e a linha do índice são gravados do mesmo jeito.
+//! Numa pasta de spec do formato antigo, cujo `spec.md` é o documento e não a
+//! página refeita, o binário não grava nada: a gravação recusa ali, e a pasta
+//! fica com os mesmos bytes. A conferência é a do
+//! [`super::pages::old_format_spec`].
 //!
-//! Quem grava por dentro do binário, como a testemunha da aprovação e o
-//! `spec-draft`, usa [`record`], a mesma gravação deste comando.
+//! Quem grava por dentro do binário, como a testemunha da aprovação, usa
+//! [`record`], a mesma gravação deste comando.
 //!
 //! Este comando também não grava a execução de um critério (`criterion_run`)
 //! nem o veredito (`verdict`), nem tira ou revê um deles: quem os grava é o
-//! binário, quando roda o QA ([`record_run`]) e quando registra a revisão. Numa
-//! spec cujo `spec.md` é o documento, os critérios vêm dos ACs
-//! ([`sync_criteria`]), e ele não grava, não tira nem revê um `criterion`. O
-//! autor `binary` é só das gravações de dentro do binário.
+//! binário, e as portas que os gravarão, o `round` e o `close` do fluxo novo,
+//! ainda não chegaram nesta versão. O autor `binary` é só das gravações de
+//! dentro do binário.
 //!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
 //! fluxo e da testemunha da aprovação. As portas que gravam `state` são
@@ -88,11 +87,10 @@
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
 //! de toda porta que grava o estado.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::LESSON;
-use mustard_core::domain::spec_events::{type_spec, Refusal, SpecEvent, SpecLog, PHASES};
+use mustard_core::domain::spec_events::{type_spec, Refusal, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
     birth_event, goal_rule, phase_write_allowed, survey_rule, waves_grown_by, PhaseWriter, SpecState, State,
@@ -165,9 +163,6 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     }
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
-    }
-    if event_type == "criterion" && super::pages::drafted_by_spec_draft(&project.root, spec) {
-        return refuse(Refusal::CriteriaFromSpecMd { spec: spec.trim().to_string() });
     }
     if event_type == "deferred"
         && let Err(refusal) = point_to_open_pending(&opts.root, &mut draft)
@@ -266,8 +261,7 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
 /// refeitos, onde eles estão ou por que não foram gravados.
 pub struct Recorded {
     pub(crate) written: store::Written,
-    /// `None` quando a spec tem o `spec.md` do `spec-draft`, que fica como
-    /// está.
+    /// Onde a página e o `.md` foram gravados, ou a recusa da gravação deles.
     pub(crate) pages: Option<Result<SpecPages, Refusal>>,
     /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
     /// passar das ondas que tinha na aprovação que vale.
@@ -279,8 +273,7 @@ pub struct Recorded {
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
 /// `run write`: a linha no arquivo de eventos, a linha da spec no índice e a
-/// página e o `.md`, quando a spec não é um rascunho do `spec-draft`. `by`
-/// diz quem grava, para a regra da mudança de fase.
+/// página e o `.md`. `by` diz quem grava, para a regra da mudança de fase.
 ///
 /// # Errors
 ///
@@ -298,6 +291,9 @@ pub fn record(
 /// A única gravação no arquivo de eventos de uma spec: toda porta chega
 /// aqui, e a regra da mudança de fase confere o arquivo antes e depois, com a
 /// trava presa.
+///
+/// Numa pasta do formato antigo nada é gravado: o `spec.md` dela é o
+/// documento, e um arquivo de eventos ali levaria a página a apagá-lo.
 fn record_in(
     project: &super::Project,
     start: &Path,
@@ -306,9 +302,11 @@ fn record_in(
     draft: Map<String, Value>,
     by: Option<PhaseWriter>,
 ) -> Result<Recorded, Refusal> {
+    if super::pages::old_format_spec(&project.root, spec) {
+        return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
+    }
     let path = store::spec_file(&project.root, spec)?;
     let roots = store::citation_roots(start, &project.root);
-    let drafted = super::pages::drafted_by_spec_draft(&project.root, spec);
     let carried = (event_type == "state")
         .then(|| draft.get("phase").and_then(Value::as_str).map(|phase| phase.trim().to_string()))
         .flatten();
@@ -330,7 +328,7 @@ fn record_in(
         draft,
         &roots,
         |before, after| {
-            phase_rule(&name, before, after, carried.as_deref(), replaces, by, drafted)?;
+            phase_rule(&name, before, after, carried.as_deref(), replaces, by)?;
             goal_rule(&name, before, after)?;
             survey_rule(&name, before, after)?;
             // O passo do levantamento só vai ao relatório do modelo.
@@ -343,9 +341,7 @@ fn record_in(
             if wave {
                 grew = waves_grown_by(log, log.max_id());
             }
-            if !drafted {
-                pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
-            }
+            pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
         },
     )?;
     Ok(Recorded { written, pages, grew, survey })
@@ -462,7 +458,6 @@ fn phase_rule(
     carried: Option<&str>,
     replaces: Option<u64>,
     by: Option<PhaseWriter>,
-    document: bool,
 ) -> Result<(), Refusal> {
     let (was, now) = (State::from_log(before), State::from_log(after));
     let revised = replaces.and_then(|id| before.get(id)).and_then(|event| event.str_field("phase")).map(str::trim);
@@ -474,11 +469,6 @@ fn phase_rule(
         // O tipo de trabalho é do `grill`: o modelo não o tira nem o revê.
         if visible_of(before, "work_type") != visible_of(after, "work_type") {
             return Err(Refusal::WorkTypeByGrill);
-        }
-        // Os critérios de uma spec cujo `spec.md` é o documento vêm dos ACs:
-        // o modelo não os tira nem os revê.
-        if document && visible_of(before, "criterion") != visible_of(after, "criterion") {
-            return Err(Refusal::CriteriaFromSpecMd { spec: spec.to_string() });
         }
         return if was == now { Ok(()) } else { Err(Refusal::StateByFlowOnly { spec: spec.to_string() }) };
     };
@@ -492,9 +482,13 @@ fn phase_rule(
     })
 }
 
-/// A ponte até os gravadores definitivos do fechamento e do merge: grava no
-/// estado da spec `spec`, vista de `start`, a fase `phase` (`closed` no
-/// fechamento, `delivered` no merge), pela mesma gravação do `run write`.
+/// A porta do fechamento e da entrega: grava no estado da spec `spec`, vista
+/// de `start`, a fase `phase` (`closed` no fechamento, `delivered` no merge),
+/// pela mesma gravação do `run write`.
+///
+/// Nenhum comando desta versão a chama: as portas antigas recusam, e as novas,
+/// o `close` e o `pr-merge`, ainda não chegaram. É por ela que os dois vão
+/// gravar a fase e armar a cobrança, e é a única que arma.
 ///
 /// Só grava quando a spec tem arquivo de eventos (uma branch que o Mustard
 /// não abriu fica como está) e quando a fase de agora vem antes de `phase` na
@@ -509,6 +503,7 @@ fn phase_rule(
 /// A sessão de quem fecha é dita por quem chama: uma entrada `run` a lê do
 /// ambiente, um gancho a sabe pelo evento que recebeu. O contador guarda
 /// essa sessão, e só ela é cobrada; sem sessão, qualquer sessão principal é.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Option<&str>) -> bool {
     let order = |name: &str| PHASES.iter().position(|known| *known == name);
     let Some(target) = order(phase) else {
@@ -534,226 +529,6 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Optio
         }
         Err(_) => false,
     }
-}
-
-/// Os critérios da spec `spec`, vista de `start`, acertados com os ACs do
-/// `spec.md` quando ele é o documento da spec: cada AC tem o seu `criterion`,
-/// casado pelo id do AC, que fica no `label`. O AC sem critério ganha um; o AC
-/// cujo comando mudou ganha uma versão nova do critério, com o comando novo;
-/// o critério que não é de nenhum AC sai da leitura. Tudo pelo binário, pela
-/// mesma gravação do `run write`.
-///
-/// É a ponte das specs do `spec-draft` até os gravadores definitivos, e a
-/// função única de quem mexe nos critérios dessas specs: o `qa-run`, o
-/// `review-result`, o `ac-add` e o `ac-amend` passam por aqui. Numa spec já
-/// acertada, não grava nada. Devolve, para cada id de AC (em maiúsculas), o
-/// número do critério vigente; vazio sem arquivo de eventos ou sem ACs.
-pub(crate) fn sync_criteria(start: &Path, spec: &str) -> BTreeMap<String, u64> {
-    use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items, spec_file_for};
-    let mut current = BTreeMap::new();
-    let Some(log) = DiskSpecState::new(start).log(spec) else {
-        return current;
-    };
-    let Some(items) = spec_file_for(&store::spec_root(start), spec)
-        .and_then(|file| std::fs::read_to_string(file).ok())
-        .and_then(|markdown| extract_ac_section(&markdown))
-        .map(|section| parse_ac_items(&section))
-    else {
-        return current;
-    };
-    let unquoted = |text: &str| text.trim().trim_matches('`').trim().to_string();
-    let criteria: Vec<&SpecEvent> = log.visible().into_iter().filter(|event| event.event_type == "criterion").collect();
-    let recorded: BTreeMap<String, (u64, String)> = criteria
-        .iter()
-        .filter_map(|event| {
-            let proof = unquoted(event.str_field("proof").unwrap_or_default());
-            event.str_field("label").map(|label| (ac_key(label), (event.id, proof)))
-        })
-        .collect();
-    for item in &items {
-        let key = ac_key(&item.id);
-        let found = recorded.get(&key);
-        if let Some((id, proof)) = found
-            && *proof == unquoted(&item.command)
-        {
-            current.insert(key, *id);
-            continue;
-        }
-        let (when, then) = split_statement(&item.statement, &item.id);
-        let mut draft = Map::new();
-        draft.insert("author".to_string(), json!("binary"));
-        draft.insert("label".to_string(), json!(item.id));
-        draft.insert("when".to_string(), json!(when));
-        draft.insert("then".to_string(), json!(then));
-        draft.insert("proof".to_string(), json!(item.command));
-        if let Some((old, _)) = found {
-            draft.insert("replaces".to_string(), json!(old));
-        }
-        if let Ok(written) = record(start, spec, "criterion", draft, PhaseWriter::Binary) {
-            current.insert(key, written.written.id);
-        }
-    }
-    // O critério que não é de nenhum AC não tem como receber execução: sai da
-    // leitura, e o QA não fica preso nele.
-    let orphans: Vec<u64> = criteria
-        .iter()
-        .filter(|event| event.str_field("label").is_none_or(|label| !current.contains_key(&ac_key(label))))
-        .map(|event| event.id)
-        .collect();
-    if !orphans.is_empty() {
-        let mut draft = Map::new();
-        draft.insert("author".to_string(), json!("binary"));
-        draft.insert("targets".to_string(), json!(orphans));
-        draft.insert("reason".to_string(), json!("critério fora dos ACs do spec.md"));
-        let _ = record(start, spec, "remove", draft, PhaseWriter::Binary);
-    }
-    current
-}
-
-/// O id de um AC como chave de casamento: sem espaços nas pontas e em
-/// maiúsculas.
-fn ac_key(id: &str) -> String {
-    id.trim().to_ascii_uppercase()
-}
-
-/// O veredito que a revisão de um subprojeto deu, lido de um evento
-/// `verdict`: o da ponte traz o subprojeto no `label` e o veredito dele nos
-/// critérios; um veredito sem `label` vale pelo resultado.
-fn own_approval(event: &SpecEvent) -> bool {
-    if event.str_field("label").is_some()
-        && let Some(items) = event.fields.get("criteria").and_then(Value::as_array)
-    {
-        return !items.is_empty() && items.iter().all(|c| c.get("tests_rule") == Some(&Value::Bool(true)));
-    }
-    event.str_field("result").map(str::trim) == Some("approved")
-}
-
-/// A frase de um AC partida em "quando" e "então", pela vírgula antes de
-/// `then` ou de `então`; sem ela, a frase inteira vale para os dois. Uma
-/// frase vazia vira o id do AC.
-fn split_statement(statement: &str, id: &str) -> (String, String) {
-    let text = statement.trim();
-    if text.is_empty() {
-        return (id.to_string(), id.to_string());
-    }
-    for marker in [", then ", ", então ", ", Then ", ", Então "] {
-        if let Some((when, then)) = text.split_once(marker) {
-            return (when.trim().to_string(), then.trim().to_string());
-        }
-    }
-    (text.to_string(), text.to_string())
-}
-
-/// A ponte até o gravador definitivo da revisão: grava o veredito da revisão
-/// do subprojeto `subproject` em cada onda que ele toca, pelas mesmas ondas e
-/// subprojetos do plano de despacho, ou em todas as ondas quando não há
-/// subprojeto ou quando ele não casa com nenhuma. Uma spec sem ondas tem a
-/// onda 1. Antes, acerta os critérios com os ACs do `spec.md`.
-///
-/// Em cada onda, o resultado gravado junta o último veredito de cada
-/// subprojeto daquela onda com este: basta um reprovado para a onda ficar
-/// reprovada, e o veredito sem subprojeto só conta quando é o único. O evento
-/// leva o subprojeto no `label` e o veredito dele nos critérios, conferidos
-/// quando ele aprova. Devolve quantas ondas receberam o veredito.
-pub(crate) fn record_verdict(
-    start: &Path,
-    spec: &str,
-    verdict: &str,
-    critical: i64,
-    subproject: Option<&str>,
-) -> usize {
-    use crate::commands::pipeline::dispatch_plan::{build_plan_with_cycle, resolve_spec_dir};
-    if !matches!(verdict, "approved" | "rejected") {
-        return 0;
-    }
-    sync_criteria(start, spec);
-    let Some(log) = DiskSpecState::new(start).log(spec) else {
-        return 0;
-    };
-    let approved = verdict == "approved";
-    let criteria: Vec<Value> = log
-        .visible()
-        .iter()
-        .filter(|event| event.event_type == "criterion")
-        .map(|event| json!({ "criterion": event.id, "tests_rule": approved }))
-        .collect();
-    if criteria.is_empty() {
-        return 0;
-    }
-    let root = store::spec_root(start);
-    let (plan, _) = build_plan_with_cycle(&root, &resolve_spec_dir(&root, spec), spec, None);
-    let same = |a: &str, b: &str| {
-        let clean = |s: &str| s.trim().trim_start_matches("./").trim_end_matches('/').to_string();
-        clean(a) == clean(b)
-    };
-    let subproject = subproject.map(str::trim).filter(|s| !s.is_empty() && *s != ".");
-    let all: std::collections::BTreeSet<u64> = plan.iter().map(|item| u64::from(item.wave)).collect();
-    let touched: std::collections::BTreeSet<u64> = subproject.map_or_else(
-        || all.clone(),
-        |sub| plan.iter().filter(|item| same(&item.subproject, sub)).map(|item| u64::from(item.wave)).collect(),
-    );
-    let waves = match (touched.is_empty(), all.is_empty()) {
-        (false, _) => touched,
-        (true, false) => all,
-        (true, true) => std::iter::once(1).collect(),
-    };
-    let key = subproject.unwrap_or(".").to_string();
-    let text = format!("review-result: {verdict}, {critical} critical, subproject {key}");
-    let mut written = 0;
-    for wave in waves {
-        // O último veredito de cada subprojeto desta onda, e o deste.
-        let mut last: BTreeMap<String, (u64, bool)> = BTreeMap::new();
-        for event in log.visible().into_iter().filter(|e| e.event_type == "verdict" && e.wave() == Some(wave)) {
-            let sub = event.str_field("label").map(str::trim).filter(|s| !s.is_empty()).unwrap_or(".").to_string();
-            let entry = last.entry(sub).or_insert((event.id, own_approval(event)));
-            if event.id >= entry.0 {
-                *entry = (event.id, own_approval(event));
-            }
-        }
-        last.insert(key.clone(), (u64::MAX, approved));
-        let real = last.keys().any(|sub| sub != ".");
-        let joined = last.iter().filter(|(sub, _)| !(real && sub.as_str() == ".")).all(|(_, (_, ok))| *ok);
-        let mut draft = Map::new();
-        draft.insert("author".to_string(), json!("review"));
-        draft.insert("label".to_string(), json!(key));
-        draft.insert("wave".to_string(), json!(wave));
-        draft.insert("result".to_string(), json!(if joined { "approved" } else { "rejected" }));
-        draft.insert("text".to_string(), json!(text));
-        draft.insert("criteria".to_string(), json!(criteria));
-        if record(start, spec, "verdict", draft, PhaseWriter::Binary).is_ok() {
-            written += 1;
-        }
-    }
-    written
-}
-
-/// A ponte até o gravador definitivo do QA: grava na spec `spec`, vista de
-/// `start`, uma execução do critério de número `criterion` (`pass` quando
-/// `passed`), com o código de saída, o tempo e o fim da saída, pela mesma
-/// gravação do `run write`. Só grava quando a spec tem arquivo de eventos.
-/// `true` quando gravou.
-pub(crate) fn record_run(
-    start: &Path,
-    spec: &str,
-    criterion: u64,
-    passed: bool,
-    exit: Option<i64>,
-    ms: u128,
-    output: &str,
-) -> bool {
-    if DiskSpecState::new(start).log(spec).is_none() {
-        return false;
-    }
-    let mut draft = Map::new();
-    draft.insert("criterion".to_string(), json!(criterion));
-    draft.insert("result".to_string(), json!(if passed { "pass" } else { "fail" }));
-    draft.insert("exit".to_string(), json!(exit.unwrap_or(i64::from(!passed)).max(0)));
-    draft.insert("ms".to_string(), json!(u64::try_from(ms).unwrap_or(u64::MAX)));
-    draft.insert("author".to_string(), json!("binary"));
-    if !output.trim().is_empty() {
-        draft.insert("output".to_string(), json!(output.trim()));
-    }
-    record(start, spec, "criterion_run", draft, PhaseWriter::Binary).is_ok()
 }
 
 /// O nascimento de uma spec com arquivo de eventos e sem nenhum `state`, pela
@@ -939,11 +714,12 @@ mod tests {
         assert!(log.visible().iter().any(|event| event.event_type == "point"), "the point is in the file");
     }
 
-    /// O autor `binary` é só das gravações de dentro do binário, e numa spec
-    /// cujo `spec.md` é o documento os critérios vêm dos ACs: o `run write`
-    /// recusa gravar, tirar e rever um `criterion` dela.
+    /// O autor `binary` é só das gravações de dentro do binário. Numa spec
+    /// cujo `spec.md` traz a seção de critérios de aceitação, o `spec.md` é o
+    /// documento: dali em diante nenhuma gravação entra, e o texto dele fica
+    /// com os mesmos bytes.
     #[test]
-    fn run_write_refuses_the_binary_author_and_the_criteria_of_a_drafted_spec() {
+    fn run_write_refuses_the_binary_author_and_every_write_to_an_old_format_spec() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let msg = write(root, "message", r#"{"author":"user","text":"oi"}"#)["id"].as_u64().unwrap();
@@ -953,17 +729,24 @@ mod tests {
         let criterion = format!(r#"{{"when":"w","then":"t","proof":"cd .","origin":{msg}}}"#);
         let accepted = write(root, "criterion", &criterion);
         assert_eq!(accepted["ok"], json!(true), "a spec rendered from its events takes a criterion: {accepted}");
-        std::fs::write(
-            root.join(".claude").join("spec").join("teste").join("spec.md"),
-            "# T\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `cd .`\n",
-        )
-        .unwrap();
-        let refused = write(root, "criterion", &criterion);
-        assert_eq!(refused["reason"], json!("criteria-from-spec-md"), "{refused}");
-        let removal = write(root, "remove", &format!(r#"{{"targets":[{}],"reason":"engano"}}"#, accepted["id"]));
-        assert_eq!(removal["reason"], json!("criteria-from-spec-md"), "{removal}");
+        let md = root.join(".claude").join("spec").join("teste").join("spec.md");
+        let document = "# T\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `cd .`\n";
+        std::fs::write(&md, document).unwrap();
+        let events = lines(root);
+
+        let removal = format!(r#"{{"targets":[{}],"reason":"engano"}}"#, accepted["id"]);
         let revision = format!(r#"{{"when":"w","then":"t","proof":"cd ..","origin":{msg},"replaces":{}}}"#, accepted["id"]);
-        assert_eq!(write(root, "criterion", &revision)["reason"], json!("criteria-from-spec-md"));
+        for (event_type, payload) in [
+            ("criterion", criterion.as_str()),
+            ("remove", removal.as_str()),
+            ("criterion", revision.as_str()),
+            ("message", r#"{"author":"user","text":"e mais um"}"#),
+        ] {
+            let refused = write(root, event_type, payload);
+            assert_eq!(refused["reason"], json!("old-format-spec"), "{event_type}: {refused}");
+        }
+        assert_eq!(lines(root), events, "nothing was written");
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), document, "the document is left alone");
     }
 
     /// A execução de um critério e o veredito são gravados só pelo binário: o
@@ -1071,27 +854,53 @@ mod tests {
         assert_eq!(after.lines().count(), events.lines().count() + 1, "only the revision was written");
     }
 
-    /// Numa spec aberta pelo `spec-draft`, o `spec.md` é o documento do
-    /// rascunho: gravar um evento não o refaz, e a página não nasce. O evento
-    /// e a linha do índice são gravados do mesmo jeito.
+    /// Numa pasta de spec do formato antigo, que tem o `meta.json` e nenhum
+    /// arquivo de eventos, o binário não cria o arquivo: a gravação recusa, o
+    /// `spec.md` dela fica com os mesmos bytes e a página não nasce.
     #[test]
-    fn a_spec_drafted_by_spec_draft_keeps_its_md() {
+    fn the_binary_never_creates_an_event_file_in_an_old_format_spec() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = root.join(".claude").join("spec").join("teste");
         std::fs::create_dir_all(&spec).unwrap();
         std::fs::write(spec.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
-        std::fs::write(spec.join("spec.md"), "# Rascunho\n\n## Contexto\n\nO texto da spec.\n").unwrap();
+        let document = "# Rascunho\n\n## Contexto\n\nO texto da spec.\n";
+        std::fs::write(spec.join("spec.md"), document).unwrap();
 
         let out = write(root, "message", r#"{"author":"user","text":"um recado"}"#);
-        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["reason"], json!("old-format-spec"), "{out}");
+        assert!(out["hint"].as_str().unwrap().contains("teste"), "{out}");
+        // A testemunha da aprovação chega pela mesma gravação, e recusa igual.
+        assert_eq!(record_birth(root, "teste", None).unwrap_err().reason(), "old-format-spec");
+        // E o `page --spec` também.
         assert_eq!(
-            std::fs::read_to_string(spec.join("spec.md")).unwrap(),
-            "# Rascunho\n\n## Contexto\n\nO texto da spec.\n",
-            "the draft's document is left alone",
+            super::super::pages::refresh(root, "teste", Locale::PtBr).unwrap_err().reason(),
+            "old-format-spec"
         );
-        assert!(!spec.join("spec.html").exists(), "no page over a draft");
-        assert!(std::fs::read_to_string(spec.join("spec.ndjson")).unwrap().contains("um recado"));
+
+        assert_eq!(std::fs::read_to_string(spec.join("spec.md")).unwrap(), document, "the document is left alone");
+        assert!(!spec.join("spec.ndjson").exists(), "no event file in an old spec");
+        assert!(!spec.join("spec.html").exists(), "no page over an old spec");
+    }
+
+    /// Uma spec aberta pelo `open` refaz a página e o `.md` a cada gravação,
+    /// mesmo com um `meta.json` posto ao lado por uma porta antiga.
+    #[test]
+    fn a_spec_opened_by_open_rebuilds_its_page_on_every_write() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = root.join(".claude").join("spec").join("teste");
+        write(root, "message", r#"{"author":"user","text":"um recado"}"#);
+        std::fs::create_dir_all(&spec).unwrap();
+        std::fs::write(spec.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
+
+        let before = std::fs::read_to_string(spec.join("spec.html")).unwrap();
+        let out = write(root, "message", r#"{"author":"user","text":"e outro recado"}"#);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let after = std::fs::read_to_string(spec.join("spec.html")).unwrap();
+        assert_ne!(before, after, "the page follows the write");
+        assert!(after.contains("e outro recado"), "{after}");
+        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("e outro recado"));
         let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
         assert!(index.contains("\"teste\""), "{index}");
     }
@@ -2595,6 +2404,34 @@ mod tests {
         assert_eq!(written.int("closes"), Some(points[0].id));
         assert_eq!(written.str_field("gap"), Some(points[0].gap.as_str()));
         assert_eq!(revised["point"]["id"], json!(points[1].id), "the other point stays open: {revised}");
+    }
+
+    /// A porta que fica arma a cobrança no fechamento e na entrega, com a
+    /// sessão de quem fechou e sem ela, e a entrada na execução não arma nada.
+    /// É a porta que o `close` e o `pr-merge` novos vão chamar.
+    #[test]
+    fn the_binary_door_still_arms_the_charge_on_closed_and_delivered() {
+        use crate::commands::event::pending::armed_charges;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        for spec in ["com-sessao", "sem-sessao"] {
+            let folder = root.join(".claude").join("spec").join(spec);
+            std::fs::create_dir_all(&folder).unwrap();
+            let state = json!({"v": 1, "id": 1, "type": "state", "phase": "approved", "author": "binary",
+                "at": "2026-09-14T10:00:00Z"});
+            std::fs::write(folder.join("spec.ndjson"), format!("{state}\n")).unwrap();
+        }
+
+        assert!(record_phase(root, "com-sessao", "running", Some("s-1")), "the spec enters execution");
+        assert!(armed_charges(root).is_empty(), "entering execution charges nothing");
+
+        assert!(record_phase(root, "com-sessao", "closed", Some("s-1")), "the close is recorded");
+        assert!(record_phase(root, "sem-sessao", "delivered", None), "the merge is recorded");
+        let armed: Vec<(String, Option<String>)> =
+            armed_charges(root).into_iter().map(|charge| (charge.spec, charge.session)).collect();
+        assert!(armed.contains(&("com-sessao".to_string(), Some("s-1".to_string()))), "{armed:?}");
+        assert!(armed.contains(&("sem-sessao".to_string(), None)), "{armed:?}");
     }
 
     /// Dois fechamentos ao mesmo tempo armam os dois: o arquivo dos

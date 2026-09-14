@@ -23,10 +23,11 @@
 //!   the spec the unit belongs to, the subproject its `## Files` name, and the
 //!   SAME skill shelf the implementer was dispatched with — so "reviewed
 //!   against the project patterns" means the very molds the work was written
-//!   to, never a second list that can drift. With `--verdict` it RECORDS
-//!   through [`review_result::record_review`], the one recorder `review-result`
-//!   already uses. The merge step reads the verdicts of the spec's
-//!   `spec.ndjson` instead, one per wave.
+//!   to, never a second list that can drift. `--verdict` no longer records
+//!   anything: it refuses at the door and says to wait for the round, which
+//!   will record each wave's verdict in the spec file. The merge step reads
+//!   the verdicts of the spec's `spec.ndjson`, one per wave — and until the
+//!   round arrives nothing writes one.
 //!
 //! ## The spec is read out of the PR's OWN branch
 //!
@@ -47,18 +48,19 @@
 //! `spec.ndjson` the merge reads is the main checkout's, whatever branch
 //! happens to be out, and recording from the base adds nothing tracked to the
 //! base's tree.
-//! - **`pr-merge`** — merges, then hands the pruning to
-//!   [`git_settle::settle_at`]: returning to the base, pulling it, removing the
-//!   worktree and deleting the local + remote branch IS the exit ritual, already
-//!   written and already covering the in-place unit and the per-repo report.
-//!   Reimplementing it here would be a second exit ritual to keep in step.
+//! - **`pr-merge`** — STOPPED in this version: the command refuses at the door,
+//!   merges nothing, delivers nothing and closes no pending item. The new merge
+//!   door, which records the delivery and closes the item that became the spec,
+//!   has not arrived yet. The body below stays as it was, with its tests, until
+//!   it does: it merges, then hands the pruning to [`git_settle::settle_at`] —
+//!   returning to the base, pulling it, removing the worktree and deleting the
+//!   local + remote branch IS the exit ritual, already written and already
+//!   covering the in-place unit and the per-repo report.
 //!
-//!   Every merge also records the `pr.merged` event and, when the merge is of
-//!   a spec with an event file, its `delivered` state: that state is what arms
-//!   the pending charge at the end of the answer. When the unit was born from
-//!   a pending item (`emit-pipeline --pending`, which leaves on it the note
-//!   "became the spec X"), the merge closes that item with the reason
-//!   `PR #N mergeado`. The report returns `pendingClosed` and `pendingOpen` —
+//!   The `pr.merged` event is the only thing a merge records. The spec's
+//!   `delivered` state, which arms the pending charge at the end of the answer,
+//!   is written by the binary door of the spec file, and nothing in this
+//!   version calls it. The report returns `pendingClosed` and `pendingOpen` —
 //!   the pending items born in the spec that stay open — so the delivery asks
 //!   only about them.
 //!
@@ -443,11 +445,12 @@ pub(crate) struct PrReviewReport {
 /// Build the review brief for a resolved PR, recording `verdict` when one is
 /// supplied.
 ///
-/// Recording goes through [`review_result::record_review`] — the same path the
-/// `review-result` CLI and the `SubagentStop` verdict capture already take, so
-/// a verdict recorded from this door is indistinguishable from one recorded by
-/// the REVIEW phase. `pr-merge` reads the per-wave verdicts of the spec's
-/// `spec.ndjson`.
+/// The door refuses `--verdict` before it gets here, so nothing is recorded
+/// in this version. Kept as it was: recording goes through
+/// [`review_result::record_review`] — the same path the `review-result` CLI
+/// and the `SubagentStop` verdict capture take, into the old log. `pr-merge`
+/// reads the per-wave verdicts of the spec's `spec.ndjson`, which the round
+/// will write.
 #[must_use]
 fn review_brief(
     root: &Path,
@@ -655,7 +658,8 @@ pub(crate) struct PrMergeReport {
 /// the provider said even when the operator overrode it.
 ///
 /// `session` is the one who asked for the merge, read from the environment by
-/// the `run` entry: it is the session the merge's pending charge waits for.
+/// the `run` entry: it is the session the new merge door's pending charge will
+/// wait for.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 fn merge_core(
@@ -858,10 +862,10 @@ fn after_merge(
     (closed, born)
 }
 
-/// Records this door's `pr.merged` and, with the spec, the `delivered` phase
-/// in its state. `pr_detect` only records the event of a `gh pr merge` typed
-/// in Bash, never the state — without the state, the pending charge at the end
-/// of the answer would never know the spec was merged.
+/// Records this door's `pr.merged`, and nothing else: the spec's `delivered`
+/// phase is written by the binary door of the spec file, which the new merge
+/// will call. `pr_detect` records the event of a `gh pr merge` typed in Bash,
+/// the same way.
 ///
 /// Declared effect: the event also feeds `pr_metrics` — the merge count when
 /// git does not answer and the opened → merged pairing. The merges made by
@@ -884,12 +888,6 @@ fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>, session: Optio
         spec: spec.map(str::to_string),
     };
     let _ = crate::shared::events::route::emit(&root.to_string_lossy(), &event);
-    // The bridge until the merge's definitive recorder: the spec's state moves
-    // to the `delivered` phase, and that state is what arms the pending charge
-    // at the end of the answer.
-    if let Some(spec) = spec {
-        let _ = crate::commands::spec_events::write::record_phase(root, spec, "delivered", session);
-    }
 }
 
 /// Ask the provider to merge. The strategy is explicit because it has to be: a
@@ -945,7 +943,8 @@ pub fn run_merge(root: &Path, _pr: Option<u64>, _confirm: bool) {
 }
 
 /// The door's old body, kept until the new merge door arrives.
-#[cfg_attr(not(test), allow(dead_code))]
+// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+#[allow(dead_code)]
 fn run_merge_old(root: &Path, pr: Option<u64>, confirm: bool) {
     let repo = project_root(root);
     match resolve_pr(&repo, pr) {
@@ -1407,173 +1406,6 @@ mod tests {
         assert_eq!(after["open"][0]["became"], json!("outra"));
     }
 
-    /// The verdict of a wave joins the last review of each subproject:
-    /// `apps/a` rejected and then `apps/b` approved leave the wave rejected,
-    /// and an approval with no subproject does not cover a subproject's
-    /// rejection. Once `apps/a` approves too, the wave approves.
-    #[test]
-    fn the_verdict_of_a_wave_joins_the_last_review_of_each_subproject() {
-        use crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state;
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        let spec_dir = root.join(".claude").join("spec").join("unit-j");
-        std::fs::create_dir_all(&spec_dir).expect("spec dir");
-        std::fs::write(spec_dir.join("spec.md"), "# J\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `cd .`\n")
-            .expect("spec");
-        let state = json!({ "phase": "running" });
-        mustard_core::io::spec_events::write(
-            &spec_dir.join("spec.ndjson"),
-            "state",
-            state.as_object().cloned().expect("object"),
-            &[],
-        )
-        .expect("state");
-
-        review_result::record_review(root, "unit-j", "rejected", 1, Some("apps/a"), None);
-        review_result::record_review(root, "unit-j", "approved", 0, Some("apps/b"), None);
-        assert_eq!(recorded_verdict(root, "unit-j").as_deref(), Some("rejected"), "b does not hide a");
-        assert!(read_review_qa_state(root, "unit-j").2, "the resume goes back to the review");
-
-        review_result::record_review(root, "unit-j", "approved", 0, None, None);
-        assert_eq!(
-            recorded_verdict(root, "unit-j").as_deref(),
-            Some("rejected"),
-            "an approval with no subproject counts only when it is the only one"
-        );
-
-        review_result::record_review(root, "unit-j", "approved", 0, Some("apps/a"), None);
-        assert_eq!(recorded_verdict(root, "unit-j").as_deref(), Some("approved"));
-        assert!(!read_review_qa_state(root, "unit-j").2);
-    }
-
-    /// The `review-result` verdict reaches the merge through the spec file:
-    /// with the review rejected the merge asks, and once approved it goes on
-    /// without asking.
-    #[test]
-    fn the_review_result_verdict_decides_whether_the_merge_asks() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        let spec_dir = root.join(".claude").join("spec").join("unit-r");
-        std::fs::create_dir_all(&spec_dir).expect("spec dir");
-        std::fs::write(spec_dir.join("spec.md"), "# R\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `cd .`\n")
-            .expect("spec");
-        let state = json!({ "phase": "running" });
-        mustard_core::io::spec_events::write(
-            &spec_dir.join("spec.ndjson"),
-            "state",
-            state.as_object().cloned().expect("object"),
-            &[],
-        )
-        .expect("state");
-
-        let merges = Cell::new(0u32);
-        let merge = |_: &Path, _: u64| {
-            merges.set(merges.get() + 1);
-            Ok(())
-        };
-        let settle = |_: &Path, _: &str| json!({ "ok": true });
-        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
-        let facts = PrFacts { number: 250, head: "dev_unit-r".to_string() };
-
-        review_result::record_review(root, "unit-r", "rejected", 1, None, None);
-        let asked = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
-        assert_eq!(asked.action, "confirm");
-        assert_eq!(asked.reason, Some("review-not-approved"));
-        assert_eq!(merges.get(), 0, "a rejected review is never merged without asking");
-
-        review_result::record_review(root, "unit-r", "approved", 0, None, None);
-        let merged = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
-        assert_eq!(merged.action, "merged", "the review approved everything, nothing to ask");
-        assert_eq!(merges.get(), 1);
-    }
-
-    /// End to end, with a spec drafted by `spec-draft`: the approval, the
-    /// wave's work, the review, the QA, the resume, the close and the merge
-    /// agree. The draft no longer writes the spec file, so the birth in plan
-    /// and the approval, which is the witness's, are the only lines written by
-    /// hand in it.
-    #[test]
-    fn a_drafted_spec_goes_through_review_qa_close_and_merge() {
-        use crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state;
-        use crate::commands::review::qa_run::{run_qa_with_options, QaRunOptions};
-        use crate::commands::spec::spec_draft::{run_at, SpecDraftOpts};
-        use mustard_core::domain::spec_state::SpecState as _;
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        std::fs::create_dir_all(root.join(".claude")).expect("anchor");
-        std::fs::write(root.join("mustard.json"), br#"{"language":{"text":"en-US"}}"#).expect("cfg");
-        // The criterion is red before the work — the draft takes the proof.
-        let red = "cd feito-pela-onda";
-        let plan = root.join("plan.json");
-        let acceptance = [
-            format!("**AC-1** — when the wave lands, then the folder exists.\n  Command: `{red}`"),
-            "**AC-2** — build green.\n  Command: `cd .`".to_string(),
-        ];
-        let body = json!({
-            "waves": [{
-                "n": 1, "role": "rt", "summary": "wire it", "tasks": ["wire it"],
-                "files": ["apps/rt/src/lib.rs"], "acceptance": acceptance, "satisfies": ["AC-1", "AC-2"],
-            }],
-            "total_waves": 1,
-            "lang": "en-US"
-        });
-        std::fs::write(&plan, body.to_string()).expect("plan");
-        let code = run_at(
-            root,
-            SpecDraftOpts {
-                intent: "Ponta a ponta".into(),
-                slug: Some("ponta".into()),
-                scope: "full".into(),
-                signals: None,
-                output: None,
-                material: None,
-                material_only: false,
-                no_material_reason: Some("fixture: the whole flow is under test".into()),
-                waves: 1,
-                plan: Some(plan),
-                force: false,
-                query_terms: None,
-                force_scope: false,
-            },
-        );
-        assert_eq!(code, 0, "the draft lands");
-        let events = root.join(".claude").join("spec").join("ponta").join("spec.ndjson");
-        let birth = json!({ "author": "binary", "phase": "plan" });
-        mustard_core::io::spec_events::write(&events, "state", birth.as_object().cloned().expect("object"), &[])
-            .expect("birth");
-        let approval = json!({
-            "author": "user",
-            "phase": "approved",
-            "witness": { "question": "Approve this spec?", "answer": "Approve" }
-        });
-        mustard_core::io::spec_events::write(&events, "state", approval.as_object().cloned().expect("object"), &[])
-            .expect("approval");
-        let disk = crate::shared::spec_state::DiskSpecState::new(root);
-
-        // The wave does its work, and the review approves it.
-        std::fs::create_dir_all(root.join("feito-pela-onda")).expect("work");
-        review_result::record_review(root, "ponta", "approved", 0, None, None);
-        assert_eq!(read_review_qa_state(root, "ponta"), (false, true, false), "reviewed, QA still owed");
-
-        // The QA passes, and the resume moves on to the close.
-        assert_eq!(run_qa_with_options(root, "ponta", QaRunOptions::default()).overall, "pass");
-        assert_eq!(read_review_qa_state(root, "ponta"), (true, true, false));
-
-        // `complete-spec` closes it.
-        assert!(crate::commands::spec::complete_spec::run_complete(root, "ponta").is_ok(), "the close is admitted");
-        assert_eq!(disk.state("ponta").and_then(|s| s.phase), Some("closed"));
-
-        // The merge reads the approved review and asks nothing.
-        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
-        let merge = |_: &Path, _: u64| Ok(());
-        let settle = |_: &Path, _: &str| json!({ "ok": true });
-        let facts = PrFacts { number: 260, head: "feature/ponta".to_string() };
-        let done = merge_core(root, &facts, &door_flow(), false, &green, &merge, &settle, None);
-        assert_eq!(done.action, "merged", "{done:?}");
-        assert_eq!(done.verdict.as_deref(), Some("approved"));
-        assert_eq!(disk.state("ponta").and_then(|s| s.phase), Some("delivered"));
-    }
-
     /// The whole pending criterion: twelve open, two born in the delivered
     /// spec and three idle for over 30 days. The session start shows one line
     /// with the count; the delivery asks only about the two; the end-of-answer
@@ -1626,7 +1458,12 @@ mod tests {
         let asked: Vec<String> = done.pending_open.clone().unwrap_or_default().into_iter().map(|i| i.id).collect();
         assert_eq!(asked, vec!["P-11", "P-12"], "{done:?}");
 
-        // The end-of-answer lock charges only the two.
+        // The end-of-answer lock charges only the two. The delivery is recorded
+        // by the binary door the new merge will use: this one only asks.
+        assert!(
+            crate::commands::spec_events::write::record_phase(root, "entrega", "delivered", Some("s-doze")),
+            "the delivery is recorded",
+        );
         let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::Stop));
         let stop = HookInput {
             hook_event_name: Some("Stop".to_string()),
@@ -1663,56 +1500,6 @@ mod tests {
         let gone: Vec<&Value> = expired["closed"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
         assert_eq!(gone.len(), 2, "{expired}");
         assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{expired}");
-    }
-
-    /// The bridge: closing the spec records the `closed` state, the merge
-    /// records `delivered`, and each arms the charge of the pending items born
-    /// in it at the end of the answer.
-    #[test]
-    fn the_bridge_records_closed_and_delivered_and_both_trigger_the_charge() {
-        use crate::commands::event::pending::{pending_at, PendingOpts};
-        use crate::hooks::task::end_of_turn_check::run_rules;
-        use crate::hooks::task::pending_gate::{seed_spec, PendingRule};
-        use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
-        use mustard_core::domain::spec_state::SpecState;
-
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
-            .expect("cfg");
-        let added = pending_at(&PendingOpts {
-            root: root.to_path_buf(),
-            add: true,
-            title: Some("Humanize".into()),
-            detail: Some("nasceu na spec".into()),
-            ..PendingOpts::default()
-        });
-        assert_eq!(added["id"], json!("P-1"), "{added}");
-        seed_spec(root, "trava", &[1], "s-ponte");
-
-        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::Stop));
-        let stop = |message: &str| HookInput {
-            hook_event_name: Some("Stop".to_string()),
-            session_id: Some("s-ponte".to_string()),
-            raw: json!({ "last_assistant_message": message }),
-            ..HookInput::default()
-        };
-        let charged = |message: &str| run_rules(&[&PendingRule], &stop(message), &ctx);
-        let state = || crate::shared::spec_state::DiskSpecState::new(root).state("trava").expect("state");
-
-        let _ = crate::commands::spec::complete_spec::finalize(root, "trava", None);
-        assert_eq!(state().phase, Some("closed"), "closing records the closed state");
-        assert!(charged("Spec fechada.").is_blocking(), "the close charges");
-        assert_eq!(charged("Spec fechada; segue o Humanize."), Verdict::Allow);
-
-        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
-        let merge = |_: &Path, _: u64| Ok(());
-        let settle = |_: &Path, _: &str| json!({ "ok": true });
-        let facts = PrFacts { number: 300, head: "feature/trava".to_string() };
-        let done = merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, None);
-        assert_eq!(done.action, "merged");
-        assert_eq!(state().phase, Some("delivered"), "the merge records the delivered state");
-        assert!(charged("PR mergeado.").is_blocking(), "the merge charges again");
     }
 
     /// The base model of a project declaring the ordinary two-tier flow.

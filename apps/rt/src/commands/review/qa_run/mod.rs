@@ -872,9 +872,6 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         return QaResult { overall: "skip".to_string(), criteria: Vec::new() };
     }
 
-    // Every AC of `spec.md` has its criterion in the spec file before it runs,
-    // matched by the AC id.
-    let current = crate::commands::spec_events::write::sync_criteria(state, spec);
     let mut criteria = Vec::new();
     for (id, command, expect) in &items {
         let mut res = runner::run_ac_command(command, expect.as_deref(), cwd);
@@ -882,7 +879,6 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         criteria.push(res);
     }
     let overall = overall_verdict(&criteria, self_invoked);
-    record_runs(state, spec, &current, &criteria);
 
     let cjson = criteria_json(&criteria);
     let payload = json!({ "spec": spec, "overall": overall, "criteria": cjson });
@@ -895,34 +891,6 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     render::write_qa_report_md(state, spec, overall, &criteria);
 
     QaResult { overall: overall.to_string(), criteria }
-}
-
-/// The bridge to the spec's `spec.ndjson` until the definitive QA recorder:
-/// each AC that ran records its run, `pass` or `fail`, on the criterion
-/// `current` names for its id (a criterion killed by its deadline verified
-/// nothing, so it records `fail`). An AC with no criterion (a linked
-/// capability's scenario) and an AC that was never attempted (`skip`) record
-/// nothing.
-fn record_runs(state: &Path, spec: &str, current: &std::collections::BTreeMap<String, u64>, criteria: &[AcResult]) {
-    for result in criteria {
-        let passed = match result.status.as_str() {
-            "pass" => true,
-            "fail" | "timeout" => false,
-            _ => continue,
-        };
-        let Some(criterion) = current.get(&result.id.trim().to_ascii_uppercase()) else {
-            continue;
-        };
-        let _ = crate::commands::spec_events::write::record_run(
-            state,
-            spec,
-            *criterion,
-            passed,
-            result.exit,
-            result.duration_ms,
-            &result.stderr_excerpt,
-        );
-    }
 }
 
 /// Dispatch `mustard-rt run qa-run`. The command has left the flow: it refuses
@@ -939,7 +907,8 @@ pub fn run(_spec: &str, _format: &str) {
 
 /// The door's old body — run every criterion and print the report. Kept, with
 /// what only it reaches, until the command leaves.
-#[cfg_attr(not(test), allow(dead_code))]
+// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+#[allow(dead_code)]
 fn run_qa_cli(spec: &str, format: &str) {
     let cwd = std::env::current_dir()
         .ok()
@@ -1527,52 +1496,6 @@ mod tests {
         let result = run_qa_with_options(cwd, "ext-mixed", QaRunOptions::default());
         assert_eq!(result.overall, "pass", "{}", result.criteria[0].stderr_excerpt);
         assert_eq!(qa_result_events(cwd, "ext-mixed"), 1);
-    }
-
-    /// The bridge to the spec file matches by the AC id: an AC whose command
-    /// changed gets a new version of its criterion, an AC with no criterion
-    /// gets one, a criterion of no AC leaves the reading, and each run lands on
-    /// the criterion of its AC.
-    #[test]
-    fn each_run_lands_on_the_criterion_of_its_ac_id() {
-        use crate::shared::spec_state::seed_event;
-        use mustard_core::domain::spec_state::{qa, SpecState as _};
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        seed_spec_md(
-            cwd,
-            "ponte",
-            "# P\n\n## Acceptance Criteria\n\
-             - **AC-1** — green.\n  Command: `cd .`\n\
-             - **AC-2** — red.\n  Command: `false`\n",
-        );
-        let stale = seed_event(cwd, "ponte", "criterion", json!({ "when": "w", "then": "t", "proof": "cd old", "label": "AC-1" }));
-        let orphan = seed_event(cwd, "ponte", "criterion", json!({ "when": "w", "then": "t", "proof": "cargo test outro" }));
-
-        let result = run_qa_with_options(cwd, "ponte", QaRunOptions::default());
-        assert_eq!(result.overall, "fail");
-        let log = crate::shared::spec_state::DiskSpecState::new(cwd).log("ponte").unwrap();
-        let criteria: Vec<(String, String, u64)> = log
-            .visible()
-            .iter()
-            .filter(|e| e.event_type == "criterion")
-            .map(|e| (e.str_field("label").unwrap().to_string(), e.str_field("proof").unwrap().to_string(), e.id))
-            .collect();
-        assert_eq!(
-            criteria.iter().map(|(l, p, _)| (l.as_str(), p.as_str())).collect::<Vec<_>>(),
-            vec![("AC-1", "cd ."), ("AC-2", "false")],
-            "the stale proof is revised, the missing AC is added, the orphan leaves"
-        );
-        assert!(criteria.iter().all(|(_, _, id)| *id != stale && *id != orphan));
-        let runs: Vec<(u64, String)> = log
-            .visible()
-            .iter()
-            .filter(|e| e.event_type == "criterion_run")
-            .map(|e| (e.int("criterion").unwrap(), e.str_field("result").unwrap().to_string()))
-            .collect();
-        assert_eq!(runs, vec![(criteria[0].2, "pass".to_string()), (criteria[1].2, "fail".to_string())]);
-        let recorded = qa(&log);
-        assert_eq!((recorded.criteria, recorded.passed, recorded.failed), (2, 1, 1));
     }
 
     /// `qa.result` events recorded for `spec` under `cwd`.

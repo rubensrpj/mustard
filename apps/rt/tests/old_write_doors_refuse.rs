@@ -148,6 +148,54 @@ fn every_retired_write_door_refuses_and_leaves_the_spec_file_untouched() {
     }
 }
 
+/// Nenhum comando antigo arma a cobrança das pendências, por caminho nenhum:
+/// nem os que recusam, nem os que ainda passam pela porta de dentro (a
+/// aprovação, o fim de onda e os tipos que só gravam no log velho). Entre esta
+/// rodada e os comandos novos, ninguém fecha nem entrega pelo Mustard, e o
+/// arquivo dos contadores nem nasce.
+#[test]
+fn no_old_command_arms_the_pending_charge() {
+    let dir = project(PT);
+    let root = dir.path();
+    // A spec em execução, com um pedido adiado que aponta a pendência: há o
+    // que cobrar, se alguém fechasse.
+    let said = run(root, &["write", "message", "--spec", SPEC, "--json", r#"{"author":"user","text":"o Humanize fica"}"#]);
+    assert!(said.status.success(), "{}", String::from_utf8_lossy(&said.stdout));
+    let origin: Value = serde_json::from_slice(&said.stdout).unwrap();
+    let deferred = format!(
+        r#"{{"text":"o Humanize fica para depois","keys":["humanize"],"pending":1,"origin":{}}}"#,
+        origin["id"]
+    );
+    let adiado = run(root, &["write", "deferred", "--spec", SPEC, "--json", &deferred]);
+    assert!(adiado.status.success(), "{}", String::from_utf8_lossy(&adiado.stdout));
+    let running = r#"{"v":1,"id":900,"at":"2026-09-14T10:00:00-03:00","type":"state","author":"binary","phase":"running"}"#;
+    let mut events = std::fs::read_to_string(spec_file(root)).unwrap();
+    events.push_str(running);
+    events.push('\n');
+    std::fs::write(spec_file(root), &events).unwrap();
+    // Com o `meta.json` ao lado, as portas de dentro fazem o serviço inteiro:
+    // é por ele que o fim da última onda fechava a spec.
+    std::fs::write(
+        spec_file(root).with_file_name("meta.json"),
+        r#"{"scope":"light","stage":"Execute","outcome":"Active","phase":"EXECUTE","totalWaves":1}"#,
+    )
+    .unwrap();
+
+    let mut doors: Vec<Vec<&str>> = doors().into_iter().map(|(args, ..)| args).collect();
+    // As portas que ainda passam: a aprovação e o fim de onda movem o estágio
+    // por dentro, e o tipo de fase só grava no log velho.
+    doors.push(vec!["approve-spec", "--spec", SPEC]);
+    doors.push(vec!["wave-done", "--spec", SPEC, "--wave", "1"]);
+    doors.push(vec!["emit-pipeline", "--kind", "pipeline.phase", "--spec", SPEC, "--payload", "{}"]);
+    doors.push(vec!["emit-pipeline", "--kind", "pipeline.complete", "--spec", SPEC, "--payload", "{}"]);
+    for args in doors {
+        run(root, &args);
+        assert!(!charges(root).exists(), "{args:?} armed a charge");
+        let now = std::fs::read_to_string(spec_file(root)).unwrap();
+        assert!(!now.contains("\"closed\"") && !now.contains("\"delivered\""), "{args:?} moved the phase: {now}");
+    }
+}
+
 /// O merge recusa antes de qualquer coisa: a pendência que virou a spec
 /// continua aberta, e a spec não fica entregue.
 #[test]

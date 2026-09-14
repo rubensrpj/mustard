@@ -35,30 +35,36 @@ struct SpecFiles {
     html: PathBuf,
 }
 
-/// O `spec.md` da spec é um documento, e não a página refeita do arquivo de
-/// eventos: o `meta.json` do `spec-draft` está na pasta, ou o `spec.md` traz a
-/// seção de critérios de aceitação, de onde o QA lê os ACs. Ali a página e o
-/// `.md` nunca são refeitos do arquivo de eventos, que apagaria o texto da
-/// spec: o `write` e as pontes do binário só gravam o evento, e o
-/// `page --spec` recusa. A única conferência disso.
-pub(crate) fn drafted_by_spec_draft(root: &Path, spec: &str) -> bool {
+/// A pasta é de uma spec do formato antigo, cujo `spec.md` é o documento e não
+/// a página refeita do arquivo de eventos. Dois sinais, e a diferença entre
+/// eles importa:
+///
+/// - o `spec.md` com a seção de critérios de aceitação, de onde o fluxo antigo
+///   lia os critérios, marca a spec como antiga sempre;
+/// - o `meta.json` marca só quando não há `spec.ndjson`: uma spec aberta pelo
+///   `open` pode ganhar um `meta.json` de uma porta antiga e continua nova.
+///
+/// Numa pasta assim o binário não grava nada: nem o evento, nem a página, que
+/// refeita do arquivo de eventos apagaria o texto da spec. A única conferência
+/// disso.
+pub(crate) fn old_format_spec(root: &Path, spec: &str) -> bool {
     let Ok(paths) = ClaudePaths::for_project(root).and_then(|paths| paths.for_spec(spec.trim())) else {
         return false;
     };
-    paths.meta_json_path().is_file()
-        || std::fs::read_to_string(paths.spec_md_path())
-            .ok()
-            .and_then(|md| crate::commands::review::qa_run::extract_ac_section(&md))
-            .is_some()
+    let criteria_section = std::fs::read_to_string(paths.spec_md_path())
+        .ok()
+        .and_then(|md| crate::commands::review::qa_run::extract_ac_section(&md))
+        .is_some();
+    criteria_section || (paths.meta_json_path().is_file() && !paths.spec_ndjson_path().is_file())
 }
 
 /// Refaz o `spec.md` e o `spec.html` da spec `spec` do projeto `root`, com os
 /// rótulos no idioma `lang`, lendo o arquivo de eventos com a trava presa.
 /// Recusa um nome que não é de spec, uma spec sem arquivo de eventos e uma
-/// spec do `spec-draft`.
+/// spec do formato antigo.
 pub(crate) fn refresh(root: &Path, spec: &str, lang: Locale) -> Result<SpecPages, Refusal> {
-    if drafted_by_spec_draft(root, spec) {
-        return Err(Refusal::DraftedSpec { spec: spec.trim().to_string() });
+    if old_format_spec(root, spec) {
+        return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
     let files = spec_files(root, spec)?;
     store::with_locked_log(&files.events, |log| write_pages(root, spec, &files, log, lang))?
@@ -105,23 +111,51 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Numa spec do `spec-draft`, o `page --spec` recusa e não toca no
-    /// `spec.md` dele, nem cria a página.
+    /// Numa spec do formato antigo, o `page --spec` recusa e não toca no
+    /// `spec.md` dela, nem cria a página. Os dois sinais valem: a pasta só com
+    /// o `meta.json`, e o `spec.md` com a seção de critérios de aceitação,
+    /// mesmo com arquivo de eventos ao lado.
     #[test]
-    fn the_page_is_never_rebuilt_over_a_drafted_spec() {
+    fn the_page_is_never_rebuilt_over_an_old_format_spec() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let spec_dir = root.join(".claude").join("spec").join("rascunho");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# Rascunho\n\nO texto da spec.\n").unwrap();
-        let plan = serde_json::json!({ "phase": "plan" });
-        store::write(&spec_dir.join("spec.ndjson"), "state", plan.as_object().cloned().unwrap(), &[])
-            .unwrap();
+        let text = "# Rascunho\n\nO texto da spec.\n";
+        let with_criteria = "# Rascunho\n\n## Acceptance Criteria\n\n- [ ] AC-1: passa — Command: `cd .`\n";
+        for (spec, md, with_events) in
+            [("so-meta", text, false), ("com-criterios", with_criteria, true)]
+        {
+            let spec_dir = root.join(".claude").join("spec").join(spec);
+            std::fs::create_dir_all(&spec_dir).unwrap();
+            std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
+            std::fs::write(spec_dir.join("spec.md"), md).unwrap();
+            if with_events {
+                let plan = serde_json::json!({ "phase": "plan" });
+                store::write(&spec_dir.join("spec.ndjson"), "state", plan.as_object().cloned().unwrap(), &[])
+                    .unwrap();
+            }
 
-        let refused = refresh(root, "rascunho", Locale::PtBr).unwrap_err();
-        assert_eq!(refused.reason(), "drafted-spec");
-        assert_eq!(std::fs::read_to_string(spec_dir.join("spec.md")).unwrap(), "# Rascunho\n\nO texto da spec.\n");
-        assert!(!spec_dir.join("spec.html").exists(), "no page over a draft");
+            let refused = refresh(root, spec, Locale::PtBr).unwrap_err();
+            assert_eq!(refused.reason(), "old-format-spec", "{spec}");
+            assert_eq!(std::fs::read_to_string(spec_dir.join("spec.md")).unwrap(), md, "{spec}");
+            assert!(!spec_dir.join("spec.html").exists(), "{spec}: no page over an old spec");
+        }
+    }
+
+    /// Uma spec com arquivo de eventos nunca é do formato antigo por um
+    /// `meta.json` que apareceu ao lado: a página dela continua sendo refeita.
+    #[test]
+    fn a_spec_with_an_event_file_is_never_old_format_even_with_a_meta_json() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("nova");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        let survey = serde_json::json!({ "phase": "survey" });
+        store::write(&spec_dir.join("spec.ndjson"), "state", survey.as_object().cloned().unwrap(), &[]).unwrap();
+        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
+
+        assert!(!old_format_spec(root, "nova"));
+        let pages = refresh(root, "nova", Locale::PtBr).expect("the page is rebuilt");
+        assert!(pages.html.ends_with("spec.html"), "{pages:?}");
+        assert!(spec_dir.join("spec.html").is_file());
     }
 }

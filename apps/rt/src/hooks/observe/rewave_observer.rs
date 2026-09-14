@@ -181,36 +181,6 @@ mod tests {
         assert!(target_spec_md(cwd, None).is_none(), "already decomposed");
     }
 
-    /// Entering execution records `running` on an approved spec, and the
-    /// re-wave then fires for it; before the approval, entering execution
-    /// records nothing.
-    #[test]
-    fn the_rewave_fires_once_the_approved_spec_enters_execution() {
-        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let project = dir.path();
-        let cwd = project.to_str().unwrap();
-        let spec_md = make_spec(project, "specB", "- src/a.ts\n- src/b.ts", Some("plan"));
-        crate::shared::spec_state::stand_on_spec_branch(project, "specB");
-        let enter = || {
-            crate::commands::event::emit_pipeline::patch_meta_for_transition(
-                project,
-                "specB",
-                "pipeline.stage",
-                &json!({ "stage": "Execute" }),
-                "2026-09-13T12:00:00.000Z",
-            );
-        };
-
-        enter();
-        assert!(target_spec_md(cwd, None).is_none(), "a plan never jumps to execution");
-        crate::shared::spec_state::approve_in(spec_md.parent().unwrap());
-        enter();
-        assert_eq!(target_spec_md(cwd, None), Some(spec_md), "an approved spec in execution re-waves");
-    }
-
     #[test]
     fn decompose_is_idempotent_second_call_skips() {
         // A multi-layer EXECUTE spec decomposes once; the second call no-ops

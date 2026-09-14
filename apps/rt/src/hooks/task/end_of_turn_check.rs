@@ -199,12 +199,12 @@ mod tests {
             .unwrap_or(Value::Null)
     }
 
-    /// Fecha, pela ponte, uma spec em que as duas pendências de
+    /// Fecha, pela porta do binário, uma spec em que as duas pendências de
     /// [`project_with_open_items`] nasceram, com a sessão `session` ligada a ela.
     fn close_spec_with_both_items(root: &Path, session: &str) {
         seed_spec(root, "trava", &[1, 2], session);
         // Sem sessão: a do processo de teste, vinda do ambiente, não entra.
-        assert!(record_phase(root, "trava", "closed", None), "the bridge records the close");
+        assert!(record_phase(root, "trava", "closed", None), "the binary door records the close");
     }
 
     /// Um projeto com as pendências abertas "Humanize" e "HTML padrao da spec".

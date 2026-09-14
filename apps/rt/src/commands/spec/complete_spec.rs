@@ -205,9 +205,10 @@ fn is_terminal_status(status: Option<&str>) -> bool {
 /// (`close-pipeline`, `close-orchestrate`) reach this through [`finalize`] after
 /// already running the verification and gating on it.
 ///
-/// `session` is the one closing, given by the caller: the close bridge arms
-/// the pending charge for it, and only it is unbound from the spec that ended.
-/// Only the `run` entry reads it from the environment.
+/// `session` is the one closing, given by the caller: only it is unbound from
+/// the spec that ended. The pending charge is armed by the binary door of the
+/// spec file, which this close no longer calls. Only the `run` entry reads the
+/// session from the environment.
 fn mark_complete(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     let affected = collect_affected_files(cwd, spec);
 
@@ -256,11 +257,6 @@ fn mark_complete(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     // FAIL-OPEN: any capability error here is swallowed; the close already
     // landed above and must succeed regardless.
     merge_capabilities_on_close(cwd, spec, &now);
-
-    // The bridge until the close's definitive recorder: the spec's state moves
-    // to the `closed` phase, and that state is what arms the pending charge at
-    // the end of the answer.
-    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed", session);
 
     // Unbind the spec from the session now that it ended: the events after the
     // close do not inherit the spec that finished. Only the closer's session;
@@ -696,7 +692,8 @@ pub fn run(_spec: Option<&str>, _archive_flag: bool, _archive_stale: bool, _arch
 }
 
 /// The door's old body, kept with its tests until the command leaves.
-#[cfg_attr(not(test), allow(dead_code))]
+// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+#[allow(dead_code)]
 fn run_close(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_followups_flag: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
@@ -1074,50 +1071,6 @@ mod tests {
         )
         .expect("projection exists after close");
         assert_eq!(view.status.as_deref(), Some("completed"));
-    }
-
-    /// The automatic close is checked by the state: closing an approved spec
-    /// records the `closed` state in `spec.ndjson`, and the check finds it
-    /// after the time the close began. A spec in plan does not close by the
-    /// bridge, and the check says nothing arrived.
-    #[test]
-    fn the_close_is_verified_by_the_closed_state_in_the_spec_file() {
-        use crate::commands::event::verify_emit::closed_state_landed;
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        crate::shared::spec_state::approve_in(&cwd.join(".claude").join("spec").join("aprovada"));
-        let since = mustard_core::time::now_unix_millis();
-        let _ = mark_complete(cwd, "aprovada", None);
-        assert!(closed_state_landed(cwd, "aprovada", since), "the close reached the spec file");
-        assert!(!closed_state_landed(cwd, "aprovada", since + 60_000), "not a close from the future");
-
-        let plan = cwd.join(".claude").join("spec").join("em-plano");
-        std::fs::create_dir_all(&plan).unwrap();
-        let state = json!({ "phase": "plan" });
-        mustard_core::io::spec_events::write(&plan.join("spec.ndjson"), "state", state.as_object().cloned().unwrap(), &[])
-            .unwrap();
-        let _ = mark_complete(cwd, "em-plano", None);
-        assert!(!closed_state_landed(cwd, "em-plano", since), "a spec in plan never closes by the bridge");
-    }
-
-    /// With the bridge, the QA the run records is the QA the close reads: a
-    /// `complete-spec` whose criterion passes closes, and one whose criterion
-    /// fails refuses. Each criterion is its AC's, matched by the AC id.
-    #[test]
-    fn a_passing_qa_run_lets_complete_spec_close_and_a_failing_one_refuses() {
-        for (spec, command, closes) in [("verde", "cd .", true), ("vermelha", "false", false)] {
-            let dir = tempdir().unwrap();
-            let cwd = dir.path();
-            seed_spec_md(cwd, spec, &format!("# S\n\n## Acceptance Criteria\n\n- **AC-1** — a. Command: `{command}`\n"));
-            crate::shared::spec_state::seed_event(
-                cwd,
-                spec,
-                "criterion",
-                json!({ "when": "w", "then": "t", "proof": command }),
-            );
-            assert_eq!(run_complete(cwd, spec).is_ok(), closes, "{spec}");
-            assert_eq!(completed(cwd, spec), closes, "{spec}");
-        }
     }
 
     #[test]

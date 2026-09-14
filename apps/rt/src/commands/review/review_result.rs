@@ -83,11 +83,6 @@ pub(crate) fn record_review(
         write_review_findings_md(cwd, spec, subproject, path);
     }
 
-    // The bridge until the definitive review recorder: the verdict also lands
-    // in the spec's `spec.ndjson`, on every wave the reviewed subproject
-    // touches, which is where the resume and the merge read it.
-    crate::commands::spec_events::write::record_verdict(cwd, spec, verdict, critical_count, subproject);
-
     payload
 }
 
@@ -239,7 +234,8 @@ pub fn run(
 }
 
 /// The door's old body, kept until the command leaves.
-#[cfg_attr(not(test), allow(dead_code))]
+// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+#[allow(dead_code)]
 fn run_record(
     spec: Option<&str>,
     verdict: Option<&str>,

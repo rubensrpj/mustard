@@ -1033,10 +1033,6 @@ pub(crate) fn amend(root: &Path, opts: &AcAmendOpts) -> AcAmendReport {
         }
     }
     rewritten.sort();
-    // The amended AC gets a new version of its criterion in the spec file,
-    // with the new command, through the one function every door that touches
-    // the ACs goes through.
-    crate::commands::spec_events::write::sync_criteria(root, &opts.spec);
 
     // WHERE the red came from travels on the CRITERION's record, not only in
     // the amendment history — the approval gate reads `criteria`, and a gate
@@ -1148,7 +1144,8 @@ pub fn run(_opts: AcAmendOpts) {
 }
 
 /// The door's old body, kept until the command leaves.
-#[cfg_attr(not(test), allow(dead_code))]
+// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+#[allow(dead_code)]
 fn run_amend(opts: AcAmendOpts) {
     let root = PathBuf::from(crate::shared::context::project_dir());
     let report = amend(&root, &opts);

@@ -475,46 +475,6 @@ mod tests {
         assert_eq!(out.next_action.as_deref(), Some("run-qa"));
     }
 
-    /// After a `review-result`, the resume leaves `dispatch-review` instead of
-    /// asking for the same review again: the verdict lands in the spec file,
-    /// the criteria come from `spec.md`, and the next step is the QA. Once the
-    /// QA passes, the next step is the close.
-    #[test]
-    fn after_the_review_result_the_resume_leaves_dispatch_review() {
-        let dir = tempfile::tempdir().unwrap();
-        let project = dir.path();
-        let spec_dir = project.join(".claude").join("spec").join("demo");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(
-            spec_dir.join("spec.md"),
-            "# Demo\n\n## Acceptance Criteria\n\n- **AC-1** — when it runs, then it passes. Command: `cd .`\n",
-        )
-        .unwrap();
-        let state = serde_json::json!({ "phase": "running" });
-        mustard_core::io::spec_events::write(
-            &spec_dir.join("spec.ndjson"),
-            "state",
-            state.as_object().cloned().unwrap(),
-            &[],
-        )
-        .unwrap();
-        let resume = || {
-            let mut out = ResumeBootstrap { stage: Some("Close".to_string()), ..Default::default() };
-            apply_post_execute_gate(project, "demo", &spec_dir, &mut out);
-            out.next_action
-        };
-
-        assert_eq!(resume().as_deref(), Some("dispatch-review"));
-        crate::commands::review::review_result::record_review(project, "demo", "approved", 0, None, None);
-        assert_eq!(resume().as_deref(), Some("run-qa"), "the review landed: no second dispatch");
-        crate::commands::review::qa_run::run_qa_with_options(
-            project,
-            "demo",
-            crate::commands::review::qa_run::QaRunOptions::default(),
-        );
-        assert_eq!(resume().as_deref(), Some("emit-complete"));
-    }
-
     /// Mid-execute (currentWave < totalWaves) → gate is a no-op; no nextAction.
     #[test]
     fn post_execute_gate_is_noop_mid_execute() {

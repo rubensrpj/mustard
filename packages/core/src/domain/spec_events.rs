@@ -631,15 +631,12 @@ pub enum Refusal {
     /// critério e o veredito da revisão), ou uma gravação dele que tiraria ou
     /// reveria um desses eventos.
     BinaryOnlyType { event_type: String, spec: String },
-    /// O `run write` com um `criterion` numa spec cujos critérios vêm do
-    /// `spec.md`, ou uma gravação dele que tiraria ou reveria um deles.
-    CriteriaFromSpecMd { spec: String },
     /// O `run write` com o autor `binary`, que fica só para as gravações de
     /// dentro do binário.
     BinaryAuthor,
-    /// A página pedida de uma spec cujo `spec.md` é o documento do
-    /// `spec-draft`, que refazer do arquivo de eventos apagaria.
-    DraftedSpec { spec: String },
+    /// Uma gravação, ou uma página, numa pasta de spec do formato antigo: o
+    /// `spec.md` dela é o documento, e o binário não grava nela.
+    OldFormatSpec { spec: String },
     /// O pedido adiado (`deferred`) aponta uma pendência que a lista não tem.
     DeferredUnknownPending { pending: String },
     /// O pedido adiado aponta uma pendência já fechada ou descartada.
@@ -704,9 +701,8 @@ impl Refusal {
             Self::PhaseChangeRefused { .. } => "phase-change-refused",
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::BinaryOnlyType { .. } => "binary-only-type",
-            Self::CriteriaFromSpecMd { .. } => "criteria-from-spec-md",
             Self::BinaryAuthor => "binary-author",
-            Self::DraftedSpec { .. } => "drafted-spec",
+            Self::OldFormatSpec { .. } => "old-format-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalNotVerbatim { .. } => "goal-not-verbatim",
@@ -819,7 +815,9 @@ impl Refusal {
                 "spec_events.phase_change_refused",
                 &[("{spec}", spec.clone()), ("{from}", from.clone()), ("{to}", to.clone())],
             ),
-            Self::DraftedSpec { spec } => fill("spec_events.drafted_spec", &[("{spec}", spec.clone())]),
+            Self::OldFormatSpec { spec } => {
+                fill("spec_events.old_format_spec", &[("{spec}", spec.clone())])
+            }
             Self::StateByFlowOnly { spec } => {
                 fill("spec_events.state_by_flow_only", &[("{spec}", spec.clone())])
             }
@@ -827,9 +825,6 @@ impl Refusal {
                 "spec_events.binary_only_type",
                 &[("{type}", event_type.clone()), ("{spec}", spec.clone())],
             ),
-            Self::CriteriaFromSpecMd { spec } => {
-                fill("spec_events.criteria_from_spec_md", &[("{spec}", spec.clone())])
-            }
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
             Self::DeferredUnknownPending { pending } => {
                 fill("spec_events.deferred_unknown_pending", &[("{pending}", pending.clone())])

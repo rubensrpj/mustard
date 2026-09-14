@@ -13,14 +13,18 @@
 //!
 //! ## Quem arma a cobrança
 //!
-//! A ponte do fechamento e a do merge (`record_phase`, chamada pelo
-//! `complete-spec` e pelo `pr-merge`)
-//! gravam o `state` e, no mesmo passo, armam um contador por spec e por número
-//! do fechamento, no checkout principal, ao lado da lista de pendências
+//! A porta do fechamento e da entrega (`record_phase`) grava o `state` e, no
+//! mesmo passo, arma um contador por spec e por número do fechamento, no
+//! checkout principal, ao lado da lista de pendências
 //! (`.claude/pending/charges.json`). A regra lê os contadores armados sem
 //! perguntar qual é a spec atual: a arrumação do merge, que volta para a base,
 //! a sessão desligada no fechamento e o worktree, em que o degrau da branch
 //! pode não responder, não apagam a cobrança.
+//!
+//! Nesta versão nenhum comando chama essa porta: os comandos antigos que
+//! fechavam e entregavam recusam, e o `close` e o `pr-merge` do fluxo novo
+//! ainda não chegaram. Enquanto isso, nada fecha nem entrega pelo Mustard, e
+//! não há o que cobrar; um merge feito fora dele não passa por aqui.
 //!
 //! ## Quando cobra — todos os fatos precisam valer
 //!
@@ -201,7 +205,8 @@ fn block_reason(spec: &str, omitted: &[OpenPending], lang: Locale) -> String {
 
 /// Semeia a spec `spec` do projeto em `root` em andamento, com um evento
 /// `deferred` para cada pendência de `born`, e liga a sessão `session` a ela
-/// (um `session` vazio não liga nada). Fechar é com a ponte, `record_phase`.
+/// (um `session` vazio não liga nada). Fechar é com a porta do binário,
+/// `record_phase`.
 #[cfg(test)]
 pub(crate) fn seed_spec(root: &Path, spec: &str, born: &[u64], session: &str) {
     use mustard_core::io::spec_events as store;
@@ -275,11 +280,11 @@ mod tests {
     }
 
     /// A spec [`SPEC`] em que as pendências `born` nasceram, ligada à sessão
-    /// `session` e fechada pela ponte.
+    /// `session` e fechada pela porta do binário.
     fn closed_spec(root: &Path, born: &[u64], session: &str) {
         seed_spec(root, SPEC, born, session);
         // Sem sessão: a do processo de teste, vinda do ambiente, não entra.
-        assert!(record_phase(root, SPEC, "closed", None), "the bridge records the close");
+        assert!(record_phase(root, SPEC, "closed", None), "the binary door records the close");
     }
 
     /// A regra das pendências sozinha, como a conferência do fim da resposta
@@ -649,7 +654,7 @@ mod tests {
     }
 
     /// Fechar a spec, e gravar os eventos de fechamento e de merge, não deixa
-    /// marca nenhuma na sessão: quem arma a cobrança é a ponte, e o bloqueio
+    /// marca nenhuma na sessão: quem arma a cobrança é a porta do binário, e o bloqueio
     /// nomeia a spec que fechou.
     #[test]
     fn closing_a_spec_leaves_no_session_mark() {
@@ -674,7 +679,7 @@ mod tests {
             };
             assert!(crate::shared::events::route::emit(&project, &event), "{name} recorded");
         }
-        let _ = crate::commands::spec::complete_spec::finalize(root, SPEC, None);
+        assert!(record_phase(root, SPEC, "closed", None), "the spec closes by the binary door");
 
         let session_dir = root.join(".claude").join(".session").join("s-marca");
         let names: Vec<String> = std::fs::read_dir(&session_dir)

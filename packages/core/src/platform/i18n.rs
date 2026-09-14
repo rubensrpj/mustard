@@ -1802,16 +1802,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              and nothing was written: the binary writes the criteria runs when it runs the QA, and \
              the verdict when it records the review."
         }
-        ("spec_events.criteria_from_spec_md", Locale::PtBr) => {
-            "Os critérios da spec {spec} vêm do spec.md, e nada foi gravado: o `run write` não \
-             grava, não tira nem revê um critério dela. Para acrescentar um critério, use \
-             `mustard-rt run ac-add`; para trocar o comando de um, `mustard-rt run ac-amend`."
-        }
-        ("spec_events.criteria_from_spec_md", Locale::EnUs) => {
-            "The criteria of the spec {spec} come from its spec.md, and nothing was written: \
-             `run write` does not write, remove or revise one of them. To add a criterion, use \
-             `mustard-rt run ac-add`; to change the command of one, `mustard-rt run ac-amend`."
-        }
         ("spec_events.binary_author", Locale::PtBr) => {
             "O autor `binary` fica para as gravações de dentro do binário, e nada foi gravado: o \
              `run write` grava com o autor de quem escreve, `assistant` (o padrão) ou `user`."
@@ -1820,13 +1810,15 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The author `binary` is kept for the writes made inside the binary, and nothing was \
              written: `run write` records the author who writes, `assistant` (the default) or `user`."
         }
-        ("spec_events.drafted_spec", Locale::PtBr) => {
-            "A spec {spec} tem o spec.md escrito pelo spec-draft: a página e o .md não são refeitos \
-             do arquivo de eventos, para não apagar o texto da spec."
+        ("spec_events.old_format_spec", Locale::PtBr) => {
+            "A spec {spec} está no formato antigo (o `spec.md` dela traz a seção \"Critérios de \
+             Aceitação\", ou a pasta tem `meta.json` e nenhum `spec.ndjson`), e o binário não grava \
+             nela. Abra uma spec nova com `mustard-rt run open`. Nada foi gravado."
         }
-        ("spec_events.drafted_spec", Locale::EnUs) => {
-            "The spec {spec} carries the spec.md written by spec-draft: the page and the .md are \
-             not rebuilt from the event file, so the spec's text is not erased."
+        ("spec_events.old_format_spec", Locale::EnUs) => {
+            "Spec {spec} is in the old format (its `spec.md` carries the \"Acceptance Criteria\" \
+             section, or the folder has a `meta.json` and no `spec.ndjson`), and the binary does \
+             not write to it. Open a new spec with `mustard-rt run open`. Nothing was written."
         }
         ("spec_events.io_failed", Locale::PtBr) => "Não consegui usar o arquivo da spec: {detail}.",
         ("spec_events.io_failed", Locale::EnUs) => "Could not use the spec file: {detail}.",
@@ -2869,7 +2861,8 @@ mod tests {
     /// each carries the slots the caller fills. The texts of the end-of-answer
     /// hooks that left (the summary delivery, the QA on `Stop`, the reminder to
     /// record the conversation) and the next-message advisory left with them,
-    /// and the invented-name defect left with its measure.
+    /// the invented-name defect left with its measure, and the two texts of the
+    /// old-flow criteria copy left with it.
     #[test]
     fn i18n_translates_doc_and_pending_keys() {
         for (key, slots) in [
@@ -2906,6 +2899,8 @@ mod tests {
             "clarity.next.head",
             "clarity.unexplained_term",
             "pending.notice",
+            "spec_events.criteria_from_spec_md",
+            "spec_events.drafted_spec",
         ] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(key, lang), "<missing-key>", "{key} left with its hook");
@@ -3019,9 +3014,8 @@ mod tests {
             ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
-            ("spec_events.criteria_from_spec_md", &["{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
-            ("spec_events.drafted_spec", &["{spec}"][..]),
+            ("spec_events.old_format_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),
             ("spec_events.skipped_line", &["{line}"][..]),

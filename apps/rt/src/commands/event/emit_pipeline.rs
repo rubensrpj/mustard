@@ -994,8 +994,6 @@ fn mark_pending_work_branch(
 fn finalize_complete(cwd: &Path, spec: &str, ts: &str, sid: &str) {
     patch_meta_complete(cwd, spec, ts);
     emit_completed_status_if_needed(cwd, spec, ts, sid);
-    let session = Some(sid).filter(|sid| !sid.is_empty());
-    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed", session);
 }
 
 /// The one deterministic success line — `{ok, kind, spec[, branch][,
@@ -1362,13 +1360,6 @@ fn meta_path_for(cwd: &Path, spec: &str, payload: &Value) -> Option<std::path::P
 /// process-global `run()` entry — it is the same routine `run()` calls after
 /// writing a `pipeline.stage` / `pipeline.outcome` event.
 pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payload: &Value, ts: &str) {
-    // Entering execution moves the spec's state to `running`, from an
-    // approved phase only: the automatic re-wave fires on that phase.
-    if kind == EVENT_PIPELINE_STAGE
-        && matches!(payload.get("stage").and_then(Value::as_str).and_then(Stage::parse), Some(Stage::Execute))
-    {
-        let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "running", None);
-    }
     // Only a `meta.json` that already exists is patched: a spec without one,
     // like a spec opened by `open`, never gets one here.
     let Some(path) = meta_path_for(cwd, spec, payload) else {
@@ -1531,9 +1522,6 @@ fn sync_wave_started(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 /// the forward-only guard there: an already-`Execute`-or-later stage is left
 /// untouched, never regressed. Fail-open.
 fn sync_parent_started(cwd: &Path, spec: &str, ts: &str) {
-    // A wave starting is the execution too: the state moves to `running`,
-    // from an approved phase only.
-    let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "running", None);
     // Only a `meta.json` that already exists is advanced: a spec without one,
     // like a spec opened by `open`, never gets one here.
     let Some(path) = meta_path_for(cwd, spec, &Value::Null) else {
@@ -1920,7 +1908,6 @@ fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
         emit_pipeline_complete(cwd, spec, ts);
         let session = session_from_env();
         emit_completed_status_if_needed(cwd, spec, ts, session.as_deref().unwrap_or_default());
-        let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "closed", session.as_deref());
     }
 }
 

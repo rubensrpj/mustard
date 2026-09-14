@@ -181,7 +181,8 @@ pub fn run(_opts: CloseOrchestrateOpts) {
 
 /// The door's old body — every gate in order, then the close. Kept, with what
 /// only it reaches, until the command leaves.
-#[cfg_attr(not(test), allow(dead_code))]
+// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+#[allow(dead_code)]
 fn run_gates(opts: CloseOrchestrateOpts) {
     let started = std::time::Instant::now();
     let mut gates: Vec<GateReport> = Vec::new();
