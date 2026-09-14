@@ -246,11 +246,8 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
             Some(n) => Some(n),
             None => return Err(Refusal::DeferredUnknownPending { pending: number.to_string() }),
         },
-        Some(Value::String(text)) => {
-            let text = text.trim();
-            let digits = text.strip_prefix("P-").or_else(|| text.strip_prefix("p-")).unwrap_or(text);
-            digits.trim().parse::<u64>().ok()
-        }
+        Some(Value::String(text)) => crate::commands::event::pending::pending_id(text)
+            .and_then(|id| id.trim_start_matches("P-").parse::<u64>().ok()),
         _ => None,
     };
     let Some(number) = number else {

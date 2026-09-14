@@ -820,6 +820,17 @@ pub(crate) fn open_pending(root: &Path) -> Vec<OpenPending> {
         .unwrap_or_default()
 }
 
+/// O número de uma pendência escrito à mão, como `P-12`, `p-12` ou `12`, com
+/// ou sem espaço nas pontas: devolve a grafia da lista, `P-12`. Zero e texto
+/// sem número dão `None`. É a leitura única do número, a do pedido adiado e a
+/// do `open --pending`.
+#[must_use]
+pub(crate) fn pending_id(text: &str) -> Option<String> {
+    let text = text.trim();
+    let digits = text.strip_prefix("P-").or_else(|| text.strip_prefix("p-")).unwrap_or(text);
+    digits.trim().parse::<u64>().ok().filter(|n| *n > 0).map(|n| format!("P-{n}"))
+}
+
 /// A pendência `id` na lista, lida como [`open_pending`] lê: `Some(true)`
 /// aberta, `Some(false)` fechada ou descartada, `None` quando a lista não a
 /// tem. Uma lista ausente, ilegível ou corrompida não tem pendência nenhuma: é
@@ -1028,6 +1039,27 @@ mod tests {
     fn git(dir: &Path, args: &[&str]) {
         let out = Command::new("git").args(args).current_dir(dir).output().expect("spawn git");
         assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// O número de uma pendência se lê como `P-12`, `p-12` ou `12`, com
+    /// espaço nas pontas, e sai na grafia da lista; zero, texto sem número e
+    /// o vazio não são pendência.
+    #[test]
+    fn a_pending_number_is_read_as_p_n_or_n() {
+        let table = [
+            ("P-12", Some("P-12")),
+            ("p-12", Some("P-12")),
+            ("12", Some("P-12")),
+            (" P-12 ", Some("P-12")),
+            ("+12", Some("P-12")),
+            ("P-0", None),
+            ("0", None),
+            ("P-x", None),
+            ("", None),
+        ];
+        for (text, id) in table {
+            assert_eq!(pending_id(text).as_deref(), id, "{text:?}");
+        }
     }
 
     /// Um repositório parado na base de integração `dev` — nenhuma unidade aberta.
