@@ -29,6 +29,17 @@ fn write(root: &Path, event_type: &str, fields: &Value) -> u64 {
     stdout_json(&out)["id"].as_u64().expect("the write reports its number")
 }
 
+/// A spec já aberta: o arquivo de eventos existe antes de qualquer gravação,
+/// como o comando que abre a spec o deixa. Sem ele, o `write` recusa e manda
+/// abrir a spec.
+fn open_spec(root: &Path) {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+    if !path.exists() {
+        std::fs::File::create(&path).expect("the event file");
+    }
+}
+
 /// O `state` da spec, pela gravação do núcleo: o `run write` não grava o
 /// estado, que é dos comandos do fluxo e da testemunha.
 fn seed_state(root: &Path, fields: &Value) {
@@ -56,6 +67,7 @@ fn read(root: &Path, block: &str) -> Value {
 fn two_processes_writing_at_once_get_consecutive_numbers() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
+    open_spec(root);
     let rounds = 10;
     for round in 0..rounds {
         let writers: Vec<_> = (0..2)
@@ -92,6 +104,7 @@ fn two_processes_writing_at_once_leave_both_items_on_the_page_and_the_md() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let spec = root.join(".claude").join("spec").join("teste");
+    open_spec(root);
     for round in 0..10 {
         let texts: Vec<String> = (0..2).map(|w| format!("rodada {round} escrita {w}")).collect();
         let writers: Vec<_> = texts
@@ -200,6 +213,7 @@ fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
 fn an_index_that_cannot_be_written_is_refused_with_exit_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
+    open_spec(root);
     std::fs::create_dir_all(index_file(root)).expect("an index that is a folder");
     let fields = json!({"author": "user", "text": "fica gravado"}).to_string();
     let written = rt(root, &["write", "message", "--spec", "teste", "--json", &fields]).output().expect("run write");

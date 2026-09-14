@@ -147,6 +147,13 @@ mod tests {
     }
 
     fn put(root: &std::path::Path, event_type: &str, fields: Value) -> u64 {
+        // A spec já aberta: o arquivo de eventos existe antes da gravação,
+        // como o comando que abre a spec o deixa.
+        let path = store::spec_file(root, "teste").expect("spec file");
+        if !path.exists() {
+            std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+            std::fs::File::create(&path).expect("the event file");
+        }
         let out = write_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some("teste".into()),
@@ -166,12 +173,13 @@ mod tests {
     fn reading_one_wave_brings_only_that_wave_and_never_the_search_field() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let c1 = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": 1}));
-        let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "origin": 1}));
-        put(root, "wave", json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": 1}));
-        put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": 1}));
-        put(root, "wave", json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": 1}));
-        put(root, "task", json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": 1}));
+        let said = put(root, "message", json!({"author": "user", "text": "o pedido"}));
+        let c1 = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+        let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "origin": said}));
+        put(root, "wave", json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": said}));
+        put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": said}));
+        put(root, "wave", json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": said}));
+        put(root, "task", json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": said}));
 
         let report = read_at(&opts(root, "wave-2", None)).unwrap();
         let got = events(&report);
@@ -200,8 +208,9 @@ mod tests {
     fn a_term_that_is_an_item_code_finds_that_item() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "keys": ["C-1"], "origin": 1}));
-        put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "keys": ["C-2"], "origin": 1}));
+        let said = put(root, "message", json!({"author": "user", "text": "o pedido"}));
+        put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "keys": ["C-1"], "origin": said}));
+        put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "keys": ["C-2"], "origin": said}));
         let got = events(&read_at(&opts(root, "criteria", Some("MSTD-CRIT-0002"))).unwrap());
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0]["code"], json!("MSTD-CRIT-0002"));

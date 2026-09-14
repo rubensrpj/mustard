@@ -612,6 +612,9 @@ pub enum Refusal {
     UnknownBlock { found: String },
     BadSpecName { spec: String },
     NoSpecFile { spec: String },
+    /// Uma gravação numa spec que ninguém abriu: sem arquivo de eventos e sem
+    /// estado. O arquivo nasce com a branch, no comando que abre a spec.
+    SpecNotOpen { spec: String },
     /// Uma leitura sem `--spec`, e nem a variável de ambiente, nem a branch,
     /// nem a sessão apontam uma spec.
     NoCurrentSpec,
@@ -657,6 +660,9 @@ pub enum Refusal {
     /// A passagem para o plano de uma spec com lacunas do tipo de trabalho
     /// ainda sem ponto; a mensagem as nomeia no idioma de quem lê.
     SurveyGapsUnrecorded { spec: String, gaps: Vec<GapKey> },
+    /// Um `point` novo no mesmo bloco e com a mesma lacuna de um ponto que já
+    /// está aberto: o que existe volta no lugar do segundo.
+    PointAlreadyOpen { code: String, block: String },
     /// Um `point` que fecha (`closes`) o que não é um ponto aberto; a lista
     /// dos abertos vai junto.
     PointNotOpen { id: String, open: String },
@@ -694,6 +700,7 @@ impl Refusal {
             Self::UnknownBlock { .. } => "unknown-block",
             Self::BadSpecName { .. } => "bad-spec-name",
             Self::NoSpecFile { .. } => "no-spec-file",
+            Self::SpecNotOpen { .. } => "spec-not-open",
             Self::NoCurrentSpec => "no-current-spec",
             Self::SpecRequired { .. } => "spec-required",
             Self::UnknownLesson { .. } => "unknown-lesson",
@@ -710,6 +717,7 @@ impl Refusal {
             Self::SurveyOpen { .. } => "survey-open",
             Self::SurveyNotStarted { .. } => "survey-not-started",
             Self::SurveyGapsUnrecorded { .. } => "survey-gaps-unrecorded",
+            Self::PointAlreadyOpen { .. } => "point-already-open",
             Self::PointNotOpen { .. } => "point-not-open",
             Self::ClosingPointOpen => "closing-point-open",
             Self::NotApplicableNeedsReason => "not-applicable-needs-reason",
@@ -805,6 +813,9 @@ impl Refusal {
             Self::NoSpecFile { spec } => {
                 fill("spec_events.no_spec_file", &[("{spec}", spec.clone())])
             }
+            Self::SpecNotOpen { spec } => {
+                fill("spec_events.spec_not_open", &[("{spec}", spec.clone())])
+            }
             Self::NoCurrentSpec => fill("spec_events.no_current_spec", &[]),
             Self::SpecRequired { event_type } => {
                 fill("spec_events.spec_required", &[("{type}", event_type.clone())])
@@ -849,6 +860,10 @@ impl Refusal {
                     ("{count}", gaps.len().to_string()),
                     ("{gaps}", gaps.iter().map(|gap| gap.label(lang)).collect::<Vec<_>>().join("; ")),
                 ],
+            ),
+            Self::PointAlreadyOpen { code, block } => fill(
+                "spec_events.point_already_open",
+                &[("{code}", code.clone()), ("{block}", block.clone())],
             ),
             Self::PointNotOpen { id, open } => {
                 fill("spec_events.point_not_open", &[("{id}", id.clone()), ("{open}", open.clone())])
@@ -1184,6 +1199,13 @@ pub fn check_against(
             });
         }
     }
+    // De onde o evento veio é um evento que já está no arquivo: o número que
+    // não existe, e o número do próprio evento, não dizem origem nenhuma.
+    if let Some(origin) = event.get("origin").and_then(Value::as_u64)
+        && (origin == new_id || log.get(origin).is_none())
+    {
+        return Err(Refusal::UnknownTarget { target: EventRef::Id(origin) });
+    }
     let mut targets = ints(event.get("targets"));
     if let Some(unknown) = targets.iter().find(|id| log.get(**id).is_none()) {
         return Err(Refusal::UnknownTarget { target: EventRef::Id(*unknown) });
@@ -1196,6 +1218,13 @@ pub fn check_against(
             }
             if let Some(target) = event.get("closes").and_then(Value::as_u64) {
                 check_closes(log, event, target)?;
+            } else if event.get("replaces").is_none()
+                && let Some(existing) = same_open_point(log, event)
+            {
+                return Err(Refusal::PointAlreadyOpen {
+                    code: log.codes().get(&existing.id).cloned().unwrap_or_else(|| existing.id.to_string()),
+                    block: existing.str_field("block").unwrap_or_default().trim().to_string(),
+                });
             }
         }
         "remove" => {
@@ -1234,6 +1263,18 @@ pub fn check_against(
         _ => {}
     }
     Ok(effects)
+}
+
+/// O ponto aberto que já está no arquivo com o mesmo bloco e a mesma lacuna
+/// do evento `event`: gravar o segundo deixaria dois pontos abertos pedindo a
+/// mesma resposta, e o levantamento apresentaria a mesma pergunta duas vezes.
+/// Um evento sem bloco ou sem lacuna não repete ponto nenhum.
+fn same_open_point<'a>(log: &'a SpecLog, event: &Map<String, Value>) -> Option<&'a SpecEvent> {
+    let text = |name: &str| event.get(name).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let (block, gap) = (text("block")?, text("gap")?);
+    survey::open_points(log).into_iter().find(|point| {
+        point.str_field("block").map(str::trim) == Some(block) && point.str_field("gap").map(str::trim) == Some(gap)
+    })
 }
 
 /// O `closes` de um ponto aponta um ponto aberto, por qualquer versão dele. A

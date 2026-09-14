@@ -169,6 +169,9 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     {
         return refuse(refusal);
     }
+    if let Err(refusal) = spec_was_opened(&project.root, spec) {
+        return refuse(refusal);
+    }
     // O passo seguinte de um pedido, pelo efeito dele; a conferência do tipo
     // recusa um efeito que não existe antes de o relatório sair.
     let next = (event_type == "request")
@@ -227,6 +230,27 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         }
         Err(refusal) => refuse(refusal),
     }
+}
+
+/// A spec `spec` foi aberta: o arquivo de eventos dela existe, ou a pasta é
+/// do formato antigo, que tem a recusa própria na gravação.
+///
+/// Uma gravação do modelo nunca faz uma spec nascer. O arquivo de eventos
+/// nasce no comando que abre a spec, junto com a branch de mesmo nome; sem
+/// ele, a gravação criava a pasta e o arquivo, e depois o comando de abrir
+/// recusava o nome, já tomado por uma spec que ninguém abriu.
+///
+/// # Errors
+///
+/// [`Refusal::SpecNotOpen`], que nomeia o comando que abre a spec.
+fn spec_was_opened(root: &Path, spec: &str) -> Result<(), Refusal> {
+    if super::pages::old_format_spec(root, spec) {
+        return Ok(());
+    }
+    if store::spec_file(root, spec)?.is_file() {
+        return Ok(());
+    }
+    Err(Refusal::SpecNotOpen { spec: spec.trim().to_string() })
 }
 
 /// O pedido adiado aponta uma pendência aberta da lista do projeto, vista de
@@ -652,7 +676,25 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Deixa a spec aberta, como o comando que abre uma spec a deixa: com o
+    /// arquivo de eventos no lugar. Uma pasta do formato antigo, que tem o
+    /// `spec.md` como documento, fica exatamente como está.
+    fn open_spec(root: &std::path::Path, spec: &str) {
+        // A spec mora no checkout principal, também quando a gravação sai de
+        // um worktree: é por lá que a abertura passa.
+        let Ok(path) = store::spec_file(&store::spec_root(root), spec) else { return };
+        let Some(dir) = path.parent() else { return };
+        if path.exists() || dir.join("spec.md").exists() {
+            return;
+        }
+        std::fs::create_dir_all(dir).expect("spec folder");
+        std::fs::File::create(&path).expect("the event file");
+    }
+
     fn write_to(root: &std::path::Path, spec: Option<&str>, event_type: &str, json: &str) -> Value {
+        if let Some(spec) = spec {
+            open_spec(root, spec);
+        }
         write_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: spec.map(str::to_string),
@@ -1082,11 +1124,13 @@ mod tests {
     #[test]
     fn what_is_not_a_json_object_is_refused() {
         let dir = tempdir().unwrap();
+        open_spec(dir.path(), "teste");
+        let file = store::spec_file(dir.path(), "teste").unwrap();
         for json in ["[1,2]", "{quebrado", "\"texto\""] {
             let out = write(dir.path(), "note", json);
             assert_eq!(out["reason"], json!("not-an-object"), "{json}: {out}");
         }
-        assert!(!dir.path().join(".claude").exists(), "a refusal writes nothing");
+        assert_eq!(std::fs::read(&file).unwrap(), b"", "a refusal writes nothing");
     }
 
     /// Um tipo que não existe e um campo que falta são recusados pelo nome; um
@@ -1105,7 +1149,78 @@ mod tests {
         assert!(no_spec["hint"].as_str().unwrap().contains("--spec"), "{no_spec}");
         let unknown_no_spec = write_to(dir.path(), None, "licao", "{}");
         assert_eq!(unknown_no_spec["reason"], json!("unknown-type"), "{unknown_no_spec}");
-        assert!(!dir.path().join(".claude").exists(), "a refusal writes nothing");
+        assert_eq!(
+            std::fs::read(store::spec_file(dir.path(), "teste").unwrap()).unwrap(),
+            b"",
+            "a refusal writes nothing",
+        );
+    }
+
+    /// Uma gravação numa spec que ninguém abriu é recusada, e a recusa manda
+    /// abrir a spec: nem a pasta nem o arquivo de eventos nascem por ali, e
+    /// o nome não fica tomado por uma spec que a abertura nunca viu.
+    #[test]
+    fn a_write_into_a_spec_that_was_never_opened_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let out = write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("nunca-aberta".into()),
+            event_type: "message".into(),
+            json: r#"{"author":"user","text":"oi"}"#.into(),
+        });
+        assert_eq!(out["reason"], json!("spec-not-open"), "{out}");
+        assert!(out["hint"].as_str().unwrap().contains("run open"), "{out}");
+        assert!(!root.join(".claude").join("spec").join("nunca-aberta").exists(), "nothing was created");
+    }
+
+    /// A origem de um evento é um evento que já está no arquivo: o número que
+    /// a spec não tem e o número do próprio evento são recusados, e nada é
+    /// gravado.
+    #[test]
+    fn an_origin_that_is_not_in_the_file_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let file = store::spec_file(root, "teste").unwrap();
+        let before = std::fs::read(&file).unwrap();
+        for origin in [99, said + 1] {
+            let rule = json!({"text": "t", "keys": ["k"], "example": "e", "origin": origin});
+            let out = write(root, "rule", &rule.to_string());
+            assert_eq!(out["reason"], json!("unknown-target"), "origin {origin}: {out}");
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), before, "the refusals wrote nothing");
+        let rule = json!({"text": "t", "keys": ["k"], "example": "e", "origin": said});
+        assert_eq!(write(root, "rule", &rule.to_string())["ok"], json!(true), "a real origin passes");
+    }
+
+    /// O mesmo ponto gravado duas vezes é recusado na segunda, nomeando o que
+    /// já está aberto: dois pontos abertos com a mesma lacuna fariam a mesma
+    /// pergunta duas vezes. Outra lacuna entra, e a versão revista do ponto
+    /// aberto também.
+    #[test]
+    fn the_same_point_twice_is_refused_naming_the_one_already_open() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let facts = json!([{"text": "não há teto", "source": format!("mensagem {said}")}]);
+        let point = |gap: &str| {
+            json!({"block": "limits", "gap": gap, "from": "gap", "status": "open", "origin": said,
+                "facts": facts})
+            .to_string()
+        };
+        let first = write(root, "point", &point("tamanho"));
+        assert_eq!(first["ok"], json!(true), "{first}");
+
+        let again = write(root, "point", &point("tamanho"));
+        assert_eq!(again["reason"], json!("point-already-open"), "{again}");
+        let hint = again["hint"].as_str().unwrap();
+        assert!(hint.contains("MSTD-POINT-0001") && hint.contains("limits"), "{hint}");
+
+        assert_eq!(write(root, "point", &point("prazo"))["ok"], json!(true), "another gap is another point");
+        let revised = json!({"block": "limits", "gap": "tamanho", "from": "gap", "status": "open",
+            "replaces": first["id"], "origin": said, "facts": facts});
+        assert_eq!(write(root, "point", &revised.to_string())["ok"], json!(true), "a revision is the same point");
     }
 
     /// A lição vai para o banco de lições, com a spec do `--spec` dizendo

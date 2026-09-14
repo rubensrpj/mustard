@@ -311,6 +311,13 @@ mod tests {
         events.iter().map(|e| e.id).collect()
     }
 
+    /// A mensagem do usuário que abre o arquivo, o evento número 1: tudo o
+    /// que o assistente grava aponta de onde veio, e a origem tem de ser um
+    /// evento que já está no arquivo.
+    fn seed_message(path: &Path) {
+        put(path, &[], "message", &at("09:00"), json!({"author": "user", "text": "o pedido"}));
+    }
+
     /// Uma spec de teste com os 33 tipos, em três ondas, com uma remoção por
     /// horário, um expurgo e um limite revisto.
     struct Spec {
@@ -533,6 +540,7 @@ mod tests {
     fn unknown_type_and_empty_required_field_are_refused_and_nothing_is_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
         put(&path, &[], "note", &at("10:00"), json!({"text": "t", "keys": ["k"], "origin": 1}));
         let before = std::fs::read(&path).unwrap();
 
@@ -621,36 +629,38 @@ mod tests {
         std::fs::write(root.join("src/real.rs"), "a\nb\nc").unwrap();
         let path = root.join("spec.ndjson");
         let roots = vec![root];
-        let point = |source: Value| {
+        seed_message(&path);
+        let before = std::fs::read(&path).unwrap();
+        let point = |gap: &str, source: Value| {
             let mut fact = json!({"text": "o pedido não tem teto"});
             if !source.is_null() {
                 fact["source"] = source;
             }
-            obj(json!({"block": "limits", "gap": "tamanho", "from": "gap", "status": "open", "facts": [fact], "origin": 1}))
+            obj(json!({"block": "limits", "gap": gap, "from": "gap", "status": "open", "facts": [fact], "origin": 1}))
         };
         let write = |draft| write_at(&path, "point", draft, &roots, &at("10:00"));
 
-        assert_eq!(write(point(Value::Null)).unwrap_err(), Refusal::FactWithoutSource { fact: 1 });
+        assert_eq!(write(point("tamanho", Value::Null)).unwrap_err(), Refusal::FactWithoutSource { fact: 1 });
         assert_eq!(
-            write(point(json!("src/nao-existe.rs:10"))).unwrap_err(),
+            write(point("tamanho", json!("src/nao-existe.rs:10"))).unwrap_err(),
             Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into() }
         );
         assert_eq!(
-            write(point(json!("src/real.rs:9"))).unwrap_err(),
+            write(point("tamanho", json!("src/real.rs:9"))).unwrap_err(),
             Refusal::CitedLineMissing { fact: 1, path: "src/real.rs".into(), line: 9, lines: 3 }
         );
-        assert!(!path.exists(), "the refusals wrote nothing");
-        assert_eq!(write(point(json!("src/real.rs:3"))).unwrap().id, 1);
-        assert_eq!(write(point(json!("cargo test -p x → 12 passed"))).unwrap().id, 2);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the refusals wrote nothing");
+        assert_eq!(write(point("tamanho", json!("src/real.rs:3"))).unwrap().id, 2);
+        assert_eq!(write(point("prazo", json!("cargo test -p x → 12 passed"))).unwrap().id, 3);
     }
 
-    /// Um ponto de um fato só, com a fonte e o texto dados.
-    fn one_fact_point(source: Option<&str>, text: &str) -> Map<String, Value> {
+    /// Um ponto de um fato só, na lacuna `gap`, com a fonte e o texto dados.
+    fn one_fact_point(gap: &str, source: Option<&str>, text: &str) -> Map<String, Value> {
         let mut fact = json!({"text": text});
         if let Some(source) = source {
             fact["source"] = json!(source);
         }
-        obj(json!({"block": "limits", "gap": "tamanho", "from": "gap", "status": "open", "facts": [fact], "origin": 1}))
+        obj(json!({"block": "limits", "gap": gap, "from": "gap", "status": "open", "facts": [fact], "origin": 1}))
     }
 
     /// Um fato sem fonte e outro que cita um arquivo que não existe são
@@ -671,7 +681,10 @@ mod tests {
         .unwrap();
         let path = root.join("spec.ndjson");
         let roots = vec![root.clone()];
-        let write = |source: Option<&str>, text: &str| write_at(&path, "point", one_fact_point(source, text), &roots, &at("10:00"));
+        seed_message(&path);
+        let before = std::fs::read(&path).unwrap();
+        let write =
+            |source: Option<&str>, text: &str| write_at(&path, "point", one_fact_point("tamanho", source, text), &roots, &at("10:00"));
         let plan = |source: &str, text: &str| crate::io::citation::check_at(&roots, &root, source, text);
 
         let without = write(None, "o pedido não tem teto").unwrap_err();
@@ -682,10 +695,10 @@ mod tests {
         assert_eq!(missing, Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into() });
         assert!(missing.message(crate::platform::i18n::Locale::PtBr).contains("src/nao-existe.rs"));
         assert_eq!(plan("src/nao-existe.rs:10", ""), vec![Finding::MissingFile { path: "src/nao-existe.rs".into() }]);
-        assert!(!path.exists(), "the refusals wrote nothing");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the refusals wrote nothing");
 
         let real = write(Some("src/real.rs:2"), "quem lê é `ler_linha`").unwrap();
-        assert_eq!(real.id, 1);
+        assert_eq!(real.id, 2);
         assert_eq!(real.citation_warnings, Vec::new());
         assert_eq!(plan("src/real.rs:2", "quem lê é `ler_linha`"), Vec::new());
     }
@@ -712,10 +725,14 @@ mod tests {
             "https://example.com:8080/src/real.rs:3",
             "",
         ];
-        for source in sources {
+        seed_message(&path);
+        // Cada fonte entra na própria lacuna: dois pontos abertos com a mesma
+        // lacuna são recusados, e aqui o assunto é a fonte.
+        for (i, source) in sources.into_iter().enumerate() {
+            let gap = format!("lacuna {i}");
             let shared: Vec<Finding> =
                 crate::io::citation::check_at(&roots, &root, source, "").into_iter().filter(Finding::is_refusal).collect();
-            let door = match write_at(&path, "point", one_fact_point(Some(source), "t"), &roots, &at("10:00")) {
+            let door = match write_at(&path, "point", one_fact_point(&gap, Some(source), "t"), &roots, &at("10:00")) {
                 Ok(_) => Vec::new(),
                 Err(Refusal::CitedFileMissing { path, .. }) => vec![Finding::MissingFile { path }],
                 Err(Refusal::CitedLineMissing { path, line, lines, .. }) => vec![Finding::MissingLine { path, line, lines }],
@@ -741,10 +758,12 @@ mod tests {
             {"text": "e o `check_citations` confere", "source": "cargo test → ok"},
             {"text": "sem nome nenhum", "source": "12"}
         ]);
+        seed_message(&path);
         let draft = obj(json!({"block": "limits", "gap": "g", "from": "gap", "status": "open", "facts": facts, "origin": 1}));
         let written = write_at(&path, "point", draft, &roots, &at("10:00")).unwrap();
         assert_eq!(written.citation_warnings, vec![(1, Finding::NoMap)]);
-        let plain = write_at(&path, "point", one_fact_point(Some("src/real.rs:2"), "sem nome"), &roots, &at("10:01"));
+        let plain =
+            write_at(&path, "point", one_fact_point("tamanho", Some("src/real.rs:2"), "sem nome"), &roots, &at("10:01"));
         assert_eq!(plain.unwrap().citation_warnings, Vec::new(), "a point without names gets no warning");
     }
 
@@ -821,6 +840,7 @@ mod tests {
     fn a_replaced_item_shows_only_its_new_version_and_keeps_its_type() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
         let old = put(&path, &[], "decision", &at("10:00"), json!({"text": "Publicar sempre.", "why": "w", "keys": ["página"], "origin": 1})).id;
         let new = put(&path, &[], "decision", &at("10:01"), json!({"text": "Publicar só nos marcos.", "why": "w", "keys": ["página"], "replaces": old, "origin": 1})).id;
         let log = read(&path).unwrap().unwrap();
@@ -854,6 +874,7 @@ mod tests {
     fn the_code_is_written_in_the_line_and_a_hand_deleted_line_moves_no_other() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
         let written: Vec<Written> =
             (1..=4).map(|i| put(&path, &[], "rule", &at("10:00"), rule(&format!("regra {i}")))).collect();
         for (i, w) in written.iter().enumerate() {
@@ -866,14 +887,14 @@ mod tests {
         let kept: String = raw.lines().filter(|l| !l.contains("regra 2")).flat_map(|l| [l, "\n"]).collect();
         std::fs::write(&path, kept).unwrap();
         let codes = read(&path).unwrap().unwrap().codes();
-        let shown: Vec<&str> = [1, 3, 4].iter().map(|id| codes[id].as_str()).collect();
+        let shown: Vec<&str> = [2, 4, 5].iter().map(|id| codes[id].as_str()).collect();
         assert_eq!(shown, ["MSTD-RULE-0001", "MSTD-RULE-0003", "MSTD-RULE-0004"]);
 
         let fifth = put(&path, &[], "rule", &at("10:01"), rule("regra 5"));
         assert_eq!(fifth.code.as_deref(), Some("MSTD-RULE-0005"), "the number that left never returns");
 
         let mut revised = rule("regra 3, revista");
-        revised["replaces"] = json!(3);
+        revised["replaces"] = json!(4);
         let revised = put(&path, &[], "rule", &at("10:02"), revised);
         assert_eq!(revised.code.as_deref(), Some("MSTD-RULE-0003"));
         assert!(line_of(&path, revised.id).contains("\"code\":\"MSTD-RULE-0003\""));
@@ -886,7 +907,7 @@ mod tests {
         assert_eq!(after.code.as_deref(), Some("MSTD-RULE-0007"));
         let codes = read(&path).unwrap().unwrap().codes();
         assert_eq!(codes[&50], "MSTD-RULE-0006", "the hand line keeps its number");
-        assert_eq!(codes[&4], "MSTD-RULE-0004");
+        assert_eq!(codes[&5], "MSTD-RULE-0004");
     }
 
     /// Um item se aponta pelo código que a página mostra: a remoção tira da
@@ -895,6 +916,7 @@ mod tests {
     fn an_item_is_removed_by_its_code() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
         let ids: Vec<u64> = (1..=3).map(|i| put(&path, &[], "rule", &at("10:00"), rule(&format!("regra {i}"))).id).collect();
         let removal = put(&path, &[], "remove", &at("10:01"), json!({"targets": ["MSTD-RULE-0002"], "reason": "repetida"}));
         assert_eq!(removal.removed, [ids[1]]);
@@ -911,12 +933,13 @@ mod tests {
     fn what_comes_after_a_write_sees_the_line_just_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
+        seed_message(&path);
         let mut seen = Vec::new();
         let written = write_at_then(&path, "rule", obj(rule("regra")), &[], &at("10:00"), |log| {
             seen = log.events.iter().map(|e| e.id).collect();
         })
         .unwrap();
-        assert_eq!(seen, [written.id]);
+        assert_eq!(seen, [1, written.id], "the line just written is there");
         let mut called = false;
         let refused =
             write_at_then(&path, "remove", obj(json!({"targets": [9], "reason": "r"})), &[], &at("10:01"), |_| {
@@ -924,7 +947,7 @@ mod tests {
             });
         assert!(refused.is_err() && !called);
         let locked = with_locked_log(&path, |log| log.events.len()).unwrap();
-        assert_eq!(locked, Some(1));
+        assert_eq!(locked, Some(2));
         assert_eq!(with_locked_log(&dir.path().join("nada.ndjson"), |_| ()).unwrap(), None);
         assert!(!dir.path().join("nada.ndjson").exists());
     }

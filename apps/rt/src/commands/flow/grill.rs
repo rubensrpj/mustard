@@ -300,6 +300,17 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("not written: {report}"))
     }
 
+    /// A spec já aberta, com o arquivo de eventos no lugar e sem estado
+    /// nenhum: é assim que a abertura a deixa antes do primeiro `state`.
+    fn open_spec(root: &Path, spec: &str) {
+        let path = store::spec_file(&store::spec_root(root), spec).expect("spec file");
+        if path.exists() {
+            return;
+        }
+        std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+        std::fs::File::create(&path).expect("the event file");
+    }
+
     /// Uma spec em levantamento, com o objetivo gravado palavra por palavra.
     /// Devolve o número da mensagem do objetivo.
     fn surveyed(root: &Path, spec: &str) -> u64 {
@@ -356,6 +367,7 @@ mod tests {
                    "applies_to": {"files": ["**"]}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(lesson["ok"], json!(true), "{lesson}");
+        open_spec(root, "antiga");
         let old = Some("antiga");
         let said = id_of(&write(root, old, "message", json!({"author": "user", "text": "Travar o merge com pendência aberta."})));
         id_of(&write(root, old, "context", json!({"text": "Travar o merge com pendência aberta.", "origin": said})));
@@ -514,6 +526,7 @@ mod tests {
         witness.insert("phase".into(), json!("approved"));
         witness.insert("witness".into(), json!({"question": "Aprovar a spec?", "answer": "Aprovar"}));
         assert!(record(root, "aprovada", "state", witness, PhaseWriter::Witness).is_ok());
+        open_spec(root, "sem-estado");
         id_of(&write(root, Some("sem-estado"), "message", json!({"author": "user", "text": GOAL})));
         for (spec, phase) in [("plano", "plan"), ("aprovada", "approved"), ("sem-estado", "-")] {
             let bytes = events(root, spec);

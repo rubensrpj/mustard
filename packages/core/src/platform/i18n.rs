@@ -1303,6 +1303,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              run grill` and record the points it lists before moving on to the plan. Nothing was \
              written."
         }
+        ("spec_events.point_already_open", Locale::PtBr) => {
+            "O ponto {code}, no bloco {block}, já está aberto com esta mesma lacuna. Responda a ele \
+             em vez de gravar outro: dois pontos abertos pedindo a mesma resposta fariam a mesma \
+             pergunta duas vezes. Nada foi gravado."
+        }
+        ("spec_events.point_already_open", Locale::EnUs) => {
+            "Point {code}, in the block {block}, is already open with this very gap. Answer it \
+             instead of recording another: two open points asking for the same answer would ask \
+             the same question twice. Nothing was written."
+        }
         ("spec_events.point_not_open", Locale::PtBr) => {
             "O ponto {id} não está aberto, e só um ponto aberto pode ser fechado. Abertos agora: \
              {open}. Nada foi gravado."
@@ -1790,6 +1800,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("spec_events.no_spec_file", Locale::PtBr) => "A spec {spec} ainda não tem arquivo de eventos.",
         ("spec_events.no_spec_file", Locale::EnUs) => "The spec {spec} has no event file yet.",
+        ("spec_events.spec_not_open", Locale::PtBr) => {
+            "A spec {spec} não foi aberta: não há arquivo de eventos nem estado, e uma gravação não \
+             faz a spec nascer. Abra a spec com `mustard-rt run open`, que cria a branch e a spec \
+             com o mesmo nome. Nada foi gravado."
+        }
+        ("spec_events.spec_not_open", Locale::EnUs) => {
+            "The spec {spec} was never opened: there is no event file and no state, and a write \
+             does not bring a spec into being. Open the spec with `mustard-rt run open`, which \
+             creates the branch and the spec with the same name. Nothing was written."
+        }
         ("spec_events.phase_change_refused", Locale::PtBr) => {
             "Esta gravação na spec {spec}, da fase {from} para {to}, não passa por esta porta, e \
              nada foi gravado. A aprovação nasce só quando o usuário escolhe \"Aprovar\" na \
@@ -2998,6 +3018,7 @@ mod tests {
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
             ("spec_events.survey_gaps_unrecorded", &["{spec}", "{count}", "{gaps}"][..]),
+            ("spec_events.point_already_open", &["{code}", "{block}"][..]),
             ("spec_events.point_not_open", &["{id}", "{open}"][..]),
             ("spec_events.closing_point_open", &[][..]),
             ("spec_events.not_applicable_reason", &[][..]),
@@ -3017,6 +3038,7 @@ mod tests {
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
             ("spec_events.no_spec_file", &["{spec}"][..]),
+            ("spec_events.spec_not_open", &["{spec}"][..]),
             ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
