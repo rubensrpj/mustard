@@ -9,6 +9,10 @@
 //! substituída. Cada item leva o seu código (`MSTD-RULE-0005`), que é também o
 //! endereço dele, e toda referência a outro evento sai como o código dele.
 //! Nada vem do relógio: a hora mostrada é a que cada evento gravou.
+//!
+//! Numa spec aprovada, o item do combinado, da especificação, dos critérios,
+//! das ondas e das anotações gravado depois da aprovação que vale sai marcado
+//! "depois da aprovação", com a hora dele: é o que mudou sem aprovação nova.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,7 +20,12 @@ use serde_json::Value;
 
 use super::{Document, Field, Item, Meta, Node, Section, Table};
 use crate::domain::spec_events::{type_spec, Block, Hidden, Kind, SpecEvent, SpecLog, TYPES};
+use crate::domain::spec_state::approval_event;
 use crate::platform::i18n::{translate, Locale};
+
+/// Os registros da execução: não mudam o que foi aprovado, e não levam a
+/// marca de "depois da aprovação".
+const EXECUTION_RECORDS: &[&str] = &["criterion_run", "send", "delivered"];
 
 /// Campos com o número de um evento: saem como o código dele.
 const EVENT_REF: &[&str] = &["reply_to", "closes", "criterion"];
@@ -51,11 +60,15 @@ struct Page<'a> {
     lang: Locale,
     codes: BTreeMap<u64, String>,
     visible: Vec<&'a SpecEvent>,
+    /// O número da aprovação que vale, a mesma que o leitor da aprovação e o
+    /// aviso de crescimento das ondas leem.
+    approval: Option<u64>,
 }
 
 impl<'a> Page<'a> {
     fn new(log: &'a SpecLog, lang: Locale) -> Self {
-        Self { log, lang, codes: log.codes(), visible: log.visible() }
+        let approval = approval_event(log).map(|event| event.id);
+        Self { log, lang, codes: log.codes(), visible: log.visible(), approval }
     }
 
     fn t(&self, key: &str) -> &'static str {
@@ -323,22 +336,38 @@ impl<'a> Page<'a> {
     fn note(&self, event: &SpecEvent, who: Option<&str>) -> String {
         let mut parts = vec![self.t(&format!("page.type.{}", event.event_type)).to_string()];
         parts.extend(who.map(str::to_string));
-        let at = event.at();
-        if !at.is_empty() {
-            parts.push(at.get(..16).unwrap_or(at).replace('T', " "));
-        }
+        parts.extend(when(event));
         parts.join(" · ")
+    }
+
+    /// "depois da aprovação · 2026-09-12 11:06": a marca do item do
+    /// combinado, da especificação, dos critérios, das ondas ou das anotações
+    /// gravado depois da aprovação que vale. Os registros da execução não a
+    /// levam.
+    fn after_approval(&self, event: &SpecEvent) -> Option<String> {
+        let approval = self.approval?;
+        let marked = matches!(
+            event.block(),
+            Some(Block::Agreed | Block::Specification | Block::Criteria | Block::Waves | Block::Notes)
+        );
+        if !marked || event.id <= approval || EXECUTION_RECORDS.contains(&event.event_type.as_str()) {
+            return None;
+        }
+        let mut parts = vec![self.t("page.after_approval").to_string()];
+        parts.extend(when(event));
+        Some(parts.join(" · "))
     }
 
     // -----------------------------------------------------------------------
     // Um item e os campos dele
     // -----------------------------------------------------------------------
 
+    /// Um item; sem nota dada, o que mudou depois da aprovação leva a marca.
     fn item(&self, event: &SpecEvent, anchored: bool, note: Option<String>) -> Item {
         Item {
             code: self.code(event.id),
             anchored,
-            note,
+            note: note.or_else(|| self.after_approval(event)),
             text: event.str_field("text").unwrap_or_default().trim().to_string(),
             fields: self.fields(event),
         }
@@ -507,6 +536,12 @@ impl<'a> Page<'a> {
 /// próprio número, e a tarefa, o envio e o entregou não repetem a onda.
 fn in_the_heading(event_type: &str, field: &str) -> bool {
     matches!((event_type, field), ("wave", "n") | ("task" | "send" | "delivered", "wave"))
+}
+
+/// A hora que o evento gravou, até o minuto: "2026-09-11 21:03".
+fn when(event: &SpecEvent) -> Option<String> {
+    let at = event.at();
+    (!at.is_empty()).then(|| at.get(..16).unwrap_or(at).replace('T', " "))
 }
 
 fn ints(value: &Value) -> Vec<u64> {
@@ -702,6 +737,59 @@ mod tests {
         assert_eq!(proofs, ["`find . -type f | wc -l` = 3", "`cargo test`"]);
     }
 
+    /// O que a spec ganhou depois da aprovação que vale sai marcado, com a
+    /// hora do próprio item: a regra e a onda novas e o pedido. O que veio
+    /// antes, os registros da execução e a conversa não levam a marca, e uma
+    /// spec nunca aprovada não marca nada.
+    #[test]
+    fn the_page_marks_what_changed_after_the_approval_with_its_time() {
+        let before_approval = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "rule", ",\"text\":\"Regra antiga.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":1"),
+            line(3, "wave", ",\"n\":1,\"text\":\"Onda um.\",\"criteria\":[2],\"done_when\":\"d\",\"origin\":1"),
+            line(4, "state", ",\"author\":\"binary\",\"phase\":\"plan\""),
+        ]
+        .concat();
+        let after_approval = [
+            line(5, "state", ",\"author\":\"user\",\"phase\":\"approved\",\"witness\":{\"question\":\"Aprovar?\",\"answer\":\"Aprovar\"}"),
+            line(6, "rule", ",\"text\":\"Regra nova.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":1"),
+            line(7, "wave", ",\"n\":2,\"text\":\"Onda dois.\",\"criteria\":[2],\"done_when\":\"d\",\"origin\":1"),
+            line(8, "send", ",\"author\":\"binary\",\"wave\":2,\"role\":\"wave\",\"lines\":1,\"chars\":1,\"items\":[7],\"mustard\":\"0.2.0\""),
+            line(9, "request", ",\"text\":\"Mais uma onda.\",\"keys\":[\"k\"],\"effect\":\"new_waves\",\"origin\":1"),
+        ]
+        .concat();
+        let notes = |content: &str, lang: Locale| -> Vec<(String, Option<String>)> {
+            let doc = spec_document("s", &parse_log(content), lang);
+            sections(&doc)
+                .into_iter()
+                .filter(|s| s.anchor.as_deref() != Some("conversation"))
+                .flat_map(|s| items(s).into_iter().map(|i| (i.code.clone(), i.note.clone())).collect::<Vec<_>>())
+                .collect()
+        };
+        let marked = |got: &[(String, Option<String>)]| -> Vec<(String, String)> {
+            got.iter().filter_map(|(code, note)| note.clone().map(|n| (code.clone(), n))).collect()
+        };
+
+        let approved = format!("{before_approval}{after_approval}");
+        assert_eq!(
+            marked(&notes(&approved, Locale::PtBr)),
+            [
+                ("MSTD-RULE-0002".to_string(), "depois da aprovação · 2026-09-12 10:06".to_string()),
+                ("MSTD-WAVE-0002".to_string(), "depois da aprovação · 2026-09-12 10:07".to_string()),
+                ("MSTD-REQ-0001".to_string(), "depois da aprovação · 2026-09-12 10:09".to_string()),
+            ]
+        );
+        let english = marked(&notes(&approved, Locale::EnUs));
+        assert_eq!(english[0].1, "after the approval · 2026-09-12 10:06");
+
+        let doc = spec_document("s", &parse_log(&approved), Locale::PtBr);
+        let talk = items(sections(&doc)[9]);
+        assert_eq!(talk[0].note.as_deref(), Some("mensagem · usuário · 2026-09-12 10:01"), "the conversation keeps its note");
+
+        let never = before_approval.replace("\"phase\":\"plan\"", "\"phase\":\"survey\"") + &after_approval.replace("approved", "plan");
+        assert!(marked(&notes(&never, Locale::PtBr)).is_empty(), "a spec never approved marks nothing");
+    }
+
     /// Todo rótulo que a página usa existe nos dois idiomas: blocos, tipos,
     /// campos, valores, fases e autores.
     #[test]
@@ -756,6 +844,7 @@ mod tests {
             "page.meta.base",
             "page.empty",
             "page.replaced",
+            "page.after_approval",
             "page.wave.heading",
             "page.conversation.summary",
             "page.metrics.col.measure",

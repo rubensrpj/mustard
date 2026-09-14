@@ -1674,6 +1674,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.empty", Locale::EnUs) => "Nothing recorded yet.",
         ("page.replaced", Locale::PtBr) => "versão substituída",
         ("page.replaced", Locale::EnUs) => "replaced version",
+        ("page.after_approval", Locale::PtBr) => "depois da aprovação",
+        ("page.after_approval", Locale::EnUs) => "after the approval",
         ("page.wave.heading", Locale::PtBr) => "Onda {n}",
         ("page.wave.heading", Locale::EnUs) => "Wave {n}",
         ("page.conversation.summary", Locale::PtBr) => "{count} registros",

@@ -629,4 +629,76 @@ mod tests {
         let last = "2026-09-12T11:00:00-03:00".to_string();
         assert_eq!(both(), (Some(("Aprovar de novo".into(), last.clone())), Some(last)));
     }
+
+    /// A página e o leitor da aprovação veem a mesma aprovação, lado a lado:
+    /// depois de reaprovada, a página marca só o que veio depois da aprovação
+    /// que o leitor devolve.
+    #[test]
+    fn the_page_and_the_approval_reader_see_the_same_approval() {
+        use mustard_core::platform::i18n::Locale;
+        use mustard_core::view::document::{spec_document, Node};
+        use serde_json::json;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = store::spec_file(root, "epic").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let write = |event_type: &str, fields: Value, at: &str| {
+            store::write_at(&path, event_type, fields.as_object().cloned().unwrap(), &[], at).unwrap().id
+        };
+        let at = |time: &str| format!("2026-09-12T{time}:00-03:00");
+        let msg = write("message", json!({ "author": "user", "text": "combine" }), &at("08:00"));
+        let rule = |text: &str, time: &str| {
+            write("rule", json!({ "text": text, "keys": ["k"], "example": "e", "origin": msg }), &at(time));
+        };
+        let approve = |answer: &str, time: &str| {
+            let witness = json!({ "question": "Aprovar esta spec?", "answer": answer });
+            write("state", json!({ "phase": "approved", "author": "user", "witness": witness }), &at(time));
+        };
+        write("state", json!({ "phase": "plan" }), &at("08:01"));
+        rule("Antes de tudo.", "08:02");
+        approve("Aprovar", "09:00");
+        rule("Entre as aprovações.", "09:30");
+        write("state", json!({ "phase": "plan" }), &at("10:00"));
+        approve("Aprovar de novo", "11:00");
+        rule("Depois da última.", "11:30");
+
+        let reader = approval(root, "epic").expect("the spec is approved");
+        let log = DiskSpecState::new(root).log("epic").unwrap();
+        let boundary = log
+            .visible()
+            .into_iter()
+            .find(|event| event.event_type == "state" && event.at() == reader.at)
+            .map(|event| event.id)
+            .unwrap();
+        let doc = spec_document("epic", &log, Locale::PtBr);
+        let agreed = doc
+            .body
+            .iter()
+            .find_map(|node| match node {
+                Node::Section(section) if section.anchor.as_deref() == Some("agreed") => Some(section),
+                _ => None,
+            })
+            .unwrap();
+        let marked: Vec<(String, bool)> = agreed
+            .body
+            .iter()
+            .filter_map(|node| match node {
+                Node::Item(item) => Some((item.text.clone(), item.note.is_some())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            marked,
+            [
+                ("Antes de tudo.".to_string(), false),
+                ("Entre as aprovações.".to_string(), false),
+                ("Depois da última.".to_string(), true),
+            ]
+        );
+        for event in log.visible().into_iter().filter(|event| event.event_type == "rule") {
+            let text = event.str_field("text").unwrap_or_default();
+            let on_page = marked.iter().find(|(shown, _)| shown == text).map(|(_, mark)| *mark);
+            assert_eq!(on_page, Some(event.id > boundary), "{text}: the page and the reader disagree");
+        }
+    }
 }

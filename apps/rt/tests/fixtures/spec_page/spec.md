@@ -216,17 +216,17 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
 ## Anotações
 
-- **MSTD-REQ-0001** — Incluir o Windows no teste de duas gravações ao mesmo tempo.
+- **MSTD-REQ-0001** · depois da aprovação · 2026-09-12 11:06 — Incluir o Windows no teste de duas gravações ao mesmo tempo.
 
   - Efeito: ajusta as ondas
   - Origem: MSTD-MSG-0001
 
-- **MSTD-DEFER-0001** — Medir o antivírus do Windows na verificação automática.
+- **MSTD-DEFER-0001** · depois da aprovação · 2026-09-12 11:07 — Medir o antivírus do Windows na verificação automática.
 
   - Pendência: 3
   - Origem: MSTD-MSG-0001
 
-- **MSTD-NOTE-0002** — O pull request 276 corrigiu o Clippy no dev antes da primeira onda.
+- **MSTD-NOTE-0002** · depois da aprovação · 2026-09-12 11:09 — O pull request 276 corrigiu o Clippy no dev antes da primeira onda.
 
   - Origem: MSTD-MSG-0001
 
