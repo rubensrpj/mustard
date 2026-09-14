@@ -15,8 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
-use mustard_core::domain::spec_state::{resolve, SpecState, State};
+use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_state::{approval_event, resolve, SpecState, State};
 use mustard_core::io::spec_events as store;
 use serde_json::Value;
 
@@ -134,22 +134,19 @@ pub(crate) struct Approval {
     pub(crate) at: String,
 }
 
-/// A aprovação da spec `spec`: o `state` visível mais novo que traz a
-/// testemunha, enquanto a trava a lê aprovada ([`approved`]). `None` numa
-/// spec que não está aprovada ou que não tem arquivo de eventos.
+/// A aprovação da spec `spec`: a que vale pelo núcleo
+/// ([`mustard_core::domain::spec_state::approval_event`]), a mesma que a
+/// página e o aviso de crescimento das ondas leem, enquanto a trava a lê
+/// aprovada ([`approved`]). `None` numa spec que não está aprovada ou que não
+/// tem arquivo de eventos.
 #[must_use]
 pub(crate) fn approval(root: &Path, spec: &str) -> Option<Approval> {
     if !approved(root, spec) {
         return None;
     }
     let log = DiskSpecState::new(root).log(spec)?;
-    let event = log
-        .block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .filter(|event| event.event_type == "state")
-        .filter(|event| event.fields.get("witness").is_some_and(Value::is_object))
-        .max_by_key(|event| event.id)?;
-    let witness = &event.fields["witness"];
+    let event = approval_event(&log)?;
+    let witness = event.fields.get("witness").filter(|witness| witness.is_object())?;
     let text = |key: &str| witness.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     Some(Approval { question: text("question"), answer: text("answer"), at: event.at().to_string() })
 }
@@ -591,5 +588,45 @@ mod tests {
         assert!(state.approved);
         assert_eq!(state.branch.as_deref(), Some("feature/com-arquivo"), "the branch is inherited");
         assert_eq!(state.base.as_deref(), Some("dev"));
+    }
+
+    /// O leitor da aprovação do rt e o do núcleo veem a mesma aprovação, lado
+    /// a lado: nenhuma em plano, a primeira, nenhuma de volta ao plano e a
+    /// última depois de reaprovada.
+    #[test]
+    fn the_approval_reader_and_the_core_see_the_same_approval() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = store::spec_file(root, "epic").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let state = |fields: serde_json::Value, at: &str| {
+            store::write_at(&path, "state", fields.as_object().cloned().unwrap(), &[], at).unwrap();
+        };
+        let approve = |answer: &str, at: &str| {
+            state(
+                serde_json::json!({
+                    "phase": "approved",
+                    "author": "user",
+                    "witness": { "question": "Aprovar esta spec?", "answer": answer }
+                }),
+                at,
+            );
+        };
+        let both = || {
+            let log = DiskSpecState::new(root).log("epic").unwrap();
+            let core = approval_event(&log).map(|event| event.at().to_string());
+            (approval(root, "epic").map(|a| (a.answer, a.at)), core)
+        };
+
+        state(serde_json::json!({ "phase": "plan" }), "2026-09-12T09:00:00-03:00");
+        assert_eq!(both(), (None, None), "in plan");
+        approve("Aprovar", "2026-09-12T09:03:00-03:00");
+        let first = "2026-09-12T09:03:00-03:00".to_string();
+        assert_eq!(both(), (Some(("Aprovar".into(), first.clone())), Some(first)));
+        state(serde_json::json!({ "phase": "plan" }), "2026-09-12T10:00:00-03:00");
+        assert_eq!(both(), (None, None), "back in plan");
+        approve("Aprovar de novo", "2026-09-12T11:00:00-03:00");
+        let last = "2026-09-12T11:00:00-03:00".to_string();
+        assert_eq!(both(), (Some(("Aprovar de novo".into(), last.clone())), Some(last)));
     }
 }

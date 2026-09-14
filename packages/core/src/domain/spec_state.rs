@@ -28,7 +28,7 @@
 //! toda porta que pergunta "o QA passou?" ou "a revisão reprovou?" lê a mesma
 //! resposta do mesmo arquivo.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -363,6 +363,56 @@ pub fn requests_after(log: &SpecLog, after: u64) -> Vec<&SpecEvent> {
         .into_iter()
         .filter(|event| event.event_type == "request" && event.id > after)
         .collect()
+}
+
+/// A aprovação que vale: o `state` visível mais novo, na ordem da dobra, com a
+/// fase `approved`, enquanto a dobra lê a spec aprovada. `None` numa spec que
+/// nunca foi aprovada e numa que voltou a uma fase de antes da aprovação. A
+/// página, o aviso de crescimento das ondas e o leitor da aprovação do rt
+/// leem daqui.
+#[must_use]
+pub fn approval_event(log: &SpecLog) -> Option<&SpecEvent> {
+    if !State::from_log(log).approved {
+        return None;
+    }
+    log.block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|event| event.event_type == "state" && event.str_field("phase").map(str::trim) == Some("approved"))
+        .max_by_key(|event| (original_of(log, event), event.id))
+}
+
+/// Quantas ondas a leitura mostrava logo depois do evento de número `id`,
+/// contando só os eventos até ele. Uma onda conta pelo número dela: a versão
+/// nova de uma onda não soma, e uma onda tirada depois de `id` ainda conta.
+#[must_use]
+pub fn waves_at(log: &SpecLog, id: u64) -> usize {
+    let until = SpecLog { events: log.events.iter().filter(|event| event.id <= id).cloned().collect(), skipped: Vec::new() };
+    waves_now(&until)
+}
+
+/// Quantas ondas a leitura mostra agora, cada uma pelo número dela.
+#[must_use]
+pub fn waves_now(log: &SpecLog) -> usize {
+    log.visible()
+        .into_iter()
+        .filter(|event| event.event_type == "wave")
+        .filter_map(SpecEvent::wave)
+        .collect::<BTreeSet<u64>>()
+        .len()
+}
+
+/// O crescimento que o evento de número `id` trouxe às ondas depois da
+/// aprovação que vale: `(aprovadas, agora)`, quando ele somou uma onda e a
+/// spec passou a ter mais ondas do que tinha na aprovação. `None` numa spec
+/// sem aprovação, num evento que não somou onda (a versão nova de uma onda,
+/// por exemplo) e quando a conta não passa da aprovada. É só um aviso: o
+/// crescimento nunca barra a gravação.
+#[must_use]
+pub fn waves_grown_by(log: &SpecLog, id: u64) -> Option<(usize, usize)> {
+    let approval = approval_event(log)?;
+    let approved = waves_at(log, approval.id);
+    let now = waves_at(log, id);
+    (now > approved && now > waves_at(log, id.saturating_sub(1))).then_some((approved, now))
 }
 
 /// Algum `state` que a leitura mostra, com a fase `phase`, foi gravado no
@@ -734,5 +784,89 @@ mod tests {
         let after: Vec<&str> = requests_after(&log, 4).iter().filter_map(|e| e.str_field("text")).collect();
         assert_eq!(after, ["depois"]);
         assert_eq!(requests_after(&log, 0).len(), 2);
+    }
+
+    fn wave(id: u64, n: u64) -> Value {
+        json!({"v":1,"id":id,"type":"wave","n":n,"text":"t","criteria":[1],"done_when":"d","origin":1})
+    }
+
+    fn approve(id: u64) -> Value {
+        json!({"v":1,"id":id,"type":"state","phase":"approved",
+               "witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}})
+    }
+
+    /// Uma spec com o nascimento em plano, as ondas `1..=approved` e a
+    /// aprovação logo depois delas.
+    fn approved_with(approved: u64) -> Vec<Value> {
+        let mut lines = vec![json!({"v":1,"id":1,"type":"state","phase":"plan"})];
+        lines.extend((1..=approved).map(|n| wave(n + 1, n)));
+        lines.push(approve(approved + 2));
+        lines
+    }
+
+    /// A aprovação que vale é a mais nova enquanto a spec continua aprovada; a
+    /// spec que voltou ao plano não tem aprovação.
+    #[test]
+    fn the_approval_event_is_the_newest_approval_while_the_spec_stays_approved() {
+        let mut lines = approved_with(1);
+        lines.push(json!({"v":1,"id":4,"type":"state","phase":"running"}));
+        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(3), "running keeps the approval");
+        lines.push(json!({"v":1,"id":5,"type":"state","phase":"plan"}));
+        assert_eq!(approval_event(&log(&lines)), None, "back in plan, no approval stands");
+        lines.push(approve(6));
+        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(6));
+        assert_eq!(approval_event(&log(&[wave(1, 1)])), None, "a spec never approved");
+    }
+
+    /// Quatro ondas aprovadas e duas novas: cada onda nova avisa, com a conta
+    /// da aprovação e a de agora.
+    #[test]
+    fn new_waves_after_the_approval_count_as_growth() {
+        let mut lines = approved_with(4);
+        lines.push(wave(7, 5));
+        assert_eq!(waves_grown_by(&log(&lines), 7), Some((4, 5)));
+        lines.push(wave(8, 6));
+        assert_eq!(waves_grown_by(&log(&lines), 8), Some((4, 6)));
+        assert_eq!((waves_at(&log(&lines), 6), waves_now(&log(&lines))), (4, 6));
+    }
+
+    #[test]
+    fn a_spec_never_approved_never_warns_growth() {
+        let lines: Vec<Value> = (1..=6).map(|n| wave(n, n)).collect();
+        assert_eq!(waves_grown_by(&log(&lines), 6), None);
+    }
+
+    /// Reaprovada, a conta parte da última aprovação: as ondas que entraram
+    /// entre as duas já foram aprovadas.
+    #[test]
+    fn growth_counts_from_the_latest_approval() {
+        let mut lines = approved_with(4);
+        lines.push(wave(7, 5));
+        lines.push(json!({"v":1,"id":8,"type":"state","phase":"plan"}));
+        lines.push(approve(9));
+        lines.push(wave(10, 6));
+        assert_eq!(waves_grown_by(&log(&lines), 10), Some((5, 6)));
+    }
+
+    /// A versão nova de uma onda depois da aprovação não soma onda nenhuma.
+    #[test]
+    fn a_revised_wave_after_approval_is_not_growth() {
+        let mut lines = approved_with(4);
+        let mut revised = wave(7, 3);
+        revised["replaces"] = json!(4);
+        lines.push(revised);
+        assert_eq!(waves_now(&log(&lines)), 4);
+        assert_eq!(waves_grown_by(&log(&lines), 7), None);
+    }
+
+    /// Uma onda tirada e outra somada deixam a conta na aprovada: sem aviso.
+    #[test]
+    fn removing_one_wave_and_adding_one_does_not_warn() {
+        let mut lines = approved_with(4);
+        lines.push(json!({"v":1,"id":7,"type":"remove","targets":[5],"reason":"sai"}));
+        lines.push(wave(8, 5));
+        assert_eq!(waves_at(&log(&lines), 6), 4, "the removal came after the approval");
+        assert_eq!(waves_now(&log(&lines)), 4);
+        assert_eq!(waves_grown_by(&log(&lines), 8), None);
     }
 }
