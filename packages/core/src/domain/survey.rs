@@ -697,6 +697,18 @@ impl Proposed {
         log.visible().into_iter().filter(|e| e.event_type == "point" && self.is(e)).max_by_key(|e| e.id)
     }
 
+    /// O ponto que registra este item pela leitura única dos pontos, com a
+    /// situação dele: entre os abertos ([`open_points`]), `open`, e entre os
+    /// fechados ([`closed_points`]), `closed`, o que tem a mesma origem e a
+    /// mesma lacuna. O ponto fechado conta pela versão que nasceu aberta,
+    /// também quando o fechamento grava outro texto na lacuna.
+    #[must_use]
+    pub fn standing<'a>(&self, log: &'a SpecLog) -> Option<(&'a SpecEvent, &'static str)> {
+        let open = open_points(log).into_iter().map(|p| (p, "open"));
+        let closed = closed_points(log).into_iter().map(|p| (p, "closed"));
+        open.chain(closed).find(|(point, _)| self.is(point))
+    }
+
     fn is(&self, point: &SpecEvent) -> bool {
         if point.str_field("from").map(str::trim) != Some(self.from) {
             return false;

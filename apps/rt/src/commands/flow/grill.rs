@@ -196,20 +196,19 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     });
 
     let codes = log.codes();
-    let mut to_record = 0usize;
+    let to_record = survey::missing(&log, &list).len();
     let points: Vec<Value> = list
         .iter()
         .map(|item| {
             let mut value = item.to_value(origin);
-            match item.recorded_by(&log) {
-                Some(point) => {
-                    value["id"] = json!(point.id);
-                    if let Some(code) = codes.get(&point.id) {
-                        value["code"] = json!(code);
-                    }
-                    value["status"] = json!(point.str_field("status").unwrap_or_default());
+            // O número e a situação saem da leitura única dos pontos, a mesma
+            // da página e da passagem para o plano.
+            if let Some((point, status)) = item.standing(&log) {
+                value["id"] = json!(point.id);
+                if let Some(code) = codes.get(&point.id) {
+                    value["code"] = json!(code);
                 }
-                None => to_record += 1,
+                value["status"] = json!(status);
             }
             value
         })
@@ -637,9 +636,10 @@ mod tests {
     }
 
     /// Lado a lado: a página e o `grill` contam pela mesma leitura dos pontos
-    /// abertos. O ponto revisto e fechado pela primeira versão sai fechado nos
-    /// dois; com todos fechados, a página não mostra nenhum pendente e o
-    /// `grill` passa ao fim.
+    /// abertos. O ponto revisto e fechado pela primeira versão, e o fechado
+    /// por um ponto que grava outro texto na lacuna, saem fechados nos dois;
+    /// com todos fechados, a página não mostra nenhum pendente e o `grill`
+    /// passa ao fim.
     #[test]
     fn the_page_and_grill_count_the_same_open_points() {
         let dir = tempdir().unwrap();
@@ -671,7 +671,19 @@ mod tests {
         let next = grill(root, "x", Some("fix"), false);
         assert_eq!(next["next"]["id"], json!(ids[1]), "{next}");
 
-        for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
+        let second = &items(&listed)[1];
+        let reworded = json!({"block": second["block"], "gap": "Outro texto na lacuna", "from": "gap",
+            "status": "not_applicable", "closes": ids[1], "reason": "não se aplica", "origin": said});
+        assert_eq!(write(root, Some("x"), "point", reworded)["ok"], json!(true));
+        assert!(page().contains(&panel(ids.len() - 2, 2)), "{}", page());
+        let after = grill(root, "x", Some("fix"), false);
+        let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
+        assert_eq!(open, ids.len() - 2, "{after}");
+        assert_eq!(items(&after)[1]["status"], json!("closed"), "{after}");
+        assert_eq!(items(&after)[1]["id"], json!(ids[1]), "{after}");
+        assert_eq!(after["next"]["id"], json!(ids[2]), "{after}");
+
+        for (item, id) in items(&listed).iter().zip(&ids).skip(2) {
             close(item, *id);
         }
         assert!(page().contains(&panel(0, ids.len())), "{}", page());
