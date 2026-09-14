@@ -180,3 +180,52 @@ fn the_approval_command_still_moves_its_stage_through_the_internal_door() {
     let meta: Value = serde_json::from_str(&std::fs::read_to_string(spec_dir.join("meta.json")).unwrap()).unwrap();
     assert_eq!(meta["stage"], "Plan", "the internal door moved the stage: {meta}");
 }
+
+/// Numa spec aberta pelo `open`, a porta de dentro do `approve-spec` não deixa
+/// `meta.json` nenhum: a pasta fica com os três arquivos dela, o critério
+/// gravado depois é aceito e a página continua sendo refeita.
+#[test]
+fn the_approval_command_creates_no_meta_json_on_a_spec_opened_by_open() {
+    let dir = project(PT);
+    let root = dir.path();
+    let opened = run(root, &["open", "--kind", "feature", "--name", "cadastro", "--base", "dev"]);
+    assert!(opened.status.success(), "{}", String::from_utf8_lossy(&opened.stdout));
+    let spec_dir = root.join(".claude").join("spec").join("cadastro");
+    assert!(!spec_dir.join("meta.json").exists(), "the open door creates no sidecar");
+
+    // A testemunha grava o estado aprovado; aqui as duas linhas dela entram
+    // direto no arquivo, que é tudo o que o `approve-spec` lê.
+    let events = spec_dir.join("spec.ndjson");
+    let plan = r#"{"v":1,"id":2,"at":"2026-09-14T10:00:00-03:00","type":"state","author":"binary","phase":"plan"}"#;
+    let approved = r#"{"v":1,"id":3,"at":"2026-09-14T10:01:00-03:00","type":"state","author":"user","phase":"approved","witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}}"#;
+    let mut log = std::fs::read_to_string(&events).unwrap();
+    log.push_str(plan);
+    log.push('\n');
+    log.push_str(approved);
+    log.push('\n');
+    std::fs::write(&events, log).unwrap();
+
+    let out = run(root, &["approve-spec", "--spec", "cadastro"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!spec_dir.join("meta.json").exists(), "no door creates a meta.json: {stdout}");
+
+    // A spec segue nova: o critério é aceito e a página é refeita com ele.
+    let said = run(root, &["write", "--spec", "cadastro", "message", "--json", r#"{"author":"user","text":"Travar o merge."}"#]);
+    let said: Value = serde_json::from_slice(&said.stdout).expect("a JSON report");
+    assert_eq!(said["ok"], true, "{said}");
+    let criterion = format!(
+        r#"{{"when":"o merge roda","then":"a pendência trava","proof":"cargo test","origin":{}}}"#,
+        said["id"],
+    );
+    let written = run(root, &["write", "--spec", "cadastro", "criterion", "--json", &criterion]);
+    let written: Value = serde_json::from_slice(&written.stdout).expect("a JSON report");
+    assert_eq!(written["ok"], true, "the criterion is accepted: {written}");
+
+    let page = run(root, &["page", "--spec", "cadastro"]);
+    let page: Value = serde_json::from_slice(&page.stdout).expect("a JSON report");
+    assert_eq!(page["ok"], true, "the page is still rebuilt: {page}");
+    let md = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
+    assert!(md.contains("MSTD-CRIT-0001"), "the criterion reaches the page: {md}");
+    assert!(!spec_dir.join("meta.json").exists(), "and still no sidecar");
+}

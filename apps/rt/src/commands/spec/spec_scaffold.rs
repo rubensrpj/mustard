@@ -232,7 +232,11 @@ pub fn write_meta_json(output: &Path, meta: &Meta) -> Result<(), String> {
 ///   the canonical mirror of `SpecState.flags`.
 ///
 /// A missing spec directory is treated as a no-op (the directory is never
-/// created; the caller is responsible for directory setup).
+/// created; the caller is responsible for directory setup). A directory with
+/// no `meta.json` is a no-op too: the sidecar is only ever PATCHED here, never
+/// born. A spec opened by `open` keeps its lifecycle in its own event file, and
+/// a sidecar dropped beside it would hand that spec to every reader of the old
+/// flow — the list of active specs included.
 ///
 /// # Errors
 ///
@@ -254,6 +258,12 @@ pub fn sync_status(state: SpecState, spec_path: &Path) -> Result<(), String> {
     // home of every machine-parseable lifecycle field — `spec.md` is left as
     // pure narrative.
     let meta_path = spec_dir.join("meta.json");
+    // Only a sidecar that already exists is patched. Both production callers
+    // want exactly this: the wave folder is born with its own, and the spec
+    // folder of the new flow must not grow one behind the user's back.
+    if !meta_path.is_file() {
+        return Ok(());
+    }
     let mut meta = read_meta(&meta_path).unwrap_or_default();
     meta.stage = Some(spec::stage_label(state.stage).to_string());
     meta.outcome = Some(spec::outcome_label(state.outcome).to_string());
@@ -339,23 +349,17 @@ mod tests {
         assert!(body.contains("Plan"));
     }
 
+    /// A folder with no `meta.json` gets none: the sidecar is patched here,
+    /// never born. This is the folder shape of a spec opened by `open`, whose
+    /// lifecycle lives in its own event file — a sidecar dropped beside it
+    /// would hand the spec to every reader of the old flow.
     #[test]
-    fn sync_status_creates_meta_when_absent() {
+    fn sync_status_never_creates_meta_when_absent() {
         let dir = tempdir().unwrap();
-        // spec.md does not exist — sync_status must not create spec.md
-        // (guard: only patches when spec_md exists).
-        let spec_md_path = dir.path().join("spec.md");
         sync_status(st(Stage::Execute, Outcome::Active), dir.path()).unwrap();
-        // meta.json was created.
-        let meta_path = dir.path().join("meta.json");
-        assert!(meta_path.exists());
-        // spec.md was NOT created (it didn't exist).
-        assert!(!spec_md_path.exists());
-        // meta fields correct.
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-        assert_eq!(v["stage"], serde_json::json!("Execute"));
-        assert_eq!(v["outcome"], serde_json::json!("Active"));
+        // Neither file was created: no sidecar, and no narrative either.
+        assert!(!dir.path().join("meta.json").exists());
+        assert!(!dir.path().join("spec.md").exists());
     }
 
     #[test]
