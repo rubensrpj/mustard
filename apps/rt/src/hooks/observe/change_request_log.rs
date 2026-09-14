@@ -10,8 +10,9 @@
 //! NOWHERE — no event, no spec entry — it simply vanished. This observer closes
 //! that gap.
 //!
-//! On every `UserPromptSubmit` while the resolved spec's `meta.json#outcome` is
-//! `Active`, it:
+//! On every `UserPromptSubmit` while the resolved spec is still in flight —
+//! its phase, by the one rule for the spec's state, comes before the close —
+//! it:
 //! 1. appends the prompt to `.claude/spec/{id}/change-requests.ndjson` — a
 //!    durable, greppable record that lives WITH the spec; and
 //! 2. emits a `pipeline.change.request` harness event for the event bus /
@@ -19,15 +20,16 @@
 //!
 //! ## Boundaries
 //!
-//! - **Active pipeline only.** A terminal (`Completed`/`Cancelled`/…) spec is
-//!   the amendment window's territory (post-close), so this observer skips it —
-//!   the two never double-record.
+//! - **Active pipeline only.** A closed, in-review, delivered or discarded spec
+//!   is the amendment window's territory (post-close), so this observer skips
+//!   it — the two never double-record.
 //! - **Pure side-effect** ([`Observer`]): never returns a verdict, never blocks.
 //! - **Fail-open.** Any resolution / IO error is swallowed; telemetry must never
 //!   block a turn.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
+use mustard_core::domain::spec_events::PHASES;
 use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
 use serde_json::json;
@@ -61,23 +63,25 @@ pub(crate) fn resolve_spec(project_dir: &str, session_id: Option<&str>) -> Optio
     crate::shared::spec_state::active_spec(project_dir, session_id)
 }
 
-/// `true` when the spec's `meta.json#outcome` is `Active` — the pipeline is
-/// still in flight. Fail-CLOSED: an unreadable / absent meta returns `false` so
-/// we never log against a spec we cannot prove is live.
-fn spec_is_active(project_dir: &str, spec: &str) -> bool {
-    read_outcome_stage(project_dir, spec)
-        .and_then(|(outcome, _)| outcome)
-        .and_then(|o| mustard_core::Outcome::parse(&o))
-        .map(|o| o == mustard_core::Outcome::Active)
-        .unwrap_or(false)
+/// The spec's phase, by the one rule for the spec's state — the same answer
+/// the write gate reads. `None` for a branch with no event file.
+///
+/// The old metadata file was the source here, and it is not written when a
+/// spec is opened by the flow's own command: reading it switched this recorder
+/// off in every spec opened that way.
+fn spec_phase(project_dir: &str, spec: &str) -> Option<&'static str> {
+    crate::shared::spec_state::lock_state(std::path::Path::new(project_dir), spec)
+        .and_then(|state| state.phase)
 }
 
-/// Read `(outcome, stage)` from the spec's `meta.json`. `None` on any error.
-fn read_outcome_stage(project_dir: &str, spec: &str) -> Option<(Option<String>, Option<String>)> {
-    let cp = ClaudePaths::for_project(project_dir).ok()?;
-    let sp = cp.for_spec(spec).ok()?;
-    let meta = mustard_core::domain::meta::read_meta_beside(&sp.spec_md_path())?;
-    Some((meta.outcome, meta.stage))
+/// `true` while the spec is still in flight: its phase comes before the close
+/// in the order of the phases — under survey, in plan, approved or running. A
+/// closed, in-review, delivered or discarded spec is the amendment window's
+/// territory (post-close), so the two never double-record. Fail-CLOSED: a spec
+/// with no phase at all is never logged against.
+fn spec_is_active(phase: Option<&str>) -> bool {
+    let order = |name: &str| PHASES.iter().position(|known| *known == name);
+    matches!((phase.and_then(order), order("closed")), (Some(now), Some(closed)) if now < closed)
 }
 
 /// Append one change-request line to `.claude/spec/{id}/change-requests.ndjson`.
@@ -248,14 +252,16 @@ impl Observer for ChangeRequestLog {
         let Some(spec) = resolve_spec(&project_dir, input.session_id.as_deref()) else {
             return; // not inside a spec → nothing to attribute the request to.
         };
-        if !spec_is_active(&project_dir, &spec) {
+        // The phase is read once and answers both questions: whether the spec
+        // is still in flight, and where in the flow the request arrived.
+        let phase = spec_phase(&project_dir, &spec);
+        if !spec_is_active(phase) {
             return; // terminal spec → post-close territory (amend_window owns it).
         }
         let session_id = input.session_id.as_deref().unwrap_or("unknown");
-        let stage = read_outcome_stage(&project_dir, &spec).and_then(|(_, stage)| stage);
-        append_change_request(&project_dir, &spec, session_id, stage.as_deref(), &prompt);
-        append_change_log_md(&project_dir, &spec, stage.as_deref(), &prompt);
-        emit_event(&project_dir, session_id, &spec, stage.as_deref(), &prompt);
+        append_change_request(&project_dir, &spec, session_id, phase, &prompt);
+        append_change_log_md(&project_dir, &spec, phase, &prompt);
+        emit_event(&project_dir, session_id, &spec, phase, &prompt);
     }
 }
 
@@ -266,15 +272,14 @@ mod tests {
     use serde_json::Value;
     use tempfile::tempdir;
 
-    /// Seed a spec with a `meta.json` (outcome/stage) under `cwd`.
-    fn seed_spec(cwd: &std::path::Path, spec: &str, outcome: &str, stage: &str) {
-        let sp = ClaudePaths::for_project(cwd).unwrap().for_spec(spec).unwrap();
-        std::fs::create_dir_all(sp.dir()).unwrap();
-        std::fs::write(
-            sp.dir().join("meta.json"),
-            json!({ "scope": "light", "stage": stage, "outcome": outcome }).to_string(),
-        )
-        .unwrap();
+    /// Seed a spec whose event file records the phase `phase`, the way the
+    /// flow's own commands record it.
+    fn seed_spec(cwd: &std::path::Path, spec: &str, phase: &str) {
+        let path = mustard_core::io::spec_events::spec_file(cwd, spec).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let fields = json!({ "phase": phase });
+        mustard_core::io::spec_events::write(&path, "state", fields.as_object().cloned().unwrap(), &[])
+            .unwrap();
     }
 
     fn prompt_input(session_id: &str, cwd: &std::path::Path, prompt: &str) -> HookInput {
@@ -298,12 +303,15 @@ mod tests {
         std::fs::read_to_string(sp.dir().join(LOG_FILE)).ok()
     }
 
-    /// An ACTIVE spec records the user's change request to the durable log.
+    /// A spec still in flight records the user's change request to the durable
+    /// log. The spec here has only its event file, exactly as the flow's own
+    /// opening command leaves it — no metadata file anywhere — and the
+    /// recorder still works, because it reads the state by the one rule.
     #[test]
     fn records_request_for_active_spec() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        seed_spec(cwd, "my-feature", "Active", "Execute");
+        seed_spec(cwd, "my-feature", "running");
         let cwd_str = cwd.to_string_lossy().into_owned();
         bind_session_spec(&cwd_str, "sess-1", "my-feature");
 
@@ -312,7 +320,7 @@ mod tests {
 
         let body = log_contents(cwd, "my-feature").expect("log file must exist");
         assert!(body.contains("muda o campo status para enum"), "got: {body}");
-        assert!(body.contains("\"stage\":\"Execute\""), "stage recorded: {body}");
+        assert!(body.contains("\"stage\":\"running\""), "the phase is the stage recorded: {body}");
 
         // The human-readable change-log.md is documented beside the spec.
         let sp = ClaudePaths::for_project(cwd).unwrap().for_spec("my-feature").unwrap();
@@ -329,7 +337,7 @@ mod tests {
     fn skips_harness_notices_but_keeps_real_requests() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        seed_spec(cwd, "my-feature", "Active", "Execute");
+        seed_spec(cwd, "my-feature", "running");
         let cwd_str = cwd.to_string_lossy().into_owned();
         bind_session_spec(&cwd_str, "sess-1", "my-feature");
 
@@ -363,7 +371,7 @@ mod tests {
         for (seed, tail) in [("- **t1** — first", "no trailing newline"), ("- **t1** — first\n", "clean")] {
             let dir = tempdir().unwrap();
             let cwd = dir.path();
-            seed_spec(cwd, "my-feature", "Active", "Execute");
+            seed_spec(cwd, "my-feature", "running");
             let sp = ClaudePaths::for_project(cwd).unwrap().for_spec("my-feature").unwrap();
             std::fs::create_dir_all(sp.dir()).unwrap();
             std::fs::write(sp.dir().join(CHANGE_LOG_MD), seed).unwrap();
@@ -388,7 +396,7 @@ mod tests {
     fn skips_terminal_spec() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        seed_spec(cwd, "done-feature", "Completed", "Close");
+        seed_spec(cwd, "done-feature", "closed");
         let cwd_str = cwd.to_string_lossy().into_owned();
         bind_session_spec(&cwd_str, "sess-2", "done-feature");
 
@@ -427,7 +435,7 @@ mod tests {
     fn skips_slash_command_prompts() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        seed_spec(cwd, "feat", "Active", "Execute");
+        seed_spec(cwd, "feat", "running");
         let cwd_str = cwd.to_string_lossy().into_owned();
         bind_session_spec(&cwd_str, "sess-5", "feat");
         let input = prompt_input("sess-5", cwd, "/close");
@@ -443,7 +451,7 @@ mod tests {
     fn ignores_empty_prompt() {
         let dir = tempdir().unwrap();
         let cwd = dir.path();
-        seed_spec(cwd, "feat", "Active", "Execute");
+        seed_spec(cwd, "feat", "running");
         let cwd_str = cwd.to_string_lossy().into_owned();
         bind_session_spec(&cwd_str, "sess-4", "feat");
 

@@ -9,13 +9,19 @@ use mustard_core::platform::i18n::translate;
 use mustard_core::ProjectConfig;
 use serde_json::{json, Value};
 
-/// A recusa como o comando imprime: a razão `reason` e a mensagem da chave
-/// `key`, com as vagas `slots` preenchidas, no idioma do projeto em `root`.
+/// A mensagem da chave `key`, com as vagas `slots` preenchidas, no idioma do
+/// projeto em `root`: a que o comando aposentado imprime ao recusar, e a mesma
+/// que qualquer portão manda dizer no lugar de mandar rodá-lo.
+#[must_use]
+pub(crate) fn hint(root: &Path, key: &str, slots: &[(&str, &str)]) -> String {
+    let lang = ProjectConfig::load(root).language().text_or_default();
+    slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
+}
+
+/// A recusa como o comando imprime: a razão `reason` e a mensagem de [`hint`].
 #[must_use]
 pub(crate) fn report(root: &Path, reason: &str, key: &str, slots: &[(&str, &str)]) -> Value {
-    let lang = ProjectConfig::load(root).language().text_or_default();
-    let hint = slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
-    json!({ "ok": false, "reason": reason, "hint": hint })
+    json!({ "ok": false, "reason": reason, "hint": hint(root, key, slots) })
 }
 
 /// Imprime a recusa de [`report`] e sai com o código 1.

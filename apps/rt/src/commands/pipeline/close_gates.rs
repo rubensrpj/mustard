@@ -569,6 +569,13 @@ fn finding_refusal(spec: &str, finding: &FindingItem) -> String {
 // QA gate
 // ---------------------------------------------------------------------------
 
+/// What to say instead of "run the command that verifies the criteria": that
+/// command has left the flow and refuses at its own door, so the gate hands
+/// over its refusal, from the catalog, in the project's language.
+fn retired_qa_hint(cwd: &str) -> String {
+    crate::commands::retired::hint(Path::new(cwd), "retired.wait_close", &[("{command}", "qa-run")])
+}
+
 /// The spec's event file, through the [`SpecState`] port; `None` with no spec
 /// or no `spec.ndjson`. The gate reads the criteria runs and the requests from
 /// it.
@@ -1067,17 +1074,10 @@ pub(crate) fn run_close_gates(cwd: &str, spec_ref: Option<&str>, modes: CloseGat
                     |s| format!("no QA pass recorded for spec \"{s}\""),
                 ),
                 "CLOSE requires the acceptance criteria to be verified",
-                &spec_ref.map_or_else(
-                    || "run `mustard-rt run qa-run --spec <spec>` before closing, or set \
-                        MUSTARD_QA_GATE_MODE=warn"
-                        .to_string(),
-                    |s| {
-                        format!(
-                            "run `mustard-rt run qa-run --spec {s}`, \
-                             or set MUSTARD_QA_GATE_MODE=warn"
-                        )
-                    },
-                ),
+                // The command that used to verify them refuses at the door,
+                // so the remedy is the one its own refusal gives — never
+                // "run it", which only earns a second refusal.
+                &retired_qa_hint(cwd),
             );
             if qa_mode == GateMode::Strict {
                 emit_close_gate_event(

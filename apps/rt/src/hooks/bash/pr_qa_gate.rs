@@ -66,14 +66,18 @@ pub(crate) fn pr_qa_gate(command: &str, cwd: &str) -> Option<Verdict> {
     } else {
         "Opening a PR for"
     };
+    // The command that used to run the criteria refuses at its own door, so
+    // the advisory hands over that refusal instead of telling anyone to run
+    // it: a remedy that only earns a second refusal is no remedy.
+    let wait = crate::commands::retired::hint(Path::new(cwd), "retired.wait_close", &[("{command}", "qa-run")]);
     Some(Verdict::Warn {
         message: format!(
             "[qa-coupling] {moment} `{spec}` — not every acceptance criterion in its \
              `spec.ndjson` has a passing last run yet. \
              The canonical order runs QA BEFORE integration (close-pipeline fires while the unit \
-             is still live on its work branch). Run `mustard-rt run qa-run --spec {spec}` first, \
-             or accept \
-             that this integrates unverified work — CLOSE will refuse the spec until QA passes."
+             is still live on its work branch). {wait} \
+             Integrating now integrates unverified work — CLOSE will refuse the spec until QA \
+             passes."
         ),
     })
 }

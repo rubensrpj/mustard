@@ -401,7 +401,7 @@ fn emit(project_dir: &str, kind: &str, spec: &str, payload: Value) {
 enum Blocker {
     /// `verify-pipeline` (build/lint/test) returned non-zero.
     BuildRed,
-    /// `qa-run` reported a failing acceptance criterion.
+    /// The spec's acceptance criteria have no passing last run recorded.
     AcFailing,
 }
 
@@ -414,14 +414,17 @@ impl Blocker {
     }
 }
 
-/// Run the close-gate for `spec`: `verify-pipeline` then `qa-run --spec`.
+/// Run the close-gate for `spec`: `verify-pipeline`, then the recorded state
+/// of the acceptance criteria.
 ///
-/// Returns `Ok(())` when both are green, `Err(blocker)` otherwise. Each step
-/// shells to the binary's own `run` face via `current_exe()`. A *spawn* error
-/// (env bug, no exe) is treated as green for that step — fail-open: an
-/// environment problem must never *force* a close, and the other step still
-/// gates. `qa-run` exit `0` covers both "pass" and "skip" (no testable AC),
-/// matching the close-gate's advisory QA semantics.
+/// Returns `Ok(())` when both are green, `Err(blocker)` otherwise. The build
+/// step shells to the binary's own `run` face via `current_exe()`; a *spawn*
+/// error (env bug, no exe) is treated as green for it — fail-open: an
+/// environment problem must never *force* a close, and the criteria still
+/// gate. The criteria are not run here: they are read from the spec's event
+/// file, so this observer and the close gate can never disagree about what
+/// "verified" means, and no command is spawned only to have its refusal read
+/// as a red criterion.
 ///
 /// Under `cfg(test)` the shell is skipped (returns green) so unit tests can
 /// drive the classifier without spawning the libtest binary recursively.
@@ -450,18 +453,14 @@ fn run_close_gate(cwd: &Path, spec: &str) -> Result<(), Blocker> {
         Err(_) => {}
     }
 
-    // 2. qa-run --spec NAME (idempotent). Exit 1 ⇒ an AC failed.
-    let qa = Command::new(&exe)
-        .args(["run", "qa-run", "--spec", spec])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match qa {
-        Ok(s) if s.success() => Ok(()),
-        Ok(_) => Err(Blocker::AcFailing),
-        Err(_) => Ok(()),
+    // 2. The acceptance criteria, read from the spec's own event file — the
+    //    same single source of truth the close gate consults. Shelling to the
+    //    command that used to run them would read its door refusal as a failed
+    //    criterion and fail every spec for a reason that is not true.
+    if crate::commands::event::emit_pipeline::qa_result_passed(cwd, spec) {
+        Ok(())
+    } else {
+        Err(Blocker::AcFailing)
     }
 }
 

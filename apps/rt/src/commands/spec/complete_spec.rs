@@ -616,11 +616,13 @@ pub(crate) fn close_admission(cwd: &Path, spec: &str) -> Result<(), String> {
     if crate::commands::event::emit_pipeline::qa_result_passed(cwd, spec) {
         return Ok(());
     }
+    // The command that used to record a run refuses at its own door, so the
+    // remedy is its own refusal: telling anyone to run it would only earn a
+    // second refusal.
+    let wait = crate::commands::retired::hint(cwd, "retired.wait_close", &[("{command}", "qa-run")]);
     Err(format!(
         "not every acceptance criterion in the spec.ndjson of {spec} has a passing last run, so \
-         completing it would claim a verification that never happened. Record one first — and run it EXTERNALLY, \
-         because a run inside this binary cannot rebuild the binary its own criteria target and \
-         so records nothing: `mustard-rt run qa-run --spec {spec}`. This refusal is \
+         completing it would claim a verification that never happened. {wait} This refusal is \
          unconditional; no environment switch relaxes it."
     ))
 }

@@ -204,7 +204,10 @@ pub struct ResumeBootstrap {
     /// present) or from the union of `wave-N-{role}` dirs.
     #[serde(rename = "reviewRoles", skip_serializing_if = "Vec::is_empty")]
     pub review_roles: Vec<String>,
-    /// Shell-ready command to run QA. Populated when `nextAction == "run-qa"`.
+    /// What to do to have the criteria verified. Populated when `nextAction ==
+    /// "run-qa"`. While the command that used to run them is retired, this
+    /// carries that command's own refusal, which says what to wait for — never
+    /// an order to run something that only refuses again.
     #[serde(rename = "qaCommand", skip_serializing_if = "Option::is_none")]
     pub qa_command: Option<String>,
     /// Shell-ready command that starts the round. Populated when `nextAction ==

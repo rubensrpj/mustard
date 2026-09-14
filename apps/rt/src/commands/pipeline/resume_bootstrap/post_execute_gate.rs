@@ -289,7 +289,10 @@ pub(super) fn apply_post_execute_gate(
         // REVIEW landed (and not rejected), but QA hasn't passed yet → run QA.
         out.stage = Some("QaPending".to_string());
         out.next_action = Some("run-qa".to_string());
-        out.qa_command = Some(format!("mustard-rt run qa-run --spec {spec}"));
+        // The command that used to run the criteria refuses at its own door,
+        // so what goes here is its refusal, not an order to run it.
+        out.qa_command =
+            Some(crate::commands::retired::hint(project, "retired.wait_close", &[("{command}", "qa-run")]));
         return;
     }
     // No REVIEW yet, OR REVIEW was rejected → dispatch REVIEW agents.
@@ -365,7 +368,8 @@ mod tests {
         assert_eq!(out.next_action.as_deref(), Some("dispatch-review"));
     }
 
-    /// Approved REVIEW + no QA → `QaPending` + `run-qa` + qaCommand.
+    /// Approved REVIEW + no QA → `QaPending` + `run-qa`, and what comes back
+    /// is the refusal of the retired command, never an order to run it.
     #[test]
     fn post_execute_gate_signals_qa_pending_after_approved_review() {
         let dir = tempfile::tempdir().unwrap();
@@ -383,9 +387,11 @@ mod tests {
 
         assert_eq!(out.stage.as_deref(), Some("QaPending"));
         assert_eq!(out.next_action.as_deref(), Some("run-qa"));
+        let said = out.qa_command.as_deref().expect("a next step");
+        assert!(!said.contains("run qa-run"), "nobody is told to run the retired command: {said}");
         assert_eq!(
-            out.qa_command.as_deref(),
-            Some("mustard-rt run qa-run --spec demo")
+            said,
+            crate::commands::retired::hint(dir.path(), "retired.wait_close", &[("{command}", "qa-run")]),
         );
         assert!(out.review_roles.is_empty());
     }
