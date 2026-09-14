@@ -66,9 +66,11 @@
 //! também são conferidas: nenhuma delas muda o estado, nem removendo nem
 //! revendo um `state`.
 //!
-//! Numa spec em levantamento ainda sem `context`, o primeiro `context` é o
-//! objetivo, e ele é a resposta do usuário palavra por palavra: aponta em
-//! `origin` uma mensagem do usuário e repete o texto dela
+//! Numa spec em levantamento, o objetivo, o primeiro `context` como o índice
+//! o lê, é a resposta do usuário palavra por palavra. Toda gravação que troca
+//! o objetivo (o primeiro `context`, a revisão dele e a remoção que passa o
+//! lugar para outro `context`) deixa um objetivo que aponta em `origin` uma
+//! mensagem do usuário e repete o texto dela
 //! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência.
 //!
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
@@ -1608,6 +1610,101 @@ mod tests {
         let second = message(root, "user", "Travar o merge com pendência aberta.");
         assert_eq!(context(root, "Qualquer coisa.", second)["reason"], json!("goal-not-verbatim"));
         assert_eq!(context(root, "Travar o merge com pendência aberta.", second)["ok"], json!(true));
+    }
+
+    /// O objetivo que a linha da spec no índice mostra.
+    fn index_goal(root: &std::path::Path) -> Option<String> {
+        let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
+        index
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| line["name"] == json!("teste"))
+            .and_then(|line| line["goal"].as_str().map(str::to_string))
+    }
+
+    fn revise(root: &std::path::Path, id: u64, text: &str, origin: u64) -> Value {
+        write(root, "context", &json!({ "text": text, "origin": origin, "replaces": id }).to_string())
+    }
+
+    fn remove(root: &std::path::Path, id: u64) -> Value {
+        write(root, "remove", &json!({ "targets": [id], "reason": "não vale" }).to_string())
+    }
+
+    /// Revisar o objetivo com outras palavras é recusado, e nada é gravado; a
+    /// revisão que repete uma resposta nova do usuário passa.
+    #[test]
+    fn revising_the_goal_takes_a_new_answer_word_for_word() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", "Travar o merge.");
+        let goal = context(root, "Travar o merge.", said)["id"].as_u64().unwrap();
+        let before = lines(root);
+        let reworded = revise(root, goal, "Travar tudo, sempre.", said);
+        assert_eq!(reworded["reason"], json!("goal-not-verbatim"), "{reworded}");
+        assert_eq!(lines(root), before);
+        let again = message(root, "user", "Travar o merge e o envio.");
+        assert_eq!(revise(root, goal, "Travar o merge e o envio.", again)["ok"], json!(true));
+        assert_eq!(index_goal(root).as_deref(), Some("Travar o merge e o envio."));
+    }
+
+    /// Tirar o objetivo não promove um `context` que o usuário não escreveu:
+    /// a remoção que passaria o lugar para ele é recusada. Tirado o outro
+    /// antes, o objetivo sai, e a vaga fica aberta.
+    #[test]
+    fn removing_the_goal_never_promotes_a_context_the_user_did_not_write() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", "Travar o merge.");
+        let goal = context(root, "Travar o merge.", said)["id"].as_u64().unwrap();
+        let free = context(root, "Uma nota do assistente.", said)["id"].as_u64().unwrap();
+        let promoted = remove(root, goal);
+        assert_eq!(promoted["reason"], json!("goal-not-verbatim"), "{promoted}");
+        assert_eq!(index_goal(root).as_deref(), Some("Travar o merge."));
+        assert_eq!(remove(root, free)["ok"], json!(true));
+        assert_eq!(remove(root, goal)["ok"], json!(true));
+        assert_eq!(index_goal(root), None);
+    }
+
+    /// O índice e a regra do objetivo leem o mesmo objetivo: em cada caminho
+    /// que troca o objetivo, aceito ou recusado, o que a linha do índice
+    /// mostra é o objetivo que a regra conferiu, e ele é sempre uma mensagem
+    /// do usuário palavra por palavra.
+    #[test]
+    fn the_index_and_the_goal_rule_see_the_same_goal() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let seen = |root: &std::path::Path| -> Option<String> {
+            let log = DiskSpecState::new(root).log("teste").unwrap();
+            let shown = index_goal(root);
+            assert_eq!(shown, spec_index::goal_of(&log), "the index file and its reading");
+            match mustard_core::domain::survey::goal(&log) {
+                Some(goal) => {
+                    let said = goal.int("origin").and_then(|id| log.get(id)).expect("the goal has its origin");
+                    assert_eq!(said.str_field("author"), Some("user"));
+                    assert_eq!(said.str_field("text"), goal.str_field("text"));
+                    assert_eq!(shown.as_deref(), goal.str_field("text"));
+                }
+                None => assert_eq!(shown, None),
+            }
+            shown
+        };
+        let first = message(root, "user", "Travar o merge.");
+        assert_eq!(context(root, "Outra coisa.", first)["reason"], json!("goal-not-verbatim"));
+        assert_eq!(seen(root), None);
+        let goal = context(root, "Travar o merge.", first)["id"].as_u64().unwrap();
+        assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
+        assert_eq!(revise(root, goal, "Outra coisa.", first)["reason"], json!("goal-not-verbatim"));
+        let other = context(root, "Uma nota.", first)["id"].as_u64().unwrap();
+        assert_eq!(remove(root, goal)["reason"], json!("goal-not-verbatim"));
+        assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
+        let second = message(root, "user", "Travar o envio.");
+        assert_eq!(revise(root, other, "Travar o envio.", second)["ok"], json!(true));
+        assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
+        assert_eq!(remove(root, goal)["ok"], json!(true));
+        assert_eq!(seen(root).as_deref(), Some("Travar o envio."));
     }
 
     /// Uma spec que nasce em plano, como as do `spec-draft`, não tem a vaga do

@@ -176,37 +176,45 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
 }
 
 /// O objetivo de uma spec em levantamento é a resposta do usuário, palavra
-/// por palavra: o primeiro `context` visível aponta em `origin` uma mensagem
-/// do usuário e repete o texto dela. A regra olha o arquivo antes e depois de
-/// uma gravação: numa spec em levantamento ainda sem `context` visível, todo
-/// `context` que a gravação traz é o objetivo. Fora do levantamento, ou com o
-/// objetivo já gravado, qualquer `context` passa; o objetivo tirado com
-/// `remove` deixa a vaga aberta para a próxima resposta.
+/// por palavra. O objetivo é o que [`crate::domain::survey::goal`] acha, a
+/// mesma leitura do índice: o primeiro `context` gravado, na versão vigente.
+///
+/// A regra olha o arquivo antes e depois de uma gravação. Numa spec em
+/// levantamento, toda gravação que troca o objetivo — o primeiro `context`, a
+/// revisão dele com `replaces` e a remoção que passa o lugar para outro
+/// `context` — deixa como objetivo um `context` que aponta em `origin` uma
+/// mensagem do usuário e repete o texto dela. Tirar o objetivo sem outro
+/// `context` deixa a vaga aberta para a próxima resposta. A gravação que não
+/// troca o objetivo passa, e fora do levantamento qualquer `context` passa.
 ///
 /// # Errors
 ///
-/// [`Refusal::GoalNotVerbatim`] quando o objetivo não aponta uma mensagem do
-/// usuário ou não repete o texto dela.
+/// [`Refusal::GoalNotVerbatim`] quando o objetivo novo não aponta uma
+/// mensagem do usuário ou não repete o texto dela.
 pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
-    let contexts = |log: &SpecLog| -> usize { log.visible().iter().filter(|e| e.event_type == "context").count() };
-    if State::from_log(before).phase != Some("survey") || contexts(before) > 0 {
+    use crate::domain::survey::goal;
+    if State::from_log(before).phase != Some("survey") {
         return Ok(());
     }
-    for goal in after.visible().into_iter().filter(|e| e.event_type == "context") {
-        let origin = goal.int("origin");
-        let answer = origin
-            .and_then(|id| after.get(id))
-            .filter(|m| m.event_type == "message" && m.str_field("author").map(str::trim) == Some("user"))
-            .and_then(|m| m.str_field("text"))
-            .map(str::trim);
-        if answer.is_none() || answer != goal.str_field("text").map(str::trim) {
-            return Err(Refusal::GoalNotVerbatim {
-                spec: spec.trim().to_string(),
-                origin: origin.map_or_else(|| "-".to_string(), |id| id.to_string()),
-            });
-        }
+    let Some(now) = goal(after) else {
+        return Ok(());
+    };
+    if goal(before).is_some_and(|was| was.id == now.id) {
+        return Ok(());
     }
-    Ok(())
+    let origin = now.int("origin");
+    let answer = origin
+        .and_then(|id| after.get(id))
+        .filter(|m| m.event_type == "message" && m.str_field("author").map(str::trim) == Some("user"))
+        .and_then(|m| m.str_field("text"))
+        .map(str::trim);
+    if answer.is_some() && answer == now.str_field("text").map(str::trim) {
+        return Ok(());
+    }
+    Err(Refusal::GoalNotVerbatim {
+        spec: spec.trim().to_string(),
+        origin: origin.map_or_else(|| "-".to_string(), |id| id.to_string()),
+    })
 }
 
 /// O `meta.json` de uma spec parada antes da execução: em análise ou em plano
