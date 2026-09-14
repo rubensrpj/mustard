@@ -477,8 +477,10 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         return refuse(OpenRefusal::Busy(busy));
     }
     // Onde o checkout estava e de que commit a branch sai: se a spec não
-    // puder ser gravada, a branch nova é desfeita a partir daqui.
-    let back_to = current.clone().or_else(|| git_out(&vcs, &root, &["rev-parse", "HEAD"]));
+    // puder ser gravada, a branch nova é desfeita a partir daqui. Com o HEAD
+    // solto, o git responde "HEAD" no lugar do nome da branch; aí a volta é
+    // para o commit em que o checkout estava.
+    let back_to = current.clone().filter(|b| b != "HEAD").or_else(|| git_out(&vcs, &root, &["rev-parse", "HEAD"]));
     let start = cut_start(&vcs, &root, &base);
     if let Err(detail) = checkout_work_branch(&vcs, &root_s, &target, &base) {
         return refuse(OpenRefusal::GitFailed { branch: target, detail });
@@ -1017,6 +1019,25 @@ mod tests {
             assert_eq!(again["ok"], json!(true), "{again}");
             assert_eq!(head(root), "feature/x");
         }
+    }
+
+    /// Partindo de um checkout fora de qualquer branch, a falha ao gravar a
+    /// spec também desfaz a branch nova: o checkout volta, solto, ao commit
+    /// de onde saiu, e a branch nova some.
+    #[test]
+    fn a_spec_that_cannot_be_written_from_a_detached_head_goes_back_to_its_commit() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        git(root, &["checkout", "-q", "--detach", "dev"]);
+        let from = git(root, &["rev-parse", "HEAD"]);
+        std::fs::create_dir_all(root.join(".claude").join("spec")).unwrap();
+        std::fs::write(spec_dir(root, "x"), "não é pasta").unwrap();
+        let report = open(root, Some("feature"), Some("x"), Some("dev"));
+        assert_eq!(report["ok"], json!(false), "{report}");
+        assert_eq!(report["reason"], json!("io-failed"), "{report}");
+        assert_eq!(head(root), "HEAD", "the checkout is detached again");
+        assert_eq!(git(root, &["rev-parse", "HEAD"]), from);
+        assert!(!branches(root).contains(&"feature/x".to_string()));
     }
 
     /// O desfazer nunca apaga uma branch que já tem commit próprio.
