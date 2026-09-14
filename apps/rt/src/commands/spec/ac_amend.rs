@@ -1134,8 +1134,22 @@ fn exit_code(report: &AcAmendReport) -> i32 {
     i32::from(!report.ok)
 }
 
-/// CLI entry — `mustard-rt run ac-amend`.
-pub fn run(opts: AcAmendOpts) {
+/// CLI entry — `mustard-rt run ac-amend`. The command has left the flow: it
+/// refuses at the door with exit 1, writes nothing and says to revise the
+/// criterion in the spec with `run write criterion`. [`amend`] keeps its body,
+/// with its tests, until the command leaves.
+pub fn run(_opts: AcAmendOpts) {
+    crate::commands::retired::refuse(
+        Path::new(&crate::shared::context::project_dir()),
+        "use-write-criterion",
+        "retired.use_write_criterion",
+        &[("{command}", "ac-amend")],
+    );
+}
+
+/// The door's old body, kept until the command leaves.
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_amend(opts: AcAmendOpts) {
     let root = PathBuf::from(crate::shared::context::project_dir());
     let report = amend(&root, &opts);
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());

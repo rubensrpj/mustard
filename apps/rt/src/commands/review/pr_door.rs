@@ -914,14 +914,19 @@ pub fn run_list(root: &Path) {
     emit(&list_at(root));
 }
 
-/// Dispatch `mustard-rt run pr-review`.
+/// Dispatch `mustard-rt run pr-review`. The brief still answers; recording a
+/// verdict has left the flow, so `--verdict` refuses at the door with exit 1,
+/// records nothing and says to wait for the round.
 pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical: i64) {
-    if let Some(v) = verdict
-        && v != "approved" && v != "rejected" {
-            eprintln!("[pr-review] Invalid --verdict \"{v}\" — expected approved|rejected");
-            return;
-        }
     let repo = project_root(root);
+    if verdict.is_some() {
+        crate::commands::retired::refuse(
+            &repo,
+            "wait-for-round",
+            "retired.wait_round",
+            &[("{command}", "pr-review --verdict")],
+        );
+    }
     match resolve_pr(&repo, pr) {
         Ok(facts) => {
             let (flow, _) = bases_and_branch(&repo);
@@ -931,8 +936,17 @@ pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical:
     }
 }
 
-/// Dispatch `mustard-rt run pr-merge`.
-pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
+/// Dispatch `mustard-rt run pr-merge`. The command is stopped in this version:
+/// it refuses at the door with exit 1, merges nothing, delivers nothing and
+/// closes no pending item. [`merge_core`] keeps its body, with its tests, until
+/// the new merge door arrives.
+pub fn run_merge(root: &Path, _pr: Option<u64>, _confirm: bool) {
+    crate::commands::retired::refuse(&project_root(root), "wait-for-merge", "retired.wait_merge", &[]);
+}
+
+/// The door's old body, kept until the new merge door arrives.
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_merge_old(root: &Path, pr: Option<u64>, confirm: bool) {
     let repo = project_root(root);
     match resolve_pr(&repo, pr) {
         Ok(facts) => {

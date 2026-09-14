@@ -168,8 +168,21 @@ pub(crate) fn qa_gate_passes(cwd: &Path, spec: &str) -> bool {
     crate::commands::event::emit_pipeline::qa_result_passed(cwd, spec)
 }
 
-/// CLI entry.
-pub fn run(opts: CloseOrchestrateOpts) {
+/// CLI entry. The command has left the flow: it refuses at the door with exit
+/// 1, runs no gate and writes nothing, and says to wait for the close.
+pub fn run(_opts: CloseOrchestrateOpts) {
+    crate::commands::retired::refuse(
+        Path::new(&crate::shared::context::project_dir()),
+        "wait-for-close",
+        "retired.wait_close",
+        &[("{command}", "close-orchestrate")],
+    );
+}
+
+/// The door's old body — every gate in order, then the close. Kept, with what
+/// only it reaches, until the command leaves.
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_gates(opts: CloseOrchestrateOpts) {
     let started = std::time::Instant::now();
     let mut gates: Vec<GateReport> = Vec::new();
     // Resolved ONCE, up here: the QA gate below reads the recorded verdict from

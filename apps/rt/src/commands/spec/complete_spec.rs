@@ -682,7 +682,22 @@ pub(crate) fn finalize(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
 /// is nothing for the old TTL sweep to find. Each prints
 /// `{ scanned: 0, archived: 0 }` so any caller still passing the flag keeps a
 /// shape-compatible JSON line.
-pub fn run(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_followups_flag: bool) {
+/// The command has left the flow: every mode, the close and the archiving,
+/// refuses at the door with exit 1, writes nothing and says to wait for the
+/// close. Archiving refuses too, because closing the spec without arming the
+/// charge of its pending items would drop a protection.
+pub fn run(_spec: Option<&str>, _archive_flag: bool, _archive_stale: bool, _archive_followups_flag: bool) {
+    crate::commands::retired::refuse(
+        Path::new(&crate::shared::context::project_dir()),
+        "wait-for-close",
+        "retired.wait_close",
+        &[("{command}", "complete-spec")],
+    );
+}
+
+/// The door's old body, kept with its tests until the command leaves.
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_close(spec: Option<&str>, archive_flag: bool, archive_stale: bool, archive_followups_flag: bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
     if archive_stale {

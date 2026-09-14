@@ -925,8 +925,22 @@ fn record_runs(state: &Path, spec: &str, current: &std::collections::BTreeMap<St
     }
 }
 
-/// Dispatch `mustard-rt run qa-run`.
-pub fn run(spec: &str, format: &str) {
+/// Dispatch `mustard-rt run qa-run`. The command has left the flow: it refuses
+/// at the door with exit 1, writes nothing and says to wait for the close. The
+/// engine below stays, because the new close reuses it.
+pub fn run(_spec: &str, _format: &str) {
+    crate::commands::retired::refuse(
+        Path::new(&project_dir()),
+        "wait-for-close",
+        "retired.wait_close",
+        &[("{command}", "qa-run")],
+    );
+}
+
+/// The door's old body — run every criterion and print the report. Kept, with
+/// what only it reaches, until the command leaves.
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_qa_cli(spec: &str, format: &str) {
     let cwd = std::env::current_dir()
         .ok()
         .or_else(|| Some(PathBuf::from(project_dir())))

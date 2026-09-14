@@ -605,8 +605,22 @@ fn exit_code(report: &AcAddReport) -> i32 {
     i32::from(!report.ok)
 }
 
-/// CLI entry — `mustard-rt run ac-add`.
-pub fn run(opts: AcAddOpts) {
+/// CLI entry — `mustard-rt run ac-add`. The command has left the flow: it
+/// refuses at the door with exit 1, writes nothing and says to record the
+/// criterion in the spec with `run write criterion`. [`add`] keeps its body,
+/// with its tests, until the command leaves.
+pub fn run(_opts: AcAddOpts) {
+    crate::commands::retired::refuse(
+        Path::new(&crate::shared::context::project_dir()),
+        "use-write-criterion",
+        "retired.use_write_criterion",
+        &[("{command}", "ac-add")],
+    );
+}
+
+/// The door's old body, kept until the command leaves.
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_add(opts: AcAddOpts) {
     let root = PathBuf::from(crate::shared::context::project_dir());
     let report = add(&root, &opts);
     let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());

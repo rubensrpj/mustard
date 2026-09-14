@@ -219,8 +219,28 @@ fn write_review_verdict_md(
     let _ = fs::write_atomic(review_dir.join("verdict.md"), body.as_bytes());
 }
 
-/// Dispatch `mustard-rt run review-result`.
+/// Dispatch `mustard-rt run review-result`. The command has left the flow: it
+/// refuses at the door with exit 1, records nothing and says to wait for the
+/// round, which will record each wave's verdict. [`record_review`] stays, for
+/// the readers that still record in the old log.
 pub fn run(
+    _spec: Option<&str>,
+    _verdict: Option<&str>,
+    _critical: i64,
+    _subproject: Option<&str>,
+    _findings_file: Option<&Path>,
+) {
+    crate::commands::retired::refuse(
+        Path::new(&project_dir()),
+        "wait-for-round",
+        "retired.wait_round",
+        &[("{command}", "review-result")],
+    );
+}
+
+/// The door's old body, kept until the command leaves.
+#[cfg_attr(not(test), allow(dead_code))]
+fn run_record(
     spec: Option<&str>,
     verdict: Option<&str>,
     critical: i64,

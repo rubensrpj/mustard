@@ -1523,6 +1523,42 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              `mustard-rt run open`; the phases go through the new flow's commands. Nothing was \
              written."
         }
+        ("retired.wait_close", Locale::PtBr) => {
+            "O `{command}` não grava mais na spec. Os critérios vão rodar, e a spec vai fechar, pelo \
+             `mustard-rt run close`, que ainda não existe nesta versão. Nada foi gravado."
+        }
+        ("retired.wait_close", Locale::EnUs) => {
+            "`{command}` no longer writes to the spec. The criteria will run, and the spec will \
+             close, through `mustard-rt run close`, which does not exist in this version yet. \
+             Nothing was written."
+        }
+        ("retired.wait_round", Locale::PtBr) => {
+            "O `{command}` não grava mais o veredito na spec. O veredito de cada onda vai ser \
+             gravado pelo `mustard-rt run round`, que ainda não existe nesta versão. Nada foi \
+             gravado."
+        }
+        ("retired.wait_round", Locale::EnUs) => {
+            "`{command}` no longer records the verdict in the spec. Each wave's verdict will be \
+             recorded by `mustard-rt run round`, which does not exist in this version yet. Nothing \
+             was written."
+        }
+        ("retired.use_write_criterion", Locale::PtBr) => {
+            "O `{command}` saiu do fluxo. Grave ou reveja o critério na spec com `mustard-rt run \
+             write criterion`; a versão nova leva `replaces`. Nada foi gravado."
+        }
+        ("retired.use_write_criterion", Locale::EnUs) => {
+            "`{command}` has left the flow. Record or revise the criterion in the spec with \
+             `mustard-rt run write criterion`; a new version takes `replaces`. Nothing was written."
+        }
+        ("retired.wait_merge", Locale::PtBr) => {
+            "O `pr-merge` está parado nesta versão. A nova porta de merge, que entrega a spec e \
+             fecha a pendência ligada, ainda não chegou: espere o `pr-merge` novo. Nada foi feito."
+        }
+        ("retired.wait_merge", Locale::EnUs) => {
+            "`pr-merge` is stopped in this version. The new merge door, which delivers the spec and \
+             closes the linked pending item, has not arrived yet: wait for the new `pr-merge`. \
+             Nothing was done."
+        }
         ("grill.goal_missing", Locale::PtBr) => {
             "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
              frase?\" e rode o grill depois da resposta. Nada foi gravado."
@@ -3052,13 +3088,17 @@ mod tests {
 
     /// As recusas dos comandos antigos que saíram do fluxo saem do catálogo
     /// nos dois idiomas, cada uma com as vagas que o chamador preenche, e
-    /// todas mandam para o comando novo.
+    /// todas dizem por qual comando esperar, ou para qual ir.
     #[test]
     fn i18n_translates_retired_keys() {
-        for (key, slots) in [
-            ("retired.spec_draft", &[][..]),
-            ("retired.tactical_fix", &[][..]),
-            ("retired.pipeline_door", &["{kind}"][..]),
+        for (key, slots, points_to) in [
+            ("retired.spec_draft", &[][..], "mustard-rt run open"),
+            ("retired.tactical_fix", &[][..], "mustard-rt run open"),
+            ("retired.pipeline_door", &["{kind}"][..], "mustard-rt run open"),
+            ("retired.wait_close", &["{command}"][..], "mustard-rt run close"),
+            ("retired.wait_round", &["{command}"][..], "mustard-rt run round"),
+            ("retired.use_write_criterion", &["{command}"][..], "mustard-rt run write criterion"),
+            ("retired.wait_merge", &[][..], "pr-merge"),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -3067,7 +3107,7 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
-            assert!(pt.contains("mustard-rt run open") && en.contains("mustard-rt run open"), "{key}");
+            assert!(pt.contains(points_to) && en.contains(points_to), "{key} does not name {points_to}");
         }
     }
 

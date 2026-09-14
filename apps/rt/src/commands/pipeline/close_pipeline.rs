@@ -91,22 +91,27 @@ use crate::commands::review::ac_negative_check::{self, Confirmation, Verdict};
 use crate::commands::review::qa_run::{self, QaRunOptions};
 use crate::commands::spec::complete_spec;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
-/// CLI entry — `mustard-rt run close-pipeline --spec <slug>`.
-pub fn run(spec: &str) {
-    let cwd = PathBuf::from(crate::shared::context::project_dir());
-    let session = crate::shared::spec_state::session_from_env();
-    let report = close(&cwd, spec, session.as_deref());
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+/// CLI entry — `mustard-rt run close-pipeline --spec <slug>`. The command has
+/// left the flow: it refuses at the door with exit 1, writes nothing and says
+/// to wait for the close. [`close`] keeps its body, with its tests, until the
+/// command leaves.
+pub fn run(_spec: &str) {
+    crate::commands::retired::refuse(
+        Path::new(&crate::shared::context::project_dir()),
+        "wait-for-close",
+        "retired.wait_close",
+        &[("{command}", "close-pipeline")],
     );
 }
 
 /// The composite miolo against an explicit `cwd` root (testable without
-/// mutating the process cwd). Returns the report Value [`run`] prints.
+/// mutating the process cwd). Returns the report the door used to print.
 /// `session` is the one closing, read from the environment by the `run` entry.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn close(cwd: &Path, spec: &str, session: Option<&str>) -> Value {
     // 1. Reviews — advisory listing of every verdict in the spec file.
     let reviews = collect_review_verdicts(cwd, spec);
