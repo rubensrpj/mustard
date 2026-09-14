@@ -5,6 +5,7 @@
 //! module-level enforcement mode the dispatcher applies — the dispatcher
 //! repasses the verdict without downgrade. 1:1 port of `review-gate.js`.
 
+use mustard_core::ClaudePaths;
 use mustard_core::platform::config::Mode;
 use mustard_core::platform::process::rtk_command;
 use mustard_core::domain::model::contract::{Ctx, Verdict};
@@ -276,6 +277,24 @@ fn staged_files(project_dir: &str) -> Option<Vec<String>> {
     )
 }
 
+/// List active pipeline names under `.claude/.pipeline-states/*.json`.
+fn active_pipelines(project_dir: &str) -> Vec<String> {
+    let Ok(paths) = ClaudePaths::for_project(Path::new(project_dir)) else {
+        return Vec::new();
+    };
+    let dir = paths.pipeline_states_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(std::result::Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".json").map(str::to_string)
+        })
+        .collect()
+}
+
 /// Emit the `commit-gate.check` harness event. Best-effort — telemetry is
 /// never load-bearing, so any failure is swallowed.
 fn emit_commit_gate_event(
@@ -409,6 +428,15 @@ pub(super) fn review_gate(cmd: &str, ctx: &Ctx, mode: Mode) -> Option<Verdict> {
             // env_error → fail-open: leave `build_ok` as `None`, no warning.
         }
 
+    // Check 6: active pipeline advisory.
+    let pipelines = active_pipelines(project_dir);
+    if !pipelines.is_empty() {
+        warnings.push(format!(
+            "Active pipeline(s): {}. Ensure changes match spec.",
+            pipelines.join(", ")
+        ));
+    }
+
     // Emit the harness event (best-effort).
     let blocking_types: Vec<&str> = blocking.iter().map(|(t, _)| *t).collect();
     emit_commit_gate_event(
@@ -534,7 +562,7 @@ mod tests {
     fn review_gate_fails_open_without_git_repo() {
         let dir = tempdir().unwrap();
         let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
-        // No `.git` → no warnings → no verdict.
+        // No `.git`, no `.pipeline-states` → no warnings → no verdict.
         assert_eq!(review_gate("git commit -m x", &ctx, Mode::Warn), None);
     }
 

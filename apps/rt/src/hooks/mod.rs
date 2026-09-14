@@ -16,7 +16,8 @@
 //!   pipeline-phase), and [`scan_gate`] (the pre-pipeline scan gate — blocks
 //!   until grain.model.json).
 //! - The session-lifecycle families — `session_start_inject`
-//!   (harness-init / terrain census / spec-hygiene), `session_cleanup_observer`
+//!   (harness-init / terrain census / spec-hygiene), `session_knowledge_observer`
+//!   (session-knowledge friction telemetry / -inc), `session_cleanup_observer`
 //!   (`SessionEnd` cleanup), `prompt_submit_inject` (the `UserPromptSubmit` follow-up archival gate),
 //!   and `spec_hygiene_observer` (the gated SessionStart auto-close).
 

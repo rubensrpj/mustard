@@ -19,6 +19,7 @@ use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
 use crate::hooks::write::mold_gate::MoldGate;
 use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::write_gate::WriteGate;
+use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::observe::prompt_observer::PromptObserver;
 use crate::hooks::observe::rewave_observer::RewaveObserver;
 use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
@@ -344,6 +345,19 @@ impl Registry {
                 applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
                 check: Some(Box::new(SessionStartInject)),
                 observer: None,
+            },
+            Module {
+                id: "session_knowledge_observer",
+                // `session-knowledge` (friction telemetry) on SessionEnd,
+                // `session-knowledge-inc` on PostToolUse(Task). Pure telemetry
+                // — an `Observer`.
+                applies_to: &[
+                    (Trigger::SessionEnd, ToolMatch::Any),
+                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
+                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
+                ],
+                check: None,
+                observer: Some(Box::new(SessionKnowledgeObserver)),
             },
             Module {
                 id: "session_cleanup_observer",
@@ -758,6 +772,7 @@ mod tests {
             "post_edit",
             "spec_hygiene_observer",
             "session_start_inject",
+            "session_knowledge_observer",
             "session_cleanup_observer",
             "statusline_heal_observer",
             "prompt_submit_inject",
@@ -815,15 +830,19 @@ mod tests {
         assert!(hyg_idx < ss_idx, "spec_hygiene_observer must precede session_start_inject");
         // `statusline_heal_observer` also rides SessionStart.
         assert!(start.contains(&"statusline_heal_observer"));
-        // `session_cleanup_observer` on SessionEnd.
+        // `session_cleanup_observer` + `session_knowledge_observer` on SessionEnd.
         let end = applicable_ids(&registry, Trigger::SessionEnd, None);
         assert!(end.contains(&"session_cleanup_observer"));
+        assert!(end.contains(&"session_knowledge_observer"));
         // `prompt_submit_inject` on UserPromptSubmit.
         assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
             .contains(&"prompt_submit_inject"));
         // `user_prompt_observer` also rides UserPromptSubmit.
         assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
             .contains(&"user_prompt_observer"));
+        // `session_knowledge_observer` also covers PostToolUse(Task).
+        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
+            .contains(&"session_knowledge_observer"));
     }
 
     /// The write gate runs on the `PreToolUse` of the five file tools, and

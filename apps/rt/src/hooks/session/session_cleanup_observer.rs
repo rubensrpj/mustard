@@ -8,11 +8,13 @@
 //!
 //! 1. Kills this project's OTEL collector and removes its PID file.
 //! 2. Removes the statusline git cache from the temp dir.
-//! 3. Removes `.compact-state` files older than 24h.
-//! 4. Prunes telemetry NDJSON files (`.claude/spec/*/.events/*.ndjson`,
+//! 3. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
+//!    states whose spec is already done.
+//! 4. Removes `.compact-state` files older than 24h.
+//! 5. Prunes telemetry NDJSON files (`.claude/spec/*/.events/*.ndjson`,
 //!    `.claude/.session/*/.events/*.ndjson`) older than the retention window.
-//! 5. Drains the local `rtk gain --json` ledger into the savings events.
-//! 6. Finalizes the per-session amendment window.
+//! 6. Drains the local `rtk gain --json` ledger into the savings events.
+//! 7. Finalizes the per-session amendment window.
 //!
 //! ## Why the order is load-bearing
 //!
@@ -54,6 +56,7 @@ use mustard_core::domain::economy::{
     self, sources::rtk as rtk_source, sources::IngestContext,
 };
 use mustard_core::io::fs;
+use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use std::path::{Path, PathBuf};
@@ -70,9 +73,120 @@ const ONE_DAY_MS: u128 = 24 * 60 * 60 * 1000;
 /// many days are pruned on `SessionEnd`. Fail-open: pruning never aborts cleanup.
 const TELEMETRY_RETENTION_DAYS: i64 = 90;
 
+/// Terminal pipeline-state statuses — these files are removed on cleanup.
+const TERMINAL_STATUSES: &[&str] = &["implemented", "completed", "validated", "cancelled"];
+
 /// The `SessionEnd` state-cleanup module.
 pub struct SessionCleanupObserver;
 
+
+/// Current time as milliseconds since the Unix epoch.///
+/// Read the `status` field of a pipeline-state JSON file.
+fn state_status(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let obj: serde_json::Value = serde_json::from_str(&text).ok()?;
+    obj.get("status")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// The `specName` field of a pipeline-state JSON file.
+fn state_spec_name(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let obj: serde_json::Value = serde_json::from_str(&text).ok()?;
+    obj.get("specName")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// `true` if a spec is done — the flat layout reads the spec dir
+/// directly under `.claude/spec/{name}/`, with no `active/` / `completed/`
+/// buckets. Done means either the directory is gone or the spec's lifecycle
+/// metadata reads `Completed`. **`meta.json` is the single source of truth**;
+/// the legacy `### Status:` / `### Outcome:` header in `spec.md` /
+/// `wave-plan.md` is the fallback for un-migrated specs.
+fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
+    // ClaudePaths-exempt: `claude_dir` is seam-produced upstream; re-deriving
+    // via `for_project`/`for_spec` here would be circular and would add name
+    // validation that changes the fail-open trigger.
+    let spec_root = claude_dir.join("spec").join(spec_name);
+    if !spec_root.exists() {
+        // Spec deleted → treat as done.
+        return true;
+    }
+    // meta.json wins: a terminal `Completed` outcome marks the spec done.
+    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_root.join("spec.md"))
+        && let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
+            return outcome == mustard_core::Outcome::Completed;
+        }
+    // Legacy fallback: read the lifecycle header from wave-plan.md / spec.md.
+    let wave_plan = spec_root.join("wave-plan.md");
+    if fs::exists(&wave_plan) {
+        return fs::read_to_string(&wave_plan).is_ok_and(|t| header_marks_done(&t));
+    }
+    let spec_file = spec_root.join("spec.md");
+    if !fs::exists(&spec_file) {
+        // Spec dir empty / spec.md absent → treat as done.
+        return true;
+    }
+    fs::read_to_string(&spec_file).is_ok_and(|t| header_marks_done(&t))
+}
+
+/// `true` when a spec's lifecycle header resolves to the terminal `Completed`
+/// outcome. Legacy fallback only — see [`is_spec_done`]. Delegates to the
+/// canonical [`mustard_core::domain::spec`] parser, so the new `### Stage:`/
+/// `### Outcome:` header and every legacy `### Status:` shape
+/// (`completed`/`done`/`closed`) are recognised. Fail-open: an unparseable
+/// header is treated as not-done (the spec stays, its state file is not reaped).
+fn header_marks_done(content: &str) -> bool {
+    spec::parse_state(content)
+        .is_some_and(|s| s.outcome == mustard_core::Outcome::Completed)
+}
+
+/// Remove terminal / orphaned pipeline-state files. Port of
+/// `cleanPipelineStates` (`closed-followup` is intentionally non-terminal).
+fn clean_pipeline_states(claude_dir: &Path) {
+    let states_dir = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+        .map(|p| p.pipeline_states_dir());
+    let Some(states_dir) = states_dir else {
+        return;
+    };
+    if let Ok(entries) = fs::read_dir(&states_dir) {
+        for entry in entries {
+            if !std::path::Path::new(&entry.file_name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
+                continue;
+            }
+            let path = &entry.path;
+            if let Some(status) = state_status(path)
+                && TERMINAL_STATUSES.contains(&status.as_str()) {
+                    let _ = fs::remove_file(path);
+                    continue;
+                }
+            if let Some(spec) = state_spec_name(path)
+                && is_spec_done(claude_dir, &spec) {
+                    let _ = fs::remove_file(path);
+                }
+        }
+        // Remove the directory when empty.
+        let is_empty = fs::read_dir(&states_dir)
+            .is_ok_and(|d| d.is_empty());
+        if is_empty {
+            // std::fs::remove_dir has no facade equivalent — one-off use is fine.
+            let _ = std::fs::remove_dir(&states_dir);
+        }
+    }
+    // Legacy single-file state.
+    let legacy = claude_dir.join(".pipeline-state.json");
+    if let Some(status) = state_status(&legacy)
+        && TERMINAL_STATUSES.contains(&status.as_str()) {
+            let _ = fs::remove_file(&legacy);
+        }
+}
 
 /// Remove `.compact-state` files older than 24h; remove the dir when empty.
 fn clean_compact_state(claude_dir: &Path) {
@@ -308,6 +422,7 @@ const PROMPT_STEPS: &[fn(&CleanupTarget)] = &[step_otel_pid, step_statusline_cac
 /// carries no deadline of its own). Every step here is cosmetic if it is
 /// skipped, which is why it is the tail.
 const DEFERRED_STEPS: &[fn(&CleanupTarget)] = &[
+    step_pipeline_states,
     step_compact_state,
     step_prune_telemetry,
     step_ingest_rtk_savings,
@@ -323,6 +438,11 @@ fn step_otel_pid(target: &CleanupTarget) {
 /// Drop the statusline git cache from the temp dir.
 fn step_statusline_cache(_target: &CleanupTarget) {
     clean_statusline_cache();
+}
+
+/// Reap terminal / orphaned pipeline-state files.
+fn step_pipeline_states(target: &CleanupTarget) {
+    clean_pipeline_states(&target.claude);
 }
 
 /// Reap `.compact-state` files past the 24h window.
@@ -405,6 +525,7 @@ impl Observer for SessionCleanupObserver {
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+    use serde_json::json;
     use tempfile::tempdir;
 
     fn ctx(dir: &str) -> Ctx {
@@ -418,17 +539,59 @@ mod tests {
         }
     }
 
+    /// Write a pipeline-state file.
+    fn write_state(dir: &Path, name: &str, state: &Value) {
+        let paths = ClaudePaths::for_project(dir).unwrap();
+        let states = paths.pipeline_states_dir();
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(paths.pipeline_state_file(name), state.to_string()).unwrap();
+    }
+
+    use serde_json::Value;
+
     #[test]
     fn non_session_end_trigger_is_noop() {
         let dir = tempdir().unwrap();
-        let harness = ClaudePaths::for_project(dir.path()).unwrap().harness_dir();
-        std::fs::create_dir_all(&harness).unwrap();
-        let pid = harness.join(".otel-collector.pid");
-        std::fs::write(&pid, "12345").unwrap();
+        write_state(dir.path(), "done", &json!({ "status": "completed" }));
         let other = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         SessionCleanupObserver.observe(&session_end_input(), &other);
-        // PreToolUse → cleanup did not run, the PID file survives.
-        assert!(pid.exists());
+        // PreToolUse → cleanup did not run, the terminal state survives.
+        assert!(ClaudePaths::for_project(dir.path()).unwrap().pipeline_state_file("done").exists());
+    }
+
+    #[test]
+    fn terminal_states_are_removed() {
+        let dir = tempdir().unwrap();
+        write_state(dir.path(), "finished", &json!({ "status": "completed" }));
+        write_state(dir.path(), "active-one", &json!({ "status": "implementing" }));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        assert!(!paths.pipeline_state_file("finished").exists());
+        // Non-terminal state survives.
+        assert!(paths.pipeline_state_file("active-one").exists());
+    }
+
+    #[test]
+    fn orphaned_state_of_completed_spec_is_removed() {
+        let dir = tempdir().unwrap();
+        write_state(
+            dir.path(),
+            "orphan",
+            &json!({ "status": "implementing", "specName": "old-spec" }),
+        );
+        // Flat layout (wave-2): the spec dir is at .claude/spec/{name}/ with a
+        // `### Status: completed` header. `is_spec_done` reads the header to
+        // decide the state file is orphaned and removes it.
+        let paths = ClaudePaths::for_project(dir.path()).unwrap();
+        let sp = paths.for_spec("old-spec").unwrap();
+        std::fs::create_dir_all(sp.dir()).unwrap();
+        std::fs::write(
+            sp.spec_md_path(),
+            "# old-spec\n### Status: completed\n",
+        )
+        .unwrap();
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
+        assert!(!paths.pipeline_state_file("orphan").exists());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! `spec-tree` projection. Extracted from `event_projections`.
 
+use crate::util::json_io;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::event::HarnessEvent;
 use serde_json::{json, Value};
@@ -9,10 +10,19 @@ use std::path::Path;
 /// `spec-tree` recursion depth cap (`MAX_SPEC_TREE_DEPTH`).
 const MAX_SPEC_TREE_DEPTH: u32 = 3;
 
+/// Read a `.pipeline-states/<name>.json` file, `None` on any error.
+fn read_state(states_dir: &Path, name: &str) -> Option<Value> {
+    json_io::read_json(&states_dir.join(format!("{name}.json")))
+}
+
 /// `buildSpecTree` — the recursive parent/child spec hierarchy (max depth 3),
-/// from `spec.link` events. Phase per node derives from `pipeline.phase`
-/// events. The root must have a spec folder or appear in a link.
+/// combining `spec.link` events with the state files of the old state folder.
+/// Phase per node derives from `pipeline.phase` events, not the JSON. The root
+/// must have a state file, a spec folder, or appear in a link.
 pub(super) fn build_spec_tree(events: &[HarnessEvent], cwd: &Path, root_spec: &str) -> Value {
+    let states_dir = ClaudePaths::for_project(cwd)
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|_| cwd.to_path_buf());
     // parent → children, child → parent — from spec.link events.
     let mut link_children: std::collections::BTreeMap<String, BTreeSet<String>> =
         std::collections::BTreeMap::new();
@@ -33,17 +43,23 @@ pub(super) fn build_spec_tree(events: &[HarnessEvent], cwd: &Path, root_spec: &s
     let on_disk = ClaudePaths::for_project(cwd)
         .and_then(|p| p.for_spec(root_spec))
         .is_ok_and(|sp| sp.dir().is_dir());
-    if !on_disk && !link_children.contains_key(root_spec) && !link_parent.contains_key(root_spec) {
+    if read_state(&states_dir, root_spec).is_none()
+        && !on_disk
+        && !link_children.contains_key(root_spec)
+        && !link_parent.contains_key(root_spec)
+    {
         return json!({ "error": "spec not found" });
     }
-    build_spec_node(events, &link_children, &link_parent, root_spec, 1, &BTreeSet::new())
+    build_spec_node(events, &states_dir, &link_children, &link_parent, root_spec, 1, &BTreeSet::new())
 }
 
 /// Build one `spec-tree` node, recursing into children. Detects cycles. Phase
-/// per node derives from `pipeline.phase` events; parent and children come
-/// from the `spec.link` events.
+/// per node derives from `pipeline.phase` events; the state file of the old
+/// state folder is still consulted for the `children_specs` / `parent_spec`
+/// shape, and the `spec.link` events complete it.
 fn build_spec_node(
     events: &[HarnessEvent],
+    states_dir: &Path,
     link_children: &std::collections::BTreeMap<String, BTreeSet<String>>,
     link_parent: &std::collections::BTreeMap<String, String>,
     spec: &str,
@@ -56,15 +72,27 @@ fn build_spec_node(
     if ancestors.contains(spec) {
         return json!({ "error": "cycle-detected", "cycle_member": spec });
     }
+    let state = read_state(states_dir, spec);
     let phase = super::phase_from_events(events, spec);
-    let parent_spec = link_parent.get(spec).cloned();
-    let children_set: BTreeSet<String> = link_children.get(spec).cloned().unwrap_or_default();
+    let parent_spec = state
+        .as_ref()
+        .and_then(|s| s.get("parent_spec").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| link_parent.get(spec).cloned());
+
+    let mut children_set: BTreeSet<String> = BTreeSet::new();
+    if let Some(arr) = state.as_ref().and_then(|s| s.get("children_specs")).and_then(Value::as_array) {
+        children_set.extend(arr.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    if let Some(linked) = link_children.get(spec) {
+        children_set.extend(linked.iter().cloned());
+    }
 
     let mut new_ancestors = ancestors.clone();
     new_ancestors.insert(spec.to_string());
     let mut children: Vec<Value> = Vec::new();
     for child in &children_set {
-        let node = build_spec_node(events, link_children, link_parent, child, depth + 1, &new_ancestors);
+        let node = build_spec_node(events, states_dir, link_children, link_parent, child, depth + 1, &new_ancestors);
         if node.get("error").and_then(Value::as_str).is_some_and(|e| e.contains("cycle")) {
             return json!({ "error": "cycle-detected", "parent": spec, "child": child });
         }
@@ -118,6 +146,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tree = build_spec_tree(&[], dir.path(), "ghost");
         assert_eq!(tree["error"], json!("spec not found"));
+    }
+
+    /// A spec named only by a file of the old state folder is still a root,
+    /// and the children that file lists are still its children.
+    #[test]
+    fn a_spec_named_only_by_the_old_state_folder_is_still_a_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let states = ClaudePaths::for_project(dir.path()).unwrap().pipeline_states_dir();
+        std::fs::create_dir_all(&states).unwrap();
+        std::fs::write(
+            states.join("legacy-root.json"),
+            r#"{ "children_specs": ["legacy-child"] }"#,
+        )
+        .unwrap();
+        let tree = build_spec_tree(&[], dir.path(), "legacy-root");
+        assert_eq!(tree["spec"], json!("legacy-root"));
+        let children = tree["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["spec"], json!("legacy-child"));
     }
 
     /// A spec with its own folder and no links is a tree of one.

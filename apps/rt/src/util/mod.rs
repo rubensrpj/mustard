@@ -11,6 +11,7 @@
 //! touch `mustard-core`.
 
 pub(crate) mod glob;
+pub mod json_io;
 pub mod platform;
 pub mod sha256;
 pub mod source_class;

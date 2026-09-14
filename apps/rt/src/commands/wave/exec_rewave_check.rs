@@ -36,8 +36,11 @@ use crate::commands::wave::wave_lib::{detect_role_with, load_role_patterns, pars
 use crate::commands::wave::wave_scaffold::{
     Plan, WavePlanEntry, headings_for_rewave, render_wave_plan, render_wave_spec, wave_name,
 };
+use crate::util::json_io;
+use mustard_core::time::now_iso8601;
 use mustard_core::io::fs;
 use mustard_core::read_meta;
+use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -251,6 +254,20 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
             return json!({ "action": "skip", "reason": "user-rejected-waves" });
         }
 
+        // 3b. Skip per pipeline-state.
+        let state_file = ClaudePaths::for_project(&project_root)
+            .map(|p| p.pipeline_state_file(&spec_name))
+            .unwrap_or_else(|_| project_root.join(format!("{spec_name}.json")));
+        let state = json_io::read_json(&state_file);
+        if let Some(ref s) = state {
+            if s.get("isWavePlan").and_then(Value::as_bool) == Some(true) {
+                return json!({ "action": "skip", "reason": "already-decomposed" });
+            }
+            if s.get("scopeOverride").and_then(Value::as_str) == Some("user-rejected-waves") {
+                return json!({ "action": "skip", "reason": "user-rejected" });
+            }
+        }
+
         // 4. Parse `## Files`.
         let Some(file_paths) = parse_files_section(&spec_text) else {
             return json!({ "action": "skip", "reason": "error-fallback", "error": "no-files-section" });
@@ -368,6 +385,25 @@ pub fn decompose_if_signaled(spec_file: &Path) -> Value {
                 false
             }
         };
+
+        // 10. Update pipeline-state.
+        let mut updated = state.unwrap_or_else(|| json!({ "specName": spec_name }));
+        if let Some(obj) = updated.as_object_mut() {
+            obj.insert("specName".to_string(), json!(spec_name));
+            obj.insert("isWavePlan".to_string(), json!(true));
+            obj.insert("currentWave".to_string(), json!(1));
+            obj.insert("totalWaves".to_string(), json!(waves.len()));
+            obj.insert("completedWaves".to_string(), json!([]));
+            obj.insert("failedWaves".to_string(), json!([]));
+            obj.insert("rewaveSource".to_string(), json!("exec-entry"));
+            obj.insert("updatedAt".to_string(), json!(now_iso8601()));
+        }
+        if let Some(parent) = state_file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&updated) {
+            let _ = fs::write_atomic(&state_file, text.as_bytes());
+        }
 
         let mut decomposed = json!({
             "action": "decomposed",
@@ -599,7 +635,7 @@ mod tests {
         let dir = tempdir().unwrap();
         // The shared anchor predicate requires BOTH `mustard.json` and `.claude/`
         // in the same directory, so plant both.
-        std::fs::create_dir_all(mustard_core::ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
+        std::fs::create_dir_all(ClaudePaths::for_project(dir.path()).unwrap().claude_dir()).unwrap();
         std::fs::write(dir.path().join("mustard.json"), "{}").unwrap();
         let nested = dir.path().join("a").join("b");
         std::fs::create_dir_all(&nested).unwrap();

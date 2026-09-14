@@ -21,7 +21,9 @@
 //!   (`CORE_FOLDERS`) between the installed `.claude/` and the
 //!   `templates/` source. Degrades to `skip` when `templates/` is not
 //!   reachable from cwd (consumer project).
-//! - **state health** — missing `grain.model.json`. WARN.
+//! - **state health** — orphan `.pipeline-states/` files (no matching active
+//!   spec), expired `closed-followup` state files, missing
+//!   `grain.model.json`. WARN per anomaly.
 //! - **nerd-font** — at least one Nerd Font detected in the OS font
 //!   directories. WARN with install hint (`mustard install-nerd-font`) when
 //!   absent. Powerline statusline themes require this; without it the
@@ -693,15 +695,119 @@ fn check_branch_protection(cwd: &Path) -> CheckResult {
 // Check: state health
 // ---------------------------------------------------------------------------
 
-/// Check the repo model's presence (`grain.model.json`, produced by `scan`).
+/// Inspect `.claude/.pipeline-states/` for orphan or stale state files;
+/// also checks for a missing repo model (`grain.model.json`).
 fn check_state_health(claude_dir: &Path) -> CheckResult {
-    if claude_dir.join("grain.model.json").exists() {
-        return CheckResult::ok("state-health");
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Check the repo model's presence (grain.model.json, produced by `scan`).
+    let model = claude_dir.join("grain.model.json");
+    if !model.exists() {
+        warnings.push("grain.model.json missing (run `mustard-rt run scan`)".to_string());
     }
-    CheckResult::warn(
-        "state-health",
-        vec!["grain.model.json missing (run `mustard-rt run scan`)".to_string()],
-    )
+
+    // Inspect pipeline-states/.
+    let states_dir = claude_dir
+        .parent()
+        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
+        .and_then(|root| ClaudePaths::for_project(root).ok())
+        .map(|p| p.pipeline_states_dir())
+        .unwrap_or_else(|| claude_dir.to_path_buf());
+    if !states_dir.exists() {
+        // No states dir — clean install, nothing to warn about.
+        if warnings.is_empty() {
+            return CheckResult::ok("state-health");
+        }
+        return CheckResult::warn("state-health", warnings);
+    }
+
+    // Collect spec names from spec/ (flat layout — no buckets).
+    let active_specs = collect_active_spec_names(claude_dir);
+
+    let Ok(entries) = fs::read_dir(&states_dir) else {
+        warnings.push("cannot read .pipeline-states/ directory".to_string());
+        return CheckResult::warn("state-health", warnings);
+    };
+
+    // 24 hours in milliseconds for closed-followup expiry.
+    const FOLLOWUP_EXPIRY_MS: u128 = 24 * 60 * 60 * 1_000;
+    let now_ms = mustard_core::time::now_unix_millis() as u128;
+
+    for entry in entries {
+        let path = entry.path.clone();
+        let file_name = entry.file_name.clone();
+
+        // Parse the state file (JSON with at least a `spec` or `state` field).
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+
+        // Detect closed-followup: state files with status "closed-followup".
+        let state_val = val
+            .get("state")
+            .or_else(|| val.get("status"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        if state_val == "closed-followup" {
+            // Check timestamp for expiry.
+            let ts = val
+                .get("timestamp")
+                .or_else(|| val.get("updatedAt"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if is_timestamp_expired(ts, now_ms, FOLLOWUP_EXPIRY_MS) {
+                warnings.push(format!("expired closed-followup state: {file_name}"));
+            }
+            continue;
+        }
+
+        // Detect orphan: state file whose spec is not in spec/ (flat layout).
+        let spec_name = val
+            .get("spec")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if !spec_name.is_empty() && !active_specs.contains(&spec_name) {
+            warnings.push(format!("orphan state file '{file_name}' (spec '{spec_name}' not in spec/)"));
+        }
+    }
+
+    if warnings.is_empty() {
+        CheckResult::ok("state-health")
+    } else {
+        CheckResult::warn("state-health", warnings)
+    }
+}
+
+/// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
+fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
+    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
+    // `run()`; re-deriving with `for_project` here would be circular.
+    let active_dir = claude_dir.join("spec");
+    let Ok(entries) = fs::read_dir(&active_dir) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter(|e| e.is_dir)
+        .map(|e| e.file_name)
+        .collect()
+}
+
+/// Return true if `ts` (ISO-8601 string) is older than `expiry_ms` milliseconds
+/// relative to `now_ms`. Returns false on parse failure (fail-open).
+fn is_timestamp_expired(ts: &str, now_ms: u128, expiry_ms: u128) -> bool {
+    // Fail-open: a malformed / empty timestamp is treated as not-expired.
+    let Some(ts_ms) = mustard_core::time::parse_iso_millis(ts) else {
+        return false;
+    };
+    let ts_ms = ts_ms.max(0) as u128;
+    now_ms.saturating_sub(ts_ms) > expiry_ms
 }
 
 // ---------------------------------------------------------------------------
@@ -2147,11 +2253,31 @@ mod tests {
     // --- state health tests ---
 
     #[test]
+    fn state_health_orphan_state_warns() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        let states_dir = claude_dir.join(".pipeline-states");
+        std::fs::create_dir_all(&states_dir).unwrap();
+        // Plant an orphan state file (spec not in spec/ flat dir).
+        write_file(
+            &states_dir.join("orphan.json"),
+            r#"{ "spec": "2026-01-01-nonexistent-spec", "state": "execute" }"#,
+        );
+        // grain.model.json present to isolate the orphan check.
+        write_file(&claude_dir.join("grain.model.json"), "{}");
+
+        let result = check_state_health(&claude_dir);
+        assert_eq!(result.status, Status::Warn);
+        let has_orphan = result.details.iter().any(|d| d.contains("orphan"));
+        assert!(has_orphan, "expected orphan warning, got: {:?}", result.details);
+    }
+
+    #[test]
     fn state_health_missing_model_warns() {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        // No grain.model.json.
+        // No grain.model.json, no .pipeline-states/.
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Warn);
         let has_model = result.details.iter().any(|d| d.contains("grain.model.json"));
@@ -2163,10 +2289,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        // Model present.
+        // Model present, no .pipeline-states/ directory.
         write_file(&claude_dir.join("grain.model.json"), "{}");
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+    }
+
+    // --- timestamp expiry helper ---
+
+    #[test]
+    fn expired_timestamp_detected() {
+        // A timestamp far in the past is expired.
+        assert!(is_timestamp_expired("2020-01-01T00:00:00Z", u128::MAX, 1));
+    }
+
+    #[test]
+    fn future_timestamp_not_expired() {
+        // now_ms = 0, expiry = 24h — everything is in the future.
+        assert!(!is_timestamp_expired("2999-12-31T23:59:59Z", 0, 86_400_000));
+    }
+
+    #[test]
+    fn empty_timestamp_not_expired() {
+        assert!(!is_timestamp_expired("", u128::MAX, 1));
     }
 
     // --- branch-protection tests ---
