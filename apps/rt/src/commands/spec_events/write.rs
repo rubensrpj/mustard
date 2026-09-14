@@ -25,6 +25,12 @@
 //! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
 //! ```
 //!
+//! Uma onda gravada depois da aprovação que leva a spec a ter mais ondas do
+//! que tinha quando foi aprovada avisa o crescimento em `warnings`, com as
+//! duas contas; o aviso nunca recusa. Um pedido (`request`) devolve em `next`
+//! o passo seguinte, pelo `effect`: gravar as ondas novas no fim ou as versões
+//! novas das que mudam, na mesma spec e na mesma branch.
+//!
 //! Num worktree, o evento vai para o arquivo do checkout principal. As
 //! citações de arquivo de um ponto são conferidas a partir de onde o comando
 //! roda, e os nomes de código citados, no mapa do projeto: o nome que o mapa
@@ -60,8 +66,11 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::lessons::LESSON;
 use mustard_core::domain::spec_events::{type_spec, Refusal, SpecEvent, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
-use mustard_core::domain::spec_state::{birth_event, phase_write_allowed, PhaseWriter, SpecState, State};
+use mustard_core::domain::spec_state::{
+    birth_event, phase_write_allowed, waves_grown_by, PhaseWriter, SpecState, State,
+};
 use mustard_core::io::{lessons, spec_events as store};
+use mustard_core::platform::i18n::translate;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
@@ -128,8 +137,13 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     if event_type == "criterion" && super::pages::drafted_by_spec_draft(&project.root, spec) {
         return refuse(Refusal::CriteriaFromSpecMd { spec: spec.trim().to_string() });
     }
+    // O passo seguinte de um pedido, pelo efeito dele; a conferência do tipo
+    // recusa um efeito que não existe antes de o relatório sair.
+    let next = (event_type == "request")
+        .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
+        .flatten();
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
-        Ok(Recorded { written, pages }) => {
+        Ok(Recorded { written, pages, grew }) => {
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -159,8 +173,19 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             for (fact, finding) in &written.citation_warnings {
                 warnings.extend(finding.warning(*fact, lang));
             }
+            // O crescimento das ondas depois da aprovação só avisa.
+            if let Some((approved, now)) = grew {
+                warnings.push(
+                    translate("spec_events.waves_grew", lang)
+                        .replace("{approved}", &approved.to_string())
+                        .replace("{now}", &now.to_string()),
+                );
+            }
             if !warnings.is_empty() {
                 report["warnings"] = json!(warnings);
+            }
+            if let Some(key) = next {
+                report["next"] = json!(translate(&key, lang));
             }
             report
         }
@@ -175,6 +200,9 @@ pub(crate) struct Recorded {
     /// `None` quando a spec tem o `spec.md` do `spec-draft`, que fica como
     /// está.
     pub(crate) pages: Option<Result<SpecPages, Refusal>>,
+    /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
+    /// passar das ondas que tinha na aprovação que vale.
+    pub(crate) grew: Option<(usize, usize)>,
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
@@ -212,8 +240,12 @@ fn record_in(
     let name = spec.trim().to_string();
     // A página e o `.md` acompanham cada gravação e são refeitos antes de a
     // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
-    // outra sessão, só entra depois, e refaz os dois por último.
+    // outra sessão, só entra depois, e refaz os dois por último. A conta das
+    // ondas também sai dali, com a trava presa: duas ondas gravadas ao mesmo
+    // tempo nunca avisam a mesma conta.
     let mut pages = None;
+    let mut grew = None;
+    let wave = event_type == "wave";
     let written = store::write_guarded(
         &path,
         event_type,
@@ -221,12 +253,15 @@ fn record_in(
         &roots,
         |before, after| phase_rule(&name, before, after, carried.as_deref(), replaces, by, drafted),
         |log| {
+            if wave {
+                grew = waves_grown_by(log, log.max_id());
+            }
             if !drafted {
                 pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
             }
         },
     )?;
-    Ok(Recorded { written, pages })
+    Ok(Recorded { written, pages, grew })
 }
 
 /// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
@@ -1177,5 +1212,97 @@ mod tests {
             assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{page}");
             assert!(!shown.contains(&search) && !shown.contains("\"search\""), "{page} shows the search field");
         }
+    }
+
+    /// Uma spec nascida em plano, com uma mensagem, um critério e as ondas
+    /// `1..=waves`; devolve o número da mensagem e o do critério.
+    fn planned_with_waves(root: &std::path::Path, waves: u64) -> (u64, u64) {
+        born(root);
+        let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "origin": msg});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        for n in 1..=waves {
+            assert_eq!(write_wave(root, n, msg, criterion, None)["ok"], json!(true));
+        }
+        (msg, criterion)
+    }
+
+    fn write_wave(root: &std::path::Path, n: u64, origin: u64, criterion: u64, replaces: Option<u64>) -> Value {
+        let mut wave = json!({"n": n, "text": format!("Onda {n}."), "criteria": [criterion], "done_when": "d", "origin": origin});
+        if let Some(old) = replaces {
+            wave["replaces"] = json!(old);
+        }
+        write(root, "wave", &wave.to_string())
+    }
+
+    /// Um pedido do usuário depois da aprovação entra na mesma spec, na mesma
+    /// branch: nenhuma pasta de spec nova, nenhuma branch nova, e a aprovação
+    /// continua valendo. O relatório diz o passo seguinte pelo efeito.
+    #[test]
+    fn a_request_after_approval_keeps_the_spec_and_the_branch() {
+        use mustard_core::platform::i18n::Locale;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        repo_on(root, "feature/teste");
+        born(root);
+        witness_approves(root);
+        let branches = || {
+            let out = std::process::Command::new("git").args(["branch", "--list"]).current_dir(root).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        let before = branches();
+
+        let msg = write(root, "message", r#"{"author":"user","text":"inclua o Windows"}"#)["id"].as_u64().unwrap();
+        for (effect, key) in [("new_waves", "request.new_waves"), ("adjust_waves", "request.adjust_waves")] {
+            let request = json!({"text": "Incluir o Windows.", "keys": ["windows"], "effect": effect, "origin": msg});
+            let out = write(root, "request", &request.to_string());
+            assert_eq!(out["ok"], json!(true), "{out}");
+            assert_eq!(out["spec"], json!("teste"), "{out}");
+            assert_eq!(out["next"], json!(translate(key, Locale::PtBr)), "{out}");
+        }
+        let note = write(root, "note", &json!({"text": "t", "keys": ["k"], "origin": msg}).to_string());
+        assert!(note.get("next").is_none(), "only a request says the next step: {note}");
+
+        let state = DiskSpecState::new(root).state("teste").unwrap();
+        assert!(state.approved, "the user's request needs no new approval");
+        assert_eq!(state.branch.as_deref(), Some("feature/teste"));
+        assert_eq!(branches(), before, "no branch was created");
+        let specs: Vec<String> = std::fs::read_dir(root.join(".claude").join("spec"))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(specs, ["teste"], "no spec was opened");
+    }
+
+    /// Quatro ondas aprovadas e duas novas: cada onda nova é gravada, sai
+    /// sem recusa e avisa a conta; a segunda diz "tinha 4, agora tem 6". A
+    /// versão nova de uma onda não avisa.
+    #[test]
+    fn new_waves_after_approval_warn_the_growth_and_are_written() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (msg, criterion) = planned_with_waves(root, 4);
+        let before = write_wave(root, 5, msg, criterion, None);
+        assert!(before.get("warnings").is_none(), "no approval yet, no growth: {before}");
+        let removed = write(root, "remove", &json!({"targets": [before["id"]], "reason": "cedo"}).to_string());
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+        witness_approves(root);
+
+        let fifth = write_wave(root, 5, msg, criterion, None);
+        assert_eq!(fifth["ok"], json!(true), "{fifth}");
+        assert_eq!(fifth["warnings"], json!(["A spec tinha 4 ondas aprovadas, agora tem 5."]), "{fifth}");
+        let sixth = write_wave(root, 6, msg, criterion, None);
+        assert_eq!(sixth["ok"], json!(true), "{sixth}");
+        assert_eq!(sixth["warnings"], json!(["A spec tinha 4 ondas aprovadas, agora tem 6."]), "{sixth}");
+
+        let revised = write_wave(root, 6, msg, criterion, sixth["id"].as_u64());
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+        assert!(revised.get("warnings").is_none(), "a new version of a wave is not growth: {revised}");
+
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 6, "the new waves are in the file");
+        assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
     }
 }

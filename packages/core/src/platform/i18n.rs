@@ -1237,6 +1237,24 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("spec_events.names_unchecked", Locale::EnUs) => {
             "Without the project map, the cited names were not checked. Run `mustard-rt run scan`."
         }
+        ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
+        ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
+        ("request.new_waves", Locale::PtBr) => {
+            "Pedido gravado. Grave as ondas novas no fim do plano; a spec e a branch continuam as \
+             mesmas, e não há nova aprovação."
+        }
+        ("request.new_waves", Locale::EnUs) => {
+            "Request recorded. Record the new waves at the end of the plan; the spec and the branch \
+             stay the same, and there is no new approval."
+        }
+        ("request.adjust_waves", Locale::PtBr) => {
+            "Pedido gravado. Grave as versões novas das ondas que mudam, com `replaces`; a spec e a \
+             branch continuam as mesmas, e não há nova aprovação."
+        }
+        ("request.adjust_waves", Locale::EnUs) => {
+            "Request recorded. Record the new versions of the waves that change, with `replaces`; \
+             the spec and the branch stay the same, and there is no new approval."
+        }
         ("spec_events.unknown_target", Locale::PtBr) => {
             "O evento {id} não existe nesta spec. Nada foi gravado."
         }
@@ -2492,6 +2510,9 @@ mod tests {
             ("spec_events.name_elsewhere", &["{fact}", "{name}", "{path}", "{found}"][..]),
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
+            ("spec_events.waves_grew", &["{approved}", "{now}"][..]),
+            ("request.new_waves", &[][..]),
+            ("request.adjust_waves", &[][..]),
             ("spec_events.unknown_target", &["{id}"][..]),
             ("spec_events.unknown_code", &["{code}"][..]),
             ("spec_events.binary_only_field", &["{field}"][..]),
