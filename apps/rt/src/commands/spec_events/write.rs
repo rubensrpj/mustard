@@ -70,6 +70,9 @@
 //! objetivo, e ele é a resposta do usuário palavra por palavra: aponta em
 //! `origin` uma mensagem do usuário e repete o texto dela
 //! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência.
+//!
+//! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
+//! de pontos junto: este comando não o grava, nem o tira ou o revê.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -141,6 +144,9 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     };
     if event_type == "state" {
         return refuse(Refusal::StateByFlowOnly { spec: spec.trim().to_string() });
+    }
+    if event_type == "work_type" {
+        return refuse(Refusal::WorkTypeByGrill);
     }
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
@@ -336,6 +342,10 @@ fn phase_rule(
     let Some(by) = by else {
         if let Some(event_type) = BINARY_ONLY.iter().find(|t| visible_of(before, t) != visible_of(after, t)) {
             return Err(Refusal::BinaryOnlyType { event_type: (*event_type).to_string(), spec: spec.to_string() });
+        }
+        // O tipo de trabalho é do `grill`: o modelo não o tira nem o revê.
+        if visible_of(before, "work_type") != visible_of(after, "work_type") {
+            return Err(Refusal::WorkTypeByGrill);
         }
         // Os critérios de uma spec cujo `spec.md` é o documento vêm dos ACs:
         // o modelo não os tira nem os revê.
@@ -1614,5 +1624,35 @@ mod tests {
         assert_eq!(record_open(root, "teste", "feature/teste", "dev"), Ok(false));
         assert_eq!(lines(root), before);
         assert_eq!(DiskSpecState::new(root).state("teste").unwrap().phase, Some("plan"));
+    }
+
+    /// O tipo de trabalho sai só pelo `grill`: o `run write work_type` é
+    /// recusado nos dois idiomas, o modelo também não o tira, e nada é
+    /// gravado.
+    #[test]
+    fn the_work_type_is_written_only_by_grill() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", "Travar o merge.");
+        let draft = json!({ "kinds": ["feature"], "origin": said }).to_string();
+        let before = lines(root);
+        let refused = write(root, "work_type", &draft);
+        assert_eq!(refused["reason"], json!("work-type-by-grill"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains("mustard-rt run grill"), "{refused}");
+        assert_eq!(lines(root), before);
+
+        let mut by_grill = Map::new();
+        by_grill.insert("kinds".to_string(), json!(["feature"]));
+        by_grill.insert("origin".to_string(), json!(said));
+        let recorded = record(root, "teste", "work_type", by_grill, PhaseWriter::Binary).unwrap().written.id;
+        let before = lines(root);
+        let removal = write(root, "remove", &json!({ "targets": [recorded], "reason": "outro tipo" }).to_string());
+        assert_eq!(removal["reason"], json!("work-type-by-grill"), "{removal}");
+        assert_eq!(lines(root), before);
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
+        let english = write(root, "work_type", &draft);
+        assert!(english["hint"].as_str().unwrap().contains("is written by `mustard-rt run grill`"), "{english}");
     }
 }

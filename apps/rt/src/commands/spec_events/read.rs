@@ -77,7 +77,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
 }
 
 /// O checkout em que o comando roda, cuja branch diz qual é a spec atual.
-fn checkout(start: &Path) -> PathBuf {
+pub(crate) fn checkout(start: &Path) -> PathBuf {
     let start = std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf());
     mustard_core::io::workspace::workspace_root_or_self(&start)
 }

@@ -45,6 +45,28 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Survey a spec: record the work type and build the point list - the
+    /// gaps of each kind (joined without repeats in a mixed request), the
+    /// lessons and the earlier specs that match the goal, and up to three old
+    /// user messages as reminders inside those points. The assistant records
+    /// each point with `write point`; running grill again with the same kinds
+    /// writes nothing and returns the first open point.
+    #[command(display_order = 105)]
+    Grill {
+        /// The spec surveyed. Without it, the current spec.
+        #[arg(long)]
+        spec: Option<String>,
+        /// The work type, comma-separated: `feature`, `fix`, `refactor`.
+        #[arg(long)]
+        kinds: Option<String>,
+        /// A request that fits in one sentence: every point in one block,
+        /// shown at once for a single yes.
+        #[arg(long)]
+        condensed: bool,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `flow`-family `run` subcommand.
@@ -52,6 +74,9 @@ pub fn dispatch(cmd: FlowCmd) {
     match cmd {
         FlowCmd::Open { kind, name, base, root } => {
             flow::open::run(&flow::open::OpenOpts { root, kind, name, base });
+        }
+        FlowCmd::Grill { spec, kinds, condensed, root } => {
+            flow::grill::run(&flow::grill::GrillOpts { root, spec, kinds, condensed });
         }
     }
 }

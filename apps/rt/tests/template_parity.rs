@@ -90,6 +90,12 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          caller",
     ),
     (
+        "grill",
+        "the survey step of the flow (commands/flow/grill.rs): records the work \
+         type and builds the point list; the flow prose that will call it is \
+         rewritten together with the rest of the flow",
+    ),
+    (
         "index",
         "rebuilds the spec index and the search field from the event files \
          (commands/spec_events/index.rs); the doctor's divergence warning and \
@@ -311,6 +317,21 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "the READING face of the exit ritual, settling nothing. The door prose \
          instructs the ritual; the report is what an operator runs to look first, \
          and the command's help describes it",
+    ),
+    (
+        "grill",
+        "condensed",
+        "the one-sentence request of the flow's survey step \
+         (commands/flow/grill.rs); RUNTIME_WHITELIST already records that the \
+         flow prose calling grill is rewritten together with the rest of the flow",
+    ),
+    (
+        "grill",
+        "kinds",
+        "the work type of the flow's survey step (commands/flow/grill.rs), \
+         asked back by its own refusal; RUNTIME_WHITELIST already records that \
+         the flow prose calling grill is rewritten together with the rest of \
+         the flow",
     ),
     (
         "mark-checklist-item",

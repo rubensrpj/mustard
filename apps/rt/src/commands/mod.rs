@@ -102,7 +102,7 @@ pub enum RunCmd {
     /// The harness event stream: emit, project, verify.
     #[command(flatten)]
     Event(event::cli::EventCmd),
-    /// The spec flow, one command per step: open.
+    /// The spec flow, one command per step: open, grill.
     #[command(flatten)]
     Flow(flow::cli::FlowCmd),
     /// The git exit ritual of a delivered work unit.
