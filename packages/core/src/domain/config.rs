@@ -441,6 +441,16 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 
+    /// The file is there and did not load: it exists on disk and could not be
+    /// read or parsed, so every field above is a fallback, not the project's
+    /// own answer. An absent file *is* an answer — "this project declares
+    /// nothing" — and leaves this `false`. A rule that would silently switch
+    /// itself off on the empty fallback, like the write gate's base lock, asks
+    /// here and refuses instead. Never on disk: it describes the load, not the
+    /// document.
+    #[serde(skip)]
+    pub unreadable: bool,
+
     /// Any keys not modelled above — preserved verbatim across a load→write
     /// round-trip so a future field (or a user's custom key) is never dropped.
     #[serde(flatten)]
@@ -465,15 +475,22 @@ impl ProjectConfig {
         Self::json_path(root).is_file()
     }
 
-    /// Load the config from `<root>/mustard.json`, fail-open to
+    /// Load the config from `<root>/mustard.json`, falling back to
     /// [`ProjectConfig::default`] on any IO or parse error.
+    ///
+    /// The fallback keeps the two cases apart in
+    /// [`ProjectConfig::unreadable`]: a project with no file declares nothing,
+    /// and a file that exists and does not load declares nothing *that anyone
+    /// can read*. The defaults are the same; what a caller may conclude from
+    /// them is not.
     #[must_use]
     pub fn load(root: &Path) -> Self {
         let path = Self::json_path(root);
+        let broken = || Self { unreadable: true, ..Self::default() };
         let Ok(text) = fs::read_to_string(&path) else {
-            return Self::default();
+            return if path.is_file() { broken() } else { Self::default() };
         };
-        serde_json::from_str(&text).unwrap_or_default()
+        serde_json::from_str(&text).unwrap_or_else(|_| broken())
     }
 
     /// Serialize and atomically write to `<root>/mustard.json`.
@@ -672,6 +689,30 @@ mod tests {
         assert_eq!(cfg.git.provider, "");
         assert!(cfg.build_command().is_none());
         assert_eq!(cfg.vcs(), Some("git".to_string()));
+        assert!(!cfg.unreadable, "no file is an answer: this project declares nothing");
+    }
+
+    /// A file that is there and does not load gives the same defaults as no
+    /// file at all, and says so: the defaults are a fallback, not the
+    /// project's own answer. The flag never reaches the disk.
+    #[test]
+    fn a_file_that_does_not_load_is_told_apart_from_no_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+        for broken in ["{ not json", "[]", ""] {
+            std::fs::write(&path, broken).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert!(cfg.unreadable, "{broken:?} is there and does not load");
+            assert!(cfg.git.declared_bases().is_empty(), "{broken:?} declares no base either");
+        }
+        std::fs::write(&path, r#"{"git":{"flow":{"*":"dev"}}}"#).unwrap();
+        assert!(!ProjectConfig::load(dir.path()).unreadable, "a readable file is an answer");
+
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        ProjectConfig { unreadable: true, ..ProjectConfig::default() }.write(&out).unwrap();
+        let raw = std::fs::read_to_string(out.join("mustard.json")).unwrap();
+        assert!(!raw.contains("unreadable"), "it describes the load, not the document: {raw}");
     }
 
     #[test]

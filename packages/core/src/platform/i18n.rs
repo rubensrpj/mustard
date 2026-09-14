@@ -640,6 +640,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              `mustard.json`. Mustard never edits a base directly: open the spec on a work branch \
              before editing."
         }
+        ("write_gate.unreadable_config", Locale::PtBr) => {
+            "[Mustard] O `mustard.json` existe e não se lê, então ninguém sabe quais são as bases \
+             de integração e {file} não pode ser escrito. Conserte o `mustard.json` — é o único \
+             arquivo que passa enquanto ele não voltar a se ler."
+        }
+        ("write_gate.unreadable_config", Locale::EnUs) => {
+            "[Mustard] The `mustard.json` is there and does not load, so nobody knows which \
+             branches are integration bases and {file} cannot be written. Fix `mustard.json` — it \
+             is the only file that passes until it reads again."
+        }
         ("write_gate.other_branch", Locale::PtBr) => {
             "[Mustard] A spec {spec} mora na branch {branch}, e esta edição está na {current}."
         }
@@ -2912,6 +2922,7 @@ mod tests {
             ("write_gate.spec_file", &["{file}", "{spec}"][..]),
             ("write_gate.not_approved", &["{spec}", "{file}"][..]),
             ("write_gate.on_base", &["{branch}"][..]),
+            ("write_gate.unreadable_config", &["{file}"][..]),
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),

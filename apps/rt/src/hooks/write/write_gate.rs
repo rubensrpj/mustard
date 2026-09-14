@@ -20,7 +20,9 @@
 //! 5. **Base** ([`BaseRule`]): nenhuma edição direta numa base que o
 //!    `git.flow` do `mustard.json` declara, fora dos planos e da evidência
 //!    descartável. Sem `git.flow`, nenhuma branch é base; o portão nunca
-//!    pergunta ao git qual é a branch padrão.
+//!    pergunta ao git qual é a branch padrão. Um `mustard.json` que existe e
+//!    não se lê não é um projeto sem bases: ali o portão recusa toda escrita,
+//!    menos a do próprio arquivo, que é como ele volta a se ler.
 //!
 //! O estado da spec vem do [`lock_state`], a regra única da trava: com algum
 //! `state`, a dobra deles; sem nenhum, o `meta.json` — parada antes da
@@ -41,7 +43,10 @@
 //! ## Nunca falha
 //!
 //! O que não se lê — sem git, sem spec, arquivo ilegível — cala a regra que
-//! dependia dele. O portão só barra com uma resposta positiva.
+//! dependia dele. O portão só barra com uma resposta positiva. A exceção é a
+//! configuração do projeto: quando ela existe e não se lê, calar a regra da
+//! base seria abrir a trava justo onde ela devia fechar, então ali a resposta
+//! positiva é a própria leitura que falhou.
 //!
 //! ## Acrescentar uma regra
 //!
@@ -80,6 +85,9 @@ pub(crate) struct WriteContext {
     pub(crate) in_project_repo: bool,
     /// As bases que o `git.flow` declara.
     pub(crate) bases: BTreeSet<String>,
+    /// O `mustard.json` existe e não se lê: as bases acima estão vazias
+    /// porque ninguém as leu, e não porque o projeto não declarou nenhuma.
+    pub(crate) config_unreadable: bool,
     /// O idioma das mensagens.
     pub(crate) lang: Locale,
 }
@@ -95,6 +103,7 @@ impl WriteContext {
             current_branch: None,
             in_project_repo: false,
             bases: ctx.config.git.declared_bases(),
+            config_unreadable: ctx.config.unreadable,
             lang: ctx.config.language().text_or_default(),
         };
         if target.access != Access::Write {
@@ -261,12 +270,23 @@ impl WriteRule for BranchRule {
 }
 
 /// Nenhuma edição direta numa base que o `git.flow` declara.
+///
+/// Um `mustard.json` que existe e não se lê não declara que nenhuma branch é
+/// base: ele não declara nada, e ninguém sabe em que branch a edição está. Ali
+/// a regra não libera, ela recusa toda escrita — menos a do próprio arquivo,
+/// que é como ele volta a se ler.
 pub(crate) struct BaseRule;
 
 impl WriteRule for BaseRule {
     fn judge(&self, target: &WriteTarget, at: &WriteContext) -> Option<Verdict> {
         if target.access != Access::Write || !is_repo_work(&target.class) {
             return None;
+        }
+        // O caminho vem relativo à raiz, então a configuração do projeto é o
+        // nome dela, sem pasta nenhuma na frente.
+        if at.config_unreadable && target.path.trim() != "mustard.json" {
+            let reason = say("write_gate.unreadable_config", at.lang, &[("{file}", &target.path)]);
+            return Some(Verdict::Deny { reason });
         }
         let current = at.current_branch.as_deref().filter(|branch| at.bases.contains(*branch))?;
         let reason = say("write_gate.on_base", at.lang, &[("{branch}", current)]);
@@ -483,6 +503,45 @@ mod tests {
         }
     }
 
+    /// Quebrar a configuração do projeto não abre a trava da base: parado na
+    /// mesma branch de integração, com o arquivo válido o portão nega, e com o
+    /// arquivo ilegível ele nega de novo, agora dizendo que a configuração não
+    /// se lê. Só o próprio arquivo passa, que é como ele volta a se ler. Um
+    /// projeto sem arquivo nenhum continua livre.
+    #[test]
+    fn a_broken_config_never_unlocks_the_base() {
+        let dir = project(DEV_MAIN);
+        let root = dir.path();
+        repo_on(root, "dev");
+        let on_base = say("write_gate.on_base", lang(root), &[("{branch}", "dev")]);
+        match gate(root, "Edit", &abs(root, "src/lib.rs")) {
+            Verdict::Deny { reason } => assert_eq!(reason, on_base, "the valid config refuses"),
+            other => panic!("the base is refused, got {other:?}"),
+        }
+
+        std::fs::write(root.join("mustard.json"), "{ nao é json").expect("config");
+        let expected = say("write_gate.unreadable_config", lang(root), &[("{file}", "src/lib.rs")]);
+        for tool in WRITE_TOOLS {
+            match gate(root, tool, &abs(root, "src/lib.rs")) {
+                Verdict::Deny { reason } => assert_eq!(reason, expected, "{tool}"),
+                other => panic!("{tool} with an unreadable config must be refused, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            gate(root, "Write", &abs(root, "mustard.json")),
+            Verdict::Allow,
+            "the config itself is how it goes back to reading",
+        );
+
+        let empty = tempfile::tempdir().expect("tempdir");
+        repo_on(empty.path(), "dev");
+        assert_eq!(
+            gate(empty.path(), "Edit", &abs(empty.path(), "src/lib.rs")),
+            Verdict::Allow,
+            "a project with no config declares no base",
+        );
+    }
+
     /// Fora da branch da spec, a edição só avisa, nomeando as duas branches;
     /// na branch da spec, passa; numa base, a regra da base responde.
     #[test]
@@ -500,6 +559,7 @@ mod tests {
             current_branch: Some(current.to_string()),
             in_project_repo: true,
             bases: ["dev".to_string(), "main".to_string()].into(),
+            config_unreadable: false,
             lang: Locale::PtBr,
         };
         let warned = judge(RULES, &target, &at("feature/y"));
@@ -532,6 +592,7 @@ mod tests {
             current_branch: current.map(str::to_string),
             in_project_repo: true,
             bases: ["dev".to_string(), "main".to_string()].into(),
+            config_unreadable: false,
             lang: Locale::PtBr,
         };
         assert_eq!(
