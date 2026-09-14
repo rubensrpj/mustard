@@ -217,7 +217,7 @@ pub(crate) fn current_branch(vcs: &str, root: &str) -> Option<String> {
 }
 
 /// `true` when a local branch `refs/heads/<branch>` exists.
-fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
+pub(crate) fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
     Command::new(vcs)
         .args([
             "rev-parse",
@@ -236,7 +236,7 @@ fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
 /// The clone's ONLY record of a branch nobody checked out locally — which is
 /// every branch of a fresh clone but the default one, and therefore the shape
 /// the pick this module carries lands in most often.
-fn remote_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
+pub(crate) fn remote_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
     Command::new(vcs)
         .args([
             "rev-parse",

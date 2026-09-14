@@ -136,6 +136,12 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          removed in the 2.0 dashboard cut",
     ),
     (
+        "open",
+        "the door that opens a spec (commands/flow/open.rs): the branch, the \
+         spec file and the survey birth; the flow prose that will call it is \
+         rewritten together with the rest of the flow",
+    ),
+    (
         "pipeline-summary",
         "CLOSE gate 5 (advisory) - run in-process by close-orchestrate and \
          named in commands/mustard/close/SKILL.md step 7",
@@ -318,6 +324,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "the refusal hands it over already filled in - close_gates.rs prints \
          `mark-checklist-item --spec {spec} --item <text>` per unchecked box, so \
          the reader meets the flag at the moment it is needed",
+    ),
+    (
+        "open",
+        "name",
+        "the spec's name for the flow's open door (commands/flow/open.rs); \
+         RUNTIME_WHITELIST already records that the flow prose calling open \
+         is rewritten together with the rest of the flow",
     ),
     (
         "pipeline-summary",

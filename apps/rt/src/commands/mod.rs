@@ -56,6 +56,7 @@ pub mod capability;
 pub mod glossary_coverage;
 pub mod grill_capture;
 pub mod spec_events;
+pub mod flow;
 pub mod statusline;
 // Families whose commands are ported scripts living in flat modules (no
 // `<family>/` directory of their own) keep their clap enum in a `*_cli.rs`
@@ -101,6 +102,9 @@ pub enum RunCmd {
     /// The harness event stream: emit, project, verify.
     #[command(flatten)]
     Event(event::cli::EventCmd),
+    /// The spec flow, one command per step: open.
+    #[command(flatten)]
+    Flow(flow::cli::FlowCmd),
     /// The git exit ritual of a delivered work unit.
     #[command(flatten)]
     Git(git_cli::GitCmd),
@@ -144,6 +148,7 @@ pub fn dispatch(cmd: RunCmd) {
         RunCmd::Doctor(c) => doctor::cli::dispatch(c),
         RunCmd::Economy(c) => economy::cli::dispatch(c),
         RunCmd::Event(c) => event::cli::dispatch(c),
+        RunCmd::Flow(c) => flow::cli::dispatch(c),
         RunCmd::Git(c) => git_cli::dispatch(c),
         RunCmd::Maint(c) => maint::cli::dispatch(c),
         RunCmd::Pipeline(c) => pipeline::cli::dispatch(c),

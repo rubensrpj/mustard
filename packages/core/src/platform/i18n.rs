@@ -1255,6 +1255,119 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
         ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
+        ("open.choose_kind", Locale::PtBr) => {
+            "Falta o tipo. Pergunte ao usuário o tipo da branch, como feature ou fix. Nada foi criado."
+        }
+        ("open.choose_kind", Locale::EnUs) => {
+            "The kind is missing. Ask the user for the branch kind, such as feature or fix. Nothing \
+             was created."
+        }
+        ("open.choose_name", Locale::PtBr) => {
+            "Falta o nome. Pergunte ao usuário o nome da spec; ele vira a branch {kind}/<nome>. Nada \
+             foi criado."
+        }
+        ("open.choose_name", Locale::EnUs) => {
+            "The name is missing. Ask the user for the spec's name; it becomes the branch \
+             {kind}/<name>. Nothing was created."
+        }
+        ("open.choose_base", Locale::PtBr) => {
+            "Falta a base. Pergunte ao usuário de qual branch a spec sai; as candidatas estão em \
+             `candidates`. Nada foi criado."
+        }
+        ("open.choose_base", Locale::EnUs) => {
+            "The base is missing. Ask the user which branch the spec starts from; the candidates are \
+             in `candidates`. Nothing was created."
+        }
+        ("open.confirm_name", Locale::PtBr) => {
+            "O git não aceita \"{asked}\" como está. Mostre ao usuário o nome ajustado, \
+             \"{adjusted}\", e, com o sim dele, chame o open de novo com esse nome. Nada foi criado."
+        }
+        ("open.confirm_name", Locale::EnUs) => {
+            "Git does not accept \"{asked}\" as it is. Show the user the adjusted name, \
+             \"{adjusted}\", and, with their yes, call open again with that name. Nothing was \
+             created."
+        }
+        ("open.ask_goal", Locale::PtBr) => "Qual o objetivo, numa frase?",
+        ("open.ask_goal", Locale::EnUs) => "What is the goal, in one sentence?",
+        ("open.next_goal", Locale::PtBr) => {
+            "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
+             espere a resposta: ela vira o objetivo da spec, palavra por palavra, gravada como o \
+             primeiro `context`, com `origin` na mensagem dele."
+        }
+        ("open.next_goal", Locale::EnUs) => {
+            "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
+             wait for the answer: it becomes the spec's goal, word for word, recorded as the first \
+             `context`, with `origin` on their message."
+        }
+        ("open.no_flow", Locale::PtBr) => {
+            "O mustard.json não declara as bases (git.flow): as candidatas são as branches do \
+             repositório, e nenhuma fica protegida."
+        }
+        ("open.no_flow", Locale::EnUs) => {
+            "mustard.json declares no bases (git.flow): the candidates are the repository's \
+             branches, and none is protected."
+        }
+        ("open.map_warning", Locale::PtBr) => {
+            "O mapa do projeto não foi atualizado: {detail}. A spec foi aberta assim mesmo; rode \
+             `mustard-rt run scan` depois."
+        }
+        ("open.map_warning", Locale::EnUs) => {
+            "The project map was not refreshed: {detail}. The spec was opened anyway; run \
+             `mustard-rt run scan` later."
+        }
+        ("open.kind_invalid", Locale::PtBr) => {
+            "\"{kind}\" não serve como tipo de branch: use só letras minúsculas, números, - ou _, \
+             como feature ou fix. Nada foi criado."
+        }
+        ("open.kind_invalid", Locale::EnUs) => {
+            "\"{kind}\" cannot be a branch kind: use only lowercase letters, digits, - or _, such as \
+             feature or fix. Nothing was created."
+        }
+        ("open.name_empty", Locale::PtBr) => {
+            "O nome \"{asked}\" fica vazio depois do ajuste que o git pede. Peça ao usuário um nome \
+             com letras ou números. Nada foi criado."
+        }
+        ("open.name_empty", Locale::EnUs) => {
+            "The name \"{asked}\" is empty after the adjustment git requires. Ask the user for a name \
+             with letters or digits. Nothing was created."
+        }
+        ("open.base_not_found", Locale::PtBr) => {
+            "A branch {base} não existe neste repositório. Escolha uma destas: {candidates}. Nada foi \
+             criado."
+        }
+        ("open.base_not_found", Locale::EnUs) => {
+            "Branch {base} does not exist in this repository. Pick one of these: {candidates}. \
+             Nothing was created."
+        }
+        ("open.branch_taken", Locale::PtBr) => {
+            "A branch {branch} já existe. Escolha outro nome, ou retome a spec dela. Nada foi criado."
+        }
+        ("open.branch_taken", Locale::EnUs) => {
+            "Branch {branch} already exists. Pick another name, or resume its spec. Nothing was \
+             created."
+        }
+        ("open.spec_taken", Locale::PtBr) => {
+            "Já existe uma spec chamada {spec}. Escolha outro nome, ou retome essa spec. Nada foi \
+             criado."
+        }
+        ("open.spec_taken", Locale::EnUs) => {
+            "A spec named {spec} already exists. Pick another name, or resume that spec. Nothing was \
+             created."
+        }
+        ("open.tree_busy", Locale::PtBr) => {
+            "O checkout tem mudanças que não são desta spec: {paths}. Faça o commit delas, ou \
+             guarde-as, antes de abrir a spec. Nada foi criado."
+        }
+        ("open.tree_busy", Locale::EnUs) => {
+            "The checkout holds changes that are not this spec's: {paths}. Commit them, or set them \
+             aside, before opening the spec. Nothing was created."
+        }
+        ("open.git_failed", Locale::PtBr) => {
+            "O git recusou criar a branch {branch}: {detail}. Nada foi gravado na spec."
+        }
+        ("open.git_failed", Locale::EnUs) => {
+            "Git refused to create branch {branch}: {detail}. Nothing was written to the spec."
+        }
         ("request.new_waves", Locale::PtBr) => {
             "Pedido gravado. Grave as ondas novas no fim do plano; a spec e a branch continuam as \
              mesmas, e não há nova aprovação."
@@ -2565,6 +2678,37 @@ mod tests {
             ("spec_events.kind.time", &[][..]),
             ("spec_events.kind.ref", &[][..]),
             ("spec_events.kind.refs", &[][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+    }
+
+    /// Os passos, as recusas e os avisos da abertura de uma spec saem do
+    /// catálogo nos dois idiomas, cada um com as vagas que o chamador preenche.
+    #[test]
+    fn i18n_translates_open_keys() {
+        for (key, slots) in [
+            ("open.choose_kind", &[][..]),
+            ("open.choose_name", &["{kind}"][..]),
+            ("open.choose_base", &[][..]),
+            ("open.confirm_name", &["{asked}", "{adjusted}"][..]),
+            ("open.ask_goal", &[][..]),
+            ("open.next_goal", &["{spec}", "{branch}"][..]),
+            ("open.no_flow", &[][..]),
+            ("open.map_warning", &["{detail}"][..]),
+            ("open.kind_invalid", &["{kind}"][..]),
+            ("open.name_empty", &["{asked}"][..]),
+            ("open.base_not_found", &["{base}", "{candidates}"][..]),
+            ("open.branch_taken", &["{branch}"][..]),
+            ("open.spec_taken", &["{spec}"][..]),
+            ("open.tree_busy", &["{paths}"][..]),
+            ("open.git_failed", &["{branch}", "{detail}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

@@ -57,9 +57,10 @@
 //! autor `binary` é só das gravações de dentro do binário.
 //!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
-//! fluxo e da testemunha da aprovação. As portas que gravam `state` são três,
-//! todas aqui — o [`record`] da testemunha, o [`record_birth`] e o
-//! [`record_phase`] — e passam pela regra única da mudança de fase
+//! fluxo e da testemunha da aprovação. As portas que gravam `state` são
+//! quatro, todas aqui — o [`record`] da testemunha, o [`record_birth`], o
+//! [`record_open`] do `open` e o [`record_phase`] — e passam pela regra única
+//! da mudança de fase
 //! (`mustard_core::domain::spec_state::phase_write_allowed`), conferida com a
 //! trava presa, no arquivo como ele ficaria. As outras gravações deste comando
 //! também são conferidas: nenhuma delas muda o estado, nem removendo nem
@@ -657,6 +658,22 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
     if let Some(base) = base {
         draft.insert("base".to_string(), json!(base));
     }
+    record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
+}
+
+/// O nascimento de uma spec aberta pelo `open`: um `state` em levantamento,
+/// com a branch que ele acabou de criar e a base de que ela saiu, pela mesma
+/// gravação do `run write`. Uma spec que já tem fase nunca volta ao
+/// levantamento: aí nada é gravado, e a resposta é `Ok(false)`.
+pub(crate) fn record_open(start: &Path, spec: &str, branch: &str, base: &str) -> Result<bool, Refusal> {
+    if DiskSpecState::new(start).log(spec).is_some_and(|log| State::from_log(&log).phase.is_some()) {
+        return Ok(false);
+    }
+    let mut draft = Map::new();
+    draft.insert("phase".to_string(), json!("survey"));
+    draft.insert("author".to_string(), json!("binary"));
+    draft.insert("branch".to_string(), json!(branch));
+    draft.insert("base".to_string(), json!(base));
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
 }
 
@@ -1495,5 +1512,29 @@ mod tests {
         let events = std::fs::read_to_string(main.join(".claude/spec/teste/spec.ndjson")).unwrap();
         assert!(events.contains("\"type\":\"deferred\""), "the request lives in the main checkout: {events}");
         assert!(!wt.join(".claude").exists(), "nothing of the Mustard inside the worktree");
+    }
+
+    fn message(root: &std::path::Path, author: &str, text: &str) -> u64 {
+        write(root, "message", &json!({ "author": author, "text": text }).to_string())["id"].as_u64().unwrap()
+    }
+
+    fn context(root: &std::path::Path, text: &str, origin: u64) -> Value {
+        write(root, "context", &json!({ "text": text, "origin": origin }).to_string())
+    }
+
+    /// Uma spec que nasce em plano, como as do `spec-draft`, não tem a vaga do
+    /// objetivo: o primeiro `context` dela é livre, e a porta do `open` nunca
+    /// a leva de volta ao levantamento.
+    #[test]
+    fn a_spec_born_in_plan_keeps_a_free_first_context_and_never_returns_to_the_survey() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let said = message(root, "user", "oi");
+        assert_eq!(context(root, "Um contexto qualquer.", said)["ok"], json!(true));
+        let before = lines(root);
+        assert_eq!(record_open(root, "teste", "feature/teste", "dev"), Ok(false));
+        assert_eq!(lines(root), before);
+        assert_eq!(DiskSpecState::new(root).state("teste").unwrap().phase, Some("plan"));
     }
 }
