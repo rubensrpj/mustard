@@ -34,7 +34,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::domain::scan::read_projects;
+use crate::domain::scan::{read_projects, Project};
 use crate::domain::vocabulary::stacks::{StackRegistry, DEFAULT_STACKS_NAME};
 
 /// Canonical `(extension, language)` table — DATA, not logic. Lowercase, no
@@ -132,15 +132,12 @@ pub(crate) fn languages_of_paths(paths: &[String]) -> BTreeSet<String> {
 /// The languages the repo model DETECTED for the projects enclosing `paths` —
 /// each path attributed to the project whose `dir` is a path-prefix of it, that
 /// project's `detected_stacks` mapped to a language via the stack registry
-/// (override-aware). Fail-open: a missing model, no detection, or a registry
-/// error yields an empty set (the extension signal then stands alone).
+/// (override-aware). `projects` is the model already read, so this mapping never
+/// runs the scan tool itself. Fail-open: no projects, no detection, or a
+/// registry error yields an empty set (the extension signal then stands alone).
 #[must_use]
-pub(crate) fn detected_languages(paths: &[String], model_path: &Path, project_root: &Path) -> BTreeSet<String> {
-    if paths.is_empty() {
-        return BTreeSet::new();
-    }
-    let projects = read_projects(model_path);
-    if projects.is_empty() {
+pub(crate) fn detected_languages(paths: &[String], projects: &[Project], project_root: &Path) -> BTreeSet<String> {
+    if paths.is_empty() || projects.is_empty() {
         return BTreeSet::new();
     }
     let Ok(registry) = StackRegistry::load(DEFAULT_STACKS_NAME, project_root) else {
@@ -170,11 +167,14 @@ pub(crate) fn detected_languages(paths: &[String], model_path: &Path, project_ro
 /// The distinct languages a target involves — the union of the extension signal
 /// ([`languages_of_paths`]) and the model's detected stacks
 /// ([`detected_languages`]). The one entry point both gates call so their notion
-/// of "the target language" is identical.
+/// of "the target language" is identical. The model is read (a scan tool
+/// spawn) only when there are paths to attribute.
 #[must_use]
 pub fn resolve_target_languages(paths: &[String], model_path: &Path, project_root: &Path) -> BTreeSet<String> {
     let mut langs = languages_of_paths(paths);
-    langs.extend(detected_languages(paths, model_path, project_root));
+    if !paths.is_empty() {
+        langs.extend(detected_languages(paths, &read_projects(model_path), project_root));
+    }
     langs
 }
 
@@ -288,28 +288,17 @@ mod tests {
 
     #[test]
     fn detected_languages_maps_stacks_to_language_via_registry() {
-        use std::fs;
         let tmp = tempfile::tempdir().unwrap();
-        let model = tmp.path().join("grain.model.json");
-        // A minimal grain model: one project under `backend/` detected as aspnet
-        // (→ csharp in the built-in registry).
-        fs::write(
-            &model,
-            r#"{"projects":[{"name":"api","dir":"backend","kind":"dotnet","detected_stacks":[{"name":"aspnet","confidence":0.65,"signals":["dep:Swashbuckle.AspNetCore"]}]}]}"#,
+        // The model as the scan tool hands it over, already read: one project
+        // under `backend/` detected as aspnet (→ csharp in the built-in
+        // registry). Reading the model is the tool's own concern, tested there;
+        // this proves only the path → project → stack → language mapping.
+        let projects: Vec<Project> = serde_json::from_str(
+            r#"[{"name":"api","dir":"backend","kind":"dotnet","detected_stacks":[{"name":"aspnet","confidence":0.65,"signals":["dep:Swashbuckle.AspNetCore"]}]}]"#,
         )
         .unwrap();
         let files = vec!["backend/App/Controllers/PayableController.cs".to_string()];
-        // Diagnostic breadcrumbs: every branch of detected_languages is
-        // fail-open (empty set), so when the assert below trips on CI the
-        // failing stage is otherwise invisible. cargo only prints this output
-        // for FAILING tests, so it is free on green runs.
-        let projects = read_projects(&model);
-        eprintln!("diag read_projects: {} project(s)", projects.len());
-        match StackRegistry::load(DEFAULT_STACKS_NAME, tmp.path()) {
-            Ok(reg) => eprintln!("diag registry: ok, language_of(aspnet) = {:?}", reg.language_of("aspnet")),
-            Err(e) => eprintln!("diag registry: load failed: {e:?}"),
-        }
-        let langs = detected_languages(&files, &model, tmp.path());
+        let langs = detected_languages(&files, &projects, tmp.path());
         assert!(langs.contains("csharp"), "aspnet stack resolves to csharp: {langs:?}");
     }
 
@@ -317,7 +306,9 @@ mod tests {
     fn detected_languages_fail_open_without_model() {
         let tmp = tempfile::tempdir().unwrap();
         let files = vec!["backend/App/Payable.cs".to_string()];
-        // No model on disk → empty (extension signal carries the decision).
-        assert!(detected_languages(&files, &tmp.path().join("absent.json"), tmp.path()).is_empty());
+        // No model on disk reads as no projects, without running the scan tool
+        // → empty (extension signal carries the decision).
+        let projects = read_projects(&tmp.path().join("absent.json"));
+        assert!(detected_languages(&files, &projects, tmp.path()).is_empty());
     }
 }
