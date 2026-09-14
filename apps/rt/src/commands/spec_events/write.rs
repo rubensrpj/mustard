@@ -31,6 +31,11 @@
 //! o passo seguinte, pelo `effect`: gravar as ondas novas no fim ou as versões
 //! novas das que mudam, na mesma spec e na mesma branch.
 //!
+//! Um pedido adiado (`deferred`) aponta uma pendência aberta da lista do
+//! projeto, a do checkout principal num worktree: o número pode vir escrito
+//! `P-12`, e é gravado `12`. O número que a lista não tem, ou que já fechou, é
+//! recusado com o comando que cria a pendência; o `deferred` nunca cria uma.
+//!
 //! Num worktree, o evento vai para o arquivo do checkout principal. As
 //! citações de arquivo de um ponto são conferidas a partir de onde o comando
 //! roda, e os nomes de código citados, no mapa do projeto: o nome que o mapa
@@ -105,7 +110,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
 
-    let draft = match serde_json::from_str::<Value>(&opts.json) {
+    let mut draft = match serde_json::from_str::<Value>(&opts.json) {
         Ok(Value::Object(map)) => map,
         Ok(other) => {
             let shown: String = other.to_string().chars().take(80).collect();
@@ -136,6 +141,11 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     }
     if event_type == "criterion" && super::pages::drafted_by_spec_draft(&project.root, spec) {
         return refuse(Refusal::CriteriaFromSpecMd { spec: spec.trim().to_string() });
+    }
+    if event_type == "deferred"
+        && let Err(refusal) = point_to_open_pending(&opts.root, &mut draft)
+    {
+        return refuse(refusal);
     }
     // O passo seguinte de um pedido, pelo efeito dele; a conferência do tipo
     // recusa um efeito que não existe antes de o relatório sair.
@@ -190,6 +200,32 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             report
         }
         Err(refusal) => refuse(refusal),
+    }
+}
+
+/// O pedido adiado aponta uma pendência aberta da lista do projeto, vista de
+/// `start`: o número escrito `P-12` vira `12`, e o que a lista não tem, ou que
+/// já fechou, é recusado. Um valor que não é número fica como veio, para a
+/// conferência do tipo recusar.
+fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
+    let number = match draft.get("pending") {
+        Some(Value::Number(number)) => number.as_u64(),
+        Some(Value::String(text)) => {
+            let text = text.trim();
+            let digits = text.strip_prefix("P-").or_else(|| text.strip_prefix("p-")).unwrap_or(text);
+            digits.trim().parse::<u64>().ok()
+        }
+        _ => None,
+    };
+    let Some(number) = number else {
+        return Ok(());
+    };
+    draft.insert("pending".to_string(), json!(number));
+    let pending = format!("P-{number}");
+    match crate::commands::event::pending::pending_is_open(start, &pending) {
+        Some(true) => Ok(()),
+        Some(false) => Err(Refusal::DeferredClosedPending { pending }),
+        None => Err(Refusal::DeferredUnknownPending { pending }),
     }
 }
 
@@ -1304,5 +1340,160 @@ mod tests {
         let log = DiskSpecState::new(root).log("teste").unwrap();
         assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 6, "the new waves are in the file");
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
+    }
+
+    /// Acrescenta na lista de pendências do projeto em `root` uma pendência
+    /// aberta com o título `title` e devolve o número dela.
+    fn add_pending(root: &std::path::Path, title: &str) -> String {
+        use crate::commands::event::pending::{pending_at, PendingOpts};
+        let out = pending_at(&PendingOpts {
+            root: root.to_path_buf(),
+            add: true,
+            title: Some(title.into()),
+            detail: Some("combinado na spec".into()),
+            ..PendingOpts::default()
+        });
+        assert_eq!(out["ok"], json!(true), "{out}");
+        out["id"].as_str().unwrap().to_string()
+    }
+
+    /// Um projeto em pasta temporária, com o `mustard.json` que prende a
+    /// lista de pendências nele, e uma mensagem do usuário na spec `teste`.
+    fn project_with_message() -> (tempfile::TempDir, u64) {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), "{}").unwrap();
+        let msg = write(dir.path(), "message", r#"{"author":"user","text":"e o antivírus?"}"#)["id"].as_u64().unwrap();
+        (dir, msg)
+    }
+
+    fn deferred(root: &std::path::Path, pending: Value, origin: u64) -> Value {
+        let draft = json!({"text": "Medir o antivírus do Windows.", "keys": ["windows"], "pending": pending, "origin": origin});
+        write(root, "deferred", &draft.to_string())
+    }
+
+    /// O pedido de outro assunto vira uma pendência com número e, na spec, só
+    /// o pedido adiado que aponta para ela, nunca uma onda. A cobrança da
+    /// entrega acha a pendência pelo pedido adiado.
+    #[test]
+    fn a_request_on_another_subject_becomes_a_numbered_pending_and_a_deferred() {
+        use crate::commands::event::pending::{born_in, open_born_in};
+        let (dir, msg) = project_with_message();
+        let root = dir.path();
+        let id = add_pending(root, "Medir o antivírus do Windows");
+        assert_eq!(id, "P-1");
+
+        let out = deferred(root, json!(id), msg);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["code"], json!("MSTD-DEFER-0001"), "{out}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let event = log.visible().into_iter().find(|event| event.event_type == "deferred").unwrap();
+        assert_eq!(event.int("pending"), Some(1));
+        assert_eq!(born_in(&log), ["P-1"]);
+        let open: Vec<String> = open_born_in(root, &log).into_iter().map(|item| item.id).collect();
+        assert_eq!(open, ["P-1"], "the delivery asks about it");
+        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 0, "never a wave");
+    }
+
+    /// O número da pendência pode vir como `P-n`, como `p-n` ou como o número
+    /// puro: no arquivo, fica sempre o número.
+    #[test]
+    fn a_pending_number_written_as_p_n_is_recorded_as_the_number() {
+        let (dir, msg) = project_with_message();
+        let root = dir.path();
+        add_pending(root, "um");
+        add_pending(root, "dois");
+        for (pending, number) in [(json!("P-2"), 2), (json!(" p-1 "), 1), (json!(2), 2), (json!("1"), 1)] {
+            let out = deferred(root, pending.clone(), msg);
+            assert_eq!(out["ok"], json!(true), "{pending}: {out}");
+            let log = DiskSpecState::new(root).log("teste").unwrap();
+            let written = log.get(out["id"].as_u64().unwrap()).unwrap();
+            assert_eq!(written.fields.get("pending"), Some(&json!(number)), "{pending}");
+        }
+        let odd = deferred(root, json!("P-dois"), msg);
+        assert_eq!(odd["reason"], json!("invalid-value"), "{odd}");
+    }
+
+    /// Um pedido adiado para uma pendência que a lista não tem é recusado,
+    /// com o comando que cria a pendência, e nada é gravado; sem lista
+    /// nenhuma, também.
+    #[test]
+    fn a_deferred_request_pointing_to_a_missing_pending_is_refused() {
+        let (dir, msg) = project_with_message();
+        let root = dir.path();
+        let before = lines(root);
+        let no_list = deferred(root, json!(1), msg);
+        assert_eq!(no_list["reason"], json!("deferred-unknown-pending"), "{no_list}");
+        add_pending(root, "a única");
+        for pending in [json!(7), json!("P-7")] {
+            let out = deferred(root, pending, msg);
+            assert_eq!(out["reason"], json!("deferred-unknown-pending"), "{out}");
+            let hint = out["hint"].as_str().unwrap();
+            assert!(hint.contains("P-7") && hint.contains("mustard-rt run pending --add"), "{hint}");
+        }
+        assert_eq!(lines(root), before, "nothing was written");
+    }
+
+    /// Um pedido adiado para uma pendência fechada ou descartada é recusado:
+    /// a cobrança da entrega nunca veria esse pedido.
+    #[test]
+    fn a_deferred_request_pointing_to_a_closed_pending_is_refused() {
+        use crate::commands::event::pending::{pending_at, PendingOpts};
+        let (dir, msg) = project_with_message();
+        let root = dir.path();
+        let closed = add_pending(root, "fechada");
+        let dropped = add_pending(root, "descartada");
+        let settle = |close: Option<String>, drop: Option<String>, confirm: Option<String>| {
+            let out = pending_at(&PendingOpts {
+                root: root.to_path_buf(),
+                close,
+                drop,
+                confirm,
+                reason: Some("resolvida".into()),
+                ..PendingOpts::default()
+            });
+            assert_eq!(out["ok"], json!(true), "{out}");
+            out
+        };
+        settle(Some(closed.clone()), None, None);
+        // A remoção sai em duas chamadas: a prévia devolve o código, e a
+        // segunda, com ele, descarta.
+        let preview = settle(None, Some(dropped.clone()), None);
+        let token = preview["token"].as_str().map(str::to_string);
+        assert_eq!(settle(None, Some(dropped.clone()), token)["removed"], json!([dropped]));
+        let before = lines(root);
+        for id in [closed, dropped] {
+            let out = deferred(root, json!(id), msg);
+            assert_eq!(out["reason"], json!("deferred-closed-pending"), "{out}");
+            assert!(out["hint"].as_str().unwrap().contains(&id), "{out}");
+        }
+        assert_eq!(lines(root), before, "nothing was written");
+    }
+
+    /// De um worktree ligado, o pedido adiado confere a lista do checkout
+    /// principal, e vai para a spec de lá.
+    #[test]
+    fn a_deferred_request_from_a_linked_worktree_checks_the_list_of_the_main_checkout() {
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        repo_on(&main, "dev");
+        let id = add_pending(&main, "Medir o antivírus do Windows");
+        let wt = tmp.path().join("wt");
+        let ok = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/teste"])
+            .current_dir(&main)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git worktree add failed");
+
+        let msg = write(&wt, "message", r#"{"author":"user","text":"e o antivírus?"}"#)["id"].as_u64().unwrap();
+        let out = deferred(&wt, json!(id), msg);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let missing = deferred(&wt, json!("P-2"), msg);
+        assert_eq!(missing["reason"], json!("deferred-unknown-pending"), "{missing}");
+        let events = std::fs::read_to_string(main.join(".claude/spec/teste/spec.ndjson")).unwrap();
+        assert!(events.contains("\"type\":\"deferred\""), "the request lives in the main checkout: {events}");
+        assert!(!wt.join(".claude").exists(), "nothing of the Mustard inside the worktree");
     }
 }

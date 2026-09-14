@@ -1237,6 +1237,22 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("spec_events.names_unchecked", Locale::EnUs) => {
             "Without the project map, the cited names were not checked. Run `mustard-rt run scan`."
         }
+        ("spec_events.deferred_unknown_pending", Locale::PtBr) => {
+            "A pendência {pending} não existe na lista. Crie-a com `mustard-rt run pending --add` e \
+             grave o pedido adiado com o número que ela receber. Nada foi gravado."
+        }
+        ("spec_events.deferred_unknown_pending", Locale::EnUs) => {
+            "Pending item {pending} is not on the list. Create it with `mustard-rt run pending --add` \
+             and record the deferred request with the number it gets. Nothing was written."
+        }
+        ("spec_events.deferred_closed_pending", Locale::PtBr) => {
+            "A pendência {pending} já está fechada ou descartada. Um pedido adiado aponta uma \
+             pendência aberta: crie outra com `mustard-rt run pending --add`. Nada foi gravado."
+        }
+        ("spec_events.deferred_closed_pending", Locale::EnUs) => {
+            "Pending item {pending} is already closed or dropped. A deferred request points to an \
+             open item: create another one with `mustard-rt run pending --add`. Nothing was written."
+        }
         ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
         ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
         ("request.new_waves", Locale::PtBr) => {
@@ -2511,6 +2527,8 @@ mod tests {
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.waves_grew", &["{approved}", "{now}"][..]),
+            ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
+            ("spec_events.deferred_closed_pending", &["{pending}"][..]),
             ("request.new_waves", &[][..]),
             ("request.adjust_waves", &[][..]),
             ("spec_events.unknown_target", &["{id}"][..]),

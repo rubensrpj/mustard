@@ -637,6 +637,10 @@ pub enum Refusal {
     /// A página pedida de uma spec cujo `spec.md` é o documento do
     /// `spec-draft`, que refazer do arquivo de eventos apagaria.
     DraftedSpec { spec: String },
+    /// O pedido adiado (`deferred`) aponta uma pendência que a lista não tem.
+    DeferredUnknownPending { pending: String },
+    /// O pedido adiado aponta uma pendência já fechada ou descartada.
+    DeferredClosedPending { pending: String },
     Io { detail: String },
 }
 
@@ -670,6 +674,8 @@ impl Refusal {
             Self::CriteriaFromSpecMd { .. } => "criteria-from-spec-md",
             Self::BinaryAuthor => "binary-author",
             Self::DraftedSpec { .. } => "drafted-spec",
+            Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
+            Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -781,6 +787,12 @@ impl Refusal {
                 fill("spec_events.criteria_from_spec_md", &[("{spec}", spec.clone())])
             }
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
+            Self::DeferredUnknownPending { pending } => {
+                fill("spec_events.deferred_unknown_pending", &[("{pending}", pending.clone())])
+            }
+            Self::DeferredClosedPending { pending } => {
+                fill("spec_events.deferred_closed_pending", &[("{pending}", pending.clone())])
+            }
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

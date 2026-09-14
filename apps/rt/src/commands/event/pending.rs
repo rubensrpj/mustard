@@ -820,6 +820,20 @@ pub(crate) fn open_pending(root: &Path) -> Vec<OpenPending> {
         .unwrap_or_default()
 }
 
+/// A pendência `id` na lista, lida como [`open_pending`] lê: `Some(true)`
+/// aberta, `Some(false)` fechada ou descartada, `None` quando a lista não a
+/// tem. Uma lista ausente, ilegível ou corrompida não tem pendência nenhuma: é
+/// o `run pending` quem diz como consertá-la. O pedido adiado de uma spec só
+/// aponta uma pendência aberta daqui.
+#[must_use]
+pub(crate) fn pending_is_open(root: &Path, id: &str) -> Option<bool> {
+    let project = ledger_root(root);
+    let ledger = mustard_core::ClaudePaths::for_project(&project)
+        .ok()
+        .and_then(|paths| load(&paths.pending_ledger_path()).ok())?;
+    ledger.items.iter().find(|item| item.id == id).map(|item| item.status == Status::Open)
+}
+
 /// Os números das pendências que nasceram na spec: as que um evento
 /// `deferred` visível dela cita no campo `pending`.
 #[must_use]
