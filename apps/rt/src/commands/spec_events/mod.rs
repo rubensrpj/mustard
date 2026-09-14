@@ -22,9 +22,10 @@ pub(crate) mod pages;
 pub mod read;
 pub mod write;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::Refusal;
+use mustard_core::domain::spec_events::{Refusal, SpecEvent};
 use mustard_core::SupportedLocale;
 use serde_json::{json, Value};
 
@@ -44,4 +45,14 @@ pub(crate) fn project(start: &Path) -> Project {
 /// A recusa como o comando imprime.
 pub(crate) fn refused(refusal: &Refusal, lang: SupportedLocale) -> Value {
     json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) })
+}
+
+/// O evento como a leitura mostra: sem o `search`, com o código do item.
+pub(crate) fn shown(event: &SpecEvent, codes: &BTreeMap<u64, String>) -> Value {
+    let mut fields = event.fields.clone();
+    fields.remove("search");
+    if let Some(code) = codes.get(&event.id) {
+        fields.insert("code".to_string(), json!(code));
+    }
+    Value::Object(fields)
 }

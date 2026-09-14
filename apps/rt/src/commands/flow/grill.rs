@@ -35,10 +35,9 @@
 //! Recusa sai com exit 1 e `ok: false`, com a razão curta em `reason` e a
 //! mensagem no idioma do projeto em `hint`.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Kind, Refusal, SpecEvent, WORK_KINDS};
+use mustard_core::domain::spec_events::{Kind, Refusal, WORK_KINDS};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
@@ -46,7 +45,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use crate::commands::spec_events::{self, read::checkout, write::record};
+use crate::commands::spec_events::{self, read::checkout, shown, write::record};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run grill`.
@@ -270,16 +269,6 @@ fn record_work_type(
         draft.insert("replaces".to_string(), json!(id));
     }
     record(start, spec, "work_type", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
-}
-
-/// O evento como a leitura mostra: sem o `search`, com o código do item.
-fn shown(event: &SpecEvent, codes: &BTreeMap<u64, String>) -> Value {
-    let mut fields = event.fields.clone();
-    fields.remove("search");
-    if let Some(code) = codes.get(&event.id) {
-        fields.insert("code".to_string(), json!(code));
-    }
-    Value::Object(fields)
 }
 
 /// Run `grill` and print the JSON report; exit 1 on a refusal.
@@ -648,6 +637,49 @@ mod tests {
         assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr)));
         let unrouted: Vec<u64> = done["unrouted"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect();
         assert_eq!(unrouted, [loose]);
+    }
+
+    /// Lado a lado: a página e o `grill` contam pela mesma leitura dos pontos
+    /// abertos. O ponto revisto e fechado pela primeira versão sai fechado nos
+    /// dois; com todos fechados, a página não mostra nenhum pendente e o
+    /// `grill` passa ao fim.
+    #[test]
+    fn the_page_and_grill_count_the_same_open_points() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        record_list(root, "x", &grill(root, "x", Some("fix"), false));
+        let listed = grill(root, "x", Some("fix"), false);
+        let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
+        let close = |item: &Value, closes: u64| {
+            let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
+                "closes": closes, "reason": "não se aplica", "origin": said});
+            assert_eq!(write(root, Some("x"), "point", closing)["ok"], json!(true));
+        };
+        let first = &items(&listed)[0];
+        let revision = json!({"block": first["block"], "gap": first["gap"], "from": "gap", "status": "open",
+            "replaces": ids[0], "origin": said, "facts": [{"text": "Revisto.", "source": format!("mensagem {said}")}]});
+        assert_eq!(write(root, Some("x"), "point", revision)["ok"], json!(true));
+        close(first, ids[0]);
+
+        let page = || std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
+        let panel = |open: usize, closed: usize| {
+            translate("page.metrics.points.value", Locale::PtBr)
+                .replace("{open}", &open.to_string())
+                .replace("{closed}", &closed.to_string())
+        };
+        let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+        assert_eq!(survey::open_points(&log).len(), ids.len() - 1);
+        assert!(page().contains(&panel(ids.len() - 1, 1)), "the revised point closed by its first number: {}", page());
+        let next = grill(root, "x", Some("fix"), false);
+        assert_eq!(next["next"]["id"], json!(ids[1]), "{next}");
+
+        for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
+            close(item, *id);
+        }
+        assert!(page().contains(&panel(0, ids.len())), "{}", page());
+        let done = grill(root, "x", Some("fix"), false);
+        assert!(done.get("next").is_none() && done["unrouted"].is_array(), "{done}");
     }
 
     fn git(root: &Path, args: &[&str]) {

@@ -21,6 +21,7 @@ use serde_json::Value;
 use super::{Document, Field, Item, Meta, Node, Section, Table};
 use crate::domain::spec_events::{type_spec, Block, Hidden, Kind, SpecEvent, SpecLog, TYPES};
 use crate::domain::spec_state::approval_boundary;
+use crate::domain::survey;
 use crate::platform::i18n::{translate, Locale};
 
 /// Os registros da execução: não mudam o que foi aprovado, e não levam a
@@ -282,18 +283,16 @@ impl<'a> Page<'a> {
                     .replace("{rejected}", &count(&verdicts, "result", "rejected")),
             );
         }
-        let points = self.of_type("point");
-        if !points.is_empty() {
-            let closed: BTreeSet<u64> = points.iter().filter_map(|p| p.int("closes")).collect();
-            let open = points
-                .iter()
-                .filter(|p| p.str_field("status") == Some("open") && !closed.contains(&p.id))
-                .count();
+        // Os pontos contam pela mesma leitura do levantamento: o ponto revisto
+        // e fechado pela primeira versão aparece fechado aqui e no `grill`.
+        if !self.of_type("point").is_empty() {
+            let open = survey::open_points(self.log).len();
+            let closed = survey::closed_points(self.log).len();
             row(
                 "page.metrics.points",
                 self.t("page.metrics.points.value")
                     .replace("{open}", &open.to_string())
-                    .replace("{closed}", &closed.len().to_string()),
+                    .replace("{closed}", &closed.to_string()),
             );
         }
         if rows.is_empty() {
