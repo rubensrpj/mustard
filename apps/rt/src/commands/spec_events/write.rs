@@ -84,7 +84,7 @@
 //! pergunta da revisão e as opções, a de um revisor de fora no último bloco;
 //! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
-//! `remove` dele é recusado. A passagem do levantamento para o plano, e a
+//! `remove` e o `purge` dele são recusados. A passagem do levantamento para o plano, e a
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
 //! de toda porta que grava o estado.
 
@@ -2504,6 +2504,38 @@ mod tests {
         }
         assert_eq!(lines(root), before);
         assert_eq!(settle(root, &points[0], said)["point"]["id"], json!(points[1].id));
+    }
+
+    /// Um ponto aberto não sai com `purge`, nem pelo número nem pelo código:
+    /// a recusa, nos dois idiomas, manda fechá-lo antes, e o arquivo continua
+    /// igual.
+    #[test]
+    fn an_open_point_cannot_be_purged() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (_, points) = listed(root, &["fix"], false);
+        let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let before = std::fs::read(&file).unwrap();
+        let code = &points[0].code;
+        let expected = format!(
+            "O ponto {code} está aberto e não sai com `purge`: feche-o antes com um ponto que o aponte em \
+             `closes` (\"não se aplica\", com o motivo), e só depois apague o texto original. Nada foi gravado."
+        );
+        for target in [json!(points[0].id), json!(code)] {
+            let purge = write(root, "purge", &json!({"targets": [target], "reason": "secret"}).to_string());
+            assert_eq!(purge["reason"], json!("open-point-purged"), "{purge}");
+            assert_eq!(purge["hint"], json!(expected), "{purge}");
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), before, "the file stays the same");
+        let english = Refusal::OpenPointPurged { code: code.clone() }.message(Locale::EnUs);
+        assert_eq!(
+            english,
+            format!(
+                "Point {code} is open and does not leave with `purge`: first close it with a point that names it \
+                 in `closes` (\"not applicable\", with the reason), and only then purge the original text. \
+                 Nothing was written."
+            )
+        );
     }
 
     /// Uma spec sem nenhum ponto, como as do `spec-draft`, grava e aprova

@@ -691,6 +691,41 @@ mod tests {
         assert!(done.get("next").is_none() && done["unrouted"].is_array(), "{done}");
     }
 
+    /// O segredo de um ponto sai assim: o ponto fecha, "não se aplica" com o
+    /// motivo, e só depois o texto original é apagado. A lacuna continua
+    /// coberta: o `grill` e a página contam o ponto como fechado, e a
+    /// passagem para o plano não a pede de novo.
+    #[test]
+    fn a_point_closed_and_then_purged_still_covers_its_gap() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        record_list(root, "x", &grill(root, "x", Some("fix"), false));
+        let listed = grill(root, "x", Some("fix"), false);
+        let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
+        for (item, id) in items(&listed).iter().zip(&ids) {
+            let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
+                "closes": id, "reason": "O fato tinha um segredo.", "origin": said});
+            assert_eq!(write(root, Some("x"), "point", closing)["ok"], json!(true));
+        }
+        let purged = write(root, Some("x"), "purge", json!({"targets": [ids[0]], "reason": "secret", "origin": said}));
+        assert_eq!(purged["purged"], json!([ids[0]]), "{purged}");
+
+        let after = grill(root, "x", Some("fix"), false);
+        assert_eq!(after["to_record"], json!(0), "{after}");
+        assert!(items(&after).iter().all(|item| item["status"] == json!("closed")), "{after}");
+        let page = std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
+        let panel = translate("page.metrics.points.value", Locale::PtBr)
+            .replace("{open}", "0")
+            .replace("{closed}", &ids.len().to_string());
+        assert!(page.contains(&panel), "{page}");
+
+        let mut plan = Map::new();
+        plan.insert("phase".into(), json!("plan"));
+        plan.insert("author".into(), json!("binary"));
+        assert!(record(root, "x", "state", plan, PhaseWriter::Binary).is_ok(), "the gap stays covered");
+    }
+
     fn git(root: &Path, args: &[&str]) {
         let out = Command::new("git").args(args).current_dir(root).output().expect("git");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));

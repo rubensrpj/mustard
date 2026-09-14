@@ -669,6 +669,8 @@ pub enum Refusal {
     NotApplicableNeedsReason,
     /// Um `remove` que tiraria um ponto aberto da leitura.
     OpenPointRemoved { code: String },
+    /// Um `purge` que apagaria o texto de um ponto aberto.
+    OpenPointPurged { code: String },
     Io { detail: String },
 }
 
@@ -713,6 +715,7 @@ impl Refusal {
             Self::ClosingPointOpen => "closing-point-open",
             Self::NotApplicableNeedsReason => "not-applicable-needs-reason",
             Self::OpenPointRemoved { .. } => "open-point-removed",
+            Self::OpenPointPurged { .. } => "open-point-purged",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -854,6 +857,7 @@ impl Refusal {
             Self::ClosingPointOpen => fill("spec_events.closing_point_open", &[]),
             Self::NotApplicableNeedsReason => fill("spec_events.not_applicable_reason", &[]),
             Self::OpenPointRemoved { code } => fill("spec_events.open_point_removed", &[("{code}", code.clone())]),
+            Self::OpenPointPurged { code } => fill("spec_events.open_point_purged", &[("{code}", code.clone())]),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
@@ -1151,7 +1155,8 @@ pub struct Effects {
 /// No ponto do levantamento: o `closes` aponta um ponto aberto, por qualquer
 /// versão dele (a versão nova de um fechamento continua fechando o mesmo
 /// ponto), e cada número de `result` existe. Um ponto aberto não sai com
-/// `remove`, por nenhuma versão: ele só fecha, com a resposta ou o motivo.
+/// `remove` nem com `purge`, por nenhuma versão: ele só fecha, com a resposta
+/// ou o motivo, e o texto dele só é apagado depois de fechado.
 pub fn check_against(
     log: &SpecLog,
     event: &Map<String, Value>,
@@ -1198,13 +1203,7 @@ pub fn check_against(
             }
             targets.sort_unstable();
             targets.dedup();
-            let open: BTreeSet<u64> = survey::open_points(log).into_iter().map(|p| original_of(log, p)).collect();
-            if let Some(point) = targets
-                .iter()
-                .filter_map(|id| log.get(*id))
-                .find(|e| e.event_type == "point" && open.contains(&original_of(log, e)))
-            {
-                let code = log.codes().get(&point.id).cloned().unwrap_or_else(|| point.id.to_string());
+            if let Some(code) = open_point_among(log, &targets) {
                 return Err(Refusal::OpenPointRemoved { code });
             }
             effects.removed = targets;
@@ -1212,6 +1211,9 @@ pub fn check_against(
         "purge" => {
             targets.sort_unstable();
             targets.dedup();
+            if let Some(code) = open_point_among(log, &targets) {
+                return Err(Refusal::OpenPointPurged { code });
+            }
             effects.purged = targets;
         }
         _ => {}
@@ -1243,6 +1245,18 @@ fn check_closes(log: &SpecLog, event: &Map<String, Value>, target: u64) -> Resul
     }
     let id = log.codes().get(&target).map_or_else(|| target.to_string(), |code| format!("{code} ({target})"));
     Err(Refusal::PointNotOpen { id, open: survey::describe(log, &open) })
+}
+
+/// O código do primeiro ponto aberto entre os alvos de um `remove` ou de um
+/// `purge`, por qualquer versão dele; `None` quando nenhum alvo é ponto
+/// aberto.
+fn open_point_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
+    let open: BTreeSet<u64> = survey::open_points(log).into_iter().map(|p| original_of(log, p)).collect();
+    let point = targets
+        .iter()
+        .filter_map(|id| log.get(*id))
+        .find(|e| e.event_type == "point" && open.contains(&original_of(log, e)))?;
+    Some(log.codes().get(&point.id).cloned().unwrap_or_else(|| point.id.to_string()))
 }
 
 /// O evento pronto para o arquivo: a versão do formato, o número, o código do

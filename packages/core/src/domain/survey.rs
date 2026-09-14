@@ -37,7 +37,7 @@ use crate::domain::citation::cited_names;
 use crate::domain::lessons;
 use crate::domain::project_map::{importers, ProjectMap};
 use crate::domain::search::{query_terms, SearchIndex, TOP};
-use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
+use crate::domain::spec_events::{search_field, Hidden, Refusal, SpecEvent, SpecLog, WORK_KINDS};
 use crate::domain::spec_index::{title_of, IndexLine};
 use crate::domain::spec_state::{original_of, State};
 use crate::domain::text::fold_accents;
@@ -357,11 +357,34 @@ pub fn open_points(log: &SpecLog) -> Vec<&SpecEvent> {
 
 /// Os pontos gravados abertos que um `point` visível já fechou, pela mesma
 /// leitura de [`open_points`]: os dois juntos são todos os pontos que
-/// nasceram abertos. Em ordem de número.
+/// nasceram abertos. O ponto fechado cujo texto foi apagado depois, com
+/// `purge`, conta pelo fechamento dele, que é o que sobra na leitura. Em
+/// ordem de número.
 #[must_use]
 pub fn closed_points(log: &SpecLog) -> Vec<&SpecEvent> {
     let (born, closed) = born_open(log);
-    born.into_iter().filter(|p| closed.contains(&original_of(log, p))).collect()
+    let alive: BTreeSet<u64> = born.iter().map(|p| original_of(log, p)).collect();
+    let hidden = log.hidden();
+    let purged: BTreeSet<u64> = log
+        .events
+        .iter()
+        .filter(|e| matches!(hidden.get(&e.id), Some(Hidden::Purged { .. })))
+        .map(|e| original_of(log, e))
+        .collect();
+    let mut stood_for = BTreeSet::new();
+    let closings_left: Vec<&SpecEvent> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "point")
+        .filter(|e| {
+            let first = e.int("closes").and_then(|id| log.get(id)).map(|target| original_of(log, target));
+            first.is_some_and(|first| !alive.contains(&first) && purged.contains(&first) && stood_for.insert(first))
+        })
+        .collect();
+    let mut out: Vec<&SpecEvent> =
+        born.into_iter().filter(|p| closed.contains(&original_of(log, p))).chain(closings_left).collect();
+    out.sort_by_key(|p| p.id);
+    out
 }
 
 /// Os `point` visíveis com a situação `open`, na versão vigente, e a

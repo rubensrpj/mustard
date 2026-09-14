@@ -1323,6 +1323,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Point {code} is open and does not leave with `remove`: close it with a point that names \
              it in `closes`, with the answer or the reason. Nothing was written."
         }
+        ("spec_events.open_point_purged", Locale::PtBr) => {
+            "O ponto {code} está aberto e não sai com `purge`: feche-o antes com um ponto que o \
+             aponte em `closes` (\"não se aplica\", com o motivo), e só depois apague o texto \
+             original. Nada foi gravado."
+        }
+        ("spec_events.open_point_purged", Locale::EnUs) => {
+            "Point {code} is open and does not leave with `purge`: first close it with a point that \
+             names it in `closes` (\"not applicable\", with the reason), and only then purge the \
+             original text. Nothing was written."
+        }
         ("approve_spec.open_points", Locale::PtBr) => "{count} pontos do levantamento ainda abertos: {points}",
         ("approve_spec.open_points", Locale::EnUs) => "{count} survey points still open: {points}",
         ("open.choose_kind", Locale::PtBr) => {
@@ -2868,6 +2878,7 @@ mod tests {
             ("spec_events.closing_point_open", &[][..]),
             ("spec_events.not_applicable_reason", &[][..]),
             ("spec_events.open_point_removed", &["{code}"][..]),
+            ("spec_events.open_point_purged", &["{code}"][..]),
             ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
             ("spec_events.deferred_closed_pending", &["{pending}"][..]),
