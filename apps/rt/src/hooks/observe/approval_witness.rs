@@ -725,11 +725,11 @@ mod tests {
         assert!(!state(&main).approved, "nothing was recorded");
     }
 
-    /// Uma spec do `spec-draft` parada antes da execução, sem arquivo de
-    /// eventos, nasce e é aprovada no mesmo "Aprovar": primeiro o plano, com a
-    /// base do `meta.json`, depois a aprovação.
+    /// Uma pasta de spec antiga, só com o `meta.json` e o `spec.md`, fica
+    /// livre, e nada espera aprovação nela: o "Aprovar" não grava nada, não
+    /// cria o arquivo de eventos, e o `spec.md` fica como estava.
     #[test]
-    fn a_spec_opened_before_the_event_file_is_born_and_approved() {
+    fn an_old_folder_with_only_meta_json_is_not_approved_by_the_answer() {
         if ambient_override() {
             return;
         }
@@ -741,17 +741,33 @@ mod tests {
         std::fs::write(spec_dir.join("spec.md"), "# Epic\n").unwrap();
         context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
 
+        let said = witness(root, &approve_or_adjust("Aprovar"));
+        assert_eq!(said, Verdict::Inject { context: say("approval.witness.no_plan", lang(root), &[]) });
+        assert!(!spec_dir.join("spec.ndjson").exists(), "no event file is born");
+        assert_eq!(std::fs::read_to_string(spec_dir.join("spec.md")).unwrap(), "# Epic\n", "the old document stays");
+    }
+
+    /// O nascimento pela testemunha nunca lê o `meta.json`: numa spec com o
+    /// arquivo de eventos e sem `state`, um `meta.json` com base e mãe ao lado
+    /// não entra no `state` gravado.
+    #[test]
+    fn a_birth_by_the_witness_never_reads_meta_json() {
+        if ambient_override() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        record_for(root, "mae", "state", json!({ "phase": "running", "branch": "feature/mae" }));
+        record_for(root, "epic", "message", json!({ "author": "user", "text": "oi" }));
+        let meta = r#"{"scope":"light","stage":"Plan","base":"dev","parent":"mae"}"#;
+        std::fs::write(root.join(".claude").join("spec").join("epic").join("meta.json"), meta).unwrap();
+        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+
         witness(root, &approve_or_adjust("Aprovar"));
         let after = state(root);
-        assert!(after.approved, "the old spec is approved");
-        assert_eq!(after.base.as_deref(), Some("dev"), "the birth carries the base");
-        let log = std::fs::read_to_string(spec_dir.join("spec.ndjson")).unwrap();
-        let phases: Vec<String> = log
-            .lines()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap()["phase"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(phases, ["plan", "approved"], "{log}");
-        assert_eq!(std::fs::read_to_string(spec_dir.join("spec.md")).unwrap(), "# Epic\n", "the draft stays");
+        assert!(after.approved, "the spec with no phase is approved");
+        assert_eq!(after.base, None, "the base of the meta.json never enters");
+        assert_eq!(after.branch, None, "the parent's branch never enters");
     }
 
     /// Uma pergunta cancelada não responde nada e não diz nada.

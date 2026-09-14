@@ -896,9 +896,6 @@ fn sync_status_transition(cwd: &Path, spec: &str, payload: &Value, ts: &str, sid
     let Some(to) = payload.get("to").and_then(Value::as_str) else {
         return;
     };
-    // A status change also writes the `meta.json` stage: an old spec parked
-    // before execution is born in plan first.
-    crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     // Fix-loop exhaustion twin: a `to: wave-failed` status is the
     // deterministic signal a wave exhausted its fix-loops
     // (refs/resume/fix-loop-wave.md). Fan out the wave-scoped
@@ -1365,9 +1362,6 @@ fn meta_path_for(cwd: &Path, spec: &str, payload: &Value) -> Option<std::path::P
 /// process-global `run()` entry — it is the same routine `run()` calls after
 /// writing a `pipeline.stage` / `pipeline.outcome` event.
 pub(crate) fn patch_meta_for_transition(cwd: &Path, spec: &str, kind: &str, payload: &Value, ts: &str) {
-    // An old spec parked before execution is born in plan before the stage
-    // moves: the lock then reads the state, and not the `meta.json`.
-    crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     // Entering execution moves the spec's state to `running`, from an
     // approved phase only: the automatic re-wave fires on that phase.
     if kind == EVENT_PIPELINE_STAGE
@@ -1434,7 +1428,6 @@ pub(crate) fn patch_meta_complete(cwd: &Path, spec: &str, ts: &str) {
     let Some(path) = meta_path_for(cwd, spec, &Value::Null) else {
         return;
     };
-    crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     let mut meta = read_meta(&path).unwrap_or_default();
     meta.stage = Some(stage_label(Stage::Close).to_string());
     meta.outcome = Some(outcome_label(Outcome::Completed).to_string());
@@ -1538,7 +1531,6 @@ fn sync_wave_started(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 /// the forward-only guard there: an already-`Execute`-or-later stage is left
 /// untouched, never regressed. Fail-open.
 fn sync_parent_started(cwd: &Path, spec: &str, ts: &str) {
-    crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     // A wave starting is the execution too: the state moves to `running`,
     // from an approved phase only.
     let _ = crate::commands::spec_events::write::record_phase(cwd, spec, "running", None);
@@ -1777,7 +1769,6 @@ pub(crate) fn emit_dispatch_failure(
 /// Fail-open: a missing spec dir, missing/unparseable sidecar, or write
 /// failure all warn on stderr and return without propagating.
 fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
-    crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     let Some(spec_dir) = ClaudePaths::for_project(cwd)
         .and_then(|p| p.for_spec(spec))
         .ok()
@@ -1888,7 +1879,6 @@ fn bump_parent_progress(cwd: &Path, spec: &str, wave: u64, ts: &str) {
 /// straggling / duplicate final `wave.complete` does not re-finalize or
 /// re-emit. Fail-open — every path degrades without panicking.
 fn settle_final_wave(cwd: &Path, spec: &str, ts: &str) {
-    crate::commands::spec_events::write::birth_before_advance(cwd, spec);
     let Some(path) = meta_path_for(cwd, spec, &Value::Null) else {
         return;
     };

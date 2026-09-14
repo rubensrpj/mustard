@@ -756,58 +756,30 @@ pub(crate) fn record_run(
     record(start, spec, "criterion_run", draft, PhaseWriter::Binary).is_ok()
 }
 
-/// O nascimento de uma spec aberta fora do arquivo de eventos — pelo
-/// `spec-draft`, pelo `tactical-fix-create` ou, numa spec aberta antes dele,
-/// pela testemunha da aprovação: um `state` na fase `plan`, com a branch da
-/// spec e a base de que ela foi cortada, quando se sabem, pela mesma gravação
-/// do `run write`.
+/// O nascimento de uma spec com arquivo de eventos e sem nenhum `state`, pela
+/// testemunha da aprovação: um `state` na fase `plan`, com a branch da spec,
+/// quando se sabe, pela mesma gravação do `run write`. O `meta.json` nunca é
+/// lido.
 ///
-/// A branch é `branch`, quando o chamador a sabe (a que o rascunho cortou, a
-/// da spec-mãe de um tactical fix); senão, a do checkout, quando ela é a
-/// desta spec. A base vem do `meta.json` da spec. Uma spec que já tem fase
-/// nunca volta ao plano, e um rascunho refeito nunca desfaz uma aprovação.
-/// `Ok(true)` quando gravou.
+/// A branch é `branch`, quando o chamador a sabe; senão, a do checkout,
+/// quando ela é a desta spec. Uma spec que já tem fase nunca volta ao plano, e
+/// nada desfaz uma aprovação. `Ok(true)` quando gravou.
 ///
-/// Numa spec que já nasceu, completa a branch e a base que faltam, quando se
-/// sabem, revendo o `state` do nascimento: a fase fica como está, e uma
-/// branch ou uma base já gravadas nunca são trocadas. É o caso da spec
-/// rascunhada numa base e cortada depois, e da branch que nasce só no corte.
-///
-/// Um ajuste tático (o `meta.json` com `parent`) mora na branch da mãe: sem
-/// branch dita, vale a gravada da mãe, ou a do checkout quando ela é a da
-/// mãe. O nome do ajuste nunca é o de uma branch.
+/// Numa spec que já nasceu, completa a branch que falta, quando se sabe,
+/// revendo o `state` do nascimento: a fase fica como está, e uma branch já
+/// gravada nunca é trocada.
 pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Result<bool, Refusal> {
     let born = DiskSpecState::new(start).log(spec).filter(|log| State::from_log(log).phase.is_some());
-    // O `meta.json` mora na pasta da spec do checkout principal, também vista
-    // de um worktree; a branch é a do checkout em `start`.
-    let meta = ClaudePaths::for_project(store::spec_root(start))
-        .and_then(|paths| paths.for_spec(spec.trim()))
-        .ok()
-        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()));
-    let base = meta.as_ref().and_then(|meta| meta.base.clone());
-    let parent = meta
-        .and_then(|meta| meta.parent)
-        .map(|parent| parent.trim().trim_end_matches(['/', '\\']).trim().to_string())
-        .filter(|parent| !parent.is_empty());
-    let branch = match (branch, parent) {
-        (Some(branch), _) => Some(branch.to_string()),
-        (None, Some(parent)) => DiskSpecState::new(start)
-            .state(&parent)
-            .and_then(|state| state.branch)
-            .or_else(|| branch_of_spec(start, &parent)),
-        (None, None) => branch_of_spec(start, spec),
-    };
+    // A branch é a dita, ou a do checkout em `start` quando ela é a da spec.
+    let branch = branch.map(str::to_string).or_else(|| branch_of_spec(start, spec));
     if let Some(log) = born {
-        return complete_missing(start, spec, &log, branch, base);
+        return complete_missing(start, spec, &log, branch, None);
     }
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!("plan"));
     draft.insert("author".to_string(), json!("binary"));
     if let Some(branch) = branch {
         draft.insert("branch".to_string(), json!(branch));
-    }
-    if let Some(base) = base {
-        draft.insert("base".to_string(), json!(base));
     }
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
 }
@@ -826,20 +798,6 @@ pub(crate) fn record_open(start: &Path, spec: &str, branch: &str, base: &str) ->
     draft.insert("branch".to_string(), json!(branch));
     draft.insert("base".to_string(), json!(base));
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
-}
-
-/// Antes de uma porta do binário avançar o estágio do `meta.json` de uma spec
-/// sem nenhum `state` que a trava lê em plano — a antiga parada antes da
-/// execução, ou a aberta pelo `run write` sem `meta.json` —, a spec nasce em
-/// plano pelo [`record_birth`]. A trava dela deixa de seguir o `meta.json` e
-/// passa a ler o estado: a execução só vem depois do "Aprovar". O
-/// `emit-pipeline` cria o `meta.json` que falta já no estágio novo, e sem
-/// este nascimento a trava soltaria. Nas outras specs, não faz nada.
-pub(crate) fn birth_before_advance(start: &Path, spec: &str) {
-    use crate::shared::spec_state::{lock_state, unborn};
-    if unborn(start, spec) && lock_state(start, spec).is_some_and(|state| state.phase == Some("plan")) {
-        let _ = record_birth(start, spec, None);
-    }
 }
 
 /// Completa a branch e a base que faltam no estado de uma spec que já nasceu,
@@ -1310,34 +1268,6 @@ mod tests {
         let state = DiskSpecState::new(root).state("teste").unwrap();
         assert_eq!(state.branch.as_deref(), Some("feature/teste"));
         assert!(state.approved, "the approval stays");
-    }
-
-    /// Um ajuste tático nasce na branch da mãe: a gravada dela, de qualquer
-    /// checkout; sem ela, a do checkout, quando ela é a da mãe.
-    #[test]
-    fn a_tactical_fix_is_born_on_its_parents_branch() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        repo_on(root, "feature/epic");
-        let fix = |name: &str, parent: &str| {
-            let folder = root.join(".claude").join("spec").join(name);
-            std::fs::create_dir_all(&folder).unwrap();
-            let meta = json!({ "scope": "light", "stage": "Analyze", "outcome": "Active", "parent": parent });
-            std::fs::write(folder.join("meta.json"), meta.to_string()).unwrap();
-        };
-        let branch = |name: &str| DiskSpecState::new(root).state(name).unwrap().branch;
-
-        // A mãe sem branch gravada: vale a do checkout, que é a dela.
-        seed_state(root, "epic", json!({ "phase": "running" }));
-        fix("ajuste", "epic");
-        assert_eq!(record_birth(root, "ajuste", None), Ok(true));
-        assert_eq!(branch("ajuste").as_deref(), Some("feature/epic"));
-
-        // A mãe com branch gravada: vale a gravada, mesmo em outro checkout.
-        seed_state(root, "mae", json!({ "phase": "running", "branch": "feature/mae" }));
-        fix("outro-ajuste", "mae");
-        assert_eq!(record_birth(root, "outro-ajuste", None), Ok(true));
-        assert_eq!(branch("outro-ajuste").as_deref(), Some("feature/mae"));
     }
 
     #[test]

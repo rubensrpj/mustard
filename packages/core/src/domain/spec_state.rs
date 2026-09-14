@@ -13,11 +13,10 @@
 //!   dobra no lugar do item que ela substitui, e não no fim.
 //!
 //! O estado que a trava da aprovação lê tem uma regra só, [`lock_state_of`]:
-//! com algum `state`, vale a dobra deles; sem nenhum e com `meta.json`, vale
-//! o estágio dele (parada antes da execução trava; encerrada ou em execução
-//! pelo fluxo velho, não); sem nenhum, sem `meta.json` e com o `spec.ndjson`,
-//! a spec conta como em plano, e trava. Livre só quando não há nem o arquivo
-//! de eventos nem o `meta.json`: a branch que o Mustard não abriu.
+//! com algum `state`, vale a dobra deles; sem nenhum e com o `spec.ndjson`, a
+//! spec conta como em plano, e trava. Livre só quando não há o arquivo de
+//! eventos: a branch que o Mustard não abriu, e a pasta de spec antiga, que só
+//! tem o `meta.json`.
 //!
 //! Quem decide (o portão de escrita, a testemunha da aprovação, a cobrança das
 //! pendências) recebe os valores já lidos e se testa sem disco, com uma
@@ -32,7 +31,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::domain::meta::Meta;
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, PHASES};
 
 /// As fases em que a spec já foi aprovada pelo usuário.
@@ -244,42 +242,23 @@ pub fn survey_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), 
     }
 }
 
-/// O `meta.json` de uma spec parada antes da execução: em análise ou em plano
-/// (ou sem estágio), e ativa (ou sem desfecho). Uma encerrada, ou em execução
-/// pelo fluxo velho, não.
-#[must_use]
-pub fn meta_before_run(meta: &Meta) -> bool {
-    let before_run = meta
-        .stage
-        .as_deref()
-        .is_none_or(|stage| ["Analyze", "Plan"].iter().any(|s| stage.trim().eq_ignore_ascii_case(s)));
-    let active = meta.outcome.as_deref().is_none_or(|outcome| outcome.trim().eq_ignore_ascii_case("Active"));
-    before_run && active
-}
-
 /// O estado que a trava da aprovação lê: a regra escrita uma vez, para todos
-/// os leitores, a partir do arquivo de eventos (`log`) e do `meta.json`
-/// (`meta`) da spec, quando existem.
+/// os leitores, a partir do arquivo de eventos da spec (`log`), quando existe.
 ///
 /// - Com algum `state` no arquivo, vale a dobra deles.
-/// - Sem nenhum `state` e com `meta.json`, vale o estágio dele: parada antes
-///   da execução, em plano; encerrada ou em execução pelo fluxo velho, `None`.
-/// - Sem nenhum `state`, sem `meta.json` e com o arquivo, em plano: o
-///   "Aprovar" faz nascer e aprova.
-/// - `None` só sem arquivo e sem `meta.json`: a branch que o Mustard não
-///   abriu.
+/// - Sem nenhum `state` e com o arquivo, em plano: o "Aprovar" faz nascer e
+///   aprova.
+/// - `None` sem o arquivo: a branch que o Mustard não abriu, e a pasta de spec
+///   antiga, que só tem o `meta.json`.
 ///
-/// A spec em plano pelas regras sem `state` não tem branch.
+/// A spec em plano pela regra sem `state` não tem branch.
 #[must_use]
-pub fn lock_state_of(log: Option<&SpecLog>, meta: Option<&Meta>) -> Option<State> {
-    if let Some(log) = log.filter(|log| birth_event(log).is_some()) {
+pub fn lock_state_of(log: Option<&SpecLog>) -> Option<State> {
+    let log = log?;
+    if birth_event(log).is_some() {
         return Some(State::from_log(log));
     }
-    let plan = State { phase: Some("plan"), ..State::default() };
-    match meta {
-        Some(meta) => meta_before_run(meta).then_some(plan),
-        None => log.map(|_| plan),
-    }
+    Some(State { phase: Some("plan"), ..State::default() })
 }
 
 /// O `state` do nascimento: o primeiro na ordem da dobra, já com a revisão
@@ -546,38 +525,19 @@ mod tests {
         State { phase, approved: phase.is_some_and(is_approved_phase), ..State::default() }
     }
 
-    /// A regra da trava, nos quatro casos: com `state`, a dobra; sem `state`
-    /// e com `meta.json`, o estágio dele; sem os dois e com o arquivo, em
-    /// plano; sem nada, livre.
+    /// A regra da trava, nos três casos: com `state`, a dobra; sem `state` e
+    /// com o arquivo, em plano; sem o arquivo, livre.
     #[test]
-    fn the_lock_rule_reads_the_state_then_the_meta_then_the_file() {
-        let meta = |stage: &str, outcome: &str| Meta {
-            stage: Some(stage.to_string()),
-            outcome: Some(outcome.to_string()),
-            ..Meta::default()
-        };
+    fn the_lock_rule_reads_the_state_then_the_file() {
         let approved = log(&[json!({ "v": 1, "id": 1, "type": "state", "phase": "approved" })]);
         let note = log(&[json!({ "v": 1, "id": 1, "type": "message", "author": "user", "text": "oi" })]);
-        let phase = |log: Option<&SpecLog>, meta: Option<&Meta>| lock_state_of(log, meta).map(|state| state.phase);
 
-        // Com `state`, vale a dobra, diga o `meta.json` o que disser.
-        assert!(lock_state_of(Some(&approved), Some(&meta("Plan", "Active"))).is_some_and(|state| state.approved));
-        // Sem `state` e com `meta.json`: antes da execução trava; depois, não.
-        for (stage, outcome, locks) in [
-            ("Analyze", "Active", true),
-            ("Plan", "Active", true),
-            ("Execute", "Active", false),
-            ("Close", "Completed", false),
-            ("Plan", "Cancelled", false),
-        ] {
-            let expected = locks.then_some(Some("plan"));
-            assert_eq!(phase(Some(&note), Some(&meta(stage, outcome))), expected, "{stage}/{outcome}, a note");
-            assert_eq!(phase(None, Some(&meta(stage, outcome))), expected, "{stage}/{outcome}, no file");
-        }
-        // Sem `state`, sem `meta.json` e com o arquivo: em plano.
-        assert_eq!(phase(Some(&note), None), Some(Some("plan")));
-        // Sem nada: a branch que o Mustard não abriu, livre.
-        assert_eq!(phase(None, None), None);
+        // Com `state`, vale a dobra.
+        assert!(lock_state_of(Some(&approved)).is_some_and(|state| state.approved));
+        // Sem `state` e com o arquivo: em plano.
+        assert_eq!(lock_state_of(Some(&note)).map(|state| state.phase), Some(Some("plan")));
+        // Sem o arquivo: livre.
+        assert_eq!(lock_state_of(None), None);
     }
 
     /// Cada fase tem a sua porta: a aprovação só pela testemunha, a partir do

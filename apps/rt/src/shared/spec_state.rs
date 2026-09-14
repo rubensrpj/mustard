@@ -99,21 +99,15 @@ pub(crate) fn approved(root: &Path, spec: &str) -> bool {
 
 /// O estado que a trava da aprovação lê, pela regra única do núcleo
 /// ([`mustard_core::domain::spec_state::lock_state_of`]), com o arquivo de
-/// eventos e o `meta.json` da spec, os do checkout principal num worktree. O
-/// portão, a testemunha, o nascimento antes do avanço e [`approved`] passam
-/// por aqui.
+/// eventos da spec, o do checkout principal num worktree. O portão, a
+/// testemunha e [`approved`] passam por aqui.
 ///
-/// Uma spec sem `state` só segue o `meta.json` ou o arquivo até nascer: toda
-/// porta do binário que avança o estágio dela a faz nascer em plano antes
-/// ([`crate::commands::spec_events::write::birth_before_advance`]). Daí em
-/// diante a trava lê o estado, e a execução só vem depois do "Aprovar".
+/// Só o arquivo de eventos conta: uma pasta de spec antiga, só com o
+/// `meta.json`, fica livre, e um `meta.json` ao lado de um arquivo de eventos
+/// nunca muda o que o estado diz.
 #[must_use]
 pub(crate) fn lock_state(root: &Path, spec: &str) -> Option<State> {
-    let meta = mustard_core::ClaudePaths::for_project(store::spec_root(root))
-        .and_then(|paths| paths.for_spec(spec.trim()))
-        .ok()
-        .and_then(|paths| mustard_core::read_meta(&paths.meta_json_path()));
-    mustard_core::domain::spec_state::lock_state_of(DiskSpecState::new(root).log(spec).as_ref(), meta.as_ref())
+    mustard_core::domain::spec_state::lock_state_of(DiskSpecState::new(root).log(spec).as_ref())
 }
 
 /// A spec ainda não nasceu no arquivo de eventos: não há nenhum `state`
@@ -503,7 +497,7 @@ mod tests {
         std::fs::remove_file(&events).unwrap();
         std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
         unapproved("a meta");
-        assert_eq!(lock_state(root, "epic").and_then(|state| state.phase), Some("plan"), "a draft is a plan");
+        assert_eq!(lock_state(root, "epic"), None, "an old meta.json alone is free");
 
         let plan = serde_json::json!({ "phase": "plan" });
         store::write(&events, "state", plan.as_object().cloned().unwrap(), &[]).unwrap();

@@ -1197,17 +1197,6 @@ pub fn run_at(project_root: &Path, opts: SpecDraftOpts) -> i32 {
     }
     written.push(output.join("meta.json").display().to_string());
 
-    // The spec is born in the plan phase, recorded by the binary in
-    // `spec.ndjson`: the write gate blocks project code until the user chooses
-    // "Aprovar" in the question. Only in the spec's canonical folder, where the
-    // state lives.
-    if auto_output
-        && let Err(refusal) =
-            crate::commands::spec_events::write::record_birth(project_root, &slug, work_branch.as_deref())
-    {
-        eprintln!("spec-draft: WARN: {}", refusal.message(lang_locale));
-    }
-
     // ---- Deterministic ROUTING GATE — the most expensive routing error is the
     // orchestrator asking for `--scope full` when the deterministic signals
     // (single-layer, few files) do not justify it. The machine enforces the

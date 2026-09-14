@@ -14,8 +14,6 @@
 use serde_json::json;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use crate::shared::context;
-use crate::shared::spec_state::DiskSpecState;
-use mustard_core::domain::spec_state::SpecState;
 use crate::commands::spec::spec_scaffold;
 use mustard_core::time::now_iso8601;
 use mustard_core::io::claude_paths::ClaudePaths;
@@ -183,16 +181,6 @@ fn create(cwd: &Path, opts: &TacticalFixOpts) -> TacticalFixReport {
         report.error = Some(format!("write meta.json failed: {e}"));
         return report;
     }
-    // The spec is born in the plan phase, through the same recording as
-    // `spec-draft`, on the parent spec's branch, where the tactical fix goes
-    // along. There the ladder names the parent: the witness finds the fix by
-    // the session and approves it, and the write gate keeps judging the parent.
-    let parent_branch = DiskSpecState::new(cwd).state(&parent).and_then(|state| state.branch);
-    if let Err(refusal) =
-        crate::commands::spec_events::write::record_birth(cwd, &slug, parent_branch.as_deref())
-    {
-        eprintln!("tactical-fix-create: WARN: {}", refusal.message(lang));
-    }
     // Emit the `spec.link` parent → child edge in-process — the retired
     // `spec-link` face used to do this via a child process. Routed with the
     // caller's `cwd`, so unit tests under `cargo test -p mustard-rt` write to
@@ -306,28 +294,6 @@ mod tests {
         assert!(r1.error.is_none());
         let r2 = create(dir.path(), &opts);
         assert_eq!(r2.error.as_deref(), Some("dir_exists"));
-    }
-
-    /// The tactical fix is born in the plan phase, on the parent spec's branch.
-    #[test]
-    fn the_tactical_fix_is_born_in_plan_on_its_parents_branch() {
-        let dir = tempdir().unwrap();
-        let parent = mustard_core::io::spec_events::spec_file(dir.path(), "epic-1").unwrap();
-        std::fs::create_dir_all(parent.parent().unwrap()).unwrap();
-        let running = serde_json::json!({ "phase": "running", "branch": "feature/epic-1" });
-        mustard_core::io::spec_events::write(&parent, "state", running.as_object().cloned().unwrap(), &[])
-            .unwrap();
-        let opts = TacticalFixOpts {
-            parent: "epic-1".to_string(),
-            description: "Fix null guard".to_string(),
-            scope: "light".to_string(),
-        };
-        let report = create(dir.path(), &opts);
-        assert!(report.error.is_none(), "unexpected error: {:?}", report.error);
-        let state = DiskSpecState::new(dir.path()).state(&report.slug).expect("the fix is born");
-        assert_eq!(state.phase, Some("plan"));
-        assert!(!state.approved);
-        assert_eq!(state.branch.as_deref(), Some("feature/epic-1"), "it rides its parent's branch");
     }
 
     /// The parent is the name of a spec folder that exists: with a trailing

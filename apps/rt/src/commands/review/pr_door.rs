@@ -1473,10 +1473,11 @@ mod tests {
         assert_eq!(merges.get(), 1);
     }
 
-    /// End to end, with a spec opened by `spec-draft`: the approval, the
+    /// End to end, with a spec drafted by `spec-draft`: the approval, the
     /// wave's work, the review, the QA, the resume, the close and the merge
-    /// agree, with nothing written by hand in the spec file besides the
-    /// approval, which is the witness's.
+    /// agree. The draft no longer writes the spec file, so the birth in plan
+    /// and the approval, which is the witness's, are the only lines written by
+    /// hand in it.
     #[test]
     fn a_drafted_spec_goes_through_review_qa_close_and_merge() {
         use crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state;
@@ -1523,7 +1524,9 @@ mod tests {
         );
         assert_eq!(code, 0, "the draft lands");
         let events = root.join(".claude").join("spec").join("ponta").join("spec.ndjson");
-        assert!(events.is_file(), "the draft is born in the spec file");
+        let birth = json!({ "author": "binary", "phase": "plan" });
+        mustard_core::io::spec_events::write(&events, "state", birth.as_object().cloned().expect("object"), &[])
+            .expect("birth");
         let approval = json!({
             "author": "user",
             "phase": "approved",

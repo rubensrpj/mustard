@@ -662,41 +662,22 @@ mod tests {
         }
     }
 
-    /// Uma spec do `spec-draft` sem o `spec.ndjson`, aberta antes do arquivo
-    /// de eventos ou com ele apagado, conta como em plano, e trava.
+    /// Uma pasta de spec antiga, só com o `meta.json` e sem o `spec.ndjson`,
+    /// não trava, em qualquer estágio: a trava lê só o arquivo de eventos.
     #[test]
-    fn a_drafted_spec_without_its_event_file_is_locked() {
-        let dir = project("{}");
-        let root = dir.path();
-        stand_on_spec_branch(root, "x");
-        std::fs::write(root.join(".claude").join("spec").join("x").join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#)
-            .expect("meta");
-        let expected = say("write_gate.not_approved", lang(root), &[("{spec}", "x"), ("{file}", "src/main.rs")]);
-        assert_eq!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Deny { reason: expected });
-    }
-
-    /// Uma spec antiga do `spec-draft` que já executou ou fechou pelo fluxo
-    /// velho, sem `spec.ndjson`, não trava: só a parada antes da execução
-    /// conta como em plano.
-    #[test]
-    fn an_old_spec_that_ran_or_closed_is_never_locked() {
+    fn a_spec_with_only_an_old_meta_json_does_not_lock() {
         for meta in [
-            r#"{"scope":"light","stage":"Close","outcome":"Completed","phase":"CLOSE"}"#,
+            r#"{"scope":"light","stage":"Plan"}"#,
+            r#"{"scope":"full","stage":"Analyze","outcome":"Active"}"#,
             r#"{"scope":"full","stage":"Execute","outcome":"Active"}"#,
-            r#"{"scope":"light","stage":"Close","outcome":"Cancelled"}"#,
+            r#"{"scope":"light","stage":"Close","outcome":"Completed","phase":"CLOSE"}"#,
         ] {
             let dir = project("{}");
             let root = dir.path();
             stand_on_spec_branch(root, "x");
             std::fs::write(root.join(".claude").join("spec").join("x").join("meta.json"), meta).expect("meta");
             assert_eq!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Allow, "{meta}");
-            // Um recado gravado cria o arquivo de eventos sem `state`: a trava
-            // continua seguindo o `meta.json`.
-            let events = mustard_core::io::spec_events::spec_file(root, "x").expect("spec file");
-            let note = json!({ "author": "user", "text": "um recado" });
-            mustard_core::io::spec_events::write(&events, "message", note.as_object().cloned().unwrap(), &[])
-                .expect("message");
-            assert_eq!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Allow, "with a note: {meta}");
+            assert_eq!(lock_state(root, "x"), None, "{meta}");
         }
     }
 
@@ -722,28 +703,22 @@ mod tests {
         assert_eq!(lock_state(root, "x").and_then(|state| state.phase), Some("plan"), "still in plan");
     }
 
-    /// Numa spec antiga em plano, o binário que avança o estágio para a
-    /// execução, pela troca de estágio ou pelo início de onda, a faz nascer em
-    /// plano antes: a trava continua fechada até o "Aprovar".
+    /// Um estado sempre vence um `meta.json` posto ao lado: uma spec aberta
+    /// pelo `open`, em levantamento, com um `meta.json` em execução ou
+    /// encerrada, continua travada.
     #[test]
-    fn an_old_spec_in_plan_moved_to_execution_by_the_binary_stays_locked() {
-        use crate::commands::event::emit_pipeline::{emit_wave_start, patch_meta_for_transition};
-        for how in ["stage", "wave start"] {
+    fn a_state_always_wins_over_a_stray_meta_json() {
+        for meta in [
+            r#"{"scope":"light","stage":"Execute","outcome":"Active"}"#,
+            r#"{"scope":"light","stage":"Close","outcome":"Completed"}"#,
+        ] {
             let dir = project("{}");
             let root = dir.path();
             stand_on_spec_branch(root, "x");
-            let meta = root.join(".claude").join("spec").join("x").join("meta.json");
-            std::fs::write(&meta, r#"{"scope":"light","stage":"Plan","outcome":"Active"}"#).expect("meta");
-            if how == "stage" {
-                let to = json!({ "stage": "Execute" });
-                patch_meta_for_transition(root, "x", "pipeline.stage", &to, "2026-09-13T00:00:00Z");
-            } else {
-                emit_wave_start(root, "x", 1);
-            }
-            assert!(std::fs::read_to_string(&meta).expect("meta").contains("Execute"), "{how}: the stage moved");
-            assert!(matches!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Deny { .. }), "{how}: still locked");
-            let state = lock_state(root, "x").expect("the spec was born");
-            assert_eq!(state.phase, Some("plan"), "{how}");
+            assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
+            std::fs::write(root.join(".claude").join("spec").join("x").join("meta.json"), meta).expect("meta");
+            assert!(matches!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Deny { .. }), "{meta}");
+            assert_eq!(lock_state(root, "x").and_then(|state| state.phase), Some("survey"), "{meta}");
         }
     }
 
