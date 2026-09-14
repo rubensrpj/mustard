@@ -1259,6 +1259,32 @@ fn open_point_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
     Some(log.codes().get(&point.id).cloned().unwrap_or_else(|| point.id.to_string()))
 }
 
+/// O ponto que fecha outro carrega a identidade dele: a lacuna (`gap`) e a
+/// origem (`from`) do ponto fechado, lidas pelo par, entram no fechamento,
+/// qualquer que seja a lacuna que veio no pedido. Assim a lacuna segue
+/// coberta pelo fechamento depois que o original sai. Outro evento sai como
+/// entrou.
+pub fn carry_closed_identity(log: &SpecLog, event: &mut Map<String, Value>) {
+    if event.get("type").and_then(Value::as_str) != Some("point") {
+        return;
+    }
+    let Some(target) = event.get("closes").and_then(Value::as_u64).and_then(|id| log.get(id)) else {
+        return;
+    };
+    if target.event_type != "point" {
+        return;
+    }
+    let first = original_of(log, target);
+    let Some(point) = survey::points(log).into_iter().find(|point| point.first() == first) else {
+        return;
+    };
+    for field in ["gap", "from"] {
+        if let Some(value) = point.shown().fields.get(field) {
+            event.insert(field.to_string(), value.clone());
+        }
+    }
+}
+
 /// O evento pronto para o arquivo: a versão do formato, o número, o código do
 /// item (veja [`code_after`]), a hora e o campo de busca, calculado de `text`
 /// e `keys`.

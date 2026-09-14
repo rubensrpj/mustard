@@ -13,9 +13,10 @@
 //!   usuário nas specs anteriores que nenhum registro aponta ([`reminders`]).
 //!
 //! Quem grava os pontos é o assistente, pelo `write`, sobre esta lista, que
-//! não é gravada: a mesma entrada dá sempre a mesma lista. [`missing`] diz
-//! quais itens ainda não têm ponto gravado, e [`open_points`] diz quais pontos
-//! gravados continuam abertos, na ordem dos blocos.
+//! não é gravada: a mesma entrada dá sempre a mesma lista. Cada ponto gravado
+//! é lido pelo par, o original e o fechamento, numa leitura só ([`points`]):
+//! por ela, [`missing`] diz quais itens ainda não têm ponto gravado, e
+//! [`open_points`] diz quais pontos continuam abertos, na ordem dos blocos.
 //!
 //! O pedido que cabe numa frase tem o levantamento condensado: todos os
 //! pontos num bloco só ([`CONDENSED`]), mostrados de uma vez para um "sim".
@@ -29,7 +30,7 @@
 //! Função pura: sem disco e sem relógio. Quem lê o banco, o índice, as specs
 //! anteriores e o mapa é o comando.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
@@ -37,7 +38,7 @@ use crate::domain::citation::cited_names;
 use crate::domain::lessons;
 use crate::domain::project_map::{importers, ProjectMap};
 use crate::domain::search::{query_terms, SearchIndex, TOP};
-use crate::domain::spec_events::{search_field, Hidden, Refusal, SpecEvent, SpecLog, WORK_KINDS};
+use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
 use crate::domain::spec_index::{title_of, IndexLine};
 use crate::domain::spec_state::{original_of, State};
 use crate::domain::text::fold_accents;
@@ -314,14 +315,11 @@ pub fn kinds_of(event: &SpecEvent) -> Vec<&'static str> {
     WORK_KINDS.iter().copied().filter(|kind| listed.contains(kind)).collect()
 }
 
-/// A lacuna `key` já tem um ponto gravado, aberto ou fechado.
+/// A lacuna `key` já tem um ponto gravado, aberto ou fechado, pela leitura
+/// dos pares ([`points`]).
 #[must_use]
 pub fn gap_recorded(log: &SpecLog, key: GapKey) -> bool {
-    log.visible().into_iter().any(|e| {
-        e.event_type == "point"
-            && e.str_field("from").map(str::trim) == Some(FROM_GAP)
-            && e.str_field("gap").is_some_and(|gap| key.matches(gap))
-    })
+    points(log).iter().any(|point| point.from() == Some(FROM_GAP) && point.gap().is_some_and(|gap| key.matches(gap)))
 }
 
 /// As lacunas do tipo de trabalho gravado que ainda não têm ponto. Sem tipo
@@ -343,62 +341,122 @@ pub fn block_rank(block: &str) -> usize {
     BLOCKS.iter().position(|known| *known == block).map_or(BLOCKS.len() + 1, |i| i + 1)
 }
 
-/// Os pontos gravados que continuam abertos: os `point` visíveis com a
-/// situação `open` que nenhum `point` visível fecha. O `closes` pode apontar
-/// o número do ponto ou o de qualquer versão dele. Em ordem de bloco e, no
-/// mesmo bloco, pela ordem em que o ponto nasceu.
+/// Um ponto do levantamento, lido pelo par: o original, que nasceu aberto, e
+/// o ponto que o fecha.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurveyPoint<'a> {
+    first: u64,
+    original: Option<&'a SpecEvent>,
+    closing: Option<&'a SpecEvent>,
+    shown: &'a SpecEvent,
+}
+
+impl<'a> SurveyPoint<'a> {
+    /// O número da primeira versão do original: é por ele que o par se forma.
+    #[must_use]
+    pub fn first(&self) -> u64 {
+        self.first
+    }
+
+    /// O original, na versão vigente, enquanto ele está na leitura.
+    #[must_use]
+    pub fn original(&self) -> Option<&'a SpecEvent> {
+        self.original
+    }
+
+    /// O ponto que fecha este; sem ele, o ponto está aberto.
+    #[must_use]
+    pub fn closing(&self) -> Option<&'a SpecEvent> {
+        self.closing
+    }
+
+    /// O ponto está aberto: o original existe e nada o fecha.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.closing.is_none()
+    }
+
+    /// O ponto como a leitura o mostra, com o número, o código, o bloco e a
+    /// lacuna: o original, enquanto ele existe; depois que ele sai, o
+    /// fechamento, que carrega a lacuna e a origem dele.
+    #[must_use]
+    pub fn shown(&self) -> &'a SpecEvent {
+        self.shown
+    }
+
+    /// A lacuna do ponto (`gap`), lida pelo par.
+    #[must_use]
+    pub fn gap(&self) -> Option<&'a str> {
+        self.shown.str_field("gap")
+    }
+
+    /// A origem do ponto (`from`), lida pelo par.
+    #[must_use]
+    pub fn from(&self) -> Option<&'a str> {
+        self.shown.str_field("from").map(str::trim)
+    }
+
+    /// O bloco do ponto, lido pelo par.
+    #[must_use]
+    pub fn block(&self) -> &'a str {
+        self.shown.str_field("block").unwrap_or_default().trim()
+    }
+}
+
+/// A leitura única dos pontos do levantamento: cada ponto é o par formado
+/// pelo original e pelo fechamento, casados pela primeira versão do original.
+///
+/// - Com fechamento, o ponto está fechado e cobre a lacuna do original,
+///   exista ainda o original ou tenha ele saído por `remove` ou `purge`.
+/// - Sem fechamento, o ponto está aberto enquanto o original existe; sem os
+///   dois, o ponto não existe.
+///
+/// O original é o `point` visível com a situação `open`, na versão vigente; o
+/// fechamento é o `point` visível que aponta em `closes` um ponto, por
+/// qualquer versão dele. Em ordem da primeira versão do original.
+#[must_use]
+pub fn points(log: &SpecLog) -> Vec<SurveyPoint<'_>> {
+    let mut pairs: BTreeMap<u64, (Option<&SpecEvent>, Option<&SpecEvent>)> = BTreeMap::new();
+    for event in log.visible().into_iter().filter(|e| e.event_type == "point") {
+        if let Some(first) = closed_first(log, event) {
+            pairs.entry(first).or_default().1.get_or_insert(event);
+        } else if event.str_field("status").map(str::trim) == Some("open") {
+            pairs.entry(original_of(log, event)).or_default().0.get_or_insert(event);
+        }
+    }
+    pairs
+        .into_iter()
+        .filter_map(|(first, (original, closing))| {
+            let shown = original.or(closing)?;
+            Some(SurveyPoint { first, original, closing, shown })
+        })
+        .collect()
+}
+
+/// A primeira versão do ponto que `event` fecha pelo `closes`; `None` quando
+/// ele não fecha ponto nenhum.
+fn closed_first(log: &SpecLog, event: &SpecEvent) -> Option<u64> {
+    let target = log.get(event.int("closes")?).filter(|target| target.event_type == "point")?;
+    Some(original_of(log, target))
+}
+
+/// Os pontos que continuam abertos, pela leitura dos pares ([`points`]). Em
+/// ordem de bloco e, no mesmo bloco, pela ordem em que o ponto nasceu.
 #[must_use]
 pub fn open_points(log: &SpecLog) -> Vec<&SpecEvent> {
-    let (born, closed) = born_open(log);
-    let mut open: Vec<&SpecEvent> = born.into_iter().filter(|p| !closed.contains(&original_of(log, p))).collect();
-    open.sort_by_key(|p| (block_rank(p.str_field("block").unwrap_or_default()), original_of(log, p), p.id));
-    open
+    let mut open: Vec<SurveyPoint<'_>> = points(log).into_iter().filter(SurveyPoint::is_open).collect();
+    open.sort_by_key(|p| (block_rank(p.block()), p.first(), p.shown().id));
+    open.into_iter().map(|p| p.shown()).collect()
 }
 
-/// Os pontos gravados abertos que um `point` visível já fechou, pela mesma
-/// leitura de [`open_points`]: os dois juntos são todos os pontos que
-/// nasceram abertos. O ponto fechado cujo texto foi apagado depois, com
-/// `purge`, conta pelo fechamento dele, que é o que sobra na leitura. Em
-/// ordem de número.
+/// Os pontos já fechados, pela mesma leitura dos pares ([`points`]): cada um
+/// pelo original ou, se ele saiu, pelo fechamento. Com [`open_points`], são
+/// todos os pontos do levantamento. Em ordem de número.
 #[must_use]
 pub fn closed_points(log: &SpecLog) -> Vec<&SpecEvent> {
-    let (born, closed) = born_open(log);
-    let alive: BTreeSet<u64> = born.iter().map(|p| original_of(log, p)).collect();
-    let hidden = log.hidden();
-    let purged: BTreeSet<u64> = log
-        .events
-        .iter()
-        .filter(|e| matches!(hidden.get(&e.id), Some(Hidden::Purged { .. })))
-        .map(|e| original_of(log, e))
-        .collect();
-    let mut stood_for = BTreeSet::new();
-    let closings_left: Vec<&SpecEvent> = log
-        .visible()
-        .into_iter()
-        .filter(|e| e.event_type == "point")
-        .filter(|e| {
-            let first = e.int("closes").and_then(|id| log.get(id)).map(|target| original_of(log, target));
-            first.is_some_and(|first| !alive.contains(&first) && purged.contains(&first) && stood_for.insert(first))
-        })
-        .collect();
-    let mut out: Vec<&SpecEvent> =
-        born.into_iter().filter(|p| closed.contains(&original_of(log, p))).chain(closings_left).collect();
+    let mut out: Vec<&SpecEvent> = points(log).into_iter().filter(|p| !p.is_open()).map(|p| p.shown()).collect();
     out.sort_by_key(|p| p.id);
     out
-}
-
-/// Os `point` visíveis com a situação `open`, na versão vigente, e a
-/// primeira versão de cada ponto que algum `point` visível fecha.
-fn born_open(log: &SpecLog) -> (Vec<&SpecEvent>, BTreeSet<u64>) {
-    let points: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "point").collect();
-    let closed: BTreeSet<u64> = points
-        .iter()
-        .filter_map(|p| p.int("closes"))
-        .filter_map(|id| log.get(id))
-        .map(|target| original_of(log, target))
-        .collect();
-    let born = points.into_iter().filter(|p| p.str_field("status").map(str::trim) == Some("open")).collect();
-    (born, closed)
 }
 
 /// Os pontos como uma recusa os lista: o código, o número e a lacuna de cada
@@ -555,27 +613,18 @@ pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>
 /// vigente, e os registros que os fechamentos deles apontam em `result`, sem
 /// repetir, em ordem de número.
 fn block_review(log: &SpecLog, block: &str) -> (Vec<u64>, Vec<u64>) {
-    let points: Vec<&SpecEvent> =
-        closed_points(log).into_iter().filter(|p| p.str_field("block").map(str::trim) == Some(block)).collect();
-    let originals: BTreeSet<u64> = points.iter().map(|p| original_of(log, p)).collect();
-    let records: BTreeSet<u64> = log
-        .visible()
-        .into_iter()
-        .filter(|e| e.event_type == "point")
-        .filter(|e| {
-            e.int("closes").and_then(|id| log.get(id)).is_some_and(|target| originals.contains(&original_of(log, target)))
-        })
-        .flat_map(|e| e.ints("result"))
-        .collect();
-    (points.iter().map(|p| p.id).collect(), records.into_iter().collect())
+    let closed: Vec<SurveyPoint<'_>> = points(log).into_iter().filter(|p| !p.is_open() && p.block() == block).collect();
+    let mut ids: Vec<u64> = closed.iter().map(|p| p.shown().id).collect();
+    ids.sort_unstable();
+    let records: BTreeSet<u64> = closed.iter().filter_map(SurveyPoint::closing).flat_map(|c| c.ints("result")).collect();
+    (ids, records.into_iter().collect())
 }
 
-/// Algum ponto visível veio do revisor de fora: ele já conferiu o
-/// levantamento, e a revisão do último bloco não o oferece de novo.
+/// Algum ponto veio do revisor de fora, pela leitura dos pares: ele já
+/// conferiu o levantamento, e a revisão do último bloco não o oferece de
+/// novo.
 fn outside_reviewed(log: &SpecLog) -> bool {
-    log.visible()
-        .iter()
-        .any(|e| e.event_type == "point" && e.str_field("from").map(str::trim) == Some(FROM_OUTSIDE_REVIEW))
+    points(log).iter().any(|p| p.from() == Some(FROM_OUTSIDE_REVIEW))
 }
 
 /// O objetivo da spec: o primeiro `context` gravado, na versão vigente dele.
@@ -721,32 +770,23 @@ impl Proposed {
         Value::Object(out)
     }
 
-    /// O ponto gravado que registra este item: o mais novo dos pontos
-    /// visíveis com a mesma origem e a mesma lacuna. A lacuna é reconhecida
+    /// O ponto que registra este item pela leitura dos pares ([`points`]),
+    /// com a situação dele, `open` ou `closed`: o que tem a mesma origem e a
+    /// mesma lacuna, um aberto antes de um fechado. A lacuna é reconhecida
     /// pelo rótulo em qualquer idioma ou pelo nome; o resto, pelo texto do
-    /// `gap`.
-    #[must_use]
-    pub fn recorded_by<'a>(&self, log: &'a SpecLog) -> Option<&'a SpecEvent> {
-        log.visible().into_iter().filter(|e| e.event_type == "point" && self.is(e)).max_by_key(|e| e.id)
-    }
-
-    /// O ponto que registra este item pela leitura única dos pontos, com a
-    /// situação dele: entre os abertos ([`open_points`]), `open`, e entre os
-    /// fechados ([`closed_points`]), `closed`, o que tem a mesma origem e a
-    /// mesma lacuna. O ponto fechado conta pela versão que nasceu aberta,
-    /// também quando o fechamento grava outro texto na lacuna.
+    /// `gap`. O ponto vem pelo original e, se ele saiu, pelo fechamento.
     #[must_use]
     pub fn standing<'a>(&self, log: &'a SpecLog) -> Option<(&'a SpecEvent, &'static str)> {
-        let open = open_points(log).into_iter().map(|p| (p, "open"));
-        let closed = closed_points(log).into_iter().map(|p| (p, "closed"));
-        open.chain(closed).find(|(point, _)| self.is(point))
+        let points = points(log);
+        let found = |open: bool| points.iter().find(|p| p.is_open() == open && self.is(p));
+        found(true).map(|p| (p.shown(), "open")).or_else(|| found(false).map(|p| (p.shown(), "closed")))
     }
 
-    fn is(&self, point: &SpecEvent) -> bool {
-        if point.str_field("from").map(str::trim) != Some(self.from) {
+    fn is(&self, point: &SurveyPoint<'_>) -> bool {
+        if point.from() != Some(self.from) {
             return false;
         }
-        let Some(gap) = point.str_field("gap") else {
+        let Some(gap) = point.gap() else {
             return false;
         };
         match self.key {
@@ -756,10 +796,11 @@ impl Proposed {
     }
 }
 
-/// Os itens da lista que ainda não têm ponto gravado, na ordem da lista.
+/// Os itens da lista que ainda não têm ponto gravado, pela leitura dos pares,
+/// na ordem da lista.
 #[must_use]
 pub fn missing<'a>(log: &SpecLog, list: &'a [Proposed]) -> Vec<&'a Proposed> {
-    list.iter().filter(|item| item.recorded_by(log).is_none()).collect()
+    list.iter().filter(|item| item.standing(log).is_none()).collect()
 }
 
 /// O que a lista usa, já lido por quem chama.
@@ -1348,7 +1389,7 @@ mod tests {
         let list = build(&sources(&["fix"], None, &[], &[]));
         let left: Vec<Option<GapKey>> = missing(&log, &list).iter().map(|p| p.key).collect();
         assert_eq!(left, [Some(GapKey::Cause), Some(GapKey::DoneProof)]);
-        assert_eq!(list[0].recorded_by(&log).map(|p| p.id), Some(3));
+        assert_eq!(list[0].standing(&log), Some((log.get(3).unwrap(), "open")));
     }
 
     /// Um ponto aberto, como o assistente grava, com a mensagem 2 de origem.

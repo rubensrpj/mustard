@@ -726,6 +726,74 @@ mod tests {
         assert!(record(root, "x", "state", plan, PhaseWriter::Binary).is_ok(), "the gap stays covered");
     }
 
+    /// Lado a lado, a leitura única dos pontos: cada ponto é o par do
+    /// original com o fechamento, e a página, o `grill`, o passo do `write` e
+    /// a passagem para o plano o leem igual. Fechado com outro texto na
+    /// lacuna, fechado e depois apagado, fechado e depois removido, e as duas
+    /// coisas juntas: a lacuna segue coberta e o ponto conta como fechado. O
+    /// fechamento grava a lacuna do original, e o `grill` mostra o número do
+    /// original enquanto ele existe e, depois que ele sai, o do fechamento.
+    #[test]
+    fn a_closed_point_counts_the_same_on_the_page_grill_write_and_passage() {
+        let cases = [(true, None), (false, Some("purge")), (false, Some("remove")), (true, Some("purge")), (true, Some("remove"))];
+        for (reworded, leaves) in cases {
+            let case = format!("reworded: {reworded}, original: {leaves:?}");
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            record_list(root, "x", &grill(root, "x", Some("fix"), false));
+            let listed = grill(root, "x", Some("fix"), false);
+            let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
+            let close = |item: &Value, closes: u64, gap: &str| {
+                let closing = json!({"block": item["block"], "gap": gap, "from": "gap", "status": "not_applicable",
+                    "closes": closes, "reason": "O fato tinha um segredo.", "origin": said});
+                write(root, Some("x"), "point", closing)
+            };
+            let page = || std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
+            let panel = |open: usize, closed: usize| {
+                translate("page.metrics.points.value", Locale::PtBr)
+                    .replace("{open}", &open.to_string())
+                    .replace("{closed}", &closed.to_string())
+            };
+
+            let first = &items(&listed)[0];
+            let gap = first["gap"].as_str().unwrap();
+            let mut last = close(first, ids[0], if reworded { "Outro texto na lacuna" } else { gap });
+            let closing = id_of(&last);
+            let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+            assert_eq!(log.get(closing).and_then(|e| e.str_field("gap")), Some(gap), "{case}: the closing carries the gap");
+            if let Some(kind) = leaves {
+                let reason = if kind == "purge" { "secret" } else { "O fato tinha um segredo." };
+                last = write(root, Some("x"), kind, json!({"targets": [ids[0]], "reason": reason}));
+                assert_eq!(last["ok"], json!(true), "{case}: {last}");
+            }
+
+            let asked = write(root, Some("x"), "message", json!({"author": "user", "text": "E agora?"}));
+            for report in [&last, &asked] {
+                assert!(report.get("points").is_none(), "{case}: the gap is not asked again: {report}");
+                assert_eq!(report["point"]["id"], json!(ids[1]), "{case}: {report}");
+            }
+            let after = grill(root, "x", Some("fix"), false);
+            assert_eq!(after["to_record"], json!(0), "{case}: {after}");
+            assert_eq!(items(&after)[0]["status"], json!("closed"), "{case}: {after}");
+            let shown = if leaves.is_some() { closing } else { ids[0] };
+            assert_eq!(items(&after)[0]["id"], json!(shown), "{case}: {after}");
+            let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
+            assert_eq!(open, ids.len() - 1, "{case}: {after}");
+            assert_eq!(after["next"]["id"], json!(ids[1]), "{case}: {after}");
+            assert!(page().contains(&panel(ids.len() - 1, 1)), "{case}: {}", page());
+
+            for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
+                assert_eq!(close(item, *id, item["gap"].as_str().unwrap())["ok"], json!(true), "{case}");
+            }
+            assert!(page().contains(&panel(0, ids.len())), "{case}: {}", page());
+            let mut plan = Map::new();
+            plan.insert("phase".into(), json!("plan"));
+            plan.insert("author".into(), json!("binary"));
+            assert!(record(root, "x", "state", plan, PhaseWriter::Binary).is_ok(), "{case}: the gap stays covered");
+        }
+    }
+
     fn git(root: &Path, args: &[&str]) {
         let out = Command::new("git").args(args).current_dir(root).output().expect("git");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
