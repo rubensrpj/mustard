@@ -730,11 +730,10 @@ struct Refused {
     exit_nonzero: bool,
 }
 
-/// The approval preconditions besides the user's own gesture — the clarify
-/// marker of a Full spec, the recorded proof of the criteria and the authored
-/// narrative — judged once for every door that approves: `approve-spec`, and
-/// the approval witness before it records the user's choice. With
-/// `check_approval`, the user's approved state joins them.
+/// The approval preconditions of `approve-spec` besides the user's own
+/// gesture — the clarify marker of a Full spec, the recorded proof of the
+/// criteria and the authored narrative. With `check_approval`, the user's
+/// approved state joins them.
 ///
 /// `None` when nothing is unmet; otherwise the aggregated message and what
 /// the mode makes of it. The acceptance-criteria proof is evaluated OUTSIDE
@@ -792,14 +791,6 @@ fn open_points_line(root: &str, spec: &str) -> Option<String> {
             .replace("{count}", &open.len().to_string())
             .replace("{points}", &survey::describe(&log, &open)),
     )
-}
-
-/// What still stops the approval witness from recording the user's
-/// "Aprovar": the [`preconditions`] the mode makes blocking, in the words
-/// `approve-spec` would refuse with. `None` when the witness may record.
-pub(crate) fn unmet_before_approval(root: &str, spec: &str) -> Option<String> {
-    preconditions(root, spec, resolve_approval_mode(), false)
-        .and_then(|(message, gate)| (gate == ApprovalGate::Block).then_some(message))
 }
 
 /// Decide the approval against `root` and, only if it passes, feed every event

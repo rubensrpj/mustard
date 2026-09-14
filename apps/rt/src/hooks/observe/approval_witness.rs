@@ -27,10 +27,6 @@
 //!    "Aprovar" ou "Approve". "Não aprovar", "Don't approve" e "Aprovar
 //!    depois" não aprovam.
 //!
-//! Um ajuste tático mora na branch da spec-mãe, então a escada nomeia a mãe.
-//! Quando a spec da branch não espera aprovação, a testemunha olha a spec
-//! ligada à sessão e aprova o ajuste que espera.
-//!
 //! ## Só a pergunta de aprovação
 //!
 //! A testemunha age numa pergunta só: a de aprovação, feita com o texto do
@@ -39,20 +35,18 @@
 //! uma opção como "Aprovação manual", numa pergunta sobre outra coisa, não é
 //! a aprovação da spec.
 //!
-//! ## As conferências do `approve-spec` vêm antes
+//! ## Os pontos abertos barram
 //!
-//! Antes de gravar, a testemunha roda as mesmas conferências do
-//! `approve-spec`, pela mesma função: o `.clarified` de uma spec Full, a prova
-//! dos critérios e a narrativa escrita. Se alguma barra, nada é gravado, e o
-//! motivo vai ao assistente: a trava do código só abre quando a spec pode de
-//! fato ser aprovada.
+//! A testemunha não confere nada por conta própria: a aprovação passa pela
+//! mesma gravação do `run write`, e a regra do núcleo recusa aprovar uma spec
+//! com ponto do levantamento aberto. Na recusa, nada é gravado, e o motivo do
+//! núcleo, com o código e a lacuna de cada ponto, vai ao assistente. A regra
+//! lê a spec no checkout principal, também quando a pergunta é respondida num
+//! worktree.
 //!
-//! As conferências leem a spec no checkout principal, onde moram o `spec.md`
-//! e o `meta.json`, também quando a pergunta é respondida num worktree.
-//!
-//! Uma spec ainda sem nascimento — uma spec do `spec-draft` parada antes da
-//! execução, sem nenhum `state`, com ou sem arquivo de eventos — recebe no
-//! "Aprovar" primeiro o nascimento, em plano, e depois a aprovação.
+//! Uma spec ainda sem nascimento — sem nenhum `state`, com ou sem arquivo de
+//! eventos — recebe no "Aprovar" primeiro o nascimento, em plano, e depois a
+//! aprovação.
 //!
 //! ## Nunca barra, nunca cala
 //!
@@ -60,21 +54,20 @@
 //! assistente, ou `Allow`. O texto de um gancho no stderr não chega ao
 //! modelo, então tudo o que ela tem a dizer vai pelo `Inject`: a sugestão de
 //! `/clear` depois de gravar; por que nada foi gravado quando a spec esperava
-//! aprovação e a resposta não aprovou, ou quando uma conferência barrou; e,
+//! aprovação e a resposta não aprovou, ou quando a gravação foi recusada; e,
 //! quando uma aprovação foi escolhida sem spec em plano, ou com a spec já
 //! aprovada, que nada foi gravado. Uma pergunta cancelada não diz nada.
 
 use std::path::Path;
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
-use mustard_core::io::spec_events::spec_root;
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::hooks::write::write_gate::say;
-use crate::shared::context;
 use crate::shared::spec_state::DiskSpecState;
 
 /// A testemunha da aprovação, no `PostToolUse` da pergunta com opções.
@@ -94,64 +87,28 @@ enum Standing {
     NoPlan,
 }
 
-impl Standing {
-    fn awaits(&self) -> bool {
-        matches!(self, Self::Awaiting(_) | Self::Unborn(_))
-    }
-}
-
 /// A spec que a pergunta de aprovação decide, e onde ela está: a spec atual,
-/// pela escada única; quando ela não espera aprovação, a spec ligada à
-/// sessão, se essa espera e se o `meta.json` dela nomeia como mãe a spec
-/// atual. É o caso do ajuste tático, que mora na branch da spec-mãe: a escada
-/// nomeia a mãe. Qualquer outra spec ligada à sessão fica de fora: a sessão se
-/// liga a toda spec que um evento nomeia.
+/// pela escada única. Outra spec ligada à sessão nunca é decidida por ali: a
+/// sessão se liga a toda spec que um evento nomeia.
 fn standing(root: &str, session: Option<&str>) -> Standing {
-    let disk = DiskSpecState::new(Path::new(root));
-    let home = spec_root(Path::new(root));
+    let Some(spec) = DiskSpecState::new(Path::new(root)).active(session) else {
+        return Standing::NoPlan;
+    };
     // O estado que a trava lê, pela mesma função do portão: a spec sem nenhum
     // `state`, que a regra da trava lê em plano, espera aprovação como uma em
     // plano.
-    let judge = |spec: String| {
-        let Some(state) = crate::shared::spec_state::lock_state(Path::new(root), &spec) else {
-            return Standing::NoPlan;
-        };
-        if state.phase == Some("plan") && crate::shared::spec_state::unborn(Path::new(root), &spec) {
-            Standing::Unborn(spec)
-        } else if state.phase == Some("plan") {
-            Standing::Awaiting(spec)
-        } else if state.approved {
-            Standing::Approved(spec)
-        } else {
-            Standing::NoPlan
-        }
-    };
-    let Some(spec) = disk.active(session) else {
+    let Some(state) = crate::shared::spec_state::lock_state(Path::new(root), &spec) else {
         return Standing::NoPlan;
     };
-    let current = judge(spec.clone());
-    if current.awaits() {
-        return current;
+    if state.phase == Some("plan") && crate::shared::spec_state::unborn(Path::new(root), &spec) {
+        Standing::Unborn(spec)
+    } else if state.phase == Some("plan") {
+        Standing::Awaiting(spec)
+    } else if state.approved {
+        Standing::Approved(spec)
+    } else {
+        Standing::NoPlan
     }
-    session
-        .and_then(|sid| context::spec_for_session(root, sid))
-        .filter(|bound| *bound != spec && parent_of(&home, bound).is_some_and(|parent| same_spec(&parent, &spec)))
-        .map(judge)
-        .filter(Standing::awaits)
-        .unwrap_or(current)
-}
-
-/// A spec-mãe que o `meta.json` de `spec` nomeia: a de um ajuste tático.
-fn parent_of(home: &Path, spec: &str) -> Option<String> {
-    let paths = mustard_core::ClaudePaths::for_project(home).ok()?.for_spec(spec).ok()?;
-    mustard_core::read_meta(&paths.meta_json_path())?.parent
-}
-
-/// Os dois nomes são a mesma spec: aparados, sem a barra do fim e sem
-/// distinguir maiúsculas. Um ajuste antigo pode ter gravado a mãe como veio.
-fn same_spec(a: &str, b: &str) -> bool {
-    let bare = |name: &str| name.trim().trim_end_matches(['/', '\\']).trim().to_ascii_lowercase();
-    bare(a) == bare(b)
 }
 
 /// A pergunta é a de aprovação, com o texto do catálogo em um dos idiomas.
@@ -199,40 +156,34 @@ fn is_approve_option(label: &str) -> bool {
         .any(|lang| translate("approval.option", lang).trim() == label.trim())
 }
 
-/// Aprova a spec `spec`, que esperava aprovação: roda as conferências do
-/// `approve-spec` e, se nenhuma barra, grava o nascimento quando a spec ainda
-/// não tem fase (`unborn`) e depois a aprovação. Devolve o que dizer ao
-/// assistente; `None` quando uma gravação foi recusada.
-fn approve(root: &str, spec: &str, question: &str, answer: &str, unborn: bool, lang: Locale) -> Option<String> {
-    // As conferências leem a spec no checkout principal, também vista de um
-    // worktree, onde não há `spec.md` nem `meta.json`.
-    let home = spec_root(Path::new(root));
-    if let Some(unmet) = crate::commands::spec::approve_spec::unmet_before_approval(&home.to_string_lossy(), spec) {
-        return Some(say("approval.witness.unmet", lang, &[("{spec}", spec), ("{unmet}", &unmet)]));
-    }
+/// Aprova a spec `spec`, que esperava aprovação: grava o nascimento quando a
+/// spec ainda não tem fase (`unborn`) e depois a aprovação, pela gravação
+/// única. Devolve o que dizer ao assistente: a sugestão de `/clear` depois de
+/// gravar, ou, quando uma gravação foi recusada, o motivo do núcleo.
+fn approve(root: &str, spec: &str, question: &str, answer: &str, unborn: bool, lang: Locale) -> String {
     // O nascimento, numa spec que ainda não nasceu; numa que já nasceu, a
     // branch e a base que faltam, quando a branch do checkout é a da spec.
     let born = crate::commands::spec_events::write::record_birth(Path::new(root), spec, None);
-    if unborn && born.is_err() {
-        return None;
+    let recorded = match born {
+        Err(refusal) if unborn => Err(refusal),
+        _ => record_approval(root, spec, question, answer),
+    };
+    match recorded {
+        Ok(()) => say("approval.witness.clear", lang, &[("{spec}", spec)]),
+        Err(refusal) => say("approval.witness.unmet", lang, &[("{spec}", spec), ("{unmet}", &refusal.message(lang))]),
     }
-    record_approval(root, spec, question, answer)
-        .then(|| say("approval.witness.clear", lang, &[("{spec}", spec)]))
 }
 
 /// Grava a aprovação: um `state` com a fase `approved`, o autor `user` e a
-/// testemunha, pela mesma gravação do `run write`. `false` quando a gravação
-/// foi recusada.
-fn record_approval(root: &str, spec: &str, question: &str, answer: &str) -> bool {
-    let Value::Object(draft) = json!({
-        "phase": "approved",
-        "author": "user",
-        "witness": { "question": question, "answer": answer },
-    }) else {
-        return false;
-    };
+/// testemunha, pela mesma gravação do `run write`. A recusa da gravação volta
+/// com o motivo do núcleo.
+fn record_approval(root: &str, spec: &str, question: &str, answer: &str) -> Result<(), Refusal> {
+    let mut draft = Map::new();
+    draft.insert("phase".to_string(), json!("approved"));
+    draft.insert("author".to_string(), json!("user"));
+    draft.insert("witness".to_string(), json!({ "question": question, "answer": answer }));
     crate::commands::spec_events::write::record(Path::new(root), spec, "state", draft, PhaseWriter::Witness)
-        .is_ok()
+        .map(|_| ())
 }
 
 /// Por que nada foi gravado, quando a spec esperava aprovação e a resposta
@@ -292,8 +243,10 @@ impl Check for ApprovalWitness {
         let offered = offered_for(input, &answer.question);
         let chosen = answer.labels.iter().find(|l| is_offered(l, &offered) && is_approve_option(l));
         let context = match (standing(&root, input.session_id.as_deref()), chosen) {
-            (Standing::Awaiting(spec), Some(label)) => approve(&root, &spec, &answer.question, label, false, lang),
-            (Standing::Unborn(spec), Some(label)) => approve(&root, &spec, &answer.question, label, true, lang),
+            (Standing::Awaiting(spec), Some(label)) => {
+                Some(approve(&root, &spec, &answer.question, label, false, lang))
+            }
+            (Standing::Unborn(spec), Some(label)) => Some(approve(&root, &spec, &answer.question, label, true, lang)),
             (Standing::Awaiting(spec) | Standing::Unborn(spec), None) => {
                 decline_notice(&spec, &answer.labels, &offered, lang)
             }
@@ -579,40 +532,28 @@ mod tests {
         assert_eq!(witness(none.path(), &input), Verdict::Allow, "no notice without a spec either");
     }
 
-    /// As conferências do `approve-spec` vêm antes da gravação: uma spec Full
-    /// sem o `.clarified` fica em plano, e o motivo vai ao assistente; com o
-    /// esclarecimento gravado, o mesmo "Aprovar" aprova.
+    /// A testemunha não confere mais as marcas do comando antigo de
+    /// aprovação: uma spec com o `meta.json` de uma spec Full e sem o
+    /// `.clarified` é aprovada pela resposta.
     #[test]
-    fn an_unmet_precondition_keeps_the_spec_in_plan() {
-        if ambient_override() || std::env::var_os("MUSTARD_APPROVAL_MODE").is_some() {
+    fn a_spec_without_the_old_clarified_mark_is_approved_by_the_answer() {
+        if ambient_override() {
             return;
         }
         let dir = in_plan();
         let root = dir.path();
-        let root_str = root.to_string_lossy().into_owned();
         let spec_dir = root.join(".claude").join("spec").join("epic");
         std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"full (wave plan)","stage":"Plan"}"#).unwrap();
 
-        match witness(root, &approve_or_adjust("Aprovar")) {
-            Verdict::Inject { context } => {
-                assert!(context.contains(".clarified"), "names the unmet precondition: {context}");
-            }
-            other => panic!("the unmet precondition is explained, got {other:?}"),
-        }
-        assert!(!state(root).approved, "nothing was recorded");
-
-        std::fs::write(
-            context::clarified_marker_path(&root_str, "epic").unwrap(),
-            context::clarify_marker_body("epic", SESSION, "2026-09-13T10:00:00Z", &[], "o glossário já cobre tudo"),
-        )
-        .unwrap();
-        witness(root, &approve_or_adjust("Aprovar"));
-        assert!(state(root).approved, "with the preconditions met the answer approves");
+        let said = witness(root, &approve_or_adjust("Aprovar"));
+        let expected = say("approval.witness.clear", lang(root), &[("{spec}", "epic")]);
+        assert_eq!(said, Verdict::Inject { context: expected });
+        assert!(state(root).approved, "the answer approves");
     }
 
-    /// Um ponto do levantamento aberto barra a aprovação: a testemunha diz
-    /// qual, com o código e a lacuna, e nada é gravado; a gravação da
-    /// aprovação também é recusada pela regra da mudança de fase.
+    /// Um ponto do levantamento aberto barra a aprovação: a gravação é
+    /// recusada pela regra do núcleo, nada é gravado, e a testemunha diz ao
+    /// assistente o motivo do núcleo, com o código e a lacuna do ponto.
     #[test]
     fn a_spec_with_an_open_point_is_not_approved_and_the_witness_says_which() {
         if ambient_override() {
@@ -629,15 +570,42 @@ mod tests {
                 "origin": 2, "facts": [{ "text": "f", "source": "mensagem 2" }] }),
         );
         let before = events(root);
-        match witness(root, &approve_or_adjust("Aprovar")) {
-            Verdict::Inject { context } => {
-                assert!(context.contains("MSTD-POINT-0001") && context.contains("Os limites, com os valores"), "{context}");
-            }
-            other => panic!("the open point is named, got {other:?}"),
-        }
+        let said = witness(root, &approve_or_adjust("Aprovar"));
         assert!(!state(root).approved, "nothing was recorded");
-        assert!(!record_approval(&root.to_string_lossy(), "epic", QUESTION, "Aprovar"), "the phase rule refuses too");
+        let refusal =
+            record_approval(&root.to_string_lossy(), "epic", QUESTION, "Aprovar").expect_err("the core rule refuses");
+        let reason = refusal.message(lang(root));
+        assert!(reason.contains("MSTD-POINT-0001") && reason.contains("Os limites, com os valores"), "{reason}");
+        let expected = say("approval.witness.unmet", lang(root), &[("{spec}", "epic"), ("{unmet}", &reason)]);
+        assert_eq!(said, Verdict::Inject { context: expected });
         assert_eq!(events(root), before);
+    }
+
+    /// Uma spec sem nascimento e com um ponto aberto não é aprovada: o motivo
+    /// vai ao assistente, e a trava continua lendo a spec em plano.
+    #[test]
+    fn a_refused_approval_leaves_the_spec_locked_in_plan() {
+        if ambient_override() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        record_for(root, "epic", "message", json!({ "author": "user", "text": "Travar o merge." }));
+        record_for(
+            root,
+            "epic",
+            "point",
+            json!({ "block": "limits", "gap": "Os limites, com os valores", "from": "gap", "status": "open",
+                "origin": 1, "facts": [{ "text": "f", "source": "mensagem 1" }] }),
+        );
+        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+        match witness(root, &approve_or_adjust("Aprovar")) {
+            Verdict::Inject { context } => assert!(context.contains("MSTD-POINT-0001"), "names the point: {context}"),
+            other => panic!("the refusal is explained, got {other:?}"),
+        }
+        let lock = crate::shared::spec_state::lock_state(root, "epic").expect("the spec has its event file");
+        assert_eq!(lock.phase, Some("plan"), "the lock still reads plan");
+        assert!(!lock.approved, "nothing approved");
     }
 
     /// Um arquivo de eventos sem nenhum `state` e sem `meta.json` é uma spec
@@ -660,11 +628,12 @@ mod tests {
         assert_eq!(phases, ["plan", "approved"], "{log}");
     }
 
-    /// Um ajuste tático mora na branch da spec-mãe: a escada nomeia a mãe,
-    /// já aprovada, e a testemunha aprova o ajuste ligado à sessão, que
-    /// espera. A mãe fica como estava.
+    /// Um ajuste ligado à sessão, com o `meta.json` que nomeia como mãe a
+    /// spec da branch, não é aprovado por ali: a escada nomeia a spec da
+    /// branch, já aprovada, e é ela que responde. O ajuste fica em plano, e a
+    /// mãe fica como estava.
     #[test]
-    fn a_tactical_fix_on_its_parents_branch_is_approved() {
+    fn a_fix_bound_to_the_session_is_not_approved_through_its_parents_branch() {
         if ambient_override() {
             return;
         }
@@ -682,10 +651,10 @@ mod tests {
         context::bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");
 
         let said = witness(root, &approve_or_adjust("Aprovar"));
-        let expected = say("approval.witness.clear", lang(root), &[("{spec}", "ajuste")]);
-        assert_eq!(said, Verdict::Inject { context: expected });
+        let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
+        assert_eq!(said, Verdict::Inject { context: expected }, "the branch spec answers");
         let disk = DiskSpecState::new(root);
-        assert!(disk.state("ajuste").unwrap().approved, "the tactical fix is approved");
+        assert!(!disk.state("ajuste").unwrap().approved, "the fix stays in plan");
         assert_eq!(disk.state("epic-1").unwrap().phase, Some("running"), "the parent is untouched");
     }
 
@@ -709,11 +678,12 @@ mod tests {
         assert!(!DiskSpecState::new(root).state("outra").unwrap().approved, "the other spec stays in plan");
     }
 
-    /// Respondida num worktree, a pergunta confere a spec no checkout
-    /// principal: uma spec Full sem o `.clarified` fica em plano.
+    /// Respondida num worktree, a pergunta lê os pontos abertos da spec no
+    /// checkout principal: com um ponto aberto lá, nada é aprovado, e a
+    /// testemunha diz qual.
     #[test]
-    fn in_a_worktree_the_preconditions_read_the_main_checkout() {
-        if ambient_override() || std::env::var_os("MUSTARD_APPROVAL_MODE").is_some() {
+    fn in_a_worktree_the_witness_reads_the_open_points_of_the_main_checkout() {
+        if ambient_override() {
             return;
         }
         let tmp = tempdir().unwrap();
@@ -736,16 +706,21 @@ mod tests {
         git(&main, &["add", "-A"]);
         git(&main, &["commit", "-q", "-m", "init"]);
         std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
-        let spec_dir = main.join(".claude").join("spec").join("epic");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"full (wave plan)","stage":"Plan"}"#).unwrap();
         record(&main, json!({ "phase": "plan", "branch": "feature/epic" }));
+        record_for(&main, "epic", "message", json!({ "author": "user", "text": "Travar o merge." }));
+        record_for(
+            &main,
+            "epic",
+            "point",
+            json!({ "block": "limits", "gap": "Os limites, com os valores", "from": "gap", "status": "open",
+                "origin": 2, "facts": [{ "text": "f", "source": "mensagem 2" }] }),
+        );
         let wt = tmp.path().join("wt");
         git(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/epic"]);
 
         match witness(&wt, &approve_or_adjust("Aprovar")) {
-            Verdict::Inject { context } => assert!(context.contains(".clarified"), "{context}"),
-            other => panic!("the main checkout's spec is Full and unclarified, got {other:?}"),
+            Verdict::Inject { context } => assert!(context.contains("MSTD-POINT-0001"), "{context}"),
+            other => panic!("the main checkout's spec has an open point, got {other:?}"),
         }
         assert!(!state(&main).approved, "nothing was recorded");
     }

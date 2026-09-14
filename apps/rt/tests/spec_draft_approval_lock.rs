@@ -3,20 +3,19 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! A trava da aprovação vale no fluxo de hoje, de ponta a ponta.
+//! A trava da aprovação vale de ponta a ponta.
 //!
-//! A spec que o `spec-draft` cria nasce na fase de plano, gravada no
-//! `spec.ndjson`; o portão de escrita barra o código do projeto; "Ajustar" na
-//! pergunta não muda nada; "Aprovar" grava a aprovação, e o código passa.
+//! Uma spec em plano, com o `state` semeado à mão no `spec.ndjson`: o portão
+//! de escrita barra o código do projeto; "Ajustar" na pergunta não muda nada;
+//! "Aprovar" grava a aprovação, e o código passa.
 //!
-//! O rascunho roda por `run_at`, com a pasta temporária como projeto; os
-//! ganchos rodam como processo, porque são privados da biblioteca.
+//! Os ganchos rodam como processo, porque são privados da biblioteca, com o
+//! `CLAUDE_PROJECT_DIR` na pasta temporária.
 
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use mustard_rt::commands::spec::spec_draft::{run_at, SpecDraftOpts};
 use serde_json::{json, Value};
 
 const SPEC: &str = "cadastro";
@@ -32,9 +31,11 @@ fn git(root: &Path, args: &[&str]) {
     assert!(ok, "git {args:?} failed");
 }
 
-/// Roda o gancho `event` com `payload` e devolve a saída dele.
-fn hook(root: &Path, event: &str, payload: Value) -> String {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+/// Roda o gancho `event` com `payload`, com as variáveis `env` a mais, e
+/// devolve a saída dele.
+fn hook(root: &Path, event: &str, payload: Value, env: &[(&str, &str)]) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    command
         .args(["on", event])
         .current_dir(root)
         .env("CLAUDE_PROJECT_DIR", root)
@@ -42,11 +43,12 @@ fn hook(root: &Path, event: &str, payload: Value) -> String {
         .env_remove("MUSTARD_SESSION_ID")
         .env_remove("CLAUDE_SESSION_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("MUSTARD_APPROVAL_MODE")
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn mustard-rt");
+        .stderr(Stdio::null());
+    let mut child = command.spawn().expect("spawn mustard-rt");
     if let Some(mut stdin) = child.stdin.take() {
         let _ = write!(stdin, "{payload}");
     }
@@ -67,12 +69,14 @@ fn edit_is_blocked(root: &Path) -> bool {
             "session_id": "s-lock",
             "cwd": root.to_str().unwrap()
         }),
+        &[],
     );
     out.contains("\"deny\"")
 }
 
-/// Responde a pergunta de aprovação com `choice`.
-fn answer(root: &Path, choice: &str) -> String {
+/// Responde a pergunta de aprovação com `choice`, com as variáveis `env` a
+/// mais.
+fn answer(root: &Path, choice: &str, env: &[(&str, &str)]) -> String {
     hook(
         root,
         "PostToolUse",
@@ -86,29 +90,13 @@ fn answer(root: &Path, choice: &str) -> String {
             "session_id": "s-lock",
             "cwd": root.to_str().unwrap()
         }),
+        env,
     )
 }
 
-fn draft_opts() -> SpecDraftOpts {
-    SpecDraftOpts {
-        intent: "Cadastro de clientes".into(),
-        slug: Some(SPEC.into()),
-        scope: "light".into(),
-        signals: None,
-        output: None,
-        material: None,
-        material_only: false,
-        no_material_reason: Some("fixture: a trava da aprovação é o que se prova aqui".into()),
-        waves: 0,
-        plan: None,
-        force: false,
-        query_terms: None,
-        force_scope: false,
-    }
-}
-
-#[test]
-fn a_drafted_spec_blocks_code_until_the_user_approves() {
+/// Um projeto com o fluxo `dev`/`main`, parado na branch da spec, e a spec em
+/// plano: o `state` com a fase e a branch, semeado à mão no `spec.ndjson`.
+fn spec_in_plan() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
@@ -120,40 +108,49 @@ fn a_drafted_spec_blocks_code_until_the_user_approves() {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "init"]);
     git(root, &["checkout", "-q", "-b", &format!("feature/{SPEC}")]);
-
-    assert_eq!(run_at(root, draft_opts()), 0);
-
-    // O rascunho grava o nascimento pelo binário, e o `spec.md` dele fica.
     let spec_dir = root.join(".claude").join("spec").join(SPEC);
-    let events = std::fs::read_to_string(spec_dir.join("spec.ndjson")).unwrap();
-    let born: Value = serde_json::from_str(events.lines().next().unwrap()).unwrap();
-    assert_eq!(born["type"], "state", "{born}");
-    assert_eq!(born["phase"], "plan", "{born}");
-    assert_eq!(born["branch"], format!("feature/{SPEC}"), "{born}");
-    let md = std::fs::read_to_string(spec_dir.join("spec.md")).unwrap();
-    assert!(md.contains("Cadastro de clientes"), "the draft's document survives: {md}");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    let line = json!({
+        "v": 1, "id": 1, "at": "2026-09-14T10:00:00-03:00", "type": "state", "author": "binary",
+        "phase": "plan", "branch": format!("feature/{SPEC}")
+    });
+    std::fs::write(spec_dir.join("spec.ndjson"), format!("{line}\n")).unwrap();
+    tmp
+}
+
+#[test]
+fn a_spec_in_plan_blocks_code_until_the_user_approves() {
+    let tmp = spec_in_plan();
+    let root = tmp.path();
 
     // Antes da aprovação, o código do projeto é barrado.
-    assert!(edit_is_blocked(root), "a drafted spec blocks code before the approval");
+    assert!(edit_is_blocked(root), "a spec in plan blocks code before the approval");
 
     // "Ajustar" não aprova: continua barrado.
-    answer(root, "Ajustar");
+    answer(root, "Ajustar", &[]);
     assert!(edit_is_blocked(root), "adjusting keeps the lock");
 
-    // Com a narrativa ainda semeada, "Aprovar" não grava: as conferências do
-    // `approve-spec` vêm antes, e o motivo vai ao assistente.
-    let said = answer(root, "Aprovar");
-    assert!(!said.contains("/clear"), "an unmet precondition records nothing: {said}");
-    assert!(edit_is_blocked(root), "the lock stays while the spec cannot be approved");
-
-    // A spec escrita, sem texto semeado e sem critério a provar.
-    std::fs::write(spec_dir.join("spec.md"), "# Cadastro de clientes\n\n## Contexto\n\nClientes se cadastram sozinhos.\n")
-        .unwrap();
-
     // "Aprovar" grava a aprovação, e o código passa.
-    let said = answer(root, "Aprovar");
+    let said = answer(root, "Aprovar", &[]);
     assert!(said.contains("/clear"), "the witness suggests /clear: {said}");
     assert!(!edit_is_blocked(root), "after the approval the code is open");
+}
+
+/// A variável do modo de aprovação do comando antigo não muda mais a
+/// testemunha: com qualquer valor, e com o `meta.json` de uma spec Full sem o
+/// `.clarified`, o "Aprovar" aprova. Roda num processo à parte, para a
+/// variável não chegar aos outros testes.
+#[test]
+fn the_approval_mode_variable_no_longer_changes_the_witness() {
+    for mode in ["strict", "warn", "off"] {
+        let tmp = spec_in_plan();
+        let root = tmp.path();
+        let spec_dir = root.join(".claude").join("spec").join(SPEC);
+        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"full (wave plan)","stage":"Plan"}"#).unwrap();
+        let said = answer(root, "Aprovar", &[("MUSTARD_APPROVAL_MODE", mode)]);
+        assert!(said.contains("/clear"), "{mode}: the answer approves: {said}");
+        assert!(!edit_is_blocked(root), "{mode}: after the approval the code is open");
+    }
 }
 
 /// Os arquivos de texto de `dir`, com o caminho, em qualquer profundidade.

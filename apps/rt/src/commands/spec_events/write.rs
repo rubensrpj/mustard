@@ -2683,7 +2683,6 @@ mod tests {
         for field in ["next", "point", "review", "unrouted"] {
             assert!(rule.get(field).is_none(), "{field}: {rule}");
         }
-        assert_eq!(crate::commands::spec::approve_spec::unmet_before_approval(&root.to_string_lossy(), "teste"), None);
         witness_approves(root);
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
     }
