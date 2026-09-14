@@ -610,6 +610,36 @@ mod tests {
         assert!(state(root).approved, "with the preconditions met the answer approves");
     }
 
+    /// Um ponto do levantamento aberto barra a aprovação: a testemunha diz
+    /// qual, com o código e a lacuna, e nada é gravado; a gravação da
+    /// aprovação também é recusada pela regra da mudança de fase.
+    #[test]
+    fn a_spec_with_an_open_point_is_not_approved_and_the_witness_says_which() {
+        if ambient_override() {
+            return;
+        }
+        let dir = in_plan();
+        let root = dir.path();
+        record_for(root, "epic", "message", json!({ "author": "user", "text": "Travar o merge." }));
+        record_for(
+            root,
+            "epic",
+            "point",
+            json!({ "block": "limits", "gap": "Os limites, com os valores", "from": "gap", "status": "open",
+                "origin": 2, "facts": [{ "text": "f", "source": "mensagem 2" }] }),
+        );
+        let before = events(root);
+        match witness(root, &approve_or_adjust("Aprovar")) {
+            Verdict::Inject { context } => {
+                assert!(context.contains("MSTD-POINT-0001") && context.contains("Os limites, com os valores"), "{context}");
+            }
+            other => panic!("the open point is named, got {other:?}"),
+        }
+        assert!(!state(root).approved, "nothing was recorded");
+        assert!(!record_approval(&root.to_string_lossy(), "epic", QUESTION, "Aprovar"), "the phase rule refuses too");
+        assert_eq!(events(root), before);
+    }
+
     /// Um arquivo de eventos sem nenhum `state` e sem `meta.json` é uma spec
     /// em plano, sem nascimento: o "Aprovar" grava o plano e depois a
     /// aprovação.

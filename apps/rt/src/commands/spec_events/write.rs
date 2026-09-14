@@ -75,6 +75,17 @@
 //!
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
 //! de pontos junto: este comando não o grava, nem o tira ou o revê.
+//!
+//! Numa spec em levantamento com a lista do `grill` gravada, a saída traz o
+//! passo seguinte (`mustard_core::domain::survey::next_step`): em `next`, o
+//! que fazer; em `point`, o próximo ponto aberto, o mesmo enquanto ele não
+//! fecha; em `review`, o bloco cujo último ponto a gravação fechou, com a
+//! pergunta da revisão e as opções, a de um revisor de fora no último bloco;
+//! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
+//! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
+//! `remove` dele é recusado. A passagem do levantamento para o plano, e a
+//! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
+//! de toda porta que grava o estado.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -83,10 +94,11 @@ use mustard_core::domain::lessons::LESSON;
 use mustard_core::domain::spec_events::{type_spec, Refusal, SpecEvent, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, waves_grown_by, PhaseWriter, SpecState, State,
+    birth_event, goal_rule, phase_write_allowed, survey_rule, waves_grown_by, PhaseWriter, SpecState, State,
 };
+use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::io::{lessons, spec_events as store};
-use mustard_core::platform::i18n::translate;
+use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
@@ -167,7 +179,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
-        Ok(Recorded { written, pages, grew }) => {
+        Ok(Recorded { written, pages, grew, survey }) => {
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -210,6 +222,10 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             }
             if let Some(key) = next {
                 report["next"] = json!(translate(&key, lang));
+            } else if let Some(survey) = survey {
+                for (key, value) in survey {
+                    report[key.as_str()] = value;
+                }
             }
             report
         }
@@ -250,7 +266,7 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
 
 /// O que uma gravação deixou: o evento e, quando a página e o `.md` foram
 /// refeitos, onde eles estão ou por que não foram gravados.
-pub(crate) struct Recorded {
+pub struct Recorded {
     pub(crate) written: store::Written,
     /// `None` quando a spec tem o `spec.md` do `spec-draft`, que fica como
     /// está.
@@ -258,13 +274,20 @@ pub(crate) struct Recorded {
     /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
     /// passar das ondas que tinha na aprovação que vale.
     pub(crate) grew: Option<(usize, usize)>,
+    /// O passo do levantamento depois de uma gravação do modelo, como o
+    /// relatório o mostra ([`survey_report`]).
+    pub(crate) survey: Option<Map<String, Value>>,
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
 /// `run write`: a linha no arquivo de eventos, a linha da spec no índice e a
 /// página e o `.md`, quando a spec não é um rascunho do `spec-draft`. `by`
 /// diz quem grava, para a regra da mudança de fase.
-pub(crate) fn record(
+///
+/// # Errors
+///
+/// A recusa da gravação, das conferências do evento às da mudança de fase.
+pub fn record(
     start: &Path,
     spec: &str,
     event_type: &str,
@@ -300,7 +323,9 @@ fn record_in(
     // tempo nunca avisam a mesma conta.
     let mut pages = None;
     let mut grew = None;
+    let mut survey = None;
     let wave = event_type == "wave";
+    let lang = project.lang;
     let written = store::write_guarded(
         &path,
         event_type,
@@ -308,7 +333,13 @@ fn record_in(
         &roots,
         |before, after| {
             phase_rule(&name, before, after, carried.as_deref(), replaces, by, drafted)?;
-            goal_rule(&name, before, after)
+            goal_rule(&name, before, after)?;
+            survey_rule(&name, before, after)?;
+            // O passo do levantamento só vai ao relatório do modelo.
+            if by.is_none() {
+                survey = survey_report(before, after, lang);
+            }
+            Ok(())
         },
         |log| {
             if wave {
@@ -319,7 +350,69 @@ fn record_in(
             }
         },
     )?;
-    Ok(Recorded { written, pages, grew })
+    Ok(Recorded { written, pages, grew, survey })
+}
+
+/// O passo do levantamento depois de uma gravação, lido do arquivo antes e
+/// depois dela, como o relatório o mostra: em `next`, o que fazer, no idioma
+/// do projeto; em `point`, o ponto a apresentar; em `points`, os pontos
+/// abertos do levantamento condensado, mostrados de uma vez; em `review`, o
+/// bloco que fechou, com os pontos, os registros que os fecharam, a pergunta
+/// e as opções, "Seguir" por último; em `unrouted`, as mensagens do usuário
+/// sem destino. Com a revisão e outro passo juntos, `next` traz os dois, na
+/// ordem. `None` quando não há passo.
+fn survey_report(before: &SpecLog, after: &SpecLog, lang: Locale) -> Option<Map<String, Value>> {
+    let steps = survey::next_step(before, after);
+    if steps.is_empty() {
+        return None;
+    }
+    let codes = after.codes();
+    let code_of = |id: &u64| codes.get(id).cloned().unwrap_or_else(|| id.to_string());
+    let mut out = Map::new();
+    let mut next: Vec<String> = Vec::new();
+    for step in steps {
+        match step {
+            SurveyStep::ReviewBlock { block, closed, records, outside_review } => {
+                let go_on = translate("survey.continue_option", lang);
+                next.push(translate("survey.review_step", lang).replace("{block}", &block).replace("{continue}", go_on));
+                let mut options = Vec::new();
+                if outside_review {
+                    options.push(translate("survey.outside_review_question", lang));
+                }
+                options.push(go_on);
+                out.insert(
+                    "review".to_string(),
+                    json!({
+                        "block": block,
+                        "points": closed.iter().map(code_of).collect::<Vec<_>>(),
+                        "records": records.iter().map(code_of).collect::<Vec<_>>(),
+                        "question": translate("survey.review_question", lang),
+                        "options": options,
+                    }),
+                );
+            }
+            SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
+                next.push(translate("survey.present_all", lang).to_string());
+                let open: Vec<Value> = survey::open_points(after).into_iter().map(|p| super::shown(p, &codes)).collect();
+                out.insert("points".to_string(), json!(open));
+            }
+            SurveyStep::Point(point) => {
+                next.push(
+                    translate("survey.present_point", lang)
+                        .replace("{code}", &code_of(&point.id))
+                        .replace("{id}", &point.id.to_string()),
+                );
+                out.insert("point".to_string(), super::shown(point, &codes));
+            }
+            SurveyStep::Done { unrouted } => {
+                next.push(translate("survey.done", lang).to_string());
+                let listed: Vec<Value> = unrouted.into_iter().map(|m| super::shown(m, &codes)).collect();
+                out.insert("unrouted".to_string(), json!(listed));
+            }
+        }
+    }
+    out.insert("next".to_string(), json!(next.join(" ")));
+    Some(out)
 }
 
 /// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
@@ -1751,5 +1844,562 @@ mod tests {
         std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
         let english = write(root, "work_type", &draft);
         assert!(english["hint"].as_str().unwrap().contains("is written by `mustard-rt run grill`"), "{english}");
+    }
+
+    const GOAL: &str = "Travar o merge com pendência aberta.";
+
+    /// Um ponto do levantamento gravado aberto.
+    struct Opened {
+        id: u64,
+        code: String,
+        block: String,
+        gap: String,
+    }
+
+    /// Uma spec em levantamento com o objetivo, o tipo de trabalho `kinds`
+    /// gravado pela porta do binário, como o `grill` grava, e um ponto aberto
+    /// por lacuna, na ordem da lista; no condensado, todos num bloco só.
+    /// Enquanto a lista está sendo gravada, nenhum passo sai; a gravação do
+    /// último ponto devolve o primeiro. Devolve a mensagem do objetivo e os
+    /// pontos.
+    fn listed(root: &std::path::Path, kinds: &[&str], condensed: bool) -> (u64, Vec<Opened>) {
+        surveyed(root);
+        let said = message(root, "user", GOAL);
+        assert_eq!(context(root, GOAL, said)["ok"], json!(true));
+        let mut work_type = Map::new();
+        work_type.insert("kinds".to_string(), json!(kinds));
+        work_type.insert("origin".to_string(), json!(said));
+        assert!(record(root, "teste", "work_type", work_type, PhaseWriter::Binary).is_ok());
+        let gaps = survey::gaps(kinds);
+        let mut points = Vec::new();
+        for (i, key) in gaps.iter().enumerate() {
+            let block = if condensed { survey::CONDENSED } else { key.block() };
+            let gap = key.label(Locale::PtBr);
+            let point = json!({"block": block, "gap": gap, "from": "gap", "status": "open", "origin": said,
+                "facts": [{"text": GOAL, "source": format!("mensagem {said}")}]});
+            let report = write(root, "point", &point.to_string());
+            assert_eq!(report["ok"], json!(true), "{report}");
+            points.push(Opened {
+                id: report["id"].as_u64().unwrap(),
+                code: report["code"].as_str().unwrap().to_string(),
+                block: block.to_string(),
+                gap: gap.to_string(),
+            });
+            if i + 1 < gaps.len() {
+                assert!(report.get("next").is_none(), "no step while the list is being recorded: {report}");
+            } else if condensed {
+                assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
+            } else {
+                assert_eq!(report["point"]["id"], json!(points[0].id), "{report}");
+            }
+        }
+        (said, points)
+    }
+
+    /// Uma resposta: uma decisão com a mensagem de origem.
+    fn answer(root: &std::path::Path, origin: u64) -> Value {
+        write(root, "decision", &json!({"text": "Resposta.", "keys": ["k"], "why": "w", "origin": origin}).to_string())
+    }
+
+    /// Um ponto que fecha `closes` com a resposta `record`.
+    fn close(root: &std::path::Path, point: &Opened, closes: Value, record: u64, origin: u64) -> Value {
+        let closing = json!({"block": point.block, "gap": point.gap, "from": "gap", "status": "closed",
+            "closes": closes, "result": [record], "origin": origin});
+        write(root, "point", &closing.to_string())
+    }
+
+    /// Responde e fecha o ponto; devolve o relatório do fechamento.
+    fn settle(root: &std::path::Path, point: &Opened, origin: u64) -> Value {
+        let decided = answer(root, origin)["id"].as_u64().unwrap();
+        let closed = close(root, point, json!(point.id), decided, origin);
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        closed
+    }
+
+    fn unrouted_ids(report: &Value) -> Vec<u64> {
+        report["unrouted"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no unrouted: {report}"))
+            .iter()
+            .map(|m| m["id"].as_u64().unwrap())
+            .collect()
+    }
+
+    /// A gravação da fase de plano pela porta do binário.
+    fn to_plan(root: &std::path::Path) -> Result<Recorded, Refusal> {
+        let mut draft = Map::new();
+        draft.insert("phase".to_string(), json!("plan"));
+        draft.insert("author".to_string(), json!("binary"));
+        record(root, "teste", "state", draft, PhaseWriter::Binary)
+    }
+
+    /// Cada resposta gravada devolve o próximo ponto aberto: o mesmo, enquanto
+    /// ele não fecha, com o código e o número para o fechamento; o
+    /// fechamento devolve o seguinte.
+    #[test]
+    fn each_answer_returns_the_next_open_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let answered = answer(root, said);
+        assert_eq!(answered["point"]["id"], json!(points[0].id), "{answered}");
+        let next = answered["next"].as_str().unwrap();
+        assert!(next.contains(&points[0].code) && next.contains(&points[0].id.to_string()), "{next}");
+        assert!(answered.get("review").is_none(), "{answered}");
+        assert_eq!(answer(root, said)["point"]["id"], json!(points[0].id), "the same point until it closes");
+        assert_eq!(settle(root, &points[0], said)["point"]["id"], json!(points[1].id));
+    }
+
+    /// Fechar o último ponto de um bloco devolve a revisão dele: a pergunta,
+    /// "Seguir" por último, os pontos do bloco e as respostas que os
+    /// fecharam; o próximo ponto vem junto, para depois da revisão.
+    #[test]
+    fn closing_the_last_point_of_a_block_returns_the_block_review_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        for point in &points[..3] {
+            let report = settle(root, point, said);
+            assert!(report.get("review").is_none(), "{report}");
+        }
+        let report = settle(root, &points[3], said);
+        let review = &report["review"];
+        assert_eq!(review["block"], json!("defect"), "{report}");
+        assert_eq!(review["question"], json!("Quer ver mais algum ponto ou aprofundar algum?"));
+        assert_eq!(review["options"], json!(["Seguir"]));
+        let codes: Vec<&str> = points[..4].iter().map(|p| p.code.as_str()).collect();
+        assert_eq!(review["points"], json!(codes));
+        assert_eq!(review["records"], json!(["MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003", "MSTD-DEC-0004"]));
+        assert_eq!(report["point"]["id"], json!(points[4].id), "{report}");
+        let next = report["next"].as_str().unwrap();
+        assert!(next.starts_with("O bloco defect fechou.") && next.contains(&points[4].code), "{next}");
+    }
+
+    /// No último bloco, a revisão oferece o revisor de fora, antes de
+    /// "Seguir", nos dois idiomas, e o fim do levantamento vem junto.
+    #[test]
+    fn the_last_block_review_offers_the_outside_reviewer() {
+        for (config, outside, go_on, done) in [
+            (None, "Quer que um revisor de fora confira o levantamento inteiro?", "Seguir", "O levantamento não tem ponto aberto."),
+            (
+                Some(r#"{"language":{"text":"en-US"}}"#),
+                "Would you like an outside reviewer to check the whole survey?",
+                "Continue",
+                "The survey has no open point.",
+            ),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let (said, points) = listed(root, &["fix"], false);
+            if let Some(config) = config {
+                std::fs::write(root.join("mustard.json"), config).unwrap();
+            }
+            let mut last = Value::Null;
+            for point in &points {
+                last = settle(root, point, said);
+            }
+            assert_eq!(last["review"]["block"], json!("proof"), "{last}");
+            assert_eq!(last["review"]["options"], json!([outside, go_on]), "{last}");
+            assert!(last.get("point").is_none(), "{last}");
+            assert!(last["next"].as_str().unwrap().contains(done), "{last}");
+            assert!(last["unrouted"].is_array(), "{last}");
+        }
+    }
+
+    /// O fim do levantamento lista as mensagens do usuário que nenhum
+    /// registro aponta: as duas soltas entram; a que virou decisão, a do
+    /// objetivo e a do assistente ficam fora.
+    #[test]
+    fn the_end_of_the_survey_lists_the_user_messages_no_event_points_to() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let loose = [message(root, "user", "E o painel?"), message(root, "user", "E o aviso por e-mail?")];
+        let routed = message(root, "user", "O merge trava sempre.");
+        message(root, "assistant", "Anotado.");
+        for point in &points[..4] {
+            settle(root, point, said);
+        }
+        let decided = answer(root, routed)["id"].as_u64().unwrap();
+        let end = close(root, &points[4], json!(points[4].id), decided, said);
+        assert_eq!(unrouted_ids(&end), loose, "{end}");
+    }
+
+    /// A mensagem que só recebeu resposta continua sem destino.
+    #[test]
+    fn a_message_only_replied_to_is_still_without_destination() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let asked = message(root, "user", "Isso vale para o dev?");
+        let reply = write(root, "response", &json!({"author": "assistant", "text": "Vale.", "reply_to": asked}).to_string());
+        assert_eq!(reply["ok"], json!(true), "{reply}");
+        let mut end = Value::Null;
+        for point in &points {
+            end = settle(root, point, said);
+        }
+        assert_eq!(unrouted_ids(&end), [asked]);
+    }
+
+    /// Tirada a única decisão que apontava a mensagem, ela volta a ficar sem
+    /// destino, e a remoção devolve o fim com ela.
+    #[test]
+    fn a_message_whose_only_record_was_removed_is_without_destination_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let asked = message(root, "user", "Trave também o envio.");
+        let decision = answer(root, asked)["id"].as_u64().unwrap();
+        let mut end = Value::Null;
+        for point in &points {
+            end = settle(root, point, said);
+        }
+        assert!(unrouted_ids(&end).is_empty(), "{end}");
+        let removal = remove(root, decision);
+        assert_eq!(removal["ok"], json!(true), "{removal}");
+        assert_eq!(unrouted_ids(&removal), [asked], "{removal}");
+        let unrelated = write(root, "note", &json!({"text": "Uma nota.", "keys": ["n"], "origin": said}).to_string());
+        assert!(unrelated.get("next").is_none(), "a write that changes nothing brings no step: {unrelated}");
+    }
+
+    /// No levantamento condensado, fechar os pontos não pede revisão de
+    /// bloco: cada fechamento devolve os que faltam, de uma vez, e o último
+    /// devolve o fim.
+    #[test]
+    fn a_condensed_survey_skips_the_block_review_and_goes_to_the_end() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], true);
+        for (i, point) in points.iter().enumerate() {
+            let report = settle(root, point, said);
+            assert!(report.get("review").is_none(), "{report}");
+            let left = points.len() - i - 1;
+            if left > 0 {
+                assert_eq!(report["points"].as_array().map(Vec::len), Some(left), "{report}");
+                assert_eq!(report["next"], json!(translate("survey.present_all", Locale::PtBr)));
+            } else {
+                assert!(report["unrouted"].is_array(), "{report}");
+                assert_eq!(report["next"], json!(translate("survey.done", Locale::PtBr)));
+            }
+        }
+    }
+
+    /// Um ponto novo no bloco já revisto reabre o bloco: ele é o próximo
+    /// ponto, e o fechamento dele pede a revisão de novo.
+    #[test]
+    fn a_point_added_after_the_review_reopens_the_block_and_its_closing_asks_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let mut report = Value::Null;
+        for point in &points[..4] {
+            report = settle(root, point, said);
+        }
+        assert_eq!(report["review"]["block"], json!("defect"), "{report}");
+        let deeper = json!({"block": "defect", "gap": "O sintoma no Windows", "from": "gap", "status": "open",
+            "origin": said, "facts": [{"text": "Pedido na revisão.", "source": format!("mensagem {said}")}]});
+        let added = write(root, "point", &deeper.to_string());
+        assert_eq!(added["point"]["id"], added["id"], "the new point is the next one: {added}");
+        let added = Opened {
+            id: added["id"].as_u64().unwrap(),
+            code: added["code"].as_str().unwrap().to_string(),
+            block: "defect".to_string(),
+            gap: "O sintoma no Windows".to_string(),
+        };
+        let again = settle(root, &added, said);
+        assert_eq!(again["review"]["block"], json!("defect"), "{again}");
+        assert_eq!(again["review"]["points"].as_array().map(Vec::len), Some(5), "{again}");
+        assert_eq!(again["point"]["id"], json!(points[4].id), "{again}");
+    }
+
+    /// Depois da aprovação, nenhuma gravação traz passo do levantamento.
+    #[test]
+    fn after_approval_a_write_returns_no_survey_step() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        for point in &points {
+            settle(root, point, said);
+        }
+        assert!(to_plan(root).is_ok(), "every point is closed");
+        witness_approves(root);
+        let extra = json!({"block": "limits", "gap": "Mais um limite", "from": "gap", "status": "open", "origin": said,
+            "facts": [{"text": "f", "source": format!("mensagem {said}")}]});
+        for report in [
+            write(root, "message", r#"{"author":"user","text":"Mais uma coisa."}"#),
+            write(root, "point", &extra.to_string()),
+        ] {
+            assert_eq!(report["ok"], json!(true), "{report}");
+            for field in ["next", "point", "points", "review", "unrouted"] {
+                assert!(report.get(field).is_none(), "{field}: {report}");
+            }
+        }
+    }
+
+    /// De um worktree, a gravação vai para o arquivo do checkout principal e
+    /// devolve o mesmo próximo ponto que a gravação feita de lá.
+    #[test]
+    fn a_write_from_a_linked_worktree_returns_the_same_next_point() {
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        std::fs::create_dir_all(&main).unwrap();
+        repo_on(&main, "dev");
+        let (said, points) = listed(&main, &["fix"], false);
+        let wt = tmp.path().join("wt");
+        let ok = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/teste"])
+            .current_dir(&main)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git worktree add failed");
+        let decision = json!({"text": "Resposta.", "keys": ["k"], "why": "w", "origin": said}).to_string();
+        let from_main = write(&main, "decision", &decision);
+        let from_wt = write_to(&wt, Some("teste"), "decision", &decision);
+        assert_eq!(from_wt["point"], from_main["point"], "{from_wt}");
+        assert_eq!(from_wt["point"]["id"], json!(points[0].id));
+        let closing = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap", "status": "closed",
+            "closes": points[0].id, "result": [from_wt["id"]], "origin": said});
+        let closed = write_to(&wt, Some("teste"), "point", &closing.to_string());
+        assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
+        assert!(!wt.join(".claude").exists(), "nothing of the Mustard inside the worktree");
+    }
+
+    /// Com um ponto aberto, a passagem para o plano é recusada com a lista
+    /// dos abertos, com o código, o número e a lacuna, nos dois idiomas, e
+    /// nada é gravado.
+    #[test]
+    fn leaving_the_survey_with_an_open_point_is_refused_with_the_list() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        settle(root, &points[0], said);
+        let before = lines(root);
+        let refusal = to_plan(root).err().expect("an open point holds the survey");
+        assert_eq!(refusal.reason(), "survey-open");
+        let shown = refusal.message(Locale::PtBr);
+        assert!(shown.contains("4 pontos abertos"), "{shown}");
+        for point in &points[1..] {
+            let listed = format!("{} ({}): {}", point.code, point.id, point.gap);
+            assert!(shown.contains(&listed), "{shown}");
+        }
+        assert!(!shown.contains(&points[0].code), "the closed point is not listed: {shown}");
+        assert!(refusal.message(Locale::EnUs).contains("4 open survey points"));
+        assert_eq!(lines(root), before, "nothing was written");
+        assert_eq!(DiskSpecState::new(root).state("teste").unwrap().phase, Some("survey"));
+    }
+
+    /// Sem o tipo de trabalho, o levantamento não começou: a passagem para o
+    /// plano é recusada e manda rodar o `grill`.
+    #[test]
+    fn leaving_the_survey_before_grill_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", GOAL);
+        assert_eq!(context(root, GOAL, said)["ok"], json!(true));
+        let refusal = to_plan(root).err().expect("no survey yet");
+        assert_eq!(refusal.reason(), "survey-not-started");
+        assert!(refusal.message(Locale::PtBr).contains("mustard-rt run grill"), "{}", refusal.message(Locale::PtBr));
+        assert!(refusal.message(Locale::EnUs).contains("has had no survey yet"));
+    }
+
+    /// Uma lacuna do tipo de trabalho sem ponto segura a passagem, mesmo sem
+    /// nenhum ponto aberto: é o ponto que o assistente esqueceu de gravar.
+    #[test]
+    fn leaving_the_survey_with_a_gap_without_a_point_is_refused_with_the_gap() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", GOAL);
+        assert_eq!(context(root, GOAL, said)["ok"], json!(true));
+        let mut work_type = Map::new();
+        work_type.insert("kinds".to_string(), json!(["fix"]));
+        work_type.insert("origin".to_string(), json!(said));
+        assert!(record(root, "teste", "work_type", work_type, PhaseWriter::Binary).is_ok());
+        let refusal = to_plan(root).err().expect("no point was recorded");
+        assert_eq!(refusal.reason(), "survey-gaps-unrecorded");
+        let shown = refusal.message(Locale::PtBr);
+        assert!(shown.contains("5 lacunas") && shown.contains("Como provar que ficou pronto"), "{shown}");
+        assert!(refusal.message(Locale::EnUs).contains("How to prove it is done"));
+    }
+
+    /// Com todos os pontos fechados, a passagem para o plano passa.
+    #[test]
+    fn leaving_the_survey_with_every_point_closed_passes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        for point in &points {
+            settle(root, point, said);
+        }
+        assert!(to_plan(root).is_ok());
+        assert_eq!(DiskSpecState::new(root).state("teste").unwrap().phase, Some("plan"));
+    }
+
+    /// Fechar o que não é um ponto aberto é recusado, com o código, o número
+    /// e a lacuna dos pontos abertos, e nada é gravado.
+    #[test]
+    fn closing_a_point_that_is_not_open_is_refused_with_the_open_list() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let decided = answer(root, said)["id"].as_u64().unwrap();
+        let before = lines(root);
+        for target in [json!(decided), json!(999)] {
+            let refused = close(root, &points[0], target, decided, said);
+            assert_eq!(refused["reason"], json!("point-not-open"), "{refused}");
+            let hint = refused["hint"].as_str().unwrap();
+            for point in &points {
+                assert!(hint.contains(&format!("{} ({})", point.code, point.id)), "{hint}");
+            }
+        }
+        assert_eq!(lines(root), before);
+    }
+
+    /// Um ponto que fecha outro não fica aberto.
+    #[test]
+    fn a_point_that_closes_another_cannot_stay_open() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let before = lines(root);
+        let open_closing = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap", "status": "open",
+            "closes": points[0].id, "origin": said, "facts": [{"text": "f", "source": format!("mensagem {said}")}]});
+        let refused = write(root, "point", &open_closing.to_string());
+        assert_eq!(refused["reason"], json!("closing-point-open"), "{refused}");
+        assert_eq!(lines(root), before);
+    }
+
+    /// "Não se aplica" leva o motivo; com ele, o ponto fecha.
+    #[test]
+    fn not_applicable_needs_a_reason() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let decided = answer(root, said)["id"].as_u64().unwrap();
+        let mut closing = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap",
+            "status": "not_applicable", "closes": points[0].id, "result": [decided], "origin": said});
+        let refused = write(root, "point", &closing.to_string());
+        assert_eq!(refused["reason"], json!("not-applicable-needs-reason"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains("`reason`"), "{refused}");
+        closing["reason"] = json!("O defeito não aparece fora do Linux.");
+        let closed = write(root, "point", &closing.to_string());
+        assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
+    }
+
+    /// Uma resposta que aponta um evento que não existe é recusada.
+    #[test]
+    fn a_result_citing_a_missing_event_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let before = lines(root);
+        let refused = close(root, &points[0], json!(points[0].id), 999, said);
+        assert_eq!(refused["reason"], json!("unknown-target"), "{refused}");
+        assert_eq!(lines(root), before);
+    }
+
+    /// O mesmo ponto não fecha duas vezes: o segundo fechamento é recusado,
+    /// e a lista dos abertos já não o traz.
+    #[test]
+    fn closing_the_same_point_twice_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        settle(root, &points[0], said);
+        let decided = answer(root, said)["id"].as_u64().unwrap();
+        let twice = close(root, &points[0], json!(points[0].id), decided, said);
+        assert_eq!(twice["reason"], json!("point-not-open"), "{twice}");
+        let hint = twice["hint"].as_str().unwrap();
+        let (_, open) = hint.split_once("Abertos agora:").unwrap();
+        assert!(!open.contains(&points[0].code) && open.contains(&points[1].code), "{hint}");
+    }
+
+    /// O ponto fecha pelo código que a página mostra, e a linha gravada
+    /// guarda o número.
+    #[test]
+    fn a_point_closed_by_its_code_is_closed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let decided = answer(root, said)["id"].as_u64().unwrap();
+        let closed = close(root, &points[0], json!(points[0].code), decided, said);
+        assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert_eq!(log.get(closed["id"].as_u64().unwrap()).unwrap().int("closes"), Some(points[0].id));
+        let unknown = close(root, &points[1], json!("MSTD-POINT-0099"), decided, said);
+        assert_eq!(unknown["reason"], json!("unknown-target"), "{unknown}");
+    }
+
+    /// Um ponto revisto fecha pelo número de qualquer versão: a primeira ou a
+    /// nova.
+    #[test]
+    fn a_revised_open_point_is_closed_by_either_number() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let revise = |point: &Opened| -> u64 {
+            let revision = json!({"block": point.block, "gap": point.gap, "from": "gap", "status": "open",
+                "replaces": point.id, "origin": said, "facts": [{"text": "Revisto.", "source": format!("mensagem {said}")}]});
+            let report = write(root, "point", &revision.to_string());
+            assert_eq!(report["code"], json!(point.code), "the revision keeps the code: {report}");
+            report["id"].as_u64().unwrap()
+        };
+        revise(&points[0]);
+        let decided = answer(root, said)["id"].as_u64().unwrap();
+        let by_first = close(root, &points[0], json!(points[0].id), decided, said);
+        assert_eq!(by_first["point"]["id"], json!(points[1].id), "closed by its first number: {by_first}");
+        let newer = revise(&points[1]);
+        let by_newer = close(root, &points[1], json!(newer), decided, said);
+        assert_eq!(by_newer["point"]["id"], json!(points[2].id), "closed by its new number: {by_newer}");
+    }
+
+    /// A versão nova de um fechamento continua fechando o mesmo ponto.
+    #[test]
+    fn a_revised_closing_keeps_closing_its_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let closing = settle(root, &points[0], said)["id"].as_u64().unwrap();
+        let revision = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap", "status": "closed",
+            "closes": points[0].id, "reason": "Resposta revista.", "replaces": closing, "origin": said});
+        let revised = write(root, "point", &revision.to_string());
+        assert_eq!(revised["point"]["id"], json!(points[1].id), "{revised}");
+    }
+
+    /// Um ponto aberto não sai com `remove`, nem pelo número nem pelo código:
+    /// ele só fecha. Nada é gravado.
+    #[test]
+    fn an_open_point_cannot_be_removed_only_closed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let before = lines(root);
+        for target in [json!(points[0].id), json!(points[0].code)] {
+            let removal = write(root, "remove", &json!({"targets": [target], "reason": "não vale"}).to_string());
+            assert_eq!(removal["reason"], json!("open-point-removed"), "{removal}");
+            assert!(removal["hint"].as_str().unwrap().contains(&points[0].code), "{removal}");
+        }
+        assert_eq!(lines(root), before);
+        assert_eq!(settle(root, &points[0], said)["point"]["id"], json!(points[1].id));
+    }
+
+    /// Uma spec sem nenhum ponto, como as do `spec-draft`, grava e aprova
+    /// como antes: sem passo do levantamento e sem recusa nova.
+    #[test]
+    fn an_old_spec_without_points_writes_and_approves_as_before() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let said = message(root, "user", "Travar o merge.");
+        let rule = write(root, "rule", &json!({"text": "Regra.", "keys": ["k"], "example": "e", "origin": said}).to_string());
+        assert_eq!(rule["ok"], json!(true), "{rule}");
+        for field in ["next", "point", "review", "unrouted"] {
+            assert!(rule.get(field).is_none(), "{field}: {rule}");
+        }
+        assert_eq!(crate::commands::spec::approve_spec::unmet_before_approval(&root.to_string_lossy(), "teste"), None);
+        witness_approves(root);
+        assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
     }
 }

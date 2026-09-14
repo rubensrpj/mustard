@@ -582,8 +582,14 @@ fn unmet_gate_message(
     proof: &ProofState,
     scaffold_sections: &[String],
     is_full: bool,
+    open_points: Option<&str>,
 ) -> Option<String> {
     let mut unmet: Vec<String> = Vec::new();
+    // O levantamento vem antes de tudo: com ponto aberto, a spec nem chegou
+    // ao plano.
+    if let Some(line) = open_points {
+        unmet.push(format!("survey — {line}"));
+    }
     if !scaffold_sections.is_empty() {
         // The residue gate runs on EVERY scope — the PRD sections are seeded
         // for Light and Full alike — so the remedy has to match the spec it is
@@ -677,10 +683,17 @@ fn unmet_gate_message(
     // mode actually governs. The proof is unconditional, so when it is the (or
     // a) blocker the message says so instead of pointing at a switch that will
     // not move it.
-    let tail = if proof.refuses() {
-        "The acceptance-criteria proof is UNCONDITIONAL — MUSTARD_APPROVAL_MODE does not relax it."
-    } else {
-        "To temporarily relax, set MUSTARD_APPROVAL_MODE=warn or off."
+    let tail = match (proof.refuses(), open_points.is_some()) {
+        (true, true) => {
+            "The acceptance-criteria proof and the open survey points are UNCONDITIONAL — \
+             MUSTARD_APPROVAL_MODE does not relax them."
+        }
+        (true, false) => "The acceptance-criteria proof is UNCONDITIONAL — MUSTARD_APPROVAL_MODE does not relax it.",
+        (false, true) => {
+            "The open survey points are UNCONDITIONAL — MUSTARD_APPROVAL_MODE does not relax them: close \
+             each one first."
+        }
+        (false, false) => "To temporarily relax, set MUSTARD_APPROVAL_MODE=warn or off.",
     };
     Some(format!(
         "approve-spec will not self-approve a Full plan (that is what the field incident \
@@ -730,6 +743,10 @@ struct Refused {
 /// preconditions and nothing else — strict Blocks, warn Warns, off mutes both.
 /// Clarify only gates Full specs, and gates them on what the marker CARRIES,
 /// not merely that it is there.
+///
+/// Os pontos do levantamento ainda abertos barram sempre, como a prova dos
+/// critérios: a variável do modo não desliga a trava. A lista é a mesma da
+/// passagem para o plano (`survey::open_points`).
 fn preconditions(
     root: &str,
     spec: &str,
@@ -737,6 +754,7 @@ fn preconditions(
     check_approval: bool,
 ) -> Option<(String, ApprovalGate)> {
     let proof = proof_state(root, spec);
+    let open = open_points_line(root, spec);
     let (clarify, missing_approval) = if mode == ApprovalMode::Off {
         (ClarifyState::NotGated, false)
     } else {
@@ -750,9 +768,30 @@ fn preconditions(
         &proof,
         &scaffold,
         spec_is_full(root, spec),
+        open.as_deref(),
     )?;
-    let gate = if proof.refuses() { ApprovalGate::Block } else { approval_gate(mode, false) };
+    let gate = if proof.refuses() || open.is_some() { ApprovalGate::Block } else { approval_gate(mode, false) };
     Some((message, gate))
+}
+
+/// Os pontos do levantamento ainda abertos na spec `spec`, lidos do arquivo
+/// de eventos do checkout principal, numa linha no idioma do projeto. `None`
+/// sem ponto aberto, e numa spec sem arquivo de eventos.
+fn open_points_line(root: &str, spec: &str) -> Option<String> {
+    use mustard_core::domain::survey;
+    use mustard_core::io::spec_events as store;
+    let home = store::spec_root(Path::new(root));
+    let log = store::spec_file(&home, spec).ok().and_then(|path| store::read(&path).ok().flatten())?;
+    let open = survey::open_points(&log);
+    if open.is_empty() {
+        return None;
+    }
+    let lang = mustard_core::ProjectConfig::load(&home).language().text_or_default();
+    Some(
+        mustard_core::platform::i18n::translate("approve_spec.open_points", lang)
+            .replace("{count}", &open.len().to_string())
+            .replace("{points}", &survey::describe(&log, &open)),
+    )
 }
 
 /// What still stops the approval witness from recording the user's
@@ -980,6 +1019,7 @@ mod tests {
             &ProofState::NotGated,
             &residue,
             true,
+            None,
         )
         .expect("scaffold residue must refuse");
         assert!(msg.contains("Contexto"), "the refusal must name the sections: {msg}");
@@ -997,6 +1037,7 @@ mod tests {
             &ProofState::NotGated,
             &residue,
             false,
+            None,
         )
         .expect("scaffold residue must refuse a light spec too");
         assert!(light.contains("Contexto"), "it must still name the sections: {light}");
@@ -1375,7 +1416,7 @@ mod tests {
     fn combined_refusal_lists_all_missing_gates() {
         // Both markers absent → the single refusal names BOTH, each with its own
         // minting path, instead of exiting on the first miss and hiding the second.
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, true, &ProofState::NotGated, &[], true)
+        let msg = unmet_gate_message("epic", ClarifyState::Missing, true, &ProofState::NotGated, &[], true, None)
             .expect("both missing → a refusal");
         assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
         assert!(
@@ -1395,7 +1436,7 @@ mod tests {
     fn clarify_only_missing_refuses_with_single_requirement() {
         // Clarify absent, approval present → refuse, but name ONLY the clarify
         // requirement (no stray approval line).
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, false, &ProofState::NotGated, &[], true)
+        let msg = unmet_gate_message("epic", ClarifyState::Missing, false, &ProofState::NotGated, &[], true, None)
             .expect("clarify missing → a refusal");
         assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
         assert!(
@@ -1413,7 +1454,7 @@ mod tests {
     fn approval_only_missing_refuses_with_single_requirement() {
         // Approval absent, clarify present (or not a Full spec) → refuse, but name
         // ONLY the approval requirement.
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
+        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true, None)
             .expect("approval missing → a refusal");
         assert!(msg.contains("\"Aprovar\""), "names the approval gesture: {msg}");
         assert!(
@@ -1434,7 +1475,7 @@ mod tests {
     /// taught, and the answers that approve nothing are named.
     #[test]
     fn the_refusal_names_the_one_gesture_that_approves() {
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true)
+        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true, None)
             .expect("approval missing → a refusal");
         assert!(msg.contains("CHOOSES") && msg.contains("\"Aprovar\""), "the gesture: {msg}");
         assert!(msg.contains("Free text"), "free text approves nothing: {msg}");
@@ -1447,12 +1488,12 @@ mod tests {
     fn both_present_approves() {
         // Neither precondition unmet → no refusal message, and strict proceeds.
         assert_eq!(
-            unmet_gate_message("epic", ClarifyState::Recorded, false, &ProofState::Proven, &[], true),
+            unmet_gate_message("epic", ClarifyState::Recorded, false, &ProofState::Proven, &[], true, None),
             None
         );
         // A Light spec skips clarify entirely — same silence.
         assert_eq!(
-            unmet_gate_message("small", ClarifyState::NotGated, false, &ProofState::NotGated, &[], true),
+            unmet_gate_message("small", ClarifyState::NotGated, false, &ProofState::NotGated, &[], true, None),
             None
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
@@ -1846,11 +1887,100 @@ mod tests {
         assert_eq!(proof_state(root_str, bare), ProofState::NotGated);
         let bare_opts = ApproveSpecOpts { spec: bare.to_string(), wave_plan: false, resume: false };
         assert_eq!(
-            unmet_gate_message(bare, ClarifyState::NotGated, false, &proof_state(root_str, bare), &[], true),
+            unmet_gate_message(bare, ClarifyState::NotGated, false, &proof_state(root_str, bare), &[], true, None),
             None,
             "a spec with no acceptance criteria must not be refused by this gate"
         );
         // And it approves under `off`, where the two marker preconditions are muted.
         assert!(approve_at(root_str, &bare_opts, ApprovalMode::Off, &mut record).is_ok());
+    }
+
+    /// Uma spec `spec` em plano, com uma mensagem do usuário e um ponto do
+    /// levantamento aberto, gravados direto no arquivo de eventos.
+    fn seed_open_point(root: &Path, spec: &str) {
+        let path = mustard_core::io::spec_events::spec_file(root, spec).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (event_type, fields) in [
+            ("state", json!({"phase": "plan", "author": "binary"})),
+            ("message", json!({"author": "user", "text": "Travar o merge."})),
+            (
+                "point",
+                json!({"block": "limits", "gap": "Os limites, com os valores", "from": "gap", "status": "open",
+                    "origin": 2, "facts": [{"text": "f", "source": "mensagem 2"}]}),
+            ),
+        ] {
+            mustard_core::io::spec_events::write(&path, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
+        }
+    }
+
+    /// Os pontos abertos barram a aprovação em qualquer modo: a variável do
+    /// modo não desliga a trava, e a recusa diz isso.
+    #[test]
+    fn the_approval_mode_variable_does_not_turn_off_the_open_point_check() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        seed_open_point(root, "epic");
+        let opts = ApproveSpecOpts { spec: "epic".to_string(), wave_plan: false, resume: false };
+        let emitted: std::cell::RefCell<Vec<(String, Value)>> = std::cell::RefCell::new(Vec::new());
+        let mut record = |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
+        for mode in [ApprovalMode::Off, ApprovalMode::Warn, ApprovalMode::Strict] {
+            let (message, gate) =
+                preconditions(root_str, "epic", mode, false).unwrap_or_else(|| panic!("{mode:?} must not relax the open point"));
+            assert_eq!(gate, ApprovalGate::Block, "{mode:?}");
+            assert!(message.contains("MSTD-POINT-0001") && message.contains("Os limites, com os valores"), "{message}");
+            assert!(message.contains("does not relax them"), "{message}");
+            let refused = approve_at(root_str, &opts, mode, &mut record)
+                .err()
+                .unwrap_or_else(|| panic!("{mode:?} must not approve with an open point"));
+            assert!(refused.exit_nonzero, "{mode:?}");
+        }
+        assert!(emitted.borrow().is_empty(), "nothing emitted under any mode");
+    }
+
+    /// Lado a lado: a passagem para o plano e a conferência da aprovação veem
+    /// os mesmos pontos abertos, com a mesma lista, a cada ponto que fecha.
+    #[test]
+    fn the_passage_and_the_approval_see_the_same_open_points() {
+        use crate::commands::spec_events::write::{record, record_open};
+        use mustard_core::domain::spec_events::Refusal;
+        use mustard_core::domain::spec_state::PhaseWriter;
+        use mustard_core::platform::i18n::{translate, Locale};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let root_str = root.to_str().unwrap();
+        let spec = "epic";
+        let draft = |value: Value| value.as_object().cloned().unwrap();
+        assert_eq!(record_open(root, spec, "feature/epic", "dev"), Ok(true));
+        let goal = "Travar o merge.";
+        let said =
+            record(root, spec, "message", draft(json!({"author": "user", "text": goal})), PhaseWriter::Binary).unwrap().written.id;
+        record(root, spec, "context", draft(json!({"text": goal, "origin": said})), PhaseWriter::Binary).unwrap();
+        record(root, spec, "work_type", draft(json!({"kinds": ["fix"], "origin": said})), PhaseWriter::Binary).unwrap();
+        let mut points = Vec::new();
+        for key in mustard_core::domain::survey::gaps(&["fix"]) {
+            let point = json!({"block": key.block(), "gap": key.name(), "from": "gap", "status": "open", "origin": said,
+                "facts": [{"text": "f", "source": format!("mensagem {said}")}]});
+            points.push(record(root, spec, "point", draft(point), PhaseWriter::Binary).unwrap().written.id);
+        }
+        let to_plan = || {
+            record(root, spec, "state", draft(json!({"phase": "plan", "author": "binary"})), PhaseWriter::Binary).err()
+        };
+        for (closed, id) in points.iter().enumerate() {
+            let Some(Refusal::SurveyOpen { count, points: listed, .. }) = to_plan() else {
+                panic!("the passage must refuse with the open points");
+            };
+            assert_eq!(count, points.len() - closed);
+            let line = open_points_line(root_str, spec).expect("the approval sees the open points");
+            let expected = translate("approve_spec.open_points", Locale::PtBr)
+                .replace("{count}", &count.to_string())
+                .replace("{points}", &listed);
+            assert_eq!(line, expected);
+            let closing = json!({"block": "x", "gap": "g", "from": "gap", "status": "closed", "closes": id,
+                "result": [said], "origin": said});
+            record(root, spec, "point", draft(closing), PhaseWriter::Binary).unwrap();
+        }
+        assert_eq!(open_points_line(root_str, spec), None);
+        assert!(to_plan().is_none(), "with every point closed the passage goes");
     }
 }
