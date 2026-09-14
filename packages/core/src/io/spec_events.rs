@@ -243,43 +243,8 @@ pub fn with_locked_log<R>(path: &Path, f: impl FnOnce(&SpecLog) -> R) -> Result<
     Ok(Some(out))
 }
 
-/// O que está errado numa citação de arquivo.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CitationProblem {
-    /// O arquivo não existe em nenhuma das raízes.
-    MissingFile { path: String },
-    /// O arquivo existe, e a linha citada passa do fim dele.
-    MissingLine { path: String, line: u64, lines: u64 },
-}
-
-/// Confere uma fonte que cita arquivo e linha. O caminho é procurado em cada
-/// raiz, em ordem, e a primeira em que ele existe decide a linha. `None`
-/// quando a citação confere ou quando a fonte não cita arquivo.
-#[must_use]
-pub fn citation_problem(roots: &[PathBuf], source: &str) -> Option<CitationProblem> {
-    let (path, line) = model::file_citation(source)?;
-    let Some(bytes) = roots.iter().find_map(|root| crate::io::fs::read(root.join(&path)).ok()) else {
-        return Some(CitationProblem::MissingFile { path });
-    };
-    let lines = count_lines(&bytes);
-    if line == 0 || line > lines {
-        Some(CitationProblem::MissingLine { path, line, lines })
-    } else {
-        None
-    }
-}
-
 /// As raízes das citações moram na conferência das citações.
 pub use crate::io::citation::citation_roots;
-
-/// Quantas linhas o arquivo tem: a última conta mesmo sem `\n` no fim.
-fn count_lines(bytes: &[u8]) -> u64 {
-    if bytes.is_empty() {
-        return 0;
-    }
-    let pieces = bytes.split(|b| *b == b'\n').count() as u64;
-    if bytes.ends_with(b"\n") { pieces - 1 } else { pieces }
-}
 
 /// Confere as fontes dos fatos de um ponto pela conferência única das
 /// citações, a mesma que o plano chama: o arquivo citado é procurado em
@@ -724,9 +689,9 @@ mod tests {
         assert_eq!(plan("src/real.rs:2", "quem lê é `ler_linha`"), Vec::new());
     }
 
-    /// A mesma fonte pela conferência antiga das citações, pela gravação de
-    /// um ponto e pela conferência única que o plano chama: as três acham os
-    /// mesmos problemas.
+    /// A mesma fonte pela gravação de um ponto, a porta antiga, e pela
+    /// conferência única que o plano chama: as duas acham os mesmos
+    /// problemas.
     #[test]
     fn the_old_and_the_shared_citation_check_find_the_same_problems() {
         let dir = tempfile::tempdir().unwrap();
@@ -749,14 +714,6 @@ mod tests {
         for source in sources {
             let shared: Vec<Finding> =
                 crate::io::citation::check_at(&roots, &root, source, "").into_iter().filter(Finding::is_refusal).collect();
-            let old: Vec<Finding> = citation_problem(&roots, source)
-                .map(|problem| match problem {
-                    CitationProblem::MissingFile { path } => Finding::MissingFile { path },
-                    CitationProblem::MissingLine { path, line, lines } => Finding::MissingLine { path, line, lines },
-                })
-                .into_iter()
-                .collect();
-            assert_eq!(old, shared, "the old check and the shared one differ on {source:?}");
             let door = match write_at(&path, "point", one_fact_point(Some(source), "t"), &roots, &at("10:00")) {
                 Ok(_) => Vec::new(),
                 Err(Refusal::CitedFileMissing { path, .. }) => vec![Finding::MissingFile { path }],
