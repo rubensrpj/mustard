@@ -110,15 +110,6 @@ pub(crate) fn lock_state(root: &Path, spec: &str) -> Option<State> {
     mustard_core::domain::spec_state::lock_state_of(DiskSpecState::new(root).log(spec).as_ref())
 }
 
-/// A spec ainda não nasceu no arquivo de eventos: não há nenhum `state`
-/// visível, com ou sem arquivo.
-#[must_use]
-pub(crate) fn unborn(root: &Path, spec: &str) -> bool {
-    DiskSpecState::new(root)
-        .log(spec)
-        .is_none_or(|log| mustard_core::domain::spec_state::birth_event(&log).is_none())
-}
-
 /// A aprovação que vale de uma spec: a pergunta, a opção que o usuário
 /// escolheu e a hora em que a testemunha gravou.
 #[derive(Debug, Clone, PartialEq, Eq)]
