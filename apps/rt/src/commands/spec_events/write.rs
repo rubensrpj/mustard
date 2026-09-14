@@ -65,6 +65,11 @@
 //! trava presa, no arquivo como ele ficaria. As outras gravações deste comando
 //! também são conferidas: nenhuma delas muda o estado, nem removendo nem
 //! revendo um `state`.
+//!
+//! Numa spec em levantamento ainda sem `context`, o primeiro `context` é o
+//! objetivo, e ele é a resposta do usuário palavra por palavra: aponta em
+//! `origin` uma mensagem do usuário e repete o texto dela
+//! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -73,7 +78,7 @@ use mustard_core::domain::lessons::LESSON;
 use mustard_core::domain::spec_events::{type_spec, Refusal, SpecEvent, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, phase_write_allowed, waves_grown_by, PhaseWriter, SpecState, State,
+    birth_event, goal_rule, phase_write_allowed, waves_grown_by, PhaseWriter, SpecState, State,
 };
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::translate;
@@ -288,7 +293,10 @@ fn record_in(
         event_type,
         draft,
         &roots,
-        |before, after| phase_rule(&name, before, after, carried.as_deref(), replaces, by, drafted),
+        |before, after| {
+            phase_rule(&name, before, after, carried.as_deref(), replaces, by, drafted)?;
+            goal_rule(&name, before, after)
+        },
         |log| {
             if wave {
                 grew = waves_grown_by(log, log.max_id());
@@ -1514,12 +1522,60 @@ mod tests {
         assert!(!wt.join(".claude").exists(), "nothing of the Mustard inside the worktree");
     }
 
+    /// Uma spec em levantamento, nascida pela porta do `open`, sem o git.
+    fn surveyed(root: &std::path::Path) {
+        assert_eq!(record_open(root, "teste", "feature/teste", "dev"), Ok(true));
+    }
+
     fn message(root: &std::path::Path, author: &str, text: &str) -> u64 {
         write(root, "message", &json!({ "author": author, "text": text }).to_string())["id"].as_u64().unwrap()
     }
 
     fn context(root: &std::path::Path, text: &str, origin: u64) -> Value {
         write(root, "context", &json!({ "text": text, "origin": origin }).to_string())
+    }
+
+    /// O primeiro `context` de uma spec em levantamento é a resposta do
+    /// usuário palavra por palavra: outro texto, ou a mensagem que não é do
+    /// usuário, é recusado, e nada é gravado; a resposta igual entra, e o
+    /// `context` seguinte já não é o objetivo.
+    #[test]
+    fn the_first_context_of_a_survey_is_the_users_answer_word_for_word() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let answer = "Travar o merge com pendência aberta.";
+        let said = message(root, "user", answer);
+        let reply = message(root, "assistant", answer);
+        let before = lines(root);
+        let reworded = context(root, "Travar o merge.", said);
+        assert_eq!(reworded["reason"], json!("goal-not-verbatim"), "{reworded}");
+        assert!(reworded["hint"].as_str().unwrap().contains(&said.to_string()), "{reworded}");
+        let from_reply = context(root, answer, reply);
+        assert_eq!(from_reply["reason"], json!("goal-not-verbatim"), "{from_reply}");
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+        assert_eq!(context(root, answer, said)["ok"], json!(true));
+        assert_eq!(context(root, "Outro contexto, livre.", said)["ok"], json!(true));
+    }
+
+    /// O objetivo errado sai com `remove`, e a próxima resposta do usuário
+    /// vira o objetivo, também palavra por palavra.
+    #[test]
+    fn a_removed_goal_lets_the_next_answer_become_the_goal() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let first = message(root, "user", "Quero isso.");
+        let goal = context(root, "Quero isso.", first)["id"].as_u64().unwrap();
+        let removal = write(
+            root,
+            "remove",
+            &json!({ "targets": [goal], "reason": "o usuário respondeu outra coisa" }).to_string(),
+        );
+        assert_eq!(removal["ok"], json!(true), "{removal}");
+        let second = message(root, "user", "Travar o merge com pendência aberta.");
+        assert_eq!(context(root, "Qualquer coisa.", second)["reason"], json!("goal-not-verbatim"));
+        assert_eq!(context(root, "Travar o merge com pendência aberta.", second)["ok"], json!(true));
     }
 
     /// Uma spec que nasce em plano, como as do `spec-draft`, não tem a vaga do

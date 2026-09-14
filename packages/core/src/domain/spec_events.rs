@@ -641,6 +641,9 @@ pub enum Refusal {
     DeferredUnknownPending { pending: String },
     /// O pedido adiado aponta uma pendência já fechada ou descartada.
     DeferredClosedPending { pending: String },
+    /// O primeiro `context` de uma spec em levantamento, o objetivo, não
+    /// aponta uma mensagem do usuário ou não repete o texto dela.
+    GoalNotVerbatim { spec: String, origin: String },
     Io { detail: String },
 }
 
@@ -676,6 +679,7 @@ impl Refusal {
             Self::DraftedSpec { .. } => "drafted-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
+            Self::GoalNotVerbatim { .. } => "goal-not-verbatim",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -793,6 +797,10 @@ impl Refusal {
             Self::DeferredClosedPending { pending } => {
                 fill("spec_events.deferred_closed_pending", &[("{pending}", pending.clone())])
             }
+            Self::GoalNotVerbatim { spec, origin } => fill(
+                "spec_events.goal_not_verbatim",
+                &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
+            ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

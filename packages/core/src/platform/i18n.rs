@@ -1255,6 +1255,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
         ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
+        ("spec_events.goal_not_verbatim", Locale::PtBr) => {
+            "O primeiro `context` da spec {spec} é o objetivo: a resposta do usuário, palavra por \
+             palavra. Grave em `text` o texto da mensagem dele e, em `origin`, o número dela; {origin} \
+             não é uma mensagem do usuário com esse texto. Nada foi gravado."
+        }
+        ("spec_events.goal_not_verbatim", Locale::EnUs) => {
+            "The first `context` of spec {spec} is the goal: the user's answer, word for word. Put \
+             their message's text in `text` and its number in `origin`; {origin} is not a user \
+             message with that text. Nothing was written."
+        }
         ("open.choose_kind", Locale::PtBr) => {
             "Falta o tipo. Pergunte ao usuário o tipo da branch, como feature ou fix. Nada foi criado."
         }
@@ -2642,6 +2652,7 @@ mod tests {
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.waves_grew", &["{approved}", "{now}"][..]),
+            ("spec_events.goal_not_verbatim", &["{spec}", "{origin}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
             ("spec_events.deferred_closed_pending", &["{pending}"][..]),
             ("request.new_waves", &[][..]),

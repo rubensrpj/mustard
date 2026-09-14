@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::domain::meta::Meta;
-use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog, PHASES};
+use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, PHASES};
 
 /// As fases em que a spec já foi aprovada pelo usuário.
 const APPROVED_PHASES: &[&str] = &["approved", "running", "closed", "pr_open", "delivered"];
@@ -173,6 +173,40 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
         PhaseWriter::Witness => to == "approved" && matches!(before.phase, None | Some("plan")),
         PhaseWriter::Binary => to != "approved" && before.approved,
     }
+}
+
+/// O objetivo de uma spec em levantamento é a resposta do usuário, palavra
+/// por palavra: o primeiro `context` visível aponta em `origin` uma mensagem
+/// do usuário e repete o texto dela. A regra olha o arquivo antes e depois de
+/// uma gravação: numa spec em levantamento ainda sem `context` visível, todo
+/// `context` que a gravação traz é o objetivo. Fora do levantamento, ou com o
+/// objetivo já gravado, qualquer `context` passa; o objetivo tirado com
+/// `remove` deixa a vaga aberta para a próxima resposta.
+///
+/// # Errors
+///
+/// [`Refusal::GoalNotVerbatim`] quando o objetivo não aponta uma mensagem do
+/// usuário ou não repete o texto dela.
+pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let contexts = |log: &SpecLog| -> usize { log.visible().iter().filter(|e| e.event_type == "context").count() };
+    if State::from_log(before).phase != Some("survey") || contexts(before) > 0 {
+        return Ok(());
+    }
+    for goal in after.visible().into_iter().filter(|e| e.event_type == "context") {
+        let origin = goal.int("origin");
+        let answer = origin
+            .and_then(|id| after.get(id))
+            .filter(|m| m.event_type == "message" && m.str_field("author").map(str::trim) == Some("user"))
+            .and_then(|m| m.str_field("text"))
+            .map(str::trim);
+        if answer.is_none() || answer != goal.str_field("text").map(str::trim) {
+            return Err(Refusal::GoalNotVerbatim {
+                spec: spec.trim().to_string(),
+                origin: origin.map_or_else(|| "-".to_string(), |id| id.to_string()),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// O `meta.json` de uma spec parada antes da execução: em análise ou em plano

@@ -124,7 +124,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = write(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
-    write(root, "context", &json!({"text": "O contexto.", "origin": msg}));
+    write(root, "context", &json!({"text": "Revise tudo", "origin": msg}));
     let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": msg}));
     let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "origin": msg}));
     write(root, "wave", &json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
@@ -178,7 +178,7 @@ fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
-    let msg = write(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
+    let msg = write(root, "message", &json!({"author": "user", "text": "Deixar o índice certo. Depois o resto."}));
     write(root, "context", &json!({"text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
     write(root, "rule", &json!({"text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));
     let written = std::fs::read(index_file(root)).expect("the write left the index");
