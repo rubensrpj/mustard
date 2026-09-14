@@ -1033,7 +1033,12 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                 }
                 return need("facts");
             }
-            need("closes")?;
+            // A versão nova de um ponto pode vir sem `closes`: o binário copia
+            // o da versão antiga e confere de novo (veja
+            // [`carry_closed_identity`]).
+            if !has("replaces") {
+                need("closes")?;
+            }
             if status == "not_applicable" {
                 return if has("reason") { Ok(()) } else { Err(Refusal::NotApplicableNeedsReason) };
             }
@@ -1287,30 +1292,52 @@ fn last_record_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
     Some(log.codes().get(&closing.id).cloned().unwrap_or_else(|| closing.id.to_string()))
 }
 
-/// O ponto que fecha outro carrega a identidade dele: a lacuna (`gap`) e a
-/// origem (`from`) do ponto fechado, lidas pelo par, entram no fechamento,
-/// qualquer que seja a lacuna que veio no pedido. Assim a lacuna segue
-/// coberta pelo fechamento depois que o original sai. Outro evento sai como
-/// entrou.
-pub fn carry_closed_identity(log: &SpecLog, event: &mut Map<String, Value>) {
+/// O ponto que fecha outro carrega a identidade dele. A versão nova
+/// (`replaces`) de um fechamento recebe o mesmo `closes` da versão antiga,
+/// qualquer que seja o que veio no pedido, e por isso nunca tira o ponto da
+/// leitura. Depois, a lacuna (`gap`) e a origem (`from`) do ponto fechado,
+/// lidas pelo par, entram no fechamento, qualquer que seja a lacuna que veio
+/// no pedido: a lacuna segue coberta pelo fechamento depois que o original
+/// sai. Outro evento sai como entrou.
+///
+/// Com o `closes` no lugar, o ponto é conferido de novo: a versão que tenta
+/// reabrir o ponto é recusada como todo ponto aberto que fecha outro, e o
+/// ponto que não está aberto e segue sem `closes` é recusado pela falta dele.
+pub fn carry_closed_identity(log: &SpecLog, event: &mut Map<String, Value>) -> Result<(), Refusal> {
     if event.get("type").and_then(Value::as_str) != Some("point") {
-        return;
+        return Ok(());
+    }
+    let inherited = event
+        .get("replaces")
+        .and_then(Value::as_u64)
+        .and_then(|id| log.get(id))
+        .filter(|old| old.event_type == "point")
+        .and_then(|old| old.int("closes"));
+    if let Some(closes) = inherited {
+        event.insert("closes".into(), Value::from(closes));
+    }
+    let open = event.get("status").and_then(Value::as_str) == Some("open");
+    match (open, event.get("closes").is_some_and(|v| !is_empty(v))) {
+        (true, true) => return Err(Refusal::ClosingPointOpen),
+        (false, false) => return Err(missing("point", "closes")),
+        _ => {}
     }
     let Some(target) = event.get("closes").and_then(Value::as_u64).and_then(|id| log.get(id)) else {
-        return;
+        return Ok(());
     };
     if target.event_type != "point" {
-        return;
+        return Ok(());
     }
     let first = original_of(log, target);
     let Some(point) = survey::points(log).into_iter().find(|point| point.first() == first) else {
-        return;
+        return Ok(());
     };
     for field in ["gap", "from"] {
         if let Some(value) = point.shown().fields.get(field) {
             event.insert(field.to_string(), value.clone());
         }
     }
+    Ok(())
 }
 
 /// O evento pronto para o arquivo: a versão do formato, o número, o código do

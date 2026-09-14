@@ -794,6 +794,62 @@ mod tests {
         }
     }
 
+    /// A versão nova de um fechamento pode vir sem `closes`: com o original
+    /// já fora, por `purge` ou por `remove`, ela é aceita e recebe o ponto que
+    /// a antiga fechava. O ponto segue fechado na página, no `grill` e na
+    /// passagem para o plano.
+    #[test]
+    fn a_new_version_of_a_closing_without_closes_keeps_the_point_closed() {
+        for leaves in ["purge", "remove"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            record_list(root, "x", &grill(root, "x", Some("fix"), false));
+            let listed = grill(root, "x", Some("fix"), false);
+            let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
+            let close = |item: &Value, closes: u64| {
+                let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
+                    "closes": closes, "reason": "O fato tinha um segredo.", "origin": said});
+                write(root, Some("x"), "point", closing)
+            };
+            let page = || std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
+            let panel = |open: usize, closed: usize| {
+                translate("page.metrics.points.value", Locale::PtBr)
+                    .replace("{open}", &open.to_string())
+                    .replace("{closed}", &closed.to_string())
+            };
+
+            let first = &items(&listed)[0];
+            let closing = id_of(&close(first, ids[0]));
+            let reason = if leaves == "purge" { "secret" } else { "O fato tinha um segredo." };
+            let left = write(root, Some("x"), leaves, json!({"targets": [ids[0]], "reason": reason}));
+            assert_eq!(left["ok"], json!(true), "{leaves}: {left}");
+            let revision = json!({"block": first["block"], "gap": first["gap"], "from": "gap", "status": "closed",
+                "reason": "Resposta revista.", "replaces": closing, "origin": said});
+            let revised = write(root, Some("x"), "point", revision);
+            assert_eq!(revised["ok"], json!(true), "{leaves}: {revised}");
+            let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+            assert_eq!(log.get(id_of(&revised)).and_then(|e| e.int("closes")), Some(ids[0]), "{leaves}");
+
+            let after = grill(root, "x", Some("fix"), false);
+            assert_eq!(after["to_record"], json!(0), "{leaves}: {after}");
+            assert_eq!(items(&after)[0]["status"], json!("closed"), "{leaves}: {after}");
+            let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
+            assert_eq!(open, ids.len() - 1, "{leaves}: {after}");
+            assert_eq!(after["next"]["id"], json!(ids[1]), "{leaves}: {after}");
+            assert!(page().contains(&panel(ids.len() - 1, 1)), "{leaves}: {}", page());
+
+            for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
+                assert_eq!(close(item, *id)["ok"], json!(true), "{leaves}");
+            }
+            assert!(page().contains(&panel(0, ids.len())), "{leaves}: {}", page());
+            let mut plan = Map::new();
+            plan.insert("phase".into(), json!("plan"));
+            plan.insert("author".into(), json!("binary"));
+            assert!(record(root, "x", "state", plan, PhaseWriter::Binary).is_ok(), "{leaves}: the gap stays covered");
+        }
+    }
+
     fn git(root: &Path, args: &[&str]) {
         let out = Command::new("git").args(args).current_dir(root).output().expect("git");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));

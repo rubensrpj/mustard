@@ -2626,6 +2626,50 @@ mod tests {
         assert_eq!(point.gap(), Some(points[0].gap.as_str()));
     }
 
+    /// A versão nova de um fechamento que vem sem `closes` e aberta recebe o
+    /// ponto que a antiga fechava e é recusada como todo ponto aberto que
+    /// fecha outro, pelo número e pelo código da versão antiga. O arquivo não
+    /// muda, e o ponto segue fechado.
+    #[test]
+    fn a_new_version_of_a_closing_cannot_reopen_the_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let closed = settle(root, &points[0], said);
+        let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let before = std::fs::read(&file).unwrap();
+        for old in [closed["id"].clone(), closed["code"].clone()] {
+            let reopened = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap", "status": "open",
+                "replaces": old, "origin": said, "facts": [{"text": "Reaberto.", "source": format!("mensagem {said}")}]});
+            let refused = write(root, "point", &reopened.to_string());
+            assert_eq!(refused["reason"], json!("closing-point-open"), "{refused}");
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), before, "the file stays the same");
+        let asked = answer(root, said);
+        assert_eq!(asked["point"]["id"], json!(points[1].id), "the point stays closed: {asked}");
+    }
+
+    /// A versão nova de um fechamento que aponta outro ponto em `closes` é
+    /// gravada com o `closes` da antiga e com a lacuna do ponto que ela
+    /// fecha: o mesmo ponto segue fechado, e o outro segue aberto.
+    #[test]
+    fn a_new_version_of_a_closing_keeps_the_point_the_old_one_closed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let closing = settle(root, &points[0], said)["id"].as_u64().unwrap();
+        let decided = answer(root, said)["id"].as_u64().unwrap();
+        let moved = json!({"block": points[1].block, "gap": points[1].gap, "from": "gap", "status": "closed",
+            "closes": points[1].id, "result": [decided], "replaces": closing, "origin": said});
+        let revised = write(root, "point", &moved.to_string());
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let written = log.get(revised["id"].as_u64().unwrap()).unwrap();
+        assert_eq!(written.int("closes"), Some(points[0].id));
+        assert_eq!(written.str_field("gap"), Some(points[0].gap.as_str()));
+        assert_eq!(revised["point"]["id"], json!(points[1].id), "the other point stays open: {revised}");
+    }
+
     /// Uma spec sem nenhum ponto, como as do `spec-draft`, grava e aprova
     /// como antes: sem passo do levantamento e sem recusa nova.
     #[test]

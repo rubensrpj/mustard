@@ -181,8 +181,8 @@ fn write_inner(
     let log = model::parse_log(&content);
     let id = log.max_id().saturating_add(1);
     model::resolve_codes(&log, &mut event)?;
+    model::carry_closed_identity(&log, &mut event)?;
     let effects = model::check_against(&log, &event, id)?;
-    model::carry_closed_identity(&log, &mut event);
     let code = model::code_after(&log, &event);
     let line = model::render_line(&model::stamp(event, id, code.as_deref(), at));
 
