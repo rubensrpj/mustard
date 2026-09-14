@@ -275,7 +275,11 @@ pub struct MapModule {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MapDecl {
+    /// O tipo da declaração, como o scan o grava: `function`, `struct`…
+    pub kind: String,
     pub name: String,
+    /// A linha em que a declaração começa.
+    pub line: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -407,6 +411,20 @@ impl ProjectMap {
     pub fn module(&self, path: &str) -> Option<&MapModule> {
         let path = clean_path(path);
         self.modules.iter().find(|m| m.path == path)
+    }
+
+    /// Onde o mapa declara `name`: o caminho e a linha de cada declaração com
+    /// esse nome, em ordem de caminho e de linha.
+    #[must_use]
+    pub fn declared(&self, name: &str) -> Vec<(String, u64)> {
+        let mut out: Vec<(String, u64)> = self
+            .modules
+            .iter()
+            .flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(|d| (m.path.clone(), d.line)))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     fn known(&self, file: &str) -> Result<&MapModule, MapRefusal> {
@@ -938,6 +956,10 @@ mod tests {
         }
     }
 
+    fn decl(name: &str) -> MapDecl {
+        MapDecl { name: name.to_string(), ..MapDecl::default() }
+    }
+
     fn commit(id: &str, at: i64, added: &[&str], changed: &[&str]) -> RawCommit {
         RawCommit {
             id: id.to_string(),
@@ -1026,7 +1048,7 @@ mod tests {
                 deps.push(sections);
             }
             let mut m = module(path, 150 + (i * 13) % 200, &deps);
-            m.declarations = vec![MapDecl { name: "run".to_string() }, MapDecl { name: format!("Cmd{i}Opts") }];
+            m.declarations = vec![decl("run"), decl(&format!("Cmd{i}Opts"))];
             m.has_tests = i % 4 == 0;
             modules.push(m);
         }
@@ -1036,7 +1058,7 @@ mod tests {
         modules.push(module(context, 900, &[]));
         modules.push(module(util, 300, &[]));
         let mut hook = module("apps/rt/src/hooks/worktree_create.rs", 20, &[context]);
-        hook.declarations = vec![MapDecl { name: "run".to_string() }, MapDecl { name: "command".to_string() }];
+        hook.declarations = vec![decl("run"), decl("command")];
         modules.push(hook);
         modules.push(module("apps/rt/src/hooks/mod.rs", 10, &["apps/rt/src/hooks/worktree_create.rs"]));
         ProjectMap { modules, ..ProjectMap::default() }
@@ -1105,7 +1127,7 @@ mod tests {
     #[test]
     fn a_portuguese_query_finds_a_portuguese_identifier() {
         let mut pay = module("src/pagamentos/processador_pagamento.rs", 40, &[]);
-        pay.declarations = vec![MapDecl { name: "ProcessadorPagamento".to_string() }];
+        pay.declarations = vec![decl("ProcessadorPagamento")];
         let other = module("src/usuarios/cadastro.rs", 40, &[]);
         let map = ProjectMap { modules: vec![other, pay], ..ProjectMap::default() };
         let found = search(&map, "processar os pagamentos");
@@ -1217,5 +1239,21 @@ mod tests {
         assert_eq!(split_identifier("ProcessadorPagamento"), "Processador Pagamento");
         assert_eq!(split_identifier("processador_pagamento"), "processador pagamento");
         assert_eq!(split_identifier("apps/rt/work-branch.rs"), "apps rt work branch rs");
+    }
+
+    #[test]
+    fn the_map_keeps_the_kind_and_the_line_of_each_declaration() {
+        let map: ProjectMap = serde_json::from_str(
+            r#"{"modules":[
+                {"path":"src/b.rs","declarations":[{"kind":"function","name":"run","line":103}]},
+                {"path":"src/a.rs","declarations":[{"kind":"struct","name":"run","line":7,"supertypes":[]},{"name":"old"}]}
+            ]}"#,
+        )
+        .unwrap();
+        let decl = &map.modules[0].declarations[0];
+        assert_eq!((decl.kind.as_str(), decl.name.as_str(), decl.line), ("function", "run", 103));
+        assert_eq!(map.declared("run"), vec![("src/a.rs".to_string(), 7), ("src/b.rs".to_string(), 103)]);
+        assert_eq!(map.declared("old"), vec![("src/a.rs".to_string(), 0)], "an old map without the line still reads");
+        assert!(map.declared("nada").is_empty());
     }
 }

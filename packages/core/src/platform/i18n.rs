@@ -1217,6 +1217,26 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Fact {fact} cites line {line} of {path}, but the file has {lines} lines. Check the \
              line before stating it. Nothing was written."
         }
+        ("spec_events.name_elsewhere", Locale::PtBr) => {
+            "O fato {fact} cita `{name}`, que o mapa não acha em {path}, e sim em {found}."
+        }
+        ("spec_events.name_elsewhere", Locale::EnUs) => {
+            "Fact {fact} cites `{name}`, which the map does not find in {path}, but in {found}."
+        }
+        ("spec_events.name_unknown", Locale::PtBr) => {
+            "O fato {fact} cita `{name}`, e o mapa do projeto não conhece esse nome. Confira antes \
+             de afirmar."
+        }
+        ("spec_events.name_unknown", Locale::EnUs) => {
+            "Fact {fact} cites `{name}`, and the project map does not know that name. Check it \
+             before stating it."
+        }
+        ("spec_events.names_unchecked", Locale::PtBr) => {
+            "Sem o mapa do projeto, os nomes citados não foram conferidos. Rode `mustard-rt run scan`."
+        }
+        ("spec_events.names_unchecked", Locale::EnUs) => {
+            "Without the project map, the cited names were not checked. Run `mustard-rt run scan`."
+        }
         ("spec_events.unknown_target", Locale::PtBr) => {
             "O evento {id} não existe nesta spec. Nada foi gravado."
         }
@@ -2469,6 +2489,9 @@ mod tests {
             ("spec_events.fact_without_source", &["{fact}"][..]),
             ("spec_events.cited_file_missing", &["{fact}", "{path}"][..]),
             ("spec_events.cited_line_missing", &["{fact}", "{path}", "{line}", "{lines}"][..]),
+            ("spec_events.name_elsewhere", &["{fact}", "{name}", "{path}", "{found}"][..]),
+            ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
+            ("spec_events.names_unchecked", &[][..]),
             ("spec_events.unknown_target", &["{id}"][..]),
             ("spec_events.unknown_code", &["{code}"][..]),
             ("spec_events.binary_only_field", &["{field}"][..]),

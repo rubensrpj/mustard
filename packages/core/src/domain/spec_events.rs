@@ -1003,30 +1003,8 @@ fn check_fact_sources(event: &Map<String, Value>, event_type: &str) -> Result<()
     Ok(())
 }
 
-/// A fonte de um fato que cita um arquivo: `caminho:linha` ou
-/// `caminho:início-fim`, sem espaço. Devolve o caminho, com barras normais, e
-/// a última linha citada. `None` para as outras fontes — um comando com o
-/// resultado, o número de uma mensagem, um endereço.
-#[must_use]
-pub fn file_citation(source: &str) -> Option<(String, u64)> {
-    let source = source.trim();
-    if source.is_empty() || source.contains(char::is_whitespace) || source.contains("://") {
-        return None;
-    }
-    let (path, lines) = source.rsplit_once(':')?;
-    let (start, end) = lines.split_once('-').unwrap_or((lines, lines));
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if !digits(start) || !digits(end) {
-        return None;
-    }
-    let path = path.replace('\\', "/");
-    if path.is_empty() || !(path.contains('/') || path.contains('.')) {
-        return None;
-    }
-    let start: u64 = start.parse().ok()?;
-    let end: u64 = end.parse().ok()?;
-    Some((path, start.max(end)))
-}
+/// A leitura da fonte que cita um arquivo mora na conferência das citações.
+pub use crate::domain::citation::file_citation;
 
 /// Troca cada código (`MSTD-RULE-0002`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada

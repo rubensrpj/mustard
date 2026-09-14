@@ -261,16 +261,8 @@ pub fn citation_problem(roots: &[PathBuf], source: &str) -> Option<CitationProbl
     }
 }
 
-/// As raízes em que uma citação é procurada, a partir de onde o comando roda:
-/// a própria pasta, cada pasta acima dela e, por último, a raiz das specs.
-/// Assim a citação confere de uma subpasta, de um submódulo e de um worktree.
-#[must_use]
-pub fn citation_roots(start: &Path, spec_root: &Path) -> Vec<PathBuf> {
-    let start = std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf());
-    let mut roots: Vec<PathBuf> = start.ancestors().map(Path::to_path_buf).collect();
-    roots.push(spec_root.to_path_buf());
-    roots
-}
+/// As raízes das citações moram na conferência das citações.
+pub use crate::io::citation::citation_roots;
 
 /// Quantas linhas o arquivo tem: a última conta mesmo sem `\n` no fim.
 fn count_lines(bytes: &[u8]) -> u64 {
