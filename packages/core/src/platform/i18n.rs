@@ -1333,6 +1333,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              names it in `closes` (\"not applicable\", with the reason), and only then purge the \
              original text. Nothing was written."
         }
+        ("spec_events.closing_point_last_record", Locale::PtBr) => {
+            "O ponto {code} fecha um ponto cujo texto original já saiu, e é o único registro dele: \
+             não sai com `remove` nem com `purge`. Para tirar um dado sensível dele, grave uma versão \
+             nova com `replaces` e apague a antiga. Nada foi gravado."
+        }
+        ("spec_events.closing_point_last_record", Locale::EnUs) => {
+            "Point {code} closes a point whose original text is already gone, and it is the only \
+             record of it: it does not leave with `remove` or `purge`. To take sensitive data out of \
+             it, record a new version with `replaces` and purge the old one. Nothing was written."
+        }
         ("approve_spec.open_points", Locale::PtBr) => "{count} pontos do levantamento ainda abertos: {points}",
         ("approve_spec.open_points", Locale::EnUs) => "{count} survey points still open: {points}",
         ("open.choose_kind", Locale::PtBr) => {
@@ -2901,6 +2911,7 @@ mod tests {
             ("spec_events.not_applicable_reason", &[][..]),
             ("spec_events.open_point_removed", &["{code}"][..]),
             ("spec_events.open_point_purged", &["{code}"][..]),
+            ("spec_events.closing_point_last_record", &["{code}"][..]),
             ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
             ("spec_events.deferred_closed_pending", &["{pending}"][..]),

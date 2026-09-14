@@ -2538,6 +2538,94 @@ mod tests {
         );
     }
 
+    /// Enquanto o original existe, tirar o fechamento só reabre o ponto: com
+    /// `remove` e com `purge`, ele volta a ser o próximo ponto aberto.
+    #[test]
+    fn taking_the_closing_out_while_the_original_stands_reopens_the_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        for (kind, reason) in [("remove", "Fechei o ponto errado."), ("purge", "secret")] {
+            let closing = settle(root, &points[0], said)["id"].as_u64().unwrap();
+            let out = write(root, kind, &json!({"targets": [closing], "reason": reason}).to_string());
+            assert_eq!(out["ok"], json!(true), "{kind}: {out}");
+            assert_eq!(out["point"]["id"], json!(points[0].id), "{kind}: the point is open again: {out}");
+        }
+    }
+
+    /// Com o original fora, por `purge` ou por `remove`, o ponto que o fechou
+    /// é o único registro dele: o `remove` e o `purge` dele são recusados,
+    /// pelo número e pelo código, com o texto nos dois idiomas, e o arquivo
+    /// não muda. Tirar o original e o fechamento na mesma gravação também é
+    /// recusado.
+    #[test]
+    fn the_closing_of_a_point_whose_original_left_does_not_leave() {
+        for (gone, why) in [("purge", "secret"), ("remove", "O texto tinha um segredo.")] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let (said, points) = listed(root, &["fix"], false);
+            let closed = settle(root, &points[0], said);
+            let closing = closed["id"].as_u64().unwrap();
+            let code = closed["code"].as_str().unwrap().to_string();
+            let left = write(root, gone, &json!({"targets": [points[0].id], "reason": why}).to_string());
+            assert_eq!(left["ok"], json!(true), "{gone}: {left}");
+            let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+            let before = std::fs::read(&file).unwrap();
+            let expected = format!(
+                "O ponto {code} fecha um ponto cujo texto original já saiu, e é o único registro dele: não sai com \
+                 `remove` nem com `purge`. Para tirar um dado sensível dele, grave uma versão nova com `replaces` e \
+                 apague a antiga. Nada foi gravado."
+            );
+            for (kind, reason) in [("remove", "Não vale mais."), ("purge", "secret")] {
+                for target in [json!(closing), json!(code)] {
+                    let out = write(root, kind, &json!({"targets": [target], "reason": reason}).to_string());
+                    assert_eq!(out["reason"], json!("closing-point-last-record"), "{gone}, {kind}: {out}");
+                    assert_eq!(out["hint"], json!(expected), "{gone}, {kind}: {out}");
+                }
+            }
+            assert_eq!(std::fs::read(&file).unwrap(), before, "{gone}: the file stays the same");
+
+            let together = settle(root, &points[1], said)["id"].as_u64().unwrap();
+            let both = write(root, "purge", &json!({"targets": [points[1].id, together], "reason": "secret"}).to_string());
+            assert_eq!(both["reason"], json!("closing-point-last-record"), "{gone}: {both}");
+        }
+        let english = Refusal::ClosingPointLastRecord { code: "MSTD-POINT-0007".to_string() }.message(Locale::EnUs);
+        assert_eq!(
+            english,
+            "Point MSTD-POINT-0007 closes a point whose original text is already gone, and it is the only record of \
+             it: it does not leave with `remove` or `purge`. To take sensitive data out of it, record a new version \
+             with `replaces` and purge the old one. Nothing was written."
+        );
+    }
+
+    /// Para tirar um segredo do fechamento que é o único registro do ponto,
+    /// grava-se a versão nova dele e apaga-se a velha: as duas gravações
+    /// passam, a versão nova carrega a lacuna do ponto, e o ponto segue
+    /// fechado.
+    #[test]
+    fn a_new_version_of_the_last_closing_lets_the_old_one_be_purged() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let closing = settle(root, &points[0], said)["id"].as_u64().unwrap();
+        let purged = write(root, "purge", &json!({"targets": [points[0].id], "reason": "secret"}).to_string());
+        assert_eq!(purged["ok"], json!(true), "{purged}");
+        let revision = json!({"block": points[0].block, "gap": "Outro texto", "from": "gap", "status": "not_applicable",
+            "closes": points[0].id, "reason": "Resposta sem o segredo.", "replaces": closing, "origin": said});
+        let revised = write(root, "point", &revision.to_string());
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+        let old = write(root, "purge", &json!({"targets": [closing], "reason": "secret"}).to_string());
+        assert_eq!(old["purged"], json!([closing]), "{old}");
+        assert!(old.get("points").is_none(), "the gap stays covered: {old}");
+        assert_eq!(old["point"]["id"], json!(points[1].id), "{old}");
+        let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let log = mustard_core::domain::spec_events::parse_log(&std::fs::read_to_string(file).unwrap());
+        let point = survey::points(&log).into_iter().find(|p| p.first() == points[0].id).expect("the point stays");
+        assert!(!point.is_open());
+        assert_eq!(point.shown().id, revised["id"].as_u64().unwrap());
+        assert_eq!(point.gap(), Some(points[0].gap.as_str()));
+    }
+
     /// Uma spec sem nenhum ponto, como as do `spec-draft`, grava e aprova
     /// como antes: sem passo do levantamento e sem recusa nova.
     #[test]

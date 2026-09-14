@@ -671,6 +671,9 @@ pub enum Refusal {
     OpenPointRemoved { code: String },
     /// Um `purge` que apagaria o texto de um ponto aberto.
     OpenPointPurged { code: String },
+    /// Um `remove` ou um `purge` que tiraria o ponto que fecha outro cujo
+    /// original já saiu: ele é o único registro do ponto.
+    ClosingPointLastRecord { code: String },
     Io { detail: String },
 }
 
@@ -716,6 +719,7 @@ impl Refusal {
             Self::NotApplicableNeedsReason => "not-applicable-needs-reason",
             Self::OpenPointRemoved { .. } => "open-point-removed",
             Self::OpenPointPurged { .. } => "open-point-purged",
+            Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -858,6 +862,9 @@ impl Refusal {
             Self::NotApplicableNeedsReason => fill("spec_events.not_applicable_reason", &[]),
             Self::OpenPointRemoved { code } => fill("spec_events.open_point_removed", &[("{code}", code.clone())]),
             Self::OpenPointPurged { code } => fill("spec_events.open_point_purged", &[("{code}", code.clone())]),
+            Self::ClosingPointLastRecord { code } => {
+                fill("spec_events.closing_point_last_record", &[("{code}", code.clone())])
+            }
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
@@ -1156,7 +1163,9 @@ pub struct Effects {
 /// versão dele (a versão nova de um fechamento continua fechando o mesmo
 /// ponto), e cada número de `result` existe. Um ponto aberto não sai com
 /// `remove` nem com `purge`, por nenhuma versão: ele só fecha, com a resposta
-/// ou o motivo, e o texto dele só é apagado depois de fechado.
+/// ou o motivo, e o texto dele só é apagado depois de fechado. O fechamento
+/// de um ponto cujo original já saiu, ou sai junto, também não sai: é o único
+/// registro do ponto.
 pub fn check_against(
     log: &SpecLog,
     event: &Map<String, Value>,
@@ -1206,6 +1215,9 @@ pub fn check_against(
             if let Some(code) = open_point_among(log, &targets) {
                 return Err(Refusal::OpenPointRemoved { code });
             }
+            if let Some(code) = last_record_among(log, &targets) {
+                return Err(Refusal::ClosingPointLastRecord { code });
+            }
             effects.removed = targets;
         }
         "purge" => {
@@ -1213,6 +1225,9 @@ pub fn check_against(
             targets.dedup();
             if let Some(code) = open_point_among(log, &targets) {
                 return Err(Refusal::OpenPointPurged { code });
+            }
+            if let Some(code) = last_record_among(log, &targets) {
+                return Err(Refusal::ClosingPointLastRecord { code });
             }
             effects.purged = targets;
         }
@@ -1257,6 +1272,19 @@ fn open_point_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
         .filter_map(|id| log.get(*id))
         .find(|e| e.event_type == "point" && open.contains(&original_of(log, e)))?;
     Some(log.codes().get(&point.id).cloned().unwrap_or_else(|| point.id.to_string()))
+}
+
+/// O código do primeiro fechamento, entre os alvos de um `remove` ou de um
+/// `purge`, que é o único registro do ponto que fecha: o original dele já
+/// saiu, ou sai junto. A versão velha de um fechamento revisto pode sair,
+/// porque a nova fica; `None` quando nenhum alvo é um desses fechamentos.
+fn last_record_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
+    let leaves = |event: &SpecEvent| targets.contains(&event.id);
+    let closing = survey::points(log).into_iter().find_map(|point| {
+        let closing = point.closing().filter(|closing| leaves(closing))?;
+        point.original().is_none_or(leaves).then_some(closing)
+    })?;
+    Some(log.codes().get(&closing.id).cloned().unwrap_or_else(|| closing.id.to_string()))
 }
 
 /// O ponto que fecha outro carrega a identidade dele: a lacuna (`gap`) e a
