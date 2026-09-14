@@ -7,8 +7,6 @@ user-invocable: false
 
 **Iron law: ONE layer only — the moment it grows to two, it is a `/feature`.** Spec-less by design; promote to `/feature` Light or `/tactical-fix` if tracking is needed. The parent NEVER reads source and NEVER implements — all work runs inside Task contexts (L0).
 
-**On an integration base `/task` only analyzes.** The write gate refuses any edit on a base the `git.flow` of `mustard.json` declares, and `/task` opens no branch — a branch is opened only with its spec. So on a base only the read-only actions run here (`analyze`, `audit`, `compare`, `review`); an edit — `docs`, `refactor`, `implement`, one layer or not — goes through `/mustard:feature` in the light mode, which opens the spec and its branch. On a work branch every action runs as below.
-
 `/task <action> <scope>`
 
 | Action | `--role` | `subagent_type` |

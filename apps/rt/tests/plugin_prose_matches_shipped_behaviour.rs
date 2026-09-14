@@ -383,48 +383,6 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     );
 }
 
-/// On an integration base the `/task` flow only analyzes.
-///
-/// The write gate refuses edits on a base the `git.flow` declares, and the
-/// `/task` flow opens no branch — a branch is opened only with its spec. The
-/// hook that used to cut a branch on the first edit is gone, so a `/task` that
-/// edits on a base meets the refusal. Every page that sends work to `/task`
-/// must say that, on a base, the edit goes to `/feature` in the light mode;
-/// and the gate must still refuse the edit there, or the pages explain a
-/// refusal nothing makes.
-#[test]
-fn the_task_flow_only_analyzes_on_a_base() {
-    // --- 1. Every page that routes to `/task` says it ----------------------
-    let task = read("plugin/commands/task.md");
-    let rule = line_with(&task, "**On an integration base `/task` only analyzes.**")
-        .expect("the /task flow never says what it does on a base");
-    for needle in ["write gate", "/mustard:feature", "light", "opens no branch"] {
-        assert!(rule.contains(needle), "the /task base rule misses {needle}: {rule}");
-    }
-    let feature = read("plugin/commands/feature.md");
-    for anchor in ["The one fork:", "Routing economy:"] {
-        let line = line_with(&feature, anchor).expect("/feature no longer routes to /task");
-        assert!(
-            line.contains("integration base") && line.contains("light"),
-            "/feature sends an edit to /task without the base exception: {line}",
-        );
-    }
-    for router in ["packages/core/templates/mustard/orchestrator.md", ".claude/mustard/orchestrator.md"] {
-        let body = read(router);
-        let line = line_with(&body, "**On an integration base `task` only analyzes.**")
-            .unwrap_or_else(|| panic!("{router} routes edits to `task` with no base exception"));
-        assert!(line.contains("`feature`") && line.contains("light"), "{router}: {line}");
-    }
-
-    // --- 2. The gate really refuses an edit on a base -----------------------
-    let gate = production_half("apps/rt/src/hooks/write/write_gate.rs");
-    assert!(
-        gate.contains("\"write_gate.on_base\""),
-        "the write gate no longer refuses an edit on a base — the pages explain a \
-         refusal nothing makes",
-    );
-}
-
 /// The plan schema names the reserved role names that resolve to
 /// read-only agents.
 ///

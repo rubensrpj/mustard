@@ -11,7 +11,7 @@ Law: no code before the approved spec — `write_gate` refuses it anyway. Full s
 
 ## When
 
-Router dispatched a `feature` kind, or (fallback) the user asks to create / add / implement across ≥2 layers or a new entity. The one fork: single-layer, already-located work is a `/mustard:task`, not a feature — route there and stop. On an integration base `/task` only analyzes, so a single-layer EDIT stays here, on the light path: the spec is what opens the branch.
+Router dispatched a `feature` kind, or (fallback) the user asks to create / add / implement across ≥2 layers or a new entity. The one fork: single-layer, already-located work is a `/mustard:task`, not a feature — route there and stop.
 
 ## 1. ANALYZE — understand + research
 
@@ -37,7 +37,7 @@ No stage emit here; the unit's name was minted at the base gate, BEFORE this flo
 
 ## 2. Route + scope (deterministic — never your eye alone)
 
-1. Routing economy: pruned anchors show single-layer work, no new entity → run it as `/mustard:task` on those anchors and STOP — except on an integration base, where `/task` only analyzes: an edit stays here and takes the light path.
+1. Routing economy: pruned anchors show single-layer work, no new entity → run it as `/mustard:task` on those anchors and STOP.
 2. **Assemble the conversation material FIRST — then materialize. Never the other way round.** A flow that drafts first invites the retype-by-hand this channel exists to remove: what the hand does not retype is simply lost. **The base gate comes first, and the order lives in one place — `.claude/mustard/dispatch.md`, which states it for every flow.** The gate is what NAMES the unit, the branch is cut from that name, and this step is an ordinary write, so it belongs inside the unit's branch and not on an integration base. No hook cuts a branch on a write any more: with the unit's branch already out this write lands, and from an integration base the `git.flow` declares the write gate refuses it and the flow dead-ends here with nothing materialised. Write everything §1 established into one JSON file (`.claude/.cache/spec-material.json` — a scratch path; the material's permanent home is the spec `spec-draft` is about to write):
    ```json
    { "definitions": [{"term": "wave", "meaning": "one level of the plan"}],
@@ -63,10 +63,10 @@ No stage emit here; the unit's name was minted at the base gate, BEFORE this flo
 
 Orientation labels (plan-prepare decides on a populated census): light = 1-2 layers, ≤5 files, mirrors a slice · extended-light (internal flow label — emits the canonical scope `light`) = matched slice + modifies existing, 6-8 files · full = 3+ layers, net-new, ≥2 slices with ≥2 layers, or >8 files.
 
-## 3. Light / Extended-Light EXECUTE (after the approval, through the resume — Full never reaches here)
+## 3. Light / Extended-Light EXECUTE (inline — Full never reaches here)
 
-- Present the spec WITH the approval question — the same ONE question for every size of request: print the spec in the final message and ask `AskUserQuestion` *"Aprovar esta spec?"* with **Aprovar** (the spec as its `preview`) and **Ajustar**. Never ask about a plan the user has not seen. Choosing **Aprovar** is the approval: the approval witness records it in `spec.ndjson`, with no command, and the Mustard suggests `/clear`. Say `Spec aprovada. Limpe a conversa com /clear e rode /mustard:spec {slug}: a execução começa numa janela limpa.` and STOP — never execute in the window that asked. **Ajustar** → ask what to adjust, then present again and ask the same question.
-- The execution continues through the resume, in the clean window (`/mustard:spec {slug}`, `${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md`): `emit-phase --to Execute` → `exec-rewave-check` (decomposed → use the wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch via `agent-prompt-render --emit ref` — never hand-craft (stub stdout passed verbatim as the Task prompt; all agents of a wave in one message; each with its role subagent_type) → per-wave validate → REVIEW per subproject (`review-result`, max 2 fix loops) → QA (`qa-run`: pass → CLOSE; fail → return the failing AC; skip → warn + allow CLOSE).
+- Present the spec WITH the approval question: print it in the final message AND attach it as the `preview` of the AskUserQuestion options — "Approve and implement?" / "Adjust (give feedback)" / "Save for later (stop)". Never ask about a plan the user has not seen.
+- On approve: `emit-phase --to Execute` → `exec-rewave-check` (decomposed → use the wave-1 spec) → `dependency-precheck` (block on missing externals) → dispatch via `agent-prompt-render --emit ref` — never hand-craft (stub stdout passed verbatim as the Task prompt; all agents of a wave in one message; each with its role subagent_type) → per-wave validate → REVIEW per subproject (`review-result`, max 2 fix loops) → QA (`qa-run`: pass → CLOSE; fail → return the failing AC; skip → warn + allow CLOSE).
 - Prompt render + subagent_type mapping: `${CLAUDE_PLUGIN_ROOT}/refs/agent-prompt/agent-prompt.md`. The dispatch loop itself: `${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § B`.
 
 ## Inviolable (all scopes)
