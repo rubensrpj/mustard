@@ -20,9 +20,10 @@
 //! O pedido que cabe numa frase tem o levantamento condensado: todos os
 //! pontos num bloco só ([`CONDENSED`]), mostrados de uma vez para um "sim".
 //!
-//! Depois de cada gravação, [`next_step`] diz o passo seguinte: o próximo
-//! ponto aberto, a revisão do bloco cujo último ponto fechou e, sem ponto
-//! aberto, o fim, com as mensagens do usuário sem destino. [`leave_survey`] diz
+//! Depois de cada gravação, [`next_step`] diz o passo seguinte: gravar os
+//! pontos das lacunas que ainda não têm, o próximo ponto aberto, a revisão do
+//! bloco cujo último ponto fechou e, sem ponto aberto, o fim, com as
+//! mensagens do usuário sem destino. [`leave_survey`] diz
 //! se a spec pode passar para o plano.
 //!
 //! Função pura: sem disco e sem relógio. Quem lê o banco, o índice, as specs
@@ -446,9 +447,18 @@ pub fn leave_survey(log: &SpecLog) -> Result<(), SurveyGap<'_>> {
     if open.is_empty() { Ok(()) } else { Err(SurveyGap::Open(open)) }
 }
 
+/// O levantamento é condensado: algum ponto visível está no bloco único.
+#[must_use]
+pub fn condensed(log: &SpecLog) -> bool {
+    log.visible().iter().any(|e| e.event_type == "point" && e.str_field("block").map(str::trim) == Some(CONDENSED))
+}
+
 /// Um passo do levantamento, que o `write` devolve depois de uma gravação.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurveyStep<'a> {
+    /// Lacunas do tipo de trabalho ainda sem ponto, na ordem dos blocos:
+    /// antes de qualquer ponto ser apresentado, os pontos delas são gravados.
+    Record(Vec<GapKey>),
     /// O próximo ponto aberto: o mesmo, enquanto ele não fecha.
     Point(&'a SpecEvent),
     /// A gravação fechou o último ponto aberto do bloco `block`: a revisão
@@ -464,21 +474,25 @@ pub enum SurveyStep<'a> {
 /// Os passos do levantamento depois de uma gravação, lidos do arquivo antes
 /// (`before`) e depois (`after`) dela, em ordem:
 ///
-/// - nenhum fora do levantamento e do plano, numa spec sem nenhum ponto (as
-///   specs antigas) e enquanto alguma lacuna do tipo de trabalho não tem
-///   ponto, porque a lista do `grill` ainda está sendo gravada;
+/// - nenhum fora do levantamento e do plano, e numa spec sem nenhum ponto e
+///   sem lacuna por gravar (as specs antigas);
 /// - a revisão do bloco, quando a gravação fechou o último ponto aberto de um
-///   bloco que não é o do levantamento condensado;
-/// - depois dela, ou sozinho, o próximo ponto aberto, o primeiro na ordem dos
-///   blocos; sem ponto aberto, o fim, com as mensagens do usuário sem
-///   destino. O fim sai na gravação que fecha o último ponto e, depois dela,
-///   em cada gravação que muda a lista dessas mensagens.
+///   bloco que não é o do levantamento condensado; o revisor de fora só é
+///   oferecido quando o levantamento acabou;
+/// - depois dela, ou sozinho: enquanto alguma lacuna do tipo de trabalho não
+///   tem ponto (a lista do `grill` ainda sendo gravada, ou um ponto
+///   esquecido), gravar os pontos que faltam; senão, o próximo ponto aberto,
+///   o primeiro na ordem dos blocos; sem ponto aberto, o fim, com as
+///   mensagens do usuário sem destino. O fim sai na gravação que fecha o
+///   último ponto e, depois dela, em cada gravação que muda a lista dessas
+///   mensagens.
 #[must_use]
 pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>> {
     if !matches!(State::from_log(after).phase, Some("survey" | "plan")) {
         return Vec::new();
     }
-    if !after.visible().iter().any(|e| e.event_type == "point") || !missing_gaps(after).is_empty() {
+    let unrecorded = missing_gaps(after);
+    if unrecorded.is_empty() && !after.visible().iter().any(|e| e.event_type == "point") {
         return Vec::new();
     }
     let (was, now) = (open_points(before), open_points(after));
@@ -492,7 +506,12 @@ pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>
     let mut steps = Vec::new();
     if let Some(block) = emptied.into_iter().next() {
         let (closed, records) = block_review(after, &block);
-        steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review: now.is_empty() });
+        let over = now.is_empty() && unrecorded.is_empty();
+        steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review: over });
+    }
+    if !unrecorded.is_empty() {
+        steps.push(SurveyStep::Record(unrecorded));
+        return steps;
     }
     match now.first() {
         Some(point) => steps.push(SurveyStep::Point(point)),

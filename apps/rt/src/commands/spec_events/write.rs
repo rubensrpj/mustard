@@ -76,10 +76,11 @@
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
 //! de pontos junto: este comando não o grava, nem o tira ou o revê.
 //!
-//! Numa spec em levantamento com a lista do `grill` gravada, a saída traz o
-//! passo seguinte (`mustard_core::domain::survey::next_step`): em `next`, o
-//! que fazer; em `point`, o próximo ponto aberto, o mesmo enquanto ele não
-//! fecha; em `review`, o bloco cujo último ponto a gravação fechou, com a
+//! Numa spec em levantamento com o tipo de trabalho ou algum ponto gravado,
+//! a saída traz o passo seguinte (`mustard_core::domain::survey::next_step`):
+//! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
+//! tem ponto, os pontos que faltam gravar; em `point`, o próximo ponto
+//! aberto, o mesmo enquanto ele não fecha; em `review`, o bloco cujo último ponto a gravação fechou, com a
 //! pergunta da revisão e as opções, a de um revisor de fora no último bloco;
 //! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
@@ -97,7 +98,7 @@ use mustard_core::domain::spec_state::{
     birth_event, goal_rule, phase_write_allowed, survey_rule, waves_grown_by, PhaseWriter, SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
-use mustard_core::io::{lessons, spec_events as store};
+use mustard_core::io::{lessons, project_map, spec_events as store};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
@@ -337,7 +338,7 @@ fn record_in(
             survey_rule(&name, before, after)?;
             // O passo do levantamento só vai ao relatório do modelo.
             if by.is_none() {
-                survey = survey_report(before, after, lang);
+                survey = survey_report(&project.root, &name, before, after, lang);
             }
             Ok(())
         },
@@ -353,15 +354,22 @@ fn record_in(
     Ok(Recorded { written, pages, grew, survey })
 }
 
-/// O passo do levantamento depois de uma gravação, lido do arquivo antes e
-/// depois dela, como o relatório o mostra: em `next`, o que fazer, no idioma
-/// do projeto; em `point`, o ponto a apresentar; em `points`, os pontos
-/// abertos do levantamento condensado, mostrados de uma vez; em `review`, o
-/// bloco que fechou, com os pontos, os registros que os fecharam, a pergunta
-/// e as opções, "Seguir" por último; em `unrouted`, as mensagens do usuário
-/// sem destino. Com a revisão e outro passo juntos, `next` traz os dois, na
-/// ordem. `None` quando não há passo.
-fn survey_report(before: &SpecLog, after: &SpecLog, lang: Locale) -> Option<Map<String, Value>> {
+/// O passo do levantamento depois de uma gravação na spec `spec`, lido do
+/// arquivo antes e depois dela, como o relatório o mostra: em `next`, o que
+/// fazer, no idioma do projeto; em `point`, o ponto a apresentar; em
+/// `points`, os pontos que faltam gravar, como o `grill` os lista, ou os
+/// pontos abertos do levantamento condensado, mostrados de uma vez; em
+/// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
+/// a pergunta e as opções, "Seguir" por último; em `unrouted`, as mensagens
+/// do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
+/// dois, na ordem. `None` quando não há passo.
+fn survey_report(
+    root: &Path,
+    spec: &str,
+    before: &SpecLog,
+    after: &SpecLog,
+    lang: Locale,
+) -> Option<Map<String, Value>> {
     let steps = survey::next_step(before, after);
     if steps.is_empty() {
         return None;
@@ -409,10 +417,38 @@ fn survey_report(before: &SpecLog, after: &SpecLog, lang: Locale) -> Option<Map<
                 let listed: Vec<Value> = unrouted.into_iter().map(|m| super::shown(m, &codes)).collect();
                 out.insert("unrouted".to_string(), json!(listed));
             }
+            SurveyStep::Record(_) => {
+                next.push(translate("survey.record_points", lang).replace("{spec}", spec));
+                out.insert("points".to_string(), json!(unrecorded_points(root, spec, after, lang)));
+            }
         }
     }
     out.insert("next".to_string(), json!(next.join(" ")));
     Some(out)
+}
+
+/// Os itens da lista do `grill` para as lacunas do tipo de trabalho que ainda
+/// não têm ponto, como o `grill` os mostra: os campos que o assistente copia,
+/// com a mensagem do objetivo como origem e o que o mapa do projeto já
+/// responde.
+fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Vec<Value> {
+    let kinds = survey::work_type(log).map(survey::kinds_of).unwrap_or_default();
+    let goal = survey::goal(log);
+    let map = project_map::read(root).ok();
+    let list = survey::build(&survey::Sources {
+        kinds: &kinds,
+        goal: goal.and_then(|g| g.str_field("text")).map(str::trim).unwrap_or_default(),
+        current: spec,
+        bank: None,
+        lessons_file: "",
+        index: &[],
+        prior: &[],
+        map: map.as_ref(),
+        condensed: survey::condensed(log),
+        lang,
+    });
+    let origin = goal.and_then(|g| g.int("origin"));
+    survey::missing(log, &list).into_iter().map(|item| item.to_value(origin)).collect()
 }
 
 /// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
@@ -1859,9 +1895,9 @@ mod tests {
     /// Uma spec em levantamento com o objetivo, o tipo de trabalho `kinds`
     /// gravado pela porta do binário, como o `grill` grava, e um ponto aberto
     /// por lacuna, na ordem da lista; no condensado, todos num bloco só.
-    /// Enquanto a lista está sendo gravada, nenhum passo sai; a gravação do
-    /// último ponto devolve o primeiro. Devolve a mensagem do objetivo e os
-    /// pontos.
+    /// Enquanto a lista está sendo gravada, cada gravação pede os pontos das
+    /// lacunas que faltam; a gravação do último ponto devolve o primeiro.
+    /// Devolve a mensagem do objetivo e os pontos.
     fn listed(root: &std::path::Path, kinds: &[&str], condensed: bool) -> (u64, Vec<Opened>) {
         surveyed(root);
         let said = message(root, "user", GOAL);
@@ -1886,7 +1922,13 @@ mod tests {
                 gap: gap.to_string(),
             });
             if i + 1 < gaps.len() {
-                assert!(report.get("next").is_none(), "no step while the list is being recorded: {report}");
+                let ask = translate("survey.record_points", Locale::PtBr).replace("{spec}", "teste");
+                assert_eq!(report["next"], json!(ask), "{report}");
+                let left: Vec<&str> =
+                    report["points"].as_array().unwrap().iter().filter_map(|item| item["gap"].as_str()).collect();
+                let expected: Vec<&str> = gaps[i + 1..].iter().map(|key| key.label(Locale::PtBr)).collect();
+                assert_eq!(left, expected, "each write asks for the gaps still without a point: {report}");
+                assert!(report.get("point").is_none(), "no point before the list is recorded: {report}");
             } else if condensed {
                 assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
             } else {
@@ -2222,6 +2264,55 @@ mod tests {
         let shown = refusal.message(Locale::PtBr);
         assert!(shown.contains("5 lacunas") && shown.contains("Como provar que ficou pronto"), "{shown}");
         assert!(refusal.message(Locale::EnUs).contains("How to prove it is done"));
+    }
+
+    /// Uma lacuna que ficou sem ponto é pedida pela gravação seguinte, com o
+    /// item a copiar, no lugar do próximo ponto; fechar os outros pontos não
+    /// traz o fim nem oferece o revisor de fora. Gravado o ponto que faltava,
+    /// ele é o próximo.
+    #[test]
+    fn a_gap_left_without_a_point_is_asked_again_by_the_next_write() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", GOAL);
+        assert_eq!(context(root, GOAL, said)["ok"], json!(true));
+        let mut work_type = Map::new();
+        work_type.insert("kinds".to_string(), json!(["fix"]));
+        work_type.insert("origin".to_string(), json!(said));
+        assert!(record(root, "teste", "work_type", work_type, PhaseWriter::Binary).is_ok());
+        let forgotten = survey::GapKey::ExpectedVsActual;
+        let point_of = |key: survey::GapKey| {
+            json!({"block": key.block(), "gap": key.label(Locale::PtBr), "from": "gap", "status": "open",
+                "origin": said, "facts": [{"text": GOAL, "source": format!("mensagem {said}")}]})
+        };
+        let mut points = Vec::new();
+        for key in survey::gaps(&["fix"]).into_iter().filter(|key| *key != forgotten) {
+            let report = write(root, "point", &point_of(key).to_string());
+            points.push(Opened {
+                id: report["id"].as_u64().unwrap_or_else(|| panic!("{report}")),
+                code: report["code"].as_str().unwrap().to_string(),
+                block: key.block().to_string(),
+                gap: key.label(Locale::PtBr).to_string(),
+            });
+        }
+        let ask = translate("survey.record_points", Locale::PtBr).replace("{spec}", "teste");
+        let asks_again = |report: &Value| {
+            assert!(report["next"].as_str().is_some_and(|next| next.ends_with(&ask)), "{report}");
+            let item = json!({"block": "defect", "gap": forgotten.label(Locale::PtBr), "from": "gap", "origin": said});
+            assert_eq!(report["points"], json!([item]), "{report}");
+            assert!(report.get("point").is_none() && report.get("unrouted").is_none(), "{report}");
+        };
+        asks_again(&answer(root, said));
+        let mut last = Value::Null;
+        for point in &points {
+            last = settle(root, point, said);
+            asks_again(&last);
+        }
+        assert_eq!(last["review"]["block"], json!("proof"), "{last}");
+        assert_eq!(last["review"]["options"], json!(["Seguir"]), "the survey is not over: {last}");
+        let recorded = write(root, "point", &point_of(forgotten).to_string());
+        assert_eq!(recorded["point"]["id"], recorded["id"], "the forgotten point is the next one: {recorded}");
     }
 
     /// Com todos os pontos fechados, a passagem para o plano passa.

@@ -181,10 +181,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     let index = spec_index::read(&project.root);
     let prior = spec_index::read_specs(&project.root);
     let map = project_map::read(&project.root).ok();
-    let condensed = opts.condensed
-        || log.visible().iter().any(|e| {
-            e.event_type == "point" && e.str_field("block").map(str::trim) == Some(survey::CONDENSED)
-        });
+    let condensed = opts.condensed || survey::condensed(&log);
     let list = survey::build(&Sources {
         kinds: &kinds,
         goal: &goal_text,
