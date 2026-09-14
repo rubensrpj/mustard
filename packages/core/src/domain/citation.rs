@@ -59,10 +59,10 @@ pub fn cited_names(text: &str) -> Vec<String> {
         if i % 2 == 0 {
             continue;
         }
-        if let Some(name) = code_name(span.trim()) {
-            if !out.contains(&name) {
-                out.push(name);
-            }
+        if let Some(name) = code_name(span.trim())
+            && !out.contains(&name)
+        {
+            out.push(name);
         }
     }
     out
@@ -204,10 +204,10 @@ pub fn check(world: &impl CitationWorld, source: &str, text: &str) -> Vec<Findin
             out.push(Finding::NameUnknown { name });
             continue;
         }
-        if let Some((path, _)) = &cited {
-            if !found.iter().any(|(declared_in, _)| same_file(declared_in, path)) {
-                out.push(Finding::NameElsewhere { name, path: path.clone(), found });
-            }
+        if let Some((path, _)) = &cited
+            && !found.iter().any(|(declared_in, _)| same_file(declared_in, path))
+        {
+            out.push(Finding::NameElsewhere { name, path: path.clone(), found });
         }
     }
     out

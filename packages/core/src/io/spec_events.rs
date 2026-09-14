@@ -29,7 +29,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::domain::citation::{self, Finding};
 use crate::domain::spec_events::{self as model, Refusal, SpecLog};
+use crate::io::citation::DiskWorld;
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs::lock::{read_shared, LockedFile};
 use crate::io::workspace;
@@ -69,6 +71,10 @@ pub struct Written {
     /// Por que a linha da spec no índice não foi refeita, quando não foi. O
     /// evento já está gravado; o `index` refaz o índice.
     pub index_warning: Option<Refusal>,
+    /// Os avisos da conferência dos nomes citados nos fatos de um ponto, com o
+    /// número do fato: o nome que o mapa acha em outro arquivo, o que ele não
+    /// conhece e, uma vez só, a falta do mapa. O ponto já está gravado.
+    pub citation_warnings: Vec<(usize, Finding)>,
 }
 
 /// Grava um evento com a hora de agora. Veja [`write_at_then`].
@@ -116,7 +122,9 @@ pub fn write_at(
 /// não existe em nenhuma de `cite_roots`, número ou código apontado que não
 /// existe, versão nova de outro tipo e filtro de remoção que não pega nada. O
 /// expurgo reescreve o arquivo com o texto dos alvos tirado; as outras
-/// gravações só acrescentam uma linha.
+/// gravações só acrescentam uma linha. Um nome de código citado num fato que
+/// o mapa do projeto (o da última de `cite_roots`) não confirma só avisa, em
+/// [`Written::citation_warnings`].
 ///
 /// Numa pasta de spec do projeto (`<raiz>/.claude/spec/<nome>/spec.ndjson`),
 /// a linha da spec no índice é refeita logo depois da escrita, com a trava do
@@ -166,7 +174,7 @@ fn write_inner(
 ) -> Result<Written, Refusal> {
     let mut event = model::normalize(draft, event_type);
     model::validate(&event)?;
-    check_citations(cite_roots, &event)?;
+    let citation_warnings = check_citations(cite_roots, &event)?;
 
     let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
     let content = file.read_to_string().map_err(io_refusal)?;
@@ -205,7 +213,7 @@ fn write_inner(
         .and_then(|(index, name)| crate::io::spec_index::refresh_line(&index, &name, &log).err());
     then(&log);
     drop(file);
-    Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning })
+    Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning, citation_warnings })
 }
 
 /// Lê o arquivo inteiro, com a trava compartilhada. `Ok(None)` quando a spec
@@ -273,24 +281,32 @@ fn count_lines(bytes: &[u8]) -> u64 {
     if bytes.ends_with(b"\n") { pieces - 1 } else { pieces }
 }
 
-fn check_citations(roots: &[PathBuf], event: &Map<String, Value>) -> Result<(), Refusal> {
+/// Confere as fontes dos fatos de um ponto pela conferência única das
+/// citações, a mesma que o plano chama: o arquivo citado é procurado em
+/// `roots`, e os nomes, no mapa do projeto da última delas. O arquivo ou a
+/// linha que não existe recusa o ponto. Os achados dos nomes voltam como
+/// avisos, com o número do fato, e a falta do mapa, uma vez só.
+fn check_citations(roots: &[PathBuf], event: &Map<String, Value>) -> Result<Vec<(usize, Finding)>, Refusal> {
+    let mut warnings: Vec<(usize, Finding)> = Vec::new();
     if event.get("type").and_then(Value::as_str) != Some("point") {
-        return Ok(());
+        return Ok(warnings);
     }
+    let world = DiskWorld::new(roots.to_vec(), roots.last().map(PathBuf::as_path));
     let facts = event.get("facts").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     for (i, fact) in facts.iter().enumerate() {
         let Some(source) = fact.get("source").and_then(Value::as_str) else { continue };
-        match citation_problem(roots, source) {
-            Some(CitationProblem::MissingFile { path }) => {
-                return Err(Refusal::CitedFileMissing { fact: i + 1, path });
+        let text = fact.get("text").and_then(Value::as_str).unwrap_or_default();
+        for finding in citation::check(&world, source, text) {
+            if let Some(refusal) = finding.refusal(i + 1) {
+                return Err(refusal);
             }
-            Some(CitationProblem::MissingLine { path, line, lines }) => {
-                return Err(Refusal::CitedLineMissing { fact: i + 1, path, line, lines });
+            if finding == Finding::NoMap && warnings.iter().any(|(_, seen)| *seen == Finding::NoMap) {
+                continue;
             }
-            None => {}
+            warnings.push((i + 1, finding));
         }
     }
-    Ok(())
+    Ok(warnings)
 }
 
 fn io_refusal(error: Error) -> Refusal {
@@ -660,6 +676,118 @@ mod tests {
         assert!(!path.exists(), "the refusals wrote nothing");
         assert_eq!(write(point(json!("src/real.rs:3"))).unwrap().id, 1);
         assert_eq!(write(point(json!("cargo test -p x → 12 passed"))).unwrap().id, 2);
+    }
+
+    /// Um ponto de um fato só, com a fonte e o texto dados.
+    fn one_fact_point(source: Option<&str>, text: &str) -> Map<String, Value> {
+        let mut fact = json!({"text": text});
+        if let Some(source) = source {
+            fact["source"] = json!(source);
+        }
+        obj(json!({"block": "limits", "gap": "tamanho", "from": "gap", "status": "open", "facts": [fact], "origin": 1}))
+    }
+
+    /// Um fato sem fonte e outro que cita um arquivo que não existe são
+    /// recusados, com a mensagem do que falta; o que cita um arquivo real com
+    /// a linha entra. A conferência que o plano chama acha o mesmo nas mesmas
+    /// fontes.
+    #[test]
+    fn a_point_without_source_or_citing_a_missing_file_is_refused_and_a_real_line_is_written_through_the_shared_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/real.rs"), "fn a() {}\nfn ler_linha() {}\nfn c() {}\n").unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(
+            crate::io::project_map::model_path(&root),
+            r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"ler_linha","line":2}]}]}"#,
+        )
+        .unwrap();
+        let path = root.join("spec.ndjson");
+        let roots = vec![root.clone()];
+        let write = |source: Option<&str>, text: &str| write_at(&path, "point", one_fact_point(source, text), &roots, &at("10:00"));
+        let plan = |source: &str, text: &str| crate::io::citation::check_at(&roots, &root, source, text);
+
+        let without = write(None, "o pedido não tem teto").unwrap_err();
+        assert_eq!(without, Refusal::FactWithoutSource { fact: 1 });
+        assert!(without.message(crate::platform::i18n::Locale::PtBr).contains("não tem fonte"));
+
+        let missing = write(Some("src/nao-existe.rs:10"), "o pedido não tem teto").unwrap_err();
+        assert_eq!(missing, Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into() });
+        assert!(missing.message(crate::platform::i18n::Locale::PtBr).contains("src/nao-existe.rs"));
+        assert_eq!(plan("src/nao-existe.rs:10", ""), vec![Finding::MissingFile { path: "src/nao-existe.rs".into() }]);
+        assert!(!path.exists(), "the refusals wrote nothing");
+
+        let real = write(Some("src/real.rs:2"), "quem lê é `ler_linha`").unwrap();
+        assert_eq!(real.id, 1);
+        assert_eq!(real.citation_warnings, Vec::new());
+        assert_eq!(plan("src/real.rs:2", "quem lê é `ler_linha`"), Vec::new());
+    }
+
+    /// A mesma fonte pela conferência antiga das citações, pela gravação de
+    /// um ponto e pela conferência única que o plano chama: as três acham os
+    /// mesmos problemas.
+    #[test]
+    fn the_old_and_the_shared_citation_check_find_the_same_problems() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/real.rs"), "a\nb\nc\n").unwrap();
+        let path = root.join("spec.ndjson");
+        let roots = vec![root.clone()];
+        let sources = [
+            "src/real.rs:2",
+            "src/nao-existe.rs:10",
+            "src/real.rs:3-9",
+            "src/real.rs:0",
+            "src\\real.rs:3",
+            "cargo test -p x → 12 passed",
+            "354",
+            "https://example.com:8080/src/real.rs:3",
+            "",
+        ];
+        for source in sources {
+            let shared: Vec<Finding> =
+                crate::io::citation::check_at(&roots, &root, source, "").into_iter().filter(Finding::is_refusal).collect();
+            let old: Vec<Finding> = citation_problem(&roots, source)
+                .map(|problem| match problem {
+                    CitationProblem::MissingFile { path } => Finding::MissingFile { path },
+                    CitationProblem::MissingLine { path, line, lines } => Finding::MissingLine { path, line, lines },
+                })
+                .into_iter()
+                .collect();
+            assert_eq!(old, shared, "the old check and the shared one differ on {source:?}");
+            let door = match write_at(&path, "point", one_fact_point(Some(source), "t"), &roots, &at("10:00")) {
+                Ok(_) => Vec::new(),
+                Err(Refusal::CitedFileMissing { path, .. }) => vec![Finding::MissingFile { path }],
+                Err(Refusal::CitedLineMissing { path, line, lines, .. }) => vec![Finding::MissingLine { path, line, lines }],
+                Err(Refusal::FactWithoutSource { .. }) if source.is_empty() => Vec::new(),
+                Err(other) => panic!("{source:?} was refused for another reason: {other:?}"),
+            };
+            assert_eq!(door, shared, "the point write and the shared check differ on {source:?}");
+        }
+    }
+
+    /// Sem o mapa do projeto, os nomes citados não são conferidos, o ponto
+    /// entra, e um aviso só diz isso, por mais fatos que citem nomes.
+    #[test]
+    fn without_a_map_names_are_not_checked_and_one_warning_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/real.rs"), "a\nb\n").unwrap();
+        let path = root.join("spec.ndjson");
+        let roots = vec![root];
+        let facts = json!([
+            {"text": "o `SpecLog` guarda", "source": "src/real.rs:1"},
+            {"text": "e o `check_citations` confere", "source": "cargo test → ok"},
+            {"text": "sem nome nenhum", "source": "12"}
+        ]);
+        let draft = obj(json!({"block": "limits", "gap": "g", "from": "gap", "status": "open", "facts": facts, "origin": 1}));
+        let written = write_at(&path, "point", draft, &roots, &at("10:00")).unwrap();
+        assert_eq!(written.citation_warnings, vec![(1, Finding::NoMap)]);
+        let plain = write_at(&path, "point", one_fact_point(Some("src/real.rs:2"), "sem nome"), &roots, &at("10:01"));
+        assert_eq!(plain.unwrap().citation_warnings, Vec::new(), "a point without names gets no warning");
     }
 
     #[test]

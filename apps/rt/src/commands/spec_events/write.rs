@@ -27,7 +27,8 @@
 //!
 //! Num worktree, o evento vai para o arquivo do checkout principal. As
 //! citações de arquivo de um ponto são conferidas a partir de onde o comando
-//! roda.
+//! roda, e os nomes de código citados, no mapa do projeto: o nome que o mapa
+//! não confirma entra em `warnings`, e o ponto é gravado.
 //!
 //! Uma spec aberta pelo `spec-draft` tem o `spec.md` escrito por ele, ao lado
 //! do `meta.json`. Ali a página e o `.md` não são refeitos: o `.md` é o
@@ -146,13 +147,17 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             }
             // Se não deu para gravar a página e o `.md`, ou para refazer a
             // linha da spec no índice, o evento já está no arquivo: fica o
-            // aviso.
+            // aviso. O nome citado num fato que o mapa não confirma também
+            // só avisa.
             let mut warnings = Vec::new();
             if let Some(Err(refusal)) = &pages {
                 warnings.push(refusal.message(lang));
             }
             if let Some(refusal) = &written.index_warning {
                 warnings.push(spec_index::write_warning(refusal, lang));
+            }
+            for (fact, finding) in &written.citation_warnings {
+                warnings.extend(finding.warning(*fact, lang));
             }
             if !warnings.is_empty() {
                 report["warnings"] = json!(warnings);
@@ -701,6 +706,40 @@ mod tests {
         let removal = write(root, "remove", r#"{"targets":[1,2],"reason":"engano"}"#);
         assert_eq!(removal["removed"], json!([1, 2]), "{removal}");
         assert!(root.join(".claude").join("spec").join("teste").join("spec.ndjson").is_file());
+    }
+
+    /// Um fato que cita um nome que o mapa não conhece entra, e o relatório
+    /// avisa, com o número do fato; o nome declarado no arquivo citado passa
+    /// calado.
+    #[test]
+    fn a_cited_name_the_map_does_not_know_warns_and_the_point_is_written() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/real.rs"), "fn um() {}\nfn dois_passos() {}\n").unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(
+            mustard_core::io::project_map::model_path(root),
+            r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"dois_passos","line":2}]}]}"#,
+        )
+        .unwrap();
+        let msg = write(root, "message", r#"{"author":"user","text":"oi"}"#)["id"].as_u64().unwrap();
+        let point = json!({
+            "block": "limits", "gap": "g", "from": "gap", "status": "open", "origin": msg,
+            "facts": [
+                {"text": "quem lê é `ler_tudo`", "source": "src/real.rs:2"},
+                {"text": "e depois `dois_passos`", "source": "src/real.rs:1"}
+            ]
+        });
+        let report = write(root, "point", &point.to_string());
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let warnings = report["warnings"].as_array().unwrap_or_else(|| panic!("no warnings: {report}"));
+        assert_eq!(warnings.len(), 1, "{report}");
+        let warning = warnings[0].as_str().unwrap();
+        assert!(warning.contains("`ler_tudo`") && warning.contains('1'), "{warning}");
+        assert!(!warning.contains("dois_passos"), "{warning}");
+        let log = store::read(&root.join(".claude/spec/teste/spec.ndjson")).unwrap().unwrap();
+        assert!(log.visible().iter().any(|event| event.event_type == "point"), "the point is in the file");
     }
 
     /// O autor `binary` é só das gravações de dentro do binário, e numa spec
