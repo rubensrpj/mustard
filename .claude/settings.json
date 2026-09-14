@@ -38,10 +38,7 @@
       "Task",
       "WebFetch",
       "WebSearch",
-      "Bash",
-      "Bash(mustard-rt run event-projections:*)",
-      "Bash(mustard-rt run qa-run:*)",
-      "Bash(mustard-rt run refresh-claude:*)"
+      "Bash"
     ],
     "deny": [
       "Bash(rm -rf:*)",
@@ -111,10 +108,5 @@
       "Read(**/Migrations/**)",
       "Grep(**/Migrations/**)"
     ]
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "mustard-rt run statusline",
-    "padding": 1
   }
 }
