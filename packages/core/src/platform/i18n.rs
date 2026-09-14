@@ -2126,8 +2126,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.block.conversation", Locale::EnUs) => "Conversation",
 
         ("page.kind.spec", _) => "spec",
-        ("page.kind.project", Locale::PtBr) => "projeto",
-        ("page.kind.project", Locale::EnUs) => "project",
         ("page.meta.spec", _) => "spec",
         ("page.meta.phase", Locale::PtBr) => "fase",
         ("page.meta.phase", Locale::EnUs) => "phase",
@@ -2517,19 +2515,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.metrics.points", Locale::EnUs) => "Survey points",
         ("page.metrics.points.value", Locale::PtBr) => "{open} pendentes, {closed} fechados",
         ("page.metrics.points.value", Locale::EnUs) => "{open} open, {closed} closed",
-
-        ("page.project.specs", _) => "Specs",
-        ("page.project.col.spec", _) => "Spec",
-        ("page.project.col.phase", Locale::PtBr) => "Fase",
-        ("page.project.col.phase", Locale::EnUs) => "Phase",
-        ("page.project.col.page", Locale::PtBr) => "Página",
-        ("page.project.col.page", Locale::EnUs) => "Page",
-        ("page.project.open", Locale::PtBr) => "abrir",
-        ("page.project.open", Locale::EnUs) => "open",
-        ("page.project.none", Locale::PtBr) => "sem página",
-        ("page.project.none", Locale::EnUs) => "no page",
-        ("page.project.index", Locale::PtBr) => "Índice das specs: {path}",
-        ("page.project.index", Locale::EnUs) => "Spec index: {path}",
 
         // As recusas do comando `page`.
         ("page.missing_body", Locale::PtBr) => {

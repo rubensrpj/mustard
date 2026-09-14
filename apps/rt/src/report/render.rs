@@ -1,7 +1,7 @@
 //! A árvore de uma página escrita como `.md` ou como `.html`.
 //!
 //! [`Render::Html`] é a única saída de página do Mustard: a página de uma
-//! spec, a do projeto e uma página avulsa escrita em markdown passam por ela,
+//! spec e uma página avulsa escrita em markdown passam por ela,
 //! com o mesmo layout e as mesmas fontes. [`Render::Md`] escreve a mesma
 //! árvore como texto.
 //!
@@ -331,7 +331,7 @@ mod tests {
     use super::*;
     use mustard_core::domain::spec_events::parse_log;
     use mustard_core::platform::i18n::Locale;
-    use mustard_core::view::document::{project_document, spec_document, ProjectRow};
+    use mustard_core::view::document::spec_document;
 
     const LOG: &str = concat!(
         "{\"v\":1,\"id\":1,\"at\":\"2026-09-11T08:40:00-03:00\",\"type\":\"state\",\"author\":\"binary\",\"phase\":\"survey\",\"branch\":\"feature/demo\",\"base\":\"dev\"}\n",
@@ -420,18 +420,12 @@ mod tests {
         }
     }
 
-    /// A página de uma spec, a do projeto e uma página avulsa em markdown
-    /// saem da mesma função, com o mesmo estilo e as fontes do Google Fonts,
-    /// sem fonte gravada.
+    /// A página de uma spec e uma página avulsa em markdown saem da mesma
+    /// função, com o mesmo estilo e as fontes do Google Fonts, sem fonte
+    /// gravada.
     #[test]
-    fn spec_project_and_standalone_pages_share_one_engine() {
+    fn spec_and_standalone_pages_share_one_engine() {
         let spec = spec_page(Render::Html);
-        let project = Render::Html.render(&project_document(
-            "mustard",
-            &[ProjectRow { spec: "demo".into(), phase: Some("plan".into()), url: None }],
-            ".claude/spec/index.ndjson",
-            Locale::PtBr,
-        ));
         let loose = Render::Html.render(&Document {
             lang: "pt-BR".into(),
             kind: None,
@@ -446,9 +440,8 @@ mod tests {
                 .map(|(css, _)| css.to_string())
                 .expect("a page without style")
         };
-        assert_eq!(style(&spec), style(&project));
         assert_eq!(style(&spec), style(&loose));
-        for html in [&spec, &project, &loose] {
+        for html in [&spec, &loose] {
             assert!(html.contains(crate::report::FONTS), "{html}");
             assert!(!html.contains("@font-face") && !html.contains("data:font"), "a font written into the page");
         }

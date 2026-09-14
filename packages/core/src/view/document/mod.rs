@@ -1,6 +1,6 @@
 //! `view::document` — a árvore de blocos de uma página do Mustard.
 //!
-//! Toda página (a de uma spec, a do projeto, uma avulsa escrita em markdown)
+//! Toda página (a de uma spec, uma avulsa escrita em markdown)
 //! é esta árvore antes de virar texto. Quem monta a árvore não sabe de HTML
 //! nem de markdown; quem a escreve (o motor de página do `mustard-rt`) não sabe
 //! de eventos. Assim a mesma árvore sai como `.md` e como `.html`, e toda
@@ -15,10 +15,8 @@
 
 use std::collections::BTreeSet;
 
-mod project;
 mod spec;
 
-pub use project::{project_document, ProjectRow};
 pub use spec::spec_document;
 
 /// Uma página inteira.

@@ -862,7 +862,6 @@ mod tests {
             "page.value.wave_done",
             "page.value.wave_reviewed",
             "page.kind.spec",
-            "page.kind.project",
             "page.meta.spec",
             "page.meta.phase",
             "page.meta.branch",
@@ -886,13 +885,6 @@ mod tests {
             "page.metrics.verdicts.value",
             "page.metrics.points",
             "page.metrics.points.value",
-            "page.project.specs",
-            "page.project.col.spec",
-            "page.project.col.phase",
-            "page.project.col.page",
-            "page.project.open",
-            "page.project.none",
-            "page.project.index",
         ] {
             keys.push(key.to_string());
         }

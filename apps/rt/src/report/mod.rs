@@ -1,6 +1,6 @@
 //! O motor de página do Mustard: o único lugar que escreve uma página HTML.
 //!
-//! A página de uma spec, a do projeto, uma página avulsa escrita em markdown e
+//! A página de uma spec, uma página avulsa escrita em markdown e
 //! os relatórios da face `run` saem daqui, no layout padrão do Mustard (v4,
 //! mostarda e carvão), com as fontes Geist e Geist Mono buscadas do Google
 //! Fonts. Nenhuma fonte vai gravada dentro da página; quem abre o arquivo sem
