@@ -1943,8 +1943,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("clarity.long_sentence", Locale::EnUs) => "sentence with {words} words: \"{opening}…\"",
         ("clarity.unexpanded_acronym", Locale::PtBr) => "{acronym} sem as palavras por extenso",
         ("clarity.unexpanded_acronym", Locale::EnUs) => "{acronym} without its full words",
-        ("clarity.unexplained_term", Locale::PtBr) => "{term} usado sem tradução",
-        ("clarity.unexplained_term", Locale::EnUs) => "{term} used without a translation",
         ("clarity.internal_code", Locale::PtBr) => {
             "{code} é um código interno; diga o assunto pelo nome"
         }
@@ -2757,7 +2755,8 @@ mod tests {
     /// The pending advisories come from the catalog in both languages, and
     /// each carries the slots the caller fills. The texts of the end-of-answer
     /// hooks that left (the summary delivery, the QA on `Stop`, the reminder to
-    /// record the conversation) and the next-message advisory left with them.
+    /// record the conversation) and the next-message advisory left with them,
+    /// and the invented-name defect left with its measure.
     #[test]
     fn i18n_translates_doc_and_pending_keys() {
         for (key, slots) in [
@@ -2792,6 +2791,7 @@ mod tests {
             "stopgate.block.reason",
             "crystallise.nudge",
             "clarity.next.head",
+            "clarity.unexplained_term",
             "pending.notice",
         ] {
             for lang in [Locale::PtBr, Locale::EnUs] {
@@ -3076,7 +3076,6 @@ mod tests {
         for (key, slots) in [
             ("clarity.long_sentence", &["{words}", "{opening}"][..]),
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
-            ("clarity.unexplained_term", &["{term}"][..]),
             ("clarity.internal_code", &["{code}"][..]),
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),

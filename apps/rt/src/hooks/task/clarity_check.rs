@@ -24,18 +24,16 @@
 //! ## O que faz
 //!
 //! Mede o texto com o medidor do núcleo (`domain::clarity`): frase longa,
-//! sigla sem as palavras por extenso, nome inventado sem tradução, código
-//! do Mustard ("MSTD-RULE-0005"), tamanho, a nota de Flesch em português e o idioma. Os nomes
-//! inventados vêm da semente do output style `mustard-didactic`, nunca de uma
-//! lista escrita aqui.
+//! sigla sem as palavras por extenso, código do Mustard ("MSTD-RULE-0005"),
+//! tamanho, a nota de Flesch em português e o idioma.
 //!
 //! - Na primeira resposta que reprova, bloqueia: o assistente recebe os
 //!   defeitos e reescreve. A resposta já apareceu na tela, mas o bloqueio é o
 //!   único caminho que chega ao assistente no mesmo turno.
 //! - Na reescrita (`stop_hook_active`), só avisa o usuário: bloquear de novo
 //!   prenderia o turno num laço.
-//! - Guarda em `.claude/.session/<sid>/clarity.json` as siglas e os termos já
-//!   explicados na sessão, para a próxima medição não cobrar de novo. É a
+//! - Guarda em `.claude/.session/<sid>/clarity.json` as siglas já explicadas
+//!   na sessão, para a próxima medição não cobrar de novo. É a
 //!   única coisa que a medição grava: nenhum arquivo de eventos.
 //!
 //! O bloqueio e o aviso listam no máximo [`MAX_LISTED_DEFECTS`] defeitos, cada
@@ -55,18 +53,11 @@ use crate::hooks::task::end_of_turn_check::{Finding, Turn, TurnRule};
 /// O arquivo da sessão onde a medição guarda o que precisa lembrar.
 const RECORD_FILE: &str = "clarity.json";
 
-/// O output style que o assistente recebe no prompt de sistema. É dele que sai
-/// a semente dos nomes inventados, para a lista viver num lugar só.
-const OUTPUT_STYLE: &str = include_str!("../../../../../plugin/output-styles/mustard-didactic.md");
-
-/// O começo do parágrafo do output style que lista, entre crases, os primeiros
-/// nomes inventados do projeto.
-const SEED_PARAGRAPH: &str = "**A name this project invented";
-
 /// O que a sessão lembra entre uma resposta e a próxima.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ClarityRecord {
-    /// Siglas e termos que alguma resposta desta sessão já explicou.
+    /// As siglas que alguma resposta desta sessão já explicou. Um registro
+    /// antigo também traz termos aqui; eles só ficam guardados.
     #[serde(default)]
     explained: Vec<String>,
 }
@@ -103,7 +94,7 @@ impl TurnRule for ClarityRule {
 fn writing_defects(root: &Path, turn: &Turn<'_>, expected: Option<Locale>) -> Vec<String> {
     let record_path = record_path(root, turn.session);
     let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
-    let report = measure(turn.message, &style_seed(), &record.explained, expected);
+    let report = measure(turn.message, &record.explained, expected);
     for term in &report.explained {
         if !record.explained.contains(term) {
             record.explained.push(term.clone());
@@ -176,22 +167,6 @@ fn write_record(path: &Path, record: &ClarityRecord) {
     }
 }
 
-/// Os nomes entre crases do parágrafo dos nomes inventados do output style
-/// (`gate`, `wave`, `slug`…).
-fn style_seed() -> Vec<String> {
-    let Some(paragraph) = OUTPUT_STYLE.lines().find(|line| line.starts_with(SEED_PARAGRAPH)) else {
-        return Vec::new();
-    };
-    let mut terms: Vec<String> = Vec::new();
-    for term in paragraph.split('`').skip(1).step_by(2).flat_map(|quoted| quoted.split('/')) {
-        let term = term.trim();
-        if !term.is_empty() && !terms.iter().any(|known| known == term) {
-            terms.push(term.to_string());
-        }
-    }
-    terms
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,7 +178,7 @@ mod tests {
 
     /// Reprova por uma sigla sem as palavras por extenso.
     const FAILING: &str = "O CI falhou de novo.";
-    /// Passa: frase curta, sem sigla nem nome inventado.
+    /// Passa: frase curta e sem sigla.
     const CLEAR: &str = "A resposta ficou curta e clara.";
 
     /// Um projeto que declarou o português do Brasil como idioma do texto.
@@ -440,22 +415,42 @@ mod tests {
         assert!(matches!(check(root, &stop("s2", FAILING)), Verdict::Deny { .. }));
     }
 
-    /// Os nomes inventados saem só da semente do output style: um termo da
-    /// semente sem tradução reprova, e um termo do glossário do projeto não é
-    /// cobrado.
+    /// As palavras que o estilo de resposta antigo listava como nomes
+    /// inventados não são mais cobradas: "slug" e "gate" passam, mesmo num
+    /// projeto com glossário.
     #[test]
-    fn invented_names_come_from_the_output_style() {
-        assert_eq!(
-            style_seed(),
-            ["gate", "wave", "slug", "upsert", "strict", "warn", "boundary"].map(String::from)
-        );
+    fn a_reply_that_says_slug_or_gate_is_not_blocked() {
         let dir = project();
         let root = dir.path();
-        std::fs::write(root.join("CONTEXT.md"), "# Glossário\n\n**Unidade**: um trabalho aberto.\n").unwrap();
-        let Verdict::Deny { reason } = check(root, &stop("s1", "Troquei o slug da spec.")) else {
-            panic!("a seed term without translation blocks");
+        std::fs::write(root.join("CONTEXT.md"), "# Glossário\n\n**Slug**: o nome curto da spec.\n").unwrap();
+        for reply in ["Troquei o slug da spec.", "O gate da onda passou."] {
+            assert_eq!(check(root, &stop("s1", reply)), Verdict::Allow, "{reply}");
+        }
+    }
+
+    /// Uma palavra da lista antiga escrita em maiúsculas é medida como
+    /// qualquer sigla: sem as palavras por extenso, barra.
+    #[test]
+    fn an_uppercase_word_of_the_old_seed_is_measured_as_any_acronym() {
+        let dir = project();
+        let Verdict::Deny { reason } = check(dir.path(), &stop("s1", "O GATE falhou.")) else {
+            panic!("an acronym without its full words blocks");
         };
-        assert!(reason.contains("- slug usado sem tradução"), "{reason}");
-        assert_eq!(check(root, &stop("s2", "A Unidade ficou aberta.")), Verdict::Allow);
+        assert!(reason.contains("\n- GATE sem as palavras por extenso"), "{reason}");
+    }
+
+    /// Um registro antigo da sessão, que também guardava termos na lista do
+    /// que já foi explicado, continua lido: a sigla que ele traz não volta a
+    /// ser cobrada, e os termos antigos continuam guardados.
+    #[test]
+    fn an_old_session_record_with_explained_terms_still_reads() {
+        let dir = project();
+        let root = dir.path();
+        let path = record_file(root, "s1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"explained":["slug","CI"]}"#).unwrap();
+        assert_eq!(check(root, &stop("s1", FAILING)), Verdict::Allow);
+        let kept: ClarityRecord = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(kept.explained, ["slug", "CI"].map(String::from));
     }
 }
