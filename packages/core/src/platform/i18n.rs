@@ -1986,6 +1986,18 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // A última linha da lista quando há mais defeitos do que ela mostra.
         ("clarity.more", Locale::PtBr) => "e mais {count}",
         ("clarity.more", Locale::EnUs) => "and {count} more",
+        ("prompt_entry.line", Locale::PtBr) => {
+            "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno."
+        }
+        ("prompt_entry.line", Locale::EnUs) => {
+            "Answer in US English, in plain text: short sentences and no internal codes."
+        }
+        ("prompt_entry.line.undeclared", Locale::PtBr) => {
+            "Responda no idioma de quem escreve, em texto simples: frases curtas e nenhum código interno."
+        }
+        ("prompt_entry.line.undeclared", Locale::EnUs) => {
+            "Answer in the language the user writes in, in plain text: short sentences and no internal codes."
+        }
 
         // A página e o `.md` de uma spec (`view::document`): os títulos dos
         // blocos, os nomes dos tipos, os rótulos dos campos e dos valores.

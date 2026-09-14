@@ -4,8 +4,9 @@
 //!
 //! ## Por que existe
 //!
-//! O assistente recebe a regra de escrita em toda mensagem
-//! (`prompt_submit_inject::writing_rule`). Nada conferia se ela foi cumprida:
+//! O assistente recebe a regra de escrita no estilo de resposta, e toda
+//! mensagem leva uma linha curta que a lembra
+//! (`prompt_submit_inject::message_line`). Nada conferia se ela foi cumprida:
 //! em 09/09/2026 o usuário reclamou duas vezes de respostas difíceis de
 //! entender, com a regra ativa, e nenhum gancho percebeu.
 //!
