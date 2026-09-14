@@ -16,8 +16,9 @@
 //!
 //! Depois vêm as conferências, todas antes de mexer no git: a base existe no
 //! repositório (quando o git não responde, nenhuma existe), nenhuma branch e
-//! nenhuma pasta de spec têm o nome, e o checkout não carrega trabalho de
-//! outra spec, pela mesma pergunta do corte da branch. A branch nasce no
+//! nenhuma pasta de spec têm o nome, o checkout não carrega trabalho de
+//! outra spec, pela mesma pergunta do corte da branch, e está num commit para
+//! onde voltar se a spec não puder ser gravada. A branch nasce no
 //! checkout de `--root`, que num worktree é o próprio worktree; a spec mora
 //! no checkout principal. O mapa do projeto é atualizado só no que mudou, e a
 //! falha dele só avisa.
@@ -72,6 +73,7 @@ enum OpenRefusal {
     SpecTaken { spec: String },
     Busy(BusyCheckout),
     GitFailed { branch: String, detail: String },
+    UnbornBranch { base: String },
     Spec(Refusal),
 }
 
@@ -87,6 +89,7 @@ impl OpenRefusal {
             Self::Busy(busy) if matches!(busy.cause, RefusalCause::BaseStale { .. }) => "base-stale",
             Self::Busy(_) => "tree-holds-work",
             Self::GitFailed { .. } => "git-failed",
+            Self::UnbornBranch { .. } => "unborn-branch",
             Self::Spec(refusal) => refusal.reason(),
         }
     }
@@ -111,6 +114,7 @@ impl OpenRefusal {
                 None => busy.reason(lang),
             },
             Self::GitFailed { branch, detail } => fill("open.git_failed", &[("{branch}", branch), ("{detail}", detail)]),
+            Self::UnbornBranch { base } => fill("open.unborn_branch", &[("{base}", base)]),
             Self::Spec(refusal) => refusal.message(lang),
         }
     }
@@ -317,8 +321,8 @@ fn cut_start(vcs: &str, root: &Path, base: &str) -> Option<String> {
 /// Só apaga a branch que não tem commit além de `start`, o commit de que ela
 /// saiu; com commit próprio, ou sem resposta do git, nada é desfeito.
 /// `true` quando desfez.
-fn undo_branch(vcs: &str, root: &Path, back_to: Option<&str>, start: Option<&str>, target: &str) -> bool {
-    let (Some(back_to), Some(start)) = (back_to, start) else {
+fn undo_branch(vcs: &str, root: &Path, back_to: &str, start: Option<&str>, target: &str) -> bool {
+    let Some(start) = start else {
         return false;
     };
     if git_out(vcs, root, &["rev-list", "--count", &format!("{start}..{target}")]).as_deref() != Some("0") {
@@ -477,16 +481,21 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         return refuse(OpenRefusal::Busy(busy));
     }
     // Onde o checkout estava e de que commit a branch sai: se a spec não
-    // puder ser gravada, a branch nova é desfeita a partir daqui. Com o HEAD
-    // solto, o git responde "HEAD" no lugar do nome da branch; aí a volta é
-    // para o commit em que o checkout estava.
-    let back_to = current.clone().filter(|b| b != "HEAD").or_else(|| git_out(&vcs, &root, &["rev-parse", "HEAD"]));
+    // puder ser gravada, a branch nova é desfeita a partir daqui. Com o
+    // checkout solto, a volta é para o commit em que ele estava.
+    let back_to = current.clone().or_else(|| git_out(&vcs, &root, &["rev-parse", "HEAD"]));
+    // Numa branch sem nenhum commit, o git não dá nem nome nem commit para
+    // voltar, e o desfazer não teria o que fazer: a recusa vem antes de a
+    // branch nova nascer.
+    let Some(back_to) = back_to else {
+        return refuse(OpenRefusal::UnbornBranch { base });
+    };
     let start = cut_start(&vcs, &root, &base);
     if let Err(detail) = checkout_work_branch(&vcs, &root_s, &target, &base) {
         return refuse(OpenRefusal::GitFailed { branch: target, detail });
     }
     if let Err(refusal) = record_open(&root, &name, &target, &base) {
-        undo_branch(&vcs, &root, back_to.as_deref(), start.as_deref(), &target);
+        undo_branch(&vcs, &root, &back_to, start.as_deref(), &target);
         return refuse(OpenRefusal::Spec(refusal));
     }
 
@@ -1050,8 +1059,29 @@ mod tests {
         std::fs::write(root.join("src").join("y.rs"), "fn y() {}\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-q", "-m", "y"]);
-        assert!(!undo_branch("git", root, Some("dev"), Some(&start), "feature/y"));
+        assert!(!undo_branch("git", root, "dev", Some(&start), "feature/y"));
         assert_eq!(head(root), "feature/y");
         assert!(branches(root).contains(&"feature/y".to_string()));
+    }
+
+    /// Numa branch sem nenhum commit, o `open` não teria para onde voltar se
+    /// a gravação da spec falhasse: ele recusa antes de criar a branch, nos
+    /// dois idiomas, dizendo o que fazer, e nada nasce, nem a branch nova nem
+    /// a pasta da spec.
+    #[test]
+    fn a_branch_without_any_commit_is_refused_before_the_new_branch_is_created() {
+        for (config, words) in [(DEV_MAIN, "primeiro commit"), (EN, "first commit")] {
+            let dir = repo(config);
+            let root = dir.path();
+            git(root, &["checkout", "-q", "--orphan", "vazia"]);
+            let report = open(root, Some("feature"), Some("x"), Some("dev"));
+            assert_eq!(report["ok"], json!(false), "{report}");
+            assert_eq!(report["reason"], json!("unborn-branch"), "{report}");
+            let hint = report["hint"].as_str().unwrap();
+            assert!(hint.contains(words) && hint.contains("dev"), "{hint}");
+            assert_eq!(branches(root), vec!["dev".to_string(), "main".to_string()]);
+            assert_eq!(git(root, &["symbolic-ref", "--short", "HEAD"]), "vazia");
+            assert!(!spec_dir(root, "x").exists());
+        }
     }
 }

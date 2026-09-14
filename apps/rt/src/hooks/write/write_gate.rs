@@ -110,8 +110,7 @@ impl WriteContext {
         at.current_branch = ctx
             .config
             .vcs()
-            .and_then(|vcs| current_branch(&vcs, &tree))
-            .filter(|branch| branch != "HEAD");
+            .and_then(|vcs| current_branch(&vcs, &tree));
         // Só a regra da aprovação pergunta, e só quando há estado e branch.
         at.in_project_repo =
             at.state.is_some() && at.current_branch.is_some() && same_repository(&tree, root);

@@ -1448,6 +1448,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("open.git_failed", Locale::EnUs) => {
             "Git refused to create branch {branch}: {detail}. Nothing was written to the spec."
         }
+        ("open.unborn_branch", Locale::PtBr) => {
+            "O checkout está numa branch sem nenhum commit, e o open não teria para onde voltar se \
+             a gravação da spec falhasse. Faça o primeiro commit nesta branch, ou saia para uma \
+             branch com commit, como a {base}, e rode o open de novo. Nada foi criado."
+        }
+        ("open.unborn_branch", Locale::EnUs) => {
+            "The checkout is on a branch without any commit, so open would have nowhere to go back \
+             to if writing the spec failed. Make the first commit on this branch, or switch to a \
+             branch with a commit, such as {base}, and run open again. Nothing was created."
+        }
         ("grill.goal_missing", Locale::PtBr) => {
             "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
              frase?\" e rode o grill depois da resposta. Nada foi gravado."
@@ -2947,6 +2957,7 @@ mod tests {
             ("open.spec_taken", &["{spec}"][..]),
             ("open.tree_busy", &["{paths}"][..]),
             ("open.git_failed", &["{branch}", "{detail}"][..]),
+            ("open.unborn_branch", &["{base}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

@@ -197,8 +197,11 @@ pub(crate) fn compute_work_branch(
 // The cut — git primitives shared by the hook gate and the draft
 // ---------------------------------------------------------------------------
 
-/// The current branch name (`git rev-parse --abbrev-ref HEAD`), or `None` on
-/// any failure (not a repo, detached HEAD reported as `"HEAD"`, git absent).
+/// The current branch name (`git rev-parse --abbrev-ref HEAD`), or `None`
+/// whenever the checkout stands on no branch it can name: a detached HEAD (git
+/// answers the literal `HEAD`, which is no branch), a branch with no commit
+/// yet (git refuses the question), not a repository, git absent. Callers never
+/// filter the literal themselves.
 pub(crate) fn current_branch(vcs: &str, root: &str) -> Option<String> {
     let out = Command::new(vcs)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -209,11 +212,7 @@ pub(crate) fn current_branch(vcs: &str, root: &str) -> Option<String> {
         return None;
     }
     let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    (!name.is_empty() && name != "HEAD").then_some(name)
 }
 
 /// `true` when a local branch `refs/heads/<branch>` exists.
@@ -846,16 +845,17 @@ pub(crate) fn is_protected(
 /// hand-made `feature/x` carries edits exactly the same way, and taking its
 /// checkout costs exactly the same.
 ///
-/// `None` (unreadable HEAD) and git's `"HEAD"` (a detached checkout) are NOT
-/// measurements of a position, so neither counts: an unmeasured HEAD keeps
-/// today's cut rather than triggering a refusal the operator did not ask for.
+/// `None` (an unreadable HEAD, or a detached checkout, which
+/// [`current_branch`] already answers as no branch) is NOT a measurement of a
+/// position, so it never counts: an unmeasured HEAD keeps today's cut rather
+/// than triggering a refusal the operator did not ask for.
 pub(crate) fn holds_other_work(
     root: &Path,
     current: Option<&str>,
     target: &str,
     config: &mustard_core::ProjectConfig,
 ) -> bool {
-    let Some(branch) = current.filter(|b| *b != "HEAD") else {
+    let Some(branch) = current else {
         return false;
     };
     branch != target && !is_protected(root, branch, config)
@@ -2834,5 +2834,27 @@ mod tests {
             "the refusal names the work at risk",
         );
         assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+    }
+
+    /// Com o checkout solto, a branch atual responde "nenhuma", e não o texto
+    /// que o git dá no lugar do nome; numa branch sem nenhum commit, também.
+    /// Sem branch, o checkout não conta como trabalho de outra unidade.
+    #[test]
+    fn the_current_branch_is_none_on_a_detached_checkout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let root_s = root.to_string_lossy().to_string();
+        seed_repo(root);
+        git(root, &["checkout", "-q", "-b", "dev_first"]);
+        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+
+        git(root, &["checkout", "-q", "--detach"]);
+        let detached = super::current_branch("git", &root_s);
+        assert_eq!(detached, None, "a detached checkout stands on no branch");
+        let config = mustard_core::ProjectConfig::load(root);
+        assert!(!super::holds_other_work(root, detached.as_deref(), "dev_second", &config));
+
+        git(root, &["checkout", "-q", "--orphan", "vazia"]);
+        assert_eq!(super::current_branch("git", &root_s), None, "a branch without any commit");
     }
 }
