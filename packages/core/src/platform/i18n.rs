@@ -1468,6 +1468,34 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              to if writing the spec failed. Make the first commit on this branch, or switch to a \
              branch with a commit, such as {base}, and run open again. Nothing was created."
         }
+        ("open.pending_unknown", Locale::PtBr) => {
+            "A pendência {pending} não existe na lista. Confira o número com `mustard-rt run pending`. \
+             Nada foi criado."
+        }
+        ("open.pending_unknown", Locale::EnUs) => {
+            "Pending item {pending} is not on the list. Check the number with `mustard-rt run pending`. \
+             Nothing was created."
+        }
+        ("open.pending_closed", Locale::PtBr) => {
+            "A pendência {pending} já está fechada ou descartada, e só uma pendência aberta vira spec. \
+             Reabra-a com `mustard-rt run pending --reopen {pending}`, ou abra a spec sem ela. Nada \
+             foi criado."
+        }
+        ("open.pending_closed", Locale::EnUs) => {
+            "Pending item {pending} is already closed or dropped, and only an open item becomes a spec. \
+             Reopen it with `mustard-rt run pending --reopen {pending}`, or open the spec without it. \
+             Nothing was created."
+        }
+        ("open.pending_note_failed", Locale::PtBr) => {
+            "A spec {spec} foi aberta, mas a nota \"virou a spec {spec}\" não entrou na pendência \
+             {pending}, e o merge não vai fechá-la sozinho. Chame o open de novo, com os mesmos \
+             dados, para gravar a nota."
+        }
+        ("open.pending_note_failed", Locale::EnUs) => {
+            "Spec {spec} was opened, but the note \"became spec {spec}\" did not reach pending item \
+             {pending}, so the merge will not close it by itself. Call open again with the same \
+             arguments to record the note."
+        }
         ("grill.goal_missing", Locale::PtBr) => {
             "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
              frase?\" e rode o grill depois da resposta. Nada foi gravado."
@@ -2981,6 +3009,9 @@ mod tests {
             ("open.tree_busy", &["{paths}"][..]),
             ("open.git_failed", &["{branch}", "{detail}"][..]),
             ("open.unborn_branch", &["{base}"][..]),
+            ("open.pending_unknown", &["{pending}"][..]),
+            ("open.pending_closed", &["{pending}"][..]),
+            ("open.pending_note_failed", &["{spec}", "{pending}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

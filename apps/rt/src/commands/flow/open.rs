@@ -23,9 +23,15 @@
 //! no checkout principal. O mapa do projeto é atualizado só no que mudou, e a
 //! falha dele só avisa.
 //!
+//! Com `--pending P-12`, a spec vem de uma pendência da lista: ela precisa
+//! existir e estar aberta, conferido antes de qualquer coisa ser criada, e
+//! depois do nascimento ganha a nota "virou a spec `<nome>`", que o merge da
+//! spec lê para fechá-la. A nota que não se grava vira aviso, e a spec fica.
+//!
 //! A resposta termina na pergunta do objetivo, que o assistente faz ao
 //! usuário. Chamar o `open` de novo na branch que ele criou devolve o mesmo
-//! relatório, com `already_open`, e não grava nada.
+//! relatório, com `already_open`, e não grava nada além da nota da pendência
+//! que ainda faltar.
 //!
 //! Recusa sai com exit 1 e `ok: false`, com a razão curta em `reason` e a
 //! mensagem no idioma do projeto em `hint`.
@@ -43,6 +49,7 @@ use mustard_core::{ClaudePaths, ProjectConfig, Scan};
 use serde_json::{json, Value};
 
 use crate::commands::event::census_settlement::{settle, CensusSettlement, CheckoutPosition};
+use crate::commands::event::pending::{mark_became, pending_id, pending_is_open};
 use crate::commands::event::work_branch::{
     checkout_work_branch, current_branch, local_branch_exists, name_dirty_paths, remote_branch_exists,
     BusyCheckout, CheckoutWork, RefusalCause,
@@ -62,6 +69,8 @@ pub struct OpenOpts {
     pub name: Option<String>,
     /// A branch de que a spec sai.
     pub base: Option<String>,
+    /// A pendência aberta de onde a spec vem, como `P-12`.
+    pub pending: Option<String>,
 }
 
 /// As recusas do `open`: as dele e as da gravação da spec.
@@ -74,6 +83,8 @@ enum OpenRefusal {
     Busy(BusyCheckout),
     GitFailed { branch: String, detail: String },
     UnbornBranch { base: String },
+    PendingUnknown { pending: String },
+    PendingClosed { pending: String },
     Spec(Refusal),
 }
 
@@ -90,6 +101,8 @@ impl OpenRefusal {
             Self::Busy(_) => "tree-holds-work",
             Self::GitFailed { .. } => "git-failed",
             Self::UnbornBranch { .. } => "unborn-branch",
+            Self::PendingUnknown { .. } => "pending-unknown",
+            Self::PendingClosed { .. } => "pending-closed",
             Self::Spec(refusal) => refusal.reason(),
         }
     }
@@ -115,6 +128,8 @@ impl OpenRefusal {
             },
             Self::GitFailed { branch, detail } => fill("open.git_failed", &[("{branch}", branch), ("{detail}", detail)]),
             Self::UnbornBranch { base } => fill("open.unborn_branch", &[("{base}", base)]),
+            Self::PendingUnknown { pending } => fill("open.pending_unknown", &[("{pending}", pending)]),
+            Self::PendingClosed { pending } => fill("open.pending_closed", &[("{pending}", pending)]),
             Self::Spec(refusal) => refusal.message(lang),
         }
     }
@@ -331,6 +346,28 @@ fn undo_branch(vcs: &str, root: &Path, back_to: &str, start: Option<&str>, targe
     git_out(vcs, root, &["checkout", "-q", back_to]).is_some() && git_out(vcs, root, &["branch", "-D", target]).is_some()
 }
 
+/// A pendência `raw` de onde a spec vem, na grafia da lista, quando ela
+/// existe e está aberta; senão, a recusa. `root` é a raiz do projeto em que a
+/// spec mora, o checkout principal.
+fn pending_to_note(root: &Path, raw: &str) -> Result<String, OpenRefusal> {
+    let Some(id) = pending_id(raw) else {
+        return Err(OpenRefusal::PendingUnknown { pending: raw.to_string() });
+    };
+    match pending_is_open(root, &id) {
+        Some(true) => Ok(id),
+        Some(false) => Err(OpenRefusal::PendingClosed { pending: id }),
+        None => Err(OpenRefusal::PendingUnknown { pending: id }),
+    }
+}
+
+/// Grava na pendência `pending` a nota "virou a spec `spec`", pela mesma
+/// gravação que o merge lê. Devolve o aviso quando a nota não se grava.
+fn note_pending(root: &Path, pending: Option<&str>, spec: &str, lang: Locale) -> Option<String> {
+    let id = pending?;
+    (!mark_became(root, id, spec))
+        .then(|| translate("open.pending_note_failed", lang).replace("{spec}", spec).replace("{pending}", id))
+}
+
 /// O relatório da spec aberta, que termina na pergunta do objetivo.
 fn opened(spec: &str, branch: &str, base: &str, kind: &WorkKind, map: Option<Value>, warnings: &[String], lang: Locale) -> Value {
     let mut report = json!({
@@ -368,6 +405,9 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     let root_s = root.to_string_lossy().into_owned();
     let config = ProjectConfig::load(&project.root);
     let given = |value: &Option<String>| value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    // A pendência de onde a spec vem: só uma aberta vira spec. A lista é a do
+    // projeto em que a spec mora, também vista de um worktree.
+    let pending = || given(&opts.pending).map(|raw| pending_to_note(&project.root, &raw)).transpose();
 
     // O tipo, dito ou no começo do nome completo da branch.
     let (kind, asked) = match given(&opts.kind) {
@@ -433,9 +473,18 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             .map(|log| State::from_log(&log))
             .filter(|state| state.branch.as_deref() == Some(target.as_str()))
     {
+        // Com a pendência, a mesma conferência, e a nota que ainda faltar.
+        let pending = match pending() {
+            Ok(pending) => pending,
+            Err(refusal) => return refuse(refusal),
+        };
+        let warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
         let base = state.base.unwrap_or_default();
-        let mut report = opened(&name, &target, &base, &kind, None, &[], lang);
+        let mut report = opened(&name, &target, &base, &kind, None, &warnings, lang);
         report["already_open"] = json!(true);
+        if let Some(id) = pending {
+            report["pending"] = json!(id);
+        }
         return report;
     }
 
@@ -465,6 +514,10 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     if !branch_exists(&vcs, &root_s, &base) {
         return refuse(OpenRefusal::BaseNotFound { base, candidates: candidates() });
     }
+    let pending = match pending() {
+        Ok(pending) => pending,
+        Err(refusal) => return refuse(refusal),
+    };
 
     // O nome livre, na branch e na pasta da spec.
     if branch_exists(&vcs, &root_s, &target) {
@@ -499,12 +552,21 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         return refuse(OpenRefusal::Spec(refusal));
     }
 
-    // O mapa, só no que mudou; a falha só avisa.
-    let (map, warnings) = match refresh(&project.root) {
-        Ok(report) => (Some(json!({ "full": report.full, "read": report.read.len() })), Vec::new()),
-        Err(detail) => (None, vec![translate("open.map_warning", lang).replace("{detail}", &detail)]),
+    // A nota da pendência, e o mapa, só no que mudou; a falha de cada um só
+    // avisa.
+    let mut warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
+    let map = match refresh(&project.root) {
+        Ok(report) => Some(json!({ "full": report.full, "read": report.read.len() })),
+        Err(detail) => {
+            warnings.push(translate("open.map_warning", lang).replace("{detail}", &detail));
+            None
+        }
     };
-    opened(&name, &target, &base, &kind, map, &warnings, lang)
+    let mut report = opened(&name, &target, &base, &kind, map, &warnings, lang);
+    if let Some(id) = pending {
+        report["pending"] = json!(id);
+    }
+    report
 }
 
 /// Run `open` and print the JSON report; exit 1 on a refusal.
@@ -569,6 +631,7 @@ mod tests {
             kind: kind.map(str::to_string),
             name: name.map(str::to_string),
             base: base.map(str::to_string),
+            pending: None,
         }
     }
 
@@ -885,6 +948,233 @@ mod tests {
         assert!(spec_dir(&main, "x").join("spec.ndjson").is_file());
         assert!(!spec_dir(&worktree, "x").exists());
         assert_eq!(state(&main, "x").branch.as_deref(), Some("feature/x"));
+    }
+
+    /// A lista de pendências do projeto em `root`.
+    fn ledger(root: &Path) -> PathBuf {
+        ClaudePaths::for_project(root).unwrap().pending_ledger_path()
+    }
+
+    /// Acrescenta à lista a pendência `title`; a primeira ganha o número
+    /// `P-1`.
+    fn add_pending(root: &Path, title: &str) {
+        let added = crate::commands::event::pending::pending_at(&crate::commands::event::pending::PendingOpts {
+            root: root.to_path_buf(),
+            add: true,
+            title: Some(title.to_string()),
+            detail: Some("nasceu na conversa".to_string()),
+            ..crate::commands::event::pending::PendingOpts::default()
+        });
+        assert_eq!(added["ok"], json!(true), "{added}");
+    }
+
+    /// O `open` da spec `cadastro` a partir de `dev`, vindo da pendência
+    /// `pending`.
+    fn open_from(root: &Path, pending: &str) -> Value {
+        let mut with = opts(root, Some("feature"), Some("cadastro"), Some("dev"));
+        with.pending = Some(pending.to_string());
+        open_with(&with, mapped)
+    }
+
+    /// A pendência que virou a spec `spec`, pela leitura do merge.
+    fn became(root: &Path, spec: &str) -> Option<String> {
+        crate::commands::event::pending::became_of(root, spec)
+    }
+
+    /// Nada foi criado: nem branch nova, nem pasta de spec, e a lista de
+    /// pendências tem os mesmos bytes.
+    fn nothing_created(root: &Path, list: Option<&Vec<u8>>) {
+        assert_eq!(head(root), "dev");
+        assert_eq!(branches(root), vec!["dev".to_string(), "main".to_string()]);
+        assert!(!spec_dir(root, "cadastro").exists());
+        assert_eq!(std::fs::read(ledger(root)).ok().as_ref(), list, "the list stays the same");
+    }
+
+    /// Aberta a partir de uma pendência aberta, a spec nasce, o relatório
+    /// traz o número, e a pendência ganha a nota de que virou a spec.
+    #[test]
+    fn open_with_a_pending_item_records_that_it_became_the_spec() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        let report = open_from(root, "P-1");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["pending"], json!("P-1"), "{report}");
+        assert!(report.get("warnings").is_none(), "{report}");
+        assert_eq!(state(root, "cadastro").phase, Some("survey"));
+        assert_eq!(became(root, "cadastro").as_deref(), Some("P-1"));
+    }
+
+    /// A nota que o `open` grava é a que o merge lê: a leitura do merge acha
+    /// a pendência pela spec, e o fechamento dela passa.
+    #[test]
+    fn a_spec_opened_from_a_pending_is_found_by_the_merge_reader() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        assert_eq!(open_from(root, "P-1")["ok"], json!(true));
+        let found = became(root, "cadastro").expect("the merge reader finds the item");
+        assert_eq!(found, "P-1");
+        assert!(crate::commands::event::pending::close_pending(root, &found, "PR #7 mergeado"));
+        assert_eq!(pending_is_open(root, "P-1"), Some(false));
+    }
+
+    /// O número da pendência vale como `P-1`, `p-1` ou `1`, com espaço nas
+    /// pontas, e o relatório o traz na grafia da lista.
+    #[test]
+    fn a_pending_number_is_accepted_as_p_n_or_n() {
+        for written in ["P-1", "p-1", "1", " P-1 "] {
+            let dir = repo(DEV_MAIN);
+            let root = dir.path();
+            add_pending(root, "Cadastro de clientes");
+            let report = open_from(root, written);
+            assert_eq!(report["pending"], json!("P-1"), "{written}: {report}");
+            assert_eq!(became(root, "cadastro").as_deref(), Some("P-1"), "{written}");
+        }
+    }
+
+    /// Uma pendência que a lista não tem é recusada, nos dois idiomas, antes
+    /// de qualquer coisa ser criada; um texto sem número também.
+    #[test]
+    fn open_with_an_unknown_pending_is_refused_and_creates_nothing() {
+        for (config, lang) in [(DEV_MAIN, Locale::PtBr), (EN, Locale::EnUs)] {
+            let dir = repo(config);
+            let root = dir.path();
+            add_pending(root, "Cadastro de clientes");
+            let list = std::fs::read(ledger(root)).ok();
+            for (written, named) in [("P-9", "P-9"), ("abc", "abc")] {
+                let report = open_from(root, written);
+                assert_eq!(report["ok"], json!(false), "{report}");
+                assert_eq!(report["reason"], json!("pending-unknown"), "{report}");
+                let expected = translate("open.pending_unknown", lang).replace("{pending}", named);
+                assert_eq!(report["hint"], json!(expected), "{report}");
+                nothing_created(root, list.as_ref());
+            }
+        }
+    }
+
+    /// Uma pendência fechada é recusada, nos dois idiomas, antes de qualquer
+    /// coisa ser criada: só uma pendência aberta vira spec.
+    #[test]
+    fn open_with_a_closed_pending_is_refused_and_creates_nothing() {
+        for (config, lang) in [(DEV_MAIN, Locale::PtBr), (EN, Locale::EnUs)] {
+            let dir = repo(config);
+            let root = dir.path();
+            add_pending(root, "Cadastro de clientes");
+            assert!(crate::commands::event::pending::close_pending(root, "P-1", "feito"));
+            let list = std::fs::read(ledger(root)).ok();
+            let report = open_from(root, "P-1");
+            assert_eq!(report["reason"], json!("pending-closed"), "{report}");
+            let expected = translate("open.pending_closed", lang).replace("{pending}", "P-1");
+            assert_eq!(report["hint"], json!(expected), "{report}");
+            nothing_created(root, list.as_ref());
+        }
+    }
+
+    /// Sem `--pending`, a lista de pendências fica com os mesmos bytes.
+    #[test]
+    fn without_a_pending_the_list_is_not_touched() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        let list = std::fs::read(ledger(root)).unwrap();
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert!(report.get("pending").is_none(), "{report}");
+        assert_eq!(std::fs::read(ledger(root)).unwrap(), list);
+        assert_eq!(became(root, "cadastro"), None);
+    }
+
+    /// Chamar o `open` de novo, com a mesma pendência, devolve o mesmo
+    /// relatório e não grava a nota outra vez: a lista fica com os mesmos
+    /// bytes.
+    #[test]
+    fn running_open_again_with_its_pending_records_the_note_once() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        assert_eq!(open_from(root, "P-1")["ok"], json!(true));
+        let list = std::fs::read(ledger(root)).unwrap();
+        let again = open_from(root, "P-1");
+        assert_eq!(again["already_open"], json!(true), "{again}");
+        assert_eq!(again["pending"], json!("P-1"), "{again}");
+        assert_eq!(std::fs::read(ledger(root)).unwrap(), list, "the note is written once");
+        assert_eq!(became(root, "cadastro").as_deref(), Some("P-1"));
+    }
+
+    /// A nota que não se grava vira aviso, e a spec fica aberta; chamar o
+    /// `open` de novo, com a lista gravável, grava a nota que faltou.
+    #[cfg(unix)]
+    #[test]
+    fn a_note_that_cannot_be_written_warns_and_keeps_the_spec() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        let list = ledger(root);
+        let folder = list.parent().unwrap().to_path_buf();
+        let modes = |file: u32, folder_mode: u32| {
+            std::fs::set_permissions(&list, std::fs::Permissions::from_mode(file)).unwrap();
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(folder_mode)).unwrap();
+        };
+        modes(0o444, 0o555);
+        // Quem roda com poder total escreve mesmo assim: aí não há o que
+        // provar.
+        if std::fs::write(folder.join("probe"), "x").is_ok() {
+            let _ = std::fs::remove_file(folder.join("probe"));
+            modes(0o644, 0o755);
+            return;
+        }
+        let report = open_from(root, "P-1");
+        modes(0o644, 0o755);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let expected =
+            translate("open.pending_note_failed", Locale::PtBr).replace("{spec}", "cadastro").replace("{pending}", "P-1");
+        assert_eq!(report["warnings"], json!([expected]), "{report}");
+        assert_eq!(state(root, "cadastro").phase, Some("survey"), "the spec stays");
+        assert_eq!(became(root, "cadastro"), None);
+        let again = open_from(root, "P-1");
+        assert!(again.get("warnings").is_none(), "{again}");
+        assert_eq!(became(root, "cadastro").as_deref(), Some("P-1"), "the repeated call records the note");
+    }
+
+    /// Uma pendência que já virou outra spec passa a apontar a nova.
+    #[test]
+    fn a_pending_that_became_another_spec_now_points_to_the_new_one() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        add_pending(root, "Cadastro de clientes");
+        assert!(mark_became(root, "P-1", "outra"));
+        assert_eq!(open_from(root, "P-1")["ok"], json!(true));
+        assert_eq!(became(root, "cadastro").as_deref(), Some("P-1"));
+        assert_eq!(became(root, "outra"), None);
+    }
+
+    /// Aberta de um worktree, a spec vem da pendência da lista do checkout
+    /// principal, e a nota entra lá.
+    #[test]
+    fn open_from_a_linked_worktree_notes_the_pending_of_the_main_checkout() {
+        let dir = tempdir().unwrap();
+        let main = dir.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["config", "user.email", "t@example.com"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-q", "-b", "dev"]);
+        std::fs::write(main.join(".git").join("info").join("exclude"), ".claude/\nmustard.json\n").unwrap();
+        std::fs::write(main.join("mustard.json"), DEV_MAIN).unwrap();
+        std::fs::write(main.join("README.md"), "oi\n").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-q", "-m", "init"]);
+        let worktree = dir.path().join("wt");
+        git(&main, &["worktree", "add", "-q", "-b", "scratch", &worktree.to_string_lossy()]);
+        add_pending(&main, "Cadastro de clientes");
+
+        let report = open_from(&worktree, "P-1");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["pending"], json!("P-1"), "{report}");
+        assert_eq!(became(&main, "cadastro").as_deref(), Some("P-1"));
+        assert!(!ledger(&worktree).exists(), "the worktree has no list of its own");
     }
 
     /// A spec nasce em levantamento, com a branch e a base, gravada pelo

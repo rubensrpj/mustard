@@ -39,6 +39,11 @@ pub enum FlowCmd {
         /// declares none.
         #[arg(long)]
         base: Option<String>,
+        /// The open pending item this spec comes from, as `P-12`: the item
+        /// gets the note that it became this spec, and the spec's merge
+        /// closes it.
+        #[arg(long)]
+        pending: Option<String>,
         /// Any directory inside the repo. The branch is created in this
         /// checkout; the spec lives in the main one. Defaults to the current
         /// dir.
@@ -72,8 +77,8 @@ pub enum FlowCmd {
 /// Dispatch one `flow`-family `run` subcommand.
 pub fn dispatch(cmd: FlowCmd) {
     match cmd {
-        FlowCmd::Open { kind, name, base, root } => {
-            flow::open::run(&flow::open::OpenOpts { root, kind, name, base });
+        FlowCmd::Open { kind, name, base, pending, root } => {
+            flow::open::run(&flow::open::OpenOpts { root, kind, name, base, pending });
         }
         FlowCmd::Grill { spec, kinds, condensed, root } => {
             flow::grill::run(&flow::grill::GrillOpts { root, spec, kinds, condensed });
