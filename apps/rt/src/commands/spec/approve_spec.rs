@@ -1,5 +1,9 @@
 //! `mustard-rt run approve-spec` — deterministic spec-approval event sequence.
 //!
+//! The command now refuses at the door and writes nothing ([`run`]): the user
+//! approves a spec by answering the approval question, and the witness records
+//! it. What follows describes the old body, kept until the command leaves.
+//!
 //! Replaces the hand-assembled `emit-pipeline` sequence the legacy approve
 //! flow (now `plugin/refs/spec/resume-loop.md § A`) used to make the LLM run
 //! by hand (emit `pipeline.stage Plan` then `pipeline.status
@@ -861,7 +865,20 @@ fn approve_at(
     })
 }
 
-/// CLI entry — `mustard-rt run approve-spec --spec <name> [--wave-plan] [--resume]`.
+/// CLI entry — `mustard-rt run approve-spec`. The command refuses at the door
+/// with exit 1 and writes nothing: a spec is approved by the user's answer to
+/// the approval question, which the witness records. [`run_old`] keeps the
+/// old body, with its tests, until the command leaves.
+pub fn run(_opts: ApproveSpecOpts) {
+    crate::commands::retired::refuse(
+        Path::new(&crate::shared::context::cwd()),
+        "approve-by-question",
+        "retired.approve_spec",
+        &[],
+    );
+}
+
+/// The door's old body, kept until the command leaves.
 ///
 /// Delegates the decision + emission to [`approve_at`] against the process cwd,
 /// emitting each step through the canonical
@@ -869,7 +886,9 @@ fn approve_at(
 /// `wave_complete_observer`) — no subprocess, no duplicated NDJSON logic, no
 /// facade. Prints the JSON report to stdout; a gate refusal exits 1 (a gate the
 /// gated cannot open by running this very command), an empty spec name exits 0.
-pub fn run(opts: ApproveSpecOpts) {
+// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+#[allow(dead_code)]
+fn run_old(opts: ApproveSpecOpts) {
     let root = crate::shared::context::cwd();
     let spec = opts.spec.clone();
     let mut emit = |kind: &str, payload: Value| {

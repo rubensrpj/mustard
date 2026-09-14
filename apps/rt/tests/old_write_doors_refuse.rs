@@ -149,8 +149,8 @@ fn every_retired_write_door_refuses_and_leaves_the_spec_file_untouched() {
 }
 
 /// Nenhum comando antigo arma a cobrança das pendências, por caminho nenhum:
-/// nem os que recusam, nem os que ainda passam pela porta de dentro (a
-/// aprovação, o fim de onda e os tipos que só gravam no log velho). Entre esta
+/// nem os que recusam (a aprovação entre eles), nem os que ainda passam pela
+/// porta de dentro (o fim de onda e os tipos que só gravam no log velho). Entre esta
 /// rodada e os comandos novos, ninguém fecha nem entrega pelo Mustard, e o
 /// arquivo dos contadores nem nasce.
 #[test]
@@ -182,8 +182,8 @@ fn no_old_command_arms_the_pending_charge() {
     .unwrap();
 
     let mut doors: Vec<Vec<&str>> = doors().into_iter().map(|(args, ..)| args).collect();
-    // As portas que ainda passam: a aprovação e o fim de onda movem o estágio
-    // por dentro, e o tipo de fase só grava no log velho.
+    // A aprovação recusa na entrada; o fim de onda move o estágio por dentro,
+    // e o tipo de fase só grava no log velho.
     doors.push(vec!["approve-spec", "--spec", SPEC]);
     doors.push(vec!["wave-done", "--spec", SPEC, "--wave", "1"]);
     doors.push(vec!["emit-pipeline", "--kind", "pipeline.phase", "--spec", SPEC, "--payload", "{}"]);

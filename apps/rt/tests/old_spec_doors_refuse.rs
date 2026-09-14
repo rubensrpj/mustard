@@ -6,8 +6,9 @@
 //! Os comandos antigos que criam ou avançam uma spec recusam na entrada e
 //! mandam usar o `open`, com a mensagem nos dois idiomas, sem criar nada: o
 //! `spec-draft`, o `tactical-fix-create` e, pela linha de comando, os tipos do
-//! `emit-pipeline` que criam ou avançam uma spec. Os tipos que só gravam no
-//! log velho passam.
+//! `emit-pipeline` que criam ou avançam uma spec. O `approve-spec` recusa do
+//! mesmo jeito e manda aprovar pela pergunta. Os tipos que só gravam no log
+//! velho passam.
 //!
 //! Tudo roda pelo binário, com o `CLAUDE_PROJECT_DIR` na pasta temporária e
 //! sem as variáveis de sessão, para nada cair no projeto de verdade.
@@ -157,31 +158,36 @@ fn the_old_unit_door_refuses_before_writing_the_became_note() {
     nothing_created(root);
 }
 
-/// A recusa fica só na linha de comando: o `approve-spec` ainda move o
-/// estágio pela porta de dentro, e o `meta.json` de uma spec antiga, que já
-/// existe, continua atualizado.
+/// O `approve-spec` recusa na entrada, nos dois idiomas, e manda aprovar pela
+/// pergunta. Mesmo numa spec antiga já aprovada, com o `meta.json` ao lado,
+/// nada é gravado: o estágio não se move, o arquivo de eventos da spec fica
+/// com os mesmos bytes e o log velho nem nasce.
 #[test]
-fn the_approval_command_still_moves_its_stage_through_the_internal_door() {
-    let dir = project(PT);
-    let root = dir.path();
-    let spec_dir = root.join(".claude").join("spec").join("epic");
-    std::fs::create_dir_all(&spec_dir).unwrap();
-    std::fs::write(spec_dir.join("spec.md"), "# Epic\n\n## Contexto\n\nClientes se cadastram sozinhos.\n").unwrap();
-    std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Draft","outcome":"Active","phase":"PLAN"}"#)
-        .unwrap();
-    let plan = r#"{"v":1,"id":1,"at":"2026-09-14T10:00:00-03:00","type":"state","author":"binary","phase":"plan"}"#;
-    let approved = r#"{"v":1,"id":2,"at":"2026-09-14T10:01:00-03:00","type":"state","author":"user","phase":"approved","witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}}"#;
-    std::fs::write(spec_dir.join("spec.ndjson"), format!("{plan}\n{approved}\n")).unwrap();
+fn the_approval_command_refuses_and_writes_nothing_in_both_languages() {
+    for (config, lang) in [(PT, Locale::PtBr), (EN, Locale::EnUs)] {
+        let dir = project(config);
+        let root = dir.path();
+        let spec_dir = root.join(".claude").join("spec").join("epic");
+        std::fs::create_dir_all(&spec_dir).unwrap();
+        std::fs::write(spec_dir.join("spec.md"), "# Epic\n\n## Contexto\n\nClientes se cadastram sozinhos.\n").unwrap();
+        let meta = r#"{"scope":"light","stage":"Draft","outcome":"Active","phase":"PLAN"}"#;
+        std::fs::write(spec_dir.join("meta.json"), meta).unwrap();
+        let plan = r#"{"v":1,"id":1,"at":"2026-09-14T10:00:00-03:00","type":"state","author":"binary","phase":"plan"}"#;
+        let approved = r#"{"v":1,"id":2,"at":"2026-09-14T10:01:00-03:00","type":"state","author":"user","phase":"approved","witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}}"#;
+        let events = format!("{plan}\n{approved}\n");
+        std::fs::write(spec_dir.join("spec.ndjson"), &events).unwrap();
 
-    let out = run(root, &["approve-spec", "--spec", "epic"]);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
-    assert!(!stdout.contains("pipeline-door-retired"), "{stdout}");
-    let meta: Value = serde_json::from_str(&std::fs::read_to_string(spec_dir.join("meta.json")).unwrap()).unwrap();
-    assert_eq!(meta["stage"], "Plan", "the internal door moved the stage: {meta}");
+        let out = run(root, &["approve-spec", "--spec", "epic", "--resume"]);
+        let report = refusal(&out);
+        assert_eq!(report["reason"], "approve-by-question", "{report}");
+        assert_eq!(report["hint"], translate("retired.approve_spec", lang), "{report}");
+        assert_eq!(std::fs::read_to_string(spec_dir.join("meta.json")).unwrap(), meta, "the stage did not move");
+        assert_eq!(std::fs::read_to_string(spec_dir.join("spec.ndjson")).unwrap(), events, "the spec file is untouched");
+        assert!(!spec_dir.join(".events").exists(), "nothing reached the old log");
+    }
 }
 
-/// Numa spec aberta pelo `open`, a porta de dentro do `approve-spec` não deixa
+/// Numa spec aberta pelo `open`, o `approve-spec` recusa e não deixa
 /// `meta.json` nenhum: a pasta fica com os três arquivos dela, o critério
 /// gravado depois é aceito e a página continua sendo refeita.
 #[test]
@@ -194,7 +200,7 @@ fn the_approval_command_creates_no_meta_json_on_a_spec_opened_by_open() {
     assert!(!spec_dir.join("meta.json").exists(), "the open door creates no sidecar");
 
     // A testemunha grava o estado aprovado; aqui as duas linhas dela entram
-    // direto no arquivo, que é tudo o que o `approve-spec` lê.
+    // direto no arquivo.
     let events = spec_dir.join("spec.ndjson");
     let plan = r#"{"v":1,"id":2,"at":"2026-09-14T10:00:00-03:00","type":"state","author":"binary","phase":"plan"}"#;
     let approved = r#"{"v":1,"id":3,"at":"2026-09-14T10:01:00-03:00","type":"state","author":"user","phase":"approved","witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}}"#;
@@ -206,9 +212,8 @@ fn the_approval_command_creates_no_meta_json_on_a_spec_opened_by_open() {
     std::fs::write(&events, log).unwrap();
 
     let out = run(root, &["approve-spec", "--spec", "cadastro"]);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
-    assert!(!spec_dir.join("meta.json").exists(), "no door creates a meta.json: {stdout}");
+    assert_eq!(refusal(&out)["reason"], "approve-by-question");
+    assert!(!spec_dir.join("meta.json").exists(), "no door creates a meta.json");
 
     // A spec segue nova: o critério é aceito e a página é refeita com ele.
     let said = run(root, &["write", "--spec", "cadastro", "message", "--json", r#"{"author":"user","text":"Travar o merge."}"#]);

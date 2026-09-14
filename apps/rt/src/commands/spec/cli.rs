@@ -238,16 +238,9 @@ pub enum SpecCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Emit the deterministic spec-approval event sequence (replaces the
-    /// hand-assembled `emit-pipeline` steps of the legacy approve flow —
-    /// now `plugin/refs/spec/resume-loop.md § A`).
-    ///
-    /// Emits, in order: `pipeline.stage {stage:"Plan"}` → `pipeline.status
-    /// {from:"draft",to:"approved"}`, and — only with `--resume` — a trailing
-    /// `pipeline.stage {stage:"Execute"}` (the `r`-suffix inline-resume case).
-    /// With `--wave-plan`, the stage payloads carry `wave:1` so the wave-1
-    /// `meta.json` sidecar is patched for dispatch. Reuses the canonical
-    /// `emit-pipeline` internals (no subprocess). Prints a JSON report; exit 0.
+    /// Refuses at the door with exit 1 and writes nothing: a spec is approved
+    /// by the user's answer to the approval question, which the witness
+    /// records.
     #[command(name = "approve-spec")]
     #[command(display_order = 67)]
     ApproveSpec {

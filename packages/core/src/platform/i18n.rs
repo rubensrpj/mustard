@@ -1559,6 +1559,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              closes the linked pending item, has not arrived yet: wait for the new `pr-merge`. \
              Nothing was done."
         }
+        ("retired.approve_spec", Locale::PtBr) => {
+            "O `approve-spec` não aprova nem avança mais uma spec. Quem aprova é o usuário, na \
+             pergunta \"Aprovar esta spec?\": ele escolhe \"Aprovar\", e a testemunha grava a spec \
+             como aprovada. Nada foi gravado."
+        }
+        ("retired.approve_spec", Locale::EnUs) => {
+            "`approve-spec` no longer approves or advances a spec. The user approves it in the \
+             question \"Approve this spec?\": they choose \"Approve\", and the witness records the \
+             spec as approved. Nothing was written."
+        }
         ("grill.goal_missing", Locale::PtBr) => {
             "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
              frase?\" e rode o grill depois da resposta. Nada foi gravado."
@@ -3082,9 +3092,13 @@ mod tests {
 
     /// As recusas dos comandos antigos que saíram do fluxo saem do catálogo
     /// nos dois idiomas, cada uma com as vagas que o chamador preenche, e
-    /// todas dizem por qual comando esperar, ou para qual ir.
+    /// todas dizem por qual comando esperar, ou para qual ir. A da aprovação
+    /// não tem comando para onde ir: ela diz a pergunta de aprovação.
     #[test]
     fn i18n_translates_retired_keys() {
+        let (pt, en) = (translate("retired.approve_spec", Locale::PtBr), translate("retired.approve_spec", Locale::EnUs));
+        assert!(pt.contains(translate("approval.question", Locale::PtBr)), "{pt}");
+        assert!(en.contains(translate("approval.question", Locale::EnUs)), "{en}");
         for (key, slots, points_to) in [
             ("retired.spec_draft", &[][..], "mustard-rt run open"),
             ("retired.tactical_fix", &[][..], "mustard-rt run open"),
