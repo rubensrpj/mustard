@@ -2048,6 +2048,36 @@ mod tests {
         }
     }
 
+    /// O revisor de fora é oferecido uma vez: fechado o último ponto que veio
+    /// dele, a revisão do bloco dele fica só com "Seguir", e o fim vem junto.
+    #[test]
+    fn closing_the_outside_reviewers_last_point_does_not_offer_the_reviewer_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let mut last = Value::Null;
+        for point in &points {
+            last = settle(root, point, said);
+        }
+        let outside = "Quer que um revisor de fora confira o levantamento inteiro?";
+        assert_eq!(last["review"]["options"], json!([outside, "Seguir"]), "{last}");
+        let gap = "O merge pela interface web";
+        let found = json!({"block": "outside_review", "gap": gap, "from": "outside_review", "status": "open",
+            "origin": said, "facts": [{"text": "O revisor achou.", "source": format!("mensagem {said}")}]});
+        let added = write(root, "point", &found.to_string());
+        assert_eq!(added["point"]["id"], added["id"], "the reviewer's point is the next one: {added}");
+        let reviewer = Opened {
+            id: added["id"].as_u64().unwrap(),
+            code: added["code"].as_str().unwrap().to_string(),
+            block: "outside_review".to_string(),
+            gap: gap.to_string(),
+        };
+        let closed = settle(root, &reviewer, said);
+        assert_eq!(closed["review"]["block"], json!("outside_review"), "{closed}");
+        assert_eq!(closed["review"]["options"], json!(["Seguir"]), "offered once: {closed}");
+        assert!(closed["unrouted"].is_array(), "{closed}");
+    }
+
     /// O fim do levantamento lista as mensagens do usuário que nenhum
     /// registro aponta: as duas soltas entram; a que virou decisão, a do
     /// objetivo e a do assistente ficam fora.

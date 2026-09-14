@@ -89,6 +89,7 @@ const PRIOR_FACT_TYPES: &[&str] = &["rule", "decision", "error"];
 const FROM_GAP: &str = "gap";
 const FROM_LESSON: &str = "lesson";
 const FROM_PRIOR_SPEC: &str = "prior_spec";
+const FROM_OUTSIDE_REVIEW: &str = "outside_review";
 
 /// Uma lacuna do tipo de trabalho: o que o levantamento precisa responder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -464,7 +465,8 @@ pub enum SurveyStep<'a> {
     /// A gravação fechou o último ponto aberto do bloco `block`: a revisão
     /// dele, com os pontos do bloco (`closed`) e os registros que os
     /// fechamentos apontam em `result` (`records`). Sem ponto aberto em bloco
-    /// nenhum, a revisão oferece o revisor de fora (`outside_review`).
+    /// nenhum, a revisão oferece o revisor de fora (`outside_review`), uma vez:
+    /// com algum ponto vindo dele, não oferece de novo.
     ReviewBlock { block: String, closed: Vec<u64>, records: Vec<u64>, outside_review: bool },
     /// Não sobra ponto aberto: as mensagens do usuário que nenhum registro
     /// aponta.
@@ -478,7 +480,7 @@ pub enum SurveyStep<'a> {
 ///   sem lacuna por gravar (as specs antigas);
 /// - a revisão do bloco, quando a gravação fechou o último ponto aberto de um
 ///   bloco que não é o do levantamento condensado; o revisor de fora só é
-///   oferecido quando o levantamento acabou;
+///   oferecido quando o levantamento acabou e nenhum ponto veio dele ainda;
 /// - depois dela, ou sozinho: enquanto alguma lacuna do tipo de trabalho não
 ///   tem ponto (a lista do `grill` ainda sendo gravada, ou um ponto
 ///   esquecido), gravar os pontos que faltam; senão, o próximo ponto aberto,
@@ -507,7 +509,7 @@ pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>
     if let Some(block) = emptied.into_iter().next() {
         let (closed, records) = block_review(after, &block);
         let over = now.is_empty() && unrecorded.is_empty();
-        steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review: over });
+        steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review: over && !outside_reviewed(after) });
     }
     if !unrecorded.is_empty() {
         steps.push(SurveyStep::Record(unrecorded));
@@ -543,6 +545,14 @@ fn block_review(log: &SpecLog, block: &str) -> (Vec<u64>, Vec<u64>) {
         .flat_map(|e| e.ints("result"))
         .collect();
     (points.iter().map(|p| p.id).collect(), records.into_iter().collect())
+}
+
+/// Algum ponto visível veio do revisor de fora: ele já conferiu o
+/// levantamento, e a revisão do último bloco não o oferece de novo.
+fn outside_reviewed(log: &SpecLog) -> bool {
+    log.visible()
+        .iter()
+        .any(|e| e.event_type == "point" && e.str_field("from").map(str::trim) == Some(FROM_OUTSIDE_REVIEW))
 }
 
 /// O objetivo da spec: o primeiro `context` gravado, na versão vigente dele.
