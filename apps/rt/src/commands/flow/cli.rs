@@ -73,6 +73,24 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Leva a spec de volta ao levantamento, com o motivo gravado no evento
+    /// da volta: a fase volta a ser a de levantamento, o `grill` roda de
+    /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
+    /// que está gravado é apagado. Uma spec fechada, com o pull request
+    /// aberto, entregue ou descartada é recusada, dizendo a fase em que está.
+    #[command(display_order = 106)]
+    Reopen {
+        /// Por que a spec volta ao levantamento, numa frase. Obrigatório: é
+        /// ele que explica depois por que o levantamento recomeçou.
+        #[arg(long)]
+        reason: String,
+        /// A spec que volta. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Despacha um comando `run` da família do fluxo.
@@ -83,6 +101,9 @@ pub fn dispatch(cmd: FlowCmd) {
         }
         FlowCmd::Grill { spec, kinds, condensed, root } => {
             flow::grill::run(&flow::grill::GrillOpts { root, spec, kinds, condensed });
+        }
+        FlowCmd::Reopen { reason, spec, root } => {
+            flow::reopen::run(&flow::reopen::ReopenOpts { root, spec, reason });
         }
     }
 }

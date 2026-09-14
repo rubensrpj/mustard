@@ -164,6 +164,12 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          (commands/spec/rebuild_specs.rs module doc); user-invoked only",
     ),
     (
+        "reopen",
+        "the way back of the flow (commands/flow/reopen.rs): takes a spec to \
+         the survey again with the reason on the record; the flow prose that \
+         will call it is rewritten together with the rest of the flow",
+    ),
+    (
         "review-dispatch",
         "built to replace the review SKILL's imperative steps, but the SKILL \
          still calls review-prefetch/diff-context directly - unadopted",

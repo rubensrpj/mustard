@@ -119,6 +119,21 @@ pub fn is_approved_phase(phase: &str) -> bool {
     APPROVED_PHASES.contains(&phase.trim())
 }
 
+/// O lugar da fase na ordem de [`PHASES`]; o fim da fila para um nome que não
+/// é fase nenhuma.
+fn order(phase: &str) -> usize {
+    PHASES.iter().position(|known| *known == phase.trim()).unwrap_or(PHASES.len())
+}
+
+/// A spec pode voltar ao levantamento: a fase de agora vem antes do
+/// fechamento. Em levantamento, em plano, aprovada ou em execução, a volta
+/// passa; fechada, com o pull request aberto, entregue ou descartada, não: o
+/// que essas decidiram já saiu, e o caminho é uma spec nova.
+#[must_use]
+pub fn reopenable(phase: &str) -> bool {
+    order(phase) < order("closed")
+}
+
 /// Quem grava uma mudança de fase no `spec.ndjson`. O modelo não está aqui:
 /// o `run write` nunca grava o estado, que é dos comandos do fluxo e da
 /// testemunha da aprovação.
@@ -140,7 +155,9 @@ pub enum PhaseWriter {
 /// - As fases depois da aprovação (`running`, `closed`, `pr_open`,
 ///   `delivered`) só pelo binário, e só a partir de uma fase aprovada.
 /// - Uma fase que não aprova (`survey`, `plan`, `discarded`) só fecha a
-///   trava, e só o binário a grava.
+///   trava, e só o binário a grava: o nascimento, a passagem para a frente na
+///   ordem das fases e a volta ao levantamento, que é a única marcha à ré e
+///   sai só de uma spec que ainda não fechou ([`reopenable`]).
 /// - A branch e a base, só o binário: no nascimento, ou completando a que
 ///   falta. O portão deixa de travar numa branch diferente da gravada.
 /// - A fase nunca some: tirar o último `state` voltaria a spec ao nascimento.
@@ -165,7 +182,17 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
         return false;
     };
     if !is_approved_phase(to) {
-        return by == PhaseWriter::Binary;
+        if by != PhaseWriter::Binary {
+            return false;
+        }
+        // O nascimento: a spec ainda não tinha fase nenhuma.
+        let Some(from) = before.phase else {
+            return true;
+        };
+        // A volta ao levantamento é a única marcha à ré, e sai só de uma spec
+        // que ainda não fechou. O resto anda para a frente, na ordem das
+        // fases.
+        return if to == "survey" { reopenable(from) } else { order(from) < order(to) };
     }
     match by {
         PhaseWriter::Witness => to == "approved" && matches!(before.phase, None | Some("plan")),
@@ -560,9 +587,23 @@ mod tests {
         }
 
         for locking in ["survey", "plan", "discarded"] {
-            assert!(allowed(Some("running"), Some(locking), Binary), "{locking} only locks");
-            assert!(allowed(None, Some(locking), Binary));
+            assert!(allowed(None, Some(locking), Binary), "{locking} at birth");
             assert!(!allowed(None, Some(locking), Witness), "the witness only approves");
+        }
+        assert!(allowed(Some("survey"), Some("plan"), Binary), "the survey done");
+        assert!(allowed(Some("running"), Some("discarded"), Binary), "the discard");
+
+        // A volta ao levantamento é a única marcha à ré, e sai só de uma spec
+        // que ainda não fechou.
+        for from in ["plan", "approved", "running"] {
+            assert!(allowed(Some(from), Some("survey"), Binary), "back to the survey from {from}");
+            assert!(!allowed(Some(from), Some("survey"), Witness), "the witness only approves");
+        }
+        for settled in ["closed", "pr_open", "delivered", "discarded"] {
+            assert!(!allowed(Some(settled), Some("survey"), Binary), "{settled} never goes back");
+        }
+        for from in ["approved", "running", "closed"] {
+            assert!(!allowed(Some(from), Some("plan"), Binary), "{from} never goes back to the plan");
         }
 
         // A fase nunca some: tirar o último `state` não é gravação de porta

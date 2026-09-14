@@ -1630,6 +1630,41 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The work type is written by `mustard-rt run grill`, which builds the point list with \
              it. Nothing was written."
         }
+        ("reopen.reason_missing", Locale::PtBr) => {
+            "A volta ao levantamento precisa do motivo: passe `--reason` com uma frase dizendo por \
+             que a spec volta. O motivo fica gravado no evento da volta. Nada foi gravado."
+        }
+        ("reopen.reason_missing", Locale::EnUs) => {
+            "Going back to the survey needs a reason: pass `--reason` with one sentence saying why \
+             the spec goes back. The reason is written into the event. Nothing was written."
+        }
+        ("reopen.settled", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase} e não volta ao levantamento: o que ela decidiu já \
+             saiu. Abra uma spec nova com `mustard-rt run open`. Nada foi gravado."
+        }
+        ("reopen.settled", Locale::EnUs) => {
+            "The spec {spec} is in the phase {phase} and does not go back to the survey: what it \
+             decided is already out. Open a new spec with `mustard-rt run open`. Nothing was \
+             written."
+        }
+        ("reopen.next", Locale::PtBr) => {
+            "A spec {spec} voltou ao levantamento, e o motivo ficou gravado. Rode `mustard-rt run \
+             grill --spec {spec} --kinds <tipos>` para montar os pontos: os novos convivem com o \
+             que já foi decidido, e nada do que estava gravado foi apagado."
+        }
+        ("reopen.next", Locale::EnUs) => {
+            "The spec {spec} is back in the survey, and the reason is on the record. Run \
+             `mustard-rt run grill --spec {spec} --kinds <types>` to build the points: the new ones \
+             live alongside what was already decided, and nothing written was erased."
+        }
+        ("reopen.already", Locale::PtBr) => {
+            "A spec {spec} já está em levantamento, e nada foi gravado. Rode `mustard-rt run grill \
+             --spec {spec} --kinds <tipos>` para montar os pontos."
+        }
+        ("reopen.already", Locale::EnUs) => {
+            "The spec {spec} is already under survey, and nothing was written. Run `mustard-rt run \
+             grill --spec {spec} --kinds <types>` to build the points."
+        }
         ("survey.present_point", Locale::PtBr) => {
             "Apresente o ponto {code}, e só ele: o fato conferido no código, com a fonte; o que já \
              está decidido; o que falta decidir; e uma recomendação. Grave cada resposta na hora e \
@@ -3148,6 +3183,10 @@ mod tests {
             ("grill.kinds_missing".into(), &[][..]),
             ("grill.kinds_narrowed".into(), &["{spec}", "{recorded}"][..]),
             ("grill.work_type_by_grill".into(), &[][..]),
+            ("reopen.reason_missing".into(), &[][..]),
+            ("reopen.settled".into(), &["{spec}", "{phase}"][..]),
+            ("reopen.next".into(), &["{spec}"][..]),
+            ("reopen.already".into(), &["{spec}"][..]),
             ("survey.present_point".into(), &["{code}", "{id}"][..]),
             ("survey.present_all".into(), &[][..]),
             ("survey.record_points".into(), &["{spec}"][..]),
