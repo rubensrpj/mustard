@@ -401,9 +401,9 @@ pub fn requests_after(log: &SpecLog, after: u64) -> Vec<&SpecEvent> {
 
 /// A aprovação que vale: o `state` visível mais novo, na ordem da dobra, com a
 /// fase `approved`, enquanto a dobra lê a spec aprovada. `None` numa spec que
-/// nunca foi aprovada e numa que voltou a uma fase de antes da aprovação. A
-/// página, o aviso de crescimento das ondas e o leitor da aprovação do rt
-/// leem daqui.
+/// nunca foi aprovada e numa que voltou a uma fase de antes da aprovação. O
+/// leitor da aprovação do rt lê daqui; a página e o aviso de crescimento das
+/// ondas medem pela fronteira dela ([`approval_boundary`]).
 #[must_use]
 pub fn approval_event(log: &SpecLog) -> Option<&SpecEvent> {
     if !State::from_log(log).approved {
@@ -413,6 +413,16 @@ pub fn approval_event(log: &SpecLog) -> Option<&SpecEvent> {
         .into_iter()
         .filter(|event| event.event_type == "state" && event.str_field("phase").map(str::trim) == Some("approved"))
         .max_by_key(|event| (original_of(log, event), event.id))
+}
+
+/// A fronteira da aprovação que vale: o número da primeira versão dela. Uma
+/// aprovação revista, como a da spec antiga que nasceu aprovada e ganhou a
+/// branch depois, continua valendo desde onde foi dada: o que veio entre ela
+/// e a revisão já é depois da aprovação. A página e o aviso de crescimento
+/// das ondas medem daqui.
+#[must_use]
+pub fn approval_boundary(log: &SpecLog) -> Option<u64> {
+    approval_event(log).map(|event| original_of(log, event))
 }
 
 /// Quantas ondas a leitura mostrava logo depois do evento de número `id`,
@@ -443,8 +453,7 @@ pub fn waves_now(log: &SpecLog) -> usize {
 /// crescimento nunca barra a gravação.
 #[must_use]
 pub fn waves_grown_by(log: &SpecLog, id: u64) -> Option<(usize, usize)> {
-    let approval = approval_event(log)?;
-    let approved = waves_at(log, approval.id);
+    let approved = waves_at(log, approval_boundary(log)?);
     let now = waves_at(log, id);
     (now > approved && now > waves_at(log, id.saturating_sub(1))).then_some((approved, now))
 }
@@ -827,6 +836,20 @@ mod tests {
     fn approve(id: u64) -> Value {
         json!({"v":1,"id":id,"type":"state","phase":"approved",
                "witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}})
+    }
+
+    /// Uma spec que nasceu aprovada e ganhou a branch depois, pela revisão do
+    /// nascimento: a fronteira fica na primeira versão da aprovação, e a onda
+    /// gravada entre ela e a revisão conta como crescimento.
+    #[test]
+    fn a_revised_approval_keeps_the_boundary_of_its_first_version() {
+        let mut revision = approve(3);
+        revision["replaces"] = json!(1);
+        revision["branch"] = json!("feature/x");
+        let lines = [approve(1), wave(2, 1), revision, wave(4, 2)];
+        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(3), "the revision is the approval shown");
+        assert_eq!(approval_boundary(&log(&lines)), Some(1));
+        assert_eq!(waves_grown_by(&log(&lines), 4), Some((0, 2)), "the wave between the two is not approved");
     }
 
     /// Uma spec com o nascimento em plano, as ondas `1..=approved` e a

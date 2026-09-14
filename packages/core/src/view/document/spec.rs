@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use super::{Document, Field, Item, Meta, Node, Section, Table};
 use crate::domain::spec_events::{type_spec, Block, Hidden, Kind, SpecEvent, SpecLog, TYPES};
-use crate::domain::spec_state::approval_event;
+use crate::domain::spec_state::approval_boundary;
 use crate::platform::i18n::{translate, Locale};
 
 /// Os registros da execução: não mudam o que foi aprovado, e não levam a
@@ -67,7 +67,7 @@ struct Page<'a> {
 
 impl<'a> Page<'a> {
     fn new(log: &'a SpecLog, lang: Locale) -> Self {
-        let approval = approval_event(log).map(|event| event.id);
+        let approval = approval_boundary(log);
         Self { log, lang, codes: log.codes(), visible: log.visible(), approval }
     }
 
@@ -788,6 +788,32 @@ mod tests {
 
         let never = before_approval.replace("\"phase\":\"plan\"", "\"phase\":\"survey\"") + &after_approval.replace("approved", "plan");
         assert!(marked(&notes(&never, Locale::PtBr)).is_empty(), "a spec never approved marks nothing");
+    }
+
+    /// Numa aprovação revista (a spec que nasceu aprovada e ganhou a branch
+    /// depois), a marca parte da primeira versão da aprovação: a regra
+    /// gravada entre ela e a revisão continua marcada.
+    #[test]
+    fn a_revised_approval_keeps_marking_from_its_first_version() {
+        let witness = ",\"witness\":{\"question\":\"Aprovar?\",\"answer\":\"Aprovar\"}";
+        let content = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "state", &format!(",\"author\":\"user\",\"phase\":\"approved\"{witness}")),
+            line(3, "rule", ",\"text\":\"Entre as duas.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":1"),
+            line(4, "state", &format!(",\"author\":\"binary\",\"phase\":\"approved\",\"branch\":\"feature/x\",\"replaces\":2{witness}")),
+            line(5, "rule", ",\"text\":\"Depois da revisão.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":1"),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let rules: Vec<(&str, Option<&str>)> =
+            items(sections(&doc)[2]).iter().map(|i| (i.text.as_str(), i.note.as_deref())).collect();
+        assert_eq!(
+            rules,
+            [
+                ("Entre as duas.", Some("depois da aprovação · 2026-09-12 10:03")),
+                ("Depois da revisão.", Some("depois da aprovação · 2026-09-12 10:05")),
+            ]
+        );
     }
 
     /// Todo rótulo que a página usa existe nos dois idiomas: blocos, tipos,
