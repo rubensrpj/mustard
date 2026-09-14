@@ -286,6 +286,47 @@ fn spec_folder_taken(project: &Path, name: &str) -> bool {
         .is_some_and(|mut entries| entries.next().is_some())
 }
 
+/// Uma pergunta ao git em `root`: a saída, sem espaço nas pontas, ou `None`
+/// quando ele recusa ou não responde.
+fn git_out(vcs: &str, root: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new(vcs).args(args).current_dir(root).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// O commit de que a branch nova sai, pela mesma ordem do corte
+/// ([`checkout_work_branch`]): a base local, a do `origin` e, sem nenhuma
+/// das duas, o commit atual.
+fn cut_start(vcs: &str, root: &Path, base: &str) -> Option<String> {
+    let root_s = root.to_string_lossy();
+    let from = if local_branch_exists(vcs, &root_s, base) {
+        base.to_string()
+    } else if remote_branch_exists(vcs, &root_s, base) {
+        format!("origin/{base}")
+    } else {
+        "HEAD".to_string()
+    };
+    git_out(vcs, root, &["rev-parse", "--verify", "--quiet", &format!("{from}^{{commit}}")])
+}
+
+/// Desfaz a branch `target` que o `open` acabou de criar, quando a spec não
+/// pôde ser gravada: o checkout volta para `back_to`, onde estava, e a branch
+/// nova é apagada. Sem isso, o checkout ficaria numa branch de trabalho sem
+/// spec, onde o portão de escrita deixa editar, e um novo `open` só diria que
+/// a branch já existe.
+///
+/// Só apaga a branch que não tem commit além de `start`, o commit de que ela
+/// saiu; com commit próprio, ou sem resposta do git, nada é desfeito.
+/// `true` quando desfez.
+fn undo_branch(vcs: &str, root: &Path, back_to: Option<&str>, start: Option<&str>, target: &str) -> bool {
+    let (Some(back_to), Some(start)) = (back_to, start) else {
+        return false;
+    };
+    if git_out(vcs, root, &["rev-list", "--count", &format!("{start}..{target}")]).as_deref() != Some("0") {
+        return false;
+    }
+    git_out(vcs, root, &["checkout", "-q", back_to]).is_some() && git_out(vcs, root, &["branch", "-D", target]).is_some()
+}
+
 /// O relatório da spec aberta, que termina na pergunta do objetivo.
 fn opened(spec: &str, branch: &str, base: &str, kind: &WorkKind, map: Option<Value>, warnings: &[String], lang: Locale) -> Value {
     let mut report = json!({
@@ -435,10 +476,15 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     if let CensusSettlement::Refuse(busy) = settle(&root, position, &config) {
         return refuse(OpenRefusal::Busy(busy));
     }
+    // Onde o checkout estava e de que commit a branch sai: se a spec não
+    // puder ser gravada, a branch nova é desfeita a partir daqui.
+    let back_to = current.clone().or_else(|| git_out(&vcs, &root, &["rev-parse", "HEAD"]));
+    let start = cut_start(&vcs, &root, &base);
     if let Err(detail) = checkout_work_branch(&vcs, &root_s, &target, &base) {
         return refuse(OpenRefusal::GitFailed { branch: target, detail });
     }
     if let Err(refusal) = record_open(&root, &name, &target, &base) {
+        undo_branch(&vcs, &root, back_to.as_deref(), start.as_deref(), &target);
         return refuse(OpenRefusal::Spec(refusal));
     }
 
@@ -942,5 +988,49 @@ mod tests {
             .find(|line| line["name"] == json!("x"))
             .expect("the spec has its index line");
         assert_eq!(line["goal"], json!(answer));
+    }
+
+    /// Quando a spec não pode ser gravada depois de a branch nascer, o
+    /// checkout volta para onde estava, e a branch nova, sem commit, é
+    /// apagada: nada fica numa branch de trabalho sem spec, onde o portão
+    /// deixaria editar. Vale saindo da base e de outra branch de trabalho, e
+    /// o `open` seguinte abre a spec.
+    #[test]
+    fn a_spec_that_cannot_be_written_undoes_the_new_branch() {
+        for from in ["dev", "feature/outra"] {
+            let dir = repo(DEV_MAIN);
+            let root = dir.path();
+            if from != "dev" {
+                git(root, &["checkout", "-q", "-b", from]);
+            }
+            // Um arquivo no lugar da pasta da spec faz a gravação falhar.
+            std::fs::create_dir_all(root.join(".claude").join("spec")).unwrap();
+            std::fs::write(spec_dir(root, "x"), "não é pasta").unwrap();
+            let report = open(root, Some("feature"), Some("x"), Some("dev"));
+            assert_eq!(report["ok"], json!(false), "{report}");
+            assert_eq!(report["reason"], json!("io-failed"), "{report}");
+            assert_eq!(head(root), from);
+            assert!(!branches(root).contains(&"feature/x".to_string()), "{from}");
+
+            std::fs::remove_file(spec_dir(root, "x")).unwrap();
+            let again = open(root, Some("feature"), Some("x"), Some("dev"));
+            assert_eq!(again["ok"], json!(true), "{again}");
+            assert_eq!(head(root), "feature/x");
+        }
+    }
+
+    /// O desfazer nunca apaga uma branch que já tem commit próprio.
+    #[test]
+    fn the_undo_keeps_a_branch_with_its_own_commit() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        let start = cut_start("git", root, "dev").expect("the base has a commit");
+        git(root, &["checkout", "-q", "-b", "feature/y"]);
+        std::fs::write(root.join("src").join("y.rs"), "fn y() {}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "y"]);
+        assert!(!undo_branch("git", root, Some("dev"), Some(&start), "feature/y"));
+        assert_eq!(head(root), "feature/y");
+        assert!(branches(root).contains(&"feature/y".to_string()));
     }
 }
