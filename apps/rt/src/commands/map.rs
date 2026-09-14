@@ -2,8 +2,7 @@
 //!
 //! `mustard-rt run map <pergunta>`:
 //! - `examples --file <alvo>` (ou `--task "<tarefa>"`): 2 ou 3 arquivos que
-//!   servem de exemplo, com o motivo de cada um, as receitas do git e as
-//!   lições do banco que valem ali;
+//!   servem de exemplo, com o motivo de cada um e as receitas do git;
 //! - `importers --file <arquivo>`: quem importa o arquivo;
 //! - `tests --file <arquivo>`: que testes o cobrem;
 //! - `search --query "<palavras>"`: a busca por conceito;
@@ -11,17 +10,15 @@
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
 //!   tamanho dela.
 //!
-//! A regra mora em `mustard_core::domain::project_map`; aqui só se lê o mapa,
-//! o banco de lições e a skill, e se imprime o JSON.
+//! A regra mora em `mustard_core::domain::project_map`; aqui só se lê o mapa
+//! e a skill, e se imprime o JSON.
 
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use mustard_core::domain::lessons::{self, Scope};
 use mustard_core::domain::project_map::{self as project_map, MapRefusal, ProjectMap};
 use mustard_core::io::project_map as store;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::ClaudePaths;
 use serde_json::{json, Value};
 
 /// A pergunta feita ao mapa.
@@ -116,14 +113,14 @@ fn answer(opts: &MapOpts, root: &Path, lang: Locale) -> Result<Value, MapRefusal
             let text = project_map::summary(&map, lang);
             Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
         }
-        Question::Examples => examples(opts, root, &map, lang),
+        Question::Examples => examples(opts, &map, lang),
         Question::Skill => skill(opts, root),
     }
 }
 
 /// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que
 /// a busca acha para `--task`.
-fn examples(opts: &MapOpts, root: &Path, map: &ProjectMap, lang: Locale) -> Result<Value, MapRefusal> {
+fn examples(opts: &MapOpts, map: &ProjectMap, lang: Locale) -> Result<Value, MapRefusal> {
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
     let task = opts.task.as_deref().map(str::trim).filter(|t| !t.is_empty());
     let target = match (file, task) {
@@ -137,7 +134,6 @@ fn examples(opts: &MapOpts, root: &Path, map: &ProjectMap, lang: Locale) -> Resu
                     "task": task,
                     "examples": [],
                     "recipes": [],
-                    "lessons": [],
                     "note": mustard_core::translate("map.no_target", lang),
                 }));
             }
@@ -147,8 +143,6 @@ fn examples(opts: &MapOpts, root: &Path, map: &ProjectMap, lang: Locale) -> Resu
         }
     };
     let got = project_map::examples(map, &target, lang);
-    let mut scope_files = vec![got.folder.clone(), target.clone()];
-    scope_files.extend(got.picks.iter().map(|p| p.path.clone()));
     let picks: Vec<Value> = got
         .picks
         .iter()
@@ -177,25 +171,11 @@ fn examples(opts: &MapOpts, root: &Path, map: &ProjectMap, lang: Locale) -> Resu
         "main_imports": got.main_imports,
         "examples": picks,
         "recipes": recipes,
-        "lessons": lessons_for(root, scope_files),
     });
     if got.picks.is_empty() {
         report["note"] = json!(mustard_core::translate("map.no_examples", lang).replace("{folder}", &got.folder));
     }
     Ok(report)
-}
-
-/// As lições do banco que valem para esses arquivos, pelo texto original.
-/// Banco ausente ou ilegível: nenhuma lição.
-fn lessons_for(root: &Path, files: Vec<String>) -> Vec<String> {
-    let Ok(paths) = ClaudePaths::for_project(root) else {
-        return Vec::new();
-    };
-    let Ok(Some(bank)) = mustard_core::io::lessons::read(&paths.lessons_path()) else {
-        return Vec::new();
-    };
-    let scope = Scope { files, subproject: None, skill: None };
-    lessons::in_scope(&bank, &scope).into_iter().map(lessons::shown).collect()
 }
 
 /// A pasta que a skill descreve: a de cima do `.claude` onde ela mora.
