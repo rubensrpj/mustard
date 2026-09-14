@@ -346,17 +346,32 @@ fn undo_branch(vcs: &str, root: &Path, back_to: &str, start: Option<&str>, targe
     git_out(vcs, root, &["checkout", "-q", back_to]).is_some() && git_out(vcs, root, &["branch", "-D", target]).is_some()
 }
 
+/// Por que a pendência dita não serve: a lista não a tem, ou ela já fechou.
+enum PendingMiss {
+    Unknown(String),
+    Closed(String),
+}
+
+impl From<PendingMiss> for OpenRefusal {
+    fn from(miss: PendingMiss) -> Self {
+        match miss {
+            PendingMiss::Unknown(pending) => Self::PendingUnknown { pending },
+            PendingMiss::Closed(pending) => Self::PendingClosed { pending },
+        }
+    }
+}
+
 /// A pendência `raw` de onde a spec vem, na grafia da lista, quando ela
-/// existe e está aberta; senão, a recusa. `root` é a raiz do projeto em que a
-/// spec mora, o checkout principal.
-fn pending_to_note(root: &Path, raw: &str) -> Result<String, OpenRefusal> {
+/// existe e está aberta; senão, por que não serve. `root` é a raiz do projeto
+/// em que a spec mora, o checkout principal.
+fn pending_to_note(root: &Path, raw: &str) -> Result<String, PendingMiss> {
     let Some(id) = pending_id(raw) else {
-        return Err(OpenRefusal::PendingUnknown { pending: raw.to_string() });
+        return Err(PendingMiss::Unknown(raw.to_string()));
     };
     match pending_is_open(root, &id) {
         Some(true) => Ok(id),
-        Some(false) => Err(OpenRefusal::PendingClosed { pending: id }),
-        None => Err(OpenRefusal::PendingUnknown { pending: id }),
+        Some(false) => Err(PendingMiss::Closed(id)),
+        None => Err(PendingMiss::Unknown(id)),
     }
 }
 
@@ -476,7 +491,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         // Com a pendência, a mesma conferência, e a nota que ainda faltar.
         let pending = match pending() {
             Ok(pending) => pending,
-            Err(refusal) => return refuse(refusal),
+            Err(miss) => return refuse(miss.into()),
         };
         let warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
         let base = state.base.unwrap_or_default();
@@ -516,7 +531,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     }
     let pending = match pending() {
         Ok(pending) => pending,
-        Err(refusal) => return refuse(refusal),
+        Err(miss) => return refuse(miss.into()),
     };
 
     // O nome livre, na branch e na pasta da spec.
