@@ -215,7 +215,12 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 /// conferência do tipo recusar.
 fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
     let number = match draft.get("pending") {
-        Some(Value::Number(number)) => number.as_u64(),
+        // Um número que não é inteiro positivo nunca é o de uma pendência: a
+        // cobrança da entrega o descartaria calada.
+        Some(Value::Number(number)) => match number.as_u64().filter(|n| *n > 0) {
+            Some(n) => Some(n),
+            None => return Err(Refusal::DeferredUnknownPending { pending: number.to_string() }),
+        },
         Some(Value::String(text)) => {
             let text = text.trim();
             let digits = text.strip_prefix("P-").or_else(|| text.strip_prefix("p-")).unwrap_or(text);
@@ -1436,6 +1441,23 @@ mod tests {
         }
         let odd = deferred(root, json!("P-dois"), msg);
         assert_eq!(odd["reason"], json!("invalid-value"), "{odd}");
+    }
+
+    /// Um número de pendência que não é inteiro positivo (negativo, zero ou
+    /// com fração) é recusado como pendência que a lista não tem, e nada é
+    /// gravado.
+    #[test]
+    fn a_deferred_request_with_a_number_that_is_not_a_positive_integer_is_refused() {
+        let (dir, msg) = project_with_message();
+        let root = dir.path();
+        add_pending(root, "a única");
+        let before = lines(root);
+        for (pending, shown) in [(json!(-12), "-12"), (json!(0), "0"), (json!(1.5), "1.5")] {
+            let out = deferred(root, pending.clone(), msg);
+            assert_eq!(out["reason"], json!("deferred-unknown-pending"), "{pending}: {out}");
+            assert!(out["hint"].as_str().unwrap().contains(shown), "{pending}: {out}");
+        }
+        assert_eq!(lines(root), before, "nothing was written");
     }
 
     /// Um pedido adiado para uma pendência que a lista não tem é recusado,
