@@ -53,12 +53,10 @@ const SPEC_FILES: &[&str] = &["spec.ndjson", "spec.md", "spec.html", "meta.json"
 /// writes: the spec index and the lessons bank.
 const BANK_FILES: &[&str] = &[SPEC_INDEX_FILE, LESSONS_FILE];
 
-/// Harness state written before the unit exists: the plan-mode plans, the
-/// disposable evidence a diagnosis runs and the harness cache, where the
-/// material of `/feature` and `/bugfix` waits for `spec-draft`. None of them is
-/// code, and the seeded `.gitignore` ignores all three: the base lock protects
-/// the project's code, not the Mustard's own files git does not see.
-const HARNESS_PREFIXES: &[&str] = &[".claude/plans/", ".claude/scratch/", ".claude/.cache/"];
+/// Harness state written before the unit exists: the plan-mode plans and the
+/// disposable evidence a diagnosis runs. Neither is code, and the seeded
+/// `.gitignore` ignores both.
+const HARNESS_PREFIXES: &[&str] = &[".claude/plans/", ".claude/scratch/"];
 
 /// Artefacts and infrastructure, never project code.
 const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/", "target/"];
@@ -187,8 +185,8 @@ pub(crate) enum PathClass {
         /// The spec that owns the file, when it lives in its folder.
         spec: Option<String>,
     },
-    /// Harness state written before the unit exists: `.claude/plans/`,
-    /// `.claude/scratch/` and `.claude/.cache/`.
+    /// Harness state written before the unit exists: `.claude/plans/` and
+    /// `.claude/scratch/`.
     Harness,
     /// An artefact or infrastructure: the rest of `.claude/`, `dist/`,
     /// `node_modules/`, `.git/` and `target/`.
@@ -405,7 +403,6 @@ mod tests {
             ("/p/.claude/spec/x/wave-1/meta.json", PathClass::Artifact),
             ("/p/.claude/plans/plano.md", PathClass::Harness),
             ("/p/.claude/scratch/probe.sh", PathClass::Harness),
-            ("/p/.claude/.cache/spec-material.json", PathClass::Harness),
             ("/p/.claude/../src/x.rs", PathClass::Production),
             ("/p/.claude/spec/x/../x/spec.md", spec("x")),
             ("/p/.claude/settings.json", PathClass::Artifact),

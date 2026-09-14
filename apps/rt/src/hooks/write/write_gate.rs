@@ -637,19 +637,6 @@ mod tests {
         assert_eq!(gate(root, "Write", &abs(root, "src/a.rs")), Verdict::Allow);
     }
 
-    /// Numa base declarada, o estado do harness que o git ignora, como o
-    /// material do `/feature` em `.claude/.cache/`, é gravado; o código do
-    /// projeto, na mesma base, é barrado.
-    #[test]
-    fn on_a_base_the_harness_cache_is_written_and_project_code_is_blocked() {
-        let dir = project(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
-        let root = dir.path();
-        repo_on(root, "dev");
-        assert_eq!(gate(root, "Write", &abs(root, ".claude/.cache/spec-material.json")), Verdict::Allow);
-        let expected = say("write_gate.on_base", lang(root), &[("{branch}", "dev")]);
-        assert_eq!(gate(root, "Write", &abs(root, "src/a.rs")), Verdict::Deny { reason: expected });
-    }
-
     /// Sem `git.flow`, nenhuma branch é base: nem `main`, nem `master`. O
     /// portão não pergunta ao git qual é a branch padrão.
     #[test]
