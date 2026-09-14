@@ -102,12 +102,7 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
 /// `None` sem `context` ou quando o texto é só título.
 #[must_use]
 pub fn goal_of(log: &SpecLog) -> Option<String> {
-    let text = log
-        .events
-        .iter()
-        .filter(|e| e.event_type == "context" && e.int("replaces").is_none())
-        .find_map(|e| log.current(e.id))
-        .and_then(|e| e.str_field("text"))?;
+    let text = crate::domain::survey::goal(log).and_then(|e| e.str_field("text"))?;
     let plain = after_titles(text).replace("**", "");
     let goal = first_sentence(&plain);
     (!goal.is_empty()).then(|| goal.to_string())
@@ -212,6 +207,38 @@ fn read_lines(content: &str) -> Lines<'_> {
         }
     }
     out
+}
+
+/// A linha de uma spec como o índice a guarda, lida de volta: o nome, o
+/// objetivo, a fase, os títulos das regras e das decisões e o campo `search`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexLine {
+    pub name: String,
+    pub goal: Option<String>,
+    pub phase: Option<String>,
+    pub titles: Vec<String>,
+    pub search: String,
+}
+
+/// As linhas de spec do índice `content`, em ordem de nome, pelo mesmo leitor
+/// da gravação: a linha do projeto e a que não se entende ficam de fora, e um
+/// nome repetido vale pela primeira linha.
+#[must_use]
+pub fn spec_lines(content: &str) -> Vec<IndexLine> {
+    read_lines(content)
+        .specs
+        .into_iter()
+        .filter_map(|(name, line)| {
+            let parsed = serde_json::from_str::<Value>(line).ok()?;
+            let text = |key: &str| parsed.get(key).and_then(Value::as_str).map(str::to_string);
+            let titles = parsed
+                .get("titles")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default();
+            Some(IndexLine { goal: text("goal"), phase: text("phase"), titles, search: text("search").unwrap_or_default(), name })
+        })
+        .collect()
 }
 
 /// O arquivo: a linha do projeto (a de agora ou, sem ela, a sem endereço),
@@ -486,5 +513,22 @@ mod tests {
         let en = write_warning(&refusal, Locale::EnUs);
         assert!(pt.contains("O evento foi gravado") && pt.contains("Is a directory"), "{pt}");
         assert!(en.contains("The event was written") && en.contains("mustard-rt run index"), "{en}");
+    }
+
+    /// O leitor das linhas devolve cada spec pelo nome, com o objetivo, a
+    /// fase, os títulos e o `search`, pelo mesmo leitor da gravação: a linha
+    /// do projeto, a que não se entende e a de spec sem nome ficam de fora.
+    #[test]
+    fn an_index_line_that_does_not_parse_is_skipped() {
+        let line = spec_line("teste", &parse_log(&spec())).unwrap();
+        let content = format!("{}\n{line}\nlixo\n{}\n", project_line(None), r#"{"v":1,"type":"spec"}"#);
+        let lines = spec_lines(&content);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let got = &lines[0];
+        assert_eq!(got.name, "teste");
+        assert_eq!(got.goal.as_deref(), Some("Deixar o Mustard enxuto."));
+        assert_eq!(got.phase.as_deref(), Some("running"));
+        assert_eq!(got.titles.len(), 2);
+        assert_eq!(got.search, parsed(&line)["search"].as_str().unwrap());
     }
 }

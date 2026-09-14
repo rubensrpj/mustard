@@ -315,7 +315,8 @@ pub const PHASES: &[&str] =
     &["survey", "plan", "approved", "running", "closed", "pr_open", "delivered", "discarded"];
 const PAGES: &[&str] = &["spec"];
 const MILESTONES: &[&str] = &["approval", "round", "close"];
-const WORK_KINDS: &[&str] = &["feature", "fix", "refactor"];
+/// Os tipos de trabalho, na ordem em que o levantamento junta as lacunas.
+pub const WORK_KINDS: &[&str] = &["feature", "fix", "refactor"];
 const POINT_FROM: &[&str] = &["gap", "lesson", "prior_spec", "code_conflict", "outside_review"];
 const POINT_STATUS: &[&str] = &["open", "closed", "not_applicable"];
 const RUN_RESULTS: &[&str] = &["pass", "fail"];
@@ -644,6 +645,9 @@ pub enum Refusal {
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
     /// aponta uma mensagem do usuário ou não repete o texto dela.
     GoalNotVerbatim { spec: String, origin: String },
+    /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
+    /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
+    WorkTypeByGrill,
     Io { detail: String },
 }
 
@@ -680,6 +684,7 @@ impl Refusal {
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalNotVerbatim { .. } => "goal-not-verbatim",
+            Self::WorkTypeByGrill => "work-type-by-grill",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -801,6 +806,7 @@ impl Refusal {
                 "spec_events.goal_not_verbatim",
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
+            Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }

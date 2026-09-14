@@ -1378,6 +1378,134 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("open.git_failed", Locale::EnUs) => {
             "Git refused to create branch {branch}: {detail}. Nothing was written to the spec."
         }
+        ("grill.goal_missing", Locale::PtBr) => {
+            "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
+             frase?\" e rode o grill depois da resposta. Nada foi gravado."
+        }
+        ("grill.goal_missing", Locale::EnUs) => {
+            "Spec {spec} has no goal yet. Ask the user \"What is the goal, in one sentence?\" and \
+             run grill after the answer. Nothing was written."
+        }
+        ("grill.not_in_survey", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}, e o levantamento só roda na fase de levantamento. \
+             Nada foi gravado."
+        }
+        ("grill.not_in_survey", Locale::EnUs) => {
+            "Spec {spec} is in the {phase} phase, and the survey only runs in the survey phase. \
+             Nothing was written."
+        }
+        ("grill.kinds_missing", Locale::PtBr) => {
+            "Diga o tipo de trabalho em --kinds: feature, fix ou refactor, mais de um no pedido \
+             misto. Nada foi gravado."
+        }
+        ("grill.kinds_missing", Locale::EnUs) => {
+            "Give the work type in --kinds: feature, fix or refactor, more than one for a mixed \
+             request. Nothing was written."
+        }
+        ("grill.kinds_narrowed", Locale::PtBr) => {
+            "O levantamento da spec {spec} já tem as lacunas de {recorded}. Um tipo a menos não tira \
+             pontos: feche os que não valem com \"não se aplica\" e o motivo. Nada foi gravado."
+        }
+        ("grill.kinds_narrowed", Locale::EnUs) => {
+            "The survey of spec {spec} already has the gaps of {recorded}. Dropping a type does not \
+             remove points: close the ones that do not apply with \"not applicable\" and the reason. \
+             Nothing was written."
+        }
+        ("grill.work_type_by_grill", Locale::PtBr) => {
+            "O tipo de trabalho é gravado pelo `mustard-rt run grill`, que monta a lista de pontos \
+             junto. Nada foi gravado."
+        }
+        ("grill.work_type_by_grill", Locale::EnUs) => {
+            "The work type is written by `mustard-rt run grill`, which builds the point list with \
+             it. Nothing was written."
+        }
+        ("survey.present_point", Locale::PtBr) => {
+            "Apresente o ponto {code}, e só ele: o fato conferido no código, com a fonte; o que já \
+             está decidido; o que falta decidir; e uma recomendação. Grave cada resposta na hora e \
+             feche o ponto com `closes`: {id}."
+        }
+        ("survey.present_point", Locale::EnUs) => {
+            "Present point {code}, and only it: the fact checked in the code, with its source; what \
+             is already decided; what is left to decide; and a recommendation. Record each answer \
+             right away and close the point with `closes`: {id}."
+        }
+        ("survey.present_all", Locale::PtBr) => {
+            "Pedido pequeno: preencha todas as lacunas de `points` a partir do pedido e do código, \
+             mostre tudo de uma vez e peça um sim só. Com o sim, grave as respostas e feche cada \
+             ponto."
+        }
+        ("survey.present_all", Locale::EnUs) => {
+            "Small request: fill every gap in `points` from the request and the code, show it all \
+             at once and ask for a single yes. With the yes, record the answers and close each point."
+        }
+        ("survey.record_points", Locale::PtBr) => {
+            "Grave cada ponto de `points` que ainda não tem `id` com `mustard-rt run write point \
+             --spec {spec}`, na ordem: copie os campos como vieram, com `status` open, e ponha em \
+             `facts` o que você conferiu no código ou na conversa, cada fato com a fonte (arquivo e \
+             linha, comando ou número da mensagem); os fatos que já vêm no ponto ficam. Depois rode \
+             o grill de novo: ele devolve o primeiro ponto."
+        }
+        ("survey.record_points", Locale::EnUs) => {
+            "Record each point in `points` that has no `id` yet with `mustard-rt run write point \
+             --spec {spec}`, in order: copy its fields as they came, with `status` open, and put in \
+             `facts` what you checked in the code or in the conversation, each fact with its source \
+             (file and line, command or message number); the facts the point already brings stay. \
+             Then run grill again: it returns the first point."
+        }
+        ("survey.done", Locale::PtBr) => {
+            "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
+             nenhum registro aponta, e pergunte o que fazer com cada uma; depois grave a \
+             especificação, as ondas e as tarefas."
+        }
+        ("survey.done", Locale::EnUs) => {
+            "The survey has no open point. Show the user the messages in `unrouted`, which no record \
+             points to, and ask what to do with each one; then record the specification, the waves \
+             and the tasks."
+        }
+        ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
+        ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
+        ("survey.fact_importers", Locale::PtBr) => "{path} é importado por: {importers}.",
+        ("survey.fact_importers", Locale::EnUs) => "{path} is imported by: {importers}.",
+        ("survey.gap.who_uses", Locale::PtBr) => "Quem usa e para quê",
+        ("survey.gap.who_uses", Locale::EnUs) => "Who uses it and what for",
+        ("survey.gap.rules", Locale::PtBr) => "Cada regra, com um exemplo com números",
+        ("survey.gap.rules", Locale::EnUs) => "Each rule, with an example with numbers",
+        ("survey.gap.limits", Locale::PtBr) => "Os limites, com os valores",
+        ("survey.gap.limits", Locale::EnUs) => "The limits, with their values",
+        ("survey.gap.contracts", Locale::PtBr) => "Os contratos de entrada e saída, com um exemplo real",
+        ("survey.gap.contracts", Locale::EnUs) => "Input and output contracts, with a real example",
+        ("survey.gap.errors", Locale::PtBr) => "Cada erro, com a mensagem exata",
+        ("survey.gap.errors", Locale::EnUs) => "Each error, with its exact message",
+        ("survey.gap.edge_cases", Locale::PtBr) => "Os casos de borda",
+        ("survey.gap.edge_cases", Locale::EnUs) => "The edge cases",
+        ("survey.gap.out_of_scope", Locale::PtBr) => "O que fica fora",
+        ("survey.gap.out_of_scope", Locale::EnUs) => "What stays out",
+        ("survey.gap.done_proof", Locale::PtBr) => "Como provar que ficou pronto",
+        ("survey.gap.done_proof", Locale::EnUs) => "How to prove it is done",
+        ("survey.gap.external_deps", Locale::PtBr) => "As dependências externas",
+        ("survey.gap.external_deps", Locale::EnUs) => "The external dependencies",
+        ("survey.gap.symptom", Locale::PtBr) => "O sintoma",
+        ("survey.gap.symptom", Locale::EnUs) => "The symptom",
+        ("survey.gap.reproduction", Locale::PtBr) => "Como reproduzir",
+        ("survey.gap.reproduction", Locale::EnUs) => "How to reproduce it",
+        ("survey.gap.expected_vs_actual", Locale::PtBr) => "O esperado contra o obtido",
+        ("survey.gap.expected_vs_actual", Locale::EnUs) => "Expected versus actual",
+        ("survey.gap.cause", Locale::PtBr) => "A causa",
+        ("survey.gap.cause", Locale::EnUs) => "The cause",
+        ("survey.gap.measured_reason", Locale::PtBr) => "O motivo, com um número medido",
+        ("survey.gap.measured_reason", Locale::EnUs) => "The reason, with a measured number",
+        ("survey.gap.must_not_change", Locale::PtBr) => "O que não pode mudar, e o teste que prova",
+        ("survey.gap.must_not_change", Locale::EnUs) => "What must not change, and the test that proves it",
+        ("survey.gap.removed_and_users", Locale::PtBr) => "O que sai e quem usa",
+        ("survey.gap.removed_and_users", Locale::EnUs) => "What goes away and who uses it",
+        ("survey.gap.moves", Locale::PtBr) => "O que muda de lugar",
+        ("survey.gap.moves", Locale::EnUs) => "What moves",
+        ("survey.gap.dependents", Locale::PtBr) => "Quem depende, dentro e fora do projeto",
+        ("survey.gap.dependents", Locale::EnUs) => "Who depends on it, inside and outside the project",
+        ("survey.gap.green_order", Locale::PtBr) => "A ordem, com os testes verdes a cada passo",
+        ("survey.gap.green_order", Locale::EnUs) => "The order, with green tests at every step",
+        ("survey.gap.before_after", Locale::PtBr) => "Os números antes e depois: linhas, tempo e tokens",
+        ("survey.gap.before_after", Locale::EnUs) => "The numbers before and after: lines, time and tokens",
         ("request.new_waves", Locale::PtBr) => {
             "Pedido gravado. Grave as ondas novas no fim do plano; a spec e a branch continuam as \
              mesmas, e não há nova aprovação."
@@ -2722,6 +2850,38 @@ mod tests {
             ("open.git_failed", &["{branch}", "{detail}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+    }
+
+    /// As recusas e os passos do levantamento e o rótulo de cada lacuna saem
+    /// do catálogo nos dois idiomas, cada um com as vagas que o chamador
+    /// preenche.
+    #[test]
+    fn i18n_translates_grill_and_survey_keys() {
+        let mut keys: Vec<(String, &[&str])> = vec![
+            ("grill.goal_missing".into(), &["{spec}"][..]),
+            ("grill.not_in_survey".into(), &["{spec}", "{phase}"][..]),
+            ("grill.kinds_missing".into(), &[][..]),
+            ("grill.kinds_narrowed".into(), &["{spec}", "{recorded}"][..]),
+            ("grill.work_type_by_grill".into(), &[][..]),
+            ("survey.present_point".into(), &["{code}", "{id}"][..]),
+            ("survey.present_all".into(), &[][..]),
+            ("survey.record_points".into(), &["{spec}"][..]),
+            ("survey.done".into(), &[][..]),
+            ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
+            ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),
+        ];
+        for gap in crate::domain::survey::GapKey::ALL {
+            keys.push((gap.label_key().to_string(), &[][..]));
+        }
+        for (key, slots) in keys {
+            let (pt, en) = (translate(&key, Locale::PtBr), translate(&key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
             assert_ne!(en, "<missing-key>", "{key} missing in en-US");
             assert_ne!(pt, en, "{key} must differ per locale");

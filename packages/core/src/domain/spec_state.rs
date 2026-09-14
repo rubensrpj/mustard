@@ -259,7 +259,7 @@ pub fn birth_event(log: &SpecLog) -> Option<&SpecEvent> {
 
 /// O número do item que `event` revê: segue os `replaces` para trás até a
 /// primeira versão. Um evento que não revê nada é o próprio item.
-fn original_of(log: &SpecLog, event: &SpecEvent) -> u64 {
+pub(crate) fn original_of(log: &SpecLog, event: &SpecEvent) -> u64 {
     let mut at = event.id;
     // Uma cadeia nunca é maior que o arquivo; o limite só corta um laço feito
     // à mão.

@@ -176,6 +176,35 @@ pub fn divergence(root: &Path) -> Result<Divergence, Refusal> {
     Ok(Divergence { specs, index_exists, diverged, stale_search })
 }
 
+/// As linhas de spec do índice do projeto `root`, pelo mesmo leitor das
+/// gravações. Sem índice, ou com um índice que não se lê, nenhuma: quem busca
+/// nas specs anteriores segue sem elas. A linha que não se entende é pulada.
+#[must_use]
+pub fn read(root: &Path) -> Vec<index::IndexLine> {
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    read_shared(&paths.spec_index_path()).map(|content| index::spec_lines(&content)).unwrap_or_default()
+}
+
+/// O arquivo de eventos de cada spec do projeto `root`, lido com a trava
+/// compartilhada, em ordem de nome. A pasta sem arquivo de eventos (o formato
+/// antigo) e o arquivo que não se lê ficam de fora.
+#[must_use]
+pub fn read_specs(root: &Path) -> Vec<(String, SpecLog)> {
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    let Ok(listing) = list_specs(&paths) else {
+        return Vec::new();
+    };
+    listing
+        .specs
+        .into_iter()
+        .filter_map(|(name, events)| read_shared(&events).ok().map(|content| (name, model::parse_log(&content))))
+        .collect()
+}
+
 /// As pastas de `.claude/spec/`, em ordem de nome.
 struct Listing {
     /// O nome e o arquivo de eventos de cada spec que tem um.
@@ -456,5 +485,24 @@ mod tests {
         assert!(std::fs::read_to_string(events(root, "s")).unwrap().contains("fica gravado"));
         assert!(matches!(rebuild(root), Err(Refusal::Io { .. })));
         assert!(matches!(divergence(root), Err(Refusal::Io { .. })));
+    }
+
+    /// Os leitores do índice e das specs devolvem as specs em ordem de nome;
+    /// a pasta sem arquivo de eventos, do formato antigo, fica de fora, e um
+    /// projeto sem specs não tem nenhuma.
+    #[test]
+    fn a_prior_spec_folder_without_an_event_file_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let old = root.join(".claude").join("spec").join("antiga");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("meta.json"), "{}").unwrap();
+        let names: Vec<String> = read_specs(root).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["busca", "trava"]);
+        let lines: Vec<String> = read(root).into_iter().map(|line| line.name).collect();
+        assert_eq!(lines, ["busca", "trava"]);
+        let empty = tempfile::tempdir().unwrap();
+        assert!(read(empty.path()).is_empty() && read_specs(empty.path()).is_empty());
     }
 }
