@@ -9,8 +9,6 @@ pub mod change_request;
 pub mod complete_spec;
 pub mod page;
 pub mod mark_finding;
-pub mod spec_children;
-pub mod spec_children_tree;
 pub mod spec_doc;
 pub mod spec_draft;
 pub mod spec_scaffold;

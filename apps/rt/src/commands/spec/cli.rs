@@ -38,35 +38,13 @@ pub enum SpecCmd {
         #[arg(long = "archive-followups")]
         archive_followups: bool,
     },
-    /// UNION of sub-specs linked to `--parent` via `spec.link` events AND via
-    /// filesystem `### Parent:` headers. Used by the dashboard "Sub-specs"
-    /// tab so sub-specs created on a teammate's machine (header present but
-    /// no `spec.link` event in this developer's SQLite) still surface.
-    /// Emits JSON `Vec<ChildEntry>` with a `source: event|header|both` tag
-    /// per row. Fail-open: any error degrades to `[]`.
-    #[command(display_order = 14)]
-    SpecChildren {
-        /// Parent (epic) spec slug whose children to enumerate.
-        #[arg(long)]
-        parent: Option<String>,
-    },
-    /// Project a parent spec's waves + acceptance criteria + sub-specs into a
-    /// single JSON document. Consumed by the dashboard's `spec_children_tree`
-    /// command. Fail-open: a missing
-    /// spec or store degrades to empty arrays.
-    #[command(display_order = 15)]
-    SpecChildrenTree {
-        /// Parent spec slug under `.claude/spec/` (flat layout).
-        #[arg(long)]
-        spec: Option<String>,
-    },
     /// Suggest wave decomposition by file/entity count.
     ///
     /// With `--from-spec <path>`, computes `fileCount` / `layerCount` /
     /// `newEntityCount` deterministically in Rust from the spec's `## Files`
     /// section + a diff against the repo model's entity names (no LLM). Without
     /// it, reads a pre-computed signals JSON from stdin (legacy / override).
-    #[command(display_order = 21)]
+    #[command(display_order = 19)]
     ScopeDecompose {
         /// Compute the signals deterministically from this spec file instead of
         /// reading them from stdin.
@@ -80,7 +58,7 @@ pub enum SpecCmd {
     /// from the `feature` digest's `sliceMatchCount`, and encodes the `/feature`
     /// SKILL's prose thresholds in code. Fail-open: an unreadable spec yields
     /// `{"scope":"full",...}` (the conservative default).
-    #[command(display_order = 22)]
+    #[command(display_order = 20)]
     ScopeClassify {
         /// Compute the signals deterministically from this spec file.
         #[arg(long = "from-spec", alias = "spec")]
@@ -97,7 +75,7 @@ pub enum SpecCmd {
     /// Returns `{scope, decompose, reason, waves, signals, filesSectionEmpty?}`
     /// — the union the `/feature` PLAN step needs to route, pick 1-vs-N, and
     /// seed `spec-draft --waves`. Replaces calling the two commands in sequence.
-    #[command(display_order = 23)]
+    #[command(display_order = 21)]
     PlanPrepare {
         /// Compute the signals deterministically from this spec file.
         #[arg(long = "from-spec", alias = "spec")]
@@ -112,7 +90,7 @@ pub enum SpecCmd {
     /// opened: pre-2026-05-20 nothing populated those tables since the JS
     /// harness writer was removed, which is why every dashboard spec card
     /// fell back to `"unknown"`.
-    #[command(display_order = 29)]
+    #[command(display_order = 27)]
     RebuildSpecs,
     /// Discover active specs from the filesystem (Outcome=Active, Stage=Plan|Execute).
     ///
@@ -120,7 +98,7 @@ pub enum SpecCmd {
     /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
     /// progress, extracts a one-line resumo.
     /// Output is either a markdown table (default) or a JSON document.
-    #[command(display_order = 46)]
+    #[command(display_order = 44)]
     ActiveSpecs {
         /// Output format: `table` (default) or `json`.
         #[arg(long, default_value = "table")]
@@ -138,7 +116,7 @@ pub enum SpecCmd {
     /// materialised by `wave-scaffold`. The narrative is written in the
     /// project's text language (`mustard.json` `language.text`). `--signals` is
     /// a free-form comma-separated list embedded in `spec.md` as a comment.
-    #[command(display_order = 54)]
+    #[command(display_order = 52)]
     SpecDraft {
         /// Free-text intent — the spec TITLE, and the last-resort slug seed.
         #[arg(long)]
@@ -220,7 +198,7 @@ pub enum SpecCmd {
     /// `mustard_core::domain::scan::Scan::spec`. Invoke as
     /// `mustard-rt run scan spec --entity <Name>`.
     #[command(name = "scan-spec")]
-    #[command(display_order = 55)]
+    #[command(display_order = 53)]
     ScanSpec {
         /// Entity/unit to create (substitutes `<Name>` in the grain recipe).
         #[arg(long)]
@@ -242,7 +220,7 @@ pub enum SpecCmd {
     /// by the user's answer to the approval question, which the witness
     /// records.
     #[command(name = "approve-spec")]
-    #[command(display_order = 64)]
+    #[command(display_order = 62)]
     ApproveSpec {
         /// Spec slug under `.claude/spec/` to approve.
         #[arg(long)]
@@ -257,7 +235,7 @@ pub enum SpecCmd {
     },
     /// Create a sub-spec linked to a parent spec for a tactical fix.
     #[command(name = "tactical-fix-create")]
-    #[command(display_order = 65)]
+    #[command(display_order = 63)]
     TacticalFixCreate {
         /// Parent spec slug (already created in `.claude/spec/`).
         #[arg(long)]
@@ -274,7 +252,7 @@ pub enum SpecCmd {
     /// events. Emits one `tactical_fix.proposed` event per new candidate;
     /// never scaffolds a sub-spec, so nothing is approved without the user.
     #[command(name = "tactical-fix-detect")]
-    #[command(display_order = 66)]
+    #[command(display_order = 64)]
     TacticalFixDetect {
         /// Spec whose review/qa events are scanned for candidates.
         #[arg(long)]
@@ -291,7 +269,7 @@ pub enum SpecCmd {
     /// without anyone hand-formatting a bullet. A blank instruction is refused
     /// and nothing is written.
     #[command(name = "change-request")]
-    #[command(display_order = 77)]
+    #[command(display_order = 75)]
     ChangeRequest {
         /// Spec slug under `.claude/spec/`. Omitted: the session→spec marker,
         /// then the active-spec fallback.
@@ -312,7 +290,7 @@ pub enum SpecCmd {
     /// A decision the conversation settles is written down WHEN it is settled —
     /// the only moment its reason is still known.
     #[command(name = "material-add")]
-    #[command(display_order = 94)]
+    #[command(display_order = 92)]
     MaterialAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -372,7 +350,7 @@ pub enum SpecCmd {
     /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
     /// the unrelated session-end amendment window.
     #[command(name = "ac-amend")]
-    #[command(display_order = 79)]
+    #[command(display_order = 77)]
     AcAmend {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -433,7 +411,7 @@ pub enum SpecCmd {
     /// to the proof ledger's `additions`. A wave spec carries no criterion
     /// text — `--wave N` names the wave that will be judged by the new id.
     #[command(name = "ac-add")]
-    #[command(display_order = 80)]
+    #[command(display_order = 78)]
     AcAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -493,7 +471,7 @@ pub enum SpecCmd {
     /// `already-routed` when the same decision is restated, and refuses a
     /// different one rather than overwriting a decision in silence.
     #[command(name = "mark-finding")]
-    #[command(display_order = 89)]
+    #[command(display_order = 87)]
     MarkFinding {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -523,7 +501,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 96)]
+    #[command(display_order = 94)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -544,7 +522,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 98)]
+    #[command(display_order = 96)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
@@ -580,8 +558,6 @@ pub fn dispatch(cmd: SpecCmd) {
             archive_stale,
             archive_followups,
         } => spec::complete_spec::run(spec.as_deref(), archive, archive_stale, archive_followups),
-        SpecCmd::SpecChildren { parent } => spec::spec_children::run(parent.as_deref()),
-        SpecCmd::SpecChildrenTree { spec } => spec::spec_children_tree::run(spec.as_deref()),
         SpecCmd::ScopeDecompose { from_spec } => spec::scope_decompose::run(from_spec.as_deref()),
         SpecCmd::ScopeClassify {
             from_spec,

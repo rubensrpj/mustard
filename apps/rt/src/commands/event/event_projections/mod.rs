@@ -39,8 +39,8 @@ mod spec_tree;
 mod pr_metrics;
 
 /// Re-export of [`mustard_core::view::projection::read_workspace_events`] under the
-/// crate path so existing rt callers (`resume_bootstrap`, `spec_children_tree`,
-/// the projection `project` dispatcher below) continue to use the short name.
+/// crate path so existing rt callers (`resume_bootstrap` and the projection
+/// `project` dispatcher below) continue to use the short name.
 ///
 /// When the SQLite store was dropped, the canonical walker moved to `mustard-core` so
 /// both the rt crate and the dashboard backend can fold over the same

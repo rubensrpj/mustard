@@ -55,7 +55,7 @@ pub enum PipelineCmd {
         duration_ms: Option<u64>,
     },
     /// Run build/test verification for the active pipeline's subprojects.
-    #[command(display_order = 33)]
+    #[command(display_order = 31)]
     VerifyPipeline {
         /// Output format: `json` (default) or `html`.
         #[arg(long, default_value = "json")]
@@ -66,7 +66,7 @@ pub enum PipelineCmd {
     /// With `--self-test`: instantiate a minimal [`mustard_core::SpecSummaryDoc`],
     /// serialise it to pretty JSON, print to stdout, and exit 0. Used by
     /// `cargo run -p mustard-rt -- run pipeline-summary --self-test` as a smoke check.
-    #[command(display_order = 34)]
+    #[command(display_order = 32)]
     PipelineSummary {
         /// Path to the spec directory (must contain `spec.md`). Also accepts a
         /// `.../spec.md` path or a bare slug. `--spec` / `--from-spec` are
@@ -88,7 +88,7 @@ pub enum PipelineCmd {
     /// `--harness` mode: reads `.claude/settings.json`, groups hooks by lifecycle
     /// event, resolves enforcement mode from env vars, and renders a 4-column
     /// table (Hook | Matcher | Enforces | Mode).
-    #[command(display_order = 47)]
+    #[command(display_order = 45)]
     Status {
         /// Include hooks table (harness view).
         #[arg(long)]
@@ -105,7 +105,7 @@ pub enum PipelineCmd {
     /// resumo, agent roles. Emits `pipeline.resume_mode` before returning
     /// (idempotent — debounced 10 s). Fail-open: every IO error degrades a
     /// field to `null`/`false`; exit 0 always.
-    #[command(display_order = 49)]
+    #[command(display_order = 47)]
     ResumeBootstrap {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -116,7 +116,7 @@ pub enum PipelineCmd {
     },
     /// Drive the CLOSE-phase gates (verify → qa → docs-stale → summary).
     #[command(name = "close-orchestrate")]
-    #[command(display_order = 62)]
+    #[command(display_order = 60)]
     CloseOrchestrate {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -134,7 +134,7 @@ pub enum PipelineCmd {
     /// Output: `"events"`, `"scaffold"` (created_files, skipped, refreshed,
     /// removed) and `"validation"` (ok, issues) — byte-stable, ordered.
     #[command(name = "plan-materialize")]
-    #[command(display_order = 70)]
+    #[command(display_order = 68)]
     PlanMaterialize {
         /// Target spec directory. Also accepts a `.../spec.md` path or a bare
         /// slug. `--spec` / `--from-spec` are hidden aliases.
@@ -158,7 +158,7 @@ pub enum PipelineCmd {
     /// text ready for `Task`. Pending = first dependency level with a wave not
     /// yet carrying `pipeline.wave.complete`; everything done → `[]`.
     #[command(name = "wave-advance")]
-    #[command(display_order = 71)]
+    #[command(display_order = 69)]
     WaveAdvance {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -172,7 +172,7 @@ pub enum PipelineCmd {
     /// Output: `{"completed":bool,"qa":{overall,criteria},"reviews":[...],`
     /// `"summary":...}`.
     #[command(name = "close-pipeline")]
-    #[command(display_order = 72)]
+    #[command(display_order = 70)]
     ClosePipeline {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
