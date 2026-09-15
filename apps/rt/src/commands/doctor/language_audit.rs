@@ -34,11 +34,8 @@
 //! is counted rather than stripped.
 //!
 //! - `.ts`/`.tsx`: a regex literal whose character class holds an odd `'`
-//!   (`/['"`]/`). Measured over the 147 in-scope files: ONE is affected
-//!   (`apps/dashboard/src/lib/quality-link.ts`). Closing it means detecting
-//!   regex literals, which is the per-language parsing `## Não-Objetivos`
-//!   refuses; it is also not a regression, since that file was flagged before
-//!   this scanner existed.
+//!   (`/['"`]/`). Closing it means detecting regex literals, which is the
+//!   per-language parsing `## Não-Objetivos` refuses.
 //! - `.rs`: a raw string with an odd `"` (`r#"a " b"#`). Measured over the 367
 //!   in-scope files: ZERO occurrences, so it is latent.
 //!
@@ -50,7 +47,7 @@
 //! Recursive walk relative to the cwd:
 //!
 //! - `apps/cli/templates/` (payload of `mustard init`)
-//! - `apps/{cli,rt,dashboard}/src/`
+//! - `apps/{cli,rt}/src/`
 //! - `packages/*/src/`
 //! - `.claude/refs/`
 //!
@@ -255,8 +252,6 @@ fn audit_targets(root: &Path) -> Vec<PathBuf> {
         "apps/cli/templates",
         "apps/cli/src",
         "apps/rt/src",
-        "apps/dashboard/src",
-        "apps/dashboard/server/src",
         "packages/core/src",
         // The compiled-in harness seeds (settings, injectable instruction
         // files) — moved from apps/cli/templates, still under the EN policy.
@@ -792,7 +787,7 @@ mod tests {
         // `https://` abriria comentário e engoliria o português da constante.
         write(
             root,
-            "apps/dashboard/src/links.ts",
+            "apps/cli/templates/links.ts",
             "export const DOC = 'https://x/não-está-no-código-padrão';\n",
         );
         let report = audit(root);

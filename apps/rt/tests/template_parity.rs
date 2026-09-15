@@ -132,14 +132,12 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
         "metrics",
         "user-invoked pipeline/hook metrics (collect + report faces, \
          commands/economy/); its only prose caller was the `/stats` door, \
-         dropped by the four-door surface prune - the dashboard renders the \
-         same `.metrics/` corpus through its own readers",
+         dropped by the four-door surface prune",
     ),
     (
         "metrics-wave-status",
         "user-facing wave telemetry; main.rs keeps the two-token rewrite \
-         (metrics wave-status) for human invocation - its dashboard spawn was \
-         removed in the 2.0 dashboard cut",
+         (metrics wave-status) for human invocation",
     ),
     (
         "open",
@@ -678,16 +676,13 @@ fn squash_whitespace(text: &str) -> String {
 ///
 /// rt sources exclude the registration/list surfaces (`cli.rs` family files,
 /// `doctor.rs` known-list) and the command's own module — a command's own
-/// docs are not a caller. Dashboard backend (`apps/dashboard/server/src`)
-/// sources count in full.
+/// docs are not a caller.
 fn has_argv_caller(root: &Path, name: &str) -> bool {
     let needle = format!("\"run\", \"{name}\"");
     let own_module = format!("{}.rs", name.replace('-', "_"));
 
     let mut rt_sources = Vec::new();
     walk_files(&root.join("apps/rt/src"), &mut rt_sources);
-    let mut dash_sources = Vec::new();
-    walk_files(&root.join("apps/dashboard/server/src"), &mut dash_sources);
 
     let excluded = |p: &Path| {
         p.file_name()
@@ -697,7 +692,6 @@ fn has_argv_caller(root: &Path, name: &str) -> bool {
     rt_sources
         .iter()
         .filter(|p| has_extension(p, &["rs"]) && !excluded(p))
-        .chain(dash_sources.iter().filter(|p| has_extension(p, &["rs"])))
         .any(|p| squash_whitespace(&read_lossy(p)).contains(&needle))
 }
 
@@ -788,7 +782,7 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     assert!(
         dark.is_empty(),
         "registered `run` subcommands with no product caller (templates, CLI \
-         sources, installer, settings template, rt/dashboard argv spawns) and \
+         sources, installer, settings template, rt argv spawns) and \
          no RUNTIME_WHITELIST justification - dark surface. Wire a caller, \
          add a JUSTIFIED whitelist entry, or remove the registration:\n{}",
         dark.join("\n")

@@ -35,7 +35,7 @@ Single prerequisite on every OS: **[Claude Code](https://docs.claude.com/claude-
 
 ### Step 1 — your OS installer
 
-On Windows and macOS, download **one** file from the [**Releases**](https://github.com/rubensrpj/mustard/releases) page (*Assets* section); on **Linux**, a single terminal line does it. Each installer carries the full CLI (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **and** the **Mustard Dashboard**:
+On Windows and macOS, download **one** file from the [**Releases**](https://github.com/rubensrpj/mustard/releases) page (*Assets* section); on **Linux**, a single terminal line does it. Each installer carries the full CLI (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`):
 
 | OS | What to download | What to do |
 |---|---|---|
@@ -180,50 +180,6 @@ The gate `merge` crosses, in order: **build + tests** → **QA** (only a recorde
 
 ---
 
-## Dashboard
-
-The **Mustard Dashboard** is the harness telemetry: an HTTP **server** (`mustard-dashboard`, Rust + `tiny_http`) serving a React screen to your browser. It reads the NDJSON events the hooks write under each project's `.claude/`, **straight from disk and live** — no database, no open session required; the screen redraws over Server-Sent Events, which reconnect on their own.
-
-### Opening it
-
-```bash
-cd ~/code            # the folder where your projects live
-mustard-dashboard    # serves http://127.0.0.1:7777/ and opens the browser
-```
-
-On Windows and Linux the **"Mustard Dashboard"** menu shortcut does the same, from your home folder.
-
-| Option | What for |
-|---|---|
-| `--root DIR` | scan another folder instead of the current directory |
-| `--port N` | another port (or `MUSTARD_DASHBOARD_PORT`); a taken port is not fatal — the next free one is used and printed |
-| `--host ADDR` | **exposes it on the network** (e.g. `0.0.0.0`); without it the dashboard only answers on `127.0.0.1` |
-| `--no-open` | never launch a browser |
-
-> Why `--host` is required to expose it: the dashboard reads the `.claude/` of **every** project on the machine. Opening it to the network has to be an act, not a forgotten flag — the same contract as the OTLP collector.
-
-### First use
-
-1. The scan starts at the directory the server was started from — the projects shown are the ones on the machine running the backend.
-2. The dashboard **auto-discovers** every Mustard-initialized project (`mustard.json` + `.claude/`) inside it.
-
-### What each area shows
-
-| Area | Content |
-|---|---|
-| **Workspace** | Aggregated overview of all discovered projects: active pipelines, latest events, health. |
-| **Activity** | The **live** execution: running pipeline, waves, dispatched agents, and the trace grouped by agent/wave. |
-| **Specs** | Every specification with its lifecycle state (active, suspicious, closed), acceptance criteria, and waves. |
-| **Economy** | Token metrics: per-session/per-spec consumption and the savings obtained (rtk, digest, routing). |
-| **Knowledge** | The project's knowledge base (patterns, conventions, recorded decisions). |
-| **Commands** | History of executed pipeline commands. |
-| **Sessions** | Claude Code session history for the project, with per-session drill-down. |
-| **Project detail** | Per project: specs, execution trace, and the live pipeline card. |
-
-> Tip: keep the dashboard open on a second monitor while Claude Code works — **Activity** shows each wave and agent in real time, and **Specs** reflects the gates (QA passed, CLOSE blocked, etc.) the moment they happen.
-
----
-
 ## Spec-Driven Development
 
 Specs live in a **flat** layout under `.claude/spec/{name}/`:
@@ -245,29 +201,18 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 | `apps/cli` | `mustard` | Rust | Install & scaffold — `init`, grammars, git-flow, fonts. |
 | `apps/mcp` | `mustard-mcp` | Rust | MCP server (harness memory/queries). |
 | `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
-| `apps/dashboard` | `mustard-dashboard` | Rust (`tiny_http`) + React | Telemetry UI (specs, runs, trace, metrics). The server (`apps/dashboard/server`) is a normal Cargo workspace member; the screen is served as static assets. |
 | `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents, MCP, and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
 
-`cargo build --workspace` covers the Rust crates — the dashboard server included; the screen builds via `pnpm`.
+`cargo build --workspace` covers every Rust crate.
 
 ---
 
 ## Build & tests
 
 ```bash
-# Rust (workspace)
-cargo build --workspace            # or: pnpm build:rust
-cargo test  --workspace            # or: pnpm test:rust
+cargo build --workspace
+cargo test  --workspace
 cargo clippy --workspace           # lint
-
-# Dashboard (Rust server + React)
-pnpm --filter mustard-dashboard dev   # screen with HMR (Vite)
-pnpm dashboard:build                  # production build (React + server)
-pnpm dashboard:serve -- --root ~/code # run the server from the checkout
-
-# Everything
-pnpm build                         # Rust workspace + dashboard
-pnpm test                          # same
 ```
 
 **Official release:** a `vX.Y.Z` tag triggers the workflow that builds one complete installer per OS + the `mustard-bins-*` packages (consumed by the plugin bootstrap) and publishes everything as a GitHub Release. The tag version **must** match `plugin/.claude-plugin/plugin.json` — the workflow refuses a desynchronized tag. Manual dispatch (Actions → Release → Run workflow) is a **rehearsal**: builds everything without publishing.
@@ -308,7 +253,6 @@ apps/
   scan/       repository miner (Rust)
   cli/        mustard — installer/scaffold (Rust)
   mcp/        MCP server (Rust)
-  dashboard/  Rust server (server/) + React screen — telemetry
 packages/
   core/       shared types/logic (Rust)
 plugin/       Claude Code plugin (commands, hooks, agents, bootstrap)

@@ -29,7 +29,6 @@ use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
-use crate::hooks::session::dashboard_register_observer::DashboardRegisterObserver;
 use crate::hooks::session::statusline_heal_observer::StatuslineHealObserver;
 use crate::hooks::write::size_gate::SizeGate;
 use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
@@ -209,8 +208,8 @@ impl Registry {
                 // `tool-result` — PostToolUse capture of rich tool output
                 // (Bash stdout/stderr/exit, Edit/MultiEdit before/after, Write
                 // content, Read content excerpt). Emits a `tool.result` event
-                // the dashboard `<ExecutionTrace>` joins with the matching
-                // `tool.use`.
+                // that carries the same identifier as the matching `tool.use`,
+                // so a reader can join the two.
                 applies_to: &[
                     (Trigger::PostToolUse, ToolMatch::Named("Bash")),
                     (Trigger::PostToolUse, ToolMatch::Named("Edit")),
@@ -378,19 +377,6 @@ impl Registry {
                 observer: Some(Box::new(StatuslineHealObserver)),
             },
             Module {
-                id: "dashboard_register_observer",
-                // A project that USES Mustard announces itself to the
-                // dashboard's machine-level list on SessionStart. `mustard
-                // init` covers new installs; this covers every project that was
-                // ALREADY installed, which would otherwise stay invisible
-                // forever. Idempotent — an established project writes nothing.
-                // An `Observer` (pure side effect, no verdict); opt out with
-                // `MUSTARD_DASHBOARD_REGISTER=0`.
-                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(DashboardRegisterObserver)),
-            },
-            Module {
                 id: "prompt_submit_inject",
                 // `followup-cancel-gate` (amendment-window close, a side
                 // effect) + declared injectables (`mustard.json#inject`,
@@ -473,9 +459,9 @@ impl Registry {
                 // `UserPromptSubmit` lifecycle observer — appends a single
                 // `user.prompt {prompt}` event to the per-spec NDJSON log (or
                 // the per-session sink under `.claude/.session/{id}/.events/`
-                // when no spec is resolvable), so the dashboard can render
-                // "what I asked" in the trace. Observe-only, unconditional,
-                // never blocks the prompt.
+                // when no spec is resolvable), so a reader of the log can tell
+                // what was asked. Observe-only, unconditional, never blocks the
+                // prompt.
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(PromptObserver)),
@@ -552,9 +538,9 @@ impl Registry {
                 // is resolvable (MUSTARD_ACTIVE_SPEC/WAVE), auto-emit
                 // `pipeline.wave.start` once (idempotent via the NDJSON event
                 // check; suppressed if the wave already completed). The
-                // counterpart to `wave_complete_observer`: it lets the dashboard
-                // mark a wave InProgress from an explicit signal. SubagentStart,
-                // fail-open, never denies.
+                // counterpart to `wave_complete_observer`: it marks a wave in
+                // progress from an explicit signal. SubagentStart, fail-open,
+                // never denies.
                 applies_to: &[(Trigger::SubagentStart, ToolMatch::Any)],
                 check: None,
                 observer: Some(Box::new(WaveStartObserver)),

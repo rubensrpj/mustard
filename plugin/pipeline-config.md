@@ -4,7 +4,7 @@
 
 ## Pipeline Phases
 
-Canonical: `ANALYZE→PLAN→EXECUTE→REVIEW→QA→CLOSE` (+`COORDINATE`). This section is the single source of the phase vocabulary — every consumer (hooks, docs, dashboard, metrics) uses these names; the pipeline-phase hook records descriptively and does not reject unknown values. Light scope skips PLAN: `ANALYZE→EXECUTE→REVIEW→QA→CLOSE`.
+Canonical: `ANALYZE→PLAN→EXECUTE→REVIEW→QA→CLOSE` (+`COORDINATE`). This section is the single source of the phase vocabulary — every consumer (hooks, docs, metrics) uses these names; the pipeline-phase hook records descriptively and does not reject unknown values. Light scope skips PLAN: `ANALYZE→EXECUTE→REVIEW→QA→CLOSE`.
 
 | Phase | Represents | Entry trigger |
 |-------|------------|---------------|

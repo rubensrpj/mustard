@@ -49,7 +49,7 @@
 //!
 //! There is **one** config file, at the **project root** (the workspace anchor
 //! `workspace_root` keys on) — never `.claude/mustard.json`. The `version`
-//! stamp lets the dashboard read the installed Mustard version; because `init`
+//! stamp records the installed Mustard version; because `init`
 //! is idempotent, **re-running it re-stamps that version** — the job the retired
 //! `mustard update` used to do.
 //!
@@ -129,7 +129,7 @@ enum ExistingAction {
 
 /// Run `mustard init` against `project_path`.
 ///
-/// This is the library entry point the dashboard backend calls. The binary passes
+/// This is the library entry point. The binary passes
 /// the process working directory; a caller may pass any folder. The bundled
 /// `templates/` directory is located via [`resolve_templates_dir`]; callers
 /// that already know its location use [`init_with_templates`].
@@ -165,8 +165,8 @@ pub enum InitOutcome {
 /// [`init`] with the `templates/` directory supplied explicitly.
 ///
 /// Splitting this out keeps template resolution (an environment concern) out
-/// of the install logic, so tests can drive a fixture tree and the dashboard
-/// backend can point at its own bundled payload — no process-global env var.
+/// of the install logic, so tests can drive a fixture tree and a caller can
+/// point at its own bundled payload — no process-global env var.
 pub fn init_with_templates(
     project_path: &Path,
     templates_dir: &Path,
@@ -181,13 +181,12 @@ pub fn init_with_templates(
     // library consumer lost the chance to handle it; a `Result` that sometimes
     // terminates the program is not a contract.
     //
-    // Measured, not theorised: `apps/dashboard/server/tests/mustard_cli_test.rs`
-    // died as "test exited abnormally" the first time CI ran it (this crate had
-    // never been in the CI test set), because a clean runner has no `rtk` and
-    // the process simply vanished mid-test. The `cfg!(test)` escape hatch in
-    // `probe_rtk` does not reach it: that flag is true only while THIS crate
-    // compiles its own unit tests, never for an integration test living in
-    // another crate.
+    // Measured, not theorised: an integration test in another crate died as
+    // "test exited abnormally" the first time CI ran it, because a clean runner
+    // has no `rtk` and the process simply vanished mid-test. The `cfg!(test)`
+    // escape hatch in `probe_rtk` does not reach it: that flag is true only
+    // while THIS crate compiles its own unit tests, never for an integration
+    // test living in another crate.
     //
     // The gate itself is not softened — it moved to `cli::dispatch`, where the
     // terminal user still meets it before any disk write. See `probe_rtk`.
@@ -345,10 +344,10 @@ pub fn init_with_templates(
     // `sh -c "curl … rtk/master/install.sh | sh"` on Unix, or `cargo install`
     // from git plus `cargo install ripgrep` on Windows.
     //
-    // Measured in review, not argued: the dashboard's `mustard_cli_test` spawned
-    // that curl pipeline TWICE under a logging `sh` shim. It would have run on
-    // ubuntu, macOS and Windows runners, downloading and executing a remote
-    // script inside a unit test, with no timeout.
+    // Measured in review, not argued: an integration test in another crate
+    // spawned that curl pipeline TWICE under a logging `sh` shim. It would have
+    // run on ubuntu, macOS and Windows runners, downloading and executing a
+    // remote script inside a unit test, with no timeout.
     //
     // The verification that missed it is worth naming too: `PATH=/nonexistent`
     // makes every spawn fail instantly, so the installer degrades to printing
@@ -592,7 +591,7 @@ fn templates_beside_exe(exe: &Path) -> Option<PathBuf> {
 ///
 /// Resolution order:
 /// 1. the `MUSTARD_TEMPLATES_DIR` environment variable (explicit override —
-///    used by tests and by the dashboard backend, which knows its own layout);
+///    used by tests and by any caller that knows its own layout);
 /// 2. `<exe-dir>/templates` and `<exe-dir>/../templates` (installed layout),
 ///    resolved from the CANONICALIZED executable path;
 /// 3. `<CARGO_MANIFEST_DIR>/templates` (the in-repo layout, for `cargo run`).
@@ -668,7 +667,7 @@ fn decide_existing_action(claude_path: &Path, options: &InitOptions) -> Result<E
         println!("  .claude/ exists - updating without overwriting user files");
         return Ok(ExistingAction::Merge);
     }
-    // Non-interactive stdin (CI, tests, the dashboard backend): default to the
+    // Non-interactive stdin (CI, tests, a library caller): default to the
     // safe merge
     // rather than blocking on a prompt that can never be answered.
     if !std::io::stdin().is_terminal() {
@@ -769,48 +768,6 @@ fn write_project_config(project_path: &Path, runtime: &Runtime, interactive: boo
     Ok(())
 }
 
-/// Tell the dashboard this machine has one more Mustard project.
-///
-/// **An environment act, so it lives on the binary side** — `cli::dispatch`
-/// calls it, never the library. `~/.claude/` is outside the project, and
-/// `library_is_pure` enforces that a library call never writes there; it caught
-/// exactly this function placed one layer too deep. Same shape, and same
-/// reason, as [`ensure_global_permissions_if_opted_in`].
-///
-/// `mustard.json` having just been written is the one moment a project becomes
-/// a Mustard project, so it is the only honest moment to record it. Before
-/// this, the machine-level registry had a single writer — the dashboard's own
-/// "add folder" button — so installing Mustard told the dashboard nothing: the
-/// operator installed, opened the dashboard and met an empty list with no hint
-/// that anything was missing (reported in the field, 2026-08-28).
-///
-/// **Never fails the install.** A dashboard listing is a convenience, and an
-/// unwritable home directory is not a reason to refuse a project its harness.
-/// Idempotent by path, so a re-run adds no second row and says so.
-///
-/// This is NOT the global-settings write that [`ensure_global_permissions`]
-/// guards behind `MUSTARD_GLOBAL_PERMISSIONS`: that rule protects the user's
-/// own `~/.claude/settings.json`, which Mustard has no business editing
-/// unprompted. This writes a file Mustard itself owns, whose whole purpose is
-/// to list the projects it was installed into.
-pub(crate) fn register_with_dashboard(project_path: &Path) {
-    use mustard_core::dashboard_registry::{register, RegisterOutcome};
-    // The registry's identity is the absolute path — a relative one would
-    // register a row that resolves differently depending on where the dashboard
-    // was started.
-    let absolute = project_path
-        .canonicalize()
-        .unwrap_or_else(|_| project_path.to_path_buf());
-    match register(&absolute) {
-        Ok(RegisterOutcome::Added) => {
-            println!("  registered with the dashboard (~/.claude/dashboard-projects.json)");
-        }
-        Ok(RegisterOutcome::AlreadyPresent) => {}
-        Err(err) => {
-            eprintln!("[mustard] warning: could not register with the dashboard: {err}");
-        }
-    }
-}
 /// The binary-side face of [`ensure_global_permissions`].
 ///
 /// Exists so `cli::dispatch` can take this environment act without the library
@@ -981,9 +938,9 @@ pub(crate) fn probe_rtk() {
     // That guard is narrower than it reads, which is why this function may only
     // be called from the BINARY's dispatch and never from the library: `cfg!(test)`
     // is true while this crate compiles its own unit tests and false everywhere
-    // else — an integration test in another crate (the dashboard's
-    // `mustard_cli_test`) compiles this as an ordinary dependency and gets the
-    // `exit(1)`. That is exactly how it died on CI's first run of that crate.
+    // else — an integration test in another crate compiles this as an ordinary
+    // dependency and gets the `exit(1)`. That is exactly how it died on CI's
+    // first run of that crate.
     if cfg!(test) || rtk_on_path() {
         return;
     }

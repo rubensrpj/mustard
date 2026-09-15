@@ -11,4 +11,3 @@ pub mod project_seed;
 pub mod config;
 pub mod seeds;
 pub mod time;
-pub mod dashboard_registry;

@@ -1,7 +1,7 @@
 # Mustard — Comandos e Fluxos
 
 Referência visual de **cada comando do Mustard** e seu fluxo de execução.
-Os diagramas usam [Mermaid](https://mermaid.js.org/) — renderizam direto no GitHub, no VS Code (com extensão Mermaid) e no dashboard.
+Os diagramas usam [Mermaid](https://mermaid.js.org/) — renderizam direto no GitHub e no VS Code (com extensão Mermaid).
 
 > **Convenções dos diagramas**
 > - **AI** = passo de raciocínio que o orquestrador (Claude) faz.
@@ -365,7 +365,7 @@ flowchart TD
     print --> done(["mesmo pipeline, mesmos gates<br/>(sem 'modo light' de gate)"])
 ```
 
-> Fail-open na existência do pai: a sub-spec é criada mesmo se `<parent>` não existir (só a navegação do dashboard degrada). Nunca auto-aprova — o usuário revisa a semente e roda `/mustard:spec`.
+> Fail-open na existência do pai: a sub-spec é criada mesmo se `<parent>` não existir (só a navegação entre specs degrada). Nunca auto-aprova — o usuário revisa a semente e roda `/mustard:spec`.
 
 ---
 

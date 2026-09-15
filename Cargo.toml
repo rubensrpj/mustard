@@ -2,19 +2,12 @@
 resolver = "2"
 members = [
     "apps/cli",
-    "apps/dashboard/server",
     "apps/mcp",
     "apps/rt",
     "apps/scan",
     "packages/core",
 ]
-# `apps/dashboard/server` was excluded while it was a desktop-shell wrapper: that
-# wrapper pinned it to edition 2021 with its own Cargo.lock and a dependency set
-# that could not consume `[workspace.dependencies]`. The shell is gone — the
-# dashboard backend is now a plain `tiny_http` server — so the reason evaporated
-# and the crate is a normal member: `cargo build --workspace` compiles it.
-#
-# Still excluded: the mustard-translate sidecar (apps/translate) — candle +
+# Excluded: the mustard-translate sidecar (apps/translate) — candle +
 # lingua are heavy deps that must not bloat the hook (`mustard-rt`) or the
 # deterministic scanner; it builds standalone, as its own workspace.
 exclude = ["apps/translate"]
@@ -84,22 +77,6 @@ tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 # `CoreBPE::encode`/`count` fallible (`Result<_, EncodeError>`) — the
 # estimator only calls `encode_with_special_tokens`, which stays infallible.
 tiktoken-rs = "0.12"
-# Cross-platform filesystem notification — the dashboard server's per-project
-# `.claude/` watcher. Updated to notify 8.2 (May 2026). `mustard-rt` also
-# declared this entry, for a transcript-watcher daemon that no longer exists;
-# the declaration was removed in the prune, so the dashboard is now the sole
-# consumer and the entry stays here only because that is where versions live.
-notify = "8"
-# Debounced wrapper over `notify` — the dashboard server coalesces a write burst
-# into one ~200 ms batch before pushing it down the server-sent-events channel.
-notify-debouncer-mini = "0.7"
-# Minimal blocking HTTP server, no async runtime. Backs both the OTLP collector
-# (`mustard-rt run otel-collector`) and the dashboard server. Kept at the same
-# version `apps/rt` pins so the two share one graph.
-tiny_http = "0.12"
-# Home-directory resolution — the dashboard server locates `~/.claude/` for the
-# project registry and for the Claude Code transcript store.
-dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Data-parallelism primitives — rayon parallelises the per-subproject
 # verification pass (`verify_pipeline`) so targets are checked concurrently.
@@ -122,17 +99,13 @@ rust-stemmers = "1.2"
 # Workspace-wide lints. A crate opts in with `[lints] workspace = true`.
 #
 # Every member opts in except `apps/scan`, which still carries no `[lints]`
-# table. `mustard-dashboard` was the other holdout — the note here used to read
-# "deliberately does not (its command surface predates the `unwrap_used = deny`
-# rule)", which is how the workspace's NEWEST code came to be the only code the
-# rule did not reach.
+# table.
 #
 # `unwrap_used` below is `deny`, and clippy does NOT exempt `#[cfg(test)]` code
 # from it on its own: `mustard-core`, `mustard-cli`, `mustard-rt` and
 # `mustard-mcp` each open their crate root with
 # `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]`, and THAT
-# is what exempts their tests. `mustard-dashboard` deliberately carries no such
-# line — see its `src/lib.rs` header.
+# is what exempts their tests.
 [workspace.lints.rust]
 # A hook on the critical path must never reach for `unsafe`.
 unsafe_code = "forbid"
@@ -198,15 +171,12 @@ map_unwrap_or = "allow"
 case_sensitive_file_extension_comparisons = "allow"
 #
 # A `Result` that never errs is the SHAPE OF AN INTERFACE here, not a claim
-# that this implementation can fail. Three places rely on it and all three
-# would get worse if the wrapper were removed: (1) the dashboard's HTTP
-# handlers, where `server.rs` maps every argument table onto a uniform
-# `Result<T, String>` — one handler returning a bare `T` would need its own
-# branch in the dispatcher; (2) ports whose OTHER implementations do fail, so
-# the trait's signature is fixed elsewhere; (3) functions that document the
-# reservation out loud, like `economy::sources::rtk::ingest_with` — "the only
+# that this implementation can fail. Two places rely on it and both would get
+# worse if the wrapper were removed: (1) ports whose OTHER implementations do
+# fail, so the trait's signature is fixed elsewhere; (2) functions that document
+# the reservation out loud, like `economy::sources::rtk::ingest_with` — "the only
 # `Err` shape is reserved for future variants that need to escalate".
-# Verified by reading all three before muting, not assumed.
+# Verified by reading both before muting, not assumed.
 unnecessary_wraps = "allow"
 #
 # Every instance is `&I18n` — a two-byte language tag. Clippy is right that

@@ -78,13 +78,6 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
     dir
 }
 
-/// The dashboard registry inside a home directory —
-/// `<home>/.claude/dashboard-projects.json`, the file a successful `init`
-/// appends the installed project to.
-fn registry(home: &Path) -> PathBuf {
-    home.join(".claude").join("dashboard-projects.json")
-}
-
 /// Run `mustard init --yes` in `project`, with `bin` as the whole PATH and
 /// `home` as `$HOME`.
 ///
@@ -94,9 +87,9 @@ fn registry(home: &Path) -> PathBuf {
 /// `~/.claude/`. A test that can damage the machine it runs on is worse than the
 /// regression it was watching for.
 ///
-/// `USERPROFILE` rides along because the dashboard registry — the OTHER file a
-/// successful install writes under the home — reads that variable on Windows
-/// and `HOME` everywhere else. Isolating one spelling isolates one platform.
+/// `USERPROFILE` rides along because home resolution reads that variable on
+/// Windows and `HOME` everywhere else. Isolating one spelling isolates one
+/// platform.
 fn run_init(project: &Path, bin: &Path, home: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_mustard"))
         .args(["init", "--yes"])
@@ -177,20 +170,6 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
         "the binary must still reach the RTK tooling; log was:\n{spawned}"
     );
 
-    // The POSITIVE half of the home isolation. A successful install registers
-    // the project with the dashboard, and the registry is resolved from the
-    // home — so the row proves two things at once: the act still happens, and
-    // it happened HERE rather than in the operator's own `~/.claude/`. Asserting
-    // only that the real file was left alone would also pass for an install
-    // that wrote nothing anywhere.
-    let canonical = project.canonicalize().unwrap_or_else(|_| project.clone());
-    let rows = mustard_core::dashboard_registry::read_at(&registry(&home));
-    assert!(
-        rows.iter().any(|e| Path::new(&e.path) == canonical),
-        "the install must have registered {} in the TEST's registry; rows were {:?}",
-        canonical.display(),
-        rows.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
-    );
 }
 
 /// `--dry-run` prints a plan and changes nothing — including the machine.
@@ -233,10 +212,6 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
         !home.join(".claude").join("settings.json").exists(),
         "a dry run wrote the operator's global settings"
     );
-    assert!(
-        mustard_core::dashboard_registry::read_at(&registry(&home)).is_empty(),
-        "a dry run registered the project with the dashboard"
-    );
     let spawned = fs::read_to_string(&log).unwrap_or_default();
     assert!(
         !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
@@ -267,7 +242,7 @@ fn the_library_half_of_init_calls_no_environment_installer() {
             !source.contains(call),
             "`{}` is back inside init.rs. These installers belong to `cli::dispatch`: \
              from the library they run `sh -c \"curl … | sh\"` for any caller, which is \
-             how the dashboard's integration test came to spawn it twice on CI.",
+             how an integration test in another crate came to spawn it twice on CI.",
             call.trim()
         );
     }

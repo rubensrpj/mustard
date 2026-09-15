@@ -149,10 +149,10 @@ fn library_probe_child() {
         .expect("init_with_templates runs");
     assert_eq!(first, InitOutcome::Installed, "a seeded project reports Installed");
 
-    // Door 2: `init`, which its own doc calls "the library entry point the
-    // dashboard backend calls". Restoring the acts HERE was green before this
-    // call existed. `MUSTARD_TEMPLATES_DIR` is how the parent points it at the
-    // fixture without a process-global default.
+    // Door 2: `init`, which its own doc calls "the library entry point".
+    // Restoring the acts HERE was green before this call existed.
+    // `MUSTARD_TEMPLATES_DIR` is how the parent points it at the fixture
+    // without a process-global default.
     let second = init(&work.join("project-two"), &opts).expect("init runs");
     assert_eq!(second, InitOutcome::Installed, "the second door also installs");
 

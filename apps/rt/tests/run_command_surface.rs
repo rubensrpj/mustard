@@ -140,10 +140,9 @@ const RUN_SUBCOMMANDS: &[&str] = &[
 /// the file extension each one is scanned through (`None` = every file).
 ///
 /// `plugin/**/*.md` is what the agent loads at runtime (commands, refs, agent
-/// prompts); `apps/dashboard/src` is what the UI prints in its hints. Each entry
-/// is ASSERTED to exist and to yield files — a surface that silently disappears
-/// would turn this guard into a green no-op.
-const DOC_SURFACES: &[(&str, Option<&str>)] = &[("plugin", Some("md")), ("apps/dashboard/src", None)];
+/// prompts). Each entry is ASSERTED to exist and to yield files — a surface that
+/// silently disappears would turn this guard into a green no-op.
+const DOC_SURFACES: &[(&str, Option<&str>)] = &[("plugin", Some("md"))];
 
 /// The repo root, resolved from this crate (`apps/rt`) so the scan does not
 /// depend on the directory the test runner happens to start in.
@@ -275,12 +274,11 @@ fn every_declared_command_keeps_its_help_slot() {
 /// (or an agent) to type must be a name the CLI actually publishes.
 ///
 /// Field defect: `wave-scaffold` was absorbed into
-/// `plan-materialize`, but the dashboard's `wave-integrity` hint still told the
-/// reader to run it. Nothing broke at build time — the command simply does not
-/// exist, so an obedient agent burns a call on a clap error. `template_parity`
-/// runs the same forward check over the template/plugin/packaging corpus; this
-/// one adds `apps/dashboard/src`, which that corpus never walks — exactly where
-/// the defect lived.
+/// `plan-materialize`, but a shipped hint still told the reader to run it.
+/// Nothing broke at build time — the command simply does not exist, so an
+/// obedient agent burns a call on a clap error. `template_parity` runs the same
+/// forward check over the template/plugin/packaging corpus; this one walks the
+/// plugin tree as the reader's own instruction surface.
 #[test]
 fn every_documented_run_command_exists() {
     let root = repo_root();

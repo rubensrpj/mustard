@@ -22,17 +22,17 @@
 //! RTK would take the whole test binary down on a bare CI runner.
 //!
 //! That was correct, and the workaround here was sound. But the hazard itself
-//! survived, and `apps/dashboard/server/tests/mustard_cli_test.rs` walked into
-//! it the first time CI ran that crate — the process vanished mid-test. So the
-//! gate moved OUT of the library and into `cli::dispatch`, where the terminal
-//! user still meets it and no library caller can be killed by it.
+//! survived, and an integration test in another crate walked into it the first
+//! time CI ran that crate — the process vanished mid-test. So the gate moved OUT
+//! of the library and into `cli::dispatch`, where the terminal user still meets
+//! it and no library caller can be killed by it.
 //!
 //! Moving the gate alone was not enough, and the second half is worth recording
 //! because it nearly shipped. While the gate exited at the top of
 //! `init_with_templates`, the best-effort installers below it (`ensure_rtk`,
 //! `ensure_ripgrep`) could only run with the tools ALREADY present — their
 //! install branches were unreachable from `init`. Removing the exit made them
-//! live for library callers, and a shimmed-PATH run of the dashboard's test
+//! live for library callers, and a shimmed-PATH run of that other crate's test
 //! caught it spawning `sh -c "curl … | sh"` twice. Both now sit beside the gate
 //! in `cli::dispatch`, for the same reason: putting software on the operator's
 //! machine is an environment act, and a library call must never take it.
@@ -105,22 +105,13 @@ fn tool_shims(root: &Path) -> PathBuf {
     bin
 }
 
-/// The dashboard registry inside a home directory —
-/// `<home>/.claude/dashboard-projects.json`, the file a successful `init`
-/// appends the installed project to.
-fn registry(home: &Path) -> PathBuf {
-    home.join(".claude").join("dashboard-projects.json")
-}
-
 /// Run the real `mustard init` in `project`, with the fixture templates and the
 /// tool shims in place. `extra` carries the flags under test.
 ///
-/// `home` is a PARAMETER, never the operator's own. A successful install
-/// registers the project with the dashboard, and that write resolves the
-/// registry from `$HOME` — so a child that inherited the real one appended a
-/// permanent row to `~/.claude/dashboard-projects.json` on every `cargo test`,
-/// each naming a temporary directory that was deleted seconds later. That is
-/// how a developer's registry came to hold 135 dead `/tmp` paths.
+/// `home` is a PARAMETER, never the operator's own: everything the install
+/// writes outside the project resolves from `$HOME`, so a child that inherited
+/// the real one would leave permanent traces in `~/.claude/` on every
+/// `cargo test`, each naming a temporary directory deleted seconds later.
 fn run_init(project: &Path, templates: &Path, shims: &Path, home: &Path, extra: &[&str]) -> Output {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut entries = vec![shims.to_path_buf()];
@@ -134,16 +125,14 @@ fn run_init(project: &Path, templates: &Path, shims: &Path, home: &Path, extra: 
         .current_dir(project)
         .env("PATH", joined)
         .env("MUSTARD_TEMPLATES_DIR", templates)
-        // The home the registry is resolved from. Both spellings, because the
-        // registry reads `USERPROFILE` on Windows and `HOME` everywhere else —
-        // and this test is NOT unix-gated, so setting only one would leave the
-        // Windows runner writing the real file.
+        // The home every out-of-project write resolves from. Both spellings,
+        // because the resolution reads `USERPROFILE` on Windows and `HOME`
+        // everywhere else — and this test is NOT unix-gated, so setting only one
+        // would leave the Windows runner writing the real file.
         .env("HOME", home)
         .env("USERPROFILE", home)
         // Never touch the operator's ~/.claude from a test — the write is
         // opt-in, and this pins it off no matter what the environment says.
-        // It does NOT cover the dashboard registry, which `init` writes
-        // unconditionally; only the isolated `home` above does.
         .env("MUSTARD_GLOBAL_PERMISSIONS", "0");
     cmd.output().expect("running the mustard binary")
 }
@@ -222,21 +211,6 @@ fn ac7_init_private_seeds_no_github_template() {
         "private install must not seed .github/ into the host repository",
     );
 
-    // The registry redirection, asserted POSITIVELY. Checking only that the
-    // operator's own file did not change would pass just as green for an init
-    // that died before writing anything at all — the row has to be somewhere,
-    // and the whole point is that "somewhere" is the tempdir. The registry
-    // stores the CANONICAL path, because a relative or symlinked one resolves
-    // differently depending on where the dashboard was started.
-    let canonical = private.canonicalize().unwrap_or_else(|_| private.clone());
-    let rows = mustard_core::dashboard_registry::read_at(&registry(&home));
-    assert!(
-        rows.iter().any(|e| Path::new(&e.path) == canonical),
-        "the install must have registered {} in the TEST's registry; rows were {:?}",
-        canonical.display(),
-        rows.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
-    );
-
     // …and it really was a PRIVATE install: the settings landed in the
     // untracked local layer, the shared twin was never created, and the
     // footprint reached this clone's exclude file.
@@ -286,69 +260,6 @@ fn ac7_init_private_seeds_no_github_template() {
             "the install hid {theirs}, which it never wrote: {status}",
         );
     }
-}
-
-/// AC-6 — a CLI-suite `init` puts its dashboard row in the TEST's registry and
-/// leaves the operator's machine registry untouched.
-///
-/// ## Why both halves live in ONE test
-///
-/// Either half alone passes for the wrong reason. "The machine registry did not
-/// change" is also true of an `init` that crashed before writing anything, and
-/// of a build where registration was deleted outright — the very regression the
-/// dashboard cares about. "A row was written" is also true of a run that wrote
-/// it into the operator's real `~/.claude/`, which is the defect being fixed.
-/// Only the pair — the row is HERE, and the real file did not move — separates
-/// isolation from inaction.
-///
-/// ## How the machine registry is measured
-///
-/// READ twice, around the run, and compared as raw BYTES; never written. The
-/// path is resolved from THIS process's environment, which is the operator's
-/// own: the parent's `$HOME` is deliberately left alone so that the file being
-/// watched is the real one. Comparing bytes rather than row counts catches a
-/// rewrite that happens to preserve the length, and comparing `Option`s catches
-/// the case the leak actually took — a file appearing where there was none.
-#[test]
-fn init_writes_only_into_the_isolated_home() {
-    let work = tempdir().expect("temp dir");
-    let templates = fake_templates(work.path());
-    let shims = tool_shims(work.path());
-    let home = work.path().join("home");
-    std::fs::create_dir_all(&home).expect("isolated home");
-
-    // The operator's real registry — the file every `cargo test` used to grow a
-    // row in. `None` means no home resolves at all, and then `None` on both
-    // sides below is an honest match: nothing appeared where nothing was.
-    let machine = mustard_core::dashboard_registry::registry_path();
-    let before = machine.as_ref().and_then(|p| std::fs::read(p).ok());
-
-    let project = git_project_with_github_remote(work.path(), "isolated-host");
-    let out = run_init(&project, &templates, &shims, &home, &[]);
-    assert_ok("isolated init", &out);
-
-    // POSITIVE — the row is in the test's own registry. The registry stores the
-    // CANONICAL path, because a relative or symlinked one resolves differently
-    // depending on where the dashboard was started.
-    let canonical = project.canonicalize().unwrap_or_else(|_| project.clone());
-    let rows = mustard_core::dashboard_registry::read_at(&registry(&home));
-    assert!(
-        rows.iter().any(|e| Path::new(&e.path) == canonical),
-        "the isolated registry must carry {}; rows were {:?}",
-        canonical.display(),
-        rows.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
-    );
-
-    // NEGATIVE — and the machine's own registry did not move a byte.
-    let after = machine.as_ref().and_then(|p| std::fs::read(p).ok());
-    assert!(
-        before == after,
-        "running the suite changed the operator's dashboard registry at {} — \
-         the child inherited the real $HOME instead of the test's",
-        machine
-            .as_ref()
-            .map_or_else(|| "<unresolved home>".to_string(), |p| p.display().to_string()),
-    );
 }
 
 /// The repository's dirt, trimmed. `--untracked-files=all` because the default

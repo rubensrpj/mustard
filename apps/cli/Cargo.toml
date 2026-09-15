@@ -13,10 +13,9 @@ build = "build.rs"
 name = "mustard"
 path = "src/main.rs"
 
-# The library surface — consumed by the dashboard backend, which
-# calls `mustard_cli::init` / `mustard_cli::update` natively instead of
-# spawning a sidecar. Only `src/` is compiled; `templates/` stays a data
-# payload copied at runtime, never a module.
+# The library surface — `mustard_cli::init` driven directly, without spawning
+# the binary. Only `src/` is compiled; `templates/` stays a data payload copied
+# at runtime, never a module.
 [lib]
 name = "mustard_cli"
 path = "src/lib.rs"
