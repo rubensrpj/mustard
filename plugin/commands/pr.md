@@ -115,7 +115,7 @@ mustard-rt run pr-review --pr <n> --verdict <approved|rejected> --critical <N>
 
 `<N>` = count of critical findings (0 when `approved`). **Two records, two readers, and they are not interchangeable:** `pr-review` records the PR-scoped verdict the merge step reads; a review dispatched INSIDE the wave loop records the spec-scoped one with `mustard-rt run review-result --spec {spec} --verdict … --subproject {sub}`, which is what `resume-bootstrap` advances past `ReviewPending`. A unit that never left the loop already carries the second; this door adds the first.
 
-**Tactical-fix discovery (detect + propose, never auto-create).** Scan the return for `## Tactical Fix Candidates` / `## Candidatos a Tactical Fix`; per entry print *"Tactical fix candidate: <desc>\nRun: /mustard:tactical-fix <parent> \"<desc>\""*. It never blocks an APPROVED; a REJECTED still routes through the normal fix-loop (`${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § Fix Loop`). Qualification → `${CLAUDE_PLUGIN_ROOT}/pipeline-config.md § Tactical Fix Discovery`. Include a `tactical_fix_candidates` array in the recorded payload (each `{description (required), scope?, severity?}`) so `mustard-rt run tactical-fix-detect --spec <spec>` proposes each deterministically — one idempotent `tactical_fix.proposed` event per candidate; it never scaffolds, because creation stays a one-confirmation step.
+**A REJECTED verdict routes through the normal fix-loop** (`${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § Fix Loop`), and an APPROVED one is never blocked by a finding the reviewer left as an adjacent suggestion.
 
 ### 3. `merge <pr>` — verify, merge, prune
 

@@ -233,31 +233,6 @@ pub enum SpecCmd {
         #[arg(long)]
         resume: bool,
     },
-    /// Create a sub-spec linked to a parent spec for a tactical fix.
-    #[command(name = "tactical-fix-create")]
-    #[command(display_order = 62)]
-    TacticalFixCreate {
-        /// Parent spec slug (already created in `.claude/spec/`).
-        #[arg(long)]
-        parent: String,
-        /// Free-text description of the fix (becomes the title + slug seed).
-        #[arg(long)]
-        description: String,
-        /// Scope flag: `touch` / `light` (default) / `full`.
-        #[arg(long, default_value = "light")]
-        scope: String,
-    },
-    /// Propose (do NOT create) tactical fixes from structured
-    /// `tactical_fix_candidates[]` in a spec's `review.result` / `qa.result`
-    /// events. Emits one `tactical_fix.proposed` event per new candidate;
-    /// never scaffolds a sub-spec, so nothing is approved without the user.
-    #[command(name = "tactical-fix-detect")]
-    #[command(display_order = 63)]
-    TacticalFixDetect {
-        /// Spec whose review/qa events are scanned for candidates.
-        #[arg(long)]
-        spec: Option<String>,
-    },
     /// Record a DELIBERATE mid-pipeline change request in the active spec's
     /// change log, carrying the INSTRUCTION the conversation produced.
     ///
@@ -269,7 +244,7 @@ pub enum SpecCmd {
     /// without anyone hand-formatting a bullet. A blank instruction is refused
     /// and nothing is written.
     #[command(name = "change-request")]
-    #[command(display_order = 73)]
+    #[command(display_order = 71)]
     ChangeRequest {
         /// Spec slug under `.claude/spec/`. Omitted: the session→spec marker,
         /// then the active-spec fallback.
@@ -290,7 +265,7 @@ pub enum SpecCmd {
     /// A decision the conversation settles is written down WHEN it is settled —
     /// the only moment its reason is still known.
     #[command(name = "material-add")]
-    #[command(display_order = 90)]
+    #[command(display_order = 88)]
     MaterialAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -350,7 +325,7 @@ pub enum SpecCmd {
     /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
     /// the unrelated session-end amendment window.
     #[command(name = "ac-amend")]
-    #[command(display_order = 75)]
+    #[command(display_order = 73)]
     AcAmend {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -411,7 +386,7 @@ pub enum SpecCmd {
     /// to the proof ledger's `additions`. A wave spec carries no criterion
     /// text — `--wave N` names the wave that will be judged by the new id.
     #[command(name = "ac-add")]
-    #[command(display_order = 76)]
+    #[command(display_order = 74)]
     AcAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -471,7 +446,7 @@ pub enum SpecCmd {
     /// `already-routed` when the same decision is restated, and refuses a
     /// different one rather than overwriting a decision in silence.
     #[command(name = "mark-finding")]
-    #[command(display_order = 85)]
+    #[command(display_order = 83)]
     MarkFinding {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -501,7 +476,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 92)]
+    #[command(display_order = 90)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -522,7 +497,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 94)]
+    #[command(display_order = 92)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
@@ -617,16 +592,6 @@ pub fn dispatch(cmd: SpecCmd) {
                 wave_plan,
                 resume,
             });
-        }
-        SpecCmd::TacticalFixCreate { parent, description, scope } => {
-            spec::tactical_fix_create::run(spec::tactical_fix_create::TacticalFixOpts {
-                parent,
-                description,
-                scope,
-            });
-        }
-        SpecCmd::TacticalFixDetect { spec } => {
-            spec::tactical_fix_detect::run(spec.as_deref());
         }
         SpecCmd::ChangeRequest { spec: slug, instruction } => {
             spec::change_request::run(spec::change_request::ChangeRequestOpts {

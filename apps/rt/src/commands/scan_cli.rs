@@ -107,7 +107,7 @@ pub enum ScanCmd {
     /// prompt and never suggests — the menu is deterministic, the choice is
     /// yours. Fail-open: a missing/unparseable model prints the empty kit.
     #[command(name = "scan-lapidation")]
-    #[command(display_order = 77)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
+    #[command(display_order = 75)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
     ScanLapidation {
         /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
@@ -172,7 +172,7 @@ pub enum ScanCmd {
     /// (slug → reason) — run-scoped: `scan-patterns-sweep` clears it at the
     /// start of every scan, so each run re-judges every cluster fresh.
     #[command(name = "scan-patterns-decline")]
-    #[command(display_order = 70)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
+    #[command(display_order = 68)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
     ScanPatternsDecline {
         /// Workspace root (holds `.claude/scan-declined.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]
@@ -197,7 +197,7 @@ pub enum ScanCmd {
     /// names exactly which agent to re-dispatch. Fail-open: a blockless
     /// envelope prints an empty report and exits 0.
     #[command(name = "scan-patterns-relay")]
-    #[command(display_order = 78)] // tail slot — keep the display_order permutation gapless
+    #[command(display_order = 76)] // tail slot — keep the display_order permutation gapless
     ScanPatternsRelay {
         /// Workspace root the molds are written under. Defaults to `.`.
         #[arg(long, default_value = ".")]
@@ -223,7 +223,7 @@ pub enum ScanCmd {
     /// cluster is re-judged. Emits `{removed:[…], preserved:[…],
     /// declinesCleared:n}`. Fail-open.
     #[command(name = "scan-patterns-sweep")]
-    #[command(display_order = 71)] // tail slot — keep the display_order permutation gapless
+    #[command(display_order = 69)] // tail slot — keep the display_order permutation gapless
     ScanPatternsSweep {
         /// Workspace root to sweep. Defaults to the current directory.
         #[arg(long, default_value = ".")]

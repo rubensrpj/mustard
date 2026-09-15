@@ -267,6 +267,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          own help",
     ),
     (
+        "diff-context",
+        "parent",
+        "the comparison branch, which the command auto-detects; every instructed \
+         invocation takes the detected one, and naming the flag would teach a \
+         reader to pin a base by hand",
+    ),
+    (
         "docs-stale-check",
         "from",
         "narrows the audit to one spec's recorded audits; CLOSE gate 4 runs the \

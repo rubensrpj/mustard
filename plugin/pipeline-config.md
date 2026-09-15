@@ -32,12 +32,6 @@ Canonical: `ANALYZE→PLAN→EXECUTE→REVIEW→QA→CLOSE` (+`COORDINATE`). Thi
 
 One `spec.md`, two `##` layers — `## PRD` (what/why) + `## Plan`/`## Plano` (how); headings per `Lang`: `refs/feature/spec-language.md`. PLAN writes both; approve covers both; EXECUTE consumes Plan; QA runs the ACs; Light keeps the shape, lean.
 
-## Tactical Fix Discovery
-
-- A REVIEW/QA finding becomes a linked sub-spec (`meta.json#parent` + `spec.link`; fails open on missing parent) — never a silent follow-up or mid-EXECUTE wave; the parent freezes at approve. → `commands/tactical-fix.md`.
-- Agents list candidates under `## Tactical Fix Candidates`; orchestrator suggests `/mustard:tactical-fix <parent> "<desc>"` — advisory, never blocks.
-- Qualification (ALL): ≤100 LOC; no public contract change; no pending design decision; no new dependency. Outside → follow-up or fresh spec.
-
 ## Diagnostic Failure Routing
 
 | Class | Meaning | Examples |

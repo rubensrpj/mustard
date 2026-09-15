@@ -5,7 +5,7 @@ user-invocable: false
 <!-- mustard:generated -->
 # /task — Delegated Task Execution
 
-**Iron law: ONE layer only — the moment it grows to two, it is a `/feature`.** Spec-less by design; promote to `/feature` Light or `/tactical-fix` if tracking is needed. The parent NEVER reads source and NEVER implements — all work runs inside Task contexts (L0).
+**Iron law: ONE layer only — the moment it grows to two, it is a `/feature`.** Spec-less by design; promote to `/feature` Light if tracking is needed. The parent NEVER reads source and NEVER implements — all work runs inside Task contexts (L0).
 
 `/task <action> <scope>`
 

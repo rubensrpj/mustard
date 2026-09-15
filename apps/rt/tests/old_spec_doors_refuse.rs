@@ -5,7 +5,7 @@
 
 //! Os comandos antigos que criam ou avançam uma spec recusam na entrada e
 //! mandam usar o `open`, com a mensagem nos dois idiomas, sem criar nada: o
-//! `spec-draft`, o `tactical-fix-create` e, pela linha de comando, os tipos do
+//! `spec-draft` e, pela linha de comando, os tipos do
 //! `emit-pipeline` que criam ou avançam uma spec. O `approve-spec` recusa do
 //! mesmo jeito e manda aprovar pela pergunta. Os tipos que só gravam no log
 //! velho passam.
@@ -83,19 +83,6 @@ fn spec_draft_refuses_and_creates_nothing_in_both_languages() {
         let report = refusal(&out);
         assert_eq!(report["reason"], "use-open", "{report}");
         assert_eq!(report["hint"], translate("retired.spec_draft", lang), "{report}");
-        nothing_created(root);
-    }
-}
-
-#[test]
-fn tactical_fix_create_refuses_and_creates_nothing_in_both_languages() {
-    for (config, lang) in [(PT, Locale::PtBr), (EN, Locale::EnUs)] {
-        let dir = project(config);
-        let root = dir.path();
-        let out = run(root, &["tactical-fix-create", "--parent", "epic", "--description", "Ajuste do cadastro"]);
-        let report = refusal(&out);
-        assert_eq!(report["reason"], "tactical-fix-retired", "{report}");
-        assert_eq!(report["hint"], translate("retired.tactical_fix", lang), "{report}");
         nothing_created(root);
     }
 }

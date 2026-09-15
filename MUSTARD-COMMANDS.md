@@ -12,7 +12,7 @@ Os diagramas usam [Mermaid](https://mermaid.js.org/) — renderizam direto no Gi
 
 Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard:`**. A entrada do dia a dia **não é um comando**: você descreve o pedido em linguagem natural e o roteador — injetado em todo prompt — classifica e despacha.
 
-> **Fluxos internos:** `feature`, `bugfix`, `task` e `tactical-fix` são despachados pelo **roteador** (a porta única) — você descreve o que quer e ele escolhe o fluxo. Invocá-los direto (`/mustard:feature …`) continua valendo como atalho de força; não é necessário no dia a dia.
+> **Fluxos internos:** `feature`, `bugfix` e `task` são despachados pelo **roteador** (a porta única) — você descreve o que quer e ele escolhe o fluxo. Invocá-los direto (`/mustard:feature …`) continua valendo como atalho de força; não é necessário no dia a dia.
 
 ---
 
@@ -42,10 +42,6 @@ flowchart TD
     pr -->|"passo: review"| rev["verdito registrado"]
     pr -->|"passo: QA + CLOSE"| gates["close-orchestrate<br/>(build+test · qa-run · review-spans · docs)"]
     gates -->|"gate: pass"| merge["merge + poda da unidade"]
-
-    rev -. candidato .-> tf["/mustard:tactical-fix<br/>(sub-spec ligada ao pai)"]
-    gates -. candidato .-> tf
-    tf --> spec
 
     merge --> gate
 
@@ -94,7 +90,7 @@ Descreva o que quer em linguagem natural — o roteador classifica (funcionalida
 |---|---|
 | **Trigger** | descrever o trabalho ("adiciona importação de CSV", "tá com erro ao importar") |
 | **Backend** | nenhum — roteia via `CLAUDE.md § Intent Routing` |
-| **Regra** | Nunca edita produção sem rotear; `/mustard:feature`, `/mustard:bugfix`, `/mustard:task`, `/mustard:tactical-fix` seguem disponíveis como atalhos de força |
+| **Regra** | Nunca edita produção sem rotear; `/mustard:feature`, `/mustard:bugfix` e `/mustard:task` seguem disponíveis como atalhos de força |
 
 ```mermaid
 flowchart TD
@@ -108,7 +104,6 @@ flowchart TD
     route -->|"criar / implementar<br/>≥2 camadas ou entidade nova"| f["/mustard:feature"]
     route -->|"erro / bug / quebrado"| b["/mustard:bugfix"]
     route -->|"melhorar 1 camada ·<br/>analisar / auditar"| t["/mustard:task"]
-    route -->|"ajuste pequeno ligado<br/>a uma spec-pai"| tfx["/mustard:tactical-fix"]
 ```
 
 ---
@@ -295,7 +290,7 @@ Abre, lista, revisa e mergeia. **Revisão, QA e fechamento são PASSOS daqui, n�
 | | |
 |---|---|
 | **Trigger** | `/mustard:pr <open\|list\|review\|merge> [<nº do PR>] [--confirm]` |
-| **Backend** | `pr-list` · `pr-review` · `pr-merge` (dobra `git-settle`) · `review-prefetch` · `diff-context` · `close-orchestrate` (build+test · `qa-run` · review-spans · `docs-stale-check` · `pipeline-summary`) · `tactical-fix-detect` |
+| **Backend** | `pr-list` · `pr-review` · `pr-merge` (dobra `git-settle`) · `review-prefetch` · `diff-context` · `close-orchestrate` (build+test · `qa-run` · review-spans · `docs-stale-check` · `pipeline-summary`) |
 | **Lei de ferro** | Merge nunca é silencioso: sem verdito `approved` registrado ele **avisa e pergunta** — nunca recusa de saída, nunca mergeia calado. `--confirm` é a resposta voltando |
 | **Regra** | NUNCA chamar `complete-spec` à mão, NUNCA mover o diretório da spec (arquivamento é só evento), NUNCA rodar QA antes do EXECUTE nem editar código durante o QA (read-only) |
 
@@ -311,7 +306,6 @@ flowchart TD
     brief --> fetch["review-prefetch + diff-context<br/>(fonte da verdade — não re-buscar)"]
     fetch --> skill["emit review.start → Skill(code-review)<br/>(fallback: Task) → emit review.complete"]
     skill --> verdict["pr-review --verdict approved|rejected --critical N<br/>(é isto que o merge lê)"]
-    verdict -. candidato .-> tf["tactical-fix-detect → tactical_fix.proposed<br/>(propõe, NUNCA cria sozinho)"]
 
     act -->|merge| pre{"spec já 'completed'?"}
     pre -->|não| orch["close-orchestrate --spec"]
@@ -341,31 +335,6 @@ flowchart TD
 ```
 
 > **Cancelar ≠ fechar.** Uma unidade abandonada sai por `/mustard:git delete <branch>`, da base: um gesto remove o branch, o remoto e o PR aberto — e tudo que a unidade produziu vivia naquele branch.
-
----
-
-## `/mustard:tactical-fix` — Sub-spec para correção tática *(fluxo interno)*
-
-Cria uma sub-spec ligada a um pai quando REVIEW ou QA descobre um ajuste adjacente pequeno. Preserva a pureza SDD: o pai fica congelado após o approve; o vínculo é unidirecional (filha → pai).
-
-| | |
-|---|---|
-| **Despacho** | pelo roteador; atalho: `/mustard:tactical-fix <parent> "<descrição>" [--scope touch\|light\|full]` (default `light` ≤100 LOC; `touch` ≤30 LOC) |
-| **Backend** | `tactical-fix-create --parent --description --scope` |
-| **Qualifica** | ≤100 LOC · sem mudança de contrato público · sem decisão de design pendente · sem nova dependência |
-
-```mermaid
-flowchart TD
-    start(["/mustard:tactical-fix &lt;parent&gt; '&lt;desc&gt;'"]) --> qual{"qualifica?<br/>≤100 LOC · sem contrato público<br/>sem design pendente · sem nova dep"}
-    qual -->|não| route["follow-up normal OU /mustard:feature"]
-    qual -->|sim| create["mustard-rt run tactical-fix-create"]
-
-    create --> gen["rust gera:<br/>slug YYYY-MM-DD-kebab · dir (aborta se existe)<br/>spec.md narrativo (link [[parent]])<br/>meta.json (parent + lang + stage Analyze)<br/>evento spec.link"]
-    gen --> print["print: sub-spec criada —<br/>edite e rode /mustard:spec"]
-    print --> done(["mesmo pipeline, mesmos gates<br/>(sem 'modo light' de gate)"])
-```
-
-> Fail-open na existência do pai: a sub-spec é criada mesmo se `<parent>` não existir (só a navegação entre specs degrada). Nunca auto-aprova — o usuário revisa a semente e roda `/mustard:spec`.
 
 ---
 
@@ -406,7 +375,7 @@ flowchart TD
     impl --> lex["fim da run: equivalence-learn<br/>(SÓ ponte de vocabulário confirmada)"]
 ```
 
-> Sem spec e sem close por design — precisa de rastro? Promova para `/mustard:feature` Light ou `/mustard:tactical-fix`.
+> Sem spec e sem close por design — precisa de rastro? Promova para `/mustard:feature` Light.
 
 ---
 
@@ -510,13 +479,12 @@ flowchart TD
 |---|---|---|---|
 | _(prompt em linguagem natural)_ | porta única | — (roteia via `CLAUDE.md § Intent Routing`) | não |
 | `/mustard:git` | **porta** · git | `git-settle`, `git-delete`, `notebook` (+ git nativo via `rtk`) | não |
-| `/mustard:pr` | **porta** · PR | `pr-list`, `pr-review`, `pr-merge`, `review-prefetch`, `diff-context`, `close-orchestrate`, `tactical-fix-detect` | não |
+| `/mustard:pr` | **porta** · PR | `pr-list`, `pr-review`, `pr-merge`, `review-prefetch`, `diff-context`, `close-orchestrate` | não |
 | `/mustard:spec` | **porta** · core | `active-specs`, `resume-bootstrap`, `wave-advance`, `close-pipeline` | indireto |
 | `/mustard:upsert` | **porta** · instalação | `upsert`, `unhook`, `rehook`, `doctor` | não |
 | `scan` | fluxo interno | `scan --full`, `scan-patterns-*` | **produz** |
 | `/mustard:feature` | fluxo interno · core | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
 | `/mustard:bugfix` | fluxo interno · core | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |
-| `/mustard:tactical-fix` | fluxo interno · core | `tactical-fix-create` | não |
 | `/mustard:task` | fluxo interno · delegação | `agent-prompt-render`, `feature` (digest), `equivalence-learn` | indireto |
 
 ---

@@ -134,7 +134,7 @@ pub enum PipelineCmd {
     /// Output: `"events"`, `"scaffold"` (created_files, skipped, refreshed,
     /// removed) and `"validation"` (ok, issues) — byte-stable, ordered.
     #[command(name = "plan-materialize")]
-    #[command(display_order = 66)]
+    #[command(display_order = 64)]
     PlanMaterialize {
         /// Target spec directory. Also accepts a `.../spec.md` path or a bare
         /// slug. `--spec` / `--from-spec` are hidden aliases.
@@ -158,7 +158,7 @@ pub enum PipelineCmd {
     /// text ready for `Task`. Pending = first dependency level with a wave not
     /// yet carrying `pipeline.wave.complete`; everything done → `[]`.
     #[command(name = "wave-advance")]
-    #[command(display_order = 67)]
+    #[command(display_order = 65)]
     WaveAdvance {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -172,7 +172,7 @@ pub enum PipelineCmd {
     /// Output: `{"completed":bool,"qa":{overall,criteria},"reviews":[...],`
     /// `"summary":...}`.
     #[command(name = "close-pipeline")]
-    #[command(display_order = 68)]
+    #[command(display_order = 66)]
     ClosePipeline {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]

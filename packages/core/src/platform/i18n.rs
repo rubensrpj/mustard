@@ -1524,16 +1524,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "`spec-draft` has left the flow. Open the spec with `mustard-rt run open`, which creates \
              the branch and the spec with the same name. Nothing was created."
         }
-        ("retired.tactical_fix", Locale::PtBr) => {
-            "O ajuste tático saiu do fluxo. Para mudar uma spec aprovada, grave o pedido nela com \
-             `mustard-rt run write request`; para um trabalho novo, abra uma spec com `mustard-rt run \
-             open`. Nada foi criado."
-        }
-        ("retired.tactical_fix", Locale::EnUs) => {
-            "The tactical fix has left the flow. To change an approved spec, record the request in it \
-             with `mustard-rt run write request`; for new work, open a spec with `mustard-rt run \
-             open`. Nothing was created."
-        }
         ("retired.pipeline_door", Locale::PtBr) => {
             "O `emit-pipeline {kind}` não cria nem avança mais uma spec. Abra a spec com `mustard-rt \
              run open`; as fases passam pelos comandos do fluxo novo. Nada foi gravado."
@@ -3154,7 +3144,6 @@ mod tests {
         assert!(en.contains(translate("approval.question", Locale::EnUs)), "{en}");
         for (key, slots, points_to) in [
             ("retired.spec_draft", &[][..], "mustard-rt run open"),
-            ("retired.tactical_fix", &[][..], "mustard-rt run open"),
             ("retired.pipeline_door", &["{kind}"][..], "mustard-rt run open"),
             ("retired.wait_close", &["{command}"][..], "mustard-rt run close"),
             ("retired.wait_round", &["{command}"][..], "mustard-rt run round"),

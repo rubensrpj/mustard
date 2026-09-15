@@ -49,7 +49,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 93)]
+    #[command(display_order = 91)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -131,7 +131,7 @@ pub enum MaintCmd {
     },
     /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 64)]
+    #[command(display_order = 62)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -139,7 +139,7 @@ pub enum MaintCmd {
     },
     /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 65)]
+    #[command(display_order = 63)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]

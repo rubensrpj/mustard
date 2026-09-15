@@ -16,6 +16,4 @@ pub mod spec_sections;
 pub mod spec_slug;
 pub mod rebuild_specs;
 pub mod scope_decompose;
-pub mod tactical_fix_create;
-pub mod tactical_fix_detect;
 pub mod scan_spec;
