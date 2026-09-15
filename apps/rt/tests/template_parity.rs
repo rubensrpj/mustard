@@ -29,10 +29,6 @@ use mustard_rt::commands::RunCmd;
 /// must NOT be parked here — remove the registration instead. Kept sorted.
 const RUNTIME_WHITELIST: &[(&str, &str)] = &[
     (
-        "adapt-cursor",
-        "user-invoked .cursorrules generator (commands/maint/adapt_cursor.rs); its \n         only prose caller was the pre-2.0 `init --cursor` hint, dropped by the \n         thin-init rewrite; a maintenance escape hatch with no scripted caller",
-    ),
-    (
         "amend-finalize",
         "SessionEnd finalizes the amend window in-process \
          (hooks/session/session_cleanup_observer.rs); the CLI face is the \
@@ -202,12 +198,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "the revision the REMOVAL pass restores the work to; omitted it is the \
          merge base of HEAD and the primary integration base, which is what \
          every documented `--removal` invocation wants",
-    ),
-    (
-        "adapt-cursor",
-        "repo",
-        "project-root override on a command RUNTIME_WHITELIST already records as \
-         callerless - a path argument, not a behaviour",
     ),
     (
         "amend-finalize",

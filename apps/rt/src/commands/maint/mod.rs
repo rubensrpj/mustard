@@ -8,5 +8,4 @@ pub mod worktree_gc;
 pub mod scratch_gc;
 pub mod unhook;
 pub mod rehook;
-pub mod adapt_cursor;
 pub mod upsert;

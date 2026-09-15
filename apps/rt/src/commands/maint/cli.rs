@@ -77,7 +77,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 95)]
+    #[command(display_order = 94)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -157,20 +157,9 @@ pub enum MaintCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
-    #[command(name = "adapt-cursor")]
-    #[command(display_order = 65)]
-    AdaptCursor {
-        /// Repo root override.
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        /// Preview only — no filesystem mutation.
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 66)]
+    #[command(display_order = 65)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -178,7 +167,7 @@ pub enum MaintCmd {
     },
     /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 67)]
+    #[command(display_order = 66)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -256,9 +245,6 @@ pub fn dispatch(cmd: MaintCmd) {
                 apply,
                 json,
             });
-        }
-        MaintCmd::AdaptCursor { repo, dry_run } => {
-            maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });
         }
         MaintCmd::MaintDeps { dry_run } => {
             maint::maint_deps::run(maint::maint_deps::MaintDepsOpts { dry_run });
