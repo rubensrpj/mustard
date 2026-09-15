@@ -58,7 +58,7 @@ pub enum GitCmd {
     /// `emit-pipeline` stored in the `pending-work-branch` marker. Cleanup is
     /// the `/git pr close` ritual's job, never this command's.
     #[command(name = "work-unit-open")]
-    #[command(display_order = 61)]
+    #[command(display_order = 60)]
     WorkUnitOpen {
         /// Full work-branch name (e.g. `feature/my-spec`); its prefix names a
         /// work kind, or — for a unit still in the older `{base}_{slug}` shape
@@ -95,7 +95,7 @@ pub enum GitCmd {
     /// nobody's work unit, that is protected, or that no local or remote ref
     /// carries, is REFUSED rather than reported as deleted.
     #[command(name = "git-delete")]
-    #[command(display_order = 66)]
+    #[command(display_order = 65)]
     GitDelete {
         /// The work branch to delete, e.g. `dev_my-unit`.
         #[arg(long)]

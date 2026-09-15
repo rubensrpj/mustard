@@ -22,7 +22,7 @@ use crate::commands::{statusline};
 pub enum StatuslineCmd {
     /// Render the Claude Code status bar (reads the payload JSON from stdin),
     /// or `--preview` every shipped theme on its own labelled line.
-    #[command(display_order = 31)]
+    #[command(display_order = 30)]
     Statusline {
         /// Skip stdin; render every theme with a synthetic payload.
         #[arg(long)]

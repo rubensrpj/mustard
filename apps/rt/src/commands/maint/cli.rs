@@ -32,7 +32,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 76)]
+    #[command(display_order = 75)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -61,7 +61,7 @@ pub enum MaintCmd {
     /// `packages/*/.claude/`. `--scope all` adds the user-global
     /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
     /// `state: "skipped"`). Emits a pretty JSON report.
-    #[command(display_order = 45)]
+    #[command(display_order = 44)]
     Unhook {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -79,7 +79,7 @@ pub enum MaintCmd {
     /// by an older build, rename the newest `settings.json.disabled*` snapshot
     /// back. Volatile state directories that `unhook` wiped are left alone —
     /// the runtime regenerates them on the next run. Emits a pretty JSON report.
-    #[command(display_order = 46)]
+    #[command(display_order = 45)]
     Rehook {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -96,7 +96,7 @@ pub enum MaintCmd {
     /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
     /// every step — exit code is always 0.
     #[command(name = "claude-dir-prune")]
-    #[command(display_order = 52)]
+    #[command(display_order = 51)]
     ClaudeDirPrune {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -114,7 +114,7 @@ pub enum MaintCmd {
     },
     /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 56)]
+    #[command(display_order = 55)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -122,7 +122,7 @@ pub enum MaintCmd {
     },
     /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 57)]
+    #[command(display_order = 56)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -144,7 +144,7 @@ pub enum MaintCmd {
     /// text comes back under `preserved` because there was nothing left to
     /// write. The legacy planted-orchestrator footprint is migrated away.
     /// Emits the `UpsertReport` as deterministic pretty JSON.
-    #[command(display_order = 36)]
+    #[command(display_order = 35)]
     Upsert {},
 }
 

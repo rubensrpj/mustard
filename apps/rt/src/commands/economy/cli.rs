@@ -40,7 +40,7 @@ pub enum EconomyCmd {
         context_claude_md: Option<String>,
     },
     /// Render pipeline + hook telemetry (`collect` / `report` subcommand).
-    #[command(display_order = 25)]
+    #[command(display_order = 24)]
     Metrics {
         /// Subcommand: `collect` or `report`.
         subcommand: Option<String>,
@@ -58,7 +58,7 @@ pub enum EconomyCmd {
     /// invoked from CLI as `mustard-rt run metrics wave-status --spec <parent>`
     /// via argv pre-routing in `main.rs`.
     #[command(name = "metrics-wave-status")]
-    #[command(display_order = 26)]
+    #[command(display_order = 25)]
     MetricsWaveStatus {
         /// Parent (epic) spec name under `.claude/spec/` (flat layout).
         #[arg(long)]

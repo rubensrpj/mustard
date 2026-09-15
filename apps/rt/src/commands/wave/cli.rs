@@ -45,29 +45,15 @@ pub enum WaveCmd {
         #[arg(long)]
         plan: Option<String>,
     },
-    /// Return the declared-files count and full markdown body of a wave's
-    /// sub-spec (`.claude/spec/{spec}/wave-{wave}-*/spec.md`). Used by the
-    /// dashboard "Ondas" tab to show the canon `## Arquivos` count and pop
-    /// open a drawer with the wave markdown. Fail-open: missing files →
-    /// `{"count":0,"markdown":"","path":null}`.
-    #[command(display_order = 15)]
-    WaveFiles {
-        /// Parent spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: Option<String>,
-        /// Wave number (1-based).
-        #[arg(long)]
-        wave: Option<u32>,
-    },
     /// Check whether a spec should be decomposed at EXECUTE entry.
-    #[command(display_order = 19)]
+    #[command(display_order = 18)]
     ExecRewaveCheck {
         /// Path to the spec file.
         #[arg(long)]
         spec: Option<String>,
     },
     /// Audit per-wave file/layer counts inside a wave-plan.
-    #[command(display_order = 21)]
+    #[command(display_order = 20)]
     WaveSizeCheck {
         /// Path to the spec directory. Also accepts a `.../spec.md` path or a
         /// bare slug. `--spec` / `--from-spec` are hidden aliases.
@@ -75,7 +61,7 @@ pub enum WaveCmd {
         spec_dir: Option<String>,
     },
     /// Audit dispatch-parallel waves for `## Files` overlap inside a wave-plan.
-    #[command(display_order = 62)]
+    #[command(display_order = 61)]
     WaveOverlapCheck {
         /// Path to the spec directory. Also accepts a `.../spec.md` path or a
         /// bare slug. `--spec` / `--from-spec` are hidden aliases.
@@ -100,7 +86,7 @@ pub enum WaveCmd {
     /// BEFORE any dir is deleted. Reuses `is_heading` / `write_atomic` /
     /// the wave-scaffold renderers.
     #[command(name = "wave-collapse")]
-    #[command(display_order = 37)]
+    #[command(display_order = 36)]
     WaveCollapse {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -116,7 +102,6 @@ pub fn dispatch(cmd: WaveCmd) {
     match cmd {
         WaveCmd::WaveTree { spec_dir, format } => wave::wave_tree::run(&spec_dir, &format),
         WaveCmd::WaveDependency { plan } => wave::wave_dependency::run(plan.as_deref()),
-        WaveCmd::WaveFiles { spec, wave } => wave::wave_files::run(spec.as_deref(), wave),
         WaveCmd::ExecRewaveCheck { spec } => wave::exec_rewave_check::run(spec.as_deref()),
         WaveCmd::WaveSizeCheck { spec_dir } => wave::wave_size_check::run(spec_dir.as_deref()),
         WaveCmd::WaveOverlapCheck { spec_dir } => {

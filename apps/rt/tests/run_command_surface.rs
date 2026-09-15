@@ -24,7 +24,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 83 declared variants + `help`, which clap generates at build time.
+/// 82 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "active-specs",
     "agent-prompt-render",
@@ -104,7 +104,6 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "wave-collapse",
     "wave-dependency",
     "wave-done",
-    "wave-files",
     "wave-overlap-check",
     "wave-size-check",
     "wave-tree",

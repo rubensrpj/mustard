@@ -43,7 +43,7 @@ pub enum ScanCmd {
     /// up to 3 kB) or `skill --path <SKILL.md>` (every cited path exists and
     /// the skill stays under 500 lines). Reads `.claude/grain.model.json`;
     /// prints JSON and exits 1 on a refusal.
-    #[command(display_order = 49)]
+    #[command(display_order = 48)]
     Map {
         /// The question to ask.
         #[arg(value_enum)]

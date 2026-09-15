@@ -3,7 +3,6 @@ pub mod cli;
 pub mod wave_context;
 pub mod wave_tree;
 pub mod wave_dependency;
-pub mod wave_files;
 pub mod wave_size_check;
 pub mod wave_overlap_check;
 pub mod wave_scaffold;
