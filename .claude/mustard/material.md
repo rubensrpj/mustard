@@ -1,31 +1,6 @@
 # Material Rules
 
-The conversation's own channel. `orchestrator.md` classifies the request and `dispatch.md` opens and names the unit; this file is what the unit CARRIES out of the conversation, and where that writing is allowed to land. Why the router ships as separate injectables: `refs/mustard/router-rationale.md`.
-
-## Material
-
-**A decision the conversation settles is written down when it is settled**, never reconstructed from memory at draft time. What is not written before a compaction is lost — measured: two units shipped and NEITHER carried material.
-
-```
-mustard-rt run material-add --spec {slug} --kind decision   --subject "<what>"  --detail "<why>"
-mustard-rt run material-add --spec {slug} --kind definition --subject "<term>"  --detail "<what it means here>"
-mustard-rt run material-add --spec {slug} --kind finding    --subject "<claim>" --detail "<file>" [--line N]
-mustard-rt run material-add --spec {slug} --kind risk       --subject "<risk>"  --detail "<what mitigates it>" --severity alta|media|baixa
-mustard-rt run material-add --spec {slug} --kind summary    --subject "<the whole conversation so far>"
-mustard-rt run material-add --spec {slug} --kind flow       --subject "<title>" --detail "<before/after diagram, plain text>"
-```
-
-**The summary is ONE text, and the newest replaces the last** — rewrite it whole as the conversation moves; a `--detail` on it is refused. A `flow` is the change drawn before/after in plain text; the newest replaces the last too, and its indentation is kept. A `risk` with no `--severity` is refused: a risk without a weight does not tell the reader whether to stop and read it. A `clarification` (question + answer) is recorded ON ITS OWN when the user answers a question — never by hand. The spec page reads all of them: `mustard-rt run spec-doc --spec {slug}` writes `.claude/spec/{slug}/resumo.html`.
-
-One call per item, when it is settled. Each lands in the unit's `spec-material.json`, which is the file `spec-draft --material` reads. **They open from ▸6 on:** the base gate's event log creates `.claude/spec/{slug}/`, so a decision settled before the draft still lands. `unknown_spec` means no gate minted that slug — no unit is open.
-
-**Once the spec exists, carry a new item in with `--material-only`** — it rewrites the three material sections and leaves every other byte of `spec.md` alone:
-
-```
-mustard-rt run spec-draft --slug {slug} --intent "{intent}" --material .claude/spec/{slug}/spec-material.json --material-only
-```
-
-A full `--force` re-draft is for a spec whose NARRATIVE changed. Reach for it and you rewrite the whole body to get one decision in — measured in the field, that cost the operator a save-and-splice script on every round of the conversation, which is a good way to stop recording decisions at all.
+What the unit carries beyond itself. `orchestrator.md` classifies the request and `dispatch.md` opens and names the unit; this file holds the pending ledger, where a unit's writing is allowed to land, and how every page shown to the user is written. Why the router ships as separate injectables: `refs/mustard/router-rationale.md`.
 
 ## Pending
 

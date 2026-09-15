@@ -355,6 +355,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          the reader meets the flag at the moment it is needed",
     ),
     (
+        "mark-checklist-item",
+        "line",
+        "the line of the item to tick, on a command whose only caller is the \
+         close-gate deny remediation; that remediation names the command and \
+         the operator reads the line off the gate's own list",
+    ),
+    (
         "open",
         "name",
         "the spec's name for the flow's open door (commands/flow/open.rs); \
@@ -379,6 +386,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "the sweep switch of a command whose one instructed invocation is the \
          single-directory `--path` form in the review agent prose; its own help \
          states that the default only lists",
+    ),
+    (
+        "spec-draft",
+        "material-only",
+        "the refresh half of the material channel, on a door that refuses at the \
+         entrance since the flow was rewritten; the channel's prose left with \
+         the channel and the flag leaves with the door",
     ),
     (
         "spec-draft",

@@ -1896,31 +1896,6 @@ fn router_teaches_the_self_healing_delivery() {
         "the dispatch half never says WHAT counts as a unit, so a small edit reads as none",
     );
 
-    // The conversation channel is its OWN part now — `dispatch.md` sat ten
-    // characters under the size alarm on a CRLF checkout, and the remedy the
-    // budget test prescribes is a split, never a trim that costs a rule its
-    // reason. So the rule moved WHOLE, and the file it left points at where it
-    // went: a reader of the unit's rules who is never told stops using it.
-    let material = mustard_core::MATERIAL_MD;
-    assert!(
-        material.contains("spec-material.json"),
-        "the material part never says a settled decision is written down when settled",
-    );
-    assert!(
-        material.contains("mustard-rt run material-add"),
-        "the material part carries no `material-add` call, so the channel has no door",
-    );
-    let dispatch = mustard_core::DISPATCH_MD;
-    assert!(
-        !dispatch.contains("mustard-rt run material-add"),
-        "the material calls are in BOTH parts — a correction to one leaves the \
-         window reading the other",
-    );
-    assert!(
-        dispatch.contains("material.md"),
-        "dispatch.md dropped the material channel without saying where it went",
-    );
-
     // The ref carries the measurement itself, with its date — a claim a reader
     // can check rather than take on faith.
     let rationale = read("plugin/refs/mustard/router-rationale.md");

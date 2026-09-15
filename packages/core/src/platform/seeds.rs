@@ -53,9 +53,9 @@ pub const ORCHESTRATOR_MD: &str = include_str!("../../templates/mustard/orchestr
 /// `plugin/refs/mustard/router-rationale.md`.
 pub const DISPATCH_MD: &str = include_str!("../../templates/mustard/dispatch.md");
 
-/// The material-channel injectable (`.claude/mustard/material.md`) — the three
-/// `material-add` calls, the rule that a decision is written when it is
-/// SETTLED, and the window (`▸6` on) in which the channel is open.
+/// The injectable of what a unit carries beyond itself
+/// (`.claude/mustard/material.md`) — the pending ledger, where a unit's writing
+/// lands, and how every page shown to the user is written.
 ///
 /// Split out of [`DISPATCH_MD`] rather than compressed into it. That document
 /// had ten characters of margin under the size alarm on a CRLF checkout, and
@@ -63,9 +63,9 @@ pub const DISPATCH_MD: &str = include_str!("../../templates/mustard/dispatch.md"
 /// budget test's failure message says SPLIT, the cap's own doc says trim. Cutting
 /// a rule's justification is the one thing neither may buy — a rule shipped
 /// without the dated measurement behind it is a rule the next reader argues
-/// away. Splitting costs neither the rule nor its reason, and the material
-/// channel is a self-contained job (what the unit CARRIES), distinct from where
-/// a unit starts and what it is called.
+/// away. Splitting costs neither the rule nor its reason, and this is a
+/// self-contained job, distinct from where a unit starts and what it is
+/// called.
 ///
 /// Like every other part it rides its own sibling hook on `userPromptSubmit`, so
 /// it is measured alone against the 10,000-character response ceiling — see
@@ -157,29 +157,6 @@ mod tests {
             );
         }
 
-        // The material channel MOVED; it did not get copied. A live
-        // `material-add` invocation standing in any OTHER part is the state
-        // where the rule is corrected in one file and read from the other.
-        // Matched on the INVOCATION, not the bare command name — the pointer
-        // `dispatch.md` keeps is allowed to say what it points at.
-        const MATERIAL_CALL: &str = "mustard-rt run material-add";
-        let callers: Vec<&str> = INJECTABLE_SEEDS
-            .iter()
-            .filter(|(_, body)| body.contains(MATERIAL_CALL))
-            .map(|(name, _)| *name)
-            .collect();
-        assert_eq!(
-            callers,
-            vec!["material.md"],
-            "the `material-add` calls must stand in the material part alone; found in \
-             {callers:?}",
-        );
-        // …and the part it left still POINTS at it: a reader of the unit's
-        // rules who is never told where the channel went stops using it.
-        assert!(
-            DISPATCH_MD.contains("material.md"),
-            "dispatch.md drops the material channel without saying where it went"
-        );
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
     }
 }

@@ -254,61 +254,6 @@ pub enum SpecCmd {
         #[arg(long)]
         instruction: String,
     },
-    /// Record ONE piece of conversation material, at the moment it is settled.
-    ///
-    /// `spec-draft --material <FILE>` reads a finished document, and nothing
-    /// wrote one: the model was expected to assemble the whole thing by hand at
-    /// draft time, from memory of a conversation that may already have been
-    /// compacted away. Measured 2026-08-26: two units shipped across two days
-    /// and NEITHER carried a material file.
-    ///
-    /// A decision the conversation settles is written down WHEN it is settled —
-    /// the only moment its reason is still known.
-    #[command(name = "material-add")]
-    #[command(display_order = 86)]
-    MaterialAdd {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// Which channel: `definition`, `decision`, `finding`, `risk`,
-        /// `clarification` or `summary`.
-        #[arg(long)]
-        kind: String,
-        /// The first half: the term, the decision, or the statement.
-        ///
-        /// `allow_hyphen_values` because this is PROSE, and prose about a
-        /// command-line tool starts with `--` all the time. Without it the
-        /// parser reads `--subject "--spec com barra cai em for_spec"` as an
-        /// unknown FLAG and refuses the call — measured while recording this
-        /// unit's own material. A channel that refuses to carry a sentence
-        /// about a flag is a channel that loses exactly the findings a
-        /// command-line tool produces.
-        #[arg(long, allow_hyphen_values = true)]
-        subject: String,
-        /// The half that makes it usable: what the term MEANS here, WHY the
-        /// decision was taken, or the FILE a finding was checked against.
-        /// Refused when blank — a decision without its reason is the one thing
-        /// a later reader cannot use.
-        ///
-        /// Same `allow_hyphen_values` reasoning as `--subject`: a reason is
-        /// prose too, and it names flags.
-        ///
-        /// Opcional no parser porque o `summary` é um texto só e não tem
-        /// segunda metade; a exigência dos outros tipos continua no
-        /// `material-add`, que recusa com `incomplete_entry` e diz o que falta.
-        #[arg(long, default_value = "", allow_hyphen_values = true)]
-        detail: String,
-        /// A finding's line number, when the claim is line-precise.
-        ///
-        /// `u32`, the width `spec-draft --material` reads. A wider one here
-        /// would let the door accept a value the draft refuses.
-        #[arg(long)]
-        line: Option<u32>,
-        /// O peso de um `risk`: `alta`, `media` ou `baixa`. Obrigatório para
-        /// risco; ignorado pelos outros tipos.
-        #[arg(long)]
-        severity: Option<String>,
-    },
     /// Deliberately change ONE acceptance criterion after the spec artefacts are
     /// frozen, and prove the replacement still knows how to fail.
     ///
@@ -476,7 +421,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 88)]
+    #[command(display_order = 87)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -497,7 +442,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 90)]
+    #[command(display_order = 89)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
@@ -599,18 +544,6 @@ pub fn dispatch(cmd: SpecCmd) {
                 instruction,
             });
         }
-        SpecCmd::MaterialAdd { spec: slug, kind, subject, detail, line, severity } => {
-            spec::material_add::run(&spec::material_add::MaterialAddOpts {
-                spec: slug,
-                kind,
-                subject,
-                detail,
-                line,
-                severity,
-                // As notas vêm só do observador de `AskUserQuestion`.
-                notes: None,
-            });
-        }
         SpecCmd::AcAmend {
             spec: slug,
             ac,
@@ -691,32 +624,4 @@ mod tests {
         cmd: SpecCmd,
     }
 
-    /// `material-add` carries PROSE, and prose about a command-line tool starts
-    /// with `--` all the time.
-    ///
-    /// Without `allow_hyphen_values` the parser read the VALUE as an unknown
-    /// flag and refused the whole call — measured while recording this unit's
-    /// own material, on the sentence "`--spec` com barra cai em `for_spec`". A
-    /// channel that cannot carry a sentence about a flag loses exactly the
-    /// findings a command-line tool produces.
-    #[test]
-    fn material_add_accepts_a_subject_that_opens_with_two_hyphens() {
-        let parsed = Probe::try_parse_from([
-            "probe",
-            "material-add",
-            "--spec",
-            "a-unit",
-            "--kind",
-            "finding",
-            "--subject",
-            "--spec com barra cai em for_spec",
-            "--detail",
-            "--detail tambem e prosa",
-        ]);
-        let Ok(Probe { cmd: SpecCmd::MaterialAdd { subject, detail, .. } }) = parsed else {
-            panic!("the call must parse: {:?}", parsed.err().map(|e| e.to_string()));
-        };
-        assert_eq!(subject, "--spec com barra cai em for_spec");
-        assert_eq!(detail, "--detail tambem e prosa");
-    }
 }

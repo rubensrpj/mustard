@@ -195,7 +195,7 @@ pub enum EventCmd {
     /// the first shows what would leave and prints a code, the second passes
     /// that code in `--confirm` after the user's yes. `--stale` shows the idle
     /// items once, and `--expire --keep` drops the ones the user did not keep.
-    #[command(display_order = 87)]
+    #[command(display_order = 86)]
     Pending {
         /// Record a new item (needs `--title` and `--detail`).
         #[arg(long, conflicts_with_all = ["close", "drop"])]

@@ -1,5 +1,8 @@
-//! `mustard-rt run material-add` — record ONE piece of conversation material,
-//! at the moment it is settled.
+//! O material da conversa: um item gravado no momento em que é decidido.
+//!
+//! O comando publicado saiu com o canal de material; o que fica é a porta
+//! interna, pela qual o observador de perguntas grava a resposta do usuário,
+//! e a leitura do arquivo pela página da spec.
 //!
 //! ## Why this exists
 //!
@@ -57,7 +60,7 @@
 //! material que não os usa continua com os mesmos bytes de antes.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The file the draft reads, inside the unit's own spec directory.
 pub(crate) const MATERIAL_FILE: &str = "spec-material.json";
@@ -549,16 +552,6 @@ fn repo_relative(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-/// CLI entry — `mustard-rt run material-add`.
-pub fn run(opts: &MaterialAddOpts) {
-    let root = PathBuf::from(crate::shared::context::project_dir());
-    let report = add(&root, opts);
-    let body = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string());
-    println!("{body}");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    std::process::exit(i32::from(!report.ok));
 }
 
 #[cfg(test)]
