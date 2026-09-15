@@ -20,6 +20,13 @@
 //! combinado que nenhuma tarefa cobre; contrato que nenhum critério cita; e
 //! tarefa sem arquivo.
 //!
+//! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
+//! no arquivo de eventos quando este comando roda, e a página o mostra de lá:
+//! as duas conferências que olham para fora do arquivo — o arquivo citado
+//! existe, o arquivo está no git — rodam aqui, uma vez por plano, e nunca ao
+//! desenhar a página. Rodar o comando de novo não repete a anotação que já
+//! está no arquivo.
+//!
 //! Quando a publicação anterior falhou, a resposta já traz o `scp` pronto
 //! para o usuário copiar a página para a máquina dele: a aprovação não fica
 //! presa a uma dependência de fora.
@@ -199,6 +206,13 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
 
     let built = prompts(&project.root, &spec, &log, lang);
     let findings = check(&opts.root, &project.root, &spec, &log, &built);
+    // Cada achado vira anotação no arquivo de eventos, aqui, uma vez por
+    // plano: a página o mostra de lá, sem olhar o disco nem o git ao ser
+    // desenhada. As duas conferências que olham para fora do arquivo — o
+    // arquivo citado existe, o arquivo está no git — ficam nesta chamada.
+    if let Err(refusal) = note_findings(&opts.root, &spec, &log, &findings, lang) {
+        return refuse(&refusal);
+    }
     let blocking: Vec<Value> =
         findings.iter().filter(|f| f.blocks()).map(|f| f.to_value(lang)).collect();
     let warnings: Vec<Value> =
@@ -209,6 +223,11 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         .collect();
 
     if !blocking.is_empty() {
+        // A página sai mesmo com o plano travado: é nela que o achado que
+        // segura a pergunta aparece para quem vai corrigi-lo.
+        if let Err(refusal) = crate::commands::spec_events::pages::refresh(&project.root, &spec, lang) {
+            return refuse(&refusal);
+        }
         return json!({
             "ok": false, "spec": spec, "reason": "plan-not-ready",
             "hint": translate("plan.not_ready", lang).replace("{count}", &blocking.len().to_string()),
@@ -257,6 +276,40 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         report["next"] = json!(format!("{} {}", translate("plan.next", lang), translate("plan.copy", lang)));
     }
     report
+}
+
+/// Grava cada achado da conferência como anotação, no idioma do projeto, que
+/// é o da página. O achado que já está anotado não é gravado de novo: rodar o
+/// `plan` outra vez não repete a anotação.
+///
+/// # Errors
+///
+/// A recusa da gravação da anotação.
+fn note_findings(
+    start: &Path,
+    spec: &str,
+    log: &SpecLog,
+    findings: &[PlanFinding],
+    lang: Locale,
+) -> Result<(), Refusal> {
+    let mut noted: BTreeSet<String> = log
+        .block(BlockQuery::Block(Block::Notes))
+        .into_iter()
+        .filter(|event| event.event_type == "note")
+        .filter_map(|event| event.str_field("text").map(str::to_string))
+        .collect();
+    for finding in findings {
+        let text = finding.message(lang);
+        if !noted.insert(text.clone()) {
+            continue;
+        }
+        let mut draft = Map::new();
+        draft.insert("text".to_string(), json!(text));
+        draft.insert("keys".to_string(), json!([finding.reason()]));
+        draft.insert("author".to_string(), json!("binary"));
+        record(start, spec, "note", draft, PhaseWriter::Binary)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -717,6 +770,81 @@ mod tests {
         ] {
             assert!(warnings.contains(&reason.to_string()), "{reason}: {report}");
         }
+    }
+
+    /// Cada achado da conferência é gravado como anotação quando o `plan`
+    /// roda, com a mesma mensagem que a resposta dá, e a página o mostra de
+    /// lá. Rodar de novo não repete a anotação.
+    #[test]
+    fn every_finding_is_written_as_a_note_once_and_shows_up_on_the_page() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        std::fs::write(root.join("src/fora.rs"), "fn tres() {}\n").unwrap();
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/fora.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Sem arquivo.", "origin": said}));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let messages: Vec<String> = report["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| f["hint"].as_str().map(str::to_string))
+            .collect();
+        assert!(messages.len() >= 2, "{report}");
+
+        // Cada achado virou anotação, e a página a mostra.
+        let notes = read_notes(root, "x");
+        for message in &messages {
+            assert!(notes.contains(message), "sem anotação de {message:?}: {notes:?}");
+        }
+        // No `.md` o código do item fica como está; na página ele vira link.
+        let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
+        for message in &messages {
+            assert!(md.contains(message.as_str()), "o `.md` não mostra {message:?}");
+        }
+        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
+        assert!(page.contains("MSTD-NOTE-0001"), "a página não mostra a anotação");
+
+        // De novo: as mesmas anotações, sem repetir nenhuma.
+        assert_eq!(plan(root, "x")["ok"], json!(true));
+        assert_eq!(read_notes(root, "x"), notes, "o mesmo achado não vira anotação duas vezes");
+    }
+
+    /// O achado que trava a pergunta também vira anotação, e a página sai
+    /// mesmo com o plano travado: é nela que quem for corrigir o vê.
+    #[test]
+    fn a_blocking_finding_is_noted_and_the_page_still_comes_out() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit],
+            "done_when": "passa", "depends_on": [7], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        assert!(reasons(&report, "blocking").contains(&"depends-on-missing-wave".to_string()), "{report}");
+        let hint = report["blocking"][0]["hint"].as_str().unwrap().to_string();
+        assert!(read_notes(root, "x").contains(&hint), "o achado que trava não virou anotação");
+        let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
+        assert!(md.contains(hint.as_str()), "o `.md` não mostra o achado que trava");
+        assert!(root.join(".claude/spec/x/spec.html").is_file(), "a página sai com o plano travado");
+    }
+
+    /// As anotações vigentes da spec, em ordem de número.
+    fn read_notes(root: &Path, spec: &str) -> Vec<String> {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        log.block(BlockQuery::Block(Block::Notes))
+            .into_iter()
+            .filter(|event| event.event_type == "note")
+            .filter_map(|event| event.str_field("text").map(str::to_string))
+            .collect()
     }
 
     /// Quando a última publicação falhou, a conferência passa e a resposta
