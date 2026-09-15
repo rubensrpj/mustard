@@ -19,7 +19,7 @@ Classify intent + coarse scope yourself. There is no pre-spec classifier. Narrat
 
 Each kind dispatches the `/mustard:<kind>` flow. **Dispatching means LOADING the flow, not improvising it.** For `feature`/`bugfix`/`task`/`tactical-fix`, invoke `Skill(mustard:<kind>)` FIRST, then follow what it loads. Never your recollection of the commands. `spec-draft` is the ONLY `spec.md` writer; never hand-write it. Skill unavailable: use `commands/<kind>.md`. `/mustard:*` is a direct power-override.
 
-`--spec` takes two different things, and the wrong one fails as `spec-not-readable`, which reads like a broken tool and is not. Spec PATH (`.claude/spec/{slug}` or its `spec.md`): `scope-classify`, `plan-prepare`, `analyze-validation`, `dependency-precheck`, `exec-rewave-check`. Bare slug: everything else. `ac-negative-check` and `ac-amend` accept EITHER; they resolve a slug through the same locator `qa-run` uses.
+`--spec` takes two different things, and the wrong one fails as `spec-not-readable`, which reads like a broken tool and is not. Spec PATH (`.claude/spec/{slug}` or its `spec.md`): `scope-classify`, `plan-prepare`, `analyze-validation`, `dependency-precheck`, `exec-rewave-check`. Bare slug: everything else.
 
 Confirm only on a genuine fork (bugfix-vs-feature, light-vs-full, under-specified): ONE batched question. Obvious cases proceed. The full pipeline amortizes only on genuine ≥2-layer work or a new entity (trust `layerCount`); single-layer or already-located goes to task or direct. Guards + digest need no pipeline. **Never enter it just for guidance.**
 

@@ -117,7 +117,7 @@ fn picker_prose_says_selecting_is_not_approving() {
 
     let plan_route = line_with(&picker, "resume-loop **§A Approve**")
         .expect("the picker no longer routes a Plan-stage spec to §A");
-    for needle in ["**Aprovar**", "**Ajustar**", "`/clear`", ".clarified", "approvedByUser:true"] {
+    for needle in ["**Aprovar**", "**Ajustar**", "`/clear`", "approvedByUser:true"] {
         assert!(plan_route.contains(needle), "the Plan route misses {needle}: {plan_route}");
     }
 

@@ -1,6 +1,6 @@
 # /feature — Full-scope DECOMPOSE + PLAN
 
-> You are here because `scope=full`. PLAN is the TERMINAL phase of /feature: materialise the plan, present it, STOP. EXECUTE unlocks ONLY after the user approves via `/spec` — NEVER emit `pipeline.stage: Execute` here. Approval also requires a prior CLARIFY (step 6): `approve-spec` refuses a Full plan until `<spec>/.clarified` exists AND records what was settled — settled terms or a stated reason, never a bare "done".
+> You are here because `scope=full`. PLAN is the TERMINAL phase of /feature: materialise the plan, present it, STOP. EXECUTE unlocks ONLY after the user approves via `/spec` — NEVER emit `pipeline.stage: Execute` here.
 
 ## DECOMPOSE
 

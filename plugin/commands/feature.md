@@ -7,7 +7,7 @@ user-invocable: false
 
 This file is the LIGHT path (most runs) plus the shared ANALYZE. Full-scope PLAN machinery lives in `${CLAUDE_PLUGIN_ROOT}/refs/feature/full-plan.md` — open it ONLY when scope detection returns `full`.
 
-Law: no code before the approved spec — `write_gate` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. Full CLARIFIES before approval: the clarify-finalize records WHAT was settled into `<spec>/.clarified` — the terms the grill captured, or the stated reason no grill applied — and `approve-spec` REFUSES a Full plan whose marker recorded neither. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research, and never before the conversation material is assembled (§2.2). Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
+Law: no code before the approved spec — `write_gate` refuses it anyway. Full stops at PLAN; only `/spec` unlocks EXECUTE; urgency never changes scope. The spec dir (`spec.md` + `meta.json`) is born at §2 via `spec-draft` — never reference it during research, and never before the conversation material is assembled (§2.2). Red flags to stop on: "spec after the code works"; "scope says full but feels light"; "the gate blocked me, work around it".
 
 ## When
 

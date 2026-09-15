@@ -257,9 +257,7 @@ flowchart TD
     focused --> boot["resume-bootstrap --spec --json"]
 
     boot --> stage{"stage?"}
-    stage -->|Plan| clar{"Full sem .clarified?"}
-    clar -->|sim| refuse["approve-spec RECUSA<br/>(clarify antes da aprovação — F6)"]
-    clar -->|não| approve["resume-loop §A: aprovação<br/>(letra+r pré-responde:<br/>aprovar + implementar inline)"]
+    stage -->|Plan| approve["resume-loop §A: aprovação<br/>(letra+r pré-responde:<br/>aprovar + implementar inline)"]
     stage -->|"Execute / Analyze /<br/>QaReview / Close"| loop["resume-loop §B: relay do wave-advance<br/>(mesma 'level' → 1 msg com todos os Task)"]
     approve --> done(["pronto"])
     loop --> done
