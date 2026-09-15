@@ -1765,8 +1765,9 @@ pub enum Step {
     /// Retomar: o estado.
     Resume,
     /// Despachar uma onda: o bloco da onda, os critérios dela, a
-    /// especificação com os limites, os itens combinados que as tarefas dela
-    /// cobrem e o entregou das ondas de que ela depende. Nunca a conversa.
+    /// especificação com os limites, os itens combinados que o binário
+    /// escolhe para ela e o entregou das ondas de que ela depende. Nunca a
+    /// conversa.
     Dispatch { wave: u64 },
     /// Revisar uma onda: o bloco da onda, com o entregou dela, e os critérios
     /// dela.
@@ -1980,12 +1981,7 @@ impl SpecLog {
             }
             Step::Dispatch { wave } => {
                 let own = self.block(BlockQuery::Wave(*wave));
-                let covered: Vec<&SpecEvent> = own
-                    .iter()
-                    .filter(|e| e.event_type == "task")
-                    .flat_map(|e| e.ints("covers"))
-                    .filter_map(|id| self.current(id))
-                    .collect();
+                let covered = crate::domain::wave_prompt::agreed_for(self, *wave);
                 let depends: Vec<u64> = own
                     .iter()
                     .filter(|e| e.event_type == "wave")

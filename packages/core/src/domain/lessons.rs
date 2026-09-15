@@ -192,6 +192,15 @@ pub fn in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
     found
 }
 
+/// O "onde vale" de um evento casa com `scope`? A mesma leitura serve à lição
+/// e ao item combinado, que declaram o campo do mesmo jeito: sem ela, o
+/// recorte dos itens por onda e a busca de lições discordariam sobre o mesmo
+/// campo.
+#[must_use]
+pub fn applies_to(event: &SpecEvent, scope: &Scope) -> bool {
+    applies(event, scope)
+}
+
 fn applies(lesson: &SpecEvent, scope: &Scope) -> bool {
     let Some(at) = lesson.fields.get("applies_to").and_then(Value::as_object) else {
         return false;

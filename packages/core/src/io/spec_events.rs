@@ -458,14 +458,21 @@ mod tests {
             spec.ids(&["criterion_2", "wave_2", "task_2", "skill", "send", "delivered_2"])
         );
         // The dispatch brings the wave, its criteria, the specification with the
-        // current limit, the agreed item its task covers and what the wave it
-        // depends on delivered — and never a line of the conversation.
+        // current limit, the agreed items the binary picked for it and what the
+        // wave it depends on delivered — and never a line of the conversation.
+        // The picked items are the one the task covers plus every item that
+        // matches no wave in particular, which goes to all of them; the edge
+        // case, whose words match the OTHER wave's task, stays out.
         assert_eq!(
             got(Step::Dispatch { wave: 2 }),
             spec.ids(&[
                 "context",
                 "concern",
+                "decision",
+                "out_of_scope",
                 "rule",
+                "contract",
+                "error",
                 "criterion_2",
                 "delivered_1",
                 "wave_2",
@@ -476,6 +483,8 @@ mod tests {
                 "limit",
             ])
         );
+        assert!(!got(Step::Dispatch { wave: 2 }).contains(&spec.ids["edge_case"]));
+        assert!(got(Step::Dispatch { wave: 1 }).contains(&spec.ids["edge_case"]));
         for event in log.step(&Step::Dispatch { wave: 2 }) {
             assert_ne!(event.block(), Some(Block::Conversation), "{}", event.shown());
         }
