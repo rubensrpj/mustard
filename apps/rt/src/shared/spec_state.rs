@@ -267,7 +267,6 @@ mod tests {
             ),
             ("subagent_inject", crate::hooks::task::subagent_inject::capture_spec(root, SESSION)),
             ("pr_detect", crate::hooks::bash::pr_detect::detect_recent_spec(root, Some(SESSION))),
-            ("grill_capture", crate::commands::grill_capture::finalize_spec(root, "", Some(SESSION))),
             ("route", crate::shared::events::route::spec_of_event(None, root, Some(SESSION))),
             (
                 "post_edit",

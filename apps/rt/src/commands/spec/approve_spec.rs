@@ -136,12 +136,12 @@ fn approval_sequence(wave_plan: bool, resume: bool) -> Vec<Step> {
 }
 
 // ---------------------------------------------------------------------------
-// The approval gate — clarify + user approval, evaluated together.
+// The approval gate — the user's approval.
 //
 // `approve-spec` may emit the `draft→approved` signal ONLY once BOTH preconditions
-// hold: a Full plan is CLARIFIED (`<spec>/.clarified`) and the user has APPROVED it
+// hold: the user has APPROVED the plan
 // (the spec's state in `spec.ndjson` is approved). Each is born from an act the
-// model cannot author — the deliberate clarification finalize, and the user's own
+// model cannot author — the user's own
 // choice of "Aprovar" in the approval question, echoed by the harness in
 // `tool_response` and recorded by the approval witness. A gate the gated could open
 // by running this very command is not a gate.
@@ -207,63 +207,8 @@ fn approval_gate(mode: ApprovalMode, marker_present: bool) -> ApprovalGate {
     }
 }
 
-/// What the clarify marker says — the three states the gate distinguishes, plus
-/// the case where clarify does not apply at all.
-///
-/// The middle state is the one this wave exists for: a marker that EXISTS but
-/// recorded nothing. Minting it costs the orchestrator one command it can run
-/// seconds before the approval the marker unlocks, so existence alone proves
-/// only that the command ran.
-///
-/// `pub(crate)` because the DISCOVERY of a hollow marker was moved earlier than
-/// the refusal: `active-specs` (the listing) and `resume-bootstrap` (the resume
-/// path) read this same classifier to warn, so there is exactly one definition
-/// of "hollow" in the crate. Those two callers are advisory — the refusal stays
-/// here, in [`run`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClarifyState {
-    /// Not a Full spec — Light / task specs are never clarify-gated.
-    NotGated,
-    /// No `<spec>/.clarified` at all.
-    Missing,
-    /// The marker exists but names no captured term and states no reason.
-    Hollow,
-    /// The marker records what was settled — terms, or a stated reason.
-    Recorded,
-}
-
-/// Read the clarify marker for `spec` under `root` and classify what it carries.
-///
-/// **Fail-CLOSED, deliberately.** Every other check in this crate degrades to
-/// "allow" when a read fails — a hook must never block a session over its own
-/// I/O error. This one is not a hook: it guards a VERDICT (the `draft→approved`
-/// signal), and its whole job is to refuse when the clarification cannot be
-/// shown to have happened. An unreadable or unparsable body therefore reads as
-/// [`ClarifyState::Hollow`] and REFUSES, for the same reason an absent marker
-/// already refused today. A reader who assumes the crate-wide fail-open rule
-/// here would get this backwards, which is why it is spelled out.
-///
-/// Advisory callers (`active-specs`, `resume-bootstrap`) reuse this classifier
-/// instead of re-deriving "hollow" — they only REPORT [`ClarifyState::Hollow`];
-/// the fail-closed refusal lives in [`run`].
-pub(crate) fn clarify_state(root: &str, spec: &str) -> ClarifyState {
-    if !spec_is_full(root, spec) {
-        return ClarifyState::NotGated;
-    }
-    let Some(path) = crate::shared::context::clarified_marker_path(root, spec) else {
-        return ClarifyState::Missing;
-    };
-    if !path.exists() {
-        return ClarifyState::Missing;
-    }
-    match crate::shared::context::read_marker_provenance(&path) {
-        Some(p) if p.records_substance() => ClarifyState::Recorded,
-        _ => ClarifyState::Hollow,
-    }
-}
-
 /// What the proof ledger says about the spec's own acceptance criteria — the
-/// THIRD approval precondition, beside clarify and user-approval.
+/// approval precondition beside the user's own gesture.
 ///
 /// The producer is `mustard-rt run ac-negative-check`, which runs each criterion
 /// against the tree BEFORE the work exists and records the result in
@@ -271,7 +216,7 @@ pub(crate) fn clarify_state(root: &str, spec: &str) -> ClarifyState {
 /// command, because the user is waiting at the approval gesture and the proofs
 /// take minutes.
 ///
-/// **Fail-CLOSED, deliberately** — the same exception [`clarify_state`] already
+/// **Fail-CLOSED, deliberately** — the exception this crate's fail-open rule
 /// documents, for the same reason. The crate-wide rule is fail-open (a hook must
 /// never block a session over its own IO error) and a reader WILL assume it
 /// here. This is not a hook: it guards the `draft→approved` verdict, and an
@@ -568,20 +513,13 @@ fn section_body(body: &str, heading: &str) -> Option<String> {
 }
 
 /// Build the aggregated refusal that names EVERY unmet approval precondition at
-/// once — clarify (`<spec>/.clarified`) and/or user approval (the spec's
-/// approved state) — each with the path that satisfies it. One message so the
+/// once — each with the path that satisfies it. One message so the
 /// user sees everything missing in a single run, instead of the pre-refactor
-/// gate's first-miss-only refusal. `spec` is interpolated into the clarify
-/// finalize command. Returns `None` when nothing is missing — the caller then
-/// proceeds silently. Surfaced as the report `error`; the flow relays
-/// `{ok:false,error}` straight to the user.
-///
-/// A [`ClarifyState::Hollow`] marker earns its OWN wording: the remedy is not
-/// "run the finalize" (it already ran) but "run it saying what it settled", so
-/// the refusal names the grill to run or tells the caller to state a reason.
+/// gate's first-miss-only refusal. Returns `None` when nothing is missing — the
+/// caller then proceeds silently. Surfaced as the report `error`; the flow
+/// relays `{ok:false,error}` straight to the user.
 fn unmet_gate_message(
     spec: &str,
-    clarify: ClarifyState,
     approval_missing: bool,
     proof: &ProofState,
     scaffold_sections: &[String],
@@ -618,26 +556,6 @@ fn unmet_gate_message(
              per-wave prompt is built from what this file says. {remedy}",
             scaffold_sections.len(),
             scaffold_sections.join(", "),
-        ));
-    }
-    if clarify == ClarifyState::Missing {
-        unmet.push(format!(
-            "clarify — no `<spec>/.clarified`: run the clarification finalize \
-             `mustard-rt run grill-capture --finalize --spec {spec} --term <term>` (once per \
-             term the ANALYZE glossary grill confirmed), or state why no grill applied \
-             `--reason \"<sentence>\"` — a complete glossary is a legitimate reason, so a \
-             clear-glossary spec is never deadlocked"
-        ));
-    }
-    if clarify == ClarifyState::Hollow {
-        unmet.push(format!(
-            "clarify — `<spec>/.clarified` recorded NOTHING: the marker exists but names no \
-             captured term and states no reason, so it proves only that the finalize ran. \
-             Re-run it saying what was settled: `mustard-rt run grill-capture --finalize \
-             --spec {spec} --term <term>` for each term the ANALYZE glossary grill confirmed \
-             (`mustard-rt run glossary-coverage --intent \"<intent>\" --context <CONTEXT.md>` \
-             lists the uncovered ones), or `--reason \"<sentence>\"` stating why no grill \
-             applied"
         ));
     }
     if approval_missing {
@@ -707,7 +625,7 @@ fn unmet_gate_message(
 
 /// `true` when `spec`'s `meta.json#scope` declares a Full-scope spec (starts with
 /// `full` after a case-insensitive trim — `"full"` or `"full (wave plan)"`). Only
-/// a Full plan carries the clarify gate; Light / task specs are never gated.
+/// a Full plan carries the proof gate; Light / task specs are never gated.
 /// Fail-open: an unreadable `meta.json` / absent scope returns `false` (not
 /// gated), the safe direction — the user-approval gate still applies to all.
 fn spec_is_full(root: &str, spec: &str) -> bool {
@@ -735,17 +653,14 @@ struct Refused {
 }
 
 /// The approval preconditions of `approve-spec` besides the user's own
-/// gesture — the clarify marker of a Full spec, the recorded proof of the
-/// criteria and the authored narrative. With `check_approval`, the user's
-/// approved state joins them.
+/// gesture — the recorded proof of the criteria and the authored narrative.
+/// With `check_approval`, the user's approved state joins them.
 ///
 /// `None` when nothing is unmet; otherwise the aggregated message and what
 /// the mode makes of it. The acceptance-criteria proof is evaluated OUTSIDE
 /// the mode branch, on purpose: it is unconditional, and an unmet proof always
-/// Blocks. `MUSTARD_APPROVAL_MODE` governs the clarify and approval
-/// preconditions and nothing else — strict Blocks, warn Warns, off mutes both.
-/// Clarify only gates Full specs, and gates them on what the marker CARRIES,
-/// not merely that it is there.
+/// Blocks. `MUSTARD_APPROVAL_MODE` governs the approval precondition and
+/// nothing else — strict Blocks, warn Warns, off mutes it.
 ///
 /// Os pontos do levantamento ainda abertos barram sempre, como a prova dos
 /// critérios: a variável do modo não desliga a trava. A lista é a mesma da
@@ -758,15 +673,11 @@ fn preconditions(
 ) -> Option<(String, ApprovalGate)> {
     let proof = proof_state(root, spec);
     let open = open_points_line(root, spec);
-    let (clarify, missing_approval) = if mode == ApprovalMode::Off {
-        (ClarifyState::NotGated, false)
-    } else {
-        (clarify_state(root, spec), check_approval && approval_missing(root, spec))
-    };
+    let missing_approval =
+        mode != ApprovalMode::Off && check_approval && approval_missing(root, spec);
     let scaffold = scaffold_residue(Path::new(root), spec);
     let message = unmet_gate_message(
         spec,
-        clarify,
         missing_approval,
         &proof,
         &scaffold,
@@ -805,12 +716,10 @@ fn open_points_line(root: &str, spec: &str) -> Option<String> {
 /// passing a recorder. `run` passes the canonical
 /// [`crate::commands::event::emit_pipeline::run`].
 ///
-/// Approval gate — refuse (strict) to emit the approval signal until BOTH
-/// preconditions hold. Clarify precedes approval and applies only to Full
-/// specs; user approval applies to every spec. Both are born from acts the
-/// model cannot forge (the deliberate `grill-capture --finalize`, and the
-/// witness recording the user's real choice of "Aprovar" in the approval
-/// question). A background job (no user, no answer, no approved state) halts
+/// Approval gate — refuse (strict) to emit the approval signal until the
+/// precondition holds: the user's own approval, born from an act the model
+/// cannot forge (the witness recording the user's real choice of "Aprovar" in
+/// the approval question). A background job (no user, no answer, no approved state) halts
 /// cleanly here and the spec stays in PLAN instead of auto-approving. A THIRD
 /// precondition joins them, unconditionally: every non-exempt acceptance
 /// criterion must carry a PROVEN record in `<spec>/ac-proof.json` for the
@@ -1024,7 +933,6 @@ mod tests {
 
         let msg = unmet_gate_message(
             "uma-unidade",
-            ClarifyState::NotGated,
             false,
             &ProofState::NotGated,
             &residue,
@@ -1042,7 +950,6 @@ mod tests {
         // (measured in review, handed to a real light spec).
         let light = unmet_gate_message(
             "uma-unidade",
-            ClarifyState::NotGated,
             false,
             &ProofState::NotGated,
             &residue,
@@ -1316,7 +1223,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The clarify gate (clarify precedes approval)
+    // Escopo da spec
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1341,7 +1248,7 @@ mod tests {
             .unwrap();
             assert_eq!(spec_is_full(root_str, spec), want, "scope={scope}");
         }
-        // No meta.json → not full (fail-open: the clarify gate does not apply).
+        // Sem meta.json: não é full (falha aberta).
         assert!(!spec_is_full(root_str, "ghost"));
     }
 
@@ -1360,120 +1267,20 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn clarify_gate_blocks_full_without_marker_and_proceeds_with_a_record() {
-        // Mirrors the user-approval gate, for the clarify precondition —
-        // except the clarify marker must CARRY something: absent → Missing, a
-        // body that recorded nothing → Hollow, a recorded term → Recorded.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        let spec = "epic";
-        seed_full_spec(root, spec);
-        let marker = crate::shared::context::clarified_marker_path(root_str, spec)
-            .expect("clarified marker path resolves");
-        assert!(marker.ends_with(".clarified"));
-
-        assert_eq!(clarify_state(root_str, spec), ClarifyState::Missing);
-        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
-
-        // The legacy body — the finalize ran, and said nothing.
-        std::fs::write(&marker, b"spec=epic\nvia=grill-finalize\n").unwrap();
-        assert_eq!(clarify_state(root_str, spec), ClarifyState::Hollow);
-
-        std::fs::write(
-            &marker,
-            crate::shared::context::clarify_marker_body(
-                spec,
-                "s-1",
-                "2026-07-25T10:00:00.000Z",
-                &["Payable".to_string()],
-                "",
-            ),
-        )
-        .unwrap();
-        assert_eq!(clarify_state(root_str, spec), ClarifyState::Recorded);
-    }
-
-    #[test]
-    fn light_spec_is_not_clarify_gated() {
-        // A Light spec: `spec_is_full` is false, so `run` skips the clarify gate
-        // entirely — approval never requires `.clarified` for a Light / task spec.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        let sp = mustard_core::ClaudePaths::for_project(root)
-            .unwrap()
-            .for_spec("small")
-            .unwrap();
-        std::fs::create_dir_all(sp.dir()).unwrap();
-        std::fs::write(
-            sp.meta_json_path(),
-            r#"{"scope":"light","stage":"Plan","outcome":"Active"}"#,
-        )
-        .unwrap();
-        assert!(
-            !spec_is_full(root_str, "small"),
-            "a Light spec is not full → the clarify gate is skipped"
-        );
-    }
-
     // -----------------------------------------------------------------------
-    // Combined gate — one refusal names EVERY unmet marker (clarify + approval)
+    // O portão: uma recusa só nomeia tudo o que falta
     // -----------------------------------------------------------------------
 
     #[test]
-    fn combined_refusal_lists_all_missing_gates() {
-        // Both markers absent → the single refusal names BOTH, each with its own
-        // minting path, instead of exiting on the first miss and hiding the second.
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, true, &ProofState::NotGated, &[], true, None)
-            .expect("both missing → a refusal");
-        assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
-        assert!(
-            msg.contains("grill-capture --finalize --spec epic"),
-            "names the clarify minting path with the spec: {msg}"
-        );
-        assert!(msg.contains("\"Aprovar\""), "names the approval gesture: {msg}");
-        assert!(
-            msg.contains("approval question") && msg.contains("spec.ndjson"),
-            "names where the approval comes from: {msg}"
-        );
-        // Strict refuses (Block ⇒ exit≠0) when a marker is missing.
-        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
-    }
-
-    #[test]
-    fn clarify_only_missing_refuses_with_single_requirement() {
-        // Clarify absent, approval present → refuse, but name ONLY the clarify
-        // requirement (no stray approval line).
-        let msg = unmet_gate_message("epic", ClarifyState::Missing, false, &ProofState::NotGated, &[], true, None)
-            .expect("clarify missing → a refusal");
-        assert!(msg.contains(".clarified"), "names the clarify marker: {msg}");
-        assert!(
-            msg.contains("grill-capture --finalize --spec epic"),
-            "names the clarify minting path: {msg}"
-        );
-        assert!(
-            !msg.contains("\"Aprovar\""),
-            "must NOT name the met approval: {msg}"
-        );
-        assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
-    }
-
-    #[test]
-    fn approval_only_missing_refuses_with_single_requirement() {
-        // Approval absent, clarify present (or not a Full spec) → refuse, but name
-        // ONLY the approval requirement.
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true, None)
+    fn approval_missing_refuses_naming_the_gesture() {
+        // Sem a aprovação do usuário a recusa sai nomeando o gesto que a
+        // satisfaz, e de onde ela vem.
+        let msg = unmet_gate_message("epic", true, &ProofState::NotGated, &[], true, None)
             .expect("approval missing → a refusal");
         assert!(msg.contains("\"Aprovar\""), "names the approval gesture: {msg}");
         assert!(
             msg.contains("approval question") && msg.contains("spec.ndjson"),
             "names where the approval comes from: {msg}"
-        );
-        assert!(
-            !msg.contains(".clarified"),
-            "must NOT name the met clarify marker: {msg}"
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, false), ApprovalGate::Block);
     }
@@ -1485,7 +1292,7 @@ mod tests {
     /// taught, and the answers that approve nothing are named.
     #[test]
     fn the_refusal_names_the_one_gesture_that_approves() {
-        let msg = unmet_gate_message("epic", ClarifyState::Recorded, true, &ProofState::NotGated, &[], true, None)
+        let msg = unmet_gate_message("epic", true, &ProofState::NotGated, &[], true, None)
             .expect("approval missing → a refusal");
         assert!(msg.contains("CHOOSES") && msg.contains("\"Aprovar\""), "the gesture: {msg}");
         assert!(msg.contains("Free text"), "free text approves nothing: {msg}");
@@ -1498,98 +1305,15 @@ mod tests {
     fn both_present_approves() {
         // Neither precondition unmet → no refusal message, and strict proceeds.
         assert_eq!(
-            unmet_gate_message("epic", ClarifyState::Recorded, false, &ProofState::Proven, &[], true, None),
+            unmet_gate_message("epic", false, &ProofState::Proven, &[], true, None),
             None
         );
-        // A Light spec skips clarify entirely — same silence.
+        // Uma spec light não tem prova de critério — mesmo silêncio.
         assert_eq!(
-            unmet_gate_message("small", ClarifyState::NotGated, false, &ProofState::NotGated, &[], true, None),
+            unmet_gate_message("small", false, &ProofState::NotGated, &[], true, None),
             None
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
-    }
-
-    // -----------------------------------------------------------------------
-    // The marker must CARRY something — a hollow `.clarified` refuses
-    // -----------------------------------------------------------------------
-
-    /// The input for which the gate now says no: a marker holding only the spec
-    /// name. Approval reports `ok:false` with a reason naming the remedy, and —
-    /// the load-bearing half — NOT ONE approval event is emitted.
-    #[test]
-    fn approve_refuses_a_marker_that_recorded_nothing() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        let spec = "epic";
-        seed_full_spec(root, spec);
-
-        // The user really approved — only the clarification is hollow, so the
-        // refusal can come from nothing else.
-        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
-        let clarified = crate::shared::context::clarified_marker_path(root_str, spec).unwrap();
-        std::fs::write(&clarified, b"spec=epic\n").unwrap();
-
-        let opts = ApproveSpecOpts {
-            spec: spec.to_string(),
-            wave_plan: true,
-            resume: false,
-        };
-        // A recorder in place of the real emitter — `RefCell` so the log can be
-        // inspected between the two `approve_at` calls below.
-        let emitted: std::cell::RefCell<Vec<(String, Value)>> = std::cell::RefCell::new(Vec::new());
-        let mut record =
-            |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
-
-        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
-            .expect_err("a marker that recorded nothing must refuse the approval");
-        assert!(refused.exit_nonzero, "a gate refusal exits non-zero");
-        assert!(
-            refused.error.contains(".clarified") && refused.error.contains("recorded NOTHING"),
-            "the refusal names the hollow marker: {}",
-            refused.error
-        );
-        assert!(
-            refused.error.contains("--term") && refused.error.contains("--reason"),
-            "the refusal names the remedy — run the grill, or state a reason: {}",
-            refused.error
-        );
-        assert!(
-            emitted.borrow().is_empty(),
-            "the approval events must NOT be emitted: {:?}",
-            emitted.borrow()
-        );
-
-        // The report the caller sees.
-        let err = ApproveError {
-            ok: false,
-            error: refused.error,
-        };
-        let json: Value = serde_json::from_str(&serde_json::to_string(&err).unwrap()).unwrap();
-        assert_eq!(json["ok"], false);
-
-        // Recording what was settled is what unblocks it — same spec, same
-        // markers, one honest line added.
-        std::fs::write(
-            &clarified,
-            crate::shared::context::clarify_marker_body(
-                spec,
-                "s-1",
-                "2026-07-25T10:00:00.000Z",
-                &[],
-                "the glossary already defines every matched term",
-            ),
-        )
-        .unwrap();
-        let report = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
-            .expect("a recorded clarification approves");
-        assert!(report.approved);
-        assert_eq!(
-            emitted.borrow().len(),
-            2,
-            "plan + approved: {:?}",
-            emitted.borrow()
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -1608,21 +1332,10 @@ mod tests {
         let spec = "epic";
         seed_full_spec(root, spec);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
-        std::fs::write(
-            crate::shared::context::clarified_marker_path(root_str, spec).unwrap(),
-            crate::shared::context::clarify_marker_body(
-                spec,
-                "s-1",
-                "2026-07-25T10:00:00.000Z",
-                &[],
-                "the glossary already defines every matched term",
-            ),
-        )
-        .unwrap();
         let opts = ApproveSpecOpts { spec: spec.to_string(), wave_plan: false, resume: false };
 
         let report = approve_at(root_str, &opts, ApprovalMode::Strict, &mut |_, _| {})
-            .expect("an approved and clarified spec approves");
+            .expect("an approved spec approves");
         let json: Value = serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
         assert_eq!(json["witness"], json!({ "question": "Aprovar esta spec?", "answer": "Aprovar" }));
         assert!(json["witnessAt"].as_str().is_some_and(|at| !at.is_empty()), "{json}");
@@ -1706,17 +1419,6 @@ mod tests {
         // Both approval preconditions are genuinely met, so the refusal can
         // come from nothing but the proof.
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
-        std::fs::write(
-            crate::shared::context::clarified_marker_path(root_str, spec).unwrap(),
-            crate::shared::context::clarify_marker_body(
-                spec,
-                "s-1",
-                "2026-07-25T10:00:00.000Z",
-                &[],
-                "the glossary already defines every matched term",
-            ),
-        )
-        .unwrap();
 
         // No ledger at all → fail-CLOSED, and the message says so.
         assert_eq!(proof_state(root_str, spec), ProofState::LedgerUnreadable);
@@ -1897,7 +1599,7 @@ mod tests {
         assert_eq!(proof_state(root_str, bare), ProofState::NotGated);
         let bare_opts = ApproveSpecOpts { spec: bare.to_string(), wave_plan: false, resume: false };
         assert_eq!(
-            unmet_gate_message(bare, ClarifyState::NotGated, false, &proof_state(root_str, bare), &[], true, None),
+            unmet_gate_message(bare, false, &proof_state(root_str, bare), &[], true, None),
             None,
             "a spec with no acceptance criteria must not be refused by this gate"
         );

@@ -142,17 +142,6 @@ pub struct ResumeBootstrap {
     /// twice.
     #[serde(rename = "approvedByUser")]
     pub approved_by_user: bool,
-    /// **Advisory, never blocking.** `true` when `<spec>/.clarified` EXISTS but
-    /// records nothing — no captured term, no stated reason.
-    ///
-    /// `approve-spec` REFUSES on exactly this state, at the worst possible
-    /// moment: right after the operator asked for the implementation. Reporting
-    /// it on the resume path moves the DISCOVERY earlier; the refusal itself is
-    /// untouched and this field never changes `mode` / `stage` / `nextAction`.
-    /// Classified by the single definition of "hollow" —
-    /// [`crate::commands::spec::approve_spec::clarify_state`].
-    #[serde(rename = "clarifyRecordsNothing")]
-    pub clarify_records_nothing: bool,
     /// `true` when the checkout ALREADY is this spec's own `{kind}/{slug}` work
     /// branch (or the older `{base}_{slug}`, still recognised) — the unit's
     /// home, where its spec, its waves, its ceremony and its code all live.
@@ -355,15 +344,6 @@ pub(crate) fn bootstrap(project: &Path, spec: &str) -> ResumeBootstrap {
     // the approve-spec gate asks the same question.
     out.approved_by_user = crate::shared::spec_state::approved(&project, spec);
 
-    // Advisory only: a `<spec>/.clarified` that records NOTHING is what
-    // `approve-spec` refuses on. Reporting it here (and in `active-specs`) moves
-    // the discovery off the approval gesture. Same classifier, never a second
-    // definition of hollow — and it changes nothing else on `out`.
-    out.clarify_records_nothing = matches!(
-        crate::commands::spec::approve_spec::clarify_state(&project.to_string_lossy(), spec),
-        crate::commands::spec::approve_spec::ClarifyState::Hollow
-    );
-
     // --- specSummary: first non-empty line of `## Resumo` / `## Summary`. ---
     let body = op_path
         .exists()
@@ -526,7 +506,6 @@ fn print_table(out: &ResumeBootstrap) {
     if let Some(d) = out.dispatch_command.as_deref() {
         println!("dispatchCommand  : {d}");
     }
-    println!("clarifyRecordsNothing: {}", out.clarify_records_nothing);
     // Surface the budget metrics in the text-table form so callers
     // who don't pass `--json` still see how the budget was spent.
     println!("tokensUsed       : {}", out.tokens_used);

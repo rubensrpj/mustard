@@ -53,8 +53,6 @@ pub mod scan_patterns;
 pub mod feature;
 pub mod orient;
 pub mod capability;
-pub mod glossary_coverage;
-pub mod grill_capture;
 pub mod spec_events;
 pub mod flow;
 pub mod retired;

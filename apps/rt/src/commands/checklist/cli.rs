@@ -22,7 +22,7 @@ use crate::commands::{checklist};
 pub enum ChecklistCmd {
     /// Mark a `## Checklist` item done in a spec — or, with `--drop
     /// --reason`, record it as dropped on purpose.
-    #[command(display_order = 15)]
+    #[command(display_order = 13)]
     MarkChecklistItem {
         /// Spec name or absolute `spec.md` path.
         #[arg(long)]

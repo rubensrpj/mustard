@@ -76,7 +76,6 @@ One binary (`mustard-rt`); `settings.json` wires one `on <event>` per event; a h
 | `close-gates` (checklist) | same | `MUSTARD_CHECKLIST_GATE_MODE` (strict) | unchecked `- [ ]` |
 | `close-gates` (debt) | same | `MUSTARD_DEBT_GATE_MODE` (strict) | unresolved tracked debt |
 | `approve-spec` (approval) | `approve-spec` run | `MUSTARD_APPROVAL_MODE` (strict) | the spec's state in `spec.ndjson` is not approved — approval must come from the USER choosing **Aprovar** in the approval question, recorded by the approval witness (`approval_witness`); plan mode and a typed picker letter approve nothing; strict refuses (exit≠0), warn nudges, off disables |
-| `approve-spec` (clarify, Full) | same | `MUSTARD_APPROVAL_MODE` (strict) | no `<spec>/.clarified`, or a marker that RECORDED nothing — mint it with `grill-capture --finalize --term <term>` (per settled term) or `--reason "<sentence>"` |
 | `approve-spec` (proof) | same | **none — unconditional** | any non-exempt acceptance criterion with no recorded EVIDENCE in `<spec>/ac-proof.json` — a RED proof taken with `ac-negative-check` (PLAN time; `plan-materialize` runs it itself on Full), or the GREEN confirmation `ac-amend` records when it repairs an inexecutable criterion once the artefacts are frozen |
 | `bash_command_gate` (commit) | `git commit` | `MUSTARD_COMMIT_GATE_MODE` (warn) | secrets staged / build broken |
 | `bash_command_gate` (native-redirect) | Bash | always-on | `grep`/`ls`/`cat`/`head`/`tail`/`find` → suggests Grep/Glob/Read |

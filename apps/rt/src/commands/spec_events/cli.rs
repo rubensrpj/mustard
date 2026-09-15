@@ -22,7 +22,7 @@ pub enum SpecEventsCmd {
     /// `agreed`, `specification`, `criteria`, `waves`, `wave-<n>`, `review`,
     /// `progress`, `notes` or `conversation`. Removed and replaced items are
     /// left out; a line that does not parse is skipped with a warning.
-    #[command(display_order = 93)]
+    #[command(display_order = 91)]
     Read {
         /// The block to read, e.g. `state` or `wave-2`.
         block: String,
@@ -49,7 +49,7 @@ pub enum SpecEventsCmd {
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
     /// `{"class":"defect","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`.
-    #[command(display_order = 94)]
+    #[command(display_order = 92)]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or
         /// `lesson`.
@@ -76,7 +76,7 @@ pub enum SpecEventsCmd {
     /// `write` already refreshes its own spec's line; this is the full repair
     /// the `doctor` names when it flags a divergence. Folders without an event
     /// file are listed in `skipped`.
-    #[command(display_order = 54)]
+    #[command(display_order = 52)]
     Index {
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]

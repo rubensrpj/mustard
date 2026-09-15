@@ -63,7 +63,6 @@ use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items, AcItem
 use crate::commands::spec::material_add::{read_material, Material, Severity};
 use crate::commands::spec::spec_sections::section_block;
 use crate::report::{escape, Report};
-use crate::shared::context::CLARIFIED_MARKER;
 
 /// O arquivo que o comando escreve, dentro do diretório da spec.
 pub(crate) const DOC_FILE: &str = "resumo.html";
@@ -546,7 +545,7 @@ fn render(root: &Path, slug: &str, dir: &Path) -> String {
         report.raw(&html);
     }
     report.section(&t("doc.section.where"), &steps_html(position, &i18n));
-    if let Some(html) = clarified_html(dir, &material, &i18n) {
+    if let Some(html) = clarified_html(&material, &i18n) {
         report.section(&t("doc.section.clarified"), &html);
     }
     if let Some(html) = decisions_html(&material) {
@@ -619,9 +618,8 @@ fn steps_html(position: Position, i: &I18n) -> String {
     html
 }
 
-/// As perguntas respondidas, os termos definidos e o que o marcador
-/// `.clarified` registrou.
-fn clarified_html(dir: &Path, material: &Material, i: &I18n) -> Option<String> {
+/// As perguntas respondidas e os termos definidos na conversa.
+fn clarified_html(material: &Material, i: &I18n) -> Option<String> {
     let mut rows: Vec<Vec<(&str, String)>> = Vec::new();
     for c in &material.clarifications {
         let mut answer = inline(&c.answer);
@@ -638,16 +636,6 @@ fn clarified_html(dir: &Path, material: &Material, i: &I18n) -> Option<String> {
     for d in &material.definitions {
         let question = i.render("doc.clarified.definition").replace("{term}", &format!("`{}`", d.term));
         rows.push(vec![("", inline(&question)), ("", inline(&d.meaning))]);
-    }
-    let marker = std::fs::read_to_string(dir.join(CLARIFIED_MARKER)).unwrap_or_default();
-    for line in marker.lines() {
-        if let Some(terms) = line.strip_prefix("terms=").map(str::trim).filter(|s| !s.is_empty()) {
-            rows.push(vec![("", escape(&i.render("doc.clarified.terms"))), ("", inline(terms))]);
-        } else if let Some(reason) =
-            line.strip_prefix("reason=").map(str::trim).filter(|s| !s.is_empty())
-        {
-            rows.push(vec![("", escape(&i.render("doc.clarified.reason"))), ("", inline(reason))]);
-        }
     }
     if rows.is_empty() {
         return None;
@@ -1098,8 +1086,8 @@ mod tests {
   {"id": "P-2", "title": "item já fechado", "detail": "x", "status": "closed", "reason": "entregue"}
 ]}"#;
 
-    /// Uma unidade com tudo o que a página lê: spec, meta, material, marcador
-    /// de esclarecimento, prova, uma onda, um molde e a lista de pendências.
+    /// Uma unidade com tudo o que a página lê: spec, meta, material, prova,
+    /// uma onda, um molde e a lista de pendências.
     fn seed(root: &Path) {
         fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
         let dir = root.join(".claude/spec/demo");
@@ -1111,7 +1099,6 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("spec-material.json"), MATERIAL).unwrap();
-        fs::write(dir.join(".clarified"), "spec=demo\nvia=grill-finalize\nterms=unidade, onda\n").unwrap();
         fs::write(dir.join(AC_PROOF_JSON), PROOF).unwrap();
         fs::write(dir.join("wave-1-doc/spec.md"), WAVE).unwrap();
         let mold = root.join("apps/rt/.claude/skills/rt-entry-pattern");
@@ -1183,13 +1170,12 @@ mod tests {
         assert!(html.contains("<li class=\"here\"><b>Plano</b>"), "{html}");
 
         for needle in [
-            // Esclarecimentos: pergunta, resposta e nota; o termo definido; o marcador.
+            // Esclarecimentos: pergunta, resposta e nota; o termo definido.
             "Abrir sozinho?",
             "Só na aprovação",
             "uma vez por versão",
             "O que quer dizer <code>onda</code> aqui?",
             "uma etapa de execução",
-            "unidade, onda",
             // Decisões com motivo; riscos com gravidade e atenuante.
             "<strong>O layout v4 é o padrão.</strong> Aprovado pelo usuário",
             "<td class=\"sev-alta nw\">Alta</td><td>o navegador abre sem pedir</td><td>um interruptor desliga</td>",

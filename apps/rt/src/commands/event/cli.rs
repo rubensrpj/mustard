@@ -22,7 +22,7 @@ use crate::commands::{event};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum EventCmd {
     /// List the branches a unit could be cut from, newest commit first.
-    #[command(display_order = 84)]
+    #[command(display_order = 82)]
     BaseCandidates {
         /// Skip the `git fetch` and list what the clone already knows. The
         /// default refreshes: the whole point is a menu that is true TODAY.
@@ -30,7 +30,7 @@ pub enum EventCmd {
         no_fetch: bool,
     },
     /// Emit an arbitrary named harness event with a key/value payload.
-    #[command(display_order = 8)]
+    #[command(display_order = 6)]
     EmitEvent {
         /// Event name, e.g. `review.start`.
         #[arg(long)]
@@ -47,7 +47,7 @@ pub enum EventCmd {
         wave: u32,
     },
     /// Record a `pipeline.phase` transition event from a SKILL.
-    #[command(display_order = 9)]
+    #[command(display_order = 7)]
     EmitPhase {
         /// Spec identifier.
         #[arg(long)]
@@ -66,7 +66,7 @@ pub enum EventCmd {
     /// a passing last run (`qa-run` records each run there), or `--allow-no-qa`
     /// is passed (escape hatch for trusted callers or an explicit user
     /// override).
-    #[command(display_order = 10)]
+    #[command(display_order = 8)]
     EmitPipeline {
         /// Pipeline event kind, e.g. `pipeline.scope`. Must be one of the 8 known kinds.
         #[arg(long)]
@@ -128,7 +128,7 @@ pub enum EventCmd {
         pending: Option<String>,
     },
     /// Query the harness event log by view.
-    #[command(display_order = 30)]
+    #[command(display_order = 28)]
     EventProjections {
         /// View name: `agent-visibility`, `pipeline-state`, `session-summary`,
         /// `epic-summary`, `cross-session-timeline`, `spec-tree`, `pr-metrics`,
@@ -152,7 +152,7 @@ pub enum EventCmd {
     /// state, so they travel with the branch and disappear with it. Without
     /// `--add` it READS the notebook back; once the pull request opens, that
     /// reading is the next cycle's prompt.
-    #[command(display_order = 81)]
+    #[command(display_order = 79)]
     Notebook {
         /// The item to record — one note, stored as one line. Omitted: the
         /// notebook is read, not written.
@@ -195,7 +195,7 @@ pub enum EventCmd {
     /// the first shows what would leave and prints a code, the second passes
     /// that code in `--confirm` after the user's yes. `--stale` shows the idle
     /// items once, and `--expire --keep` drops the ones the user did not keep.
-    #[command(display_order = 89)]
+    #[command(display_order = 87)]
     Pending {
         /// Record a new item (needs `--title` and `--detail`).
         #[arg(long, conflicts_with_all = ["close", "drop"])]

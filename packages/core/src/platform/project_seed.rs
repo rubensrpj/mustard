@@ -2390,7 +2390,7 @@ mod tests {
 
         // Held back: presence of either file IS the gate's answer, so a commit
         // would let `git clone` hand a fresh checkout an approval nobody gave.
-        for marker in [".approved-by-user", ".clarified"] {
+        for marker in [".approved-by-user"] {
             let path = format!(".claude/spec/a-unit/{marker}");
             assert!(ignored(&path), "a gate marker must never be versionable: {path}");
         }

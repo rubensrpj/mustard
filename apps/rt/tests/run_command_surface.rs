@@ -24,7 +24,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 98 declared variants + `help`, which clap generates at build time.
+/// 96 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "ac-add",
     "ac-amend",
@@ -59,9 +59,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "gate-regression-check",
     "git-delete",
     "git-settle",
-    "glossary-coverage",
     "grill",
-    "grill-capture",
     "help",
     "index",
     "language-audit",
@@ -247,8 +245,8 @@ fn every_declared_command_keeps_its_help_slot() {
     // clap orders the flat `run --help` listing by `(display_order, name)`.
     // The families are split across `commands/<family>/cli.rs`, so each variant
     // pins its historical slot explicitly. A duplicate or a gap would reshuffle
-    // the published listing — assert the 98 declared commands still carry the
-    // exact permutation 0..=97 (`help` is clap's own, appended last).
+    // the published listing — assert the 96 declared commands still carry the
+    // exact permutation 0..=95 (`help` is clap's own, appended last).
     let cmd = run_command_tree();
     let mut orders: Vec<usize> = cmd
         .get_subcommands()
@@ -408,36 +406,6 @@ fn amendment_path_is_published_and_instructed() {
          cannot move it"
     );
 
-    let grill_md = repo_root().join("plugin/refs/feature/glossary-grill.md");
-    let grill_text =
-        fs::read_to_string(&grill_md).expect("plugin/refs/feature/glossary-grill.md is the grill");
-    // The fact, not the wording: no sample may pair an absent glossary with a
-    // populated term list. That pairing is what the stale document showed, and
-    // the engine can no longer produce it — a reader who copies it learns a
-    // payload that does not exist.
-    // Per BLOCK, never per line: the sample spans several lines, so a line-wise
-    // filter never sees both halves at once and passes on the very payload it
-    // exists to reject. (Found by reverting the file and watching this
-    // assertion stay green — the vacuous criterion this spec is about, caught
-    // in its own test.)
-    let impossible_sample: Vec<&str> = grill_text
-        .split("```")
-        .filter(|block| {
-            let absent = block.replace(' ', "").contains("\"present\":false");
-            let populated = block
-                .split("\"uncovered\"")
-                .nth(1)
-                .and_then(|after| after.split(']').next())
-                .is_some_and(|list| list.contains('"'));
-            absent && populated
-        })
-        .collect();
-    assert!(
-        impossible_sample.is_empty(),
-        "the grill shows a sample pairing `present:false` with a populated `uncovered` — a \
-         payload the report cannot emit since an absent glossary publishes an empty list:\n{}",
-        impossible_sample.join("\n")
-    );
 }
 
 /// The shipped `pr close` ritual must NAME submodules.

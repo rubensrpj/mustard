@@ -261,6 +261,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     ),
     (
         "context-slice",
+        "context",
+        "the glossary path the slicer reads, on a command RUNTIME_WHITELIST \
+         already records as callerless; the glossary prose that spelled it left \
+         with the glossary",
+    ),
+    (
+        "context-slice",
         "context-claude-md",
         "the slicer's SECOND input path; the CONTEXT.md slice is the documented \
          one and this adds a CLAUDE.md pass after it, described in the command's \

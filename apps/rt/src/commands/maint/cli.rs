@@ -26,7 +26,7 @@ pub enum MaintCmd {
     /// Maintainer-side: reads `apps/cli/templates/.artifacts.json` and probes
     /// each external upstream. Fail-open — network errors degrade an artifact
     /// to `unknown` and never fail the command.
-    #[command(display_order = 43)]
+    #[command(display_order = 41)]
     ArtifactUpdate {
         /// Probe upstreams and emit the JSON freshness report (the default).
         #[arg(long)]
@@ -49,7 +49,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 91)]
+    #[command(display_order = 89)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -78,7 +78,7 @@ pub enum MaintCmd {
     /// `packages/*/.claude/`. `--scope all` adds the user-global
     /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
     /// `state: "skipped"`). Emits a pretty JSON report.
-    #[command(display_order = 49)]
+    #[command(display_order = 47)]
     Unhook {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -96,7 +96,7 @@ pub enum MaintCmd {
     /// by an older build, rename the newest `settings.json.disabled*` snapshot
     /// back. Volatile state directories that `unhook` wiped are left alone —
     /// the runtime regenerates them on the next run. Emits a pretty JSON report.
-    #[command(display_order = 50)]
+    #[command(display_order = 48)]
     Rehook {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -113,7 +113,7 @@ pub enum MaintCmd {
     /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
     /// every step — exit code is always 0.
     #[command(name = "claude-dir-prune")]
-    #[command(display_order = 58)]
+    #[command(display_order = 56)]
     ClaudeDirPrune {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -131,7 +131,7 @@ pub enum MaintCmd {
     },
     /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 62)]
+    #[command(display_order = 60)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -139,7 +139,7 @@ pub enum MaintCmd {
     },
     /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 63)]
+    #[command(display_order = 61)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -161,7 +161,7 @@ pub enum MaintCmd {
     /// text comes back under `preserved` because there was nothing left to
     /// write. The legacy planted-orchestrator footprint is migrated away.
     /// Emits the `UpsertReport` as deterministic pretty JSON.
-    #[command(display_order = 39)]
+    #[command(display_order = 37)]
     Upsert {},
 }
 
