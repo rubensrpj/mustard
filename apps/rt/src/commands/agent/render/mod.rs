@@ -86,7 +86,7 @@ use capabilities::capability_block;
 use prompt_ref::prompt_ref_stub;
 use reference::build_reference_files;
 use retry::compose_retry_context;
-use role::{build_role_block, patterns_task_block};
+use role::build_role_block;
 use sections::{
     build_conversation_material, build_why_block, collapse_empty_sections, filter_task_lines,
     read_guards_block, read_reality_obligations, read_wave_acceptance,
@@ -624,18 +624,6 @@ pub(crate) fn render_prompt_with_census(
             raw
         }
     };
-    // `--role patterns` (the `/scan` mold enrich) is spec-less and its work is
-    // DATA, not prose: the mold worklist `scan-patterns-list` computes. Embed
-    // that SAME worklist (single source — `scan_patterns::list::collect`),
-    // filtered to this subproject, into the TASK body so the mustard-patterns
-    // agent can work from the rendered prompt alone. An empty worklist renders
-    // an explicit "no candidates — author nothing" TASK (never the silent
-    // guards-reminder-only TASK that forced agents to demand a re-dispatch).
-    let task_steps = if role.trim().eq_ignore_ascii_case("patterns") {
-        patterns_task_block(&project, &subproject_str, &task_steps)
-    } else {
-        task_steps
-    };
     // Spec-keyed scratch lookups. With no spec there is nothing cached; pass an
     // empty key so each helper resolves to a missing path and fail-opens to "".
     let spec_key = spec.unwrap_or("");
@@ -1102,115 +1090,6 @@ mod tests {
         assert!(!out.contains("# Change Log"), "title dropped: {out}");
         // No file → empty (the heading collapses).
         assert!(read_change_log(&dir.path().join("nope")).is_empty());
-    }
-
-    /// End-to-end regression for the /scan patterns dispatch defect: rendering
-    /// `--role patterns` for a subproject with candidates must embed the SAME
-    /// worklist `scan-patterns-list` computes — slug, moldPath and exemplar
-    /// paths — in the TASK body, filtered to that subproject, so the
-    /// mustard-patterns agent can work from the rendered prompt alone.
-    #[test]
-    fn patterns_render_embeds_subproject_worklist() {
-        let dir = tempdir().unwrap();
-        anchor(dir.path());
-        std::fs::write(
-            dir.path().join(".claude").join("grain.model.json"),
-            r#"{
-              "projects": [{"name":"api","dir":"apps/api"},{"name":"web","dir":"apps/web"}],
-              "roles": [
-                {"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services","decl_kind":"class","implements":"BaseService"},
-                {"affix":"Widget","kind":"suffix","count":4,"common_dir":"apps/web/widgets"}
-              ],
-              "modules": [
-                {"path":"apps/api/services/UserService.ts"},
-                {"path":"apps/api/services/OrderService.ts"},
-                {"path":"apps/web/widgets/ChartWidget.tsx"},
-                {"path":"apps/web/widgets/TableWidget.tsx"}
-              ]
-            }"#,
-        )
-        .unwrap();
-
-        let render = || {
-            render_prompt_at(
-                dir.path(),
-                None,
-                None,
-                "patterns",
-                Path::new("apps/api"),
-                RenderMode::First,
-                None,
-                None,
-                Some("Extra orchestrator note."),
-            )
-        };
-        let rendered = render();
-        // The worklist entry rides inside the ## TASK section with every field
-        // the agent needs: slug, label, affix(+kind), declKind, count,
-        // implements, moldPath and the exemplar file paths.
-        assert!(rendered.contains("ROLE: patterns"), "role block missing: {rendered}");
-        assert!(rendered.contains("slug: api-service"), "slug missing: {rendered}");
-        assert!(rendered.contains("label: service"), "label missing: {rendered}");
-        assert!(rendered.contains("affix: Service (suffix)"), "affix missing: {rendered}");
-        assert!(rendered.contains("declKind: class"), "declKind missing: {rendered}");
-        assert!(rendered.contains("implements: BaseService"), "implements missing: {rendered}");
-        // The role tallies 5 repo-wide, but THIS subproject holds 2 — the agent
-        // is told what its own house has, never the global figure.
-        assert!(rendered.contains("count: 2"), "local count missing: {rendered}");
-        assert!(
-            rendered.contains("moldPath: apps/api/.claude/skills/api-service-pattern/SKILL.md"),
-            "moldPath missing: {rendered}"
-        );
-        assert!(
-            rendered.contains("apps/api/services/UserService.ts")
-                && rendered.contains("apps/api/services/OrderService.ts"),
-            "exemplar paths missing: {rendered}"
-        );
-        // Filtered to the requested subproject — the web cluster never leaks in.
-        assert!(!rendered.contains("web-widget"), "other subproject leaked: {rendered}");
-        // The worklist lands in the ## TASK section (before the guards line).
-        let task_body = rendered
-            .split_once("## TASK")
-            .map(|(_, rest)| rest)
-            .expect("## TASK heading present");
-        assert!(task_body.contains("slug: api-service"), "worklist not in TASK: {task_body}");
-        // `--task-text` rides after the worklist instead of being swallowed.
-        assert!(rendered.contains("Extra orchestrator note."), "task-text dropped: {rendered}");
-        // Deterministic: two renders produce identical bytes.
-        assert_eq!(rendered, render(), "patterns render must be byte-stable");
-    }
-
-    /// Empty worklist (no model / all molds exist): the TASK must explicitly
-    /// state there is nothing to author — the silent guards-reminder-only TASK
-    /// (the /scan dispatch defect) must be impossible. Exit stays 0 per the
-    /// renderer's fail-open contract; the loud part is the explicit no-op TASK
-    /// plus the stderr WARN.
-    #[test]
-    fn patterns_render_empty_worklist_states_no_candidates() {
-        let dir = tempdir().unwrap();
-        anchor(dir.path()); // no grain.model.json → collect() fail-opens to [].
-        let rendered = render_prompt_at(
-            dir.path(),
-            None,
-            None,
-            "patterns",
-            Path::new("apps/api"),
-            RenderMode::First,
-            None,
-            None,
-            None,
-        );
-        assert!(rendered.contains("NO CANDIDATES"), "explicit no-op missing: {rendered}");
-        assert!(
-            rendered.contains("Do NOT author anything"),
-            "author-nothing instruction missing: {rendered}"
-        );
-        // The TASK section survived with the explicit body (not collapsed, not blank).
-        let task_body = rendered
-            .split_once("## TASK")
-            .map(|(_, rest)| rest)
-            .expect("## TASK heading present");
-        assert!(task_body.contains("NO CANDIDATES"), "no-op not in TASK: {task_body}");
     }
 
     #[test]

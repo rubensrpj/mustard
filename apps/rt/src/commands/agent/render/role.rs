@@ -1,14 +1,11 @@
 //! Per-role delivery contracts (`{role_block}`) and the matching
 //! tool-restricted `subagent_type`.
 //!
-//! Each known role (`guards`, `patterns`, `explore`, `plan`, `review`, `qa`,
-//! and the `impl` default) gets an explicit contract: what to produce and how
-//! to deliver it. This is what makes the rendered prompt self-restricting. The
-//! `patterns` role additionally materialises its mold worklist into `## TASK`
-//! via [`patterns_task_block`] (the same worklist `scan-patterns-list` computes).
+//! Each known role (`guards`, `explore`, `plan`, `review`, `qa`, and the
+//! `impl` default) gets an explicit contract: what to produce and how to
+//! deliver it. This is what makes the rendered prompt self-restricting.
 
 use mustard_core::io::fs as mfs;
-use std::fmt::Write as _;
 use std::path::Path;
 
 /// The epistemic floor for read-only investigative dispatches (the `explore`
@@ -27,7 +24,7 @@ pub const EPISTEMIC_FLOOR: &str = "Settle existence/duplication questions by Gre
 
 /// The intentional-`<MEMORY>` contract carried by the roles that PRODUCE
 /// knowledge — the `impl` default and `plan`. Read-only investigative roles
-/// (`explore`, `review`, `qa`, `guards`, `patterns`) do not carry it. One
+/// (`explore`, `review`, `qa`, `guards`) do not carry it. One
 /// definition, two arms: `subagent_inject::extract_memory_block` captures the
 /// tag without filtering it, relying on this bar (a real choice AND
 /// transferable) to keep emission scarce — so the two arms must never state it
@@ -52,7 +49,6 @@ const MEMORY_CONTRACT: &str = "MEMORY: when you finish, emit ONE `<MEMORY>one-li
 pub(crate) fn build_role_block(role: &str, project: &Path, subproject: &str, spec_lang: &str) -> String {
     match role.trim().to_ascii_lowercase().as_str() {
         "guards" => build_guards_role_block(project, subproject, spec_lang),
-        "patterns" => build_patterns_role_block(subproject),
         "explore" => {
             // The epistemic discipline lives in one place (EPISTEMIC_FLOOR) so
             // the rendered contract and the `subagent_inject` floor never drift.
@@ -156,164 +152,6 @@ fn build_guards_role_block(project: &Path, subproject: &str, spec_lang: &str) ->
     )
 }
 
-/// Build the `patterns` role block — the mold-authoring enrich instruction (the
-/// pattern twin of [`build_guards_role_block`]). The worklist itself is
-/// materialised into `## TASK` by [`patterns_task_block`]; this block carries
-/// the delivery contract: read-only, canonical mold format, one demarcated
-/// block per mold that the caller pipes to `scan-patterns-apply`. Molds are
-/// English technical prose by policy (see `mustard-patterns.md`), so no locale
-/// enters here.
-fn build_patterns_role_block(subproject: &str) -> String {
-    format!(
-        "ROLE: patterns\n\
-         You author pattern skill molds for {subproject} ONLY — one SKILL.md per cluster \
-         listed in ## TASK, and NEVER one that is not listed there (hand-authored/adopted \
-         molds were already filtered out; never the workspace root). Every mold is authored \
-         FRESH from the CURRENT exemplars — the old mold text was swept before you ran, so \
-         there is nothing to echo. READ 2-3 of \
-         the cluster's exemplar files (their paths are in the worklist) BEFORE authoring \
-         its mold: the mold teaches what they share — folder, extension, naming, shape \
-         (traits, exports, error style, test placement) and what a new member must/must-not \
-         do. Read-only: deliver every mold in your final message, each inside \
-         `=== FILE: <moldPath> ===` ... `=== END ===` using the exact moldPath from the \
-         worklist; do NOT write any file — the caller pipes your WHOLE return to \
-         scan-patterns-relay, which splits it on those demarcators, so deliver every mold \
-         in one message: the RELAY has no size limit. The CHANNEL carrying your return does, \
-         and it cuts from the FRONT — so open with your first `=== FILE:` block and write no \
-         preamble; whatever sits at the top is lost first, and it takes the earliest molds \
-         with it. Canonical mold format (frontmatter first): name = the \
-         worklist slug + `-pattern`; description starting \"Use when adding or refactoring \
-         ...\" (one concrete sentence); `paths:` COPIED VERBATIM from the worklist entry's \
-         `paths` block — the worklist prints the exact YAML lines, so paste them as printed \
-         (this is the one key the platform reads to decide when the mold loads; never widen \
-         it, never invent a folder, and omit the key only when the worklist gave no value); \
-         `tags: [add, refactor]`; `appliesTo: [<label>]`; \
-         `scope: [code-editing]`; `source: scan`; `metadata.generated_by: scan` + \
-         `cluster.label`. Body: `## Purpose` (3-6 grounded sentences), `## Convention` — \
-         whose FIRST line is the worklist's `convention` value COPIED VERBATIM (folder, \
-         extension and tally are census facts, not yours to estimate; the apply refuses a \
-         mold that reworded them), after which you add what only reading reveals \
-         (visibility habits, test placement, derive sets); `## How to apply` (where a new \
-         member goes and what it follows), `## Examples` (2-3 real `Ref:` paths you read AND, \
-         under them, a fenced code block PASTED from one of those files — the 5-15 lines that \
-         ARE the shape a new member copies, verbatim from what you opened, never retyped from \
-         memory or invented; a section that only lists paths points instead of teaching, and \
-         leaves the reader to guess which part of the file was the lesson. The apply refuses a \
-         path that does not exist, refuses a section with no code block, and refuses a block \
-         whose lines appear in none of the cited files). \
-         Exactly those four `## ` sections, each ONCE, in that order and no others — the \
-         apply refuses a mold whose sections differ. \
-         Never cite a framework the exemplars don't use. NEVER write a universal claim \
-         (\"every\", \"always\", \"all of them\", \"never\") unless you checked EVERY member \
-         of the cluster; if you read three files, say \"the three exemplars\" or \"most\" — \
-         an overstated rule is worse than a hedged one, because a reader who finds the \
-         counter-example stops trusting the whole mold. A cluster you refuse (no teachable shape, \
-         exemplars unreadable or generated-only, role already covered by another mold) → \
-         deliver `=== DECLINE: <slug> ===` <one-line reason> `=== END ===` so the caller \
-         records it and the NEXT scan round skips it (the decline ledger clears after one \
-         cycle — a later scan may re-propose the cluster)."
-    )
-}
-
-/// Materialise the `--role patterns` TASK body: the mold worklist behind
-/// `scan-patterns-list` ([`crate::commands::scan_patterns::list::collect`] —
-/// the SAME function, never a re-derivation), filtered to `subproject`. Any
-/// `--task-text` the caller passed rides after the worklist.
-///
-/// Empty worklist (all molds exist / nothing mineable / unknown subproject):
-/// the TASK explicitly states "no candidates — author nothing" and a WARN
-/// lands on stderr. The renderer's contract is fail-open + always exit 0 (see
-/// the module header), so a loud non-zero exit is not available here; the
-/// explicit no-op TASK makes the silent-empty dispatch impossible while
-/// keeping the contract. Deterministic: `collect` is byte-stable and the
-/// rendering below adds no clock/path noise. No `## ` heading is emitted —
-/// the worklist must stay inside the template's `## TASK` section body
-/// (`collapse_empty_sections` would otherwise drop the emptied heading).
-pub(crate) fn patterns_task_block(project: &Path, subproject: &str, extra: &str) -> String {
-    // The filter lives with the worklist, not here: `scan-patterns-list` offers
-    // the SAME narrowing on its `--subproject` flag, so this render is one of
-    // two consumers of one filter rather than a second copy of it.
-    let normalized = crate::commands::scan_patterns::list::normalize_subproject(subproject);
-    let mine: Vec<crate::commands::scan_patterns::list::Candidate> =
-        crate::commands::scan_patterns::list::collect_in(project, Some(subproject));
-    let mut out = if mine.is_empty() {
-        eprintln!(
-            "agent-prompt-render: WARN: --role patterns: empty mold worklist for \
-             '{normalized}' — rendering an explicit no-candidates TASK"
-        );
-        "NO CANDIDATES: the mold worklist for this subproject is empty — every mineable \
-         cluster already has its `-pattern` skill or nothing clears the quality bar. Do \
-         NOT author anything; reply \"no candidates\" and stop."
-            .to_string()
-    } else {
-        render_patterns_worklist(&mine)
-    };
-    if !extra.trim().is_empty() {
-        out.push_str("\n\n");
-        out.push_str(extra.trim());
-    }
-    out
-}
-
-/// Render the filtered worklist as the TASK body: one entry per candidate with
-/// slug, label, affix (+kind), declKind, count, implements (when present), the
-/// moldPath the returned block must name, and the exemplar files to read.
-/// Plain bullets only — no `## ` heading (see [`patterns_task_block`]).
-fn render_patterns_worklist(
-    candidates: &[crate::commands::scan_patterns::list::Candidate],
-) -> String {
-    let mut out = String::from(
-        "Mold worklist — author ONE mold per cluster below, ONLY these \
-         (delivery contract in ## ROLE):\n",
-    );
-    for c in candidates {
-        let decl = if c.decl_kind.is_empty() { "-" } else { c.decl_kind.as_str() };
-        let kind = if c.affix_kind.is_empty() { "-" } else { c.affix_kind.as_str() };
-        let _ = write!(
-            out,
-            "- slug: {} | label: {} | affix: {} ({kind}) | declKind: {decl} | count: {}",
-            c.slug, c.label, c.affix, c.count
-        );
-        if let Some(imp) = c.implements.as_deref().filter(|s| !s.is_empty()) {
-            let _ = write!(out, " | implements: {imp}");
-        }
-        out.push('\n');
-        let _ = writeln!(out, "  moldPath: {}", c.mold_path);
-        // The glob is computed from the census, not authored: the agent copies
-        // it verbatim into `paths:`. It is printed as the LITERAL YAML block the
-        // frontmatter must carry, never as a comma-joined value — the
-        // instruction says "copy verbatim", so whatever shape this line prints
-        // is the shape that reaches the mold. Joined by comma it printed
-        // `paths: a/**, b/**`, which YAML reads as one scalar string rather than
-        // the list the key needs, and the agent obeyed the instruction: measured
-        // at 19 refusals over 79 molds in one enrich. Emitted even when empty,
-        // so a missing value reads as "this cluster has none" rather than as a
-        // dropped line.
-        if c.paths.is_empty() {
-            let _ = writeln!(out, "  paths: (none for this cluster — omit the key)");
-        } else {
-            let _ = writeln!(out, "  paths (copy the block below verbatim into the frontmatter):");
-            let _ = writeln!(out, "    paths:");
-            for p in &c.paths {
-                let _ = writeln!(out, "      - {p}");
-            }
-        }
-        // Folder / extension / tally come from the census, never from the
-        // agent's estimate — the one class of claim molds were measurably
-        // getting wrong. Copied verbatim and verified by scan-patterns-apply.
-        let _ = writeln!(
-            out,
-            "  convention (copy verbatim as the FIRST line under ## Convention): {}",
-            crate::commands::scan_patterns::list::convention_line(c)
-        );
-        let _ = writeln!(out, "  exemplars (read these first):");
-        for e in &c.exemplars {
-            let _ = writeln!(out, "    - {e}");
-        }
-    }
-    out.trim_end().to_string()
-}
-
 /// Read the `<!-- facts: ... -->` payload from a subproject's pending `## Guards`
 /// block (the scan's grounding context: `kind=...; frameworks=...`). Empty when
 /// the file or the facts line is absent. Shape-mirrors [`super::sections::read_guards_block`]
@@ -352,8 +190,8 @@ fn qualify_plugin_agent(name: &str) -> String {
 /// Read-only roles resolve to **tool-restricted** agents so they physically
 /// cannot write: `explore` → the built-in `Explore` (no Edit/Write), `plan` →
 /// the built-in `Plan` (no Edit/Write), `review`/`qa` → `mustard:mustard-review`
-/// (Read/Grep/Glob/Bash — Bash for tests only), `guards` → `mustard:mustard-guards`
-/// and `patterns` → `mustard:mustard-patterns` (Read/Grep/Glob only). The
+/// (Read/Grep/Glob/Bash — Bash for tests only) and `guards` →
+/// `mustard:mustard-guards` (Read/Grep/Glob only). The
 /// plugin-owned agents carry the [`PLUGIN_NAMESPACE`] prefix (built-ins stay
 /// bare) — without it Claude Code cannot resolve the plugin agent and silently
 /// falls back to `general-purpose`. Writing roles (`impl` and any other) stay
@@ -367,7 +205,6 @@ pub fn recommended_subagent_type(role: &str) -> String {
         "plan" => "Plan".to_string(),
         "review" | "qa" => qualify_plugin_agent("mustard-review"),
         "guards" => qualify_plugin_agent("mustard-guards"),
-        "patterns" => qualify_plugin_agent("mustard-patterns"),
         _ => "general-purpose".to_string(),
     }
 }
@@ -534,27 +371,8 @@ mod tests {
         assert_eq!(recommended_subagent_type("review"), "mustard:mustard-review");
         assert_eq!(recommended_subagent_type("qa"), "mustard:mustard-review");
         assert_eq!(recommended_subagent_type(" Guards "), "mustard:mustard-guards");
-        assert_eq!(recommended_subagent_type("patterns"), "mustard:mustard-patterns");
         assert_eq!(recommended_subagent_type("impl"), "general-purpose");
         assert_eq!(recommended_subagent_type("backend"), "general-purpose");
-    }
-
-    #[test]
-    fn patterns_role_block_carries_delivery_contract() {
-        // The patterns block must scope to the subproject, demand the exemplar
-        // reads, name the demarcated return format and forbid self-writing —
-        // the caller pipes the WHOLE return to scan-patterns-relay. Size is
-        // stated two-sidedly: the relay has no limit, the CHANNEL does and it
-        // cuts from the front — so the block asks for blocks-first, no preamble.
-        let dir = tempdir().unwrap();
-        let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
-        assert!(block.starts_with("ROLE: patterns"), "cue missing: {block}");
-        assert!(block.contains("apps/api"), "subproject scope missing: {block}");
-        assert!(block.contains("=== FILE:"), "demarcated return format missing: {block}");
-        assert!(block.contains("scan-patterns-relay"), "delivery contract missing: {block}");
-        assert!(block.contains("do NOT write any file"), "write-restriction missing: {block}");
-        // Read-only role → no MEMORY contract (not a knowledge producer).
-        assert!(!block.contains("<MEMORY>"), "patterns must not carry MEMORY: {block}");
     }
 
     #[test]
@@ -655,7 +473,6 @@ mod tests {
         assert_eq!(recommended_subagent_type("review"), format!("{ns}mustard-review"));
         assert_eq!(recommended_subagent_type("qa"), format!("{ns}mustard-review"));
         assert_eq!(recommended_subagent_type("guards"), format!("{ns}mustard-guards"));
-        assert_eq!(recommended_subagent_type("patterns"), format!("{ns}mustard-patterns"));
         // Built-in harness types are not plugin-owned → stay bare (no `<ns>:`).
         for t in [
             recommended_subagent_type("explore"),
@@ -703,99 +520,4 @@ mod tests {
         );
     }
 
-    /// The mold contract must name `paths:` — the ONE frontmatter key Claude
-    /// Code itself reads to decide when a mold loads. Without it in the
-    /// contract, the agent writes three keys the platform ignores and none it
-    /// honours, and every mold the scan produces stays unscoped.
-    ///
-    /// The three Mustard-owned keys must survive alongside it: `skill-resolve`
-    /// ranks on them, so dropping them would trade one cost for another.
-    #[test]
-    fn patterns_contract_requires_paths_and_keeps_the_ranking_keys() {
-        let dir = tempdir().unwrap();
-        anchor(dir.path());
-        let block = build_role_block("patterns", dir.path(), "api", "en-US");
-        assert!(block.starts_with("ROLE: patterns"));
-        assert!(
-            block.contains("`paths:`"),
-            "the mold contract must require the platform's own scoping key: {block}"
-        );
-        for key in ["tags:", "appliesTo:", "scope:"] {
-            assert!(block.contains(key), "ranking key {key} must survive: {block}");
-        }
-    }
-
-    /// The worklist tells the agent to copy `paths:` VERBATIM, so whatever
-    /// shape it prints is the shape that reaches the frontmatter. It printed the
-    /// globs comma-joined on one line — a YAML scalar, not the list the key
-    /// needs — and the agent obeyed: 19 refusals over 79 molds in one enrich,
-    /// the instruction fighting the validator. It now prints the literal YAML
-    /// block, so obeying it produces the canonical form.
-    #[test]
-    fn the_worklist_prints_paths_as_the_yaml_the_mold_must_carry() {
-        let dir = tempdir().unwrap();
-        anchor(dir.path());
-        std::fs::write(
-            dir.path().join(".claude/grain.model.json"),
-            r#"{"projects":[{"name":"api","dir":"apps/api"}],
-                "roles":[{"affix":"Service","kind":"suffix","count":5,"common_dir":"apps/api/services"}],
-                "modules":[{"path":"apps/api/services/UserService.x"},{"path":"apps/api/services/OrderService.x"}]}"#,
-        )
-        .unwrap();
-
-        let task = patterns_task_block(dir.path(), "apps/api", "");
-        assert!(
-            task.contains(
-                "  paths (copy the block below verbatim into the frontmatter):\n    paths:\n      - apps/api/services/**\n"
-            ),
-            "the worklist must print the literal YAML block: {task}"
-        );
-        // The comma-joined scalar that caused the refusals is gone.
-        assert!(
-            !task.contains("paths (copy verbatim into the frontmatter):"),
-            "the one-line joined form must not survive: {task}"
-        );
-        // Dedented, the printed block IS the frontmatter key — the whole point.
-        let printed: Vec<&str> = task
-            .lines()
-            .skip_while(|l| !l.trim_start().starts_with("paths:"))
-            .take_while(|l| l.trim_start().starts_with("paths:") || l.trim_start().starts_with("- "))
-            .map(|l| l.trim_start())
-            .collect();
-        assert_eq!(printed, ["paths:", "- apps/api/services/**"], "block shape: {task}");
-    }
-
-    /// O contrato pedia caminho, e caminho era o que voltava: dezesseis
-    /// moldes cuja seção `## Examples` é só uma lista de arquivos. Mudar o apply
-    /// sozinho não bastaria (o agente seria recusado por obedecer ao contrato),
-    /// e mudar só o contrato não bastaria (prosa que ninguém mede volta sozinha
-    /// ao formato antigo) — por isso as duas metades andam juntas, e este teste
-    /// guarda a metade que PEDE.
-    #[test]
-    fn the_mold_contract_demands_a_code_block() {
-        let dir = tempdir().unwrap();
-        anchor(dir.path());
-        let block = build_role_block("patterns", dir.path(), "apps/api", "en-US");
-        assert!(block.starts_with("ROLE: patterns"));
-        assert!(
-            block.contains("fenced code block"),
-            "the contract must ask for the snippet itself: {block}"
-        );
-        assert!(
-            block.contains("PASTED"),
-            "the snippet must be pasted from a file the agent opened: {block}"
-        );
-        // A metade que MEDE é nomeada no contrato, para que a recusa nunca
-        // chegue como surpresa.
-        assert!(
-            block.contains("refuses a section with no code block"),
-            "the contract must state that the apply enforces it: {block}"
-        );
-        assert!(
-            block.contains("appear in none of the cited files"),
-            "the contract must state the grounding rule: {block}"
-        );
-        // O `Ref:` continua sendo pedido — o trecho é acrescentado, não troca.
-        assert!(block.contains("`Ref:` paths you read"), "the paths survive: {block}");
-    }
 }

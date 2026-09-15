@@ -11,7 +11,6 @@ use std::path::Path;
 use mustard_core::io::fs;
 
 use crate::commands::scan_claude::GUARDS_PENDING_OPEN;
-use crate::commands::scan_patterns::list::TEST_SEGMENTS;
 
 /// Directories never descended into — mirrors `docs_stale_check::IGNORE_DIRS`
 /// so the walk stays cheap and never explodes into build/vendor trees.
@@ -23,6 +22,12 @@ const IGNORE_DIRS: &[&str] = &[
 
 /// Directory recursion depth cap — a working copy this deep is pathological.
 const MAX_DEPTH: usize = 12;
+
+/// Path segments that mark a directory as test/fixture terrain. A subproject
+/// guard describes PRODUCTION convention, so a `CLAUDE.md` sitting under one of
+/// these is not part of the census.
+const TEST_SEGMENTS: &[&str] =
+    &["tests", "test", "fixtures", "__tests__", "spec", "specs", "__mocks__", "mocks"];
 
 /// One pending-guards worklist entry.
 pub(crate) struct Pending {
@@ -105,9 +110,7 @@ fn walk(dir: &Path, root: &Path, owned: &str, out: &mut PendingScaffolds, depth:
 
 /// Whether a directory NAME is one of the conventional test/fixture segments.
 ///
-/// The list is [`TEST_SEGMENTS`], owned by the mold worklist — the other half of
-/// the same enrich — so the two halves can never disagree about what test
-/// terrain is. Case-insensitive because a `Tests/` directory is the same
+/// The list is [`TEST_SEGMENTS`]. Case-insensitive because a `Tests/` directory is the same
 /// terrain; every segment in the list is ASCII, so the ASCII comparison is the
 /// whole answer and costs no allocation inside the walk.
 fn is_test_segment(name: &str) -> bool {

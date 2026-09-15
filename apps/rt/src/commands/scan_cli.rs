@@ -13,7 +13,7 @@
 use clap::Subcommand;
 use std::path::PathBuf;
 
-use crate::commands::{scan, scan_equivalences, scan_patterns};
+use crate::commands::{scan, scan_equivalences};
 
 /// The `run` subcommands owned by the `/scan` chain (mine and enrich the repo model).
 #[derive(Debug, Subcommand)]
@@ -87,17 +87,6 @@ pub enum ScanCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Derive the pattern-skill *mold* worklist from `grain.model.json`: for
-    /// each mined role cluster (≥3 members, not under a test/fixture path),
-    /// propose a `{subproject}-{role}-pattern` mold with real hand-written
-    /// exemplars — one per subproject the cluster actually lives in. Every
-    /// proposal is a create: `scan-patterns-sweep` deletes the machine-authored
-    /// molds before authoring, so there is no refresh to distinguish.
-    /// Hand-edited or `source: manual` molds and slugs recorded in
-    /// `.claude/scan-declined.json` are never re-proposed. Uncapped. Emits a
-    /// JSON array `[{subproject, label, slug, moldPath, affix, exemplars,
-    /// ...}]`. Fail-open: a
-    /// missing/unparseable model → `[]`.
     /// Print the LAPIDATION KIT: how this project names things — the mined
     /// roles (what a thing is called and where that kind lives), the shapes
     /// (roles that recur together, i.e. what a new entity usually needs) and
@@ -107,125 +96,9 @@ pub enum ScanCmd {
     /// prompt and never suggests — the menu is deterministic, the choice is
     /// yours. Fail-open: a missing/unparseable model prints the empty kit.
     #[command(name = "scan-lapidation")]
-    #[command(display_order = 72)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
+    #[command(display_order = 68)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
     ScanLapidation {
         /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    #[command(name = "scan-patterns-list")]
-    #[command(display_order = 53)]
-    ScanPatternsList {
-        /// Workspace root (must contain `.claude/grain.model.json`). Defaults to `.`.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Emit the DROPPED roles instead of the worklist: `[{affix, kind,
-        /// count, commonDir, subproject, reason}]`, reason from a closed set
-        /// (`below_cluster_min`, `no_common_dir`, `test_terrain`, `no_owner`,
-        /// `empty_label`, `declined`, `mold_exists`, `no_exemplars`,
-        /// `house_below_exemplars`, `covers_whole_subproject`). Answers
-        /// "why is there no mold for X here?" without re-reading the funnel —
-        /// every drop point is otherwise silent. Default output is unchanged.
-        #[arg(long)]
-        rejected: bool,
-        /// Narrow EITHER payload to ONE subproject dir (root-relative, e.g.
-        /// `apps/rt`) — the convergence question "how many clusters are left in
-        /// this house?", which otherwise needed a grouping script over the whole
-        /// list. Normalised like the render's own filter (backslashes folded,
-        /// trailing `/` and leading `./` stripped), so either spelling resolves.
-        /// An unknown subproject yields `[]`, never everything. Omitted: the
-        /// whole workspace, byte-identical to before this flag existed.
-        #[arg(long)]
-        subproject: Option<String>,
-    },
-    /// Write one enrich-agent-authored pattern mold to its
-    /// `{subproject}/.claude/skills/{slug}-pattern/SKILL.md`, create-only,
-    /// path-shape-guarded, and stamped with the `<!-- mustard:generated -->`
-    /// origin notice. An existing mold is left untouched (the sweep already
-    /// removed the generated ones; a survivor is hand-authored). Being a `run`
-    /// command it sidesteps the
-    /// background-isolation gate that blocks the orchestrator's own Write.
-    #[command(name = "scan-patterns-apply")]
-    #[command(display_order = 54)]
-    ScanPatternsApply {
-        /// Path to the mold `SKILL.md` to write.
-        #[arg(long)]
-        path: PathBuf,
-        /// Authored SKILL.md body; `-` reads it from stdin (the default) and
-        /// `@<path>` reads it from that file — the SAME three channels
-        /// `scan-patterns-relay` accepts, resolved by the same reader. `@` opens
-        /// a path only when the value carries no newline, so a literal body
-        /// (which always spans lines) is never mistaken for one.
-        /// `allow_hyphen_values` so a body starting with `-`/`---` frontmatter
-        /// is not mistaken for a flag.
-        #[arg(long, default_value = "-", allow_hyphen_values = true)]
-        content: String,
-        /// Workspace root the mold's claims are checked against — every `Ref:`
-        /// path must exist under it, and the `paths:` frontmatter must equal
-        /// the globs `scan-patterns-list` computed for this cluster. Defaults
-        /// to `.`, which is where the orchestrator runs the enrich from.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Record the enrich agent's justified refusal of a mold candidate so the
-    /// SAME scan run does not re-propose it. Store: `.claude/scan-declined.json`
-    /// (slug → reason) — run-scoped: `scan-patterns-sweep` clears it at the
-    /// start of every scan, so each run re-judges every cluster fresh.
-    #[command(name = "scan-patterns-decline")]
-    #[command(display_order = 66)] // appended at the tail: slots are a global gapless permutation (see tests/run_command_surface.rs)
-    ScanPatternsDecline {
-        /// Workspace root (holds `.claude/scan-declined.json`). Defaults to `.`.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// The worklist `slug` being declined.
-        #[arg(long)]
-        slug: String,
-        /// One-line justification. `allow_hyphen_values` so a reason starting
-        /// with `-` is not mistaken for a flag.
-        #[arg(long, allow_hyphen_values = true)]
-        reason: String,
-    },
-    /// Apply a patterns agent's WHOLE return in ONE call: split the envelope on
-    /// the `=== FILE: <moldPath> ===` / `=== DECLINE: <slug> ===` demarcators
-    /// the prompt asked for and route each block through the same rules
-    /// `scan-patterns-apply` and `scan-patterns-decline` enforce. Replaces the
-    /// per-block hand-off, which made the orchestrator the envelope parser and
-    /// therefore scaled with a subproject's cluster count — twelve molds in one
-    /// 55 KB return is where that broke. A bad block never stops a good one:
-    /// every block gets a verdict in the JSON report (`{ok, blocks, created,
-    /// declined, refused, collisions, preserved, skipped}`), and `ok:false`
-    /// names exactly which agent to re-dispatch. Fail-open: a blockless
-    /// envelope prints an empty report and exits 0.
-    #[command(name = "scan-patterns-relay")]
-    #[command(display_order = 73)] // tail slot — keep the display_order permutation gapless
-    ScanPatternsRelay {
-        /// Workspace root the molds are written under. Defaults to `.`.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// The agent's return. `-` reads it from stdin (the default — a whole
-        /// return is too large for an argv) and `@<path>` reads it from that
-        /// file, which is the form the harness FORCES when a return exceeds its
-        /// inline limit and is persisted to disk. The file may hold the raw
-        /// envelope or the harness's own JSON shape; both are unwrapped, and a
-        /// path that cannot be read is REPORTED rather than degraded to an empty
-        /// envelope. `@` opens a path only when the value carries no newline, so
-        /// a literal envelope (which always spans lines) is never mistaken for
-        /// one. `allow_hyphen_values` so an envelope opening with `-`/`---` is
-        /// not mistaken for a flag.
-        #[arg(long, default_value = "-", allow_hyphen_values = true)]
-        content: String,
-    },
-    /// Delete every mustard-generated pattern skill (`source: scan`) under a
-    /// workspace BEFORE the enrich re-authors them, so each mold is written
-    /// fresh from the current exemplars with no bias from its old text.
-    /// Preserves hand-authored/adopted molds (`source: manual`). Also clears
-    /// the run-scoped decline ledger (`.claude/scan-declined.json`) so every
-    /// cluster is re-judged. Emits `{removed:[…], preserved:[…],
-    /// declinesCleared:n}`. Fail-open.
-    #[command(name = "scan-patterns-sweep")]
-    #[command(display_order = 67)] // tail slot — keep the display_order permutation gapless
-    ScanPatternsSweep {
-        /// Workspace root to sweep. Defaults to the current directory.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -240,16 +113,5 @@ pub fn dispatch(cmd: ScanCmd) {
         }
         ScanCmd::EquivalenceLearn { term, tokens, root } => scan_equivalences::run_learn(&root, &term, &tokens),
         ScanCmd::ScanLapidation { root } => crate::commands::lapidation::run(&root),
-        ScanCmd::ScanPatternsList { root, rejected, subproject } => {
-            scan_patterns::list::run(&root, rejected, subproject.as_deref());
-        }
-        ScanCmd::ScanPatternsApply { path, content, root } => {
-            scan_patterns::apply::run(&path, &content, &root);
-        }
-        ScanCmd::ScanPatternsDecline { root, slug, reason } => {
-            scan_patterns::decline::run(&root, &slug, &reason);
-        }
-        ScanCmd::ScanPatternsRelay { root, content } => scan_patterns::relay::run(&root, &content),
-        ScanCmd::ScanPatternsSweep { root } => scan_patterns::sweep::run(&root),
     }
 }

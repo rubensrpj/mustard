@@ -1530,7 +1530,7 @@ fn settle_refusal_prose_teaches_the_fields_the_gate_now_emits() {
 
 /// The role names `full-plan.md` declares reserved. `review`/`qa` are one pair
 /// of names for one agent, which is why six names spell five reservations.
-const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards", "patterns"];
+const RESERVED_ROLES: &[&str] = &["plan", "explore", "review", "qa", "guards"];
 
 /// The names that same paragraph offers as ordinary writing roles.
 const WRITING_ROLE_EXAMPLES: &[&str] = &["backend", "proof", "discovery", "bootstrap"];

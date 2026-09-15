@@ -112,38 +112,26 @@ flowchart TD
 
 ## `scan` — Modelo do código-base *(fluxo interno)*
 
-Minera o repositório para `grain.model.json` (determinístico, agnóstico de linguagem, **sem AI**) e enriquece os mapas por subprojeto com os moldes de padrão. O enriquecimento é **padrão**: roda em silêncio ou pula em silêncio (fail-open), **nunca** pede confirmação de custo.
+Minera o repositório para `grain.model.json` (determinístico, agnóstico de linguagem, **sem AI**) e regrava o mapa de cada subprojeto.
 
-**Não é passo que se roda.** O mapa é atualizado por `mustard-rt run scan`, que lê só o que mudou e nunca escreve no git; nada o dispara sozinho. Os moldes são escritos por agentes, por isso este fluxo existe, e quem o alcança é o roteador. Nenhum `CLAUDE.md` é escrito.
+**Não é passo que se roda.** O mapa é atualizado por `mustard-rt run scan`, que lê só o que mudou e nunca escreve no git; nada o dispara sozinho. Quem alcança este fluxo é o roteador. Nenhum `CLAUDE.md` é escrito.
 
 | | |
 |---|---|
 | **Trigger** | despachado pelo roteador (nunca digitado); `[--root <dir>] [--out <path>]` |
-| **Backend** | `scan --full` · `scan-patterns-sweep/list/relay/apply/decline` · `agent-prompt-render --role patterns` |
-| **Produz** | `.claude/grain.model.json` · `.claude/scan-map.md` por unidade · moldes `{role}-pattern/SKILL.md` frescos |
-| **Regra** | O passo determinístico nunca lê fonte; a AI do enriquecimento escreve SÓ moldes — todo molde `source: scan` é varrido e re-autorado do zero a cada scan (adoção = `source: manual`); recusa vale UMA rodada |
+| **Backend** | `scan --full` |
+| **Produz** | `.claude/grain.model.json` · `.claude/scan-map.md` por unidade |
+| **Regra** | O passo é determinístico: nunca lê fonte, nunca chama AI, nunca escreve no git |
 
 ```mermaid
 flowchart TD
     start(["roteador"]) --> full["mustard-rt run scan --full<br/>(rust — sem AI, sem ler fonte)"]
     full --> model[("grain.model.json<br/>+ .claude/scan-map.md por unidade<br/>(nenhum CLAUDE.md é escrito)")]
 
-    subgraph enrich["Enriquecimento padrão (fail-open)"]
-        model --> sw["scan-patterns-sweep<br/>(apaga moldes source:scan +<br/>ledger de recusas — tudo fresco)"]
-        sw --> pl["scan-patterns-list<br/>(clusters de role ≥3, sem teto)"]
-        pl --> pag["Task: 1 agente mustard-patterns<br/>por subprojeto (read-only, 1 msg)"]
-        pag --> rel["scan-patterns-relay<br/>(retorno INTEIRO: stdin ou<br/>arquivo persistido via --content @path)"]
-        rel --> pap["scan-patterns-apply<br/>(create-only, atômico, etiqueta EN)"]
-        rel --> pd["scan-patterns-decline<br/>(recusa registrada — vale 1 rodada)"]
-    end
-
-    pap --> done(["consumido por /mustard:feature e<br/>/mustard:bugfix via digest"])
-    pd --> done
+    model --> done(["consumido por /mustard:feature e<br/>/mustard:bugfix via digest"])
 ```
 
 > Um Guard pode abrir com `[critical]` na forma checável `never <proibido> in <glob>` — vira gate de edição (`MUSTARD_GUARD_GATE_MODE=strict|warn`, default `warn`). Guards sem marca são consultivos.
-
-> **Retorno do agente de moldes.** Ele vai INTEIRO para `scan-patterns-relay`: `--content -` (stdin, o padrão) ou `--content @<caminho>` quando o harness passou do limite inline e persistiu o retorno em arquivo — o mesmo leitor aceita o envelope cru **e** o JSON do harness (desembrulha os campos `text`), e um caminho ilegível vira `ok:false` em vez de envelope vazio. `scan-patterns-apply` aceita os mesmos três canais (`-`, `@<caminho>`, corpo literal). Dividir o envelope só nas fronteiras `=== END ===` é permitido (o relay é idempotente por bloco e o relatório é aditivo); dentro de um bloco, nunca. Para medir a convergência de um subprojeto: `scan-patterns-list --subproject <dir>` (com `--rejected`, os motivos de descarte).
 
 ---
 
@@ -482,7 +470,7 @@ flowchart TD
 | `/mustard:pr` | **porta** · PR | `pr-list`, `pr-review`, `pr-merge`, `review-prefetch`, `diff-context`, `close-orchestrate` | não |
 | `/mustard:spec` | **porta** · core | `active-specs`, `resume-bootstrap`, `wave-advance`, `close-pipeline` | indireto |
 | `/mustard:upsert` | **porta** · instalação | `upsert`, `unhook`, `rehook`, `doctor` | não |
-| `scan` | fluxo interno | `scan --full`, `scan-patterns-*` | **produz** |
+| `scan` | fluxo interno | `scan --full` | **produz** |
 | `/mustard:feature` | fluxo interno · core | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
 | `/mustard:bugfix` | fluxo interno · core | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |
 | `/mustard:task` | fluxo interno · delegação | `agent-prompt-render`, `feature` (digest), `equivalence-learn` | indireto |

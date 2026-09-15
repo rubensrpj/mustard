@@ -1129,18 +1129,19 @@ const CENSUS_SKILL_FILE: &str = "SKILL.md";
 /// takes: erring towards "there is work" costs a commit, erring the other way
 /// costs someone's work.
 ///
-/// The whole question goes to
-/// [`crate::commands::scan_patterns::origin::is_mustard_generated`], which IS
-/// the canonical rule and already reads through the core's frontmatter parser
-/// (BOM and CRLF tolerant, and aware of the `metadata:` block, so an indented
-/// `source:` in there is never mistaken for the top key). Rewriting the two
-/// equivalent lines here is exactly how this gate and the sweep would come to
-/// disagree about who wrote the same file — which was the defect.
+/// The `source:` field is read through the core's frontmatter parser (BOM and
+/// CRLF tolerant, and aware of the `metadata:` block, so an indented `source:`
+/// in there is never mistaken for the top key), which is the one reader of that
+/// key in the crate.
 fn census_skill_kind(root: &Path, path: &str) -> DirtyPathKind {
     let Ok(text) = std::fs::read_to_string(root.join(path)) else {
         return DirtyPathKind::Work;
     };
-    if crate::commands::scan_patterns::origin::is_mustard_generated(&text) {
+    let machine_written = mustard_core::domain::skill::frontmatter::parse(&text)
+        .ok()
+        .and_then(|fm| fm.source())
+        .is_some_and(|s| s.eq_ignore_ascii_case("scan"));
+    if machine_written {
         DirtyPathKind::Census
     } else {
         DirtyPathKind::Work
