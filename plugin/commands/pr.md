@@ -134,7 +134,7 @@ Preconditions checked before it runs: an unresolved `BLOCKED` blocks; `CONCERN`/
 **Reading the QA half of that report.** `qa-run` executes each `AC-N` carrying a `Command:` in the operative AC file (`spec.md`, or `wave-plan.md` after a decompose) and emits `qa.result`; the close gate reads the record, never a summary.
 
 - **`pass`** → the chain continues into the finalize.
-- **`fail`** → list the failing AC. After 3 failures → `AskUserQuestion`: (a) fix + retry, (b) relax the AC through `ac-amend`, (c) abort.
+- **`fail`** → list the failing AC. After 3 failures → `AskUserQuestion`: (a) fix + retry, (b) relax the AC, (c) abort.
 - **`skip`** → a skip is not a verification, so it blocks the close exactly like a fail. Two shapes, told apart by `criteria` in the result. **No AC at all** (`criteria` empty) → the spec has nothing to verify, so it has nothing to claim: author a criterion (one reproduction command, red before the work and green after) and re-run. **ACs exist but every one skipped** (per-AC timeout 120s, spawn failure, or a self-invoked run that cannot rebuild the binary its criteria target) → fix the AC commands (raise the timeout, split the AC) and re-run, or record the verdict from an EXTERNAL `mustard-rt run qa-run --spec {spec}` — that is the run that can actually attempt them.
 
 Env: `MUSTARD_QA_GATE_MODE=strict|warn|off`. Any `spec.md`/`wave-plan.md` edit after a pass marks QA STALE — the gate blocks until it is re-run. If `mustard-rt` is unavailable, dispatch `Task(general-purpose)` with `${CLAUDE_PLUGIN_ROOT}/context/qa/qa.core.md`.

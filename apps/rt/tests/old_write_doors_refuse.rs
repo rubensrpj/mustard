@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Os comandos antigos que gravavam na spec — o QA, os fechamentos, o
-//! veredito, os critérios e o merge — recusam na entrada, nos dois idiomas,
+//! veredito e o merge — recusam na entrada, nos dois idiomas,
 //! sem gravar nada: o arquivo de eventos da spec e a lista de pendências ficam
 //! com os mesmos bytes, e nenhuma cobrança é armada.
 //!
@@ -106,21 +106,6 @@ fn doors() -> Vec<(Vec<&'static str>, &'static str, &'static str, &'static str)>
         ),
         (vec!["pr-review", "--verdict", "approved"], "wait-for-round", "retired.wait_round", "pr-review --verdict"),
         (vec!["pr-merge"], "wait-for-merge", "retired.wait_merge", ""),
-        (
-            vec![
-                "ac-add", "--spec", SPEC, "--ac", "AC-9", "--statement", "quando roda, então passa", "--command",
-                "exit 0", "--reason", "critério novo",
-            ],
-            "use-write-criterion",
-            "retired.use_write_criterion",
-            "ac-add",
-        ),
-        (
-            vec!["ac-amend", "--spec", SPEC, "--ac", "AC-1", "--command", "exit 0", "--reason", "comando trocado"],
-            "use-write-criterion",
-            "retired.use_write_criterion",
-            "ac-amend",
-        ),
     ]
 }
 

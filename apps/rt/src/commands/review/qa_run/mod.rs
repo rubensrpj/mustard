@@ -36,11 +36,6 @@ use std::path::{Path, PathBuf};
 mod render;
 mod runner;
 
-/// Re-exported so `ac_negative_check` can tell an unrunnable command from a
-/// discriminating one WITHOUT the executor having to grade them alike. See the
-/// constant's own doc for why the two readers must disagree here.
-pub(crate) use runner::EXIT_COMMAND_NOT_FOUND;
-
 /// A parsed AC item: `- [ ] AC-N: description — Command: `cmd``.
 ///
 /// `pub(crate)` (not `pub`) because `analyze_validation` reuses the exact
@@ -91,69 +86,9 @@ pub(crate) struct AcResult {
     stderr_excerpt: String,
 }
 
-impl AcResult {
-    /// The outcome class: `pass` / `fail` / `timeout` / `skip`.
-    ///
-    /// Read-only accessors (not `pub` fields) so the negative-test engine can
-    /// judge an execution without gaining the power to forge one.
-    pub(crate) fn status(&self) -> &str {
-        &self.status
-    }
-
-    /// The command's own exit code, when one arrived.
-    pub(crate) fn exit(&self) -> Option<i64> {
-        self.exit
-    }
-
-    /// The bounded excerpt of the command's combined output.
-    pub(crate) fn stderr_excerpt(&self) -> &str {
-        &self.stderr_excerpt
-    }
-}
-
-/// Execute ONE acceptance criterion through the qa-run executor and return its
-/// outcome — the seam `ac-negative-check` reuses.
-///
-/// `pub(crate)` because the negative test must grade a criterion with the SAME
-/// per-AC deadline, pipe drain and `Expect:` regex rules QA itself applies;
-/// copying the executor is how the two verdicts would drift. It runs the command
-/// verbatim: the self-invocation handling stays exactly where it is (the
-/// [`QaRunOptions`] thread-local), untouched by this door.
-pub(crate) fn execute_ac(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
-    runner::run_ac_command(command, expect, cwd)
-}
-
-/// `true` when `command` would overwrite the very file this process is
-/// executing from — a `cargo build`/`cargo test` whose build target under
-/// `cwd` resolves to the running executable itself.
-///
-/// The one spelling of that question in the crate, exposed so a caller running
-/// INSIDE this binary can decline to attempt such a command instead of
-/// discovering the failure. `run_ac_command` already refuses it under
-/// [`QaRunOptions::self_invoked`]; the confirmation pass
-/// ([`crate::commands::review::ac_negative_check::confirm_in_process`]) asks
-/// FIRST, because for it the difference between "not attempted here" and
-/// "inexecutable" is the difference between a note and an order to rewrite a
-/// perfectly good criterion. Total.
-pub(crate) fn targets_running_binary(command: &str, cwd: &Path) -> bool {
-    runner::targets_running_binary(command, cwd)
-}
-
-/// The running executable named the way a refusal must name it: relative to
-/// `cwd` when it lives inside the project, its bare file name when it lives
-/// outside (never an absolute machine path — these labels reach versioned
-/// files). Falls back to a description when the path cannot be resolved at all
-/// — the reason still has to read as a sentence.
-pub(crate) fn running_binary_label(cwd: &Path) -> String {
-    std::env::current_exe().map_or_else(
-        |_| runner::UNNAMEABLE_BINARY.to_string(),
-        |exe| runner::running_binary_label(cwd, &exe),
-    )
-}
-
 /// Locate the markdown carrying a spec's acceptance criteria, by slug — the
-/// SAME locator qa-run uses, exposed so the negative test cannot disagree with
-/// QA about which file a spec name names.
+/// SAME locator qa-run uses, exposed so the finding collector cannot disagree
+/// with QA about which file a spec name names.
 pub(crate) fn spec_file_for(cwd: &Path, spec: &str) -> Option<PathBuf> {
     runner::find_spec_file(cwd, spec)
 }

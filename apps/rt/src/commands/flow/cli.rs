@@ -25,7 +25,7 @@ pub enum FlowCmd {
     /// (`choose_kind`, `choose_name`, `choose_base`), com os candidatos; nada
     /// é criado enquanto os três não forem sabidos. A resposta termina com a
     /// pergunta do objetivo, para fazer ao usuário.
-    #[command(display_order = 84)]
+    #[command(display_order = 81)]
     Open {
         /// O tipo da branch, como `feature` ou `fix`. Sem ele, um nome
         /// escrito como `<tipo>/<nome>` é partido nos dois.
@@ -56,7 +56,7 @@ pub enum FlowCmd {
     /// dentro desses pontos. O assistente grava cada ponto com `write point`;
     /// rodar o grill de novo com os mesmos tipos não grava nada e devolve o
     /// primeiro ponto aberto.
-    #[command(display_order = 85)]
+    #[command(display_order = 82)]
     Grill {
         /// A spec levantada. Sem ela, a spec atual.
         #[arg(long)]
@@ -78,7 +78,7 @@ pub enum FlowCmd {
     /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
     /// que está gravado é apagado. Uma spec fechada, com o pull request
     /// aberto, entregue ou descartada é recusada, dizendo a fase em que está.
-    #[command(display_order = 86)]
+    #[command(display_order = 83)]
     Reopen {
         /// Por que a spec volta ao levantamento, numa frase. Obrigatório: é
         /// ele que explica depois por que o levantamento recomeçou.

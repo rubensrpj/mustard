@@ -966,14 +966,6 @@ mod tests {
         assert_eq!(again.replace('\\', "/"), got.replace('\\', "/"));
     }
 
-    /// The base model of a project declaring the ordinary two-tier flow.
-    fn two_tier_flow() -> BaseFlow {
-        let mut git = mustard_core::domain::config::GitConfig::default();
-        git.flow.insert("*".to_string(), "dev".to_string());
-        git.flow.insert("dev".to_string(), "main".to_string());
-        BaseFlow::of(&git)
-    }
-
     #[test]
     fn hook_create_non_unit_name_still_cuts_its_own_branch() {
         // A harness slug (no declared `{base}_`) must never break — background

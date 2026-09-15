@@ -1548,14 +1548,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              recorded by `mustard-rt run round`, which does not exist in this version yet. Nothing \
              was written."
         }
-        ("retired.use_write_criterion", Locale::PtBr) => {
-            "O `{command}` saiu do fluxo. Grave ou reveja o critério na spec com `mustard-rt run \
-             write criterion`; a versão nova leva `replaces`. Nada foi gravado."
-        }
-        ("retired.use_write_criterion", Locale::EnUs) => {
-            "`{command}` has left the flow. Record or revise the criterion in the spec with \
-             `mustard-rt run write criterion`; a new version takes `replaces`. Nothing was written."
-        }
         ("retired.wait_merge", Locale::PtBr) => {
             "O `pr-merge` está parado nesta versão. A nova porta de merge, que entrega a spec e \
              fecha a pendência ligada, ainda não chegou: espere o `pr-merge` novo. Nada foi feito."
@@ -3143,7 +3135,6 @@ mod tests {
             ("retired.pipeline_door", &["{kind}"][..], "mustard-rt run open"),
             ("retired.wait_close", &["{command}"][..], "mustard-rt run close"),
             ("retired.wait_round", &["{command}"][..], "mustard-rt run round"),
-            ("retired.use_write_criterion", &["{command}"][..], "mustard-rt run write criterion"),
             ("retired.wait_merge", &[][..], "pr-merge"),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

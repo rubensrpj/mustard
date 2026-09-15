@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec::contract::{FindingItem, FindingRoute};
 use mustard_core::{read_meta, write_meta};
 
-use crate::commands::review::ac_negative_check;
+use crate::commands::review::finding_collect;
 use crate::commands::review::finding_collect::one_line;
 
 /// The sidecar the destinations are recorded in — the same file the collector
@@ -124,7 +124,7 @@ fn resolve_route(to: Option<&str>, reason: Option<&str>) -> Result<FindingRoute,
 /// The project root is a PARAMETER for the reason the collector takes one: the
 /// tool cuts a worktree per work unit, so the engine runs off-root as a matter
 /// of course — and a test must be able to name its own tree. The spec is
-/// resolved through [`ac_negative_check::resolve_spec_file`], the SAME rule the
+/// resolved through [`finding_collect::resolve_spec_file`], the SAME rule the
 /// collector uses, because two resolvers are how the writer and the seeder end
 /// up pointing at different specs for one name.
 pub(crate) fn mark(
@@ -133,7 +133,7 @@ pub(crate) fn mark(
     id: &str,
     route: FindingRoute,
 ) -> Result<MarkFindingOutcome, String> {
-    let Some(spec_dir) = ac_negative_check::resolve_spec_file(root, spec)
+    let Some(spec_dir) = finding_collect::resolve_spec_file(root, spec)
         .as_deref()
         .and_then(Path::parent)
         .map(Path::to_path_buf)

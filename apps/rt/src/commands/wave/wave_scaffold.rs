@@ -2808,7 +2808,6 @@ mod tests {
             json!([]),
             "a transição PLAN sai de um plano avisado: {report}",
         );
-        assert_eq!(report["proof"]["ok"], json!(true), "{report}");
         assert_eq!(report["sharedFiles"]["ok"], json!(true), "{report}");
     }
 

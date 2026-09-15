@@ -22,7 +22,7 @@ pub enum SpecEventsCmd {
     /// `agreed`, `specification`, `criteria`, `waves`, `wave-<n>`, `review`,
     /// `progress`, `notes` or `conversation`. Removed and replaced items are
     /// left out; a line that does not parse is skipped with a warning.
-    #[command(display_order = 82)]
+    #[command(display_order = 79)]
     Read {
         /// The block to read, e.g. `state` or `wave-2`.
         block: String,
@@ -49,7 +49,7 @@ pub enum SpecEventsCmd {
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
     /// `{"class":"defect","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
     /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`.
-    #[command(display_order = 83)]
+    #[command(display_order = 80)]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or
         /// `lesson`.

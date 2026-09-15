@@ -116,17 +116,15 @@ pub fn write_spec_md(
         // all four with one run, at PLAN time, where the fix costs one edit.
         //
         // A criterion that declares NONE is still OFFERED the key, as an
-        // unfilled placeholder — except the trailing criterion, skipped through
-        // the SAME positional rule the negative test applies
-        // (`ac_negative_check::is_exempt`) rather than a second spelling of
-        // "which criterion is exempt": it is the build-green safety net, green
-        // before the work by design, so it has nothing to control for.
+        // unfilled placeholder — except the trailing criterion: it is the
+        // build-green safety net, green before the work by design, so it has
+        // nothing to control for.
         //
         // The placeholder is ENGLISH regardless of the narrative locale, like
         // every other `Command:` value — the content is code, not prose.
         if let Some(control) = ac.control.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
             let _ = writeln!(body, "  Control: `{control}`");
-        } else if !crate::commands::review::ac_negative_check::is_exempt(index, ac_total) {
+        } else if !(ac_total > 0 && index + 1 == ac_total) {
             let _ = writeln!(body, "  Control: `{AC_CONTROL_SKELETON}`");
         }
     }

@@ -193,13 +193,6 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
 const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     (
-        "ac-negative-check",
-        "from",
-        "the revision the REMOVAL pass restores the work to; omitted it is the \
-         merge base of HEAD and the primary integration base, which is what \
-         every documented `--removal` invocation wants",
-    ),
-    (
         "amend-finalize",
         "session-id",
         "the required argument of a command the SessionEnd hook runs in-process; \

@@ -80,58 +80,6 @@ fn offered_options<'a>(row: &'a str, label: &str) -> Vec<&'a str> {
     rest.split("   ").map(str::trim).filter(|s| !s.is_empty()).collect()
 }
 
-/// The CLOSE prose teaches the confirmation pass the pipeline takes.
-///
-/// The red proof ("this criterion knows how to fail") shipped with prose; the
-/// green half shipped as a flag nobody was told existed and nothing called.
-/// Both operator-facing docs that describe CLOSE must now carry it, and
-/// `close-pipeline` must actually take it — a doc promising a pass that no code
-/// runs is the inert half all over again.
-#[test]
-fn close_prose_teaches_the_confirmation_pass() {
-    // --- 1. The loop ref teaches it where it teaches CLOSE ---------------
-    let loop_ref = read("plugin/refs/spec/resume-loop.md");
-    assert!(
-        loop_ref.contains("--confirm"),
-        "the loop ref never names the flag that takes the confirmation",
-    );
-    // Anchored: the paragraph that composes CLOSE is where a reader arrives.
-    let close_line = line_with(&loop_ref, "`close-pipeline` composes the CLOSE tail")
-        .expect("the loop ref no longer describes what close-pipeline composes");
-    assert!(
-        close_line.contains("confirmation"),
-        "the CLOSE composition still lists only the red half: {close_line}",
-    );
-    // The three readings are spelled out, including the one that is NOT a
-    // verdict — `taken:false` must never be readable as a pass.
-    for reading in ["taken:false", "unproven", "advisory"] {
-        assert!(
-            loop_ref.contains(reading),
-            "the confirmation prose never explains `{reading}`",
-        );
-    }
-
-    // --- 2. The config ref teaches it beside the proof gate ---------------
-    let config = read("plugin/pipeline-config.md");
-    assert!(
-        config.contains("--confirm"),
-        "pipeline-config.md documents the RED proof and not the confirmation",
-    );
-    assert!(
-        config.contains("advisory"),
-        "pipeline-config.md must say the confirmation adds no refusal to the gate table",
-    );
-
-    // --- 3. The mechanism the prose promises is really taken --------------
-    // Without this half the assertions above pass over a deleted mechanism —
-    // exactly the state the review found: documented nowhere, called nowhere.
-    let close_pipeline = read("apps/rt/src/commands/pipeline/close_pipeline.rs");
-    assert!(
-        close_pipeline.contains("ac_negative_check::confirm_in_process"),
-        "close-pipeline does not TAKE the confirmation the prose promises",
-    );
-}
-
 /// The picker prose carries the `Onde` legend the table now prints.
 ///
 /// `commands/spec.md` §2 orders the Siglas block printed "literally", so that
@@ -453,9 +401,8 @@ fn plan_prose_teaches_the_reserved_role_names() {
 /// and that guidance made a defect invisible rather than fixing it: under
 /// `cmd.exe` the single quote is not a quote character, so `rg 'token' path`
 /// searched for a literal `'token'`, matched nothing in any tree state, exited 1
-/// with an empty stderr, and `ac-negative-check` (whose whole red rule is
-/// `exit != 0`) stamped it `proven: red`. Nothing checked that page against the
-/// executor, so it kept teaching the workaround after the shell was fixed.
+/// with an empty stderr. Nothing checked that page against the executor, so it
+/// kept teaching the workaround after the shell was fixed.
 #[test]
 fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
     let body = read("plugin/refs/feature/ac-cross-shell.md");
@@ -470,17 +417,12 @@ fn cross_shell_prose_teaches_the_shell_the_executor_spawns() {
         line_with(&lower, "127").is_some(),
         "the ref must name the code an unrunnable command comes back with",
     );
-    // The two readers of exit 127 answer opposite questions and must BOTH be
-    // named. A ref that mentions only the negative test's `unproven` reads as if
-    // an unrunnable criterion were tolerated at QA — which is the regression
-    // that shipped, written down as guidance.
+    // A ref silent on the close would read as if an unrunnable criterion were
+    // tolerated at QA — which is the regression that shipped, written down as
+    // guidance.
     assert!(
         lower.contains("qa-run") && lower.contains("block"),
         "the ref must say a criterion nobody could run BLOCKS the close",
-    );
-    assert!(
-        lower.contains("unproven"),
-        "and that the negative test refuses to count it as proof",
     );
 
     // --- 2. The shell really consumes POSIX quoting ------------------------
@@ -3604,17 +3546,9 @@ fn untraced_is_advisory_and_the_wave_ruler_is_read_not_copied() {
          `satisfies:` line — a copy is what shipped and drifted: {row}",
     );
 
-    // --- 2. The loop ref stops teaching a flag that no longer exists ---------
+    // --- 2. The RE-DISPATCH names its wave, because the renderer refuses a
+    // retry of a wave plan that does not.
     let loop_ref = read("plugin/refs/spec/resume-loop.md");
-    let add_call = line_with(&loop_ref, "mustard-rt run ac-add --spec")
-        .expect("the loop ref no longer shows the ac-add call");
-    assert!(
-        !add_call.contains("--wave"),
-        "the ac-add call still teaches `--wave`, a flag the door no longer has: {add_call}",
-    );
-    // …and the RE-DISPATCH does name its wave, because the renderer refuses a
-    // retry of a wave plan that does not. The prose was the odd one out: the
-    // dispatch path always passed the flag.
     let retry_call = line_with(&loop_ref, "--mode fix-loop")
         .expect("the loop ref no longer shows the fix-loop render");
     assert!(
@@ -3669,13 +3603,7 @@ fn untraced_is_advisory_and_the_wave_ruler_is_read_not_copied() {
         "the ruler no longer reads the `wave-plan.md` union — reader and judge are back on \
          two different files",
     );
-    // The routing door is GONE, on both sides: the flag and the writer it used.
-    let add = production_half("apps/rt/src/commands/spec/ac_add.rs");
-    assert!(
-        !add.contains("pub wave: Option<u32>") && !add.contains("route_criterion("),
-        "`ac-add` routes a new id onto a wave's frozen frontmatter again — that write lives \
-         outside the materialiser's ledger and is regenerated away or read as plan drift",
-    );
+    // The routing writer `ac-add --wave N` used is GONE.
     assert!(
         !production_half("apps/rt/src/commands/wave/wave_scaffold.rs").contains("fn route_criterion"),
         "the frontmatter writer `ac-add --wave N` used is back with no caller",

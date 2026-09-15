@@ -319,25 +319,6 @@ fn rewrite_workspace_exclusion(command: &str, target_root: &Path, running: &Path
     format!("{command} --exclude {package}")
 }
 
-/// `true` when `command` would overwrite the file THIS process is executing
-/// from, resolving both sides itself: the running executable from
-/// [`std::env::current_exe`], the build target from the cargo layout under
-/// `cwd`.
-///
-/// `false` when either side cannot be resolved — an unanswerable path question
-/// is not evidence of a conflict, and refusing on it would be the crate-name
-/// guess this spec removed, wearing a different hat.
-///
-/// `pub(super)` so the CONFIRMATION pass can ask the SAME question BEFORE it
-/// spawns anything: a confirmation taken from inside this binary must answer
-/// "not taken here" for such a command, never "inexecutable" — see
-/// [`crate::commands::review::ac_negative_check::confirm_in_process`].
-pub(super) fn targets_running_binary(command: &str, cwd: &Path) -> bool {
-    let (Ok(running), Some(target_root)) = (std::env::current_exe(), cargo_target_root(cwd)) else {
-        return false;
-    };
-    overwrites_running_binary(command, &target_root, &running)
-}
 
 /// The verdict of evaluating an AC's optional `Expect:` evidence regex against
 /// a passing command's captured output. Pure and panic-free (SRP: no process,

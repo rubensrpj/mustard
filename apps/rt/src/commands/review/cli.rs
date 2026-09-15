@@ -130,52 +130,6 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Prove every acceptance criterion is ABLE to fail: run each one against
-    /// the tree as it is NOW and require it to come back red.
-    ///
-    /// A criterion clears the proof ONLY by failing; green, timed out, never
-    /// attempted or still carrying an unfilled `<…>` placeholder is UNPROVEN.
-    /// The trailing criterion is exempt (the build-green safety net). Writes the
-    /// proof ledger `<spec-dir>/ac-proof.json` either way, prints one JSON
-    /// document on stdout, and exits 2 when any criterion is unproven.
-    ///
-    /// With `--confirm` it takes the SECOND half instead: once the work has
-    /// landed, every criterion that cleared the red proof is run AGAIN and must
-    /// now come back GREEN. One still red is reported unproven — it does not
-    /// clear on its earlier failure alone.
-    ///
-    /// With `--removal` it takes the THIRD transition: each confirmed criterion
-    /// runs against a scratch checkout with the work the waves recorded taken
-    /// away. One that stays green SURVIVED the removal — it verifies something
-    /// OUTSIDE the work, which neither of the first two passes can tell apart.
-    /// A criterion whose OWN EVIDENCE — the command or the `Expect:` regex the
-    /// executor grades with — names a word the strip itself deleted is DECLINED
-    /// rather than run: its red was guaranteed, so it would say nothing.
-    #[command(name = "ac-negative-check")]
-    #[command(display_order = 64)]
-    AcNegativeCheck {
-        /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
-        /// its directory.
-        #[arg(long, alias = "from-spec")]
-        spec: Option<String>,
-        /// Take the CONFIRMATION pass (green after the work) instead of the RED
-        /// proof pass (red before it). Run it after a wave's work has landed.
-        #[arg(long)]
-        confirm: bool,
-        /// Take the REMOVAL pass — the third transition. Each criterion that
-        /// was CONFIRMED green is run against a scratch checkout with the work
-        /// the waves recorded taken away. One that stays green SURVIVED the
-        /// removal: it verifies something the work never did. One whose own
-        /// evidence — its command OR its `Expect:` regex — names a word the
-        /// strip deleted is declined, not run. Wins over `--confirm` when both
-        /// are given.
-        #[arg(long)]
-        removal: bool,
-        /// The revision the removal restores the work to. Omitted: the merge
-        /// base of `HEAD` and the project's primary integration base.
-        #[arg(long)]
-        from: Option<String>,
-    },
     /// The `/mustard:pr` door's LIST step: every open pull request of the base
     /// the checkout is standing on, with its number, title, the provider's own
     /// mergeable word, whether it is a draft and the head branch its unit lives
@@ -183,7 +137,7 @@ pub enum ReviewCmd {
     /// and the refusal names the base to switch to. A branch is never refused
     /// for missing from `git.flow`. Fail-open on `gh`.
     #[command(name = "pr-list")]
-    #[command(display_order = 67)]
+    #[command(display_order = 64)]
     PrList {
         /// Any directory inside the repo (worktrees welcome — the command
         /// resolves the main checkout itself). Defaults to the current dir.
@@ -197,7 +151,7 @@ pub enum ReviewCmd {
     /// also RECORDS the outcome through the `review-result` path, which is what
     /// `pr-merge` reads back.
     #[command(name = "pr-review")]
-    #[command(display_order = 68)]
+    #[command(display_order = 65)]
     PrReview {
         /// PR number. Omitted: the open PR of the current branch.
         #[arg(long)]
@@ -220,7 +174,7 @@ pub enum ReviewCmd {
     /// `action:"confirm"` and touches nothing; it never refuses. `--confirm` is
     /// the operator's answer coming back.
     #[command(name = "pr-merge")]
-    #[command(display_order = 69)]
+    #[command(display_order = 66)]
     PrMerge {
         /// PR number. Omitted: the open PR of the current branch.
         #[arg(long)]
@@ -240,7 +194,7 @@ pub enum ReviewCmd {
     /// JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
     /// `error` field with exit 0, never a panic.
     #[command(name = "pr-open")]
-    #[command(display_order = 75)]
+    #[command(display_order = 72)]
     PrOpen {
         /// The integration base the PR targets (short branch name).
         #[arg(long)]
@@ -272,7 +226,7 @@ pub enum ReviewCmd {
     /// in force. Same report shape as `pr-open`; failure degrades into the
     /// `error` field with exit 0.
     #[command(name = "pr-edit")]
-    #[command(display_order = 76)]
+    #[command(display_order = 73)]
     PrEdit {
         /// The PR number whose body is replaced.
         #[arg(long)]
@@ -290,7 +244,7 @@ pub enum ReviewCmd {
     /// force. Same report shape as `pr-open`; failure degrades into the
     /// `error` field with exit 0.
     #[command(name = "pr-ready")]
-    #[command(display_order = 77)]
+    #[command(display_order = 74)]
     PrReady {
         /// The draft PR number to mark ready.
         #[arg(long)]
@@ -312,7 +266,7 @@ pub enum ReviewCmd {
     /// untouched. Output is one byte-stable JSON document; this command decides
     /// nothing.
     #[command(name = "finding-collect")]
-    #[command(display_order = 72)]
+    #[command(display_order = 69)]
     FindingCollect {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -408,9 +362,6 @@ pub fn dispatch(cmd: ReviewCmd) {
             } else {
                 review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
             }
-        }
-        ReviewCmd::AcNegativeCheck { spec, confirm, removal, from } => {
-            review::ac_negative_check::run(spec.as_deref(), confirm, removal, from.as_deref());
         }
         ReviewCmd::PrList { root } => review::pr_door::run_list(&root),
         ReviewCmd::PrReview { pr, verdict, critical, root } => {

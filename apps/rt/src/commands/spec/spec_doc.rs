@@ -56,10 +56,7 @@ use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::agent::render::skills::{arquivos_paths, wave_molds, MoldCover};
 use crate::commands::event::pending::open_pending;
 use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
-use crate::commands::review::ac_negative_check::{
-    load_ledger, recorded_proof, AcProofLedger, Confirmation, Proof, Verdict, AC_PROOF_JSON,
-};
-use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items, AcItem};
+use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
 use crate::commands::spec::material_add::{read_material, Material, Severity};
 use crate::commands::spec::spec_sections::section_block;
 use crate::report::{escape, Report};
@@ -738,7 +735,7 @@ fn spec_html(spec_text: &str, i: &I18n) -> Option<String> {
 }
 
 /// Os critérios de aceite, lidos pelo MESMO parser que o QA executa, com a
-/// onda que satisfaz cada um e o estado da prova no `ac-proof.json`.
+/// onda que satisfaz cada um.
 fn criteria_html(spec_text: &str, dir: &Path, waves: &[WaveDoc], i: &I18n) -> Option<String> {
     let mut items = extract_ac_section(spec_text).map(|s| parse_ac_items(&s)).unwrap_or_default();
     if items.is_empty() {
@@ -749,7 +746,6 @@ fn criteria_html(spec_text: &str, dir: &Path, waves: &[WaveDoc], i: &I18n) -> Op
     if items.is_empty() {
         return None;
     }
-    let ledger = load_ledger(&dir.join(AC_PROOF_JSON));
     let rows: Vec<Vec<(&str, String)>> = items
         .iter()
         .map(|item| {
@@ -762,7 +758,6 @@ fn criteria_html(spec_text: &str, dir: &Path, waves: &[WaveDoc], i: &I18n) -> Op
                 ("id", escape(&item.id)),
                 ("", inline(&item.statement)),
                 ("nw", escape(&waves_for.join(", "))),
-                ("nw", escape(&i.render(proof_key(ledger.as_ref(), item)))),
             ]
         })
         .collect();
@@ -774,31 +769,10 @@ fn criteria_html(spec_text: &str, dir: &Path, waves: &[WaveDoc], i: &I18n) -> Op
                 i.render("doc.col.id"),
                 i.render("doc.col.criterion"),
                 i.render("doc.col.wave"),
-                i.render("doc.col.proof"),
             ],
             &rows,
         ),
     ))
-}
-
-/// O estado da prova de um critério. Só vale o registro cujo comando E
-/// `Expect:` batem com o critério de hoje — a mesma regra do portão de
-/// aprovação; um critério reescrito depois da prova aparece sem prova.
-fn proof_key(ledger: Option<&AcProofLedger>, item: &AcItem) -> &'static str {
-    let Some(proof) =
-        ledger.and_then(|l| recorded_proof(l, &item.id, &item.command, item.expect.as_deref()))
-    else {
-        return "doc.proof.none";
-    };
-    if proof.verdict == Verdict::Exempt {
-        "doc.proof.exempt"
-    } else if proof.confirmation == Confirmation::Green {
-        "doc.proof.confirmed"
-    } else if proof.verdict == Verdict::Proven && proof.proof == Proof::Red {
-        "doc.proof.red"
-    } else {
-        "doc.proof.none"
-    }
 }
 
 fn waves_html(root: &Path, waves: &[WaveDoc], i: &I18n) -> Option<String> {
@@ -1074,13 +1048,6 @@ mod tests {
   "summary": "A conversa pediu um HTML legível.",
   "flow": {"title": "Entrega do documento", "diagram": "  antes: terminal <texto>\n    |\n  depois: página"}
 }"#;
-
-    const PROOF: &str = r#"{"spec": "demo", "criteria": [
-  {"id": "AC-1", "command": "cargo test -p demo alpha", "verdict": "proven", "proof": "red"},
-  {"id": "AC-2", "command": "cargo test -p demo beta", "verdict": "proven", "proof": "red", "confirmation": "green"},
-  {"id": "AC-3", "command": "cargo build -p demo", "verdict": "exempt", "proof": "not-attempted"}
-]}"#;
-
     const PENDING: &str = r#"{"items": [
   {"id": "P-1", "title": "Humanize: medir se o texto está claro", "detail": "combinado", "status": "open"},
   {"id": "P-2", "title": "item já fechado", "detail": "x", "status": "closed", "reason": "entregue"}
@@ -1099,7 +1066,6 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("spec-material.json"), MATERIAL).unwrap();
-        fs::write(dir.join(AC_PROOF_JSON), PROOF).unwrap();
         fs::write(dir.join("wave-1-doc/spec.md"), WAVE).unwrap();
         let mold = root.join("apps/rt/.claude/skills/rt-entry-pattern");
         fs::create_dir_all(&mold).unwrap();
@@ -1184,11 +1150,8 @@ mod tests {
             "Mudar o painel web.",
             "IN: o comando. OUT: o painel.",
             "<ul class=\"files\"><li>apps/rt/src/commands/spec/cli.rs</li>",
-            // Critérios com a onda e o estado da prova.
+            // Critérios com a onda que os satisfaz.
             "<td class=\"id\">AC-1</td>",
-            "<td class=\"nw\">1</td><td class=\"nw\">falha provada</td>",
-            "<td class=\"nw\">confirmado</td>",
-            "<td class=\"nw\">isento</td>",
             // A onda: tarefas, skills com TODOS os arquivos, obrigação, critérios.
             "<span class=\"tag\">Onda 1</span> · O comando que monta o documento",
             "Novo comando <code>spec-doc</code> que monta a página.",

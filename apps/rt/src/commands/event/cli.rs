@@ -22,7 +22,7 @@ use crate::commands::{event};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum EventCmd {
     /// List the branches a unit could be cut from, newest commit first.
-    #[command(display_order = 74)]
+    #[command(display_order = 71)]
     BaseCandidates {
         /// Skip the `git fetch` and list what the clone already knows. The
         /// default refreshes: the whole point is a menu that is true TODAY.
@@ -152,7 +152,7 @@ pub enum EventCmd {
     /// state, so they travel with the branch and disappear with it. Without
     /// `--add` it READS the notebook back; once the pull request opens, that
     /// reading is the next cycle's prompt.
-    #[command(display_order = 71)]
+    #[command(display_order = 68)]
     Notebook {
         /// The item to record — one note, stored as one line. Omitted: the
         /// notebook is read, not written.
@@ -195,7 +195,7 @@ pub enum EventCmd {
     /// the first shows what would leave and prints a code, the second passes
     /// that code in `--confirm` after the user's yes. `--stale` shows the idle
     /// items once, and `--expire --keep` drops the ones the user did not keep.
-    #[command(display_order = 78)]
+    #[command(display_order = 75)]
     Pending {
         /// Record a new item (needs `--title` and `--detail`).
         #[arg(long, conflicts_with_all = ["close", "drop"])]

@@ -58,11 +58,9 @@
 //! destination at all, which is the OPEN position [`FindingItem::is_open`]
 //! reports.
 //!
-//! The proof ledger is read through [`ac_negative_check::load_ledger`], the ONE
-//! reader of `ac-proof.json` in the crate, so the producer and this collector can
-//! never disagree about what the file says. The reviewer's file names come from
-//! the writer's own constants (`review_result::FINDINGS_FILE` /
-//! `FINDINGS_SCOPED_PREFIX`) for the same reason.
+//! The reviewer's file names come from the writer's own constants
+//! (`review_result::FINDINGS_FILE` / `FINDINGS_SCOPED_PREFIX`), so the writer
+//! and this collector can never disagree about what to read.
 //!
 //! Output is one byte-stable JSON document: findings sorted by (source, id), no
 //! timestamps and no absolute paths. This command DECIDES nothing — a verdict
@@ -75,9 +73,25 @@ use mustard_core::domain::spec::contract::{FindingItem, FindingSource};
 use mustard_core::io::fs;
 use mustard_core::{read_meta, write_meta};
 
-use crate::commands::review::ac_negative_check::{self, AC_PROOF_JSON, Removal};
 use crate::commands::review::review_result::{FINDINGS_FILE, FINDINGS_SCOPED_PREFIX};
 use crate::util::sha256::Sha256;
+
+/// The spec markdown a spec name names: a path to the file, a path to the
+/// directory holding it, or a slug resolved through the SAME locator `qa-run`
+/// uses — two resolvers are how one name ends up pointing at two specs.
+pub(crate) fn resolve_spec_file(root: &Path, spec: &str) -> Option<PathBuf> {
+    let as_path = Path::new(spec);
+    if as_path.is_file() {
+        return Some(as_path.to_path_buf());
+    }
+    if as_path.is_dir() {
+        return ["spec.md", "wave-plan.md"]
+            .into_iter()
+            .map(|name| as_path.join(name))
+            .find(|p| fs::exists(p));
+    }
+    super::qa_run::spec_file_for(root, spec)
+}
 
 /// The spec-relative directory the reviewer writes its findings into — the same
 /// one `review_result` creates when it persists them.
@@ -194,7 +208,7 @@ impl FindingCollectReport {
 /// work unit, so the engine runs off-root as a matter of course.
 #[must_use]
 pub(crate) fn collect(root: &Path, spec: &str) -> FindingCollectReport {
-    let Some(spec_dir) = ac_negative_check::resolve_spec_file(root, spec)
+    let Some(spec_dir) = resolve_spec_file(root, spec)
         .as_deref()
         .and_then(Path::parent)
         .map(Path::to_path_buf)
@@ -202,9 +216,8 @@ pub(crate) fn collect(root: &Path, spec: &str) -> FindingCollectReport {
         return FindingCollectReport::aborted(spec, ERR_SPEC_NOT_FOUND);
     };
 
-    let mut fresh = collect_review(&spec_dir);
+    let fresh = collect_review(&spec_dir);
     let from_review = fresh.len();
-    fresh.extend(collect_ledger(&spec_dir));
     let from_proof_ledger = fresh.len() - from_review;
     // Taken BEFORE the reconciliation consumes the list: a seeded finding that
     // no producer reported is one kept for its decision alone.
@@ -618,60 +631,6 @@ fn starts_with_severity(text: &str) -> bool {
     })
 }
 
-/// One finding per criterion whose `removal` column recorded a discovery.
-///
-/// [`Removal::Survived`] and [`Removal::EvidenceRemoved`] are the only two
-/// values that say something about the criterion nobody has acted on; every
-/// other value is either a clean red or a pass that was never taken. The
-/// statement is the ledger's own `reason`, carried IN FULL — it already names
-/// what happened and the one action that clears it, and re-summarising it here
-/// would replace evidence with paraphrase.
-fn collect_ledger(spec_dir: &Path) -> Vec<FindingItem> {
-    let Some(ledger) = ac_negative_check::load_ledger(&spec_dir.join(AC_PROOF_JSON)) else {
-        return Vec::new();
-    };
-    ledger
-        .criteria
-        .iter()
-        .filter_map(|criterion| {
-            let column = removal_word(criterion.removal)?;
-            // A ledger that recorded the column without a reason (a later pass
-            // owns that field) still identifies the criterion by the command it
-            // ran — a fact, never an invented sentence.
-            let statement = one_line(
-                criterion
-                    .reason
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|reason| !reason.is_empty())
-                    .unwrap_or(criterion.command.as_str()),
-            );
-            Some(FindingItem {
-                // The COLUMN is part of the fingerprint, not only the reason: a
-                // criterion that moves from `survived` to `evidence-removed` has
-                // been found out for a different thing, and a decision taken
-                // about the first must not settle the second.
-                id: finding_id(&criterion.id, &format!("{column}|{statement}")),
-                source: FindingSource::ProofLedger,
-                statement,
-                routed: None,
-            })
-        })
-        .collect()
-}
-
-/// The ledger word for a removal column that RECORDED a discovery, and `None`
-/// for every column that made none: a clean red, a pass never taken, a run with
-/// no verdict. Spelled as the ledger's own kebab-case serde words, so an id
-/// minted here and the file it came from cannot drift apart.
-const fn removal_word(removal: Removal) -> Option<&'static str> {
-    match removal {
-        Removal::Survived => Some("survived"),
-        Removal::EvidenceRemoved => Some("evidence-removed"),
-        Removal::NotTaken | Removal::Red | Removal::NoVerdict | Removal::NotAttempted => None,
-    }
-}
-
 /// The first line of a reviewer's markdown that carries a statement, folded to
 /// one bounded line. `None` when the file is empty or holds nothing but
 /// decoration.
@@ -745,13 +704,6 @@ mod tests {
     use super::*;
     use mustard_core::domain::spec::contract::FindingRoute;
     use tempfile::tempdir;
-
-    /// A ledger entry the collector must pick up.
-    const SURVIVED_REASON: &str = "the REMOVAL was TAKEN and the command still came back green \
-         with the work taken away, so this criterion is satisfied by something the work did not do";
-    const EVIDENCE_REMOVED_REASON: &str = "the REMOVAL was NOT TAKEN: this criterion's own \
-         evidence names `parse_finding`, which the strip itself deleted from the tree";
-
     /// Seed a spec directory with a `spec.md` and a `meta.json`; returns
     /// `(project, spec_dir)`. The spec is addressed by DIRECTORY in these tests,
     /// which `resolve_spec_file` accepts alongside a slug and a markdown path.
@@ -762,55 +714,6 @@ mod tests {
         std::fs::write(spec_dir.join("spec.md"), "# Demo\n").unwrap();
         std::fs::write(spec_dir.join(META_JSON), meta).unwrap();
         (project, spec_dir)
-    }
-
-    /// Write the two reviewer files this suite uses.
-    fn seed_review(spec_dir: &Path) {
-        let review = spec_dir.join(REVIEW_DIR);
-        std::fs::create_dir_all(&review).unwrap();
-        std::fs::write(
-            review.join("findings.md"),
-            "# Findings\n\n- the close gate never reads this file\n",
-        )
-        .unwrap();
-        std::fs::write(
-            review.join("findings-apps-rt.md"),
-            "the ledger's third column has no consumer\n",
-        )
-        .unwrap();
-        // A neighbour that is NOT a findings file must be ignored.
-        std::fs::write(review.join("verdict.md"), "# Review Verdict\n").unwrap();
-    }
-
-    /// Write a proof ledger with one survivor, one evidence-removed and one
-    /// honest red (which is NOT a finding).
-    fn seed_ledger(spec_dir: &Path) {
-        std::fs::write(
-            spec_dir.join(AC_PROOF_JSON),
-            format!(
-                r#"{{"spec":"demo","criteria":[
-                    {{"id":"AC-1","command":"cd .","verdict":"unproven","proof":"red",
-                      "removal":"survived","reason":"{SURVIVED_REASON}"}},
-                    {{"id":"AC-2","command":"cd .","verdict":"proven","proof":"red",
-                      "removal":"evidence-removed","reason":"{EVIDENCE_REMOVED_REASON}"}},
-                    {{"id":"AC-3","command":"cd .","verdict":"proven","proof":"red",
-                      "removal":"red"}}
-                ]}}"#
-            ),
-        )
-        .unwrap();
-    }
-
-    /// The one finding whose id starts with `prefix`. Ids carry a content
-    /// fingerprint, so a test names the producer's half and lets the digest be
-    /// whatever the statement makes it.
-    fn by_prefix<'a>(report: &'a FindingCollectReport, prefix: &str) -> &'a FindingItem {
-        let mut hits = report.findings.iter().filter(|f| f.id.starts_with(prefix));
-        let first = hits.next().unwrap_or_else(|| {
-            panic!("no finding under \"{prefix}\": {:?}", ids_of(report));
-        });
-        assert!(hits.next().is_none(), "\"{prefix}\" named more than one finding");
-        first
     }
 
     /// Every collected id, for a failure message that shows what was there.
@@ -831,63 +734,6 @@ mod tests {
             })
     }
 
-    /// Both producers enter through the same collection, and only the two
-    /// removal columns that actually record a discovery become findings.
-    #[test]
-    fn finding_collect_reads_both_sources() {
-        let (project, spec_dir) = seed(r#"{"stage":"Execute","outcome":"Active"}"#);
-        seed_review(&spec_dir);
-        seed_ledger(&spec_dir);
-
-        let report = collect(project.path(), spec_dir.to_str().unwrap());
-        assert!(report.ok, "{report:?}");
-        assert!(report.written, "the sidecar had no findings key yet");
-        assert_eq!(report.from_review, 2, "one finding per itemised reviewer finding");
-        assert_eq!(report.from_proof_ledger, 2, "an honest red is not a finding");
-        assert_eq!(report.open, 4, "nothing has a destination yet");
-        assert_eq!(report.stale, 0);
-        assert_eq!(report.retained, 0);
-
-        // Sorted by source: the reviewer's two first, then the ledger's. Each id
-        // still walks back to its producer through its prefix.
-        let sources: Vec<FindingSource> = report.findings.iter().map(|f| f.source).collect();
-        assert_eq!(
-            sources,
-            vec![
-                FindingSource::Review,
-                FindingSource::Review,
-                FindingSource::ProofLedger,
-                FindingSource::ProofLedger
-            ]
-        );
-        assert!(
-            !report.findings.iter().any(|f| f.id.starts_with("AC-3-")),
-            "a criterion whose removal came back red made no discovery: {:?}",
-            ids_of(&report)
-        );
-
-        // The reviewer's statement is the finding it itemised, with the heading
-        // and the bullet marker gone — and its id still names the file it came
-        // from, before the fingerprint of what it says.
-        let reviewer = by_statement(&report, "the close gate never reads this file");
-        assert_eq!(reviewer.source, FindingSource::Review);
-        assert!(reviewer.id.starts_with("F-findings-"), "{}", reviewer.id);
-        assert_eq!(
-            by_statement(&report, "the ledger's third column has no consumer").id,
-            finding_id("F-findings-apps-rt", "the ledger's third column has no consumer"),
-            "a file this reader cannot itemise still yields its own one record"
-        );
-        // The ledger's reason is carried in full, never paraphrased.
-        let survivor = by_prefix(&report, "AC-1-");
-        assert_eq!(survivor.source, FindingSource::ProofLedger);
-        assert_eq!(survivor.statement, one_line(SURVIVED_REASON));
-
-        // And it landed in the sidecar, which is the only durable half.
-        let meta = read_meta(&spec_dir.join(META_JSON)).expect("reads");
-        assert_eq!(meta.findings.len(), 4);
-        assert!(meta.findings.iter().all(FindingItem::is_open));
-    }
-
     /// Declare a destination for the one finding that says `statement`, the way
     /// the `mark-finding` door does — by id, straight into the sidecar.
     fn route(spec_dir: &Path, statement: &str, route: FindingRoute) {
@@ -900,135 +746,6 @@ mod tests {
             .unwrap_or_else(|| panic!("nothing said \"{statement}\""));
         meta.findings[idx].routed = Some(route);
         write_meta(&meta_path, &meta).unwrap();
-    }
-
-    /// A destination already declared survives every later collection, an
-    /// UNDECIDED finding whose source disappeared is dropped, and a new source
-    /// enters open.
-    #[test]
-    fn finding_collect_preserves_declared_route() {
-        let (project, spec_dir) = seed(r#"{"stage":"Execute","outcome":"Active"}"#);
-        seed_review(&spec_dir);
-        seed_ledger(&spec_dir);
-        let spec_arg = spec_dir.to_str().unwrap().to_string();
-
-        let _ = collect(project.path(), &spec_arg);
-
-        // Somebody decides what happens to the survivor.
-        route(
-            &spec_dir,
-            &one_line(SURVIVED_REASON),
-            FindingRoute::ChangeRequest("rewrite AC-1 so it asserts the behaviour".to_string()),
-        );
-
-        // A reviewer file goes away between the two collections, taking a
-        // finding nobody had decided anything about.
-        std::fs::remove_file(spec_dir.join(REVIEW_DIR).join("findings-apps-rt.md")).unwrap();
-
-        let report = collect(project.path(), &spec_arg);
-        assert!(report.ok, "{report:?}");
-        assert_eq!(report.stale, 1, "an undecided finding whose source is gone is dropped");
-        assert_eq!(report.retained, 0);
-        assert_eq!(report.from_review, 1);
-
-        let routed = by_statement(&report, &one_line(SURVIVED_REASON));
-        assert!(routed.id.starts_with("AC-1-"), "{}", routed.id);
-        assert_eq!(
-            routed.route().and_then(FindingRoute::reason),
-            Some("rewrite AC-1 so it asserts the behaviour"),
-            "a declared destination is the one thing a re-collection must not lose"
-        );
-        assert!(!routed.is_open(), "a routed finding owes nobody a decision");
-        assert_eq!(report.open, 2, "the reviewer's file and AC-2 are still open");
-        assert!(
-            !report
-                .findings
-                .iter()
-                .any(|f| f.statement == "the ledger's third column has no consumer"),
-            "an undecided finding whose source is gone is dropped, not kept: {:?}",
-            ids_of(&report)
-        );
-
-        // Idempotent: a third collection over an unchanged tree writes nothing.
-        let again = collect(project.path(), &spec_arg);
-        assert!(!again.written, "an unchanged collection must not rewrite the sidecar");
-        assert_eq!(again.findings, report.findings);
-    }
-
-    /// The reviewer's real scenario: `review_result` OVERWRITES
-    /// `review/findings.md` on every round, so round two's discovery arrives
-    /// under the same file — and, on the ledger side, the same criterion id can
-    /// come back under a different removal column. Neither may inherit the
-    /// destination declared for round one: a decision belongs to the discovery
-    /// somebody actually read.
-    #[test]
-    fn finding_collect_mints_a_new_finding_for_a_new_discovery_under_the_same_source() {
-        let (project, spec_dir) = seed(r#"{"stage":"Execute","outcome":"Active"}"#);
-        let review = spec_dir.join(REVIEW_DIR);
-        std::fs::create_dir_all(&review).unwrap();
-        std::fs::write(review.join("findings.md"), "# Review\n\n- MINOR — round one\n").unwrap();
-        std::fs::write(
-            spec_dir.join(AC_PROOF_JSON),
-            r#"{"spec":"demo","criteria":[{"id":"AC-1","command":"cd .","verdict":"unproven",
-                "proof":"red","removal":"survived","reason":"the criterion survived the removal"}]}"#,
-        )
-        .unwrap();
-        let spec_arg = spec_dir.to_str().unwrap().to_string();
-
-        let first = collect(project.path(), &spec_arg);
-        assert_eq!(first.open, 2, "{:?}", ids_of(&first));
-        route(
-            &spec_dir,
-            "MINOR — round one",
-            FindingRoute::Dropped("cosmetic, not worth a wave".to_string()),
-        );
-        route(
-            &spec_dir,
-            "the criterion survived the removal",
-            FindingRoute::Dropped("the criterion is being rewritten anyway".to_string()),
-        );
-        assert_eq!(collect(project.path(), &spec_arg).open, 0, "both were decided");
-
-        // Round two: the same file, a different discovery — and the same
-        // criterion id under the OTHER removal column.
-        std::fs::write(
-            review.join("findings.md"),
-            "# Review\n\n- MINOR — ROUND TWO: the collector inherits a stale decision\n",
-        )
-        .unwrap();
-        std::fs::write(
-            spec_dir.join(AC_PROOF_JSON),
-            r#"{"spec":"demo","criteria":[{"id":"AC-1","command":"cd .","verdict":"proven",
-                "proof":"red","removal":"evidence-removed",
-                "reason":"the strip took this criterion's own evidence with it"}]}"#,
-        )
-        .unwrap();
-
-        let second = collect(project.path(), &spec_arg);
-        assert_eq!(
-            second.open, 2,
-            "a discovery nobody has read is OPEN, whatever the file it arrived in: {:?}",
-            ids_of(&second)
-        );
-        let fresh_review =
-            by_statement(&second, "MINOR — ROUND TWO: the collector inherits a stale decision");
-        assert!(fresh_review.is_open(), "{fresh_review:?}");
-        assert_ne!(
-            fresh_review.id,
-            finding_id("F-findings", "MINOR — round one"),
-            "a new discovery under the same file must not reuse the old id"
-        );
-        let fresh_column =
-            by_statement(&second, "the strip took this criterion's own evidence with it");
-        assert!(
-            fresh_column.is_open() && fresh_column.id.starts_with("AC-1-"),
-            "a criterion found out for something else is a new finding: {fresh_column:?}"
-        );
-        assert_ne!(
-            fresh_column.id,
-            by_statement(&second, "the criterion survived the removal").id,
-            "`survived` and `evidence-removed` say different things about AC-1"
-        );
     }
 
     /// A reviewer file carrying six findings becomes six records. One `--to` may

@@ -15,12 +15,10 @@ The Windows shell was `cmd.exe`, and this page taught the workarounds for it —
 `node -e "…"` wrappers, explicit `bash -c '…'` prefixes, and a list of POSIX
 constructs to avoid. That guidance made a defect invisible instead of fixing it.
 Under `cmd.exe` the single quote is **not** a quote character, so `rg 'token' path`
-searched for a literal `'token'`, matched nothing in any tree state, exited 1
-with an empty stderr — and `ac-negative-check`, whose whole red rule is
-`exit != 0`, stamped it `proven: red`. A criterion that could never go green
-entered the plan, and the failure resurfaced at QA looking like the
-implementer's fault. Teaching authors to route around a shell is not the same as
-giving them one.
+searched for a literal `'token'`, matched nothing in any tree state and exited 1
+with an empty stderr. A criterion that could never go green entered the plan,
+and the failure resurfaced at QA looking like the implementer's fault. Teaching
+authors to route around a shell is not the same as giving them one.
 
 ## The one residual: backslash paths
 
@@ -37,23 +35,15 @@ red.
 - **Spawn failure** — the OS could not start the command at all. Reported
   `skip`, carrying the OS error rather than a guess about its cause.
 
-`skip` never counts as a proof: `ac-negative-check` records it `unproven`, so an
-unrunnable criterion is never mistaken for a discriminating one.
+`skip` never counts as a pass, so an unrunnable criterion is never mistaken for
+a discriminating one.
 
-## Exit 127 — one code, two correct verdicts
+## Exit 127 — a command the shell cannot find
 
-A command the shell cannot FIND is a case apart, and the two readers of that
-result answer opposite questions, so they reach opposite verdicts on purpose:
-
-- **`qa-run` fails on it.** A criterion nobody could run must block CLOSE.
-  Grading it `skip` would let it ride along beside a passing criterion, because
-  an external run tolerates a skip next to a pass — that regression shipped once.
-- **`ac-negative-check` records it `unproven`.** Its red rule is exit≠0, so a
-  missing program would otherwise be stamped `proven: red` and enter the plan
-  carrying a proof about the shell rather than about the behaviour.
-
-The remedy is the same in both readings and neither reading suggests the wrong
-one: fix the program name, or install the tool.
+**`qa-run` fails on it.** A criterion nobody could run must block CLOSE. Grading
+it `skip` would let it ride along beside a passing criterion, because an
+external run tolerates a skip next to a pass — that regression shipped once. The
+remedy: fix the program name, or install the tool.
 
 ## Still worth avoiding
 
@@ -64,5 +54,5 @@ one: fix the program name, or install the tool.
   `RegExp` from a string inside node. Prefer `rg` with an `Expect:` regex over a
   nested `node -e` in the first place.
 - **A lone build-green** (`cargo build`, a bare `grep`). It verifies nothing
-  about the behaviour; `analyze-validation` warns on it and `ac-negative-check`
-  refuses it for not being able to fail. Only the trailing criterion is exempt.
+  about the behaviour, and `analyze-validation` warns on it. Only the trailing
+  criterion is exempt.

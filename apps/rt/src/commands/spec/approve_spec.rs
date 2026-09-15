@@ -49,7 +49,6 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
 
-use crate::commands::review::{ac_negative_check, qa_run};
 
 /// Options for `mustard-rt run approve-spec`.
 #[derive(Debug, Clone)]
@@ -207,223 +206,6 @@ fn approval_gate(mode: ApprovalMode, marker_present: bool) -> ApprovalGate {
     }
 }
 
-/// What the proof ledger says about the spec's own acceptance criteria — the
-/// approval precondition beside the user's own gesture.
-///
-/// The producer is `mustard-rt run ac-negative-check`, which runs each criterion
-/// against the tree BEFORE the work exists and records the result in
-/// `<spec>/ac-proof.json`. This door only READS that ledger; it never re-runs a
-/// command, because the user is waiting at the approval gesture and the proofs
-/// take minutes.
-///
-/// **Fail-CLOSED, deliberately** — the exception this crate's fail-open rule
-/// documents, for the same reason. The crate-wide rule is fail-open (a hook must
-/// never block a session over its own IO error) and a reader WILL assume it
-/// here. This is not a hook: it guards the `draft→approved` verdict, and an
-/// absent, unreadable or unparsable ledger is precisely a proof that cannot be
-/// shown to have been taken. It therefore REFUSES, exactly as an absent marker
-/// already does.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProofState {
-    /// The spec declares no `## Acceptance Criteria` at all (or its markdown is
-    /// not there to read). Nothing to prove, so nothing to refuse — this gate
-    /// must not invent a refusal for a spec that made no claims.
-    NotGated,
-    /// Every non-exempt criterion carries evidence for the exact command it
-    /// carries today — a RED proof, or a GREEN confirmation.
-    Proven,
-    /// No readable `<spec>/ac-proof.json` — the fail-closed case.
-    LedgerUnreadable,
-    /// One line per criterion without a proven record, each naming WHAT is
-    /// wrong: a proof never taken versus a proof that came back green.
-    Unproven(Vec<String>),
-}
-
-impl ProofState {
-    /// `true` when the gate must refuse. The refusal is UNCONDITIONAL — the
-    /// caller never softens it with `MUSTARD_APPROVAL_MODE`.
-    fn refuses(&self) -> bool {
-        !matches!(self, ProofState::NotGated | ProofState::Proven)
-    }
-}
-
-/// A proof never taken — the wording for a criterion the ledger records nothing
-/// for, including the hand edit this whole gate exists to close: a recorded
-/// command that no longer matches the one the criterion carries today.
-const WHY_NEVER_TAKEN: &str =
-    "the proof was NEVER TAKEN for the command this criterion carries today";
-
-/// A proof that WAS taken and came back the wrong colour. It asks for the
-/// OPPOSITE action to [`WHY_NEVER_TAKEN`] — rewrite the command, do not re-run
-/// it — so the two never share a wording.
-const WHY_GREEN: &str = "the proof was TAKEN and the command came back GREEN, so the criterion \
-     cannot tell done from not-done — rewrite the command instead of re-running it";
-
-/// A proof that was taken but produced no verdict.
-const WHY_NO_VERDICT: &str = "the proof was TAKEN but the command was killed by its deadline, \
-     so no verdict ever arrived";
-
-/// A proof the producer could not attempt at all.
-const WHY_NOT_ATTEMPTED: &str =
-    "the proof was NEVER TAKEN: the producer could not attempt the command at all";
-
-/// A proof taken twice whose two runs disagreed — neither colour, so neither
-/// [`WHY_GREEN`]'s remedy nor a red. The action is to make the answer stable.
-const WHY_UNSTABLE: &str = "the proof was TAKEN TWICE and the two runs disagreed, so the \
-     criterion is non-deterministic — make the command's answer stable, then take the proof again";
-
-/// The CONFIRMED column came back red — read, never re-run. It asks for the
-/// work to be finished, which is the opposite of [`WHY_GREEN`]'s remedy.
-const WHY_CONFIRMATION_RED: &str = "the confirmation was TAKEN and the command still came back \
-     RED after its work landed, and no RED proof stands for it either";
-
-/// The CONFIRMED column produced no verdict.
-const WHY_CONFIRMATION_NO_VERDICT: &str = "the confirmation was TAKEN but the command was killed \
-     by its deadline, so no verdict arrived, and no RED proof stands for it either";
-
-/// The CONFIRMED column found the criterion unrunnable. Naming `ac-amend` is
-/// the point: re-running is not the remedy for a command that cannot run.
-const WHY_INEXECUTABLE: &str = "the confirmation found the command INEXECUTABLE after its work \
-     landed, so the criterion itself is broken — repair it with `mustard-rt run ac-amend`, the \
-     one door that accepts a passing replacement for this case";
-
-/// The CONTROL column came back red — read, never re-run. It names the ONE
-/// thing a red control settles: the command cannot match anything even where it
-/// should, so no colour it produces is about the behaviour.
-const WHY_CONTROL_RED: &str = "the CONTROL was TAKEN and came back red against the tree as it is, \
-     so this criterion cannot match anything even where it should — repair the command (a broken \
-     regex, a shell it cannot run under, a quoting error), then take the proof";
-
-/// The CONTROL column produced no verdict.
-const WHY_CONTROL_NO_VERDICT: &str = "the CONTROL was TAKEN but the command was killed by its \
-     deadline, so nobody knows whether this criterion can match anything";
-
-/// The CONTROL column could not be attempted at all.
-const WHY_CONTROL_NOT_ATTEMPTED: &str = "the CONTROL was NEVER TAKEN: its command could not be \
-     attempted at all, so nobody knows whether this criterion can match anything";
-
-/// Why a recorded criterion satisfies neither column — the one action that
-/// clears it, in the wording of whichever column last spoke.
-///
-/// The CONFIRMED column is consulted first because it is the later finding: a
-/// criterion whose confirmation says the command is INEXECUTABLE is not fixed
-/// by anything the red column suggests. Pure, total — no re-run happens here,
-/// exactly as none happens for the red column.
-fn why_unsatisfied(p: &ac_negative_check::AcProof) -> &'static str {
-    use ac_negative_check::{Confirmation, Control, Proof};
-    // The CONTROL is consulted BEFORE either other column, because it decides
-    // whether they can be read at all: a criterion whose control is not green
-    // cannot match anything even where it should, so its red proof and its
-    // confirmation are both answers about the command's spelling. Read off the
-    // ledger like everything else here — nothing is ever re-run at the approval
-    // gesture, where the user is waiting.
-    match p.control {
-        Control::Red => return WHY_CONTROL_RED,
-        Control::NoVerdict => return WHY_CONTROL_NO_VERDICT,
-        Control::NotAttempted => return WHY_CONTROL_NOT_ATTEMPTED,
-        // Declared-and-green, or not declared at all: the control has nothing
-        // to say, and the columns below answer.
-        Control::Green | Control::NotDeclared => {}
-    }
-    match p.confirmation {
-        Confirmation::Red => WHY_CONFIRMATION_RED,
-        Confirmation::NoVerdict => WHY_CONFIRMATION_NO_VERDICT,
-        Confirmation::Inexecutable => WHY_INEXECUTABLE,
-        // A green confirmation is evidence, so `evidenced()` already returned
-        // above; a record reaching here has no confirmation to speak of, and
-        // the red column answers.
-        Confirmation::Green | Confirmation::NotTaken => match p.proof {
-            Proof::Green => WHY_GREEN,
-            Proof::NoVerdict => WHY_NO_VERDICT,
-            Proof::NotAttempted => WHY_NOT_ATTEMPTED,
-            Proof::Unstable => WHY_UNSTABLE,
-            // A red proof IS evidence, so this arm is likewise unreachable;
-            // treat any such record as no record at all.
-            Proof::Red => WHY_NEVER_TAKEN,
-        },
-    }
-}
-
-/// Read `<spec>/ac-proof.json` and classify the spec's acceptance criteria.
-///
-/// Reads the ledger through the type its producer defined
-/// ([`ac_negative_check::AcProofLedger`], via [`ac_negative_check::load_ledger`])
-/// and looks each criterion up by the producer's own rule
-/// ([`ac_negative_check::recorded_proof`]: id AND command AND expect must all
-/// still match). There is no second parser and no second lookup rule for this
-/// file, so a hand-edited command silently keeping its old proof is impossible
-/// by construction rather than by care.
-///
-/// BOTH columns of the record are read, through the producer's own
-/// [`ac_negative_check::AcProof::evidenced`]: the RED proof (able to fail
-/// before its work) or the GREEN confirmation (shown to actually pass after
-/// it). Reading only the red column would deadlock the amendment door — a
-/// criterion repaired for being INEXECUTABLE is accepted on a replacement that
-/// PASSES, so its evidence lives in the confirmed column by construction.
-/// Neither column is ever re-run here: the user is waiting at the approval
-/// gesture and the proofs take minutes.
-///
-/// The criteria themselves come from the SHARED `qa_run` parser, so this gate
-/// and QA cannot disagree about which criteria a spec declares. The trailing
-/// criterion is exempt by [`ac_negative_check::is_exempt`] — the one positional
-/// exemption in the crate, reused, not restated.
-pub(crate) fn proof_state(root: &str, spec: &str) -> ProofState {
-    let root_path = std::path::Path::new(root);
-    // No markdown, or no criteria section: the spec claims nothing, so there is
-    // nothing to prove. This is the ONE branch that is not fail-closed, and it
-    // is not a degradation — it is the absence of an obligation.
-    let Some(spec_file) = qa_run::spec_file_for(root_path, spec) else {
-        return ProofState::NotGated;
-    };
-    let Ok(markdown) = mustard_core::io::fs::read_to_string(&spec_file) else {
-        return ProofState::NotGated;
-    };
-    let items = qa_run::extract_ac_section(&markdown)
-        .map(|section| qa_run::parse_ac_items(&section))
-        .unwrap_or_default();
-    if items.is_empty() {
-        return ProofState::NotGated;
-    }
-
-    let ledger_path = spec_file
-        .parent()
-        .unwrap_or(root_path)
-        .join(ac_negative_check::AC_PROOF_JSON);
-    let Some(ledger) = ac_negative_check::load_ledger(&ledger_path) else {
-        return ProofState::LedgerUnreadable;
-    };
-
-    let total = items.len();
-    let mut unproven: Vec<String> = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        if ac_negative_check::is_exempt(index, total) {
-            continue;
-        }
-        let why = match ac_negative_check::recorded_proof(
-            &ledger,
-            &item.id,
-            &item.command,
-            item.expect.as_deref(),
-        ) {
-            // BOTH readings must hold: the record must carry evidence AND its
-            // control must not stand in the way of reading that evidence. They
-            // are separate questions — a record can carry a red proof taken
-            // when the control was still green (or absent) and a control that
-            // has since failed, and answering only the first would approve on
-            // evidence nobody can read any more.
-            Some(p) if p.evidenced() && p.control_satisfied() => continue,
-            Some(p) => why_unsatisfied(p),
-            None => WHY_NEVER_TAKEN,
-        };
-        unproven.push(format!("{} — {why}", item.id));
-    }
-    if unproven.is_empty() {
-        ProofState::Proven
-    } else {
-        ProofState::Unproven(unproven)
-    }
-}
-
 /// Narrative sections of `spec.md` still holding the seeded placeholder, byte
 /// for byte.
 ///
@@ -521,7 +303,6 @@ fn section_body(body: &str, heading: &str) -> Option<String> {
 fn unmet_gate_message(
     spec: &str,
     approval_missing: bool,
-    proof: &ProofState,
     scaffold_sections: &[String],
     is_full: bool,
     open_points: Option<&str>,
@@ -568,31 +349,6 @@ fn unmet_gate_message(
                 .to_string(),
         );
     }
-    match proof {
-        ProofState::NotGated | ProofState::Proven => {}
-        ProofState::LedgerUnreadable => unmet.push(format!(
-            "proof — no readable `<spec>/{ledger}`: the acceptance criteria were never shown to \
-             be ABLE to fail, so passing them would prove nothing. An absent, unreadable or \
-             unparsable ledger refuses (fail-closed). Take the proof: \
-             `mustard-rt run ac-negative-check --spec {spec}`",
-            ledger = ac_negative_check::AC_PROOF_JSON,
-        )),
-        ProofState::Unproven(entries) => {
-            let list = entries
-                .iter()
-                .map(|e| format!("    - {e}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            unmet.push(format!(
-                "proof — `<spec>/{ledger}` records no PROVEN result for the command these \
-                 criteria carry today:\n{list}\n  Take the proof: \
-                 `mustard-rt run ac-negative-check --spec {spec}`. A criterion whose proof came \
-                 back GREEN is not fixed by re-running it — rewrite its command (or amend it) so \
-                 it asserts the new behaviour, then take the proof again.",
-                ledger = ac_negative_check::AC_PROOF_JSON,
-            ));
-        }
-    }
     if unmet.is_empty() {
         return None;
     }
@@ -602,20 +358,14 @@ fn unmet_gate_message(
         .collect::<Vec<_>>()
         .join("\n");
     // The relax hint is only honest when every unmet precondition is one the
-    // mode actually governs. The proof is unconditional, so when it is the (or
-    // a) blocker the message says so instead of pointing at a switch that will
-    // not move it.
-    let tail = match (proof.refuses(), open_points.is_some()) {
-        (true, true) => {
-            "The acceptance-criteria proof and the open survey points are UNCONDITIONAL — \
-             MUSTARD_APPROVAL_MODE does not relax them."
-        }
-        (true, false) => "The acceptance-criteria proof is UNCONDITIONAL — MUSTARD_APPROVAL_MODE does not relax it.",
-        (false, true) => {
-            "The open survey points are UNCONDITIONAL — MUSTARD_APPROVAL_MODE does not relax them: close \
-             each one first."
-        }
-        (false, false) => "To temporarily relax, set MUSTARD_APPROVAL_MODE=warn or off.",
+    // mode actually governs. The open survey points are unconditional, so when
+    // they are the (or a) blocker the message says so instead of pointing at a
+    // switch that will not move them.
+    let tail = if open_points.is_some() {
+        "The open survey points are UNCONDITIONAL — MUSTARD_APPROVAL_MODE does not relax them: close \
+         each one first."
+    } else {
+        "To temporarily relax, set MUSTARD_APPROVAL_MODE=warn or off."
     };
     Some(format!(
         "approve-spec will not self-approve a Full plan (that is what the field incident \
@@ -671,7 +421,6 @@ fn preconditions(
     mode: ApprovalMode,
     check_approval: bool,
 ) -> Option<(String, ApprovalGate)> {
-    let proof = proof_state(root, spec);
     let open = open_points_line(root, spec);
     let missing_approval =
         mode != ApprovalMode::Off && check_approval && approval_missing(root, spec);
@@ -679,12 +428,11 @@ fn preconditions(
     let message = unmet_gate_message(
         spec,
         missing_approval,
-        &proof,
         &scaffold,
         spec_is_full(root, spec),
         open.as_deref(),
     )?;
-    let gate = if proof.refuses() || open.is_some() { ApprovalGate::Block } else { approval_gate(mode, false) };
+    let gate = if open.is_some() { ApprovalGate::Block } else { approval_gate(mode, false) };
     Some((message, gate))
 }
 
@@ -934,7 +682,6 @@ mod tests {
         let msg = unmet_gate_message(
             "uma-unidade",
             false,
-            &ProofState::NotGated,
             &residue,
             true,
             None,
@@ -951,7 +698,6 @@ mod tests {
         let light = unmet_gate_message(
             "uma-unidade",
             false,
-            &ProofState::NotGated,
             &residue,
             false,
             None,
@@ -1275,7 +1021,7 @@ mod tests {
     fn approval_missing_refuses_naming_the_gesture() {
         // Sem a aprovação do usuário a recusa sai nomeando o gesto que a
         // satisfaz, e de onde ela vem.
-        let msg = unmet_gate_message("epic", true, &ProofState::NotGated, &[], true, None)
+        let msg = unmet_gate_message("epic", true, &[], true, None)
             .expect("approval missing → a refusal");
         assert!(msg.contains("\"Aprovar\""), "names the approval gesture: {msg}");
         assert!(
@@ -1292,7 +1038,7 @@ mod tests {
     /// taught, and the answers that approve nothing are named.
     #[test]
     fn the_refusal_names_the_one_gesture_that_approves() {
-        let msg = unmet_gate_message("epic", true, &ProofState::NotGated, &[], true, None)
+        let msg = unmet_gate_message("epic", true, &[], true, None)
             .expect("approval missing → a refusal");
         assert!(msg.contains("CHOOSES") && msg.contains("\"Aprovar\""), "the gesture: {msg}");
         assert!(msg.contains("Free text"), "free text approves nothing: {msg}");
@@ -1305,12 +1051,12 @@ mod tests {
     fn both_present_approves() {
         // Neither precondition unmet → no refusal message, and strict proceeds.
         assert_eq!(
-            unmet_gate_message("epic", false, &ProofState::Proven, &[], true, None),
+            unmet_gate_message("epic", false, &[], true, None),
             None
         );
         // Uma spec light não tem prova de critério — mesmo silêncio.
         assert_eq!(
-            unmet_gate_message("small", false, &ProofState::NotGated, &[], true, None),
+            unmet_gate_message("small", false, &[], true, None),
             None
         );
         assert_eq!(approval_gate(ApprovalMode::Strict, true), ApprovalGate::Proceed);
@@ -1355,257 +1101,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // The THIRD precondition — every criterion must carry a PROVEN record
     // -----------------------------------------------------------------------
-
-    /// Seed a spec's `spec.md` with two criteria: `AC-1` carrying `command`, and
-    /// a trailing build-green criterion (exempt by position).
-    fn seed_criteria(root: &Path, spec: &str, command: &str) {
-        let sp = mustard_core::ClaudePaths::for_project(root)
-            .unwrap()
-            .for_spec(spec)
-            .unwrap();
-        std::fs::create_dir_all(sp.dir()).unwrap();
-        std::fs::write(
-            sp.spec_md_path(),
-            format!(
-                "# S\n\n## Acceptance Criteria\n\
-                 - **AC-1** — when the work lands, then the behaviour holds.\n  Command: `{command}`\n\
-                 - **AC-2** — build green.\n  Command: `cargo build --workspace`\n"
-            ),
-        )
-        .unwrap();
-    }
-
-    /// Write a proof ledger recording `AC-1` as PROVEN for `command`.
-    fn seed_proof_ledger(root: &Path, spec: &str, command: &str) {
-        let sp = mustard_core::ClaudePaths::for_project(root)
-            .unwrap()
-            .for_spec(spec)
-            .unwrap();
-        let body = serde_json::json!({
-            "spec": spec,
-            "criteria": [{
-                "id": "AC-1",
-                "command": command,
-                "expect": null,
-                "verdict": "proven",
-                "proof": "red",
-                "exit": 1,
-                "reason": null,
-                "stderr_excerpt": ""
-            }],
-            "amendments": []
-        });
-        std::fs::write(
-            sp.dir().join("ac-proof.json"),
-            serde_json::to_string_pretty(&body).unwrap(),
-        )
-        .unwrap();
-    }
-
-    /// A criterion whose current command has no PROVEN record refuses,
-    /// and the refusal names that criterion inside the SAME aggregated message
-    /// (never a second refusal path). Driven through the hand edit this gate
-    /// exists to close: the ledger proves the OLD command, the spec now carries
-    /// a different one.
-    #[test]
-    fn approval_refuses_a_criterion_with_no_recorded_proof() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        let spec = "epic";
-        seed_full_spec(root, spec);
-        seed_criteria(root, spec, "cargo test -p mustard-rt --lib the_new_unit");
-
-        // Both approval preconditions are genuinely met, so the refusal can
-        // come from nothing but the proof.
-        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
-
-        // No ledger at all → fail-CLOSED, and the message says so.
-        assert_eq!(proof_state(root_str, spec), ProofState::LedgerUnreadable);
-
-        let opts = ApproveSpecOpts { spec: spec.to_string(), wave_plan: true, resume: false };
-        let emitted: std::cell::RefCell<Vec<(String, Value)>> = std::cell::RefCell::new(Vec::new());
-        let mut record =
-            |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
-
-        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
-            .expect_err("no proof → the approval refuses");
-        assert!(refused.exit_nonzero, "a gate refusal exits non-zero");
-        assert!(
-            refused.error.contains("ac-proof.json") && refused.error.contains("ac-negative-check"),
-            "the refusal names the ledger and the command that mints it: {}",
-            refused.error
-        );
-        assert!(
-            emitted.borrow().is_empty(),
-            "no approval event may be emitted: {:?}",
-            emitted.borrow()
-        );
-
-        // A ledger that proves the criterion's OLD command is NO proof for the
-        // one it carries today — precisely the hand edit this gate closes.
-        seed_proof_ledger(root, spec, "cargo test -p mustard-rt --lib the_old_unit");
-        let stale = proof_state(root_str, spec);
-        let ProofState::Unproven(entries) = &stale else {
-            panic!("a superseded command must read as unproven: {stale:?}");
-        };
-        assert_eq!(entries.len(), 1, "only AC-1 is unproven: {entries:?}");
-        assert!(entries[0].starts_with("AC-1 —"), "names the criterion: {entries:?}");
-        assert!(entries[0].contains("NEVER TAKEN"), "and what is wrong: {entries:?}");
-
-        let refused = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
-            .expect_err("a stale record is not a proof");
-        assert!(
-            refused.error.contains("AC-1"),
-            "the criterion is named inside the aggregated refusal: {}",
-            refused.error
-        );
-        // ONE refusal, carrying the standing preamble — not a second path.
-        assert!(
-            refused.error.contains("Unmet precondition(s):"),
-            "the proof joins the existing aggregated message: {}",
-            refused.error
-        );
-        assert!(
-            refused.error.contains("UNCONDITIONAL"),
-            "and says the mode does not relax it: {}",
-            refused.error
-        );
-
-        // The other direction — proving the command it carries TODAY approves.
-        seed_proof_ledger(root, spec, "cargo test -p mustard-rt --lib the_new_unit");
-        assert_eq!(proof_state(root_str, spec), ProofState::Proven);
-        let report = approve_at(root_str, &opts, ApprovalMode::Strict, &mut record)
-            .expect("a proven criterion approves");
-        assert!(report.approved);
-        assert_eq!(emitted.borrow().len(), 2, "plan + approved: {:?}", emitted.borrow());
-    }
-
-    /// The gate reads the CONFIRMED column too, and re-runs nothing to do it.
-    ///
-    /// The record under test is the one the amendment door writes when it
-    /// repairs an INEXECUTABLE criterion: the red column says GREEN (the
-    /// replacement passes, which is the point) and the evidence lives in the
-    /// confirmation. Reading only the red column would refuse it forever.
-    ///
-    /// Two-sided: the same record with the confirmation NOT taken is refused,
-    /// and the refusal names the confirmed column's own finding — so the gate
-    /// cannot pass by accepting any record that merely mentions a confirmation.
-    #[test]
-    fn approval_reads_the_confirmation_column() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        let spec = "epic";
-        let command = "cargo test -p mustard-rt --lib the_repaired_unit";
-        seed_full_spec(root, spec);
-        seed_criteria(root, spec, command);
-        let ledger_path = mustard_core::ClaudePaths::for_project(root)
-            .unwrap()
-            .for_spec(spec)
-            .unwrap()
-            .dir()
-            .join("ac-proof.json");
-
-        // A record whose RED column is green and whose CONFIRMED column is not
-        // taken: no evidence at all, refused — and the wording comes from the
-        // red column, because that is the only one that spoke.
-        let record = |confirmation: &str| {
-            serde_json::json!({
-                "spec": spec,
-                "criteria": [{
-                    "id": "AC-1", "command": command, "expect": null,
-                    "verdict": "unproven", "proof": "green", "confirmation": confirmation,
-                    "exit": 0, "confirmation_exit": 0, "reason": null, "stderr_excerpt": ""
-                }],
-                "amendments": []
-            })
-        };
-        std::fs::write(&ledger_path, record("not-taken").to_string()).unwrap();
-        let ProofState::Unproven(entries) = proof_state(root_str, spec) else {
-            panic!("a record with neither column is not evidence");
-        };
-        assert!(entries[0].contains("came back GREEN"), "{entries:?}");
-
-        // The confirmed column found the criterion INEXECUTABLE: still refused,
-        // and now the refusal names the amendment door instead of a re-run.
-        std::fs::write(&ledger_path, record("inexecutable").to_string()).unwrap();
-        let ProofState::Unproven(entries) = proof_state(root_str, spec) else {
-            panic!("an inexecutable criterion is not evidence");
-        };
-        assert!(entries[0].contains("INEXECUTABLE"), "{entries:?}");
-        assert!(entries[0].contains("ac-amend"), "names the repair door: {entries:?}");
-
-        // And the accepted direction: a GREEN confirmation IS evidence.
-        std::fs::write(&ledger_path, record("green").to_string()).unwrap();
-        assert_eq!(
-            proof_state(root_str, spec),
-            ProofState::Proven,
-            "a criterion shown to actually pass after its work satisfies the gate"
-        );
-
-        // A ledger written before the confirmed column existed still reads as
-        // the truth about it — nobody asked — so the red column governs alone.
-        let legacy = serde_json::json!({
-            "spec": spec,
-            "criteria": [{
-                "id": "AC-1", "command": command, "expect": null,
-                "verdict": "proven", "proof": "red", "exit": 1,
-                "reason": null, "stderr_excerpt": ""
-            }],
-            "amendments": []
-        });
-        std::fs::write(&ledger_path, legacy.to_string()).unwrap();
-        assert_eq!(proof_state(root_str, spec), ProofState::Proven);
-    }
-
-    /// The proof precondition is UNCONDITIONAL, and it invents no refusal for a
-    /// spec that declares no criteria.
-    #[test]
-    fn the_proof_precondition_ignores_the_mode_and_spares_a_spec_with_no_criteria() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        let spec = "epic";
-        seed_full_spec(root, spec);
-        seed_criteria(root, spec, "cargo test -p mustard-rt --lib the_new_unit");
-
-        let opts = ApproveSpecOpts { spec: spec.to_string(), wave_plan: false, resume: false };
-        let emitted: std::cell::RefCell<Vec<(String, Value)>> = std::cell::RefCell::new(Vec::new());
-        let mut record =
-            |kind: &str, payload: Value| emitted.borrow_mut().push((kind.to_string(), payload));
-
-        // `off` mutes the two MARKER preconditions; the proof still refuses.
-        for mode in [ApprovalMode::Off, ApprovalMode::Warn, ApprovalMode::Strict] {
-            let refused = approve_at(root_str, &opts, mode, &mut record)
-                .err()
-                .unwrap_or_else(|| panic!("{mode:?} must not relax the proof"));
-            assert!(refused.exit_nonzero, "{mode:?}");
-        }
-        assert!(emitted.borrow().is_empty(), "nothing emitted under any mode");
-
-        // A spec that declares NO criteria has nothing to prove — unchanged.
-        let bare = "bare";
-        seed_full_spec(root, bare);
-        std::fs::write(
-            mustard_core::ClaudePaths::for_project(root)
-                .unwrap()
-                .for_spec(bare)
-                .unwrap()
-                .spec_md_path(),
-            "# S\n\nNo criteria here.\n",
-        )
-        .unwrap();
-        assert_eq!(proof_state(root_str, bare), ProofState::NotGated);
-        let bare_opts = ApproveSpecOpts { spec: bare.to_string(), wave_plan: false, resume: false };
-        assert_eq!(
-            unmet_gate_message(bare, false, &proof_state(root_str, bare), &[], true, None),
-            None,
-            "a spec with no acceptance criteria must not be refused by this gate"
-        );
-        // And it approves under `off`, where the two marker preconditions are muted.
-        assert!(approve_at(root_str, &bare_opts, ApprovalMode::Off, &mut record).is_ok());
-    }
 
     /// Uma spec `spec` em plano, com uma mensagem do usuário e um ponto do
     /// levantamento aberto, gravados direto no arquivo de eventos.

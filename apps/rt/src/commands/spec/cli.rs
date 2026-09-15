@@ -233,134 +233,11 @@ pub enum SpecCmd {
         #[arg(long)]
         resume: bool,
     },
-    /// Deliberately change ONE acceptance criterion after the spec artefacts are
-    /// frozen, and prove the replacement still knows how to fail.
-    ///
-    /// The replacement command is run through the SAME negative-test engine
-    /// (`ac-negative-check`) and REFUSED unless it comes back red: a replacement
-    /// that already passes proves exactly as little as the criterion it would
-    /// replace. On acceptance the criterion is rewritten in EVERY artefact under
-    /// the spec directory that carries its id — the root `spec.md`,
-    /// `wave-plan.md` and each `wave-*/spec.md` — because the scaffold is frozen
-    /// after approval and a root-only amendment leaves the dispatched agent
-    /// reading the superseded command. The supersession is appended to the proof
-    /// ledger's `amendments` array with the stated reason.
-    ///
-    /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
-    /// the unrelated session-end amendment window.
-    #[command(name = "ac-amend")]
-    #[command(display_order = 65)]
-    AcAmend {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// The criterion to amend (`AC-2`, `AC-W4-1`, …).
-        #[arg(long)]
-        ac: String,
-        /// The replacement command.
-        #[arg(long)]
-        command: String,
-        /// The replacement `Expect:` evidence regex. Omitted: the criterion
-        /// keeps the regex it already carries.
-        #[arg(long)]
-        expect: Option<String>,
-        /// The replacement statement. Omitted: the statement is left alone.
-        #[arg(long)]
-        statement: Option<String>,
-        /// Why the criterion is being changed. A blank reason is refused.
-        #[arg(long)]
-        reason: String,
-        /// The replacement's `Control:` — a command that must come back GREEN
-        /// against the tree as it is.
-        ///
-        /// OPTIONAL, and worth declaring when the replacement command is a
-        /// FILTERED TEST RUNNER (`cargo test -p x my_new_case`, `pytest -k
-        /// novo`, …): a runner exits 0 when its filter selects nothing, so
-        /// without a control the replacement's red can be an empty selection
-        /// rather than the missing behaviour. Omitted, the criterion keeps the
-        /// control its line already carries (a drafter placeholder is not
-        /// one), or is proven the ordinary way with the record saying
-        /// `control: not-declared` — a WARN at drafting, never a refusal.
-        #[arg(long)]
-        control: Option<String>,
-        /// Take the proof against ANOTHER checkout — one that does not carry
-        /// the work yet — instead of this tree.
-        ///
-        /// The negative proof asks whether a criterion can FAIL, which is only
-        /// answerable where the behaviour is absent. A criterion corrected
-        /// after the code landed comes back green here, and green proves
-        /// nothing. Point this at a worktree of the base commit
-        /// (`git worktree add --detach <dir> <base>`); the spec is still read
-        /// and rewritten HERE, and the ledger records the commit the red was
-        /// taken on.
-        #[arg(long = "proof-tree")]
-        proof_tree: Option<PathBuf>,
-    },
-    /// ADD an acceptance criterion the spec does not yet carry, after the
-    /// artefacts are frozen, taking the SAME negative proof a planned one takes.
-    ///
-    /// A door of its own, never a flag on `ac-amend`: an amendment supersedes a
-    /// predecessor and an added id has no predecessor, so folding the two would
-    /// blur the rule that makes amend trustworthy. The command is run through
-    /// `ac-negative-check` and REFUSED unless it comes back red — a criterion
-    /// that already passes would join the spec verifying nothing. On acceptance
-    /// it is written into the root `spec.md` and `wave-plan.md` (the union QA
-    /// executes), directly ABOVE the trailing build-green criterion so the
-    /// positional exemption does not move onto it, and the addition is appended
-    /// to the proof ledger's `additions`. A wave spec carries no criterion
-    /// text — `--wave N` names the wave that will be judged by the new id.
-    #[command(name = "ac-add")]
-    #[command(display_order = 66)]
-    AcAdd {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// The criterion id to introduce (`AC-9`, `AC-W4-3`, …). An id the spec
-        /// already carries is refused — that is an amendment.
-        #[arg(long)]
-        ac: String,
-        /// The EARS statement the criterion asserts. A blank statement is
-        /// refused.
-        #[arg(long)]
-        statement: String,
-        /// The command that asserts the new behaviour.
-        #[arg(long)]
-        command: String,
-        /// The `Expect:` evidence regex, when the criterion carries one.
-        #[arg(long)]
-        expect: Option<String>,
-        /// Why the criterion is being added. A blank reason is refused.
-        #[arg(long)]
-        reason: String,
-        /// The criterion's `Control:` — a command that must come back GREEN
-        /// against the tree as it is.
-        ///
-        /// OPTIONAL, and worth declaring when the criterion's command is a
-        /// FILTERED TEST RUNNER (`cargo test -p x my_new_case`, `pytest -k
-        /// novo`, …): a runner exits 0 when its filter selects nothing, so
-        /// without a control the criterion's red can be an empty selection
-        /// rather than the missing behaviour. Omitted, the record says
-        /// `control: not-declared` — a WARN at drafting, never a refusal.
-        #[arg(long)]
-        control: Option<String>,
-        /// Take the proof against ANOTHER checkout — one that does not carry
-        /// the work yet — instead of this tree.
-        ///
-        /// The negative proof asks whether a criterion can FAIL, which is only
-        /// answerable where the behaviour is absent. A criterion added to cover
-        /// work that ALREADY LANDED comes back green here, and green proves
-        /// nothing. Point this at a worktree of the base commit
-        /// (`git worktree add --detach <dir> <base>`); the spec is still read
-        /// and rewritten HERE, and the ledger records the commit the red was
-        /// taken on.
-        #[arg(long)]
-        proof_tree: Option<std::path::PathBuf>,
-    },
     /// Declare the DESTINATION of one collected finding, and why it went there.
     ///
     /// The seeding half (`finding-collect`) decides nothing: it reads the
-    /// reviewer's `review/findings*.md` and the `removal` column of
-    /// `ac-proof.json` and records what was found. This is the other half — the
+    /// reviewer's `review/findings*.md` and records what was found. This is the
+    /// other half — the
     /// only writer of a finding's destination, mirroring `mark-checklist-item
     /// --drop --reason`. A destination with no stated reason is REFUSED (exit
     /// 2): it would leave the finding in exactly the silence it started in, and
@@ -370,7 +247,7 @@ pub enum SpecCmd {
     /// `already-routed` when the same decision is restated, and refuses a
     /// different one rather than overwriting a decision in silence.
     #[command(name = "mark-finding")]
-    #[command(display_order = 73)]
+    #[command(display_order = 70)]
     MarkFinding {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -400,7 +277,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 79)]
+    #[command(display_order = 76)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -421,7 +298,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 81)]
+    #[command(display_order = 78)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
@@ -515,48 +392,6 @@ pub fn dispatch(cmd: SpecCmd) {
                 spec,
                 wave_plan,
                 resume,
-            });
-        }
-        SpecCmd::AcAmend {
-            spec: slug,
-            ac,
-            command,
-            expect,
-            statement,
-            reason,
-            control,
-            proof_tree,
-        } => {
-            spec::ac_amend::run(spec::ac_amend::AcAmendOpts {
-                spec: slug,
-                ac,
-                command,
-                expect,
-                statement,
-                reason,
-                control,
-                proof_tree,
-            });
-        }
-        SpecCmd::AcAdd {
-            spec: slug,
-            ac,
-            statement,
-            command,
-            expect,
-            reason,
-            control,
-            proof_tree,
-        } => {
-            spec::ac_add::run(spec::ac_add::AcAddOpts {
-                spec: slug,
-                ac,
-                statement,
-                command,
-                expect,
-                reason,
-                control,
-                proof_tree,
             });
         }
         SpecCmd::MarkFinding { spec: slug, id, to, reason } => {

@@ -32,10 +32,10 @@
 //! rejects is simply not checked — the validator stays silent about it instead
 //! of warning about a file nobody wrote.
 
-use crate::commands::review::{ac_negative_check, qa_run};
+use crate::commands::review::qa_run;
 use crate::commands::spec::spec_sections::{self, is_heading};
 use mustard_core::io::fs;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use mustard_core::platform::i18n;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -392,7 +392,14 @@ fn refs_found_elsewhere(root: &Path, refs: &[String]) -> BTreeMap<String, FoundE
                     if r.rsplit('/').next().unwrap_or(r) != entry.file_name {
                         continue;
                     }
-                    let found = ac_negative_check::repo_relative(root, &entry.path);
+                    let found = entry
+                        .path
+                        .strip_prefix(root)
+                        .ok()
+                        .or_else(|| entry.path.file_name().map(Path::new))
+                        .unwrap_or(&entry.path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
                     // A mesma normalização que o `ref_resolves` aplica: uma
                     // referência escrita `./src/x.rs` é sufixo de
                     // `apps/rt/src/x.rs` tanto quanto `src/x.rs` é.
@@ -964,41 +971,6 @@ fn narrows_by_name(
     false
 }
 
-/// The ids the negative test has already MEASURED as able to fail — the
-/// criteria this linter has nothing left to guess about.
-///
-/// Read through the producer's own door: [`ac_negative_check::load_ledger`] is
-/// the single parser of `ac-proof.json`, [`ac_negative_check::recorded_proof`]
-/// the single lookup rule (id AND command AND expect must all still match), and
-/// [`ac_negative_check::AcProof::evidenced`] the single reading of what counts
-/// as evidence. Restating any of them here is how the gate that produces the
-/// proof and the linter that would override it drift apart.
-///
-/// Fail-open in the direction that keeps the WARN: an absent, unreadable or
-/// stale ledger yields an empty set, so every criterion is judged on shape
-/// exactly as before. A hand-edited command no longer matches its record and is
-/// therefore judged on shape too — which is the correct answer, not a
-/// degradation.
-fn proven_criteria(spec_dir: &Path, items: &[qa_run::AcItem]) -> BTreeSet<String> {
-    let ledger_path = spec_dir.join(ac_negative_check::AC_PROOF_JSON);
-    let Some(ledger) = ac_negative_check::load_ledger(&ledger_path) else {
-        return BTreeSet::new();
-    };
-    items
-        .iter()
-        .filter(|item| {
-            ac_negative_check::recorded_proof(
-                &ledger,
-                &item.id,
-                &item.command,
-                item.expect.as_deref(),
-            )
-            .is_some_and(ac_negative_check::AcProof::evidenced)
-        })
-        .map(|item| item.id.clone())
-        .collect()
-}
-
 /// Whether `line` names a wave by its NUMBER — `onda 1`, `wave 2`, `ondas 3 e 4`.
 ///
 /// Exige ao menos um espaço entre a palavra e o dígito, e que a palavra comece
@@ -1256,21 +1228,12 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
     // command. Reuses the exposed `AcItem` `id` + `command`.
     if ac_items.len() > 1 {
         let last = ac_items.len() - 1;
-        // The MEASUREMENT, read before the shape is judged. `is_weak_ac_command`
-        // asks how a command is SPELLED; whether it can fail is a fact about
-        // this repository, and the negative test already established it for
-        // every criterion it proved red. Its ledger lives in this very
-        // directory, and until now the linter — whose own docstring says only
-        // that pass can settle the question — was not among its readers, so a
-        // MEASURED search kept being reported as a rubber stamp.
-        let proven = proven_criteria(spec_dir, &ac_items);
         let weak: Vec<String> = ac_items
             .iter()
             .enumerate()
             .filter(|(i, item)| {
                 *i != last
                     && !qa_run::is_skeleton(&item.command)
-                    && !proven.contains(&item.id)
                     && is_weak_ac_command(&item.command)
             })
             .map(|(_, item)| item.id.clone())
@@ -1386,10 +1349,7 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
         // flagged weak (a tautology's fix is replacement, not a Control line).
         //
         // A `Control:` still carrying the scaffold placeholder counts as NOT
-        // declared — the same reading `ac_negative_check::take_control` gives
-        // it (`NotAttempted`) and `ac-amend` gives it (not a declared
-        // control). The lint and the gate promise the same criteria; a lint
-        // silent on exactly the control the gate refuses breaks that promise.
+        // declared.
         let no_control: Vec<String> = ac_items
             .iter()
             .enumerate()
@@ -1412,8 +1372,7 @@ pub fn validate(root: &Path, abs_path: &Path, content: &str) -> Vec<Value> {
                      here can be an empty selection instead of the missing behaviour — add a \
                      `Control: `<command>`` line that comes back GREEN against the tree as it is \
                      (the unfiltered suite, or the file the new test lands in), so the red is \
-                     proven to be about the behaviour. Without one, `ac-negative-check` still \
-                     takes the proof and records `control: not-declared`.",
+                     proven to be about the behaviour.",
                     no_control.join(", ")
                 ),
             }));
@@ -1689,49 +1648,6 @@ mod tests {
                 "`{cmd}` seleciona por nome e o filtro dele pode vir vazio",
             );
         }
-    }
-
-    /// V6: a criterion the NEGATIVE TEST already measured is not reported as a
-    /// tautology on shape alone.
-    ///
-    /// This linter's own docstring says whether a search can fail is a fact
-    /// about the repository which only `ac-negative-check` can establish — and
-    /// the linter was not among that pass's readers, though its ledger lives in
-    /// the very directory being validated. So a criterion MEASURED able to fail
-    /// kept being reported as a rubber stamp.
-    ///
-    /// Two-sided: the same command, in the same shape, IS flagged when no
-    /// measurement stands for it — so the fix cannot pass by silencing V6.
-    #[test]
-    fn weak_ac_defers_to_the_recorded_proof() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("spec.md");
-        let body = "# Spec\n\n## Acceptance Criteria\n\
-                    - **AC-1** — the marker is present.\n  Command: `rg -q marker src/lib.rs`\n\
-                    - **AC-2** — build green.\n  Command: `cargo build`\n";
-        std::fs::write(&path, body).unwrap();
-
-        // No ledger: judged on shape, and a standalone search is weak.
-        let issues = validate(dir.path(), &path, body);
-        assert!(
-            issues.iter().any(|i| i["type"] == "weak-ac"),
-            "unmeasured, a search is a rubber stamp: {issues:?}",
-        );
-
-        // The negative test then MEASURES AC-1 red — it can fail, which is the
-        // fact the shape could never settle.
-        std::fs::write(
-            dir.path().join(ac_negative_check::AC_PROOF_JSON),
-            r#"{"spec":"m","criteria":[{"id":"AC-1","command":"rg -q marker src/lib.rs",
-               "expect":null,"verdict":"proven","proof":"red","confirmation":"not-taken",
-               "exit":1,"reason":null,"stderr_excerpt":""}],"amendments":[]}"#,
-        )
-        .unwrap();
-        let issues = validate(dir.path(), &path, body);
-        assert!(
-            !issues.iter().any(|i| i["type"] == "weak-ac"),
-            "a MEASURED criterion is not a rubber stamp: {issues:?}",
-        );
     }
 
     /// Prosa que atribui trabalho a uma onda pelo número, sob um título

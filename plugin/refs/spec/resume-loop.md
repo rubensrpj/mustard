@@ -90,15 +90,7 @@ Instead: print the row's `prompt` to the operator verbatim — it names the wave
 | `dispatch-review` | fallback only (resumed/missing verdict) — dispatch one review Task per `reviewRoles`; prefer the in-loop review round |
 | `run-qa` / `emit-complete` | `mustard-rt run close-pipeline --spec {spec}` |
 
-`close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — the **confirmation pass** + `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) unless every criterion in the spec's `spec.ndjson` passed its last run** — `qa-run` records each run there.
-
-**The confirmation is the second half of the criterion proof, and CLOSE is where it comes due.** At PLAN time every criterion had to come back RED (`ac-negative-check`) — the proof it knows how to fail. That half never asks whether it passes NOW, so a command that is BROKEN and a behaviour that is merely ABSENT read exactly alike. So `close-pipeline` runs each red-proven criterion AGAIN, after the work landed, and writes the verdict into the second column of `<spec>/ac-proof.json`. Read the `confirmation` block it returns:
-
-- `taken:true, ok:true` — every criterion was seen to PASS after its work landed. This is the only reading that says the proof is complete.
-- `taken:true, ok:false` — `unproven` NAMES each criterion that did not clear. Either the work is not there, or the criterion never asserted it; the ledger's `reason` says which and what clears it.
-- `taken:false` — NOT TAKEN (QA did not pass, so nothing closed and the confirmation was not due). `ok` is `null`, never `false`: nobody looked is not the same answer as it failed.
-
-It is **advisory** — QA already blocks the close on the same commands — so it stops nothing. What it ends is the spec clearing on its red proof alone. To take it by hand outside a close (e.g. after a fix loop, before re-running QA): `mustard-rt run ac-negative-check --spec {spec} --confirm`.
+`close-pipeline` composes the CLOSE tail in ONE call: review verdicts (advisory) + `qa-run` + — only on QA pass — `complete-spec` + `pipeline-summary`. QA fail/skip → `completed:false`, no close — report the failing AC; never hand-run the sequence. `pipeline.complete` is **refused (exit 2) unless every criterion in the spec's `spec.ndjson` passed its last run** — `qa-run` records each run there.
 
 **MIXED ROUND — one wave finished, its sibling came back `BLOCKED`.** Two rules above are both true here and neither one covers it: *commit once per round, after every wave has returned* (step 2) and *`BLOCKED` → STOP, do not advance* (§ Escalation). Every wave HAS returned, so the commit condition is met; one of them failed, so the round is not done. Do all three, in this order:
 
@@ -108,51 +100,7 @@ It is **advisory** — QA already blocks the close on the same commands — so i
 
 The record stays clean through this because `wave-done` scopes each wave's cached diff to the files that wave DECLARED in its own `## Files`, not to the whole commit — so the blocked sibling's half-written files never land in the finished wave's cached diff, and from there in its retry context and the closing summary. That is why committing a mixed round is safe to write down as a rule rather than a judgement call.
 
-**Then carry anything that changes BEHAVIOUR into `## Acceptance Criteria` — with `ac-amend`, never by hand**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25).
-
-```bash
-mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<the command that asserts the NEW behaviour>" [--expect "<evidence regex>"] [--statement "<the EARS line>"] --reason "<why the criterion is changing>" [--control "<a command that is GREEN today>"] [--proof-tree <dir>]
-```
-
-**`--control` is OPTIONAL, and worth declaring when the replacement command is a filtered test runner** — `cargo test -p x my_new_case`, `pytest -k novo`, `dotnet test --filter …`. Such a runner exits 0 when its filter selects nothing, so the replacement's red can be an empty selection (a mistyped test name, a path that is not there) rather than the missing behaviour. Name a command that comes back GREEN against the tree as it is — the suite without the new filter, or a command naming the file the new test lands in — and the door takes both in the same step and writes the `Control:` onto the line. Omitted, the criterion keeps the control its line already carries, or is proven the ordinary way with the record saying `control: not-declared` — the drafting lint names such a criterion as `test-ac-no-control`, and nothing refuses it. A whole-suite runner (`cargo test -p x --lib`, `cargo nextest run`, `pytest`) has no filter that can come back empty and the lint stays silent.
-
-**`--proof-tree` is for a criterion corrected AFTER its work already landed.** The negative test asks whether the command can FAIL, and that is only answerable where the behaviour is absent — in the current tree the replacement comes back green, and the door refuses it, correctly. Point the flag at a checkout that predates the work and the red is taken there:
-
-```bash
-git worktree add --detach /tmp/proof <base-commit>
-mustard-rt run ac-amend --spec {spec} --ac AC-3 --command "<…>" --reason "<…>" --proof-tree /tmp/proof
-git worktree remove /tmp/proof
-```
-
-The spec is still read and rewritten HERE; only the command runs elsewhere, and the ledger records the COMMIT the red was taken on, so the claim can be checked later. Without it the only way through was to hide the test, amend, and restore it — which worked and left no trace of where the evidence came from.
-
-Two things the hand cannot do, and this is why the hand does not do it:
-
-- **The replacement is PROVEN.** It goes through the same negative test the plan took (`ac-negative-check`): the new command is run against the tree as it is and **must itself come back RED**. A replacement that already passes proves exactly as little as the criterion it replaces, so the amendment is REFUSED — along with a blank reason, an unknown spec and an unknown AC id. Every refusal writes nothing, anywhere.
-  **The one exception, and it cannot be asked for.** When the confirmation pass already recorded the criterion being replaced as INEXECUTABLE — its command could not be attempted AT ALL after its work landed — the command is broken whatever the work does, and by then the work IS done, so a corrected command legitimately PASSES. Demanding a red there demands a criterion that lies about a feature that exists. For that ONE recorded state, a GREEN replacement is accepted and its record carries a green CONFIRMATION (the evidence the approval gate reads). The door is unlocked by a finding the engine itself wrote into `<spec>/ac-proof.json`, never by a flag — so it cannot be used to smuggle a vacuous criterion past the gate. If you meet `replacement_not_proven` on a command you believe is correct, take the confirmation first (`ac-negative-check --spec {spec} --confirm`): it is what records the finding this exception reads.
-- **The root and the union are rewritten, and that is every reader.** `wave-plan.md` carries the criterion lines too (the union QA executes), so `ac-amend` rewrites both and appends the supersession to `<spec>/ac-proof.json`'s `amendments` — auditable instead of a `decision` event that is a trail, not a path. A `wave-*/spec.md` carries NO copy of the criteria: its frontmatter names WHICH ids it satisfies (`satisfies: [AC-1, AC-3]`), and the dispatched `## ACCEPTANCE` is cut from that CURRENT section through that line at dispatch time — out of the union first, which is the file QA executes, so reader and judge cannot name different commands even after a rewave archives the root to `spec.original.md`. So the fix-loop agent re-dispatched for the finding reads the amended command without anyone touching the frozen layout. `--statement` replaces the WHOLE statement, including the continuation lines a long EARS sentence wraps onto — the parser only ever reads the first of them, so replacing just that line would leave the rest orphaned under a sentence they no longer continue (found in review, 2026-07-28, on this spec's own AC-1).
-
-**When the change is named by NO criterion at all, ADD one — with `ac-add`, never by hand.** `ac-amend` REPLACES an id that exists and refuses one it does not know, because a replacement proves itself against the criterion it supersedes and an added id has no predecessor. So a finding nobody wrote a criterion for has its own door:
-
-```bash
-mustard-rt run ac-add --spec {spec} --ac AC-9 --statement "when <trigger>, then <outcome>" --command "<the command that asserts it>" [--expect "<evidence regex>"] --reason "<why this criterion is being added>" [--control "<a command that is GREEN today>"]
-```
-
-`--control` carries the same rule it carries on `ac-amend`, and this is the door that meets it most: a criterion added for a finding usually names the test the fix will create, which is a filtered runner. Declare it and it is taken with the proof and written onto the line; omit it and the record says `control: not-declared` — a WARN, never a refusal.
-
-It takes the SAME negative proof a planned criterion takes: the command is run against the tree as it is and **must come back RED**, or the addition is refused and nothing is written — along with a blank reason, a blank statement, an unknown spec, and an id the spec already carries (that one points you back at `ac-amend`). It lands in the root `spec.md` and in `wave-plan.md` (the union QA executes), directly ABOVE the trailing build-green criterion, so the positional exemption stays where it belongs. A new id is judged by NO wave until some wave's `satisfies:` frontmatter line names it — the prompt cuts the union by that line — and the stderr WARN says so once, because until a line names it the fix-loop agent re-dispatched for the finding reads a `## ACCEPTANCE` without the criterion. **The door does not route it, and neither do you by hand:** that frontmatter has one writer. Before approval, add the id to the wave's `satisfies` in `plan.json` and re-run `plan-materialize`; after approval the layout is frozen, so it takes a change request. (`ac-add` used to route it behind a flag, writing the wave file outside the materialiser's ledger — the next materialisation then either regenerated the id away or reported the tool's own edit as plan drift.) The record goes to the ledger's `additions`, kept apart from `amendments` because nothing was superseded.
-
-**The third transition, when a criterion looks suspiciously easy to satisfy.** Red before the work and green after it are both satisfied by a criterion that verifies something the work never did — the classic shape is a command pointing at a subsystem the waves never touched. Only removing the work again catches that:
-
-```bash
-mustard-rt run ac-negative-check --spec {spec} --removal
-```
-
-It cuts a scratch checkout with the files the waves cached as changed taken away and re-runs each CONFIRMED criterion there. One that stays green **survived** the removal and is reported as verifying nothing — rewrite it through the door above. It is not automatic and should not be: the scratch tree has no build cache, so a test criterion compiles from scratch there. Ask for it when a criterion's green looks too cheap.
-
-**Read its limit before reading its reds.** The strip is file-grained, because file paths are all the cached diff carries, so it takes the criterion's own evidence away whenever that evidence shares a file with the behaviour — which for a project whose tests live beside the code they test is every test criterion there is. The pass does not book those as proof: a criterion whose own evidence — its command OR its `Expect:` regex, the two halves the executor grades with — names a word the strip deleted comes back `evidence-removed` and is counted apart from the reds, with the reason naming the word. So the pass falsifies (a green with the work gone is a finding) and declines (a guaranteed red is not); what it never does is certify a criterion it could not have failed.
-
-Then re-run QA. The narrative of `spec.md` stays frozen either way — an amendment touches the criterion, never the prose.
+Then re-run QA.
 
 ---
 

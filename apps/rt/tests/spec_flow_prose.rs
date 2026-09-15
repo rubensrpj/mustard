@@ -194,12 +194,6 @@ fn full_plan_prose_materialises_in_one_call() {
             "step 2 must say `{artefact}` comes out of that one call: {step_two}",
         );
     }
-    // The gate that is NOT being removed has to stay visible on the fused path,
-    // or a shortened flow reads as a dropped refusal.
-    assert!(
-        step_two.contains("NEGATIVE TEST"),
-        "step 2 drops the negative proof from the fused call: {step_two}",
-    );
     assert!(
         step_two.contains("leaves NO layout behind"),
         "step 2 must say a refusal materialises nothing, or a retry meets a \

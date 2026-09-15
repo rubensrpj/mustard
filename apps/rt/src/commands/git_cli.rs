@@ -95,7 +95,7 @@ pub enum GitCmd {
     /// nobody's work unit, that is protected, or that no local or remote ref
     /// carries, is REFUSED rather than reported as deleted.
     #[command(name = "git-delete")]
-    #[command(display_order = 70)]
+    #[command(display_order = 67)]
     GitDelete {
         /// The work branch to delete, e.g. `dev_my-unit`.
         #[arg(long)]

@@ -89,7 +89,7 @@ token against the previous revision).
   is.
 
 A first pass at this cut too far and lost four real instructions (`never hand-write it`;
-why `ac-negative-check` accepts either `--spec` form; `trust its thresholds`; `never enter
+`trust its thresholds`; `never enter
 it just for guidance`). All were restored. **Cutting justification buys very little, and it
 runs out well before any aggressive character target.** A budget that forces a rule out is a
 guard that lies: it stays green while the product gets worse. So the remedy the alarm
