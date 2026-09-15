@@ -121,7 +121,7 @@ fn one(
     let mut bad_skills = Vec::new();
     let mut stale_skills = Vec::new();
     for name in &named {
-        let Some((path, text)) = read_skill(root, &files, name) else {
+        let Some(text) = read_skill(root, &files, name) else {
             bad_skills.push((name.clone(), MapRefusal::SkillMissingPaths { paths: vec![skill_file(name)] }));
             continue;
         };
@@ -133,7 +133,6 @@ fn one(
         if stale {
             stale_skills.push(name.clone());
         }
-        let _ = path;
         skills.push(Skill { name: name.clone(), text, stale });
     }
 
@@ -152,7 +151,7 @@ fn one(
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
     let too_long = (lines > wave_prompt::MAX_LINES)
-        .then(|| Refusal::WavePromptTooLong { wave, lines, max: wave_prompt::MAX_LINES });
+        .then_some(Refusal::WavePromptTooLong { wave, lines, max: wave_prompt::MAX_LINES });
     WavePrompt { wave, text, lines, too_long, bad_skills, stale_skills }
 }
 
@@ -192,7 +191,7 @@ fn skill_file(name: &str) -> String {
 /// O arquivo de uma skill, procurado nas pastas dos arquivos da onda e, por
 /// último, na raiz do projeto: a skill mora no subprojeto em que a tarefa
 /// mexe.
-fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(PathBuf, String)> {
+fn read_skill(root: &Path, files: &[String], name: &str) -> Option<String> {
     let mut folders: Vec<PathBuf> = Vec::new();
     for file in files {
         let mut folder = root.join(file);
@@ -208,7 +207,7 @@ fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(PathBuf, Str
     for folder in folders {
         let path = folder.join(".claude").join("skills").join(name).join("SKILL.md");
         if let Ok(text) = std::fs::read_to_string(&path) {
-            return Some((path, text));
+            return Some(text);
         }
     }
     None
@@ -221,8 +220,7 @@ fn cited_exists(root: &Path, cited: &str) -> bool {
         return true;
     }
     crate::io::project_map::read(root)
-        .ok()
-        .is_some_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
+        .is_ok_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
 }
 
 /// Algum exemplo que a skill usou mudou no git depois de ela ter sido
@@ -232,8 +230,7 @@ fn examples_changed_after(log: &SpecLog, map: Option<&ProjectMap>, name: &str) -
     let Some(event) = log
         .visible()
         .into_iter()
-        .filter(|e| e.event_type == "skill" && e.str_field("name") == Some(name))
-        .next_back()
+        .rfind(|e| e.event_type == "skill" && e.str_field("name") == Some(name))
     else {
         return false;
     };

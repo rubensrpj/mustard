@@ -12,6 +12,7 @@
 //! busca: o que aparece é o texto original de cada item.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 use serde_json::Value;
 
@@ -219,10 +220,11 @@ impl Writer<'_> {
     fn text(&self) -> String {
         let m = self.material;
         let mut out = String::new();
-        out.push_str(&format!(
-            "# {}\n\n",
+        let _ = writeln!(
+            out,
+            "# {}\n",
             self.t("prompt.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
-        ));
+        );
         out.push_str(self.t("prompt.fixed"));
         out.push_str("\n\n");
         self.part(&mut out, "prompt.part.specification", &m.specification);
@@ -244,7 +246,7 @@ impl Writer<'_> {
         if events.is_empty() {
             return;
         }
-        out.push_str(&format!("## {}\n\n", self.t(key)));
+        let _ = writeln!(out, "## {}\n", self.t(key));
         for event in events {
             self.event(out, event);
         }
@@ -255,7 +257,7 @@ impl Writer<'_> {
     fn event(&self, out: &mut String, event: &SpecEvent) {
         let code = self.material.codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
         let kind = self.t(&format!("page.type.{}", event.event_type));
-        out.push_str(&format!("### {code} ({kind})\n\n"));
+        let _ = writeln!(out, "### {code} ({kind})\n");
         if let Some(text) = event.str_field("text").map(str::trim).filter(|t| !t.is_empty()) {
             out.push_str(text);
             out.push_str("\n\n");
@@ -323,10 +325,10 @@ impl Writer<'_> {
         if self.material.lessons.is_empty() {
             return;
         }
-        out.push_str(&format!("## {}\n\n", self.t("prompt.part.lessons")));
+        let _ = writeln!(out, "## {}\n", self.t("prompt.part.lessons"));
         for lesson in &self.material.lessons {
             let text = lesson.str_field("text").unwrap_or_default().trim();
-            out.push_str(&format!("- {text}\n"));
+            let _ = writeln!(out, "- {text}");
         }
         out.push('\n');
     }
@@ -337,11 +339,11 @@ impl Writer<'_> {
         if self.material.skills.is_empty() {
             return;
         }
-        out.push_str(&format!("## {}\n\n", self.t("prompt.part.skills")));
+        let _ = writeln!(out, "## {}\n", self.t("prompt.part.skills"));
         for skill in &self.material.skills {
-            out.push_str(&format!("### {}", skill.name));
+            let _ = write!(out, "### {}", skill.name);
             if skill.stale {
-                out.push_str(&format!(" ({})", self.t("prompt.skill.stale")));
+                let _ = write!(out, " ({})", self.t("prompt.skill.stale"));
             }
             out.push_str("\n\n");
             out.push_str(skill.text.trim_end());
@@ -390,7 +392,7 @@ mod tests {
         parse_log(&content)
     }
 
-    fn material<'a>(log: &'a SpecLog, wave: u64) -> Material<'a> {
+    fn material(log: &SpecLog, wave: u64) -> Material<'_> {
         let block = log.block(BlockQuery::Wave(wave));
         let criteria: Vec<&SpecEvent> = log
             .step(&Step::Dispatch { wave })

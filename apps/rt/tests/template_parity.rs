@@ -140,6 +140,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          named in commands/mustard/close/SKILL.md step 7",
     ),
     (
+        "plan",
+        "the plan step of the flow (commands/flow/plan.rs): assembles each \
+         wave's request, checks the plan and takes the spec from the survey to \
+         the plan; the flow prose that will call it is rewritten together with \
+         the rest of the flow",
+    ),
+    (
         "read",
         "the reader of a spec's event file (commands/spec_events/read.rs): each \
          step of the flow reads one block through it; the flow prose that will \

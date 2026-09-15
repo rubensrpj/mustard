@@ -1365,6 +1365,81 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The delivery note has {chars} characters, and the cap is {max}. It goes back to the main \
              window: say what changed, without repeating the request. Nothing was written."
         }
+        // O passo do plano: o que a conferência acha e o próximo passo.
+        ("plan.not_ready", Locale::PtBr) => {
+            "O plano tem {count} coisas a corrigir antes da pergunta de aprovação. Nada foi gravado."
+        }
+        ("plan.not_ready", Locale::EnUs) => {
+            "The plan has {count} things to fix before the approval question. Nothing was written."
+        }
+        ("plan.next", Locale::PtBr) => {
+            "Publique a página da spec e faça a pergunta de aprovação, com \"Aprovar\" e \"Ajustar\"."
+        }
+        ("plan.next", Locale::EnUs) => {
+            "Publish the spec's page and ask the approval question, with \"Approve\" and \"Adjust\"."
+        }
+        ("plan.copy", Locale::PtBr) => {
+            "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
+        }
+        ("plan.copy", Locale::EnUs) => {
+            "The last publish failed: send the `copy` command along so the user can open the page."
+        }
+        ("plan.wave_loop", Locale::PtBr) => {
+            "As ondas {waves} dependem umas das outras em círculo, e nenhuma pode começar. Corte uma \
+             das dependências."
+        }
+        ("plan.wave_loop", Locale::EnUs) => {
+            "Waves {waves} depend on each other in a circle, and none of them can start. Cut one of \
+             the dependencies."
+        }
+        ("plan.depends_on_missing", Locale::PtBr) => {
+            "A onda {wave} depende da onda {on}, que o plano não tem. Corrija o número ou grave a onda."
+        }
+        ("plan.depends_on_missing", Locale::EnUs) => {
+            "Wave {wave} depends on wave {on}, which the plan does not have. Fix the number or record \
+             the wave."
+        }
+        ("plan.task_without_wave", Locale::PtBr) => {
+            "A tarefa {task} é da onda {wave}, que o plano não tem. Corrija o número ou grave a onda."
+        }
+        ("plan.task_without_wave", Locale::EnUs) => {
+            "Task {task} belongs to wave {wave}, which the plan does not have. Fix the number or \
+             record the wave."
+        }
+        ("plan.shared_file", Locale::PtBr) => {
+            "As ondas {waves} saem na mesma rodada e mexem em {files}. Encadeie uma na outra ou divida \
+             o arquivo entre elas ({chain})."
+        }
+        ("plan.shared_file", Locale::EnUs) => {
+            "Waves {waves} go out in the same round and both touch {files}. Chain one after the other \
+             or split the file between them ({chain})."
+        }
+        ("plan.file_outside_git", Locale::PtBr) => {
+            "A tarefa {task} cita {path}, que o git não guarda: um agente noutra sessão ou noutra \
+             máquina não o vê."
+        }
+        ("plan.file_outside_git", Locale::EnUs) => {
+            "Task {task} cites {path}, which git does not track: an agent in another session or on \
+             another machine cannot see it."
+        }
+        ("plan.item_without_task", Locale::PtBr) => {
+            "Nenhuma tarefa diz que cobre o item {code}. Se ele não vira código, diga por quê."
+        }
+        ("plan.item_without_task", Locale::EnUs) => {
+            "No task says it covers item {code}. If it does not become code, say why."
+        }
+        ("plan.contract_without_criterion", Locale::PtBr) => {
+            "Nenhum critério cita o contrato {code}: nada prova que ele foi cumprido."
+        }
+        ("plan.contract_without_criterion", Locale::EnUs) => {
+            "No criterion cites contract {code}: nothing proves it was met."
+        }
+        ("plan.task_without_file", Locale::PtBr) => {
+            "A tarefa {task} não diz em que arquivo ela mexe."
+        }
+        ("plan.task_without_file", Locale::EnUs) => {
+            "Task {task} does not say which file it changes."
+        }
         ("approve_spec.open_points", Locale::PtBr) => "{count} pontos do levantamento ainda abertos: {points}",
         ("approve_spec.open_points", Locale::EnUs) => "{count} survey points still open: {points}",
         ("open.choose_kind", Locale::PtBr) => {
@@ -3301,11 +3376,23 @@ mod tests {
         }
     }
 
-    /// Os títulos e as instruções fixas do pedido de uma onda saem do
-    /// catálogo nos dois idiomas, com as vagas que o montador preenche.
+    /// Os títulos e as instruções fixas do pedido de uma onda, e o que a
+    /// conferência do plano acha, saem do catálogo nos dois idiomas, com as
+    /// vagas que o montador preenche.
     #[test]
     fn i18n_translates_wave_prompt_keys() {
         for (key, slots) in [
+            ("plan.not_ready", &["{count}"][..]),
+            ("plan.next", &[][..]),
+            ("plan.copy", &[][..]),
+            ("plan.wave_loop", &["{waves}"][..]),
+            ("plan.depends_on_missing", &["{wave}", "{on}"][..]),
+            ("plan.task_without_wave", &["{task}", "{wave}"][..]),
+            ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
+            ("plan.file_outside_git", &["{task}", "{path}"][..]),
+            ("plan.item_without_task", &["{code}"][..]),
+            ("plan.contract_without_criterion", &["{code}"][..]),
+            ("plan.task_without_file", &["{task}"][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),
             ("prompt.part.specification", &[][..]),

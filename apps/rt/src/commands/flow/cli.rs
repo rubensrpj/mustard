@@ -73,6 +73,23 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// O passo do plano, depois que a especificação, as ondas e as tarefas
+    /// estão gravadas: monta o pedido de cada onda com as lições e as skills;
+    /// confere que não há ponto do levantamento aberto, que o plano não tem
+    /// erro de montagem, que cada pedido cabe no teto de linhas, que os
+    /// arquivos e os nomes citados existem, que o arquivo citado está no git e
+    /// que ondas da mesma rodada não dividem arquivo; avisa os itens sem
+    /// tarefa; refaz a página e o índice; e responde o próximo passo. Grava a
+    /// fase do plano; a spec que já está nela só tem a página refeita.
+    #[command(display_order = 82)]
+    Plan {
+        /// A spec cujo plano é conferido. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Leva a spec de volta ao levantamento, com o motivo gravado no evento
     /// da volta: a fase volta a ser a de levantamento, o `grill` roda de
     /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
@@ -101,6 +118,9 @@ pub fn dispatch(cmd: FlowCmd) {
         }
         FlowCmd::Grill { spec, kinds, condensed, root } => {
             flow::grill::run(&flow::grill::GrillOpts { root, spec, kinds, condensed });
+        }
+        FlowCmd::Plan { spec, root } => {
+            flow::plan::run(&flow::plan::PlanOpts { root, spec });
         }
         FlowCmd::Reopen { reason, spec, root } => {
             flow::reopen::run(&flow::reopen::ReopenOpts { root, spec, reason });
