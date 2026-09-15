@@ -36,3 +36,4 @@
 {"v":1,"id":36,"at":"2026-09-12T11:10:00-03:00","type":"remove","author":"assistant","targets":[34],"reason":"Colada por engano.","origin":2}
 {"v":1,"id":37,"at":"2026-09-12T11:11:00-03:00","type":"message","author":"user","purged":38}
 {"v":1,"id":38,"at":"2026-09-12T11:12:00-03:00","type":"purge","author":"assistant","targets":[37],"reason":"secret","origin":2}
+{"v":1,"id":39,"at":"2026-09-12T11:13:00-03:00","type":"note","author":"binary","label":"achado do plano","text":"A tarefa MSTD-TASK-0001 cita `src/fora.rs`, que o git não guarda: um agente noutra sessão não o vê.","keys":["file-outside-git"],"origin":2}

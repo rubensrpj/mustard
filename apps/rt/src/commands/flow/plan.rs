@@ -21,11 +21,12 @@
 //! tarefa sem arquivo.
 //!
 //! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
-//! no arquivo de eventos quando este comando roda, e a página o mostra de lá:
-//! as duas conferências que olham para fora do arquivo — o arquivo citado
-//! existe, o arquivo está no git — rodam aqui, uma vez por plano, e nunca ao
-//! desenhar a página. Rodar o comando de novo não repete a anotação que já
-//! está no arquivo.
+//! no arquivo de eventos quando este comando roda, com o rótulo do achado do
+//! plano, e a página o mostra de lá, na seção própria que vem antes das
+//! anotações: as duas conferências que olham para fora do arquivo — o arquivo
+//! citado existe, o arquivo está no git — rodam aqui, uma vez por plano, e
+//! nunca ao desenhar a página. Rodar o comando de novo não repete a anotação
+//! que já está no arquivo.
 //!
 //! Quando a publicação anterior falhou, a resposta já traz o `scp` pronto
 //! para o usuário copiar a página para a máquina dele: a aprovação não fica
@@ -279,8 +280,9 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
 }
 
 /// Grava cada achado da conferência como anotação, no idioma do projeto, que
-/// é o da página. O achado que já está anotado não é gravado de novo: rodar o
-/// `plan` outra vez não repete a anotação.
+/// é o da página. Cada uma leva o rótulo do achado do plano, que é por onde a
+/// página as recolhe na seção própria delas. O achado que já está anotado não
+/// é gravado de novo: rodar o `plan` outra vez não repete a anotação.
 ///
 /// # Errors
 ///
@@ -306,6 +308,7 @@ fn note_findings(
         let mut draft = Map::new();
         draft.insert("text".to_string(), json!(text));
         draft.insert("keys".to_string(), json!([finding.reason()]));
+        draft.insert("label".to_string(), json!(translate("plan.finding.label", lang)));
         draft.insert("author".to_string(), json!("binary"));
         record(start, spec, "note", draft, PhaseWriter::Binary)?;
     }
@@ -773,8 +776,9 @@ mod tests {
     }
 
     /// Cada achado da conferência é gravado como anotação quando o `plan`
-    /// roda, com a mesma mensagem que a resposta dá, e a página o mostra de
-    /// lá. Rodar de novo não repete a anotação.
+    /// roda, com a mesma mensagem que a resposta dá e com o rótulo do achado
+    /// do plano, e a página o mostra de lá, na seção própria que vem antes das
+    /// anotações. Rodar de novo não repete a anotação.
     #[test]
     fn every_finding_is_written_as_a_note_once_and_shows_up_on_the_page() {
         let dir = tempdir().unwrap();
@@ -802,13 +806,23 @@ mod tests {
         for message in &messages {
             assert!(notes.contains(message), "sem anotação de {message:?}: {notes:?}");
         }
+        // Toda anotação de achado leva o rótulo, que é por onde a página as
+        // recolhe.
+        let label = translate("plan.finding.label", Locale::PtBr);
+        assert!(!note_labels(root, "x").is_empty(), "nenhuma anotação de achado");
+        assert!(note_labels(root, "x").iter().all(|l| l == label), "{:?}", note_labels(root, "x"));
+
         // No `.md` o código do item fica como está; na página ele vira link.
         let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
         for message in &messages {
             assert!(md.contains(message.as_str()), "o `.md` não mostra {message:?}");
         }
+        let heading = translate("page.findings.heading", Locale::PtBr);
+        let (found, notes_heading) = (md.find(heading), md.find("## Anotações"));
+        assert!(found.is_some() && found < notes_heading, "a seção não vem antes das anotações: {md}");
         let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         assert!(page.contains("MSTD-NOTE-0001"), "a página não mostra a anotação");
+        assert!(page.contains(heading), "a página não tem a seção do que o plano achou");
 
         // De novo: as mesmas anotações, sem repetir nenhuma.
         assert_eq!(plan(root, "x")["ok"], json!(true));
@@ -835,6 +849,16 @@ mod tests {
         let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
         assert!(md.contains(hint.as_str()), "o `.md` não mostra o achado que trava");
         assert!(root.join(".claude/spec/x/spec.html").is_file(), "a página sai com o plano travado");
+    }
+
+    /// O rótulo de cada anotação vigente que tem um, em ordem de número.
+    fn note_labels(root: &Path, spec: &str) -> Vec<String> {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        log.block(BlockQuery::Block(Block::Notes))
+            .into_iter()
+            .filter(|event| event.event_type == "note")
+            .filter_map(|event| event.str_field("label").map(str::to_string))
+            .collect()
     }
 
     /// As anotações vigentes da spec, em ordem de número.

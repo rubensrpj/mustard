@@ -342,6 +342,12 @@ Passos para acrescentar uma regra ao portão de escrita, com o teste.
 
 - **MSTD-PRSUM-0001** — O portão de escrita passa a ler a aprovação do estado. Nada muda para quem usa.
 
+## O que o plano achou
+
+- **MSTD-NOTE-0003** · depois da aprovação · 2026-09-12 11:13 — A tarefa MSTD-TASK-0001 cita `src/fora.rs`, que o git não guarda: um agente noutra sessão não o vê.
+
+  - Origem: MSTD-MSG-0001
+
 ## Anotações
 
 - **MSTD-REQ-0001** · depois da aprovação · 2026-09-12 11:06 — Incluir o Windows no teste de duas gravações ao mesmo tempo.

@@ -4,6 +4,12 @@
 //! combinado, especificação, critérios, ondas, revisão e QA, andamento,
 //! anotações e conversa, esta recolhida. Um bloco sem nada diz que está vazio.
 //!
+//! Entre o andamento e as anotações entra "O que o plano achou", montada com
+//! as anotações que a conferência do plano gravou, reconhecidas pelo rótulo
+//! do achado do plano: quem vai aprovar vê o que o plano encontrou sem
+//! procurar no meio das outras anotações. Sem achado nenhum, ela não aparece,
+//! e a anotação sem esse rótulo continua nas anotações.
+//!
 //! Só aparece o que a leitura mostra: um item removido some da página, e a
 //! versão antiga de um item revisto aparece só na conversa, marcada como
 //! substituída. Cada item leva o seu código (`MSTD-RULE-0005`), que é também o
@@ -52,14 +58,36 @@ pub type WavePrompts = BTreeMap<u64, String>;
 #[must_use]
 pub fn spec_document(spec: &str, log: &SpecLog, prompts: &WavePrompts, lang: Locale) -> Document {
     let page = Page::new(log, prompts, lang);
+    let mut body = Vec::new();
+    for block in Block::ALL {
+        // O que o plano achou vem logo antes das anotações, e só quando há
+        // achado.
+        if block == Block::Notes
+            && let Some(section) = page.findings()
+        {
+            body.push(section);
+        }
+        body.push(page.section(block));
+    }
     Document {
         lang: lang.as_str().to_string(),
         kind: Some(page.t("page.kind.spec").to_string()),
         title: spec.to_string(),
         meta: page.meta(spec),
-        body: Block::ALL.iter().map(|block| page.section(*block)).collect(),
+        body,
         footer: None,
     }
+}
+
+/// A anotação que nasceu de um achado da conferência do plano: é a que leva o
+/// rótulo do achado, escrito pelo `plan` no idioma do projeto. O rótulo é
+/// reconhecido nos dois idiomas, para a página achar a anotação gravada antes
+/// de o projeto trocar de idioma.
+fn is_plan_finding(event: &SpecEvent) -> bool {
+    event.event_type == "note"
+        && event.str_field("label").is_some_and(|label| {
+            [Locale::PtBr, Locale::EnUs].iter().any(|lang| translate("plan.finding.label", *lang) == label)
+        })
 }
 
 struct Page<'a> {
@@ -122,8 +150,13 @@ impl<'a> Page<'a> {
             Block::Criteria => self.criteria(),
             Block::Waves => self.waves(),
             Block::Conversation => self.conversation(),
-            Block::State | Block::Review | Block::Progress | Block::Notes => {
-                self.items(&self.of_block(block))
+            Block::State | Block::Review | Block::Progress => self.items(&self.of_block(block)),
+            // O achado do plano tem seção própria; o resto das anotações fica
+            // onde sempre esteve.
+            Block::Notes => {
+                let rest: Vec<&SpecEvent> =
+                    self.of_block(block).into_iter().filter(|e| !is_plan_finding(e)).collect();
+                self.items(&rest)
             }
         };
         let shown = body.iter().filter(|n| matches!(n, Node::Item(_))).count();
@@ -142,6 +175,22 @@ impl<'a> Page<'a> {
 
     fn items(&self, events: &[&SpecEvent]) -> Vec<Node> {
         events.iter().map(|e| Node::Item(self.item(e, true, None))).collect()
+    }
+
+    /// "O que o plano achou": as anotações que a conferência do plano gravou,
+    /// na ordem delas. Sem achado nenhum, não há seção.
+    fn findings(&self) -> Option<Node> {
+        let events: Vec<&SpecEvent> =
+            self.of_block(Block::Notes).into_iter().filter(|e| is_plan_finding(e)).collect();
+        if events.is_empty() {
+            return None;
+        }
+        Some(Node::Section(Section {
+            anchor: Some("findings".to_string()),
+            heading: self.t("page.findings.heading").to_string(),
+            collapsed: None,
+            body: self.items(&events),
+        }))
     }
 
     /// Os tipos do bloco, cada um com o seu subtítulo, na ordem dos tipos.
@@ -417,7 +466,9 @@ impl<'a> Page<'a> {
                 out.push(self.field(&format!("page.field.{}", field.name), shown));
             }
         }
-        if let Some(label) = event.str_field("label") {
+        // O rótulo do achado do plano já é o título da seção dele: o item não
+        // o repete.
+        if let Some(label) = event.str_field("label").filter(|_| !is_plan_finding(event)) {
             out.push(self.field("page.field.label", label.to_string()));
         }
         if let Some(origin) = event.int("origin") {
@@ -810,6 +861,47 @@ mod tests {
         assert!(marked(&notes(&never, Locale::PtBr)).is_empty(), "a spec never approved marks nothing");
     }
 
+    /// A anotação com o rótulo do achado do plano sai numa seção só dela,
+    /// logo antes das anotações; a anotação sem o rótulo continua nas
+    /// anotações. Sem achado nenhum, a seção não aparece.
+    #[test]
+    fn what_the_plan_found_gets_its_own_section_right_before_the_notes() {
+        let found = ",\"label\":\"achado do plano\"";
+        let content = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "note", ",\"text\":\"Anotação de sempre.\",\"keys\":[\"k\"],\"origin\":1"),
+            line(3, "note", &format!(",\"author\":\"binary\",\"text\":\"A tarefa não diz o arquivo.\",\"keys\":[\"k\"],\"origin\":1{found}")),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
+        let all = sections(&doc);
+        let named: Vec<(&str, &str)> = all
+            .iter()
+            .map(|s| (s.anchor.as_deref().unwrap_or_default(), s.heading.as_str()))
+            .collect();
+        assert_eq!(named[8], ("findings", "O que o plano achou"), "{named:?}");
+        assert_eq!(named[9], ("notes", "Anotações"), "a seção vem logo antes das anotações");
+        let texts = |section: &Section| -> Vec<String> {
+            items(section).iter().map(|i| i.text.clone()).collect()
+        };
+        assert_eq!(texts(all[8]), ["A tarefa não diz o arquivo."]);
+        assert_eq!(texts(all[9]), ["Anotação de sempre."]);
+        let found = items(all[8])[0];
+        assert!(
+            found.fields.iter().all(|f| f.value != "achado do plano"),
+            "o rótulo já é o título da seção: {found:?}"
+        );
+
+        // Em inglês a seção sai com o título de lá, e a mesma anotação nela.
+        let english = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::EnUs);
+        assert_eq!(sections(&english)[8].heading, "What the plan found");
+
+        // Sem achado nenhum, a página volta a ter dez seções.
+        let only_notes = [line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""), line(2, "note", ",\"text\":\"Anotação de sempre.\",\"keys\":[\"k\"],\"origin\":1")].concat();
+        let doc = spec_document("s", &parse_log(&only_notes), &WavePrompts::new(), Locale::PtBr);
+        assert_eq!(sections(&doc).len(), 10, "sem achado, nenhuma seção a mais");
+    }
+
     /// Numa aprovação revista (a spec que nasceu aprovada e ganhou a branch
     /// depois), a marca parte da primeira versão da aprovação: a regra
     /// gravada entre ela e a revisão continua marcada.
@@ -891,6 +983,7 @@ mod tests {
             "page.replaced",
             "page.after_approval",
             "page.wave.heading",
+            "page.findings.heading",
             "page.conversation.summary",
             "page.metrics.col.measure",
             "page.metrics.col.value",

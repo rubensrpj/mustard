@@ -1442,6 +1442,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("plan.task_without_file", Locale::EnUs) => {
             "Task {task} does not say which file it changes."
         }
+        ("plan.finding.label", Locale::PtBr) => "achado do plano",
+        ("plan.finding.label", Locale::EnUs) => "plan finding",
         ("approve_spec.open_points", Locale::PtBr) => "{count} pontos do levantamento ainda abertos: {points}",
         ("approve_spec.open_points", Locale::EnUs) => "{count} survey points still open: {points}",
         ("open.choose_kind", Locale::PtBr) => {
@@ -2295,6 +2297,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.block.progress", Locale::EnUs) => "Progress",
         ("page.block.notes", Locale::PtBr) => "Anotações",
         ("page.block.notes", Locale::EnUs) => "Notes",
+        ("page.findings.heading", Locale::PtBr) => "O que o plano achou",
+        ("page.findings.heading", Locale::EnUs) => "What the plan found",
         ("page.block.conversation", Locale::PtBr) => "Conversa",
         ("page.block.conversation", Locale::EnUs) => "Conversation",
 
@@ -3405,6 +3409,8 @@ mod tests {
             ("plan.item_without_task", &["{code}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}"][..]),
+            ("plan.finding.label", &[][..]),
+            ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),
             ("prompt.part.specification", &[][..]),
