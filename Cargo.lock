@@ -820,7 +820,6 @@ version = "0.1.71"
 dependencies = [
  "aho-corasick",
  "chrono",
- "rayon",
  "rust-stemmers",
  "serde",
  "serde_json",

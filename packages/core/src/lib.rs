@@ -164,10 +164,6 @@ pub use io::claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
 // directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.
 pub use io::workspace::{workspace_root, WorkspaceError};
 
-// Atomic markdown layer — shared by memory/knowledge/spec readers and the
-// wikilink footer hook. See `atomic_md/mod.rs`.
-pub use io::atomic_md::{MarkdownDoc, MarkdownStore};
-
 // Summary document — the versionable `.summary.json` artefact committed to
 // git alongside each spec. Re-exported at root so consumers can write
 // `mustard_core::SpecSummaryDoc` without knowing the sub-module path.

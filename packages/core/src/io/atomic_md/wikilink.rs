@@ -3,10 +3,9 @@
 //!
 //! ## Design
 //!
-//! - **Pure functions, no I/O side effects.** `find_outgoing_links` and
-//!   `find_backlinks` are deterministic folds over `&str` / `&[MarkdownDoc]`.
-//!   `resolve` and `render_footer` do read the filesystem (directory walk) but
-//!   carry no mutable state.
+//! - **Pure functions, no I/O side effects.** `find_outgoing_links` is a
+//!   deterministic fold over `&str`. `resolve` and `render_footer` do read the
+//!   filesystem (directory walk) but carry no mutable state.
 //! - **Single extraction kernel.** One hand-rolled scanner ([`scan_links`])
 //!   is the *only* `[[…]]` byte-scanner in the workspace — the concept-graph
 //!   (`commands::scan::graph`) and the resolver (`commands::scan::resolve`)
@@ -27,7 +26,6 @@
 //!   `⚠ unresolved` annotation in the footer (internal artefact ⇒ English).
 
 use std::fmt::Write as _;
-use super::store::MarkdownDoc;
 use std::path::{Path, PathBuf};
 
 // Sentinel strings used to delimit the auto-generated footer block.
@@ -84,23 +82,6 @@ pub fn scan_links(text: &str) -> Vec<String> {
         }
     }
     out
-}
-
-/// Find every document in `docs` that contains a `[[target]]` outgoing link.
-///
-/// Returns the paths of matching documents. The search is a linear scan over
-/// `docs` — callers with large collections should pre-filter by directory.
-#[must_use]
-pub fn find_backlinks(target: &str, docs: &[MarkdownDoc]) -> Vec<PathBuf> {
-    docs.iter()
-        .filter(|doc| {
-            // Use the pre-parsed body when available; skip docs with empty
-            // bodies (lazy scan_dir result) by returning false — the caller
-            // must call read_one first if they need full-body backlinks.
-            !doc.body.is_empty() && find_outgoing_links(&doc.body).iter().any(|l| l == target)
-        })
-        .map(|doc| doc.path.clone())
-        .collect()
 }
 
 /// Resolve a wikilink `token` to a filesystem path by searching `search_dirs`.
@@ -282,14 +263,6 @@ mod tests {
     use std::io::Write as _;
     use tempfile::tempdir;
 
-    fn make_doc(body: &str) -> MarkdownDoc {
-        MarkdownDoc {
-            path: PathBuf::from("test.md"),
-            frontmatter: None,
-            body: body.to_string(),
-        }
-    }
-
     fn write_file(dir: &Path, name: &str) {
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();
@@ -320,35 +293,6 @@ mod tests {
     fn ignores_unclosed_bracket() {
         let links = find_outgoing_links("[[open but never closed");
         assert!(links.is_empty());
-    }
-
-    // --- find_backlinks ---
-
-    #[test]
-    fn finds_backlinks_across_docs() {
-        let docs = vec![
-            make_doc("Links to [[target-spec]] here."),
-            make_doc("No links."),
-            make_doc("Also links [[target-spec]] again."),
-        ];
-        let backlinks = find_backlinks("target-spec", &docs);
-        assert_eq!(backlinks.len(), 2);
-    }
-
-    #[test]
-    fn backlinks_timing_200_docs() {
-        // find_backlinks over 200 docs must complete < 30 ms.
-        let docs: Vec<MarkdownDoc> = (0..200u32)
-            .map(|i| make_doc(&format!("Doc {i} links [[some-target]] here.")))
-            .collect();
-        let start = std::time::Instant::now();
-        let hits = find_backlinks("some-target", &docs);
-        let elapsed = start.elapsed();
-        assert_eq!(hits.len(), 200);
-        assert!(
-            elapsed.as_millis() < 30,
-            "find_backlinks took {elapsed:?} (limit: 30 ms)"
-        );
     }
 
     // --- resolve ---
