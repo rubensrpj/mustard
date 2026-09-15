@@ -200,19 +200,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          session id in front of them",
     ),
     (
-        "artifact-update",
-        "apply",
-        "the mutation switch of a command with no product caller at all; its own \
-         help states that the default is the read-only probe and that this is \
-         what writes",
-    ),
-    (
-        "artifact-update",
-        "manifest",
-        "manifest path override, defaulting to `apps/cli/templates/.artifacts.json` \
-         - the documented invocation is the default",
-    ),
-    (
         "base-candidates",
         "no-fetch",
         "opt-out of the `git fetch` the default performs; the flag's own help \

@@ -24,14 +24,13 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 84 declared variants + `help`, which clap generates at build time.
+/// 83 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "active-specs",
     "agent-prompt-render",
     "amend-finalize",
     "analyze-validation",
     "approve-spec",
-    "artifact-update",
     "base-candidates",
     "capability",
     "claude-dir-prune",

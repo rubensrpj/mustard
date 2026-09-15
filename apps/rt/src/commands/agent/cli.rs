@@ -46,7 +46,7 @@ pub enum AgentCmd {
     /// template. Substitutes every `{placeholder}` it can resolve; warns on
     /// stderr for any left unfilled. Stdout = raw prompt string ready for
     /// the Task tool (no JSON framing).
-    #[command(display_order = 45)]
+    #[command(display_order = 44)]
     AgentPromptRender {
         /// Spec slug under `.claude/spec/`. Optional: spec-less callers (the
         /// `/scan` Guards enrich step, `/task` with no scope) omit it — the

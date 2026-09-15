@@ -88,7 +88,7 @@ pub enum PipelineCmd {
     /// `--harness` mode: reads `.claude/settings.json`, groups hooks by lifecycle
     /// event, resolves enforcement mode from env vars, and renders a 4-column
     /// table (Hook | Matcher | Enforces | Mode).
-    #[command(display_order = 42)]
+    #[command(display_order = 41)]
     Status {
         /// Include hooks table (harness view).
         #[arg(long)]
@@ -105,7 +105,7 @@ pub enum PipelineCmd {
     /// resumo, agent roles. Emits `pipeline.resume_mode` before returning
     /// (idempotent — debounced 10 s). Fail-open: every IO error degrades a
     /// field to `null`/`false`; exit 0 always.
-    #[command(display_order = 44)]
+    #[command(display_order = 43)]
     ResumeBootstrap {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -116,7 +116,7 @@ pub enum PipelineCmd {
     },
     /// Drive the CLOSE-phase gates (verify → qa → docs-stale → summary).
     #[command(name = "close-orchestrate")]
-    #[command(display_order = 54)]
+    #[command(display_order = 53)]
     CloseOrchestrate {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -134,7 +134,7 @@ pub enum PipelineCmd {
     /// Output: `"events"`, `"scaffold"` (created_files, skipped, refreshed,
     /// removed) and `"validation"` (ok, issues) — byte-stable, ordered.
     #[command(name = "plan-materialize")]
-    #[command(display_order = 59)]
+    #[command(display_order = 58)]
     PlanMaterialize {
         /// Target spec directory. Also accepts a `.../spec.md` path or a bare
         /// slug. `--spec` / `--from-spec` are hidden aliases.
@@ -158,7 +158,7 @@ pub enum PipelineCmd {
     /// text ready for `Task`. Pending = first dependency level with a wave not
     /// yet carrying `pipeline.wave.complete`; everything done → `[]`.
     #[command(name = "wave-advance")]
-    #[command(display_order = 60)]
+    #[command(display_order = 59)]
     WaveAdvance {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -172,7 +172,7 @@ pub enum PipelineCmd {
     /// Output: `{"completed":bool,"qa":{overall,criteria},"reviews":[...],`
     /// `"summary":...}`.
     #[command(name = "close-pipeline")]
-    #[command(display_order = 61)]
+    #[command(display_order = 60)]
     ClosePipeline {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]

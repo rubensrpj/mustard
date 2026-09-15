@@ -21,23 +21,6 @@ use crate::commands::{maint};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum MaintCmd {
-    /// Check (or apply) freshness of managed artifacts against their upstreams.
-    ///
-    /// Maintainer-side: reads `apps/cli/templates/.artifacts.json` and probes
-    /// each external upstream. Fail-open — network errors degrade an artifact
-    /// to `unknown` and never fail the command.
-    #[command(display_order = 40)]
-    ArtifactUpdate {
-        /// Probe upstreams and emit the JSON freshness report (the default).
-        #[arg(long)]
-        check: bool,
-        /// Pull updates into vendored trees / bump pinned versions.
-        #[arg(long)]
-        apply: bool,
-        /// Manifest path (default `apps/cli/templates/.artifacts.json`).
-        #[arg(long)]
-        manifest: Option<String>,
-    },
     /// Recolhe as cópias descartáveis que os agentes deixam no diretório
     /// temporário (ou no `scratchpad/` de uma sessão do Claude Code): pasta
     /// com cópia deste projeto ou `target/` de compilação, sem mudança há
@@ -49,7 +32,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 77)]
+    #[command(display_order = 76)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -78,7 +61,7 @@ pub enum MaintCmd {
     /// `packages/*/.claude/`. `--scope all` adds the user-global
     /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
     /// `state: "skipped"`). Emits a pretty JSON report.
-    #[command(display_order = 46)]
+    #[command(display_order = 45)]
     Unhook {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -96,7 +79,7 @@ pub enum MaintCmd {
     /// by an older build, rename the newest `settings.json.disabled*` snapshot
     /// back. Volatile state directories that `unhook` wiped are left alone —
     /// the runtime regenerates them on the next run. Emits a pretty JSON report.
-    #[command(display_order = 47)]
+    #[command(display_order = 46)]
     Rehook {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -113,7 +96,7 @@ pub enum MaintCmd {
     /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
     /// every step — exit code is always 0.
     #[command(name = "claude-dir-prune")]
-    #[command(display_order = 53)]
+    #[command(display_order = 52)]
     ClaudeDirPrune {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -131,7 +114,7 @@ pub enum MaintCmd {
     },
     /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 57)]
+    #[command(display_order = 56)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -139,7 +122,7 @@ pub enum MaintCmd {
     },
     /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 58)]
+    #[command(display_order = 57)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -168,11 +151,6 @@ pub enum MaintCmd {
 /// Dispatch one `maint`-family `run` subcommand.
 pub fn dispatch(cmd: MaintCmd) {
     match cmd {
-        MaintCmd::ArtifactUpdate {
-            check,
-            apply,
-            manifest,
-        } => maint::artifact_update::run(check, apply, manifest.as_deref()),
         MaintCmd::ScratchGc { dry_run, apply, path } => {
             // `dry_run` vale `true` por padrão e o `conflicts_with_all` recusa
             // `--dry-run` junto de `--apply` OU de `--path`: quando um dos dois

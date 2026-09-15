@@ -98,7 +98,7 @@ pub enum SpecCmd {
     /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
     /// progress, extracts a one-line resumo.
     /// Output is either a markdown table (default) or a JSON document.
-    #[command(display_order = 41)]
+    #[command(display_order = 40)]
     ActiveSpecs {
         /// Output format: `table` (default) or `json`.
         #[arg(long, default_value = "table")]
@@ -116,7 +116,7 @@ pub enum SpecCmd {
     /// materialised by `wave-scaffold`. The narrative is written in the
     /// project's text language (`mustard.json` `language.text`). `--signals` is
     /// a free-form comma-separated list embedded in `spec.md` as a comment.
-    #[command(display_order = 48)]
+    #[command(display_order = 47)]
     SpecDraft {
         /// Free-text intent — the spec TITLE, and the last-resort slug seed.
         #[arg(long)]
@@ -198,7 +198,7 @@ pub enum SpecCmd {
     /// `mustard_core::domain::scan::Scan::spec`. Invoke as
     /// `mustard-rt run scan spec --entity <Name>`.
     #[command(name = "scan-spec")]
-    #[command(display_order = 49)]
+    #[command(display_order = 48)]
     ScanSpec {
         /// Entity/unit to create (substitutes `<Name>` in the grain recipe).
         #[arg(long)]
@@ -220,7 +220,7 @@ pub enum SpecCmd {
     /// by the user's answer to the approval question, which the witness
     /// records.
     #[command(name = "approve-spec")]
-    #[command(display_order = 56)]
+    #[command(display_order = 55)]
     ApproveSpec {
         /// Spec slug under `.claude/spec/` to approve.
         #[arg(long)]
@@ -247,7 +247,7 @@ pub enum SpecCmd {
     /// `already-routed` when the same decision is restated, and refuses a
     /// different one rather than overwriting a decision in silence.
     #[command(name = "mark-finding")]
-    #[command(display_order = 70)]
+    #[command(display_order = 69)]
     MarkFinding {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -277,7 +277,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 76)]
+    #[command(display_order = 75)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -298,7 +298,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 78)]
+    #[command(display_order = 77)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]

@@ -59,14 +59,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # verification pass (`verify_pipeline`) so targets are checked concurrently.
 # Latest stable on crates.io (1.10, May 2026); pure-Rust, no async runtime.
 rayon = "1.10"
-# SHA-256 — `mustard-core::model::provenance` fingerprints vendored template
-# trees. `mustard-rt` also declared this entry but never imported it (its
-# backup-specs digest runs on the crate's own `util::sha256`), so the prune left
-# `mustard-core` as the only consumer. Bumped to the 0.11 line (May 2026), which
-# moves the digest output from `generic-array` to `hybrid-array`; this crate
-# only consumes the output as a byte slice / iterator / `[u8; 32]`, all of which
-# stay source-compatible.
-sha2 = "0.11"
 # Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::spec_events` reduces
 # each word of an event to its root with the Portuguese stemmer, so "apagar",
 # "apagando" and "apagou" land on the same search term. Pure Rust, no build

@@ -44,14 +44,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 
-# `artifact-update` probes external upstreams (crates.io API, skills.directory
-# registry) over HTTP. `ureq` is the workspace's blocking, runtime-free HTTP
-# client — the same one `mustard-cli` uses; no async runtime is pulled in.
+# The pull-request calls against Azure DevOps go over HTTP. `ureq` is the
+# workspace's blocking, runtime-free HTTP client — the same one `mustard-cli`
+# uses; no async runtime is pulled in.
 ureq = { workspace = true }
 
-# `tempfile` is used by the `artifact-update --apply` engine to stage a `git
-# clone` before swapping the vendored tree under `apps/cli/templates/`. Also
-# powers the `bash_guard` parity tests.
+# `tempfile` stages the scratch directories the work-unit and capability
+# commands write into, and powers the parity tests.
 tempfile = { workspace = true }
 
 # `notify` and `sha2` were declared here and imported by nothing. The
@@ -70,7 +69,7 @@ tempfile = { workspace = true }
 regex = "1"
 
 # No `[dev-dependencies]`: the tests use `tempfile`, which is a normal
-# dependency above because `artifact-update --apply` needs it at runtime too.
+# dependency above because the runtime needs it too.
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
 # unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.

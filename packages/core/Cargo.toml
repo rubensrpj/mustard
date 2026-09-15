@@ -13,10 +13,6 @@ publish = false
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-# SHA-256 for `model::provenance::tree_checksum` — the artifact-update engine
-# fingerprints vendored template trees. Pulled through the workspace table
-# (centralised in the root Cargo.toml); shared with `mustard-rt`.
-sha2 = { workspace = true }
 # Data-parallelism for `atomic_md::store::scan_dir` when >50 files. Optional
 # feature so consumers that do not need parallel scan pay no compile cost.
 rayon = { workspace = true, optional = true }
