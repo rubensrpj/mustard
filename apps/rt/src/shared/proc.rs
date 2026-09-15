@@ -417,68 +417,6 @@ fn kill_tree(pid: u32) {
     let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
-/// Whether a process with `pid` is alive — WHEN that question can be answered
-/// at all. `Some(true)` alive, `Some(false)` measured absent, `None` when the
-/// probe itself could not run (no `kill`/`tasklist` on `PATH`, an unknown
-/// platform).
-///
-/// The third state is not pedantry: collapsing "could not measure" into
-/// "absent" is safe in exactly one direction. A caller that respawns a daemon
-/// pays a wasted spawn for the mistake; a caller that DELETES what an absent
-/// owner left behind pays with the live owner's directory. So the measurement
-/// lives here and the judgement lives in each consumer: a consumer that removes
-/// refuses to act on an unmeasured answer.
-///
-/// Cross-platform without `unsafe`: on Unix, sends signal `0` via `kill -0`
-/// (the POSIX existence probe). On Windows, queries `tasklist /FI` for the
-/// PID — slower than `OpenProcess` but `windows-sys` is not a dep and the
-/// crate forbids `unsafe`.
-#[must_use]
-pub fn process_liveness(pid: u32) -> Option<bool> {
-    #[cfg(unix)]
-    {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()
-            .map(|s| s.success())
-    }
-    #[cfg(windows)]
-    {
-        // `tasklist /NH /FI "PID eq <pid>"` prints either the matching row or
-        // the literal "INFO: No tasks are running…" string when absent. Probe
-        // stdout for the PID itself, which appears in the matching row only.
-        // A non-zero `tasklist` exit is the tool failing, not an answer about
-        // the process — that is the `None` case, never a `Some(false)`.
-        let pid_str = pid.to_string();
-        let out = Command::new("tasklist")
-            .args(["/NH", "/FI", &format!("PID eq {pid_str}")])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        match out {
-            Ok(o) if o.status.success() => {
-                let text = String::from_utf8_lossy(&o.stdout);
-                // The PID appears as a whitespace-separated column only when a
-                // row matched; the "No tasks" message never contains the
-                // numeric PID.
-                Some(text.split_whitespace().any(|tok| tok == pid_str))
-            }
-            _ => None,
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        // Unknown platform — the probe cannot answer at all.
-        let _ = pid;
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

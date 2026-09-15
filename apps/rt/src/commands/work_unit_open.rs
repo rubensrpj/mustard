@@ -7,7 +7,7 @@
 //! `.claude/worktrees/{kind}/{slug}` from a fresh `origin/{base}`; settle
 //! verifies the merge and prunes the same worktree. Cleanup of these worktrees
 //! is git-settle's job EXCLUSIVELY — nothing else may touch a worktree that
-//! reads as a work unit ([`is_unit_worktree_name`]).
+//! reads as a work unit.
 //!
 //! Branch naming reuses [`super::event::work_branch`] so the worktree branch
 //! is byte-identical to the `pending-work-branch` marker `emit-pipeline`
@@ -46,30 +46,6 @@ use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind};
 /// — the `WorktreeCreate` event names the worktree but never says where to put
 /// it, leaving the layout to whoever replaces the native `git worktree add`.
 const WORKTREES_RELDIR: &str = ".claude/worktrees";
-
-/// Whether a worktree NAME is a work unit's of THIS project.
-///
-/// This is the ONE criterion that separates a work unit's worktree from every
-/// other worktree the harness may cut, and it is derived from the project's own
-/// `git.flow` rather than from any name SHAPE. There is no `agent-` prefix to
-/// key on: `WorktreeCreate` documents `name` as a slug identifier — a
-/// user-supplied one (`feature-auth`), a `pr-<number>`, or an auto-generated
-/// `bright-running-fox` — and this repository's only harness-cut worktree is
-/// `.claude/worktrees/recursing-benz-063389`. Keying on a prefix that never
-/// appears matched nothing at all, so the reading is by the declared bases.
-///
-/// The reading itself is [`BaseFlow::base_of`], the crate's ONE parser: a unit
-/// named by its kind (`feature/…`), and one still in the `{base}_{slug}` shape,
-/// are both recognised.
-///
-/// Asked of [`UnitBase::is_unit`] and NOT of the base, deliberately: a
-/// `hotfix/…` whose base was never recorded IS a unit, and reading "no base" as
-/// "not a unit" would hand its worktree away. Everything else (a
-/// subagent's isolated checkout, a background session's, a desktop one) is not a
-/// unit.
-pub(crate) fn is_unit_worktree_name(name: &str, flow: &BaseFlow) -> bool {
-    flow.base_of(name).is_unit()
-}
 
 /// How many dirty paths the refusal message spells out before summarising.
 const MAX_DIRTY_SHOWN: usize = 20;
@@ -563,9 +539,9 @@ fn unusable_worktree_name(name: &str) -> Option<String> {
 /// stderr shown to the user, which IS this event's protocol (the same way a
 /// `Deny` is a gate's). Unit worktrees are
 /// untouched — nothing outside them depends on their tree. The precondition is
-/// keyed on [`is_unit_worktree_name`], the SAME question the cut below asks, so
-/// the two cannot drift; the earlier `agent-` prefix was a shape the platform
-/// never emits, which left this refusal permanently silent.
+/// keyed on [`BaseFlow::base_of`], the crate's ONE parser of what reads as a
+/// unit; the earlier `agent-` prefix was a shape the platform never emits,
+/// which left this refusal permanently silent.
 ///
 /// The event hands over a NAME, never a path (`worktree_path` is the *Remove*
 /// twin's field), so placing the worktree is this engine's call: it mirrors the
@@ -996,36 +972,6 @@ mod tests {
         git.flow.insert("*".to_string(), "dev".to_string());
         git.flow.insert("dev".to_string(), "main".to_string());
         BaseFlow::of(&git)
-    }
-
-    #[test]
-    fn unit_name_is_decided_by_the_declared_bases_not_by_a_prefix_shape() {
-        // The criterion, stated on its own: a name the project's own flow
-        // recognises as a unit's, and nothing else. The slug shapes the
-        // platform really emits (`WorktreeCreate#name`: user-given, `pr-<n>`,
-        // or auto-generated) are all NON-units — there is no `agent-` prefix
-        // anywhere in the documented contract, and this repository's own
-        // harness worktree is `recursing-benz-063389`.
-        let flow = two_tier_flow();
-        assert!(is_unit_worktree_name("feature/my-spec", &flow));
-        assert!(is_unit_worktree_name("hotfix/login", &flow));
-        // …and a unit still in the older shape stays a unit.
-        assert!(is_unit_worktree_name("dev_my-spec", &flow));
-        assert!(is_unit_worktree_name("main_hotfix", &flow));
-        assert!(!is_unit_worktree_name("recursing-benz-063389", &flow));
-        assert!(!is_unit_worktree_name("bright-running-fox", &flow));
-        assert!(!is_unit_worktree_name("feature-auth", &flow));
-        assert!(!is_unit_worktree_name("pr-1234", &flow));
-        assert!(!is_unit_worktree_name("agent-w1", &flow), "no special shape survives");
-        // Rootless model: no catalogue to consult, so an undeclared prefix has
-        // nothing that could answer for it. `hook_create` asks a ROOTED one.
-        assert!(!is_unit_worktree_name("hml_x", &flow), "nothing here can measure `hml`");
-        // Longest declared prefix wins, exactly like the branch gate.
-        let mut nested_git = mustard_core::domain::config::GitConfig::default();
-        nested_git.flow.insert("*".to_string(), "dev".to_string());
-        nested_git.flow.insert("dev".to_string(), "dev_rc".to_string());
-        let nested = BaseFlow::of(&nested_git);
-        assert_eq!(nested.base_of("dev_rc_thing").known(), Some("dev_rc"));
     }
 
     #[test]
