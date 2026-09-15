@@ -152,8 +152,8 @@ fn one(
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
-    let too_long = (lines > wave_prompt::MAX_LINES)
-        .then_some(Refusal::WavePromptTooLong { wave, lines, max: wave_prompt::MAX_LINES });
+    let too_long =
+        (lines > wave_prompt::MAX_LINES).then(|| wave_prompt::too_long(&material, lines, lang));
     WavePrompt { wave, text, lines, too_long, bad_skills, stale_skills }
 }
 

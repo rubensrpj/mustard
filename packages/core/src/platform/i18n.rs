@@ -1350,12 +1350,14 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              it, record a new version with `replaces` and purge the old one. Nothing was written."
         }
         ("spec_events.wave_prompt_too_long", Locale::PtBr) => {
-            "O pedido da onda {wave} tem {lines} linhas, e o teto é {max}. Divida a onda antes de \
-             levar o plano para a aprovação."
+            "O pedido da onda {wave} tem {lines} linhas, e o teto é {max}, já com o combinado \
+             reduzido a ponteiros. Tire da onda o que ainda vai inteiro, cada parte com as linhas \
+             dela: {parts}. Divida a onda antes de levar o plano para a aprovação."
         }
         ("spec_events.wave_prompt_too_long", Locale::EnUs) => {
-            "Wave {wave}'s request has {lines} lines, and the cap is {max}. Split the wave before \
-             taking the plan to approval."
+            "Wave {wave}'s request has {lines} lines, and the cap is {max}, with the agreed items \
+             already cut down to pointers. Take out of the wave what still goes whole, each part \
+             with its line count: {parts}. Split the wave before taking the plan to approval."
         }
         ("spec_events.delivered_too_long", Locale::PtBr) => {
             "O entregou tem {chars} caracteres, e o teto é {max}. Ele volta para a janela principal: \
@@ -2256,6 +2258,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("prompt.part.specification", Locale::EnUs) => "Specification",
         ("prompt.part.agreed", Locale::PtBr) => "Combinado",
         ("prompt.part.agreed", Locale::EnUs) => "Agreed",
+        ("prompt.part.pointers", Locale::PtBr) => {
+            "O resto do combinado — cada linha traz o comando que lê o item inteiro"
+        }
+        ("prompt.part.pointers", Locale::EnUs) => {
+            "The rest of the agreed items — each line carries the command that reads the whole item"
+        }
         ("prompt.part.wave", Locale::PtBr) => "A onda e as tarefas dela",
         ("prompt.part.wave", Locale::EnUs) => "The wave and its tasks",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
@@ -3164,7 +3172,7 @@ mod tests {
             ("spec_events.open_point_removed", &["{code}"][..]),
             ("spec_events.open_point_purged", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),
-            ("spec_events.wave_prompt_too_long", &["{wave}", "{lines}", "{max}"][..]),
+            ("spec_events.wave_prompt_too_long", &["{wave}", "{lines}", "{max}", "{parts}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
             ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
@@ -3401,6 +3409,7 @@ mod tests {
             ("prompt.fixed", &[][..]),
             ("prompt.part.specification", &[][..]),
             ("prompt.part.agreed", &[][..]),
+            ("prompt.part.pointers", &[][..]),
             ("prompt.part.wave", &[][..]),
             ("prompt.part.criteria", &[][..]),
             ("prompt.part.lessons", &[][..]),

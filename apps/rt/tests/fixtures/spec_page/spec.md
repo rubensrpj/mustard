@@ -171,43 +171,14 @@ O Rust roda rápido: 3 a 14 ms por gancho. O custo está nas rodadas do modelo.
 
 Cerca de 11 arquivos de teste prendem frases da prosa atual.
 
-## Combinado
+## O resto do combinado — cada linha traz o comando que lê o item inteiro
 
-### MSTD-LIMIT-0001 (limite)
-
-Tamanho do pedido de cada onda.
-
-- Valor: 500 linhas
-
-### MSTD-CONTR-0001 (contrato)
-
-A barra de status tem duas linhas: a branch e a spec; a economia e o modelo.
-
-- Exemplo: dev · demo · plano · onda 2/4
-
-### MSTD-ERR-0001 (erro)
-
-Título do pull request acima de 60 caracteres.
-
-- Mensagem: O título tem 74 caracteres, e o limite é 60. Escreva uma frase mais curta.
-
-### MSTD-EDGE-0001 (caso de borda)
-
-Duas sessões gravam a mesma spec ao mesmo tempo.
-
-- O que acontece: A segunda espera a trava e grava com o número seguinte.
-
-### MSTD-SCOPE-0001 (fora do escopo)
-
-Supabase.
-
-- Motivo: As páginas publicadas já dão o acompanhamento de qualquer máquina.
-
-### MSTD-DEC-0001 (decisão)
-
-A página é publicada só nos marcos, e a MSTD-RULE-0001 continua valendo.
-
-- Por quê: Cada publicação gasta tokens.
+- MSTD-LIMIT-0001 — Tamanho do pedido de cada onda. — `mustard-rt run read agreed --spec demo --term MSTD-LIMIT-0001`
+- MSTD-CONTR-0001 — A barra de status tem duas linhas: a branch e a spec; a economia e o modelo. — `mustard-rt run read agreed --spec demo --term MSTD-CONTR-0001`
+- MSTD-ERR-0001 — Título do pull request acima de 60 caracteres. — `mustard-rt run read agreed --spec demo --term MSTD-ERR-0001`
+- MSTD-EDGE-0001 — Duas sessões gravam a mesma spec ao mesmo tempo. — `mustard-rt run read agreed --spec demo --term MSTD-EDGE-0001`
+- MSTD-SCOPE-0001 — Supabase. — `mustard-rt run read agreed --spec demo --term MSTD-SCOPE-0001`
+- MSTD-DEC-0001 — A página é publicada só nos marcos, e a MSTD-RULE-0001 continua valendo. — `mustard-rt run read agreed --spec demo --term MSTD-DEC-0001`
 
 ## A onda e as tarefas dela
 
@@ -295,41 +266,14 @@ A trava de comandos confere o programa e as opções, nunca o texto entre aspas.
 
 - Exemplo: `git commit -m "... rm -rf ..."` passa; `rm -rf pasta` é barrado.
 
-### MSTD-LIMIT-0001 (limite)
+## O resto do combinado — cada linha traz o comando que lê o item inteiro
 
-Tamanho do pedido de cada onda.
-
-- Valor: 500 linhas
-
-### MSTD-CONTR-0001 (contrato)
-
-A barra de status tem duas linhas: a branch e a spec; a economia e o modelo.
-
-- Exemplo: dev · demo · plano · onda 2/4
-
-### MSTD-ERR-0001 (erro)
-
-Título do pull request acima de 60 caracteres.
-
-- Mensagem: O título tem 74 caracteres, e o limite é 60. Escreva uma frase mais curta.
-
-### MSTD-EDGE-0001 (caso de borda)
-
-Duas sessões gravam a mesma spec ao mesmo tempo.
-
-- O que acontece: A segunda espera a trava e grava com o número seguinte.
-
-### MSTD-SCOPE-0001 (fora do escopo)
-
-Supabase.
-
-- Motivo: As páginas publicadas já dão o acompanhamento de qualquer máquina.
-
-### MSTD-DEC-0001 (decisão)
-
-A página é publicada só nos marcos, e a MSTD-RULE-0001 continua valendo.
-
-- Por quê: Cada publicação gasta tokens.
+- MSTD-LIMIT-0001 — Tamanho do pedido de cada onda. — `mustard-rt run read agreed --spec demo --term MSTD-LIMIT-0001`
+- MSTD-CONTR-0001 — A barra de status tem duas linhas: a branch e a spec; a economia e o modelo. — `mustard-rt run read agreed --spec demo --term MSTD-CONTR-0001`
+- MSTD-ERR-0001 — Título do pull request acima de 60 caracteres. — `mustard-rt run read agreed --spec demo --term MSTD-ERR-0001`
+- MSTD-EDGE-0001 — Duas sessões gravam a mesma spec ao mesmo tempo. — `mustard-rt run read agreed --spec demo --term MSTD-EDGE-0001`
+- MSTD-SCOPE-0001 — Supabase. — `mustard-rt run read agreed --spec demo --term MSTD-SCOPE-0001`
+- MSTD-DEC-0001 — A página é publicada só nos marcos, e a MSTD-RULE-0001 continua valendo. — `mustard-rt run read agreed --spec demo --term MSTD-DEC-0001`
 
 ## A onda e as tarefas dela
 
