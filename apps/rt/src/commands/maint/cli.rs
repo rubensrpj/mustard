@@ -49,7 +49,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 88)]
+    #[command(display_order = 87)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para

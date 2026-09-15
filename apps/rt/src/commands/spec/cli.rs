@@ -233,27 +233,6 @@ pub enum SpecCmd {
         #[arg(long)]
         resume: bool,
     },
-    /// Record a DELIBERATE mid-pipeline change request in the active spec's
-    /// change log, carrying the INSTRUCTION the conversation produced.
-    ///
-    /// The `UserPromptSubmit` observer captures the sentence the user typed —
-    /// blind by construction, since it cannot know what the sentence means. This
-    /// is the orchestrator's record beside it: it lands in the same two files
-    /// (`change-log.md` + `change-requests.ndjson`), in the shape the per-wave
-    /// renderer reads, so the instruction reaches the next dispatched agent
-    /// without anyone hand-formatting a bullet. A blank instruction is refused
-    /// and nothing is written.
-    #[command(name = "change-request")]
-    #[command(display_order = 69)]
-    ChangeRequest {
-        /// Spec slug under `.claude/spec/`. Omitted: the session→spec marker,
-        /// then the active-spec fallback.
-        #[arg(long)]
-        spec: Option<String>,
-        /// What the orchestrator instructs, in full.
-        #[arg(long)]
-        instruction: String,
-    },
     /// Deliberately change ONE acceptance criterion after the spec artefacts are
     /// frozen, and prove the replacement still knows how to fail.
     ///
@@ -270,7 +249,7 @@ pub enum SpecCmd {
     /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
     /// the unrelated session-end amendment window.
     #[command(name = "ac-amend")]
-    #[command(display_order = 71)]
+    #[command(display_order = 70)]
     AcAmend {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -331,7 +310,7 @@ pub enum SpecCmd {
     /// to the proof ledger's `additions`. A wave spec carries no criterion
     /// text — `--wave N` names the wave that will be judged by the new id.
     #[command(name = "ac-add")]
-    #[command(display_order = 72)]
+    #[command(display_order = 71)]
     AcAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -391,7 +370,7 @@ pub enum SpecCmd {
     /// `already-routed` when the same decision is restated, and refuses a
     /// different one rather than overwriting a decision in silence.
     #[command(name = "mark-finding")]
-    #[command(display_order = 81)]
+    #[command(display_order = 80)]
     MarkFinding {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -421,7 +400,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 87)]
+    #[command(display_order = 86)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -442,7 +421,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 89)]
+    #[command(display_order = 88)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
@@ -536,12 +515,6 @@ pub fn dispatch(cmd: SpecCmd) {
                 spec,
                 wave_plan,
                 resume,
-            });
-        }
-        SpecCmd::ChangeRequest { spec: slug, instruction } => {
-            spec::change_request::run(spec::change_request::ChangeRequestOpts {
-                spec: slug,
-                instruction,
             });
         }
         SpecCmd::AcAmend {

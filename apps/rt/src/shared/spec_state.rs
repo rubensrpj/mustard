@@ -254,10 +254,6 @@ mod tests {
                 crate::hooks::observe::clarification_observer::active_unit(root, &input),
             ),
             (
-                "change_request",
-                crate::commands::spec::change_request::resolve_spec(root, None, Some(SESSION)),
-            ),
-            (
                 "change_request_log",
                 crate::hooks::observe::change_request_log::resolve_spec(root, Some(SESSION)),
             ),

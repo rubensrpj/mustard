@@ -108,14 +108,6 @@ It is **advisory** — QA already blocks the close on the same commands — so i
 
 The record stays clean through this because `wave-done` scopes each wave's cached diff to the files that wave DECLARED in its own `## Files`, not to the whole commit — so the blocked sibling's half-written files never land in the finished wave's cached diff, and from there in its retry context and the closing summary. That is why committing a mixed round is safe to write down as a rule rather than a judgement call.
 
-**[you] The user asks for a change mid-round → record the INSTRUCTION, not just the reply.** An observer already captures every prompt verbatim into the spec's change log — that is the raw trail, and it keeps the user's words. But a reply carries its meaning from the conversation: `"Concordo se for agregar"` recorded alone tells the next wave nothing it can act on. So state what was agreed, in one self-contained sentence, as its own record:
-
-```bash
-mustard-rt run change-request --spec {spec} --instruction "<what changes, stated so a wave that never saw this conversation can act on it>"
-```
-
-It lands in the shape `read_change_log` filters for, so the next rendered prompt carries it under `## CHANGE REQUESTS` — no hand-formatted bullet, and a refusal (empty instruction, unknown spec) writes nothing.
-
 **Then carry anything that changes BEHAVIOUR into `## Acceptance Criteria` — with `ac-amend`, never by hand**: a request that is implemented but unnamed by any AC makes the gate report green without ever verifying it (found in review, 2026-07-25).
 
 ```bash
