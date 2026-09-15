@@ -12,8 +12,11 @@
 //! {"ok": true, "spec": "teste", "id": 41, "type": "remove", "code": "MSTD-RMV-0002", "removed": [12, 13]}
 //! ```
 //!
-//! A página e o `.md` da spec e a linha dela no índice das specs são refeitos
-//! a cada gravação, ainda com a trava do arquivo de eventos presa.
+//! A linha da spec no índice das specs é refeita a cada gravação, ainda com a
+//! trava do arquivo de eventos presa. A página e o `.md` não: refazer os dois
+//! custa segundos na spec real, e gravar um evento tem de custar o tempo de
+//! escrever uma linha. Eles saem no fim de cada passo do fluxo, no fim de cada
+//! onda — o `entregou`, que passa por aqui — e no comando de página.
 //!
 //! Com o tipo `lesson`, a gravação vai para o banco de lições
 //! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
@@ -281,11 +284,12 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
     }
 }
 
-/// O que uma gravação deixou: o evento e, quando a página e o `.md` foram
-/// refeitos, onde eles estão ou por que não foram gravados.
+/// O que uma gravação deixou: o evento e, no fim de uma onda, onde a página e
+/// o `.md` foram refeitos ou por que não foram gravados.
 pub struct Recorded {
     pub(crate) written: store::Written,
     /// Onde a página e o `.md` foram gravados, ou a recusa da gravação deles.
+    /// Só no `entregou` de uma onda: as outras gravações não os refazem.
     pub(crate) pages: Option<Result<SpecPages, Refusal>>,
     /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
     /// passar das ondas que tinha na aprovação que vale.
@@ -296,8 +300,9 @@ pub struct Recorded {
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
-/// `run write`: a linha no arquivo de eventos, a linha da spec no índice e a
-/// página e o `.md`. `by` diz quem grava, para a regra da mudança de fase.
+/// `run write`: a linha no arquivo de eventos e a linha da spec no índice. A
+/// página e o `.md` só no `entregou` de uma onda. `by` diz quem grava, para a
+/// regra da mudança de fase.
 ///
 /// # Errors
 ///
@@ -336,15 +341,17 @@ fn record_in(
         .flatten();
     let replaces = (event_type == "state").then(|| draft.get("replaces").and_then(Value::as_u64)).flatten();
     let name = spec.trim().to_string();
-    // A página e o `.md` acompanham cada gravação e são refeitos antes de a
-    // trava soltar, do que acabou de ser gravado: a gravação seguinte, de
-    // outra sessão, só entra depois, e refaz os dois por último. A conta das
-    // ondas também sai dali, com a trava presa: duas ondas gravadas ao mesmo
-    // tempo nunca avisam a mesma conta.
+    // A página e o `.md` saem no fim de cada passo e no fim de cada onda, não
+    // a cada gravação. O fim de uma onda é o `entregou`, e ele passa por
+    // aqui: os dois são refeitos antes de a trava soltar, do que acabou de
+    // ser gravado, e a gravação seguinte, de outra sessão, só entra depois. A
+    // conta das ondas também sai dali, com a trava presa: duas ondas gravadas
+    // ao mesmo tempo nunca avisam a mesma conta.
     let mut pages = None;
     let mut grew = None;
     let mut survey = None;
     let wave = event_type == "wave";
+    let ends_a_wave = event_type == "delivered";
     let lang = project.lang;
     let written = store::write_guarded(
         &path,
@@ -365,7 +372,9 @@ fn record_in(
             if wave {
                 grew = waves_grown_by(log, log.max_id());
             }
-            pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
+            if ends_a_wave {
+                pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
+            }
         },
     )?;
     Ok(Recorded { written, pages, grew, survey })
@@ -820,12 +829,13 @@ mod tests {
         );
     }
 
-    /// Cada gravação refaz a página e o `.md` da spec. Uma decisão revista
-    /// mostra só a versão nova fora da conversa, onde a antiga aparece
-    /// marcada como substituída; um item removido some dos dois e continua
-    /// no arquivo de eventos, com o motivo.
+    /// Nenhuma gravação refaz a página nem o `.md`: os dois saem no fim do
+    /// passo, pela porta que os refaz. Depois dela, uma decisão revista mostra
+    /// só a versão nova fora da conversa, onde a antiga aparece marcada como
+    /// substituída; um item removido some dos dois e continua no arquivo de
+    /// eventos, com o motivo.
     #[test]
-    fn every_write_rebuilds_the_page_and_the_md() {
+    fn the_page_and_the_md_come_out_at_the_end_of_the_step_and_not_at_each_write() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"decida"}"#);
@@ -838,6 +848,9 @@ mod tests {
         assert!(removal.get("warnings").is_none(), "{removal}");
 
         let spec = root.join(".claude").join("spec").join("teste");
+        assert!(!spec.join("spec.html").exists(), "nenhuma gravação refez a página");
+        assert!(!spec.join("spec.md").exists(), "nenhuma gravação refez o `.md`");
+        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("os dois saem no fim do passo");
         let md = std::fs::read_to_string(spec.join("spec.md")).unwrap();
         let html = std::fs::read_to_string(spec.join("spec.html")).unwrap();
         let (html_before, html_talk) = html.split_once("<section id=\"conversation\">").unwrap();
@@ -877,6 +890,7 @@ mod tests {
         .unwrap();
         assert!(!agreed.contains("Regra dois.") && agreed.contains("Regra três."), "{agreed}");
         let spec = root.join(".claude").join("spec").join("teste");
+        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
         for page in ["spec.md", "spec.html"] {
             let shown = std::fs::read_to_string(spec.join(page)).unwrap();
             assert!(!shown.contains("Regra dois."), "{page}: {shown}");
@@ -925,26 +939,54 @@ mod tests {
         assert!(!spec.join("spec.html").exists(), "no page over an old spec");
     }
 
-    /// Uma spec aberta pelo `open` refaz a página e o `.md` a cada gravação,
-    /// mesmo com um `meta.json` posto ao lado por uma porta antiga.
+    /// Uma spec aberta pelo `open` tem a página e o `.md` refeitos no fim do
+    /// passo, e não a cada gravação, mesmo com um `meta.json` posto ao lado
+    /// por uma porta antiga. A linha da spec no índice continua saindo a cada
+    /// gravação: refazê-la custa uma linha.
     #[test]
-    fn a_spec_opened_by_open_rebuilds_its_page_on_every_write() {
+    fn a_spec_opened_by_open_gets_its_page_at_the_end_of_the_step() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = root.join(".claude").join("spec").join("teste");
         write(root, "message", r#"{"author":"user","text":"um recado"}"#);
         std::fs::create_dir_all(&spec).unwrap();
         std::fs::write(spec.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
+        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do primeiro passo");
 
         let before = std::fs::read_to_string(spec.join("spec.html")).unwrap();
         let out = write(root, "message", r#"{"author":"user","text":"e outro recado"}"#);
         assert_eq!(out["ok"], json!(true), "{out}");
-        let after = std::fs::read_to_string(spec.join("spec.html")).unwrap();
-        assert_ne!(before, after, "the page follows the write");
-        assert!(after.contains("e outro recado"), "{after}");
-        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("e outro recado"));
+        assert_eq!(
+            std::fs::read_to_string(spec.join("spec.html")).unwrap(),
+            before,
+            "a gravação não mexeu na página"
+        );
         let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
         assert!(index.contains("\"teste\""), "{index}");
+
+        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do passo seguinte");
+        let after = std::fs::read_to_string(spec.join("spec.html")).unwrap();
+        assert_ne!(before, after, "a página sai no fim do passo");
+        assert!(after.contains("e outro recado"), "{after}");
+        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("e outro recado"));
+    }
+
+    /// O fim de uma onda é o `entregou` dela, e ele refaz a página e o `.md`
+    /// dentro da própria gravação, ainda com a trava do arquivo presa.
+    #[test]
+    fn the_delivered_of_a_wave_rebuilds_the_page_inside_the_write() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let spec = root.join(".claude").join("spec").join("teste");
+        write(root, "message", r#"{"author":"user","text":"o plano"}"#);
+        assert!(!spec.join("spec.html").exists(), "a mensagem não refez a página");
+
+        let delivered = r#"{"wave":1,"text":"A onda 1 ficou pronta.","files":["src/a.rs"]}"#;
+        let out = write(root, "delivered", delivered);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let page = std::fs::read_to_string(spec.join("spec.html")).expect("a página sai no fim da onda");
+        assert!(page.contains("A onda 1 ficou pronta."), "{page}");
+        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("A onda 1 ficou pronta."));
     }
 
     fn witness_approves(root: &std::path::Path) {
@@ -1232,6 +1274,7 @@ mod tests {
         let root = dir.path();
         write(root, "message", r#"{"author":"user","text":"um"}"#);
         let specs = root.join(".claude").join("spec");
+        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
         let files = [specs.join("teste").join("spec.ndjson"), specs.join("teste").join("spec.md"), specs.join("teste").join("spec.html"), specs.join("index.ndjson")];
         let before: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
 
@@ -1265,6 +1308,7 @@ mod tests {
         let line = events.lines().find(|l| l.contains("\"type\":\"rule\"")).unwrap();
         let search = serde_json::from_str::<Value>(line).unwrap()["search"].as_str().unwrap().to_string();
         assert!(search.contains(' '), "{search}");
+        super::super::pages::refresh(root, "teste", Locale::PtBr).expect("a página do fim do passo");
         for page in ["spec.md", "spec.html"] {
             let shown = std::fs::read_to_string(spec.join(page)).unwrap();
             assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{page}");

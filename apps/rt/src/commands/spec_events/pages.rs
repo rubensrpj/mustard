@@ -1,13 +1,21 @@
 //! A página e o `.md` de uma spec, refeitos do `spec.ndjson` pelo motor de
 //! página.
 //!
-//! Só o binário escreve os dois. O `write` os refaz a cada evento gravado, e
-//! o `page --spec` quando alguém pede. Os dois saem da mesma árvore
-//! (`view::document`), então dizem sempre a mesma coisa, e a mesma lista de
-//! eventos dá sempre os mesmos bytes.
+//! Só o binário escreve os dois, e nunca a cada evento gravado: refazê-los
+//! custa segundos na spec real, e gravar um evento tem de custar o tempo de
+//! escrever uma linha. Quem os refaz, todos por [`refresh`]:
+//!
+//! - os passos do fluxo, no fim de cada um — hoje o `open`, o `grill` e o
+//!   `plan`; o `round` e o `close` chamam a mesma porta quando existirem;
+//! - o fim de cada onda, que é o `entregou` dela, por [`rebuild`], dentro da
+//!   própria gravação;
+//! - o `page --spec`, quando alguém pede.
+//!
+//! Os dois saem da mesma árvore (`view::document`), então dizem sempre a mesma
+//! coisa, e a mesma lista de eventos dá sempre os mesmos bytes.
 //!
 //! Os dois são refeitos sempre com a trava do arquivo de eventos presa: o
-//! `write` dentro da própria gravação, o `page --spec` pedindo a trava. Assim
+//! `entregou` dentro da própria gravação, o [`refresh`] pedindo a trava. Assim
 //! uma gravação nunca entra entre a leitura e a escrita da página, e a página
 //! nunca fica atrás do arquivo.
 

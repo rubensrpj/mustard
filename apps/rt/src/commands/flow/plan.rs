@@ -217,13 +217,10 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     }
 
     // A fase passa pela mesma porta de gravação de fase das outras, e ela já
-    // refaz a página, o `.md` e a linha da spec no índice. Uma spec que já
-    // está em plano não grava nada e tem as páginas refeitas aqui.
+    // refaz a linha da spec no índice. Uma spec que já está em plano não grava
+    // nada e tem a linha refeita aqui.
     let from = State::from_log(&log).phase.unwrap_or("-").to_string();
     let recorded = if from == "plan" {
-        if let Err(refusal) = crate::commands::spec_events::pages::refresh(&project.root, &spec, lang) {
-            return refuse(&refusal);
-        }
         if let Ok(paths) = mustard_core::ClaudePaths::for_project(&project.root)
             && let Err(refusal) =
                 mustard_core::io::spec_index::refresh_line(&paths.spec_index_path(), &spec, &log)
@@ -240,6 +237,12 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
             Err(refusal) => return refuse(&refusal),
         }
     };
+
+    // O passo termina refazendo a página e o `.md`: a gravação de cada evento
+    // já não os refaz, e é por esta página que a spec é aprovada.
+    if let Err(refusal) = crate::commands::spec_events::pages::refresh(&project.root, &spec, lang) {
+        return refuse(&refusal);
+    }
 
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,

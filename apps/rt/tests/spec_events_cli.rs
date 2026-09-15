@@ -97,10 +97,11 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
     assert_eq!(ids, (1..=2 * rounds).collect::<Vec<u64>>(), "consecutive, in file order, none repeated");
 }
 
-/// A página e o `.md` são refeitos dentro da trava do arquivo de eventos:
-/// depois de duas gravações ao mesmo tempo, os dois têm os dois itens.
+/// A página e o `.md` do fim de uma onda são refeitos dentro da trava do
+/// arquivo de eventos: depois de dois fins de onda gravados ao mesmo tempo,
+/// os dois têm os dois itens.
 #[test]
-fn two_processes_writing_at_once_leave_both_items_on_the_page_and_the_md() {
+fn two_processes_closing_a_wave_at_once_leave_both_items_on_the_page_and_the_md() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let spec = root.join(".claude").join("spec").join("teste");
@@ -109,9 +110,10 @@ fn two_processes_writing_at_once_leave_both_items_on_the_page_and_the_md() {
         let texts: Vec<String> = (0..2).map(|w| format!("rodada {round} escrita {w}")).collect();
         let writers: Vec<_> = texts
             .iter()
-            .map(|text| {
-                let fields = json!({"author": "user", "text": text});
-                rt(root, &["write", "message", "--spec", "teste", "--json", &fields.to_string()])
+            .enumerate()
+            .map(|(w, text)| {
+                let fields = json!({"wave": 2 * round + w + 1, "text": text, "files": ["a.rs"]});
+                rt(root, &["write", "delivered", "--spec", "teste", "--json", &fields.to_string()])
                     .stdout(Stdio::piped())
                     .spawn()
                     .expect("spawn write")

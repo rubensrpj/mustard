@@ -405,6 +405,13 @@ fn opened(spec: &str, branch: &str, base: &str, kind: &WorkKind, map: Option<Val
     report
 }
 
+/// O passo termina refazendo a página e o `.md` da spec, que a gravação de
+/// cada evento já não refaz. Falhar aqui só avisa: a spec já nasceu, e o
+/// comando de página refaz os dois quando alguém pedir.
+fn page_warning(root: &Path, spec: &str, lang: Locale) -> Option<String> {
+    spec_events::pages::refresh(root, spec, lang).err().map(|refusal| refusal.message(lang))
+}
+
 /// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade.
 /// Nunca entra em pânico.
 pub(crate) fn open_at(opts: &OpenOpts) -> Value {
@@ -493,7 +500,9 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             Ok(pending) => pending,
             Err(miss) => return refuse(miss.into()),
         };
-        let warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
+        let mut warnings: Vec<String> =
+            note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
+        warnings.extend(page_warning(&project.root, &name, lang));
         let base = state.base.unwrap_or_default();
         let mut report = opened(&name, &target, &base, &kind, None, &warnings, lang);
         report["already_open"] = json!(true);
@@ -577,6 +586,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             None
         }
     };
+    warnings.extend(page_warning(&project.root, &name, lang));
     let mut report = opened(&name, &target, &base, &kind, map, &warnings, lang);
     if let Some(id) = pending {
         report["pending"] = json!(id);
@@ -682,6 +692,24 @@ mod tests {
         assert_eq!(report["spec"], json!("trava-de-pendencias"));
         assert_eq!(head(root), "feature/trava-de-pendencias");
         assert!(spec_dir(root, "trava-de-pendencias").join("spec.ndjson").is_file());
+    }
+
+    /// O `open` termina refazendo a página e o `.md` da spec: a gravação de
+    /// cada evento já não os refaz, e a mesma chamada de novo os deixa no
+    /// lugar.
+    #[test]
+    fn the_open_leaves_the_page_and_the_md_rebuilt() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        assert_eq!(open(root, Some("feature"), Some("trava"), Some("dev"))["ok"], json!(true));
+        let spec = spec_dir(root, "trava");
+        assert!(spec.join("spec.html").is_file(), "a página sai no fim do passo");
+        assert!(spec.join("spec.md").is_file(), "e o `.md` também");
+
+        std::fs::remove_file(spec.join("spec.html")).unwrap();
+        let again = open(root, Some("feature"), Some("trava"), Some("dev"));
+        assert_eq!(again["already_open"], json!(true), "{again}");
+        assert!(spec.join("spec.html").is_file(), "a página volta");
     }
 
     /// O nome completo da branch, sem o tipo à parte, é dividido em tipo e

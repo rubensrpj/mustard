@@ -2929,7 +2929,7 @@ mod tests {
 
     /// Depois de uma mudança de estágio pela porta de dentro, a spec aberta
     /// pelo `open` segue sendo a do arquivo de eventos: o critério gravado é
-    /// aceito, e o `spec.md` é refeito a cada gravação, com a seção dos
+    /// aceito, e o `spec.md` refeito no fim do passo traz a seção dos
     /// critérios.
     #[test]
     fn a_spec_opened_by_open_keeps_its_page_after_criteria_are_written() {
@@ -2955,8 +2955,15 @@ mod tests {
             json!({ "when": "o merge roda", "then": "a pendência trava", "proof": "cargo test", "origin": said["id"] }),
         );
         assert_eq!(criterion["ok"], json!(true), "the criterion is accepted: {criterion}");
+        assert_eq!(
+            std::fs::read_to_string(&md).unwrap_or_default(),
+            before,
+            "a gravação não refaz o `.md`"
+        );
+        crate::commands::spec_events::pages::refresh(root, "x", mustard_core::SupportedLocale::PtBr)
+            .expect("o `.md` do fim do passo");
         let after = std::fs::read_to_string(&md).unwrap();
-        assert_ne!(after, before, "the page is rebuilt on every write");
+        assert_ne!(after, before, "o `.md` sai no fim do passo");
         assert!(after.contains("## Critérios"), "{after}");
     }
 

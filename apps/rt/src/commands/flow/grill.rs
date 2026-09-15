@@ -214,6 +214,13 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         })
         .collect();
     let reminders: usize = list.iter().map(|item| item.reminders.len()).sum();
+    // O passo termina refazendo a página e o `.md`: a gravação de cada evento
+    // já não os refaz. Falhar aqui só avisa, porque o que o passo tinha para
+    // gravar já está gravado.
+    let mut warnings: Vec<String> = Vec::new();
+    if let Err(refusal) = spec_events::pages::refresh(&project.root, &spec, lang) {
+        warnings.push(refusal.message(lang));
+    }
     let mut report = json!({
         "ok": true,
         "spec": spec,
@@ -224,6 +231,9 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "to_record": to_record,
         "reminders": reminders,
     });
+    if !warnings.is_empty() {
+        report["warnings"] = json!(warnings);
+    }
     let open = survey::open_points(&log);
     if to_record > 0 {
         report["hint"] = json!(translate("survey.record_points", lang).replace("{spec}", &spec));
@@ -328,6 +338,23 @@ mod tests {
             condensed,
         };
         grill_for(&opts, None)
+    }
+
+    /// O `grill` termina refazendo a página e o `.md` da spec: a gravação de
+    /// cada evento já não os refaz.
+    #[test]
+    fn the_grill_leaves_the_page_and_the_md_rebuilt() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root, "x");
+        let spec = root.join(".claude").join("spec").join("x");
+        assert!(!spec.join("spec.html").exists(), "nenhuma gravação refez a página");
+
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert!(report["warnings"].is_null(), "{report}");
+        assert!(spec.join("spec.html").is_file(), "a página sai no fim do passo");
+        assert!(spec.join("spec.md").is_file(), "e o `.md` também");
     }
 
     fn events(root: &Path, spec: &str) -> String {
@@ -672,7 +699,12 @@ mod tests {
         assert_eq!(write(root, Some("x"), "point", revision)["ok"], json!(true));
         close(first, ids[0]);
 
-        let page = || std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
+        // A página sai no fim do passo, não a cada gravação: aqui ela é
+            // refeita pela mesma porta que o passo usa.
+            let page = || {
+                spec_events::pages::refresh(root, "x", Locale::PtBr).expect("a página do fim do passo");
+                std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap()
+            };
         let panel = |open: usize, closed: usize| {
             translate("page.metrics.points.value", Locale::PtBr)
                 .replace("{open}", &open.to_string())
@@ -762,7 +794,12 @@ mod tests {
                     "closes": closes, "reason": "O fato tinha um segredo.", "origin": said});
                 write(root, Some("x"), "point", closing)
             };
-            let page = || std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
+            // A página sai no fim do passo, não a cada gravação: aqui ela é
+            // refeita pela mesma porta que o passo usa.
+            let page = || {
+                spec_events::pages::refresh(root, "x", Locale::PtBr).expect("a página do fim do passo");
+                std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap()
+            };
             let panel = |open: usize, closed: usize| {
                 translate("page.metrics.points.value", Locale::PtBr)
                     .replace("{open}", &open.to_string())
@@ -825,7 +862,12 @@ mod tests {
                     "closes": closes, "reason": "O fato tinha um segredo.", "origin": said});
                 write(root, Some("x"), "point", closing)
             };
-            let page = || std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
+            // A página sai no fim do passo, não a cada gravação: aqui ela é
+            // refeita pela mesma porta que o passo usa.
+            let page = || {
+                spec_events::pages::refresh(root, "x", Locale::PtBr).expect("a página do fim do passo");
+                std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap()
+            };
             let panel = |open: usize, closed: usize| {
                 translate("page.metrics.points.value", Locale::PtBr)
                     .replace("{open}", &open.to_string())
