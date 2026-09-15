@@ -312,6 +312,9 @@ const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
 
 const HOOK_ACTIONS: &[&str] = &["warn", "block"];
 const CALL_RESULTS: &[&str] = &["ok", "refused"];
+/// O teto de caracteres do texto de um entregou.
+pub const DELIVERED_MAX_CHARS: usize = 8_000;
+
 /// As fases de uma spec, na ordem em que acontecem.
 pub const PHASES: &[&str] =
     &["survey", "plan", "approved", "running", "closed", "pr_open", "delivered", "discarded"];
@@ -1069,6 +1072,15 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                 return if has("reason") { Ok(()) } else { Err(Refusal::NotApplicableNeedsReason) };
             }
             if has("result") || has("reason") { Ok(()) } else { Err(missing(event_type, "result")) }
+        }
+        // O entregou volta para a janela principal a cada onda: ele conta o
+        // que mudou, e não repete o pedido.
+        "delivered" => {
+            let chars = word("text").chars().count();
+            if chars > DELIVERED_MAX_CHARS {
+                return Err(Refusal::DeliveredTooLong { chars, max: DELIVERED_MAX_CHARS });
+            }
+            Ok(())
         }
         "skill" if word("action") == "create" => {
             need("examples")?;
@@ -2153,6 +2165,24 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, review"));
+    }
+
+    /// O entregou volta para a janela principal a cada onda, e por isso tem
+    /// teto: no limite passa, um caractere acima é recusado com o tamanho que
+    /// ele tem, nos dois idiomas.
+    #[test]
+    fn a_delivery_note_over_the_character_cap_is_refused_with_its_size() {
+        let note = |chars: usize| {
+            json!({"author": "wave", "wave": 1, "text": "á".repeat(chars), "files": ["src/a.rs"]})
+        };
+        assert!(checked("delivered", note(DELIVERED_MAX_CHARS)).is_ok());
+        let refusal = checked("delivered", note(DELIVERED_MAX_CHARS + 1)).unwrap_err();
+        assert_eq!(refusal.reason(), "delivered-too-long");
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let message = refusal.message(lang);
+            assert!(message.contains("8001"), "{message}");
+            assert!(message.contains("8000"), "{message}");
+        }
     }
 
     #[test]
