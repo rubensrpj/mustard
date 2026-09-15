@@ -221,10 +221,16 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     // está em plano não grava nada e tem as páginas refeitas aqui.
     let from = State::from_log(&log).phase.unwrap_or("-").to_string();
     let recorded = if from == "plan" {
-        match crate::commands::spec_events::pages::refresh(&project.root, &spec, lang) {
-            Ok(_) => None,
-            Err(refusal) => return refuse(&refusal),
+        if let Err(refusal) = crate::commands::spec_events::pages::refresh(&project.root, &spec, lang) {
+            return refuse(&refusal);
         }
+        if let Ok(paths) = mustard_core::ClaudePaths::for_project(&project.root)
+            && let Err(refusal) =
+                mustard_core::io::spec_index::refresh_line(&paths.spec_index_path(), &spec, &log)
+        {
+            return refuse(&refusal);
+        }
+        None
     } else {
         let mut draft = Map::new();
         draft.insert("phase".to_string(), json!("plan"));
@@ -546,11 +552,21 @@ mod tests {
         assert!(report["copy"].is_null(), "sem publicação falha, nada de copiar: {report}");
         assert!(root.join(".claude/spec/x/spec.html").is_file());
 
-        // Rodar de novo não grava fase nenhuma e continua respondendo o mesmo.
+        // A linha da spec no índice sai refeita junto com a página.
+        let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
+        assert!(index.contains("\"phase\":\"plan\""), "{index}");
+
+        // Rodar de novo não grava fase nenhuma, refaz a página e o índice, e
+        // continua respondendo o mesmo.
+        std::fs::remove_file(root.join(".claude/spec/x/spec.html")).unwrap();
+        std::fs::remove_file(root.join(".claude/spec/index.ndjson")).unwrap();
         let again = plan(root, "x");
         assert_eq!(again["ok"], json!(true), "{again}");
         assert_eq!(again["from"], json!("plan"));
         assert!(again["id"].is_null(), "{again}");
+        assert!(root.join(".claude/spec/x/spec.html").is_file(), "a página volta");
+        let rebuilt = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
+        assert_eq!(rebuilt, index, "o índice volta igual");
     }
 
     /// Cada linha de cada pedido aparece na página da spec, sem exceção, as
