@@ -323,6 +323,38 @@ mod tests {
         }
     }
 
+    /// O pedido traz o texto de exatamente as skills que as tarefas nomeiam.
+    /// Uma skill que está na prateleira do subprojeto e que nenhuma tarefa
+    /// nomeia não entra: a escolha é sempre pela tarefa, nunca pelo caminho.
+    #[test]
+    fn only_the_skills_the_tasks_name_reach_the_request() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
+        write_skill(root, "apps/rt", "subtrair", "# Subtrair\n\nOutro molde da mesma pasta.\n");
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr);
+        assert!(built[0].text.contains("Um passo por linha."), "{}", built[0].text);
+        assert!(!built[0].text.contains("Outro molde da mesma pasta."), "{}", built[0].text);
+        assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
+    }
+
+    /// Um item revisto entra no pedido só na versão nova; a antiga fica fora.
+    #[test]
+    fn a_revised_item_reaches_the_request_only_in_its_new_version() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
+        let log = log_of(&[
+            ("limit", json!({"text": "O pedido cabe em 400 linhas.", "value": "400 linhas", "keys": ["pedido"]})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}], "skill": "somar"})),
+            ("limit", json!({"text": "O pedido cabe em 500 linhas.", "value": "500 linhas", "keys": ["pedido"], "replaces": 1})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr);
+        assert!(built[0].text.contains("O pedido cabe em 500 linhas."), "{}", built[0].text);
+        assert!(!built[0].text.contains("400 linhas"), "{}", built[0].text);
+    }
+
     /// A skill cujo arquivo de exemplo mudou no git depois dela sai marcada
     /// como a revisar; a que não mudou não sai marcada.
     #[test]
