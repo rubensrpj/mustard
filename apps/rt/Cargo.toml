@@ -44,11 +44,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 
-# The `otel-collector` / `diagnose-otel` ports need a local OTLP/JSON
-# receiver. `tiny_http` is a minimal blocking HTTP server with no tokio/async
-# runtime; events land in per-spec NDJSON via the event router (no SQLite).
-tiny_http = "0.12"
-
 # `artifact-update` probes external upstreams (crates.io API, skills.directory
 # registry) over HTTP. `ureq` is the workspace's blocking, runtime-free HTTP
 # client — the same one `mustard-cli` uses; no async runtime is pulled in.

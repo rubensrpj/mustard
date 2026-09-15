@@ -24,7 +24,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 107 declared variants + `help`, which clap generates at build time.
+/// 104 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "ac-add",
     "ac-amend",
@@ -45,7 +45,6 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "complete-spec",
     "context-slice",
     "dependency-precheck",
-    "diagnose-otel",
     "diff-context",
     "digest-adherence-finalize",
     "docs-stale-check",
@@ -78,8 +77,6 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "notebook",
     "open",
     "orient",
-    "otel-collector",
-    "otel-stop",
     "page",
     "pending",
     "pipeline-summary",

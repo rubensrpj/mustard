@@ -35,8 +35,6 @@
 //! port). Unlike `on` / `check` it does not read harness JSON from stdin: a
 //! `run` subcommand takes `clap` arguments and prints its own output, porting
 //! what used to be a standalone `bun` script under `templates/scripts/`.
-//! Wave 3 (economia-moat-unification) adds long-lived ingestion daemons under
-//! this face: `otel-collector`.
 //!
 //! ## Protocol parity with the JS hooks
 //!

@@ -6,51 +6,31 @@
 //! hook to merge, kept as its own module so the registry wiring is one-to-one.
 //! It triggers on `SessionEnd` and:
 //!
-//! 1. Kills this project's OTEL collector and removes its PID file.
-//! 2. Removes the statusline git cache from the temp dir.
-//! 3. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
+//! 1. Removes the statusline git cache from the temp dir.
+//! 2. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
 //!    states whose spec is already done.
-//! 4. Removes `.compact-state` files older than 24h.
-//! 5. Prunes telemetry NDJSON files (`.claude/spec/*/.events/*.ndjson`,
+//! 3. Removes `.compact-state` files older than 24h.
+//! 4. Prunes event NDJSON files (`.claude/spec/*/.events/*.ndjson`,
 //!    `.claude/.session/*/.events/*.ndjson`) older than the retention window.
-//! 6. Drains the local `rtk gain --json` ledger into the savings events.
-//! 7. Finalizes the per-session amendment window.
+//! 5. Drains the local `rtk gain --json` ledger into the savings events.
+//! 6. Finalizes the per-session amendment window.
 //!
 //! ## Why the order is load-bearing
 //!
 //! `SessionEnd` is the shortest hook budget the harness hands out (15 s in
 //! `plugin/hooks/hooks.json`); when it is exceeded the harness cancels the hook
-//! mid-flight and whatever had not run yet simply does not run. Every step here
-//! is cosmetic except the collector kill — see the OTEL note below — so the
-//! plan is split in two halves and declared once: [`PROMPT_STEPS`], which
-//! touches only paths known up front and spawns nothing but the collector kill
-//! ITSELF, then [`DEFERRED_STEPS`], which walk a subtree of unknown size or
-//! spawn a process that is not what the hook came here to do. [`cleanup_plan`]
+//! mid-flight and whatever had not run yet simply does not run. So the plan is
+//! split in two halves and declared once: [`PROMPT_STEPS`], which touches only
+//! paths known up front and spawns nothing, then [`DEFERRED_STEPS`], which walk
+//! a subtree of unknown size or spawn a process of their own. [`cleanup_plan`]
 //! chains them in that order and `observe` executes exactly that sequence, so
-//! the collector teardown — its own `kill` / `taskkill` spawn included, which
-//! on Windows is the costliest thing the first half does — is finished before
-//! anything else that can block has started.
-//!
-//! Read the split as "cheapest useful work first", not as "no processes until
-//! later": the one process the first half spawns is the payload the whole
-//! ordering exists to protect.
+//! the cheap, bounded work is finished before anything that can block has
+//! started.
 //!
 //! ## Contract shape
 //!
 //! Pure side effect — no verdict. `SessionCleanupObserver` is an [`Observer`] only.
 //!
-//! ## OTEL collector note
-//!
-//! `session_start_inject` spawns the OTEL collector (in
-//! [`crate::hooks::session::session_start_inject`]); this module tears it down on `SessionEnd`.
-//! Because there is one collector per machine on the OTLP port, [`clean_otel_pid`]
-//! now **kills** the process whose PID is in `.otel-collector.pid` before
-//! removing the file — leaving it alive would let the next project's telemetry
-//! bind to this project's lingering listener (cross-project contamination).
-//! The kill is signal-free (subprocess `taskkill`/`kill`, the crate forbids
-//! `unsafe`) and fail-open: a dead PID or a missing kill binary degrades to a
-//! warning and the PID file is still removed.
-
 use mustard_core::domain::model::event::ActorKind;
 use mustard_core::domain::economy::{
     self, sources::rtk as rtk_source, sources::IngestContext,
@@ -60,7 +40,6 @@ use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
 
@@ -222,66 +201,6 @@ fn clean_statusline_cache() {
     let _ = fs::remove_file(&cache);
 }
 
-/// Kill this project's OTEL collector (if any) and remove its PID file.
-///
-/// As of the cross-project telemetry-contamination fix, `SessionEnd` must
-/// actually terminate the collector process — not merely drop the PID file.
-/// There is one collector per machine on the OTLP port; leaving project A's
-/// collector alive when the user moves to project B means B's telemetry binds
-/// to A's lingering listener and lands in A's `telemetry.db`. Killing on
-/// SessionEnd guarantees the live collector always belongs to the active
-/// project. Fail-open: a kill failure (process already gone, no `taskkill`/
-/// `kill` on PATH) degrades to a warning and we still remove the PID file.
-fn clean_otel_pid(claude_dir: &Path) {
-    let harness_dir = claude_dir
-        .parent()
-        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
-        .and_then(|root| ClaudePaths::for_project(root).ok())
-        .map(|p| p.harness_dir());
-    let Some(harness_dir) = harness_dir else {
-        return;
-    };
-    let pid_file = harness_dir.join(".otel-collector.pid");
-    if let Some(pid) = read_pid(&pid_file) {
-        kill_pid(pid);
-    }
-    let _ = fs::remove_file(&pid_file);
-}
-
-/// Read a PID from `path`. Returns `None` for any IO/parse failure.
-fn read_pid(path: &Path) -> Option<u32> {
-    fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-/// Best-effort, signal-free process termination via a subprocess (the crate
-/// forbids `unsafe`, so no raw signal API). `cmd /C taskkill /F /PID` on
-/// Windows; `sh -c kill` on POSIX. Fail-open: any error is dropped — telemetry
-/// teardown must never abort session cleanup.
-fn kill_pid(pid: u32) {
-    let _ = spawn_kill(pid);
-}
-
-/// Spawn the platform kill command for `pid`, waiting for it to complete.
-fn spawn_kill(pid: u32) -> std::io::Result<()> {
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = Command::new("cmd");
-        c.args(["/C", &format!("taskkill /F /PID {pid}")]);
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = Command::new("sh");
-        c.args(["-c", &format!("kill {pid}")]);
-        c
-    };
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|_| ())
-}
-
 /// Pull every `rtk gain --json` rewrite into the `savings_records` table
 /// once per session.
 ///
@@ -406,16 +325,8 @@ struct CleanupTarget {
 }
 
 /// The half of the plan that touches only paths known up front: bounded work,
-/// no subtree walk, no directory of unknown size — and exactly ONE spawned
-/// process, the collector kill in [`kill_pid`] (`sh -c kill` on POSIX,
-/// `cmd /C taskkill` on Windows).
-///
-/// That spawn is not an exception to the rule, it IS the rule. On Windows it is
-/// the most expensive thing this half does, and paying it first is the entire
-/// reason the plan is split: a hook cancelled anywhere later has already done
-/// the one step whose omission is not cosmetic. Anything that reads this
-/// constant as "no processes here" is reading it backwards.
-const PROMPT_STEPS: &[fn(&CleanupTarget)] = &[step_otel_pid, step_statusline_cache];
+/// no subtree walk, no directory of unknown size, and no spawned process.
+const PROMPT_STEPS: &[fn(&CleanupTarget)] = &[step_statusline_cache];
 
 /// The half of the plan that walks a subtree of unknown size or spawns an
 /// external process that is NOT what the hook came here to do (`rtk`, which
@@ -428,12 +339,6 @@ const DEFERRED_STEPS: &[fn(&CleanupTarget)] = &[
     step_ingest_rtk_savings,
     step_amend_finalize,
 ];
-
-/// Kill this project's OTEL collector and drop its PID file — the only step
-/// whose omission is not cosmetic, hence first in the plan.
-fn step_otel_pid(target: &CleanupTarget) {
-    clean_otel_pid(&target.claude);
-}
 
 /// Drop the statusline git cache from the temp dir.
 fn step_statusline_cache(_target: &CleanupTarget) {
@@ -486,12 +391,8 @@ fn step_amend_finalize(target: &CleanupTarget) {
 /// [`DEFERRED_STEPS`].
 ///
 /// It is a named function rather than an expression written inline in
-/// `observe` because the order is the whole point of this module, and an order
-/// stated in one place is an order a test can hold. `otel_pid_is_cleaned_before_
-/// any_subprocess` asserts against THIS sequence, so swapping the two halves
-/// cannot pass unnoticed — before the extraction the review found exactly that
-/// hole: the test walked `PROMPT_STEPS` by hand, and flipping the chain in
-/// `observe` left it green.
+/// `observe` because the order is the whole point of this module, and it is
+/// stated in exactly one place.
 fn cleanup_plan() -> impl Iterator<Item = &'static fn(&CleanupTarget)> {
     PROMPT_STEPS.iter().chain(DEFERRED_STEPS)
 }
@@ -609,94 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn otel_pid_file_is_removed() {
-        let dir = tempdir().unwrap();
-        let harness = ClaudePaths::for_project(dir.path()).unwrap().harness_dir();
-        std::fs::create_dir_all(&harness).unwrap();
-        let pid = harness.join(".otel-collector.pid");
-        std::fs::write(&pid, "12345").unwrap();
-        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-        assert!(!pid.exists());
-    }
-
-    /// On `SessionEnd` the collector teardown is the FIRST thing cleanup
-    /// does — ahead of every subtree walk and every process that is not the
-    /// kill itself.
-    ///
-    /// The name means "before any subprocess" the way the AC means it: before
-    /// any subprocess that is not the collector kill. [`clean_otel_pid`] spawns
-    /// `sh -c kill` / `cmd /C taskkill` of its own (see [`kill_pid`]) — that
-    /// spawn is the payload the ordering exists to protect, not something it is
-    /// racing.
-    ///
-    /// Two assertions, because either one alone is not a lock:
-    ///
-    /// 1. `observe` — the shipped entry point, not a hand-rolled loop — really
-    ///    runs the whole plan: the PID file is gone AND the expired telemetry
-    ///    file the deferred half owns was reaped.
-    /// 2. The sequence `observe` consumes, [`cleanup_plan`], opens with exactly
-    ///    [`PROMPT_STEPS`] in order, `step_otel_pid` first.
-    ///
-    /// Assertion 2 is what makes flipping the chain to
-    /// `DEFERRED_STEPS.iter().chain(PROMPT_STEPS)` turn this test red — under
-    /// that flip assertion 1 alone stays green, which is precisely the hole
-    /// review found in the first cut of this test.
-    #[test]
-    fn otel_pid_is_cleaned_before_any_subprocess() {
-        let dir = tempdir().unwrap();
-        let paths = ClaudePaths::for_project(dir.path()).unwrap();
-
-        let harness = paths.harness_dir();
-        std::fs::create_dir_all(&harness).unwrap();
-        let pid = harness.join(".otel-collector.pid");
-        // A PID no live process can hold: the kill is a no-op, the removal is not.
-        std::fs::write(&pid, format!("{}", u32::MAX)).unwrap();
-
-        let events_dir = paths.spec_dir().join("some-spec").join(".events");
-        std::fs::create_dir_all(&events_dir).unwrap();
-        let ndjson = events_dir.join("old.ndjson");
-        std::fs::write(&ndjson, b"{\"event\":\"old\"}\n").unwrap();
-        // Past the retention window, so the deferred half must reap it.
-        let past_retention =
-            Duration::from_secs((TELEMETRY_RETENTION_DAYS as u64 + 1) * 24 * 60 * 60);
-        filetime_set(&ndjson, SystemTime::now() - past_retention).unwrap();
-
-        // 1 — through the real hook entry point.
-        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-        assert!(
-            !pid.exists(),
-            "observe() must tear the collector down and drop its PID file"
-        );
-        assert!(
-            !ndjson.exists(),
-            "observe() must also run the deferred half — an expired telemetry \
-             file survived, so the plan did not finish"
-        );
-
-        // 2 — and in that order. `cleanup_plan()` IS the sequence the loop in
-        // `observe` walks, so this holds the real execution order, not a copy
-        // of it.
-        let plan: Vec<&'static fn(&CleanupTarget)> = cleanup_plan().collect();
-        assert_eq!(
-            plan.len(),
-            PROMPT_STEPS.len() + DEFERRED_STEPS.len(),
-            "cleanup_plan() must run every declared step exactly once"
-        );
-        assert!(
-            std::ptr::fn_addr_eq(*plan[0], step_otel_pid as fn(&CleanupTarget)),
-            "the collector teardown must be the FIRST step cleanup executes"
-        );
-        for (i, declared) in PROMPT_STEPS.iter().enumerate() {
-            assert!(
-                std::ptr::fn_addr_eq(*plan[i], *declared),
-                "step {i} of the executed plan is not PROMPT_STEPS[{i}] — the \
-                 prompt half no longer leads, so a cancelled hook can lose the \
-                 collector kill"
-            );
-        }
-    }
-
-    #[test]
     fn observe_is_infallible_on_empty_project() {
         let dir = tempdir().unwrap();
         // No .claude dir at all — observe must not panic.
@@ -781,7 +594,7 @@ mod tests {
         let session_events = project
             .join(".claude")
             .join(".session")
-            .join("otel-x")
+            .join("sess-x")
             .join(".events");
         std::fs::create_dir_all(&session_events).unwrap();
         let old = session_events.join("old.ndjson");

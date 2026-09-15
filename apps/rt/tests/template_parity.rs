@@ -56,13 +56,6 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          the mustard-rt prefix there)",
     ),
     (
-        "diagnose-otel",
-        "OTEL half of the consolidated doctor report \
-         (commands/economy/otel/diagnose.rs); its only prose caller was the \
-         `/maint doctor` section, dropped by the four-door surface prune - a \
-         telemetry diagnostic with no scripted caller",
-    ),
-    (
         "docs-stale-check",
         "CLOSE gate 4 - run in-process by close-orchestrate and named (with \
          --skip-docs) in commands/mustard/close/SKILL.md; the CLI face is the \
@@ -268,13 +261,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "the slicer's SECOND input path; the CONTEXT.md slice is the documented \
          one and this adds a CLAUDE.md pass after it, described in the command's \
          own help",
-    ),
-    (
-        "diagnose-otel",
-        "expect-rows-after",
-        "the wait window of a telemetry diagnostic RUNTIME_WHITELIST already \
-         records as callerless - documenting the flag ahead of the command would \
-         document a road to nowhere",
     ),
     (
         "docs-stale-check",

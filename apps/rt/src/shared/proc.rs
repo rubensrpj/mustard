@@ -1,11 +1,9 @@
-//! `proc` — signal-free, cross-platform process/port primitives shared by both
+//! `proc` — signal-free, cross-platform process primitives shared by both
 //! the enforcement face (`hooks`) and the script face (`commands`).
 //!
-//! These were originally private helpers in `hooks::session::session_start_inject`
-//! (which spawns and reaps the OTEL collector). They are lifted here so a `run`
-//! command (`commands::economy::otel::stop`) can reuse the exact same tested kill
-//! machinery without a `commands -> hooks` layering inversion — `shared` is the
-//! one module both faces may depend on, and it never depends back.
+//! They live here rather than inside either face so neither has to depend on
+//! the other — `shared` is the one module both may depend on, and it never
+//! depends back.
 //!
 //! Every function is best-effort and fail-open: a missing tool on `PATH`, an
 //! empty result, or a kill error degrades to an `eprintln!` warning and an empty
@@ -241,74 +239,6 @@ fn append_missing(existing: &[PathBuf], candidates: Vec<PathBuf>) -> Option<std:
     std::env::join_paths(joined).ok()
 }
 
-/// Spawn `exe args…` as a detached, long-lived background daemon whose open
-/// handles are NOT inherited from this process.
-///
-/// This matters specifically when the spawner is a harness hook. A hook's
-/// stdout is a pipe Claude Code reads until EOF; a plain `Command::spawn` on
-/// Windows passes `bInheritHandles = TRUE`, so a long-lived child inherits a
-/// duplicate of that stdout pipe handle. The hook process itself can exit, but
-/// the pipe's write end stays open inside the daemon, EOF never arrives, and
-/// the harness hangs the entire session waiting for the hook's output (observed
-/// as a new session that freezes at "Initializing harness…" and must be
-/// killed). Routing the spawn through `cmd /C start "" /B` launches the daemon
-/// with `bInheritHandles = FALSE`, which breaks the inheritance — the canonical
-/// safe-Rust detach, since the crate forbids `unsafe` (so `SetHandleInformation`
-/// on the std handles is out). On Unix the `Stdio::null` redirects already
-/// replace the inherited fds with `/dev/null`, so a direct spawn carries no such
-/// leak.
-///
-/// Best-effort: returns the spawn error (a missing `cmd`, an exec failure) for
-/// the caller to log and fail open — the daemon is telemetry, never load-bearing.
-pub fn spawn_detached(exe: &Path, args: &[&str]) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        // PowerShell `Start-Process` launches the daemon via `CreateProcess`
-        // with `bInheritHandles = FALSE`, so the child inherits NONE of this
-        // process's handles — including the harness stdout pipe. (`cmd /C start
-        // /B` does NOT achieve this: with `/B` the child stays in the same
-        // console and still inherits the pipe, so the session keeps hanging —
-        // verified empirically.) `-WindowStyle Hidden` suppresses the new
-        // console window the launch would otherwise flash for a console app.
-        // The transient `powershell` process inherits the pipe but exits within
-        // ~0.5 s of launching the daemon, so EOF arrives promptly.
-        //
-        // Single quotes are PowerShell's literal string; a literal `'` inside a
-        // value is escaped by doubling it.
-        let q = |s: &str| s.replace('\'', "''");
-        let arg_list = args
-            .iter()
-            .map(|a| format!("'{}'", q(a)))
-            .collect::<Vec<_>>()
-            .join(",");
-        let script = if arg_list.is_empty() {
-            format!("Start-Process -FilePath '{}' -WindowStyle Hidden", q(&exe.display().to_string()))
-        } else {
-            format!(
-                "Start-Process -FilePath '{}' -ArgumentList {arg_list} -WindowStyle Hidden",
-                q(&exe.display().to_string())
-            )
-        };
-        Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
-    }
-    #[cfg(not(windows))]
-    {
-        Command::new(exe)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
-    }
-}
-
 /// Poll cadence of [`run_shell_with_deadline`]'s wait loop. `std` has no
 /// native wait-with-timeout, so the child is polled with `try_wait`; 50 ms is
 /// the historical cadence of both call sites this helper absorbed.
@@ -487,197 +417,6 @@ fn kill_tree(pid: u32) {
     let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
-/// Free the given OTLP port: find whatever process is listening on
-/// `127.0.0.1:<port>` and kill it. Best-effort and fail-open at every step.
-///
-/// Returns the PIDs it attempted to kill (already-dead or unkillable PIDs are
-/// still reported — the caller surfaces them for the human line). The
-/// idempotence checks live in the callers; this is the raw port-reap.
-pub fn free_port(port: u16) -> Vec<u32> {
-    let own = session_ancestry();
-    let pids: Vec<u32> = listening_pids(port)
-        .into_iter()
-        .filter(|pid| {
-            let protected = own.contains(pid);
-            if protected {
-                // Killing an ancestor kills the session this code runs INSIDE.
-                // Measured in the field (2026-08-19, WSL): the unfiltered lsof
-                // below listed the Claude process — an OTLP CLIENT of the very
-                // port being freed — and this loop SIGTERMed it, ending the
-                // session with exit 143 every few minutes for days.
-                eprintln!("proc: refusing to kill pid {pid} — it is this session's own ancestry");
-            }
-            !protected
-        })
-        .collect();
-    for &pid in &pids {
-        kill_pid(pid);
-    }
-    pids
-}
-
-/// The PID of this process and every ancestor above it, read from
-/// `/proc/<pid>/status` `PPid:` links. On Windows (no `/proc`) only the own
-/// PID is returned — the netstat query there already filters to LISTENING
-/// rows, so the ancestry can never appear in the kill list to begin with.
-///
-/// Fail-open: an unreadable link ends the walk with what was collected —
-/// a SHORTER protected set only ever under-protects, never blocks the reap.
-fn session_ancestry() -> std::collections::BTreeSet<u32> {
-    let mut protected = std::collections::BTreeSet::new();
-    let mut pid = std::process::id();
-    for _ in 0..32 {
-        if !protected.insert(pid) || pid <= 1 {
-            break;
-        }
-        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
-            break;
-        };
-        let Some(ppid) = status
-            .lines()
-            .find_map(|l| l.strip_prefix("PPid:"))
-            .and_then(|v| v.trim().parse::<u32>().ok())
-        else {
-            break;
-        };
-        pid = ppid;
-    }
-    protected
-}
-
-/// PIDs listening on `127.0.0.1:<port>`, parsed from a platform query. Empty
-/// on any failure (no tool on PATH, nothing listening, unparseable output).
-pub(crate) fn listening_pids(port: u16) -> Vec<u32> {
-    #[cfg(windows)]
-    {
-        // `netstat -ano` rows look like:
-        //   TCP    127.0.0.1:4318    0.0.0.0:0    LISTENING    12345
-        // The trailing column is the owning PID. Filter to LISTENING rows for
-        // our port and parse the last whitespace-separated token.
-        let query = format!("netstat -ano | findstr :{port} | findstr LISTENING");
-        let out = Command::new("cmd")
-            .args(["/C", &query])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        match out {
-            Ok(o) => parse_netstat_pids(&String::from_utf8_lossy(&o.stdout), port),
-            Err(e) => {
-                eprintln!("proc: netstat for port {port} failed ({e})");
-                Vec::new()
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        // `lsof -ti tcp:<port> -sTCP:LISTEN` prints one PID per line (TCP, no
-        // header) — the state filter is LOAD-BEARING: without it lsof lists
-        // every process with ANY endpoint on the port, which includes the OTLP
-        // CLIENTS shipping telemetry to the collector. The Claude session
-        // itself is such a client, and the unfiltered query is what had this
-        // reap kill the session it ran inside (the Windows branch above always
-        // filtered to LISTENING; only this branch had the hole).
-        let out = Command::new("sh")
-            .args(["-c", &lsof_listener_query(port)])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-        match out {
-            Ok(o) => parse_lsof_pids(&String::from_utf8_lossy(&o.stdout)),
-            Err(e) => {
-                eprintln!("proc: lsof for port {port} failed ({e})");
-                Vec::new()
-            }
-        }
-    }
-}
-
-/// Parse owning PIDs from `netstat -ano` output, keeping only LISTENING rows
-/// whose local address ends in `:<port>`. The PID is the final whitespace token.
-/// Pure string parse — unit-testable without spawning `netstat`.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
-fn parse_netstat_pids(text: &str, port: u16) -> Vec<u32> {
-    let suffix = format!(":{port}");
-    let mut pids = Vec::new();
-    for line in text.lines() {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        // Expect: PROTO LOCAL REMOTE STATE PID (at least 5 columns).
-        if cols.len() < 5 || !cols.iter().any(|c| c.eq_ignore_ascii_case("LISTENING")) {
-            continue;
-        }
-        // Local address is column 1; match on the :<port> suffix.
-        if !cols[1].ends_with(&suffix) {
-            continue;
-        }
-        if let Ok(pid) = cols[cols.len() - 1].parse::<u32>()
-            && !pids.contains(&pid) {
-                pids.push(pid);
-            }
-    }
-    pids
-}
-
-/// The exact shell query the Unix reap runs. A function so the test can pin
-/// the `-sTCP:LISTEN` state filter — the one token whose absence turns the
-/// reap into a session-killer (see [`free_port`]).
-#[cfg(not(windows))]
-fn lsof_listener_query(port: u16) -> String {
-    format!("lsof -ti tcp:{port} -sTCP:LISTEN")
-}
-
-/// Parse PIDs from `lsof -ti` output — one PID per line. Pure string parse —
-/// unit-testable without spawning `lsof`.
-///
-/// The `allow` belongs to THIS function and it drifted: `lsof_listener_query`
-/// was inserted between this doc comment and the function it describes, so both
-/// landed on the newcomer — which is itself `#[cfg(not(windows))]` and is
-/// stripped on Windows, taking the guard with it. On Windows the only remaining
-/// callers of `parse_lsof_pids` are the `#[cfg(not(windows))]` reap and the test
-/// module, so it went `dead_code` in the binary target, where the crate-root
-/// `#![allow(dead_code)]` does not apply. Invisible while warnings were merely
-/// warnings; the third thing `-D warnings` caught. Its twin
-/// [`parse_netstat_pids`] never lost its own guard, which is why the asymmetry
-/// never showed up on Linux.
-#[cfg_attr(not(any(unix, test)), allow(dead_code))]
-fn parse_lsof_pids(text: &str) -> Vec<u32> {
-    let mut pids = Vec::new();
-    for line in text.lines() {
-        if let Ok(pid) = line.trim().parse::<u32>()
-            && !pids.contains(&pid) {
-                pids.push(pid);
-            }
-    }
-    pids
-}
-
-/// Best-effort, signal-free process termination via a subprocess (the crate
-/// forbids `unsafe`). `cmd /C taskkill /F /PID` on Windows; `sh -c kill` on
-/// POSIX. Fail-open: any error degrades to a warning.
-pub fn kill_pid(pid: u32) {
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = Command::new("cmd");
-        c.args(["/C", &format!("taskkill /F /PID {pid}")]);
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = Command::new("sh");
-        c.args(["-c", &format!("kill {pid}")]);
-        c
-    };
-    if let Err(e) = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        eprintln!("proc: kill pid {pid} failed ({e})");
-    }
-}
-
 /// Whether a process with `pid` is alive — WHEN that question can be answered
 /// at all. `Some(true)` alive, `Some(false)` measured absent, `None` when the
 /// probe itself could not run (no `kill`/`tasklist` on `PATH`, an unknown
@@ -688,7 +427,6 @@ pub fn kill_pid(pid: u32) {
 /// pays a wasted spawn for the mistake; a caller that DELETES what an absent
 /// owner left behind pays with the live owner's directory. So the measurement
 /// lives here and the judgement lives in each consumer — see
-/// [`is_process_alive`] for the respawn reading, and
 /// `commands::maint::worktree_gc` for the reading that refuses to remove on an
 /// unmeasured answer.
 ///
@@ -740,17 +478,6 @@ pub fn process_liveness(pid: u32) -> Option<bool> {
         let _ = pid;
         None
     }
-}
-
-/// `true` if a process with `pid` is currently alive on the host.
-///
-/// The respawn reading of [`process_liveness`]: a probe that could not answer
-/// degrades to `false`, which simply forces a re-spawn — safe per the
-/// idempotence contract: the second collector will fail to bind the port and
-/// exit, leaving the first one running.
-#[must_use]
-pub fn is_process_alive(pid: u32) -> bool {
-    process_liveness(pid).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -868,64 +595,4 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
     }
 
-    #[test]
-    fn parse_netstat_pid_from_listening_row() {
-        // Real `netstat -ano` shape: PROTO LOCAL REMOTE STATE PID.
-        let text = "  TCP    127.0.0.1:4318    0.0.0.0:0    LISTENING    12345\r\n";
-        assert_eq!(parse_netstat_pids(text, 4318), vec![12345]);
-    }
-
-    #[test]
-    fn parse_netstat_ignores_other_ports_and_states() {
-        let text = "\
-  TCP    127.0.0.1:4318    0.0.0.0:0    LISTENING       12345\r\n\
-  TCP    127.0.0.1:9999    0.0.0.0:0    LISTENING       67890\r\n\
-  TCP    127.0.0.1:4318    127.0.0.1:55000  ESTABLISHED  24680\r\n";
-        // Only the LISTENING row on :4318 contributes; ESTABLISHED + :9999 drop.
-        assert_eq!(parse_netstat_pids(text, 4318), vec![12345]);
-    }
-
-    #[test]
-    fn parse_netstat_empty_on_no_match() {
-        assert!(parse_netstat_pids("", 4318).is_empty());
-        assert!(parse_netstat_pids("garbage line with no pid", 4318).is_empty());
-    }
-
-    /// The state filter is the whole fix: an unfiltered `lsof -ti tcp:<port>`
-    /// lists the port's CLIENTS too — the Claude session among them — and the
-    /// reap then kills the session it runs inside. This pins the token.
-    #[cfg(not(windows))]
-    #[test]
-    fn the_reap_query_asks_only_for_the_listener() {
-        assert!(lsof_listener_query(4318).contains("-sTCP:LISTEN"));
-    }
-
-    /// The session's own ancestry is never a reap target: the set holds this
-    /// process and walks upward to init, so a pid list that (through any
-    /// future query bug) names an ancestor is filtered before the kill.
-    ///
-    /// The full walk needs `/proc`, so only Linux can assert an ancestor was
-    /// reached; macOS (no procfs) and Windows degrade to protecting the own
-    /// PID alone — fail-open, and on those systems the platform query already
-    /// cannot name the session (Windows filters LISTENING; macOS's lsof takes
-    /// the same `-sTCP:LISTEN` filter this fix pins).
-    #[test]
-    fn the_session_ancestry_protects_self_and_parents() {
-        let own = session_ancestry();
-        assert!(own.contains(&std::process::id()), "self is protected");
-        #[cfg(target_os = "linux")]
-        assert!(own.len() >= 2, "at least one ancestor walked: {own:?}");
-    }
-
-    #[test]
-    fn parse_lsof_pids_one_per_line_dedup() {
-        let text = "12345\n67890\n12345\n";
-        assert_eq!(parse_lsof_pids(text), vec![12345, 67890]);
-    }
-
-    #[test]
-    fn parse_lsof_empty_on_blank() {
-        assert!(parse_lsof_pids("").is_empty());
-        assert!(parse_lsof_pids("\n  \n").is_empty());
-    }
 }

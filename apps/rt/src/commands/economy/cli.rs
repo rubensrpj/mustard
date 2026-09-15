@@ -64,36 +64,6 @@ pub enum EconomyCmd {
         #[arg(long)]
         spec: Option<String>,
     },
-    /// Run the local OTLP/JSON receiver for Claude Code native telemetry.
-    ///
-    /// Binds a loopback HTTP server on `MUSTARD_OTEL_PORT` (default 4318).
-    /// Metrics/logs project into `claude_code_otel` (mustard.db); traces land
-    /// span-level token usage as `run_usage` rows in telemetry.db via the
-    /// telemetry writer (rows stamped with attribution at write time). Runs
-    /// until a shutdown signal — the harness spawns it as a long-lived child
-    /// via [`crate::hooks::session::session_start_inject`].
-    #[command(display_order = 38)]
-    OtelCollector,
-    /// Stop the local OTEL collector for this project.
-    ///
-    /// Resolves the OTLP port from `MUSTARD_OTEL_PORT` (default 4318), kills
-    /// whatever process is listening on it, and deletes the stale
-    /// `.otel-collector.pid` file under `<project>/.claude/.harness/`. Killing
-    /// by port (not by the drift-prone PID file) is the reliable teardown. Used
-    /// by `install.ps1` before a reinstall so the previous daemon releases its
-    /// exclusive lock on `mustard-rt.exe`. Fully fail-open; never exits non-zero.
-    #[command(display_order = 39)]
-    OtelStop,
-    /// End-to-end health check of the Mustard ↔ Claude Code OTEL pipeline.
-    #[command(display_order = 40)]
-    DiagnoseOtel {
-        /// Emit the machine-readable JSON report.
-        #[arg(long)]
-        json: bool,
-        /// Wait `Xs`/`Xms`, then assert the row count grew (exit 1 on fail).
-        #[arg(long = "expect-rows-after")]
-        expect_rows_after: Option<String>,
-    },
 }
 
 /// Dispatch one `economy`-family `run` subcommand.
@@ -121,11 +91,5 @@ pub fn dispatch(cmd: EconomyCmd) {
             }
             economy::metrics_wave_status::run(&argv);
         }
-        EconomyCmd::OtelCollector => economy::otel::collector::run(),
-        EconomyCmd::OtelStop => economy::otel::stop::run(),
-        EconomyCmd::DiagnoseOtel {
-            json,
-            expect_rows_after,
-        } => economy::otel::diagnose::run(json, expect_rows_after.as_deref()),
     }
 }

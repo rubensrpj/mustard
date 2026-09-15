@@ -19,14 +19,12 @@
 //!
 //! ## Submodules
 //!
-//! - [`otel`] — parses OTLP/JSON `traces` payloads into [`SpanRecord`]s.
 //! - [`rtk`] — invokes the local `rtk` binary and maps `rtk gain --json` into
 //!   [`SavingsRecord`]s.
 //!
 //! [`SpanRecord`]: super::model::SpanRecord
 //! [`SavingsRecord`]: super::model::SavingsRecord
 
-pub mod otel;
 pub mod rtk;
 
 /// Per-call context every adapter needs to attribute its records.

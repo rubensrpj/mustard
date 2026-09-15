@@ -46,7 +46,7 @@ fn hook_description(name: &str) -> &'static str {
         "boundary_gate" => "Flags edits outside the active spec's declared boundary (sensitive-file denies live in settings permissions.deny)",
         "post_edit" => "Auto-formats by extension; auto-marks Checklist items; guard-verify; pipeline-phase events",
         "session_start_inject" => "Bootstraps event bus; runs spec-hygiene; injects top-N knowledge patterns",
-        "session_cleanup_observer" => "Stops the OTEL collector; prunes old compact-state and telemetry files",
+        "session_cleanup_observer" => "Prunes old compact-state and event files",
         "prompt_submit_inject" => "Archives pending closed-followup specs on a new pipeline command",
         _ => "(no description)",
     }

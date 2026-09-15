@@ -26,7 +26,7 @@ pub enum MaintCmd {
     /// Maintainer-side: reads `apps/cli/templates/.artifacts.json` and probes
     /// each external upstream. Fail-open — network errors degrade an artifact
     /// to `unknown` and never fail the command.
-    #[command(display_order = 48)]
+    #[command(display_order = 45)]
     ArtifactUpdate {
         /// Probe upstreams and emit the JSON freshness report (the default).
         #[arg(long)]
@@ -50,7 +50,7 @@ pub enum MaintCmd {
     /// (default 7). Dry-run by default; `--apply` is required to mutate the
     /// filesystem. Emits `pipeline.economy.operation.invoked` to the harness
     /// event store.
-    #[command(display_order = 54)]
+    #[command(display_order = 51)]
     WorktreeGc {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -77,7 +77,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 100)]
+    #[command(display_order = 97)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -106,7 +106,7 @@ pub enum MaintCmd {
     /// `packages/*/.claude/`. `--scope all` adds the user-global
     /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
     /// `state: "skipped"`). Emits a pretty JSON report.
-    #[command(display_order = 55)]
+    #[command(display_order = 52)]
     Unhook {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -124,7 +124,7 @@ pub enum MaintCmd {
     /// by an older build, rename the newest `settings.json.disabled*` snapshot
     /// back. Volatile state directories that `unhook` wiped are left alone —
     /// the runtime regenerates them on the next run. Emits a pretty JSON report.
-    #[command(display_order = 56)]
+    #[command(display_order = 53)]
     Rehook {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -141,7 +141,7 @@ pub enum MaintCmd {
     /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
     /// every step — exit code is always 0.
     #[command(name = "claude-dir-prune")]
-    #[command(display_order = 64)]
+    #[command(display_order = 61)]
     ClaudeDirPrune {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -159,7 +159,7 @@ pub enum MaintCmd {
     },
     /// Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
     #[command(name = "adapt-cursor")]
-    #[command(display_order = 70)]
+    #[command(display_order = 67)]
     AdaptCursor {
         /// Repo root override.
         #[arg(long)]
@@ -170,7 +170,7 @@ pub enum MaintCmd {
     },
     /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 71)]
+    #[command(display_order = 68)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -178,7 +178,7 @@ pub enum MaintCmd {
     },
     /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 72)]
+    #[command(display_order = 69)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -200,7 +200,7 @@ pub enum MaintCmd {
     /// text comes back under `preserved` because there was nothing left to
     /// write. The legacy planted-orchestrator footprint is migrated away.
     /// Emits the `UpsertReport` as deterministic pretty JSON.
-    #[command(display_order = 44)]
+    #[command(display_order = 41)]
     Upsert {},
 }
 

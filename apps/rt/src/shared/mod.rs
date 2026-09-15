@@ -33,9 +33,8 @@
 //!   API over an injectable transport, the PAT from `AZURE_DEVOPS_EXT_PAT` or
 //!   the git credential vault, every URL derived from the `origin` remote —
 //!   and deliberately no merge operation.
-//! - [`proc`] — signal-free, cross-platform process/port primitives (kill by
-//!   port, liveness probe) shared by the collector-spawning hook and the
-//!   collector-stopping `run` command, plus [`proc::run_shell_with_deadline`]
+//! - [`proc`] — signal-free, cross-platform process primitives (the liveness
+//!   probe `worktree_gc` reads) plus [`proc::run_shell_with_deadline`]
 //!   — the ONE shell-command runner that drains both pipes concurrently and
 //!   waits under a deadline, shared by `verify-pipeline` and `qa-run`.
 //! - [`translate`] — fail-open client for the optional `mustard-translate`

@@ -65,23 +65,6 @@
 //! itself could not reach past it, and three went red on a box mid-upgrade
 //! while staying green on the runner, where no plugin is installed at all.
 //!
-//! ## OTEL collector spawn
-//!
-//! `harness-init.js` historically spawned an OTEL collector subprocess. With
-//! the port to Rust complete (`mustard-rt run otel-collector`) the spawn is now
-//! handled in-binary here: [`spawn_otel_collector`] detaches the child through
-//! [`crate::shared::proc::spawn_detached`], which on Windows routes via
-//! `cmd /C start "" /B` so the long-lived collector does NOT inherit this
-//! hook's stdout pipe — a plain `Command::spawn` would, leaving the pipe's
-//! write end open in the daemon so the harness never sees EOF and hangs the
-//! session. The collector authors its own
-//! `<project>/.claude/.harness/.otel-collector.pid` after binding the port, so
-//! the detached spawn (which cannot observe the real PID) still feeds the
-//! idempotence check: a second `SessionStart` finds the PID file, sees the
-//! process still up via [`is_process_alive`], and skips the spawn. Every
-//! failure path is fail-open: a missing exe or a spawn error is logged via
-//! `eprintln!` and the `SessionStart` payload continues unmodified.
-//!
 //! ## Profile gate
 //!
 //! `harness-init` / `spec-hygiene` each called
@@ -210,115 +193,6 @@ fn prune_old_sessions(sessions_dir: &Path) {
 }
 
 // ===========================================================================
-// OTEL collector spawn
-// ===========================================================================
-
-/// File where the OTEL collector records its PID, under the project's harness
-/// directory. The collector authors it on startup (after binding the port); this
-/// hook only reads it for the idempotence + rebuild checks, and `session_cleanup`
-/// removes it on `SessionEnd`. Single source of truth lives in the OTEL module.
-const OTEL_PID_FILE: &str = crate::commands::economy::otel::PID_FILENAME;
-
-/// Spawn the local OTEL collector detached, write its PID, and skip if a live
-/// PID file is already present (idempotent across `SessionStart` invocations).
-///
-/// Fail-open at every step: a missing `current_exe`, an unwritable PID file,
-/// or a spawn error degrades to an `eprintln!` warning and the `SessionStart`
-/// payload continues unmodified. Telemetry is never load-bearing.
-fn spawn_otel_collector(cwd: &str) {
-    let pid_path = harness_dir(cwd).join(OTEL_PID_FILE);
-
-    // Idempotence + rebuild detection: if a previous SessionStart spawned the
-    // collector and the process is still alive, normally we skip. BUT a stale
-    // daemon from an older `mustard-rt.exe` build keeps an exclusive file lock
-    // on the binary that traps any subsequent `cargo test`/`cargo build`. So
-    // compare the running exe mtime with the PID-file mtime: if the exe is
-    // newer than the PID file, a rebuild has happened since the spawn — kill
-    // the stale daemon and respawn fresh. Otherwise the existing daemon is
-    // current; honour the idempotence contract and skip.
-    if let Some(existing) = read_pid(&pid_path)
-        && crate::shared::proc::is_process_alive(existing) {
-            if exe_rebuilt_since_pid_file(&pid_path) {
-                eprintln!(
-                    "session_start: OTEL collector PID {existing} predates current exe; killing stale daemon and respawning"
-                );
-                crate::shared::proc::kill_pid(existing);
-            } else {
-                return;
-            }
-        }
-
-    // Cross-project takeover: a previous project collector may still be
-    // holding the OTLP port (its SessionEnd may not have fired, or a kill may
-    // have failed). Free the port before spawning, otherwise THIS project
-    // collector fails to bind and the foreign listener silently captures this
-    // project telemetry. Best-effort, fail-open.
-    free_otel_port();
-
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("session_start: current_exe failed ({e}); skipping OTEL collector spawn");
-            return;
-        }
-    };
-
-    // Detached spawn (`cmd /C start` on Windows): a plain child would inherit
-    // this hook stdout pipe and hang the whole session — see
-    // `shared::proc::spawn_detached`. The collector writes its own PID file
-    // after it binds the port, so there is no PID to capture or persist here.
-    if let Err(e) = crate::shared::proc::spawn_detached(&exe, &["run", "otel-collector"]) {
-        eprintln!("session_start: spawn `mustard-rt run otel-collector` failed ({e})");
-    }
-}
-
-/// Read a PID from `path`. Returns `None` for any IO/parse failure.
-fn read_pid(path: &Path) -> Option<u32> {
-    fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-/// `true` when the running `mustard-rt` executable is more recent than the
-/// PID file at `pid_path`. Used to detect a rebuild after the last spawn so
-/// the daemon (which holds an exclusive lock on `target/debug/mustard-rt.exe`
-/// on Windows) does not strand subsequent `cargo test`/`cargo build` runs.
-/// Fail-open: any IO error degrades to `false`, preserving prior idempotent
-/// behaviour for callers.
-#[must_use]
-fn exe_rebuilt_since_pid_file(pid_path: &Path) -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let Ok(exe_meta) = std::fs::metadata(&exe) else {
-        return false;
-    };
-    let Ok(pid_meta) = std::fs::metadata(pid_path) else {
-        return false;
-    };
-    let Ok(exe_mtime) = exe_meta.modified() else {
-        return false;
-    };
-    let Ok(pid_mtime) = pid_meta.modified() else {
-        return false;
-    };
-    exe_mtime > pid_mtime
-}
-
-/// Free the OTLP port so THIS project's collector can bind it. Finds whatever
-/// process is listening on `127.0.0.1:<port>` and kills it. The port is
-/// resolved from the same `resolve_port()` the collector uses (respects
-/// `MUSTARD_OTEL_PORT`), so the takeover targets the exact port the new
-/// collector will bind. Best-effort and fail-open at every step — a missing
-/// `netstat`/`lsof`/`kill`, an empty result, or a kill error degrades to a
-/// warning and the spawn proceeds (a duplicate that fails to bind exits
-/// cleanly). The idempotence check above already short-circuits when this
-/// project's own healthy collector owns the port, so this only ever reaps a
-/// foreign or dead listener.
-fn free_otel_port() {
-    let port = crate::commands::economy::otel::collector::resolve_port();
-    crate::shared::proc::free_port(port);
-}
-
-// ===========================================================================
 // spec-hygiene — flat layout; no-op
 // ===========================================================================
 
@@ -389,10 +263,6 @@ fn session_start_core(
     }
     let cwd = ctx.project_dir_or_cwd(input);
     run_harness_init(input, &cwd);
-    // The OTEL collector is no longer
-    // an "out-of-scope spawn" — fire it detached and let `session_cleanup`
-    // remove the PID file on `SessionEnd`.
-    spawn_otel_collector(&cwd);
     run_spec_hygiene(&cwd);
     // Collect orphan worktrees — those under `<repo>/.claude/worktrees/`
     // whose name is not a work unit's `{base}_…`, plus the removal-proof
@@ -1120,10 +990,6 @@ mod tests {
             .unwrap();
         assert!(dir.path().join(".claude/spec/blocked-spec").exists());
     }
-
-    // --- port-takeover PID parsing -----------------------------------------
-    // The netstat/lsof parsers (and their tests) now live in the neutral
-    // `crate::shared::proc` module, shared with `run otel-stop`.
 
     // --- terrain injection ---------------------------------------------------
 

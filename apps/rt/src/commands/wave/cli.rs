@@ -75,7 +75,7 @@ pub enum WaveCmd {
         spec_dir: Option<String>,
     },
     /// Audit dispatch-parallel waves for `## Files` overlap inside a wave-plan.
-    #[command(display_order = 79)]
+    #[command(display_order = 76)]
     WaveOverlapCheck {
         /// Path to the spec directory. Also accepts a `.../spec.md` path or a
         /// bare slug. `--spec` / `--from-spec` are hidden aliases.
@@ -100,7 +100,7 @@ pub enum WaveCmd {
     /// BEFORE any dir is deleted. Reuses `is_heading` / `write_atomic` /
     /// the wave-scaffold renderers.
     #[command(name = "wave-collapse")]
-    #[command(display_order = 45)]
+    #[command(display_order = 42)]
     WaveCollapse {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]

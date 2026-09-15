@@ -97,7 +97,7 @@ pub enum RunCmd {
     /// Installation health, docs-staleness and language audits.
     #[command(flatten)]
     Doctor(doctor::cli::DoctorCmd),
-    /// Token economy, metrics and OTEL telemetry.
+    /// Token economy and metrics.
     #[command(flatten)]
     Economy(economy::cli::EconomyCmd),
     /// The harness event stream: emit, project, verify.

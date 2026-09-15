@@ -120,7 +120,7 @@ pub enum SpecCmd {
     /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
     /// progress, extracts a one-line resumo.
     /// Output is either a markdown table (default) or a JSON document.
-    #[command(display_order = 49)]
+    #[command(display_order = 46)]
     ActiveSpecs {
         /// Output format: `table` (default) or `json`.
         #[arg(long, default_value = "table")]
@@ -138,7 +138,7 @@ pub enum SpecCmd {
     /// materialised by `wave-scaffold`. The narrative is written in the
     /// project's text language (`mustard.json` `language.text`). `--signals` is
     /// a free-form comma-separated list embedded in `spec.md` as a comment.
-    #[command(display_order = 57)]
+    #[command(display_order = 54)]
     SpecDraft {
         /// Free-text intent — the spec TITLE, and the last-resort slug seed.
         #[arg(long)]
@@ -220,7 +220,7 @@ pub enum SpecCmd {
     /// `mustard_core::domain::scan::Scan::spec`. Invoke as
     /// `mustard-rt run scan spec --entity <Name>`.
     #[command(name = "scan-spec")]
-    #[command(display_order = 58)]
+    #[command(display_order = 55)]
     ScanSpec {
         /// Entity/unit to create (substitutes `<Name>` in the grain recipe).
         #[arg(long)]
@@ -242,7 +242,7 @@ pub enum SpecCmd {
     /// by the user's answer to the approval question, which the witness
     /// records.
     #[command(name = "approve-spec")]
-    #[command(display_order = 67)]
+    #[command(display_order = 64)]
     ApproveSpec {
         /// Spec slug under `.claude/spec/` to approve.
         #[arg(long)]
@@ -257,7 +257,7 @@ pub enum SpecCmd {
     },
     /// Create a sub-spec linked to a parent spec for a tactical fix.
     #[command(name = "tactical-fix-create")]
-    #[command(display_order = 68)]
+    #[command(display_order = 65)]
     TacticalFixCreate {
         /// Parent spec slug (already created in `.claude/spec/`).
         #[arg(long)]
@@ -274,7 +274,7 @@ pub enum SpecCmd {
     /// events. Emits one `tactical_fix.proposed` event per new candidate;
     /// never scaffolds a sub-spec, so nothing is approved without the user.
     #[command(name = "tactical-fix-detect")]
-    #[command(display_order = 69)]
+    #[command(display_order = 66)]
     TacticalFixDetect {
         /// Spec whose review/qa events are scanned for candidates.
         #[arg(long)]
@@ -291,7 +291,7 @@ pub enum SpecCmd {
     /// without anyone hand-formatting a bullet. A blank instruction is refused
     /// and nothing is written.
     #[command(name = "change-request")]
-    #[command(display_order = 80)]
+    #[command(display_order = 77)]
     ChangeRequest {
         /// Spec slug under `.claude/spec/`. Omitted: the session→spec marker,
         /// then the active-spec fallback.
@@ -312,7 +312,7 @@ pub enum SpecCmd {
     /// A decision the conversation settles is written down WHEN it is settled —
     /// the only moment its reason is still known.
     #[command(name = "material-add")]
-    #[command(display_order = 97)]
+    #[command(display_order = 94)]
     MaterialAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -372,7 +372,7 @@ pub enum SpecCmd {
     /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
     /// the unrelated session-end amendment window.
     #[command(name = "ac-amend")]
-    #[command(display_order = 82)]
+    #[command(display_order = 79)]
     AcAmend {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -433,7 +433,7 @@ pub enum SpecCmd {
     /// to the proof ledger's `additions`. A wave spec carries no criterion
     /// text — `--wave N` names the wave that will be judged by the new id.
     #[command(name = "ac-add")]
-    #[command(display_order = 83)]
+    #[command(display_order = 80)]
     AcAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -493,7 +493,7 @@ pub enum SpecCmd {
     /// `already-routed` when the same decision is restated, and refuses a
     /// different one rather than overwriting a decision in silence.
     #[command(name = "mark-finding")]
-    #[command(display_order = 92)]
+    #[command(display_order = 89)]
     MarkFinding {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -523,7 +523,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 99)]
+    #[command(display_order = 96)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -544,7 +544,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 101)]
+    #[command(display_order = 98)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
