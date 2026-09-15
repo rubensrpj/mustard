@@ -52,8 +52,7 @@ pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Vec<Wave
 }
 
 /// Os números das ondas do plano, em ordem.
-#[must_use]
-pub fn waves_of(log: &SpecLog) -> Vec<u64> {
+fn waves_of(log: &SpecLog) -> Vec<u64> {
     let mut numbers: BTreeSet<u64> = BTreeSet::new();
     for event in log.block(BlockQuery::Block(Block::Waves)) {
         if event.event_type == "wave"
@@ -159,8 +158,7 @@ fn one(
 }
 
 /// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
-#[must_use]
-pub fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
+fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for task in log.block(BlockQuery::Wave(wave)).iter().filter(|e| e.event_type == "task") {
         let files = task.fields.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -175,8 +173,7 @@ pub fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
-#[must_use]
-pub fn skills_named(log: &SpecLog, wave: u64) -> Vec<String> {
+fn skills_named(log: &SpecLog, wave: u64) -> Vec<String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     for task in log.block(BlockQuery::Wave(wave)).iter().filter(|e| e.event_type == "task") {
         if let Some(name) = task.str_field("skill").map(str::trim).filter(|s| !s.is_empty()) {
