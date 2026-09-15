@@ -921,16 +921,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("doc.col.criterion", Locale::EnUs) => "When… then…",
         ("doc.col.wave", Locale::PtBr) => "Onda",
         ("doc.col.wave", Locale::EnUs) => "Wave",
-        ("doc.col.proof", Locale::PtBr) => "Hoje",
-        ("doc.col.proof", Locale::EnUs) => "Today",
-        ("doc.proof.red", Locale::PtBr) => "falha provada",
-        ("doc.proof.red", Locale::EnUs) => "failure proven",
-        ("doc.proof.confirmed", Locale::PtBr) => "confirmado",
-        ("doc.proof.confirmed", Locale::EnUs) => "confirmed",
-        ("doc.proof.exempt", Locale::PtBr) => "isento",
-        ("doc.proof.exempt", Locale::EnUs) => "exempt",
-        ("doc.proof.none", Locale::PtBr) => "sem prova",
-        ("doc.proof.none", Locale::EnUs) => "not proven",
         ("doc.waves.lead", Locale::PtBr) => {
             "As skills são os moldes que o agente de cada onda carrega antes de escrever os \
              arquivos que elas governam. A lista sai do cruzamento dos arquivos da onda com \
@@ -3284,7 +3274,6 @@ mod tests {
         for key in [
             "doc.section.where",
             "doc.step.plan.name",
-            "doc.proof.red",
             "doc.next.approve",
             "doc.footer",
         ] {

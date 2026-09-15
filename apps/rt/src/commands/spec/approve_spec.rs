@@ -41,9 +41,8 @@
 //! Every emit is best-effort (the underlying `emit_pipeline::run` / `route::emit`
 //! swallow store/IO errors). The command never panics on a DB/IO error; it
 //! prints a JSON report `{"ok":true,"spec":"<name>","approved":true,
-//! "resumed":<bool>}` on success (mirroring the report style of
-//! `tactical-fix-create`), or `{"ok":false,"error":"..."}` on a real failure
-//! (an empty spec name).
+//! "resumed":<bool>}` on success, or `{"ok":false,"error":"..."}` on a real
+//! failure (an empty spec name).
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -63,7 +62,7 @@ pub struct ApproveSpecOpts {
     pub resume: bool,
 }
 
-/// JSON success report. Mirrors the `tactical-fix-create` style (flat, typed).
+/// JSON success report — flat and typed.
 ///
 /// `witness` / `witnessAt` echo the approval the spec's state records — the
 /// question, the option the user chose, and when the witness recorded it. The
@@ -403,18 +402,16 @@ struct Refused {
 }
 
 /// The approval preconditions of `approve-spec` besides the user's own
-/// gesture — the recorded proof of the criteria and the authored narrative.
-/// With `check_approval`, the user's approved state joins them.
+/// gesture — the open survey points and the authored narrative. With
+/// `check_approval`, the user's approved state joins them.
 ///
 /// `None` when nothing is unmet; otherwise the aggregated message and what
-/// the mode makes of it. The acceptance-criteria proof is evaluated OUTSIDE
-/// the mode branch, on purpose: it is unconditional, and an unmet proof always
-/// Blocks. `MUSTARD_APPROVAL_MODE` governs the approval precondition and
-/// nothing else — strict Blocks, warn Warns, off mutes it.
+/// the mode makes of it. `MUSTARD_APPROVAL_MODE` governs the approval
+/// precondition and nothing else — strict Blocks, warn Warns, off mutes it.
 ///
-/// Os pontos do levantamento ainda abertos barram sempre, como a prova dos
-/// critérios: a variável do modo não desliga a trava. A lista é a mesma da
-/// passagem para o plano (`survey::open_points`).
+/// Os pontos do levantamento ainda abertos barram sempre: a variável do modo
+/// não desliga a trava. A lista é a mesma da passagem para o plano
+/// (`survey::open_points`).
 fn preconditions(
     root: &str,
     spec: &str,
@@ -468,12 +465,9 @@ fn open_points_line(root: &str, spec: &str) -> Option<String> {
 /// precondition holds: the user's own approval, born from an act the model
 /// cannot forge (the witness recording the user's real choice of "Aprovar" in
 /// the approval question). A background job (no user, no answer, no approved state) halts
-/// cleanly here and the spec stays in PLAN instead of auto-approving. A THIRD
-/// precondition joins them, unconditionally: every non-exempt acceptance
-/// criterion must carry a PROVEN record in `<spec>/ac-proof.json` for the
-/// command it carries today (see [`proof_state`] — fail-CLOSED). All three are
-/// evaluated TOGETHER so one refusal names every unmet precondition with its
-/// remedy.
+/// cleanly here and the spec stays in PLAN instead of auto-approving. Every
+/// precondition is evaluated TOGETHER with it, so one refusal names each unmet
+/// one with its remedy.
 fn approve_at(
     root: &str,
     opts: &ApproveSpecOpts,

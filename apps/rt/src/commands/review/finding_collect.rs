@@ -1,45 +1,32 @@
-//! `mustard-rt run finding-collect` — seed `meta.json#findings` from the two
-//! producers that already wrote their discoveries to disk.
+//! `mustard-rt run finding-collect` — seed `meta.json#findings` from the
+//! producer that already wrote its discoveries to disk.
 //!
 //! # Why a collector rather than a hand-written list
 //!
-//! A finding is a verified discovery made INSIDE a work unit, and this project
-//! has exactly two machines that produce them today. The reviewer subagent
-//! writes `<spec>/review/findings*.md`; the acceptance-criteria proof ledger
-//! writes `<spec>/ac-proof.json`, where the `removal` column already names the
-//! two discoveries it makes about a criterion — [`Removal::Survived`] (the
-//! criterion stayed green with the work torn out, so it verifies something the
-//! work did not do) and [`Removal::EvidenceRemoved`] (the strip took the
-//! criterion's own evidence with it, a declared coverage gap). Both files are
-//! machine-readable and both are read by nobody.
+//! A finding is a verified discovery made INSIDE a work unit, and the reviewer
+//! subagent is the machine that produces them: it writes
+//! `<spec>/review/findings*.md`, a machine-readable file that is read by
+//! nobody.
 //!
-//! Asking the model to retype either of them into a third place reintroduces
-//! exactly the loss the pipe exists to remove: what the hand does not retype is
-//! gone. So the seeding is DETERMINISTIC — this module reads the files, and the
-//! only thing a human ever writes is the finding's DESTINATION.
-//!
-//! Both producers enter through the SAME gate for the same reason. A collector
-//! that read only the reviewer's markdown would leave the ledger exactly as it
-//! is, and one that read only the ledger would leave the reviewer. The defect is
-//! the pipe with no outlet, not either source.
+//! Asking the model to retype it into a second place reintroduces exactly the
+//! loss the pipe exists to remove: what the hand does not retype is gone. So
+//! the seeding is DETERMINISTIC — this module reads the files, and the only
+//! thing a human ever writes is the finding's DESTINATION. The defect this
+//! closes is the pipe with no outlet, not the source.
 //!
 //! # A finding is a DISCOVERY, never the file that carries it
 //!
-//! The identity of a finding is its statement, not its container. Both producers
-//! REWRITE their file in place — `review_result` overwrites `review/findings.md`
-//! on every round, and the proof pass rewrites `ac-proof.json` — so an id taken
-//! from the file name (or from the criterion id alone) would hand round two's
-//! discovery the destination somebody declared for round one's. That is the
-//! opposite of what a record is for: a decision would be inherited by a finding
-//! nobody ever read.
+//! The identity of a finding is its statement, not its container. The producer
+//! REWRITES its file in place — `review_result` overwrites `review/findings.md`
+//! on every round — so an id taken from the file name alone would hand round
+//! two's discovery the destination somebody declared for round one's. That is
+//! the opposite of what a record is for: a decision would be inherited by a
+//! finding nobody ever read.
 //!
 //! So an id is `<producer's own name>-<fingerprint of the statement>`: the
-//! reviewer's file stem or the criterion id, which keeps the finding walkable
-//! back to its source, plus a digest of what was actually found. A different
-//! discovery under the same file, or under the same criterion id, is a DIFFERENT
-//! finding and is born open. A criterion that moves from `survived` to
-//! `evidence-removed` is likewise a new finding, because the removal column is
-//! part of the fingerprint: the two columns say different things about it.
+//! reviewer's file stem, which keeps the finding walkable back to its source,
+//! plus a digest of what was actually found. A different discovery under the
+//! same file is a DIFFERENT finding and is born open.
 //!
 //! A reviewer's file carries as many findings as the reviewer itemised, and each
 //! one becomes its OWN record — see [`review_statements`]. One file, one record
@@ -51,8 +38,8 @@
 //! [`collect`] reconciles rather than overwrites. A finding whose destination
 //! was already declared keeps it across every later collection — that decision
 //! is the one thing on the record no machine can reproduce, and it survives even
-//! when the producer goes quiet: a file rewritten between rounds, or a proof pass
-//! not re-taken, must not delete the decision along with the discovery. A finding
+//! when the producer goes quiet: a file rewritten between rounds must not
+//! delete the decision along with the discovery. A finding
 //! nobody had decided about, whose source stopped reporting it, IS dropped —
 //! there is nothing on that record worth keeping. A new one enters with no
 //! destination at all, which is the OPEN position [`FindingItem::is_open`]
@@ -108,9 +95,9 @@ const REVIEW_ID_PREFIX: &str = "F-";
 
 /// How many hex characters of the statement's SHA-256 close an id.
 ///
-/// Eight, where the sibling content-id in `tactical_fix_detect` takes sixteen,
-/// because this id is typed back by a HUMAN into a `mark-finding` command and it
-/// only has to be unique inside one spec's finding list — not across a corpus.
+/// Eight, because this id is typed back by a HUMAN into a `mark-finding`
+/// command and it only has to be unique inside one spec's finding list — not
+/// across a corpus.
 const FINGERPRINT_HEX_CHARS: usize = 8;
 
 /// The severity words the reviewer agent's own contract publishes
@@ -130,9 +117,8 @@ const FINDING_WORD: &str = "finding";
 const SENTENCE_WORDS: usize = 2;
 
 /// Upper bound, in characters, on a statement lifted out of a reviewer's
-/// markdown. The ledger's own reason is NOT bounded: this crate authored it as
-/// one finished sentence, while a findings file is arbitrary prose whose first
-/// line can be a whole paragraph.
+/// markdown: a findings file is arbitrary prose whose first line can be a
+/// whole paragraph.
 const STATEMENT_MAX_CHARS: usize = 240;
 
 /// No spec was named, so nothing could be collected.
@@ -160,7 +146,10 @@ pub(crate) struct FindingCollectReport {
     pub spec: String,
     /// How many findings came from `review/findings*.md`.
     pub from_review: usize,
-    /// How many came from the `removal` column of `ac-proof.json`.
+    /// How many came from the acceptance-criteria proof ledger. Always zero
+    /// since that producer left the product: the reviewer's files are the only
+    /// source today, and the key stays so a reader of an older report finds it
+    /// in the same place.
     pub from_proof_ledger: usize,
     /// How many of the seeded findings still owe a destination.
     pub open: usize,
@@ -200,7 +189,7 @@ impl FindingCollectReport {
     }
 }
 
-/// Collect both producers for `spec` and reconcile them into
+/// Collect the producer's files for `spec` and reconcile them into
 /// `<spec-dir>/meta.json#findings`.
 ///
 /// The project root is a PARAMETER rather than the process working directory,
@@ -329,7 +318,7 @@ const fn source_rank(source: FindingSource) -> u8 {
 /// says today.
 ///
 /// A finding the sources no longer report is kept when — and only when — a
-/// destination was declared for it. Both producers rewrite their file in place,
+/// destination was declared for it. The producer rewrites its file in place,
 /// so "not reported this time" is routinely just a round that overwrote the
 /// previous one; deleting the record would delete the decision with it, and the
 /// decision is precisely what this module promises to keep. Undecided and
@@ -847,7 +836,7 @@ mod tests {
     }
 
     /// A producer that stops reporting must not take a DECIDED finding with it:
-    /// both producers rewrite their file in place, so "gone this round" is
+    /// the producer rewrites its file in place, so "gone this round" is
     /// routinely just a round that overwrote the last one — and the decision is
     /// the half no machine can reproduce.
     #[test]

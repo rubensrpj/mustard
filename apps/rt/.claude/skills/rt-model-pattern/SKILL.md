@@ -17,32 +17,31 @@ metadata:
 
 ## Purpose
 
-A "model" module projects `.claude/grain.model.json` into a narrow, purpose-built read view — `lapidation.rs`'s `Model` struct (roles/conventions/projects) feeds the convention-map command; `orient.rs`'s `RawModel` (projects/skeleton) feeds the orientation census. Both declare ONLY the fields their command consumes and rely on lenient (`#[serde(default)]`) deserialization so grain remains the single owner of the JSON's actual shape — this module never re-derives or duplicates grain's format.
+A "model" module projects `.claude/grain.model.json` into a narrow, purpose-built read view — `orient.rs`'s `RawModel` (projects/skeleton) feeds the orientation census. It declares ONLY the fields its command consumes and relies on lenient (`#[serde(default)]`) deserialization so grain remains the single owner of the JSON's actual shape — this module never re-derives or duplicates grain's format.
 
 ## Convention
 
-Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 2
+Folder: apps/rt/src/commands/** · Extension: .rs · Files of this role in this subproject: 1
 
-Both model structs are `#[derive(Deserialize, Default)]` with `#[serde(default)]` applied crate-wide on the struct (`#[serde(default)] struct Model`), so an evolving grain schema never breaks this reader. Sizing/threshold constants that cap the projected output (`MAX_ROLES`, `MAX_SLICES`, `MIN_ROLE_COUNT`) are named module-level `const`s with a doc-comment justifying the number as a usability limit, not an arbitrary cutoff. Output is always deterministic/byte-stable — sorted, no clock, no absolute path.
+The model struct derives `Deserialize` and `Default` with `#[serde(default)]` on every field, so an evolving grain schema never breaks this reader. Sizing/threshold constants that cap the projected output are named module-level `const`s with a doc-comment justifying the number as a usability limit, not an arbitrary cutoff. Output is always deterministic/byte-stable — sorted, no clock, no absolute path.
 
 ## How to apply
 
-Declare a private `Model`/`RawModel` struct with `#[derive(Deserialize, Default)] #[serde(default)]`, listing only the JSON fields the new projection reads. Read the model file with a fail-open pattern (missing/unparseable → empty projection, exit 0 — never an error). State the "what this is NOT" boundary in the module doc when the projection could tempt overreach (as `lapidation.rs` explicitly does).
+Declare a private `Model`/`RawModel` struct with `#[derive(Deserialize, Default)]` and `#[serde(default)]`, listing only the JSON fields the new projection reads. Read the model file with a fail-open pattern (missing/unparseable → empty projection, exit 0 — never an error). State the "what this is NOT" boundary in the module doc when the projection could tempt overreach.
 
 ## Examples
 
-Ref: apps/rt/src/commands/lapidation.rs
 Ref: apps/rt/src/commands/orient.rs
 
 ```rust
-/// The slice of `grain.model.json` this projection reads. Additive
-/// `#[serde(default)]` throughout — the JSON is the contract, not the grain
-/// crate's internal types.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Model {
-    roles: Vec<Role>,
-    conventions: Vec<Convention>,
-    projects: Vec<Proj>,
+/// The slice of `grain.model.json` the census reads. Only the fields consumed
+/// are declared; every extra field grain writes is ignored (lenient serde), so
+/// the scan tool stays the single owner of the model format.
+#[derive(Debug, Default, Deserialize)]
+struct RawModel {
+    #[serde(default)]
+    projects: Vec<Project>,
+    #[serde(default)]
+    skeleton: Vec<SkeletonEntry>,
 }
 ```
