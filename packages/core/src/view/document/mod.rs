@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 
 mod spec;
 
-pub use spec::spec_document;
+pub use spec::{spec_document, WavePrompts};
 
 /// Uma página inteira.
 #[derive(Debug, Clone, PartialEq, Eq)]

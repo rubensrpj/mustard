@@ -553,6 +553,42 @@ mod tests {
         assert!(again["id"].is_null(), "{again}");
     }
 
+    /// Cada linha de cada pedido aparece na página da spec, sem exceção, as
+    /// instruções fixas incluídas: é por essa página que a spec é aprovada.
+    #[test]
+    fn every_line_of_every_request_shows_up_on_the_page() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "rule", json!({"text": "No máximo 3 tentativas de compilação.",
+            "example": "a quarta para", "keys": ["tentativas"], "origin": said}));
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "wave", json!({"n": 2, "text": "Subtrair.", "criteria": [crit], "done_when": "passa", "depends_on": [1], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Escrever a subtração.", "files": [{"path": "src/b.rs"}], "origin": said}));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let built = prompts(root, "x", &log, Locale::PtBr);
+        assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
+        for prompt in &built {
+            assert!(prompt.lines > 0);
+            for line in prompt.text.lines().filter(|l| !l.trim().is_empty()) {
+                let escaped = crate::report::escape(line);
+                assert!(
+                    page.contains(&escaped),
+                    "a onda {} não mostra a linha {line:?}",
+                    prompt.wave
+                );
+            }
+        }
+        // As instruções fixas, que todo agente recebe, estão entre elas.
+        assert!(page.contains(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap()));
+    }
+
     /// Um ponto do levantamento ainda aberto trava a pergunta de aprovação, e
     /// a spec não passa para o plano.
     #[test]

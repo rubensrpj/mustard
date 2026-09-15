@@ -81,7 +81,10 @@ fn one(
     let block: Vec<&SpecEvent> = read
         .iter()
         .copied()
-        .filter(|e| e.block() == Some(Block::Waves) && e.event_type != "delivered")
+        // O envio e o entregou são o REGISTRO de um pedido, não parte dele:
+        // repeti-los dentro do pedido novo seria contar a mesma coisa duas
+        // vezes. O entregou das ondas de que esta depende entra à parte.
+        .filter(|e| e.block() == Some(Block::Waves) && !matches!(e.event_type.as_str(), "send" | "delivered"))
         .collect();
     let delivered: Vec<&SpecEvent> = read
         .iter()

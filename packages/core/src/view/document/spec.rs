@@ -42,10 +42,16 @@ const WAVE_NUMBERS: &[&str] = &["wave", "waves", "depends_on"];
 const LITERAL: &[&str] =
     &["sha", "proof", "command", "hook", "tool", "mustard", "branch", "base", "repo", "skill", "name"];
 
-/// A página da spec `spec`, com os rótulos no idioma `lang`.
+/// O pedido montado de cada onda, pelo número dela. Quem monta o pedido lê o
+/// disco (o banco de lições e os arquivos das skills), então ele chega pronto:
+/// a página continua sendo função só do que recebe.
+pub type WavePrompts = BTreeMap<u64, String>;
+
+/// A página da spec `spec`, com os rótulos no idioma `lang`, mostrando em cada
+/// onda o pedido que `prompts` traz para ela.
 #[must_use]
-pub fn spec_document(spec: &str, log: &SpecLog, lang: Locale) -> Document {
-    let page = Page::new(log, lang);
+pub fn spec_document(spec: &str, log: &SpecLog, prompts: &WavePrompts, lang: Locale) -> Document {
+    let page = Page::new(log, prompts, lang);
     Document {
         lang: lang.as_str().to_string(),
         kind: Some(page.t("page.kind.spec").to_string()),
@@ -58,6 +64,7 @@ pub fn spec_document(spec: &str, log: &SpecLog, lang: Locale) -> Document {
 
 struct Page<'a> {
     log: &'a SpecLog,
+    prompts: &'a WavePrompts,
     lang: Locale,
     codes: BTreeMap<u64, String>,
     visible: Vec<&'a SpecEvent>,
@@ -67,9 +74,9 @@ struct Page<'a> {
 }
 
 impl<'a> Page<'a> {
-    fn new(log: &'a SpecLog, lang: Locale) -> Self {
+    fn new(log: &'a SpecLog, prompts: &'a WavePrompts, lang: Locale) -> Self {
         let approval = approval_boundary(log);
-        Self { log, lang, codes: log.codes(), visible: log.visible(), approval }
+        Self { log, prompts, lang, codes: log.codes(), visible: log.visible(), approval }
     }
 
     fn t(&self, key: &str) -> &'static str {
@@ -198,6 +205,20 @@ impl<'a> Page<'a> {
                     item.fields.push(self.field("page.field.wave_state", self.t(self.wave_state(n)).to_string()));
                 }
                 out.push(Node::Item(item));
+            }
+            // O pedido inteiro da onda, recolhido: é por esta página que a
+            // spec é aprovada, e quem aprova tem de ver cada linha que o
+            // agente vai ler, as instruções fixas incluídas.
+            if let Some(prompt) = self.prompts.get(&n) {
+                out.push(Node::Section(Section {
+                    anchor: None,
+                    heading: self.t("page.wave.prompt").replace("{n}", &n.to_string()),
+                    collapsed: Some(
+                        self.t("page.wave.prompt.summary")
+                            .replace("{lines}", &prompt.lines().count().to_string()),
+                    ),
+                    body: vec![Node::Code(prompt.clone())],
+                }));
             }
         }
         let skills: Vec<&SpecEvent> = events.iter().copied().filter(|e| e.wave().is_none()).collect();
@@ -596,7 +617,7 @@ mod tests {
     /// endereço; a conversa vem recolhida e um bloco vazio diz que está vazio.
     #[test]
     fn the_ten_blocks_come_out_in_page_order_even_when_empty() {
-        let doc = spec_document("vazia", &parse_log(""), Locale::PtBr);
+        let doc = spec_document("vazia", &parse_log(""), &WavePrompts::new(), Locale::PtBr);
         let got: Vec<(&str, &str)> = sections(&doc)
             .iter()
             .map(|s| (s.anchor.as_deref().unwrap_or_default(), s.heading.as_str()))
@@ -633,7 +654,7 @@ mod tests {
             line(3, "decision", ",\"text\":\"Texto novo.\",\"keys\":[\"k\"],\"why\":\"w\",\"origin\":1,\"replaces\":2"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
         let all = sections(&doc);
         let agreed = items(all[2]);
         assert_eq!(agreed.len(), 1);
@@ -660,7 +681,7 @@ mod tests {
             line(3, "remove", ",\"targets\":[1],\"reason\":\"engano\""),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
         let all = sections(&doc);
         let texts: Vec<&str> = all.iter().flat_map(|s| items(s)).map(|i| i.text.as_str()).collect();
         assert!(!texts.contains(&"Regra que sai."), "{texts:?}");
@@ -682,7 +703,7 @@ mod tests {
             line(4, "criterion_run", ",\"criterion\":1,\"result\":\"pass\",\"exit\":0,\"ms\":5"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
         let all = sections(&doc);
         assert_eq!(all[5].body[0], Node::Heading { level: 3, text: "Onda 1".into() });
         let wave = items(all[5])[0];
@@ -708,7 +729,7 @@ mod tests {
             line(3, "task", ",\"wave\":1,\"text\":\"Mudar o leitor.\",\"files\":[{\"path\":\"a.rs\"}],\"origin\":1"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
         let all = sections(&doc);
         let tasks: Vec<&Item> = items(all[5]).into_iter().filter(|i| i.code.starts_with("MSTD-TASK-")).collect();
         let files = |item: &Item| item.fields.iter().any(|f| f.label == "Arquivos");
@@ -725,7 +746,7 @@ mod tests {
             line(2, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"cargo test\",\"origin\":1"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
         let all = sections(&doc);
         let proofs: Vec<&str> = items(all[4])
             .iter()
@@ -758,7 +779,7 @@ mod tests {
         ]
         .concat();
         let notes = |content: &str, lang: Locale| -> Vec<(String, Option<String>)> {
-            let doc = spec_document("s", &parse_log(content), lang);
+            let doc = spec_document("s", &parse_log(content), &WavePrompts::new(), lang);
             sections(&doc)
                 .into_iter()
                 .filter(|s| s.anchor.as_deref() != Some("conversation"))
@@ -781,7 +802,7 @@ mod tests {
         let english = marked(&notes(&approved, Locale::EnUs));
         assert_eq!(english[0].1, "after the approval · 2026-09-12 10:06");
 
-        let doc = spec_document("s", &parse_log(&approved), Locale::PtBr);
+        let doc = spec_document("s", &parse_log(&approved), &WavePrompts::new(), Locale::PtBr);
         let talk = items(sections(&doc)[9]);
         assert_eq!(talk[0].note.as_deref(), Some("mensagem · usuário · 2026-09-12 10:01"), "the conversation keeps its note");
 
@@ -803,7 +824,7 @@ mod tests {
             line(5, "rule", ",\"text\":\"Depois da revisão.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":1"),
         ]
         .concat();
-        let doc = spec_document("s", &parse_log(&content), Locale::PtBr);
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
         let rules: Vec<(&str, Option<&str>)> =
             items(sections(&doc)[2]).iter().map(|i| (i.text.as_str(), i.note.as_deref())).collect();
         assert_eq!(

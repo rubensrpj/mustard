@@ -331,7 +331,7 @@ mod tests {
     use super::*;
     use mustard_core::domain::spec_events::parse_log;
     use mustard_core::platform::i18n::Locale;
-    use mustard_core::view::document::spec_document;
+    use mustard_core::view::document::{spec_document, WavePrompts};
 
     const LOG: &str = concat!(
         "{\"v\":1,\"id\":1,\"at\":\"2026-09-11T08:40:00-03:00\",\"type\":\"state\",\"author\":\"binary\",\"phase\":\"survey\",\"branch\":\"feature/demo\",\"base\":\"dev\"}\n",
@@ -344,7 +344,7 @@ mod tests {
     );
 
     fn spec_page(render: Render) -> String {
-        render.render(&spec_document("demo", &parse_log(LOG), Locale::PtBr))
+        render.render(&spec_document("demo", &parse_log(LOG), &WavePrompts::new(), Locale::PtBr))
     }
 
     /// A mesma árvore dá sempre os mesmos bytes, nas duas formas.
@@ -403,7 +403,7 @@ mod tests {
             "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"criterion\",\"author\":\"assistant\",\"when\":\"w\",\"then\":\"t\",\"proof\":\"teste da trava (MSTD-RULE-0001)\",\"origin\":2}\n",
         ]
         .concat();
-        let html = Render::Html.render(&spec_document("demo", &parse_log(&log), Locale::PtBr));
+        let html = Render::Html.render(&spec_document("demo", &parse_log(&log), &WavePrompts::new(), Locale::PtBr));
         assert!(
             html.contains("<code>teste da trava (<a href=\"#MSTD-RULE-0001\">MSTD-RULE-0001</a>)</code>"),
             "{html}"

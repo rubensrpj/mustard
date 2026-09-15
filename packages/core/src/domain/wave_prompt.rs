@@ -258,26 +258,40 @@ impl Writer<'_> {
         let code = self.material.codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
         let kind = self.t(&format!("page.type.{}", event.event_type));
         let _ = writeln!(out, "### {code} ({kind})\n");
-        if let Some(text) = event.str_field("text").map(str::trim).filter(|t| !t.is_empty()) {
+        let text = event.str_field("text").map(str::trim).filter(|t| !t.is_empty());
+        if let Some(text) = text {
             out.push_str(text);
-            out.push_str("\n\n");
-        }
-        for line in self.fields(event) {
-            out.push_str(&line);
             out.push('\n');
+        }
+        let fields = self.fields(event);
+        if !fields.is_empty() {
+            if text.is_some() {
+                out.push('\n');
+            }
+            for line in fields {
+                out.push_str(&line);
+                out.push('\n');
+            }
         }
         out.push('\n');
     }
 
     /// Os campos do evento fora do texto, na ordem em que o tipo os declara.
-    /// O campo de busca nunca sai: o pedido mostra só o texto original.
+    /// As palavras-chave e o campo de busca nunca saem: o pedido mostra só o
+    /// texto original de cada item. O número da onda também não se repete: ele
+    /// já está no título do pedido.
     fn fields(&self, event: &SpecEvent) -> Vec<String> {
         let Some(spec) = type_spec(&event.event_type) else {
             return Vec::new();
         };
         let mut out = Vec::new();
         for field in spec.fields {
-            if field.name == "text" || field.name == "search" {
+            if matches!(field.name, "text" | "keys" | "search")
+                || matches!(
+                    (event.event_type.as_str(), field.name),
+                    ("wave", "n") | ("task" | "send" | "delivered", "wave")
+                )
+            {
                 continue;
             }
             let Some(value) = event.fields.get(field.name) else {

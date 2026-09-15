@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::view::document::spec_document;
+use mustard_core::view::document::{spec_document, WavePrompts};
 use mustard_core::ClaudePaths;
 
 use crate::report::Render;
@@ -92,7 +92,13 @@ fn write_pages(
     log: &SpecLog,
     lang: Locale,
 ) -> Result<SpecPages, Refusal> {
-    let doc = spec_document(spec.trim(), log, lang);
+    // O pedido de cada onda é montado aqui, com o disco, e vai pronto para a
+    // página: quem aprova lê exatamente o que o agente da onda vai ler.
+    let prompts: WavePrompts = mustard_core::io::wave_prompt::prompts(root, spec.trim(), log, lang)
+        .into_iter()
+        .map(|built| (built.wave, built.text))
+        .collect();
+    let doc = spec_document(spec.trim(), log, &prompts, lang);
     for (path, render) in [(&files.md, Render::Md), (&files.html, Render::Html)] {
         mustard_core::io::fs::write_atomic(path, render.render(&doc).as_bytes())
             .map_err(|e| Refusal::Io { detail: e.to_string() })?;

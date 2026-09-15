@@ -2303,6 +2303,10 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.replaced", Locale::EnUs) => "replaced version",
         ("page.after_approval", Locale::PtBr) => "depois da aprovação",
         ("page.after_approval", Locale::EnUs) => "after the approval",
+        ("page.wave.prompt", Locale::PtBr) => "O pedido da onda {n}",
+        ("page.wave.prompt", Locale::EnUs) => "Wave {n}'s request",
+        ("page.wave.prompt.summary", Locale::PtBr) => "{lines} linhas, como o agente as recebe",
+        ("page.wave.prompt.summary", Locale::EnUs) => "{lines} lines, exactly as the agent gets them",
         ("page.wave.heading", Locale::PtBr) => "Onda {n}",
         ("page.wave.heading", Locale::EnUs) => "Wave {n}",
         ("page.conversation.summary", Locale::PtBr) => "{count} registros",
@@ -3403,6 +3407,8 @@ mod tests {
             ("prompt.part.skills", &[][..]),
             ("prompt.part.delivered", &[][..]),
             ("prompt.skill.stale", &[][..]),
+            ("page.wave.prompt", &["{n}"][..]),
+            ("page.wave.prompt.summary", &["{lines}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

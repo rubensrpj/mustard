@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn the_page_and_the_approval_reader_see_the_same_approval() {
         use mustard_core::platform::i18n::Locale;
-        use mustard_core::view::document::{spec_document, Node};
+        use mustard_core::view::document::{spec_document, Node, WavePrompts};
         use serde_json::json;
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -650,7 +650,7 @@ mod tests {
             .find(|event| event.event_type == "state" && event.at() == reader.at)
             .map(|event| event.id)
             .unwrap();
-        let doc = spec_document("epic", &log, Locale::PtBr);
+        let doc = spec_document("epic", &log, &WavePrompts::new(), Locale::PtBr);
         let agreed = doc
             .body
             .iter()
