@@ -6,8 +6,8 @@
 //! Counterpart of [`crate::commands::git_settle`] (the exit ritual): open cuts
 //! `.claude/worktrees/{kind}/{slug}` from a fresh `origin/{base}`; settle
 //! verifies the merge and prunes the same worktree. Cleanup of these worktrees
-//! is git-settle's job EXCLUSIVELY — `worktree-gc` collects only worktrees
-//! that are NOT work units ([`is_unit_worktree_name`]) and never touches one.
+//! is git-settle's job EXCLUSIVELY — nothing else may touch a worktree that
+//! reads as a work unit ([`is_unit_worktree_name`]).
 //!
 //! Branch naming reuses [`super::event::work_branch`] so the worktree branch
 //! is byte-identical to the `pending-work-branch` marker `emit-pipeline`
@@ -56,8 +56,7 @@ const WORKTREES_RELDIR: &str = ".claude/worktrees";
 /// user-supplied one (`feature-auth`), a `pr-<number>`, or an auto-generated
 /// `bright-running-fox` — and this repository's only harness-cut worktree is
 /// `.claude/worktrees/recursing-benz-063389`. Keying on a prefix that never
-/// appears made `worktree-gc` match nothing at all, so the collector and this
-/// engine now ask the one same question, of the same declared bases.
+/// appears matched nothing at all, so the reading is by the declared bases.
 ///
 /// The reading itself is [`BaseFlow::base_of`], the crate's ONE parser: a unit
 /// named by its kind (`feature/…`), and one still in the `{base}_{slug}` shape,
@@ -65,9 +64,9 @@ const WORKTREES_RELDIR: &str = ".claude/worktrees";
 ///
 /// Asked of [`UnitBase::is_unit`] and NOT of the base, deliberately: a
 /// `hotfix/…` whose base was never recorded IS a unit, and reading "no base" as
-/// "not a unit" would hand its worktree to the collector. Everything else (a
+/// "not a unit" would hand its worktree away. Everything else (a
 /// subagent's isolated checkout, a background session's, a desktop one) is not a
-/// unit, and is what `worktree-gc` may collect.
+/// unit.
 pub(crate) fn is_unit_worktree_name(name: &str, flow: &BaseFlow) -> bool {
     flow.base_of(name).is_unit()
 }
@@ -223,10 +222,10 @@ fn non_unit_start(
 /// — this probe's own `hook_create`, the gate's checkout-failure note,
 /// `work_removed` — so an unmeasured tree merely lets the ordinary path
 /// through. Two callers need the opposite posture and have their own probes,
-/// deliberately: `worktree_gc`'s `Contents` (it DELETES, so unproven keeps) and
-/// [`crate::commands::event::work_branch::checkout_work`] (it CHECKS OUT OVER a
-/// tree, so unproven refuses — and a unit's uncommitted `.claude/spec/…` is its
-/// work, not redirected state). Do not point either of them back here.
+/// deliberately: [`crate::commands::event::work_branch::checkout_work`] (it
+/// CHECKS OUT OVER a tree, so unproven refuses — and a unit's uncommitted
+/// `.claude/spec/…` is its work, not redirected state). Do not point it back
+/// here.
 pub(crate) fn dirty_paths(dir: &Path) -> Vec<String> {
     let Some(out) = git_out(dir, &["status", "--porcelain"]) else {
         return Vec::new();

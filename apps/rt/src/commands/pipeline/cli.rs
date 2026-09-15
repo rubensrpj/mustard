@@ -116,7 +116,7 @@ pub enum PipelineCmd {
     },
     /// Drive the CLOSE-phase gates (verify → qa → docs-stale → summary).
     #[command(name = "close-orchestrate")]
-    #[command(display_order = 60)]
+    #[command(display_order = 59)]
     CloseOrchestrate {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -134,7 +134,7 @@ pub enum PipelineCmd {
     /// Output: `"events"`, `"scaffold"` (created_files, skipped, refreshed,
     /// removed) and `"validation"` (ok, issues) — byte-stable, ordered.
     #[command(name = "plan-materialize")]
-    #[command(display_order = 67)]
+    #[command(display_order = 66)]
     PlanMaterialize {
         /// Target spec directory. Also accepts a `.../spec.md` path or a bare
         /// slug. `--spec` / `--from-spec` are hidden aliases.
@@ -158,7 +158,7 @@ pub enum PipelineCmd {
     /// text ready for `Task`. Pending = first dependency level with a wave not
     /// yet carrying `pipeline.wave.complete`; everything done → `[]`.
     #[command(name = "wave-advance")]
-    #[command(display_order = 68)]
+    #[command(display_order = 67)]
     WaveAdvance {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -172,7 +172,7 @@ pub enum PipelineCmd {
     /// Output: `{"completed":bool,"qa":{overall,criteria},"reviews":[...],`
     /// `"summary":...}`.
     #[command(name = "close-pipeline")]
-    #[command(display_order = 69)]
+    #[command(display_order = 68)]
     ClosePipeline {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]

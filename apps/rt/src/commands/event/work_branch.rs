@@ -869,10 +869,8 @@ pub(crate) fn holds_other_work(
 ///
 /// Deliberately not a `Vec<String>`: a caller that CHECKS OUT OVER a tree has to
 /// tell "I measured nothing here" from "I could not measure", and only the first
-/// authorises the checkout. It is the posture
-/// [`crate::commands::maint::worktree_gc`]'s `Contents` already takes, pointed
-/// the other way round because the caller is the other way round: that one
-/// DELETES, so an unproven candidate is KEPT; this one carries another unit's
+/// authorises the checkout. A caller that DELETES reads an unproven candidate as
+/// KEEP; this one carries another unit's
 /// work off, so an unproven checkout is REFUSED. Refusing costs the operator one
 /// commit; being wrong in the other direction costs them their work.
 #[derive(Debug, Clone, PartialEq, Eq)]

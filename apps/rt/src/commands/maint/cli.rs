@@ -38,34 +38,6 @@ pub enum MaintCmd {
         #[arg(long)]
         manifest: Option<String>,
     },
-    /// Garbage-collect orphan Claude agent worktrees under
-    /// `<repo>/.claude/worktrees/` — every entry whose name is NOT a work
-    /// unit's `{kind}/…` (nor the older `{base}_…`) — unit worktrees belong to
-    /// `git-settle`. Anything
-    /// still holding uncommitted work is kept whatever its age.
-    ///
-    /// Enumerates the directory, computes each entry's age (via
-    /// `<repo>/.git/worktrees/<name>/HEAD` mtime, falling back to the dir's
-    /// own mtime), and reports/removes entries older than `--age-days N`
-    /// (default 7). Dry-run by default; `--apply` is required to mutate the
-    /// filesystem. Emits `pipeline.economy.operation.invoked` to the harness
-    /// event store.
-    #[command(display_order = 49)]
-    WorktreeGc {
-        /// Repo root override. Defaults to the current working directory.
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        /// Age threshold in whole days. Worktrees older than this are
-        /// eligible for removal.
-        #[arg(long = "age-days", default_value_t = maint::worktree_gc::DEFAULT_AGE_DAYS)]
-        age_days: u32,
-        /// Preview only — no filesystem mutation (the default).
-        #[arg(long, default_value_t = true, conflicts_with = "apply")]
-        dry_run: bool,
-        /// Apply the removal. Required to mutate the filesystem.
-        #[arg(long)]
-        apply: bool,
-    },
     /// Recolhe as cópias descartáveis que os agentes deixam no diretório
     /// temporário (ou no `scratchpad/` de uma sessão do Claude Code): pasta
     /// com cópia deste projeto ou `target/` de compilação, sem mudança há
@@ -77,7 +49,7 @@ pub enum MaintCmd {
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
     #[command(name = "scratch-gc")]
-    #[command(display_order = 94)]
+    #[command(display_order = 93)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -98,7 +70,7 @@ pub enum MaintCmd {
     /// `.cluster-cache.json`). Everything else in the file —
     /// `permissions.allow`/`deny`, `statusLine`, `env` — is preserved, and so
     /// are worktrees: `.claude/worktrees/` holds uncommitted work and is only
-    /// ever removed by [`Self::WorktreeGc`], never by silencing the harness.
+    /// never removed by silencing the harness.
     /// Restore with [`Self::Rehook`].
     ///
     /// `--scope this` (default) acts on the current repo's `.claude/` only.
@@ -106,7 +78,7 @@ pub enum MaintCmd {
     /// `packages/*/.claude/`. `--scope all` adds the user-global
     /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
     /// `state: "skipped"`). Emits a pretty JSON report.
-    #[command(display_order = 50)]
+    #[command(display_order = 49)]
     Unhook {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -124,7 +96,7 @@ pub enum MaintCmd {
     /// by an older build, rename the newest `settings.json.disabled*` snapshot
     /// back. Volatile state directories that `unhook` wiped are left alone —
     /// the runtime regenerates them on the next run. Emits a pretty JSON report.
-    #[command(display_order = 51)]
+    #[command(display_order = 50)]
     Rehook {
         #[arg(long)]
         repo: Option<PathBuf>,
@@ -141,7 +113,7 @@ pub enum MaintCmd {
     /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
     /// every step — exit code is always 0.
     #[command(name = "claude-dir-prune")]
-    #[command(display_order = 59)]
+    #[command(display_order = 58)]
     ClaudeDirPrune {
         /// Repo root override. Defaults to the current working directory.
         #[arg(long)]
@@ -159,7 +131,7 @@ pub enum MaintCmd {
     },
     /// Install dependencies in every detected subproject.
     #[command(name = "maint-deps")]
-    #[command(display_order = 65)]
+    #[command(display_order = 64)]
     MaintDeps {
         /// Preview only — print the resolved install commands without running.
         #[arg(long)]
@@ -167,7 +139,7 @@ pub enum MaintCmd {
     },
     /// Run build/type-check validation in every detected subproject.
     #[command(name = "maint-validate")]
-    #[command(display_order = 66)]
+    #[command(display_order = 65)]
     MaintValidate {
         /// Preview only — print the resolved validate commands without running.
         #[arg(long)]
@@ -201,21 +173,6 @@ pub fn dispatch(cmd: MaintCmd) {
             apply,
             manifest,
         } => maint::artifact_update::run(check, apply, manifest.as_deref()),
-        MaintCmd::WorktreeGc {
-            repo,
-            age_days,
-            dry_run,
-            apply,
-        } => {
-            // `dry_run` defaults to `true`; clap's `conflicts_with` blocks
-            // passing both. `--apply` is the authoritative mutator flag.
-            let _ = dry_run;
-            maint::worktree_gc::run(maint::worktree_gc::WorktreeGcOpts {
-                repo,
-                age_days,
-                apply,
-            });
-        }
         MaintCmd::ScratchGc { dry_run, apply, path } => {
             // `dry_run` vale `true` por padrão e o `conflicts_with_all` recusa
             // `--dry-run` junto de `--apply` OU de `--path`: quando um dos dois

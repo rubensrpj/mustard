@@ -316,8 +316,8 @@ fn prune_empty_parents(tree: &Path, file: &Path) {
 /// Everything in a scratch worktree's name BEFORE the creating process id:
 /// `mustard-removal-{slug}-`.
 ///
-/// Published rather than inlined because the collector
-/// ([`crate::commands::maint::worktree_gc`]) has to recognise these trees in
+/// Published rather than inlined because a collector has to recognise these
+/// trees in
 /// the temp directory — they are the only worktrees the harness cuts outside
 /// `.claude/worktrees/`, and for years nothing could reap the ones an
 /// interrupted pass left behind. One function so the name is written in one

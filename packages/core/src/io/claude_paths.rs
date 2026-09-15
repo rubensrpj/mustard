@@ -177,7 +177,7 @@ const DOCUMENTED_DIRS: &[&str] = &[
     // Plan-mode plan files — `settings.json#plansDirectory` points here.
     "plans",
     // Isolated checkouts of work units, created by the entry ritual
-    // (`work-unit-open`) and retired by `worktree-gc` / `git-settle`.
+    // (`work-unit-open`) and retired by `git-settle`.
     "worktrees",
     // Sanctioned scratch evidence — the throwaway a diagnosis RUNS to decide
     // between two hypotheses. Carved out of branch protection by the write

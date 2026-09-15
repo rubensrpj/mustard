@@ -32,9 +32,9 @@
 //! `--path` e do `--apply` — passa pelo mesmo portão (`confine`): caminho
 //! resolvido, estritamente dentro do temp resolvido, dono conferido.
 //!
-//! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas
-//! que o `worktree-gc` recolhe pelo dono vivo ou morto, e duas portas
-//! apagando o mesmo alvo com critérios diferentes não se somam. Pelo mesmo
+//! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas no
+//! git, e apagá-las por aqui deixaria o registro apontando para o nada. Pelo
+//! mesmo
 //! motivo, QUALQUER worktree registrada — pasta cujo `.git` é um arquivo, nela
 //! ou numa filha direta — fica de fora e o `--path` a recusa: ela pode ter
 //! trabalho não commitado, e quem a remove é o `git worktree remove`.
@@ -49,7 +49,7 @@
 //!   própria pasta recém-criada ao terminar), mas só depois de conferir os
 //!   filtros 1 e 2. Fora do diretório temporário — o repositório, a home — é
 //!   recusado com erro (exit 1) e nada é tocado; um `mustard-removal-*` também
-//!   (é do `worktree-gc`). `--dry-run` não combina com `--apply` nem com
+//!   (é worktree registrada). `--dry-run` não combina com `--apply` nem com
 //!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
 //!
 //! ## Compilação compartilhada
@@ -102,7 +102,7 @@ const SESSION_ROOT_PREFIX: &str = "claude-";
 /// Pasta de trabalho de uma sessão, dentro de `claude-<uid>/<projeto>/<sessao>/`.
 const SCRATCHPAD_DIR: &str = "scratchpad";
 
-/// Prefixo das worktrees de prova de remoção — dono é o `worktree-gc`.
+/// Prefixo das worktrees de prova de remoção, registradas no git.
 const REMOVAL_WORKTREE_PREFIX: &str = "mustard-removal-";
 
 // ---------------------------------------------------------------------------
@@ -695,7 +695,7 @@ pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf
 ///   temp. Como [`checked_temp_root`] já garantiu que a home não mora dentro
 ///   do temp, nada que passe aqui é a home nem uma pasta acima dela;
 /// - a entrada do topo do temp é do usuário atual ([`owned_by`]);
-/// - não é um `mustard-removal-*` (é do `worktree-gc`);
+/// - não é um `mustard-removal-*` (é worktree registrada no git);
 /// - dentro de `claude-*/`, só vale o que está abaixo de um `scratchpad/`;
 /// - não é nem contém uma worktree registrada no git
 ///   ([`holds_linked_worktree`]): apagá-la perderia o que não foi commitado e
@@ -722,10 +722,10 @@ fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf
     }
     // A mesma exclusão da varredura: `mustard-removal-*` é worktree que o git
     // ainda tem registrada, e apagá-la daqui deixaria o registro apontando
-    // para uma pasta que não existe. Quem a recolhe é o `worktree-gc`.
+    // para uma pasta que não existe.
     if parts[0].to_str().is_some_and(|n| n.starts_with(REMOVAL_WORKTREE_PREFIX)) {
         return Err(format!(
-            "refused: {} is a registered removal worktree; worktree-gc owns it",
+            "refused: {} is a registered removal worktree",
             dir.display()
         ));
     }
@@ -1084,11 +1084,11 @@ mod tests {
         assert!(remove_path(&foreign, &roots).is_err());
         assert!(foreign.join("notas.txt").exists());
 
-        // Worktree de prova de remoção: é do `worktree-gc`, mesmo sendo cópia.
+        // Worktree de prova de remoção: registrada no git, mesmo sendo cópia.
         let removal = roots.temp_root.join("mustard-removal-abc");
         project_copy(&removal);
         let err = remove_path(&removal, &roots).unwrap_err();
-        assert!(err.contains("worktree-gc owns it"), "{err}");
+        assert!(err.contains("registered removal worktree"), "{err}");
         assert!(removal.join("Cargo.toml").exists(), "a registered worktree is never removed here");
     }
 

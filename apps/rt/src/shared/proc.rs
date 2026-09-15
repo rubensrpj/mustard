@@ -426,9 +426,8 @@ fn kill_tree(pid: u32) {
 /// "absent" is safe in exactly one direction. A caller that respawns a daemon
 /// pays a wasted spawn for the mistake; a caller that DELETES what an absent
 /// owner left behind pays with the live owner's directory. So the measurement
-/// lives here and the judgement lives in each consumer — see
-/// `commands::maint::worktree_gc` for the reading that refuses to remove on an
-/// unmeasured answer.
+/// lives here and the judgement lives in each consumer: a consumer that removes
+/// refuses to act on an unmeasured answer.
 ///
 /// Cross-platform without `unsafe`: on Unix, sends signal `0` via `kill -0`
 /// (the POSIX existence probe). On Windows, queries `tasklist /FI` for the

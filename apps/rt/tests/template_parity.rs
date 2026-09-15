@@ -208,6 +208,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     ),
     (
         "artifact-update",
+        "apply",
+        "the mutation switch of a command with no product caller at all; its own \
+         help states that the default is the read-only probe and that this is \
+         what writes",
+    ),
+    (
+        "artifact-update",
         "manifest",
         "manifest path override, defaulting to `apps/cli/templates/.artifacts.json` \
          - the documented invocation is the default",
@@ -225,6 +232,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "frontmatter `status` of a created capability doc; the subcommand help \
          spells the whole `create --slug X --title Y [--status active]` line, and \
          the default is what every caller wants",
+    ),
+    (
+        "claude-dir-prune",
+        "apply",
+        "the mutation switch of a command RUNTIME_WHITELIST already records as \
+         callerless; its own help states that the default is the report and that \
+         this is what removes",
     ),
     (
         "claude-dir-prune",
@@ -346,6 +360,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          runs from the project root",
     ),
     (
+        "scratch-gc",
+        "apply",
+        "the sweep switch of a command whose one instructed invocation is the \
+         single-directory `--path` form in the review agent prose; its own help \
+         states that the default only lists",
+    ),
+    (
         "spec-draft",
         "output",
         "output directory override, defaulting to `.claude/spec/{slug}/` - the \
@@ -376,18 +397,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "branch",
         "the alternative to the documented `--spec`/`--intent` pair, for a unit \
          whose branch already exists; the flag's help says exactly that",
-    ),
-    (
-        "worktree-gc",
-        "age-days",
-        "the age threshold (default 7) of a sweep that is dry-run by default; the \
-         command's help carries both numbers",
-    ),
-    (
-        "worktree-gc",
-        "repo",
-        "project-root override; the instructed invocation runs from the project \
-         root",
     ),
 ];
 

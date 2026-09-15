@@ -264,13 +264,6 @@ fn session_start_core(
     let cwd = ctx.project_dir_or_cwd(input);
     run_harness_init(input, &cwd);
     run_spec_hygiene(&cwd);
-    // Collect orphan worktrees — those under `<repo>/.claude/worktrees/`
-    // whose name is not a work unit's `{base}_…`, plus the removal-proof
-    // scratch trees an interrupted review left in the OS temp directory. It
-    // REMOVES what is orphaned (owner gone) or stale, and never touches a
-    // work unit's worktree or one holding uncommitted work. Fail-open at
-    // every step.
-    crate::commands::maint::worktree_gc::session_start_probe(Path::new(&cwd));
     // Advisory probe for drift in the project's `.claude/` directory.
     // Read-only; emits a single stderr warning when one or more children
     // classify as `ORPHAN` (no declared consumer in

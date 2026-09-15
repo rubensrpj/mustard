@@ -1093,19 +1093,18 @@ fn router_offers_the_name_for_correction() {
     );
 }
 
-/// The worktree prose teaches the REFUSAL and the reaper, and teaches no
-/// environment declaration.
+/// The worktree prose teaches the REFUSAL, and teaches no environment
+/// declaration.
 ///
 /// The environment-carrying design was withdrawn after review: `link` planted a
 /// Windows directory junction inside the worktree, and `git worktree remove`
 /// DESCENDS a junction — so closing a unit deleted the MAIN checkout's
 /// `node_modules`, with and without `--force`. The shipped prose told operators
 /// to declare exactly that, which made following the documentation the way to
-/// lose your dependencies. What remains is a refusal (commit or stash, then open
-/// the second unit) and the orphan collector, which creates nothing and only
-/// reaps the worktrees Claude Code cuts on its own.
+/// lose your dependencies. What remains is a refusal: commit or stash, then open
+/// the second unit.
 #[test]
-fn worktree_prose_teaches_the_refusal_and_the_reaper() {
+fn worktree_prose_teaches_the_refusal() {
     let flow = read("plugin/refs/git/git-flow.md");
 
     // --- 1. The refusal is taught where the gate's decision is taught -------
@@ -1151,18 +1150,7 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
         );
     }
 
-    // --- 3. The reaper, which is NOT withdrawn ------------------------------
-    let reaper = line_with(&flow, "The collector reaps what is ORPHANED")
-        .expect("the contract never says what the collector does");
-    for taught in ["--apply", "uncommitted", "PID"] {
-        assert!(
-            reaper.contains(taught),
-            "the reaper paragraph omits `{taught}` — it acts, it refuses over work, \
-             and it knows an orphan by its owner: {reaper}",
-        );
-    }
-
-    // --- 4. The code really does each of them -------------------------------
+    // --- 3. The code really does each of them -------------------------------
     // Without this half every sentence above outlives its mechanism.
     let branch = read("apps/rt/src/commands/event/work_branch.rs");
     assert!(
@@ -1239,22 +1227,6 @@ fn worktree_prose_teaches_the_refusal_and_the_reaper() {
         );
     }
 
-    let gc = read("apps/rt/src/commands/maint/worktree_gc.rs");
-    assert!(
-        gc.contains("gc(repo, DEFAULT_AGE_DAYS, /* apply = */ true)"),
-        "the SessionStart probe went back to dry-run, so nothing is ever collected",
-    );
-    assert!(
-        gc.contains("process_liveness") && gc.contains("enum Contents"),
-        "the collector lost either the owner probe that makes it prompt or the \
-         work probe that makes it safe",
-    );
-    assert!(
-        !gc.contains("dirty_paths(&wt)"),
-        "the collector decides by the CUT decision's probe again — the one that \
-         reads a failed measurement as clean and drops the candidate's own \
-         `.claude/` contents, which is how an --apply sweep deleted unsaved files",
-    );
 }
 
 /// The bugfix prose carries the diagnosis INTO the spec through the

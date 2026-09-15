@@ -34,7 +34,7 @@
 //!   the git credential vault, every URL derived from the `origin` remote —
 //!   and deliberately no merge operation.
 //! - [`proc`] — signal-free, cross-platform process primitives (the liveness
-//!   probe `worktree_gc` reads) plus [`proc::run_shell_with_deadline`]
+//!   probe) plus [`proc::run_shell_with_deadline`]
 //!   — the ONE shell-command runner that drains both pipes concurrently and
 //!   waits under a deadline, shared by `verify-pipeline` and `qa-run`.
 //! - [`translate`] — fail-open client for the optional `mustard-translate`
