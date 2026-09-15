@@ -36,7 +36,7 @@ $Plugin = "mustard@$MarketplaceName"
 function Show-ManualSteps {
     Write-Host ''
     Write-Host '    Falta atualizar o plugin do Claude Code - e ele que traz os comandos'
-    Write-Host '    /mustard:*, os hooks e o MCP de memoria, e e a copia que o Claude Code'
+    Write-Host '    /mustard:* e os hooks, e e a copia que o Claude Code'
     Write-Host '    de fato executa. Abra o Claude Code e digite estas linhas DENTRO dele'
     Write-Host '    (nao sao comandos de terminal):'
     Write-Host "        /plugin marketplace add $MarketplaceRepo"

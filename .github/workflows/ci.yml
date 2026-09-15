@@ -97,13 +97,7 @@ jobs:
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
-      # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt /
-      # mustard-dashboard). The dashboard used to be excluded because its
-      # desktop-shell wrapper needed per-OS system libraries (webkit2gtk on Linux,
-      # etc.) that made this matrix slow and brittle. That wrapper is gone — the
-      # backend is a
-      # `tiny_http` server with no system dependency at all — so its suite runs
-      # here like every other crate's.
+      # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       #
       # `-p scan` is here because mustard-core's stack-registry tests exercise
       # `Scan::locate()` at runtime (spawn, fail-open): without `scan` reachable
@@ -139,7 +133,7 @@ jobs:
       # round is free — but read 6,8% as the number, not 41%.
       # Full figures: docs/2026-08-14-build-cycle-measurements.md.
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard -- --test-threads=8
+        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
 
       # `-D warnings`: EVERY warning fails the build, not only the deny-level
       # ones. The lint table used to keep pedantic at warn "without drowning in
@@ -160,20 +154,12 @@ jobs:
       # written beside it, and `scripts/ac/lint-allows-have-reasons.py` fails the
       # build on a silent one.
       #
-      # `mustard-dashboard` is IN now. It used to be absent because it did not
-      # opt into `[lints] workspace = true` — so clippy there had no deny-level
-      # lint behind it — and the exception outlived its reason: the crate carries
-      # the table like every sibling, and leaving it out meant `unwrap_used` was
-      # not enforced on the newest code in the workspace.
-      #
-      # `--all-targets` is what makes the dashboard's entry mean anything. The
-      # crate's `.unwrap()` calls lived entirely in `#[cfg(test)]` modules and
-      # `tests/`, which the default target set never compiles — adding `-p
-      # mustard-dashboard` alone would have linted a surface that was already
-      # clean and reported a pass nobody earned. All 269 were rewritten as
-      # `.expect("<reason>")`; this flag is what keeps them from coming back.
+      # `--all-targets` is what makes the `unwrap_used = deny` rule reach the
+      # test code: `.unwrap()` calls inside `#[cfg(test)]` modules and `tests/`
+      # are never compiled by the default target set, so without this flag the
+      # lint would report a pass nobody earned.
       - name: Clippy
-        run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -p mustard-dashboard -- -D warnings
+        run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -- -D warnings
 
       # A válvula de escape do passo acima é desligar o lint. Isto garante que
       # ela nunca seja usada em silêncio.

@@ -1,9 +1,8 @@
 Mustard — instalador
 ====================
 
-UM instalador por sistema, completo: traz o CLI E o Mustard Dashboard juntos.
-O Dashboard é um SERVIDOR: ele abre uma porta na máquina e o painel aparece no
-navegador. Você NÃO precisa instalar Rust nem compilar nada — já vem pronto.
+UM instalador por sistema, completo: traz o CLI. Você NÃO precisa instalar
+Rust nem compilar nada — já vem pronto.
 
   LINUX (Ubuntu): instale numa linha com o install.sh (ele mesmo baixa o
                   mustard_<versao>_amd64.deb do Release e chama o apt)
@@ -57,15 +56,11 @@ macOS
 
 O que cada instalador faz
 -------------------------
-- LINUX:   o apt instala o CLI e o mustard-dashboard em /usr/lib/mustard/bin
-           (atalhos em /usr/bin), com os arquivos da tela ao lado do servidor;
-           adiciona o atalho "Mustard Dashboard" ao menu de aplicativos, e esse
-           atalho INICIA O SERVIDOR num terminal.
-- WINDOWS: instala os binários (com os templates e os arquivos da tela) na pasta
-           do programa, adiciona o CLI ao PATH e cria o atalho no Menu Iniciar,
-           que INICIA O SERVIDOR numa janela de console.
+- LINUX:   o apt instala o CLI em /usr/lib/mustard/bin (atalhos em /usr/bin).
+- WINDOWS: instala os binários (com os templates) na pasta do programa e
+           adiciona o CLI ao PATH.
 - macOS:   instala tudo em /usr/local/mustard e cria os atalhos no PATH
-           (/usr/local/bin). Não há .app: o painel se abre no navegador.
+           (/usr/local/bin). Não há .app.
 - Em todos: depois é só rodar `mustard init` num projeto para criar o .claude/ e
   instalar o plugin dentro do Claude Code (veja "Como usar depois").
 
@@ -74,8 +69,8 @@ Como usar depois
 ----------------
 - Prepare um projeto:  cd <projeto> && mustard init
 - Instale o plugin DENTRO do Claude Code (o instalador do sistema traz só os
-  binários e os templates; os comandos /mustard:*, os hooks e o MCP de memória
-  vêm do plugin). Abra o Claude Code no projeto e digite:
+  binários e os templates; os comandos /mustard:* e os hooks vêm do plugin).
+  Abra o Claude Code no projeto e digite:
       /plugin marketplace add rubensrpj/mustard
       /plugin install mustard@mustard-local
   O "@mustard-local" é o NOME do marketplace, não um caminho. Recarregue o
@@ -87,15 +82,6 @@ Como usar depois
   passo acima, não do `mustard init`: o init só escreve o .claude/ e o
   mustard.json, e o .claude/settings.json que ele grava não traz hook nenhum.
 - Versão instalada:  mustard --version   /   mustard-rt --version
-- Dashboard: rode  mustard-dashboard  na pasta onde ficam seus projetos (a
-  varredura começa no diretório de onde o servidor foi iniciado). Ele imprime
-  http://127.0.0.1:7777/ e abre o navegador quando há tela. No Linux e no
-  Windows o atalho "Mustard Dashboard" do menu faz o mesmo.
-  Sem --host o painel só responde na própria máquina, de propósito (ele lê o
-  .claude/ de TODOS os seus projetos). Para alcançar de outro computador:
-      mustard-dashboard --host 0.0.0.0
-  e acesse http://<ip-da-maquina>:7777/ . Outra porta: --port ou a variável
-  MUSTARD_DASHBOARD_PORT; porta ocupada não é erro, ele usa a próxima livre.
 
 
 Como remover

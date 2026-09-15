@@ -1,8 +1,7 @@
 name: Release
 
-# Gera UM instalador completo por sistema (Windows, Linux, macOS) — cada um traz
-# o CLI E o Dashboard juntos — e publica um único GitHub Release. Dispara ao
-# subir uma tag de versão:
+# Gera UM instalador completo por sistema (Windows, Linux, macOS) e publica um
+# único GitHub Release. Dispara ao subir uma tag de versão:
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 #
@@ -11,13 +10,9 @@ name: Release
 # antes de cravar uma tag de verdade.
 #
 # Artefatos (1 instalador completo por SO):
-#   Windows : Mustard_<versao>_x64-setup.exe            (NSIS: CLI + servidor + PATH)
-#   macOS   : Mustard-<versao>-universal.pkg            (app em /Applications + CLI no PATH)
-#   Linux   : mustard_<versao>_amd64.deb + install.sh   (apt: CLI + servidor + symlinks)
-#
-# The dashboard is a `tiny_http` server now, not a desktop app: every installer
-# ships `mustard-dashboard` as one more binary, with the built React assets
-# beside it. No webview bundler step, and no WebKitGTK.
+#   Windows : Mustard_<versao>_x64-setup.exe            (NSIS: CLI + PATH)
+#   macOS   : Mustard-<versao>-universal.pkg            (CLI no PATH)
+#   Linux   : mustard_<versao>_amd64.deb + install.sh   (apt: CLI + symlinks)
 
 on:
   push:
@@ -89,17 +84,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.18.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
       # NO version is named here, and that is the point: with the `toolchain`
       # input left empty this action installs exactly what `rust-toolchain.toml`
       # pins, components included, so the binaries that go out in a release are
@@ -120,10 +104,6 @@ jobs:
           cache: false
           rustflags: ''
 
-      # One workspace now. `apps/dashboard/server` was a second Cargo root
-      # only because its desktop-shell wrapper pinned its own edition and lock; the
-      # dashboard backend is a plain member (`apps/dashboard/server`).
-      #
       # Só restaura. Uma rodada de tag guarda o cache no escopo da própria tag,
       # que nenhuma rodada seguinte lê. A chave é a mesma da verificação, que só
       # guarda nas rodadas de push no `dev` e na `main`; a tag lê a da `main`.
@@ -133,19 +113,12 @@ jobs:
           shared-key: mustard-workspace
           save-if: false
 
-      # `mustard-dashboard` joins the list: it is a normal workspace binary now.
       - name: Compila os binários
-        run: cargo build --release --locked --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard --bin mustard-dashboard
+        run: cargo build --release --locked --bin scan --bin mustard-rt --bin mustard
 
       - name: rtk (best-effort — embutido no instalador se compilar)
         continue-on-error: true
         run: cargo install --git https://github.com/rtk-ai/rtk --locked
-
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build do React (assets do dashboard)
-        run: pnpm --filter mustard-dashboard build
 
       # The installer is assembled from a staging tree, so makensis only has to
       # copy three folders and mustard.nsi never has to know where a build put
@@ -156,14 +129,12 @@ jobs:
           PAYLOAD=dist/_win-payload
           rm -rf "$PAYLOAD"
           mkdir -p "$PAYLOAD/bin"
-          for b in scan mustard-rt mustard-mcp mustard mustard-dashboard; do
+          for b in scan mustard-rt mustard; do
             cp "target/release/$b.exe" "$PAYLOAD/bin/$b.exe"
           done
           RTK="$(command -v rtk || true)"
           if [ -n "$RTK" ]; then cp "$RTK" "$PAYLOAD/bin/rtk.exe"; else echo "rtk ausente — instalador sai sem rtk"; fi
           cp -R apps/cli/templates "$PAYLOAD/templates"
-          [ -f apps/dashboard/dist/index.html ] || { echo "::error::pnpm build não gerou apps/dashboard/dist"; exit 1; }
-          cp -R apps/dashboard/dist "$PAYLOAD/dist"
 
       # NSIS ships with some runner images and not others (it left windows-2025),
       # so the presence is checked instead of assumed — the assumption is exactly
@@ -191,17 +162,14 @@ jobs:
           if (-not (Test-Path $out)) { throw "makensis não gerou $out." }
 
       # Binários avulsos que o bootstrap do plugin baixa na primeira sessão
-      # (mustard-boot): o CLI completo + rtk (se compilou). O `mustard-dashboard`
-      # NÃO entra: sem a pasta dist/ ao lado dele o binário não serve página
-      # nenhuma, e carregar os assets do React em todo bootstrap de projeto
-      # custaria megabytes por uma tela que o instalador de cada SO já entrega.
+      # (mustard-boot): o CLI completo + rtk (se compilou).
       - name: Empacota binários avulsos (bootstrap do plugin)
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist/bins
-          for b in scan mustard-rt mustard-mcp mustard; do
+          for b in scan mustard-rt mustard; do
             cp "target/release/$b.exe" dist/bins/
           done
           RTK="$(command -v rtk || true)"
@@ -234,17 +202,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.18.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
       # Toolchain from `rust-toolchain.toml` — see the note in the Windows job.
       # The two Apple targets stay an input: they are needed by THIS job only,
       # and putting them in the toolchain file would make every machine in the
@@ -267,20 +224,17 @@ jobs:
         continue-on-error: true
         run: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
 
-      - name: Build do instalador .pkg (Dashboard + CLI)
+      - name: Build do instalador .pkg (CLI)
         run: bash packaging/macos/build-pkg.sh
 
       # Binários avulsos universais (lipo dos dois targets que o build-pkg.sh
       # já compilou) — o bootstrap do plugin baixa este tar na primeira sessão.
-      # O `mustard-dashboard` fica de fora pela mesma razão do job do Windows:
-      # sem os assets do React ao lado ele não serve nada, e o .pkg acima é o
-      # veículo que os leva.
       - name: Empacota binários avulsos (bootstrap do plugin)
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p dist/bins
-          for b in scan mustard-rt mustard-mcp mustard; do
+          for b in scan mustard-rt mustard; do
             lipo -create "target/x86_64-apple-darwin/release/$b" "target/aarch64-apple-darwin/release/$b" -output "dist/bins/$b"
             chmod +x "dist/bins/$b"
           done
@@ -310,14 +264,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Empacota CLI + Dashboard num .deb (build-deb.sh via Docker)
+      - name: Empacota o CLI num .deb (build-deb.sh via Docker)
         shell: pwsh
         run: ./packaging/build-packages.ps1 -Targets linux
 
       # Binários avulsos nativos (runner ubuntu, sem Docker) — o bootstrap do
-      # plugin baixa este tar na primeira sessão. O `mustard-dashboard` fica de
-      # fora pela mesma razão dos outros dois jobs: sem os assets do React ao
-      # lado ele não serve nada, e o .deb acima é o veículo que os leva.
+      # plugin baixa este tar na primeira sessão.
       # Toolchain from `rust-toolchain.toml` — see the note in the Windows job.
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -336,9 +288,9 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          cargo build --release --locked --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard
+          cargo build --release --locked --bin scan --bin mustard-rt --bin mustard
           mkdir -p dist/bins
-          for b in scan mustard-rt mustard-mcp mustard; do
+          for b in scan mustard-rt mustard; do
             cp "target/release/$b" dist/bins/
           done
           # Ver a nota no job do Windows: o templates/ tem de viajar junto, ou

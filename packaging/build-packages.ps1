@@ -2,20 +2,18 @@
 # ============================================================================
 # build-packages.ps1 — empacota o Mustard para distribuição.
 #
-# Windows (SEM dashboard): pacote auto-contido de binários pré-compilados, sem
-# precisar do toolchain:
+# Windows: pacote auto-contido de binários pré-compilados, sem precisar do
+# toolchain:
 #   dist/mustard-windows-x64.zip       (binários .exe MSVC, compilados aqui)
 #
-# Linux (COM dashboard — instalação completa): um único pacote Debian que traz
-# os binários do CLI E o servidor do Mustard Dashboard, compilados num Docker
+# Linux: um único pacote Debian com os binários do CLI, compilados num Docker
 # Ubuntu 22.04 (glibc 2.35 -> roda em Ubuntu 22.04+):
 #   dist/mustard_<versao>_amd64.deb    + install.sh (apt) + TUTORIAL-LINUX.md
 #
-# O pacote Windows contém: bin/ (scan, mustard-rt, mustard-mcp, mustard, rtk),
-# templates/, install.ps1 e README.txt — the NSIS installer that also carries
-# the dashboard is built by the release workflow (packaging/windows/mustard.nsi),
-# not here. O .deb Linux instala tudo via `apt` — ver packaging/linux/Dockerfile
-# + packaging/linux/build-deb.sh.
+# O pacote Windows contém: bin/ (scan, mustard-rt, mustard, rtk), templates/,
+# install.ps1 e README.txt — the NSIS installer is built by the release workflow
+# (packaging/windows/mustard.nsi), not here. O .deb Linux instala tudo via `apt`
+# — ver packaging/linux/Dockerfile + packaging/linux/build-deb.sh.
 #
 # Uso:
 #   .\packaging\build-packages.ps1                 # windows + linux
@@ -34,7 +32,7 @@ $Installer    = Join-Path $PkgDir 'installer'
 $Dist         = Join-Path $Root 'dist'
 $Stage        = Join-Path $Dist '_stage'
 $TemplatesSrc = Join-Path $Root 'apps\cli\templates'
-$Bins         = @('scan', 'mustard-rt', 'mustard-mcp', 'mustard')
+$Bins         = @('scan', 'mustard-rt', 'mustard')
 
 function New-CleanDir([string]$p) {
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
@@ -47,10 +45,10 @@ New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 # ---------------------------------------------------------------- Windows ----
 if ($Targets -in 'windows', 'both') {
-    Write-Host "==> [windows] cargo build --release (4 binários)"
+    Write-Host "==> [windows] cargo build --release (3 binários)"
     Push-Location $Root
     try {
-        cargo build --release --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard
+        cargo build --release --bin scan --bin mustard-rt --bin mustard
         if ($LASTEXITCODE -ne 0) { throw "cargo build (windows) falhou (exit $LASTEXITCODE)." }
     } finally { Pop-Location }
 
@@ -117,23 +115,22 @@ if ($Targets -in 'linux', 'both') {
         Remove-Item $pinDest -Force -ErrorAction SilentlyContinue
     }
 
-    # Volumes nomeados cacheiam registry/target/pnpm entre execuções (re-empacotar
+    # Volumes nomeados cacheiam registry/target entre execuções (re-empacotar
     # fica rápido). O volume do target do aplicativo de mesa saiu junto com ele — há um único
     # target agora. Limpe com:
     #   docker volume rm mustard-deb-cargo-registry mustard-deb-cargo-git `
-    #     mustard-deb-cli-target mustard-deb-pnpm
+    #     mustard-deb-cli-target
     #
     # MUSTARD_RELEASE_VERSION travels INTO the container: build-deb.sh names the
     # package with it and cargo compiles it into the binaries. Without the -e the
     # container would only see the workspace version, and a release built from a
     # tag would ship binaries stamped with whatever Cargo.toml happened to say.
-    Write-Host "==> [linux] docker run — compila CLI + dashboard e monta o .deb (pode levar vários minutos)"
+    Write-Host "==> [linux] docker run — compila o CLI e monta o .deb (pode levar vários minutos)"
     docker run --rm `
         -e "MUSTARD_RELEASE_VERSION=$env:MUSTARD_RELEASE_VERSION" `
         -v "mustard-deb-cargo-registry:/opt/cargo/registry" `
         -v "mustard-deb-cargo-git:/opt/cargo/git" `
         -v "mustard-deb-cli-target:/tmp/cli-target" `
-        -v "mustard-deb-pnpm:/tmp/pnpm-store" `
         -v "${Root}:/work" `
         -v "${Dist}:/dist" `
         -w /work `

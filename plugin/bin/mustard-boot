@@ -146,7 +146,7 @@ if [ "$need_fetch" = "1" ] && [ -n "$VER" ] && [ -n "$os" ]; then
     echo "[mustard-boot] downloaded, but could not unpack into $DIR — mustard hooks stay dormant this session" >&2
   else
     printf '%s' "$VER" > "$STAMP"
-    chmod +x "$DIR/mustard-rt" "$DIR/scan" "$DIR/mustard-mcp" "$DIR/mustard" 2>/dev/null || true
+    chmod +x "$DIR/mustard-rt" "$DIR/scan" "$DIR/mustard" 2>/dev/null || true
   fi
   rm -rf "$tmp" 2>/dev/null || true
 fi

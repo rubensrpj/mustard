@@ -65,7 +65,7 @@ PLUGIN="mustard@$MARKETPLACE_NAME"
 instrucoes_manuais() {
   echo
   echo "    Falta atualizar o plugin do Claude Code — é ele que traz os comandos"
-  echo "    /mustard:*, os hooks e o MCP de memória, e é a cópia que o Claude Code"
+  echo "    /mustard:* e os hooks, e é a cópia que o Claude Code"
   echo "    de fato executa. Abra o Claude Code e digite estas linhas DENTRO dele"
   echo "    (não são comandos de terminal):"
   echo "        /plugin marketplace add $MARKETPLACE_REPO"

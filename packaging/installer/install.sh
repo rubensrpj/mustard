@@ -2,16 +2,13 @@
 # ============================================================================
 # Mustard — instalador completo (Ubuntu / Debian)
 #
-# Instala o pacote .deb que traz TUDO: os binários do CLI (mustard, mustard-rt,
-# mustard-mcp, scan, rtk) E o mustard-dashboard, o servidor HTTP que serve o
-# painel no navegador. Usa `apt`.
+# Instala o pacote .deb com os binários do CLI (mustard, mustard-rt, scan,
+# rtk). Usa `apt`.
 #
 # Layout instalado (gerenciado pelo apt, removível com `sudo apt remove mustard`):
-#   /usr/lib/mustard/bin/        binários reais (CLI + mustard-dashboard)
-#   /usr/lib/mustard/bin/dist/   os arquivos da tela que o servidor serve
+#   /usr/lib/mustard/bin/        binários reais
 #   /usr/lib/mustard/templates/  a carga do `mustard init`
 #   /usr/bin/mustard, …          symlinks no PATH (criados pelo pacote)
-#   atalho "Mustard Dashboard" no menu de aplicativos (inicia o servidor)
 #
 # Uso:
 #   curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install.sh | sh
@@ -416,7 +413,7 @@ if [ -z "$DEB" ]; then
 fi
 echo "==> Pacote: $DEB"
 
-# --- instala (apt resolve as dependências do dashboard) ---------------------
+# --- instala (apt resolve as dependências do pacote) ------------------------
 # Duas blindagens, e as duas existem por causa do `curl … | sh`:
 #
 # `< /dev/null` — nesse modo a ENTRADA deste script é o próprio cano que ainda
@@ -435,7 +432,7 @@ echo "==> Atualizando índices do apt (para resolver as dependências do pacote)
 $SUDO $APT_ENV apt-get update </dev/null \
   || echo "  aviso: 'apt-get update' falhou — seguindo (deps podem já estar em cache)."
 
-echo "==> Instalando o Mustard (CLI + dashboard)…"
+echo "==> Instalando o Mustard…"
 # O caminho absoluto faz o apt tratar como arquivo local e puxar as dependências.
 $SUDO $APT_ENV apt-get install -y "$DEB" </dev/null
 
@@ -478,9 +475,6 @@ fi
 echo
 echo "==> Pronto."
 echo "    CLI:        mustard --version   (e mustard-rt, scan, rtk)"
-echo "    Dashboard:  rode  mustard-dashboard  na pasta dos seus projetos —"
-echo "                ele serve em http://127.0.0.1:7777/ e abre o navegador."
-echo "                De outra máquina:  mustard-dashboard --host 0.0.0.0"
 echo
 # --- o passo do plugin -------------------------------------------------------
 # ESTE bloco é a razão de a instalação não terminar no `apt-get install`. O .deb
@@ -508,13 +502,13 @@ if [ -x "$PLUGIN_STEP" ]; then
   fi
 elif [ "$INIT_RAN" -eq 1 ]; then
   echo "    Falta o plugin do Claude Code — é ele que traz os comandos /mustard:*,"
-  echo "    os hooks e o MCP de memória. As duas linhas /plugin … estão logo acima,"
+  echo "    e os hooks. As duas linhas /plugin … estão logo acima,"
   echo "    na saída do 'mustard init' (\"Next: 1.\"): elas são digitadas DENTRO do"
   echo "    Claude Code, não no terminal. Depois feche e abra o Claude Code para os"
   echo "    hooks entrarem."
 else
   echo "    Falta o plugin do Claude Code — é ele que traz os comandos /mustard:*,"
-  echo "    os hooks e o MCP de memória. Abra o Claude Code no projeto (claude) e"
+  echo "    e os hooks. Abra o Claude Code no projeto (claude) e"
   echo "    digite estas duas linhas DENTRO dele (não são comandos de terminal):"
   echo "        /plugin marketplace add rubensrpj/mustard"
   echo "        /plugin install mustard@mustard-local"

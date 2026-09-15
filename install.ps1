@@ -2,7 +2,7 @@
 # install.ps1 — Build + install Mustard and scaffold .claude/ into a project.
 #
 # Dogfooding installer: it builds the binaries (scan, mustard-translate,
-# mustard-rt, mustard-mcp, and mustard)
+# mustard-rt, and mustard)
 # in release, installs them to ~/.cargo/bin (so the hooks in .claude/settings.json
 # — which invoke `mustard-rt` from PATH — resolve at runtime, and `mustard-rt`
 # finds the `scan` miner AND the `mustard-translate` sidecar as ~/.cargo/bin
@@ -12,7 +12,7 @@
 # `mustard-translate` (apps/translate, outside the workspace) is the LOCAL MT
 # sidecar the retrieval uses for the automatic gloss + `scan-equivalences`;
 # both are fail-open, so skipping it degrades retrieval silently — that is why
-# the installer ships it alongside the core four.
+# the installer ships it alongside the core three.
 #
 # Why MUSTARD_TEMPLATES_DIR: `cargo install` copies only the binary to
 # ~/.cargo/bin, not its templates/ payload. Without an explicit pointer the
@@ -39,7 +39,6 @@ $Root         = $PSScriptRoot
 $CargoBin     = Join-Path $env:USERPROFILE '.cargo\bin'
 $MustardExe   = Join-Path $CargoBin 'mustard.exe'
 $RtExe        = Join-Path $CargoBin 'mustard-rt.exe'
-$McpExe       = Join-Path $CargoBin 'mustard-mcp.exe'
 $ScanExe      = Join-Path $CargoBin 'scan.exe'
 $TranslateExe = Join-Path $CargoBin 'mustard-translate.exe'
 $TemplatesDir = Join-Path $Root 'apps\cli\templates'
@@ -67,8 +66,8 @@ function Step-BuildNumber([string]$Path) {
 }
 
 # Build a crate and replace its installed binary, tolerating the Windows lock on
-# a running .exe. The mustard-rt MCP server (`mustard-rt mcp`) and any live hook
-# hold ~/.cargo/bin/mustard-rt.exe open for the whole Claude Code session, so
+# a running .exe. Any live hook holds ~/.cargo/bin/mustard-rt.exe open for the
+# whole Claude Code session, so
 # `cargo install --force` fails its final move with "Access is denied (os error
 # 5)" — it cannot overwrite a binary that is mapped into a running process.
 # Windows DOES allow *renaming* that binary, though: the running image keeps its
@@ -88,7 +87,7 @@ function Install-Bin([string]$ExePath, [string]$CratePath, [string]$BinName) {
         # image is mapped into a running process.
         $parked = "$ExePath.old-$([guid]::NewGuid().ToString('N').Substring(0,8))"
         try { Move-Item -LiteralPath $ExePath -Destination $parked -Force -ErrorAction Stop }
-        catch { throw "Could not free $ExePath for replacement: $($_.Exception.Message). Close running mustard-rt processes (MCP servers / hooks) and re-run." }
+        catch { throw "Could not free $ExePath for replacement: $($_.Exception.Message). Close running mustard-rt processes (hooks) and re-run." }
     }
     cargo install --path $CratePath --bin $BinName --force
     if ($LASTEXITCODE -ne 0) {
@@ -102,7 +101,7 @@ function Install-Bin([string]$ExePath, [string]$CratePath, [string]$BinName) {
 }
 
 # Mirror a freshly installed binary into plugin/bin — the Claude Code plugin
-# resolves its hooks, MCP server, and statusline from
+# resolves its hooks and statusline from
 # ${CLAUDE_PLUGIN_ROOT}/bin, NOT from PATH, so without this sync a dev install
 # would leave the plugin running the previous binary. Same park-by-rename dance
 # as Install-Bin: a mapped image can be renamed but not overwritten on Windows.
@@ -164,7 +163,7 @@ if (-not $SkipBuild) {
     # `target\`, and lives under the already-gitignored target/ tree.
     $prevTargetDir     = $env:CARGO_TARGET_DIR
     $env:CARGO_TARGET_DIR = Join-Path $Root 'target\install'
-    Write-Host "==> Installing scan + mustard-translate + mustard-rt + mustard-mcp + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
+    Write-Host "==> Installing scan + mustard-translate + mustard-rt + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
     Write-Host "    CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR (shared cache — later runs are incremental)"
     try {
         # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
@@ -174,13 +173,12 @@ if (-not $SkipBuild) {
         Install-Bin $ScanExe      (Join-Path $Root 'apps\scan')      'scan'
         Install-Bin $TranslateExe (Join-Path $Root 'apps\translate') 'mustard-translate'
         Install-Bin $RtExe        (Join-Path $Root 'apps\rt')        'mustard-rt'
-        Install-Bin $McpExe       (Join-Path $Root 'apps\mcp')       'mustard-mcp'
         Install-Bin $MustardExe   (Join-Path $Root 'apps\cli')       'mustard'
     } finally {
         $env:MUSTARD_BUILD_NUMBER = $prevBuildNumber
         $env:CARGO_TARGET_DIR     = $prevTargetDir
     }
-    # Keep the Claude Code plugin's own bin/ in lockstep — hooks, MCP, and the
+    # Keep the Claude Code plugin's own bin/ in lockstep — the hooks and the
     # statusline of a plugin-based session resolve there, not on PATH.
     $PluginBin = Join-Path $Root 'plugin\bin'
     Write-Host "==> Syncing plugin/bin (mustard-rt + scan) ..."
@@ -238,31 +236,13 @@ try {
 }
 Write-Host '==> Done. .claude/ is installed; mustard-rt hooks are wired via settings.json.'
 
-# A long-running `mustard-rt mcp` server (the mustard-memory MCP face) and the
-# OTEL collector daemon keep the *previous* binary mapped until they exit. The
-# fresh build is already on disk, but live processes won't pick it up until they
-# restart. The OTEL collector is the worst offender on Windows: it holds an
-# exclusive lock on `mustard-rt.exe`, which can strand the *next* build. So stop
-# it now via the freshly-installed binary, then surface what the user must do.
+# A live hook keeps the *previous* binary mapped until it exits. The fresh build
+# is already on disk, but running processes will not pick it up until they
+# restart.
 if (-not $SkipBuild) {
-    # Best-effort teardown of the OTEL collector via the new binary. This runs
-    # under $ErrorActionPreference='Stop', so wrap it so any failure (missing
-    # exe, kill error, no listener) can NEVER abort the install.
-    if (Test-Path $RtExe) {
-        try {
-            & $RtExe run otel-stop
-        } catch {
-            # Fail-open: teardown is advisory; an install must not hinge on it.
-        }
-    }
-
     $stillRunning = @(Get-Process -Name mustard-rt -ErrorAction SilentlyContinue)
     if ($stillRunning.Count -gt 0) {
         Write-Warning "$($stillRunning.Count) mustard-rt process(es) are still running the PREVIOUS binary."
-        Write-Host   '  - The OTEL collector was just stopped; it respawns automatically on the next Claude Code session, picking up the fresh binary.'
-        Write-Host   '  - The MCP server (`mustard-rt mcp`) can be refreshed IN-SESSION without a full Claude Code restart:'
-        Write-Host   '      open the /mcp panel -> select `mustard-memory` -> Reconnect.'
-        Write-Host   '    Reconnect re-executes the command from disk, so it picks up the freshly-installed binary.'
-        Write-Host   '  - A full Claude Code restart also works, if you prefer it.'
+        Write-Host   '  - Restart Claude Code to pick up the freshly-installed binary.'
     }
 }
