@@ -1349,6 +1349,22 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              record of it: it does not leave with `remove` or `purge`. To take sensitive data out of \
              it, record a new version with `replaces` and purge the old one. Nothing was written."
         }
+        ("spec_events.wave_prompt_too_long", Locale::PtBr) => {
+            "O pedido da onda {wave} tem {lines} linhas, e o teto é {max}. Divida a onda antes de \
+             levar o plano para a aprovação."
+        }
+        ("spec_events.wave_prompt_too_long", Locale::EnUs) => {
+            "Wave {wave}'s request has {lines} lines, and the cap is {max}. Split the wave before \
+             taking the plan to approval."
+        }
+        ("spec_events.delivered_too_long", Locale::PtBr) => {
+            "O entregou tem {chars} caracteres, e o teto é {max}. Ele volta para a janela principal: \
+             conte o que mudou, sem repetir o pedido. Nada foi gravado."
+        }
+        ("spec_events.delivered_too_long", Locale::EnUs) => {
+            "The delivery note has {chars} characters, and the cap is {max}. It goes back to the main \
+             window: say what changed, without repeating the request. Nothing was written."
+        }
         ("approve_spec.open_points", Locale::PtBr) => "{count} pontos do levantamento ainda abertos: {points}",
         ("approve_spec.open_points", Locale::EnUs) => "{count} survey points still open: {points}",
         ("open.choose_kind", Locale::PtBr) => {
@@ -2137,6 +2153,47 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
 
         // A página e o `.md` de uma spec (`view::document`): os títulos dos
         // blocos, os nomes dos tipos, os rótulos dos campos e dos valores.
+        // O pedido de uma onda: o texto que o agente dela recebe.
+        ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
+        ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
+        ("prompt.fixed", Locale::PtBr) => {
+            "**O que é isto.** O pedido desta onda, montado pelo binário a partir da spec. Tudo que \
+             a onda precisa está escrito aqui; nunca vá procurar o resto em outro arquivo.\n\n\
+             **O que fazer.** As tarefas desta onda, e só elas. Cada critério listado abaixo ganha \
+             um teste que prova a regra dele.\n\n\
+             **Quando parar.** Se faltar alguma coisa, ou se uma tarefa parecer pedir o que a spec \
+             não diz, pare e relate: não decida sozinho e não invente peça nenhuma.\n\n\
+             **O que devolver.** O que mudou, arquivo por arquivo; o teste que prova cada critério; \
+             e o que ficou aberto."
+        }
+        ("prompt.fixed", Locale::EnUs) => {
+            "**What this is.** This wave's request, assembled by the binary from the spec. \
+             Everything the wave needs is written here; never go looking for the rest in another \
+             file.\n\n\
+             **What to do.** This wave's tasks, and only those. Every criterion listed below gets a \
+             test that proves its rule.\n\n\
+             **When to stop.** If something is missing, or a task seems to ask for what the spec \
+             does not say, stop and report: do not decide alone and do not invent anything.\n\n\
+             **What to return.** What changed, file by file; the test that proves each criterion; \
+             and what is left open."
+        }
+        ("prompt.part.specification", Locale::PtBr) => "Especificação",
+        ("prompt.part.specification", Locale::EnUs) => "Specification",
+        ("prompt.part.agreed", Locale::PtBr) => "Combinado",
+        ("prompt.part.agreed", Locale::EnUs) => "Agreed",
+        ("prompt.part.wave", Locale::PtBr) => "A onda e as tarefas dela",
+        ("prompt.part.wave", Locale::EnUs) => "The wave and its tasks",
+        ("prompt.part.criteria", Locale::PtBr) => "Critérios",
+        ("prompt.part.criteria", Locale::EnUs) => "Criteria",
+        ("prompt.part.lessons", Locale::PtBr) => "Lições",
+        ("prompt.part.lessons", Locale::EnUs) => "Lessons",
+        ("prompt.part.skills", Locale::PtBr) => "Skills das tarefas",
+        ("prompt.part.skills", Locale::EnUs) => "Task skills",
+        ("prompt.part.delivered", Locale::PtBr) => "O que as ondas anteriores entregaram",
+        ("prompt.part.delivered", Locale::EnUs) => "What the earlier waves delivered",
+        ("prompt.skill.stale", Locale::PtBr) => "a revisar",
+        ("prompt.skill.stale", Locale::EnUs) => "to review",
+
         ("page.block.state", Locale::PtBr) => "Estado",
         ("page.block.state", Locale::EnUs) => "State",
         ("page.block.metrics", Locale::PtBr) => "Painel de medição",
@@ -3028,6 +3085,8 @@ mod tests {
             ("spec_events.open_point_removed", &["{code}"][..]),
             ("spec_events.open_point_purged", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),
+            ("spec_events.wave_prompt_too_long", &["{wave}", "{lines}", "{max}"][..]),
+            ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
             ("approve_spec.open_points", &["{count}", "{points}"][..]),
             ("spec_events.deferred_unknown_pending", &["{pending}"][..]),
             ("spec_events.deferred_closed_pending", &["{pending}"][..]),
@@ -3231,6 +3290,32 @@ mod tests {
             ("map.summary.recent", &["{files}"][..]),
             ("map.summary.ask", &[][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+    }
+
+    /// Os títulos e as instruções fixas do pedido de uma onda saem do
+    /// catálogo nos dois idiomas, com as vagas que o montador preenche.
+    #[test]
+    fn i18n_translates_wave_prompt_keys() {
+        for (key, slots) in [
+            ("prompt.title", &["{spec}", "{n}"][..]),
+            ("prompt.fixed", &[][..]),
+            ("prompt.part.specification", &[][..]),
+            ("prompt.part.agreed", &[][..]),
+            ("prompt.part.wave", &[][..]),
+            ("prompt.part.criteria", &[][..]),
+            ("prompt.part.lessons", &[][..]),
+            ("prompt.part.skills", &[][..]),
+            ("prompt.part.delivered", &[][..]),
+            ("prompt.skill.stale", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

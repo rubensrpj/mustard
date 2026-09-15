@@ -677,6 +677,12 @@ pub enum Refusal {
     /// Um `remove` ou um `purge` que tiraria o ponto que fecha outro cujo
     /// original já saiu: ele é o único registro do ponto.
     ClosingPointLastRecord { code: String },
+    /// O pedido montado de uma onda passa do teto de linhas: a onda precisa
+    /// ser dividida antes de o plano ir para a aprovação.
+    WavePromptTooLong { wave: u64, lines: usize, max: usize },
+    /// O texto do entregou de uma onda passa do teto de caracteres: ele volta
+    /// para a janela principal e precisa caber nela.
+    DeliveredTooLong { chars: usize, max: usize },
     Io { detail: String },
 }
 
@@ -724,6 +730,8 @@ impl Refusal {
             Self::OpenPointRemoved { .. } => "open-point-removed",
             Self::OpenPointPurged { .. } => "open-point-purged",
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
+            Self::WavePromptTooLong { .. } => "wave-prompt-too-long",
+            Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -875,6 +883,14 @@ impl Refusal {
             Self::ClosingPointLastRecord { code } => {
                 fill("spec_events.closing_point_last_record", &[("{code}", code.clone())])
             }
+            Self::WavePromptTooLong { wave, lines, max } => fill(
+                "spec_events.wave_prompt_too_long",
+                &[("{wave}", wave.to_string()), ("{lines}", lines.to_string()), ("{max}", max.to_string())],
+            ),
+            Self::DeliveredTooLong { chars, max } => fill(
+                "spec_events.delivered_too_long",
+                &[("{chars}", chars.to_string()), ("{max}", max.to_string())],
+            ),
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
