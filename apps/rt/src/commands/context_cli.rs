@@ -22,7 +22,7 @@ pub enum ContextCmd {
     /// Research a feature request against the repo via the `scan` digest (no
     /// source reading) and emit the structured insumos for decomposition +
     /// `scan spec`. The grounding step of the elicitation loop.
-    #[command(display_order = 3)]
+    #[command(display_order = 2)]
     Feature {
         /// The free-text feature/bugfix request to research. The orchestration
         /// layer passes any cross-lingual translation INSIDE this text
@@ -44,7 +44,7 @@ pub enum ContextCmd {
     /// missing / unreadable model prints nothing, exit 0. Byte-stable output.
     /// (The per-prompt Level-2 entrypoints were removed: lexical prompt×path
     /// matching measured 1 useful hit in 17 across two field sessions.)
-    #[command(display_order = 4)]
+    #[command(display_order = 3)]
     Orient {
         /// Workspace root (holds `.claude/grain.model.json`). Defaults to `.`.
         #[arg(long, default_value = ".")]

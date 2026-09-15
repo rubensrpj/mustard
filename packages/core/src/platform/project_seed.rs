@@ -154,8 +154,6 @@ const GITHUB_PR_TEMPLATE: &str = ".github/pull_request_template.md";
 /// carrying the operator's own prompt titles stayed visible to the client's git.
 const HARNESS_CLAUDE_FILES: &[&str] = &[
     ".artifacts.json",
-    "grain.dictionary.json",
-    "grain.equivalences.json",
     "grain.model.json",
     "scan-declined.json",
     "scan-map.md",
@@ -3260,8 +3258,6 @@ mod tests {
         for (name, body) in [
             ("scan-map.md", "Type: cargo\n"),
             ("grain.model.json", "{}\n"),
-            ("grain.dictionary.json", "{}\n"),
-            ("grain.equivalences.json", "{}\n"),
             ("scan-declined.json", "{}\n"),
             (".artifacts.json", "{}\n"),
             ("capabilities/cap.demo.md", "# cap\n"),

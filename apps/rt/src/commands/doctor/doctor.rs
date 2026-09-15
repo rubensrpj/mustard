@@ -1139,7 +1139,7 @@ fn check_spec_index(root: &Path, lang: Locale) -> CheckResult {
 // ---------------------------------------------------------------------------
 
 /// What the scan writes, inside the project's `.claude/`.
-const SCAN_OUTPUTS: &[&str] = &["grain.model.json", "grain.dictionary.json", "grain.equivalences.json"];
+const SCAN_OUTPUTS: &[&str] = &["grain.model.json"];
 
 /// The scan only writes outside git: what it recorded may be neither tracked
 /// nor show up as a new file. A visible file becomes a WARN with the list, in

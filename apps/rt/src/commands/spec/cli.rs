@@ -22,7 +22,7 @@ use crate::commands::{spec};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum SpecCmd {
     /// Finalize a pipeline spec — single-stage close straight to `completed`.
-    #[command(display_order = 10)]
+    #[command(display_order = 9)]
     CompleteSpec {
         /// Spec name (required unless `--archive-stale`/`--archive-followups`).
         spec: Option<String>,
@@ -44,7 +44,7 @@ pub enum SpecCmd {
     /// `newEntityCount` deterministically in Rust from the spec's `## Files`
     /// section + a diff against the repo model's entity names (no LLM). Without
     /// it, reads a pre-computed signals JSON from stdin (legacy / override).
-    #[command(display_order = 17)]
+    #[command(display_order = 16)]
     ScopeDecompose {
         /// Compute the signals deterministically from this spec file instead of
         /// reading them from stdin.
@@ -58,7 +58,7 @@ pub enum SpecCmd {
     /// from the `feature` digest's `sliceMatchCount`, and encodes the `/feature`
     /// SKILL's prose thresholds in code. Fail-open: an unreadable spec yields
     /// `{"scope":"full",...}` (the conservative default).
-    #[command(display_order = 18)]
+    #[command(display_order = 17)]
     ScopeClassify {
         /// Compute the signals deterministically from this spec file.
         #[arg(long = "from-spec", alias = "spec")]
@@ -75,7 +75,7 @@ pub enum SpecCmd {
     /// Returns `{scope, decompose, reason, waves, signals, filesSectionEmpty?}`
     /// — the union the `/feature` PLAN step needs to route, pick 1-vs-N, and
     /// seed `spec-draft --waves`. Replaces calling the two commands in sequence.
-    #[command(display_order = 19)]
+    #[command(display_order = 18)]
     PlanPrepare {
         /// Compute the signals deterministically from this spec file.
         #[arg(long = "from-spec", alias = "spec")]
@@ -90,7 +90,7 @@ pub enum SpecCmd {
     /// opened: pre-2026-05-20 nothing populated those tables since the JS
     /// harness writer was removed, which is why every dashboard spec card
     /// fell back to `"unknown"`.
-    #[command(display_order = 25)]
+    #[command(display_order = 24)]
     RebuildSpecs,
     /// Discover active specs from the filesystem (Outcome=Active, Stage=Plan|Execute).
     ///
@@ -98,7 +98,7 @@ pub enum SpecCmd {
     /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
     /// progress, extracts a one-line resumo.
     /// Output is either a markdown table (default) or a JSON document.
-    #[command(display_order = 42)]
+    #[command(display_order = 41)]
     ActiveSpecs {
         /// Output format: `table` (default) or `json`.
         #[arg(long, default_value = "table")]
@@ -116,7 +116,7 @@ pub enum SpecCmd {
     /// materialised by `wave-scaffold`. The narrative is written in the
     /// project's text language (`mustard.json` `language.text`). `--signals` is
     /// a free-form comma-separated list embedded in `spec.md` as a comment.
-    #[command(display_order = 49)]
+    #[command(display_order = 48)]
     SpecDraft {
         /// Free-text intent — the spec TITLE, and the last-resort slug seed.
         #[arg(long)]
@@ -198,7 +198,7 @@ pub enum SpecCmd {
     /// `mustard_core::domain::scan::Scan::spec`. Invoke as
     /// `mustard-rt run scan spec --entity <Name>`.
     #[command(name = "scan-spec")]
-    #[command(display_order = 50)]
+    #[command(display_order = 49)]
     ScanSpec {
         /// Entity/unit to create (substitutes `<Name>` in the grain recipe).
         #[arg(long)]
@@ -220,7 +220,7 @@ pub enum SpecCmd {
     /// by the user's answer to the approval question, which the witness
     /// records.
     #[command(name = "approve-spec")]
-    #[command(display_order = 57)]
+    #[command(display_order = 56)]
     ApproveSpec {
         /// Spec slug under `.claude/spec/` to approve.
         #[arg(long)]
@@ -249,7 +249,7 @@ pub enum SpecCmd {
     /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
     /// the unrelated session-end amendment window.
     #[command(name = "ac-amend")]
-    #[command(display_order = 66)]
+    #[command(display_order = 65)]
     AcAmend {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -310,7 +310,7 @@ pub enum SpecCmd {
     /// to the proof ledger's `additions`. A wave spec carries no criterion
     /// text — `--wave N` names the wave that will be judged by the new id.
     #[command(name = "ac-add")]
-    #[command(display_order = 67)]
+    #[command(display_order = 66)]
     AcAdd {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -370,7 +370,7 @@ pub enum SpecCmd {
     /// `already-routed` when the same decision is restated, and refuses a
     /// different one rather than overwriting a decision in silence.
     #[command(name = "mark-finding")]
-    #[command(display_order = 75)]
+    #[command(display_order = 73)]
     MarkFinding {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -400,7 +400,7 @@ pub enum SpecCmd {
     /// `changed` diz se a página mudou desde a última geração (só então ela é
     /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
     #[command(name = "spec-doc")]
-    #[command(display_order = 81)]
+    #[command(display_order = 79)]
     SpecDoc {
         /// Slug da spec em `.claude/spec/`.
         #[arg(long)]
@@ -421,7 +421,7 @@ pub enum SpecCmd {
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
     /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
     #[command(name = "page")]
-    #[command(display_order = 83)]
+    #[command(display_order = 81)]
     Page {
         /// A spec cuja página e cujo `.md` são refeitos.
         #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]

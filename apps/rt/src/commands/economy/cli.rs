@@ -26,7 +26,7 @@ pub enum EconomyCmd {
     /// whose `## Heading` / `### Heading` sections are kept when their body
     /// contains any spec-derived relevance term. The CLAUDE.md slice is
     /// emitted after the CONTEXT.md slice (separated by a blank line).
-    #[command(display_order = 11)]
+    #[command(display_order = 10)]
     ContextSlice {
         /// A `CONTEXT.md` / `CONTEXT-MAP.md` path. Repeatable.
         #[arg(long)]
@@ -40,7 +40,7 @@ pub enum EconomyCmd {
         context_claude_md: Option<String>,
     },
     /// Render pipeline + hook telemetry (`collect` / `report` subcommand).
-    #[command(display_order = 26)]
+    #[command(display_order = 25)]
     Metrics {
         /// Subcommand: `collect` or `report`.
         subcommand: Option<String>,
@@ -58,7 +58,7 @@ pub enum EconomyCmd {
     /// invoked from CLI as `mustard-rt run metrics wave-status --spec <parent>`
     /// via argv pre-routing in `main.rs`.
     #[command(name = "metrics-wave-status")]
-    #[command(display_order = 27)]
+    #[command(display_order = 26)]
     MetricsWaveStatus {
         /// Parent (epic) spec name under `.claude/spec/` (flat layout).
         #[arg(long)]

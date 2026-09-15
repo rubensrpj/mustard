@@ -220,9 +220,6 @@ mod tests {
     use crate::commands::scan::default_model_path;
     use std::process::Command;
 
-    /// The scan's second artifact, written beside the model on every run.
-    const DICTIONARY: &str = "grain.dictionary.json";
-
     /// A pergunta inteira, feita como a porta de CORTE a faz.
     ///
     /// As fixtures deste módulo medem pelo MESMO ponto de entrada que o produto
@@ -436,14 +433,12 @@ mod tests {
 
     /// A repo on `dev` whose `.claude/grain.model.json` is TRACKED and
     /// committed — the shape where a re-mined census shows up as a dirty tree
-    /// at all. Returns the model path. The fixture tracks BOTH artifacts a scan
-    /// writes, because the real miner writes both.
+    /// at all. Returns the model path.
     fn repo_tracking_the_census(root: &Path) -> std::path::PathBuf {
         init_repo_on(root, "dev");
         let model = default_model_path(root);
         std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
         std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
-        std::fs::write(model.with_file_name(DICTIONARY), "{\"terms\":[]}\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-m", "track the census"]);
         assert_eq!(porcelain(root), "", "the fixture must start clean");
@@ -455,10 +450,9 @@ mod tests {
         default_model_path(root)
     }
 
-    /// Everything a scan writes, as the miner would — model AND sidecar.
+    /// What a scan writes: the model.
     fn remine(model: &Path) {
         std::fs::write(model, "{\"projects\":[{\"dir\":\"apps/rt\"}]}\n").unwrap();
-        std::fs::write(model.with_file_name(DICTIONARY), "{\"terms\":[\"wave\"]}\n").unwrap();
     }
 
     /// Deixa na árvore, e só na árvore, a saída da passagem de ENRIQUECIMENTO —
@@ -1300,7 +1294,6 @@ mod tests {
         let model = default_model_path(root);
         std::fs::create_dir_all(model.parent().expect("model parent")).unwrap();
         std::fs::write(&model, "{\"projects\":[]}\n").unwrap();
-        std::fs::write(model.with_file_name(DICTIONARY), "{\"terms\":[]}\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-q", "-m", "track the census"]);
         let origin = root.parent().expect("tmp").join("origin.git");

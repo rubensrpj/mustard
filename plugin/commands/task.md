@@ -48,12 +48,3 @@ A dispatch can fail with a transient infra error (`Tool result missing…`) — 
 
 `copy` · `design` · `a11y` · `i18n` · `consistency` · `api-contract`. Default `consistency`. After `audit`/`compare`: map each CRITICAL/WARNING to `/task refactor` or a pipeline; present the list, user picks — never auto-execute.
 
-## Lexicon feedback (end of run)
-
-`/task` has no close, so persist a confirmed vocabulary bridge HERE — especially when you located by other means after a `weak`/`none` digest:
-
-```bash
-mustard-rt run equivalence-learn --term <missed-concept> --tokens <code-terms>
-```
-
-Only when the mapping is clear (you opened the file and the code term names the concept) — a wrong bridge poisons future queries. Writes the learned overlay that re-scans never wipe.

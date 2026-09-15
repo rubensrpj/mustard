@@ -19,7 +19,7 @@ No stage emit here; the unit's name was minted at the base gate, BEFORE this flo
 
 1. Note the intent in your own words plus every concrete critique.
 2. `mustard-rt run scan` when `grain.model.json` is absent or materially stale.
-3. **Read the lapidation kit FIRST: `mustard-rt run scan-lapidation`.** It prints how THIS project names things — the mined roles (what a thing is called and where that kind lives), the shapes (roles that recur together, i.e. what a new entity here usually needs) and the units. Lapidating from memory is guessing at a vocabulary the asker had no way to know: measured on a real request, the raw prompt scored 14/32 terms and had its planning fields withheld, while the same request in the project's own words scored 5/5 and pointed straight at the implementing modules. Map the request onto that menu — never copy the menu into the query wholesale, and never invent a term that is not in it. THEN call ONCE: `mustard-rt run feature --intent "<lapidated terms + the request content words>"` (deterministic, no model call). Query-shaping rules: `${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md`.
+3. **Call the digest ONCE:** `mustard-rt run feature --intent "<the request content words, in the code's own vocabulary>"` (deterministic, no model call). Query-shaping rules: `${CLAUDE_PLUGIN_ROOT}/refs/locating-code.md`.
 
 | Digest field | Rule |
 |---|---|
@@ -28,7 +28,6 @@ No stage emit here; the unit's name was minted at the base gate, BEFORE this flo
 | `strong` | SELECT the 5-10 files a developer would open from `candidates` by their evidence lines — never the whole published list (~12 on a strong report), never the repo or `grain.model.json`; prefer production code over migrations/seeds/skeletons; keep frontend AND backend when the request spans layers. The anchor rows carry no `terms` here: the candidate evidence already does |
 | `weak`/`none` | planning fields withheld — read the `vocabulary` menu, sharpen terms, re-call. A `miss` is NOT absent; true net-new is DESIGN |
 | `uncovered` (absence radar) | request concepts with NO candidate — settle EACH with one Grep/Glob (existence gate) BEFORE planning; never conclude it does not exist from the pool alone |
-| confirmed bridge | after a settled re-query or `uncovered` row: `mustard-rt run equivalence-learn --term <missed> --tokens <code-terms>` (learned overlay, survives re-scans; explicit, never automatic) |
 
 4. Read the survivors (Explore READS the §1.3 anchors, never re-maps): ONE consolidated `Task(Explore)` (≤30 lines each — the cap the rendered explore contract states and the return gate cuts at) when they fit one subagent; one per subproject only when anchors span ≥2 subprojects with volume in each; direct sliced parent reads for a single-subproject feature too small for a subagent. Composition/enhancement → the `slices` lead (each names the pattern and carries `exemplarFiles`); net-new entity → the anchors of a sibling lead.
 5. Specification grill (selective, EARLY — before any §2 ceremony): digest still `weak`/`none` after the re-query, or the request names an outcome/symptom without the mechanism → ONE batched AskUserQuestion (2-3 targeted questions, options inferred from the anchors); fold answers into the intent. A concrete, well-covered request skips this.

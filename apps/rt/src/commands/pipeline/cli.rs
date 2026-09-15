@@ -22,7 +22,7 @@ use crate::commands::{pipeline};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum PipelineCmd {
     /// Emit a compact git diff summary for agent context.
-    #[command(display_order = 5)]
+    #[command(display_order = 4)]
     DiffContext {
         /// Branch to compare against (auto-detects `main`/`master`).
         #[arg(long)]
@@ -42,7 +42,7 @@ pub enum PipelineCmd {
     /// to `wave-{N}-{role}/diff.md`, atomic LF). Folds the two bookkeeping steps
     /// the orchestrator did by hand after a committed wave; the diff cache
     /// replaces a fragile shell redirect (no CRLF / absolute-path-redirect footgun).
-    #[command(display_order = 9)]
+    #[command(display_order = 8)]
     WaveDone {
         /// Spec the completed wave belongs to.
         #[arg(long)]
@@ -55,7 +55,7 @@ pub enum PipelineCmd {
         duration_ms: Option<u64>,
     },
     /// Run build/test verification for the active pipeline's subprojects.
-    #[command(display_order = 29)]
+    #[command(display_order = 28)]
     VerifyPipeline {
         /// Output format: `json` (default) or `html`.
         #[arg(long, default_value = "json")]
@@ -66,7 +66,7 @@ pub enum PipelineCmd {
     /// With `--self-test`: instantiate a minimal [`mustard_core::SpecSummaryDoc`],
     /// serialise it to pretty JSON, print to stdout, and exit 0. Used by
     /// `cargo run -p mustard-rt -- run pipeline-summary --self-test` as a smoke check.
-    #[command(display_order = 30)]
+    #[command(display_order = 29)]
     PipelineSummary {
         /// Path to the spec directory (must contain `spec.md`). Also accepts a
         /// `.../spec.md` path or a bare slug. `--spec` / `--from-spec` are
@@ -88,7 +88,7 @@ pub enum PipelineCmd {
     /// `--harness` mode: reads `.claude/settings.json`, groups hooks by lifecycle
     /// event, resolves enforcement mode from env vars, and renders a 4-column
     /// table (Hook | Matcher | Enforces | Mode).
-    #[command(display_order = 43)]
+    #[command(display_order = 42)]
     Status {
         /// Include hooks table (harness view).
         #[arg(long)]
@@ -105,7 +105,7 @@ pub enum PipelineCmd {
     /// resumo, agent roles. Emits `pipeline.resume_mode` before returning
     /// (idempotent — debounced 10 s). Fail-open: every IO error degrades a
     /// field to `null`/`false`; exit 0 always.
-    #[command(display_order = 45)]
+    #[command(display_order = 44)]
     ResumeBootstrap {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -116,7 +116,7 @@ pub enum PipelineCmd {
     },
     /// Drive the CLOSE-phase gates (verify → qa → docs-stale → summary).
     #[command(name = "close-orchestrate")]
-    #[command(display_order = 55)]
+    #[command(display_order = 54)]
     CloseOrchestrate {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -134,7 +134,7 @@ pub enum PipelineCmd {
     /// Output: `"events"`, `"scaffold"` (created_files, skipped, refreshed,
     /// removed) and `"validation"` (ok, issues) — byte-stable, ordered.
     #[command(name = "plan-materialize")]
-    #[command(display_order = 60)]
+    #[command(display_order = 59)]
     PlanMaterialize {
         /// Target spec directory. Also accepts a `.../spec.md` path or a bare
         /// slug. `--spec` / `--from-spec` are hidden aliases.
@@ -158,7 +158,7 @@ pub enum PipelineCmd {
     /// text ready for `Task`. Pending = first dependency level with a wave not
     /// yet carrying `pipeline.wave.complete`; everything done → `[]`.
     #[command(name = "wave-advance")]
-    #[command(display_order = 61)]
+    #[command(display_order = 60)]
     WaveAdvance {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -172,7 +172,7 @@ pub enum PipelineCmd {
     /// Output: `{"completed":bool,"qa":{overall,criteria},"reviews":[...],`
     /// `"summary":...}`.
     #[command(name = "close-pipeline")]
-    #[command(display_order = 62)]
+    #[command(display_order = 61)]
     ClosePipeline {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]

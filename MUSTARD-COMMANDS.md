@@ -184,7 +184,7 @@ flowchart TD
     qa2 -->|fail| val
 ```
 
-> Digest com ≥2 `concerns` → cada concern vira sua própria unidade, com suas próprias anchors (no Full: uma onda; no light/task: um despacho). Ponte de vocabulário confirmada → `equivalence-learn` persiste o aprendizado (sobrevive a re-scans).
+> Digest com ≥2 `concerns` → cada concern vira sua própria unidade, com suas próprias anchors (no Full: uma onda; no light/task: um despacho).
 
 ---
 
@@ -360,7 +360,6 @@ flowchart TD
     two --> lex
     par --> lex
     chk --> lex
-    impl --> lex["fim da run: equivalence-learn<br/>(SÓ ponte de vocabulário confirmada)"]
 ```
 
 > Sem spec e sem close por design — precisa de rastro? Promova para `/mustard:feature` Light.
@@ -473,7 +472,7 @@ flowchart TD
 | `scan` | fluxo interno | `scan --full` | **produz** |
 | `/mustard:feature` | fluxo interno · core | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
 | `/mustard:bugfix` | fluxo interno · core | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |
-| `/mustard:task` | fluxo interno · delegação | `agent-prompt-render`, `feature` (digest), `equivalence-learn` | indireto |
+| `/mustard:task` | fluxo interno · delegação | `agent-prompt-render`, `feature` (digest) | indireto |
 
 ---
 

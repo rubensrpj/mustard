@@ -21,7 +21,7 @@ use crate::commands::{wave};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum WaveCmd {
     /// Render a spec's wave structure as an ASCII or JSON tree.
-    #[command(display_order = 14)]
+    #[command(display_order = 13)]
     WaveTree {
         /// Path to the spec directory. Also accepts a `.../spec.md` path or a
         /// bare slug. `--spec` / `--from-spec` are hidden aliases, so the
@@ -38,7 +38,7 @@ pub enum WaveCmd {
     /// stdin (legacy). Both transports accept BOTH shapes: the derivation form
     /// `{files, projectRoot}` and the rich plan JSON (`{waves: [{files}]}`,
     /// per-wave censuses unioned) that `plan-materialize --plan` consumes.
-    #[command(display_order = 15)]
+    #[command(display_order = 14)]
     WaveDependency {
         /// Path to a JSON file: `{files, projectRoot}` or a `--plan`-style
         /// `{waves: [...]}` document. Omit to read the same JSON from stdin.
@@ -50,7 +50,7 @@ pub enum WaveCmd {
     /// dashboard "Ondas" tab to show the canon `## Arquivos` count and pop
     /// open a drawer with the wave markdown. Fail-open: missing files →
     /// `{"count":0,"markdown":"","path":null}`.
-    #[command(display_order = 16)]
+    #[command(display_order = 15)]
     WaveFiles {
         /// Parent spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -60,14 +60,14 @@ pub enum WaveCmd {
         wave: Option<u32>,
     },
     /// Check whether a spec should be decomposed at EXECUTE entry.
-    #[command(display_order = 20)]
+    #[command(display_order = 19)]
     ExecRewaveCheck {
         /// Path to the spec file.
         #[arg(long)]
         spec: Option<String>,
     },
     /// Audit per-wave file/layer counts inside a wave-plan.
-    #[command(display_order = 22)]
+    #[command(display_order = 21)]
     WaveSizeCheck {
         /// Path to the spec directory. Also accepts a `.../spec.md` path or a
         /// bare slug. `--spec` / `--from-spec` are hidden aliases.
@@ -75,7 +75,7 @@ pub enum WaveCmd {
         spec_dir: Option<String>,
     },
     /// Audit dispatch-parallel waves for `## Files` overlap inside a wave-plan.
-    #[command(display_order = 64)]
+    #[command(display_order = 63)]
     WaveOverlapCheck {
         /// Path to the spec directory. Also accepts a `.../spec.md` path or a
         /// bare slug. `--spec` / `--from-spec` are hidden aliases.
@@ -100,7 +100,7 @@ pub enum WaveCmd {
     /// BEFORE any dir is deleted. Reuses `is_heading` / `write_atomic` /
     /// the wave-scaffold renderers.
     #[command(name = "wave-collapse")]
-    #[command(display_order = 38)]
+    #[command(display_order = 37)]
     WaveCollapse {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]

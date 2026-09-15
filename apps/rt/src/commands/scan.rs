@@ -81,7 +81,7 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     };
 
     // Only run the map pass when grain succeeded (model file is valid).
-    if let Ok(report) = &scan_result {
+    if scan_result.is_ok() {
         let mut projects = read_projects(&model_path);
         // The grain miner is git-blind; stamp the git-boundary FACT onto the
         // census here (a `.git` dir/file at each subproject's dir) so the
@@ -108,19 +108,6 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
                 result["over_cap"] = json!(over_cap_json);
                 result["ok"] = json!(false);
             }
-        }
-
-        // Equivalences artifact (additive): project the dictionary the scan
-        // tool wrote NEXT TO the model through the local MT sidecar into
-        // `grain.equivalences.json` — the PT→EN query-expansion table the
-        // `feature` retrieval feeds to `scan rank`. Only when the dictionary
-        // changed: otherwise nothing it is made from changed. Fail-open by
-        // contract: a missing
-        // dictionary/translator degrades to `{ok:false, reason}` in the
-        // summary and never fails the scan.
-        if report.dictionary {
-            let dict_path = model_path.with_file_name("grain.dictionary.json");
-            result["equivalences"] = super::scan_equivalences::generate_at(&dict_path);
         }
     }
 

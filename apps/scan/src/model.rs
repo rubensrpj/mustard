@@ -8,7 +8,6 @@
 use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -183,42 +182,6 @@ pub struct Module {
     /// that does not read the file again still infers the same stacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<String>,
-    /// The words of this file's comments, with how many times each appears
-    /// (hand-written, non-test files only), kept so the dictionary is rebuilt
-    /// from the map on every pass without reading the file again.
-    #[serde(default, with = "words", skip_serializing_if = "BTreeMap::is_empty")]
-    pub comment_terms: BTreeMap<String, u32>,
-    /// How many of this file's comments read as not English.
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub foreign_comments: u32,
-}
-
-fn is_zero_u32(n: &u32) -> bool {
-    *n == 0
-}
-
-/// The comment words of a module, written as one line (`word:count`, space
-/// separated, in word order) so the map stays compact. A word is letters and
-/// digits only, so neither separator can appear inside one.
-mod words {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::collections::BTreeMap;
-
-    pub fn serialize<S: Serializer>(map: &BTreeMap<String, u32>, s: S) -> Result<S::Ok, S::Error> {
-        let pairs: Vec<String> = map.iter().map(|(word, n)| format!("{word}:{n}")).collect();
-        s.serialize_str(&pairs.join(" "))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, u32>, D::Error> {
-        let line = String::deserialize(d)?;
-        Ok(line
-            .split(' ')
-            .filter_map(|pair| {
-                let (word, n) = pair.rsplit_once(':')?;
-                Some((word.to_string(), n.parse().ok()?))
-            })
-            .collect())
-    }
 }
 
 /// serde helper for additive numeric fields (mirrors `String::is_empty` above).

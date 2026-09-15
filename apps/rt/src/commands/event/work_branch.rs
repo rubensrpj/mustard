@@ -1094,8 +1094,7 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 /// FORA da base não há gravação nenhuma para fechar esse atrito, e aí a
 /// categoria continua nomeando os caminhos mas não libera nada: ver
 /// [`crate::commands::event::census_settlement`].
-const CENSUS_FILES: &[&str] =
-    &["grain.model.json", "grain.dictionary.json", "scan-declined.json", "scan-map.md"];
+const CENSUS_FILES: &[&str] = &["grain.model.json", "scan-declined.json", "scan-map.md"];
 
 /// A subárvore sob um `.claude/` onde os moldes `{papel}-pattern` do censo
 /// vivem, e o nome do arquivo que fecha cada um. A passagem de enriquecimento
@@ -2702,7 +2701,6 @@ mod tests {
         // corte pela saída da própria ferramenta).
         for census in [
             ".claude/grain.model.json",
-            ".claude/grain.dictionary.json",
             ".claude/scan-declined.json",
             ".claude/scan-map.md",
             "apps/rt/.claude/scan-map.md",

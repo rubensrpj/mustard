@@ -22,7 +22,7 @@ use crate::commands::{review};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ReviewCmd {
     /// Validate a spec's structure (WARN-level — never blocks).
-    #[command(display_order = 12)]
+    #[command(display_order = 11)]
     AnalyzeValidation {
         /// Path to the spec file.
         #[arg(long, alias = "from-spec")]
@@ -33,7 +33,7 @@ pub enum ReviewCmd {
     /// `export` is missing. Self-created paths (declared in `## Files`) are
     /// excluded. Output is single-line JSON; exit code is always 0
     /// (fail-open) — the orchestrator decides whether to block dispatch.
-    #[command(display_order = 21)]
+    #[command(display_order = 20)]
     DependencyPrecheck {
         /// Path to the spec file or its containing directory (resolves
         /// `<dir>/spec.md`).
@@ -53,7 +53,7 @@ pub enum ReviewCmd {
     /// integration.
     /// Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2.
     #[command(name = "gate-regression-check")]
-    #[command(display_order = 23)]
+    #[command(display_order = 22)]
     GateRegressionCheck {
         /// Spec slug under `.claude/spec/`.
         #[arg(long)]
@@ -71,7 +71,7 @@ pub enum ReviewCmd {
         wave_dir: Option<String>,
     },
     /// Execute a spec's Acceptance Criteria; emit a `qa.result` event.
-    #[command(display_order = 24)]
+    #[command(display_order = 23)]
     QaRun {
         /// Spec name (resolved under `.claude/specs` or `.claude/spec` — flat layout).
         #[arg(long, alias = "from-spec")]
@@ -81,7 +81,7 @@ pub enum ReviewCmd {
         format: String,
     },
     /// Record a REVIEW-phase verdict (emits a `review.result` event + metric).
-    #[command(display_order = 31)]
+    #[command(display_order = 30)]
     ReviewResult {
         /// Spec name.
         #[arg(long)]
@@ -103,7 +103,7 @@ pub enum ReviewCmd {
         findings_file: Option<PathBuf>,
     },
     /// Scan a project tree for committed secrets + misconfigurations.
-    #[command(display_order = 33)]
+    #[command(display_order = 32)]
     SecurityScan {
         /// Directory to scan. Defaults to the current directory.
         dir: Option<String>,
@@ -119,7 +119,7 @@ pub enum ReviewCmd {
     /// git diff. `--format table` prints a compact executive summary (title,
     /// author, scope, comments, review states). Fail-open: a provider that
     /// could not answer emits `{"error":"..."}` and exits 0.
-    #[command(display_order = 44)]
+    #[command(display_order = 43)]
     ReviewPrefetch {
         /// PR reference: a number (`123`) or the PR's web URL.
         pr_ref: Option<String>,
@@ -152,7 +152,7 @@ pub enum ReviewCmd {
     /// executor grades with — names a word the strip itself deleted is DECLINED
     /// rather than run: its red was guaranteed, so it would say nothing.
     #[command(name = "ac-negative-check")]
-    #[command(display_order = 65)]
+    #[command(display_order = 64)]
     AcNegativeCheck {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -183,7 +183,7 @@ pub enum ReviewCmd {
     /// and the refusal names the base to switch to. A branch is never refused
     /// for missing from `git.flow`. Fail-open on `gh`.
     #[command(name = "pr-list")]
-    #[command(display_order = 69)]
+    #[command(display_order = 67)]
     PrList {
         /// Any directory inside the repo (worktrees welcome — the command
         /// resolves the main checkout itself). Defaults to the current dir.
@@ -197,7 +197,7 @@ pub enum ReviewCmd {
     /// also RECORDS the outcome through the `review-result` path, which is what
     /// `pr-merge` reads back.
     #[command(name = "pr-review")]
-    #[command(display_order = 70)]
+    #[command(display_order = 68)]
     PrReview {
         /// PR number. Omitted: the open PR of the current branch.
         #[arg(long)]
@@ -220,7 +220,7 @@ pub enum ReviewCmd {
     /// `action:"confirm"` and touches nothing; it never refuses. `--confirm` is
     /// the operator's answer coming back.
     #[command(name = "pr-merge")]
-    #[command(display_order = 71)]
+    #[command(display_order = 69)]
     PrMerge {
         /// PR number. Omitted: the open PR of the current branch.
         #[arg(long)]
@@ -240,7 +240,7 @@ pub enum ReviewCmd {
     /// JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
     /// `error` field with exit 0, never a panic.
     #[command(name = "pr-open")]
-    #[command(display_order = 77)]
+    #[command(display_order = 75)]
     PrOpen {
         /// The integration base the PR targets (short branch name).
         #[arg(long)]
@@ -272,7 +272,7 @@ pub enum ReviewCmd {
     /// in force. Same report shape as `pr-open`; failure degrades into the
     /// `error` field with exit 0.
     #[command(name = "pr-edit")]
-    #[command(display_order = 78)]
+    #[command(display_order = 76)]
     PrEdit {
         /// The PR number whose body is replaced.
         #[arg(long)]
@@ -290,7 +290,7 @@ pub enum ReviewCmd {
     /// force. Same report shape as `pr-open`; failure degrades into the
     /// `error` field with exit 0.
     #[command(name = "pr-ready")]
-    #[command(display_order = 79)]
+    #[command(display_order = 77)]
     PrReady {
         /// The draft PR number to mark ready.
         #[arg(long)]
@@ -312,7 +312,7 @@ pub enum ReviewCmd {
     /// untouched. Output is one byte-stable JSON document; this command decides
     /// nothing.
     #[command(name = "finding-collect")]
-    #[command(display_order = 74)]
+    #[command(display_order = 72)]
     FindingCollect {
         /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
         /// its directory.
@@ -321,7 +321,7 @@ pub enum ReviewCmd {
     },
     /// Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
     #[command(name = "review-dispatch")]
-    #[command(display_order = 56)]
+    #[command(display_order = 55)]
     ReviewDispatch {
         /// PR number.
         #[arg(long)]

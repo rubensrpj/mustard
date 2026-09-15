@@ -7,7 +7,6 @@
 
 mod classify;
 mod condense;
-mod dictionary;
 mod digest;
 mod facts;
 mod extract;
@@ -17,7 +16,6 @@ mod manifests;
 mod matching;
 mod mine;
 mod model;
-mod pagerank;
 mod rank;
 mod refresh;
 mod spec;
@@ -27,7 +25,7 @@ mod testmap;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -103,99 +101,27 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Rank the model's files for a raw (e.g. Portuguese) request via personalized
-    /// PageRank over the dependency graph, SEEDED by the distinctive-vocabulary
-    /// dictionary — the localization layer over the dictionary's PT→term bridge.
-    /// `path` is a project dir to scan, or a grain.model.json; `--dict` is the
-    /// `grain.dictionary.json` sidecar. Emits byte-stable JSON `{query,
-    /// matched_terms, files:[{file, score_x1024}]}`; an empty `files` means
-    /// nothing bridged. Deterministic, no LLM.
-    Rank {
-        path: PathBuf,
-        /// The `grain.dictionary.json` sidecar (the seed vocabulary).
-        #[arg(long)]
-        dict: PathBuf,
-        /// Comma/space-separated request terms (the raw intent), e.g. a PT prompt.
-        #[arg(long, default_value = "")]
-        query: String,
-        /// Edge orientation: `forward` | `reverse` | `undirected` (default —
-        /// the graph splits by language, so domain-locality is undirected).
-        #[arg(long, default_value = "undirected")]
-        direction: String,
-        /// Damping ×1024 (default ≈ 0.60 → 614: a strong topic bias keeps mass
-        /// near the seeds; classic PageRank ≈ 0.85 → 870).
-        #[arg(long, default_value_t = 614)]
-        damping: u64,
-        /// Fixed power-iteration count (byte-stable — never a float convergence test).
-        #[arg(long, default_value_t = 50)]
-        iters: usize,
-        /// Seed weighting: `specificity` (default) | `idf` | `balanced` | `uniform`.
-        #[arg(long, default_value = "specificity")]
-        seed_weight: String,
-        /// Rank the personalization vector alone (ablation: no graph walk).
-        #[arg(long)]
-        no_propagate: bool,
-        /// Hub penalty ×1024 against a file's dictionary-anchor promiscuity
-        /// (cross-cutting comment-dense files); 0 = off (default).
-        #[arg(long, default_value_t = 0)]
-        hub_penalty: u64,
-        /// Fan-in penalty ×1024 against a file's global import fan-in (deep
-        /// shared sinks a walk piles onto); default 1.0 → 1024, `0` = off.
-        #[arg(long, default_value_t = 1024)]
-        fanin_penalty: u64,
-        /// Disable the ungated direct-identifier seeding: when set,
-        /// only dictionary-matched terms seed (the pre-fix, dict-gated behavior).
-        #[arg(long)]
-        no_direct_seed: bool,
-        /// Multiplier ×1024 on the absolute direct identifier-match score (the
-        /// fan-in-exempt floor); calibrated so a strong match competes with the
-        /// top propagated mass. `0` = no floor (walk only).
-        #[arg(long, default_value_t = 100_000)]
-        direct_base: u64,
-        /// How many ranked files to emit.
-        #[arg(long, default_value_t = 10)]
-        top: usize,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
     /// One-shot research bundle for the `feature` flow: parse the model ONCE and
-    /// return the per-query digest, the full domain-term index (the non-strong
-    /// vocabulary menu) and the personalized-PageRank pool — the three
-    /// projections `feature` used to fetch with three separate spawns, each
-    /// re-parsing the model. `--query` carries the digest terms, `--rank-query`
-    /// the expanded rank query, `--dict` the dictionary sidecar (rank is SKIPPED
-    /// when the dict is absent, matching the fail-open gate the caller applies —
-    /// an absent dict must yield an empty rank, never a direct-seeded one).
-    /// Byte-stable JSON `{digest, terms, rank}`; `rank` is the pool at `--top`.
+    /// return the per-query digest and the full domain-term index (the
+    /// non-strong vocabulary menu) — the two projections `feature` used to fetch
+    /// with separate spawns, each re-parsing the model. `--query` carries the
+    /// digest terms. Byte-stable JSON `{digest, terms}`.
     FeatureBundle {
         path: PathBuf,
         /// Comma/space-separated digest query terms (the `digest --query` input).
         #[arg(long, default_value = "")]
         query: String,
-        /// The `grain.dictionary.json` sidecar; rank is skipped when it is absent.
-        #[arg(long)]
-        dict: PathBuf,
-        /// The expanded rank query (raw intent + equivalence tokens) for PageRank.
-        #[arg(long, default_value = "")]
-        rank_query: String,
-        /// Rank pool depth; the caller derives the top-10 insumos list from this.
-        #[arg(long, default_value_t = 25)]
-        top: usize,
-        /// Direct identifier-match floor multiplier (the `rank` --direct-base).
-        #[arg(long, default_value_t = 100_000)]
-        direct_base: u64,
         #[arg(long)]
         out: Option<PathBuf>,
     },
 }
 
-/// The `feature-bundle` output — the three projections `feature` consumes,
+/// The `feature-bundle` output — the two projections `feature` consumes,
 /// serialized together from ONE model parse (borrowed, so nothing is cloned).
 #[derive(serde::Serialize)]
 struct FeatureBundleOut<'a> {
     digest: &'a digest::QueryResult,
     terms: &'a [digest::TermD],
-    rank: &'a [pagerank::ScoredFile],
 }
 
 /// Load a model: scan a project directory, or read a prebuilt grain.model.json.
@@ -227,16 +153,6 @@ fn main() -> Result<()> {
                 }
                 std::fs::write(&out, &model_json)?;
             }
-            // The distinctive-vocabulary sidecar lands NEXT TO the model
-            // (`grain.dictionary.json` beside `grain.model.json`). It is rebuilt
-            // from the map on every pass and rewritten only when it changed, so
-            // `dictionary: true` in the report means "the vocabulary moved".
-            let dict_out = out.with_file_name("grain.dictionary.json");
-            let dict_json = serde_json::to_string_pretty(&analysis.dictionary)?;
-            let dictionary_written = std::fs::read_to_string(&dict_out).ok().as_deref() != Some(dict_json.as_str());
-            if dictionary_written {
-                std::fs::write(&dict_out, &dict_json)?;
-            }
             if json {
                 let report = serde_json::json!({
                     "ok": true,
@@ -244,7 +160,6 @@ fn main() -> Result<()> {
                     "read": analysis.read,
                     "files": analysis.model.modules.len(),
                     "head": analysis.model.state.head,
-                    "dictionary": dictionary_written,
                 });
                 println!("{report}");
             } else {
@@ -255,15 +170,6 @@ fn main() -> Result<()> {
                     analysis.read.len(),
                     if analysis.full { " (every file)" } else { " (only what changed)" }
                 );
-                let dictionary = &analysis.dictionary;
-                let verb = if dictionary_written { "written" } else { "unchanged" };
-                println!("Dictionary {verb}: {} ({} terms)", dict_out.display(), dictionary.terms.len());
-                if dictionary.non_english_comments > 0 {
-                    println!(
-                        "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
-                        dictionary.non_english_comments
-                    );
-                }
             }
         }
         Command::Digest { path, query, out } => {
@@ -306,61 +212,14 @@ fn main() -> Result<()> {
                 None => println!("{spec_md}"),
             }
         }
-        Command::Rank { path, dict, query, direction, damping, iters, seed_weight, no_propagate, hub_penalty, fanin_penalty, no_direct_seed, direct_base, top, out } => {
-            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let cfg = pagerank::RankConfig {
-                direction: pagerank::Direction::parse(&direction),
-                damping_x1024: damping,
-                iterations: iters,
-                top,
-                seed_weight: pagerank::SeedWeight::parse(&seed_weight),
-                propagate: !no_propagate,
-                hub_penalty_x1024: hub_penalty,
-                fanin_penalty_x1024: fanin_penalty,
-                direct_seed: !no_direct_seed,
-                direct_base_x1024: direct_base,
-            };
-            // Fail-open: a degraded/unreadable model or
-            // dictionary yields an empty ranked list, never a hard error.
-            let dictionary: dictionary::Dictionary =
-                std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-            let result = match load_model(&path) {
-                Ok(model) => pagerank::rank(&model, &dictionary, &terms, &cfg),
-                Err(_) => pagerank::rank(&ProjectModel::default(), &dictionary, &terms, &cfg),
-            };
-            let json = serde_json::to_string_pretty(&result)?;
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &json)?;
-                    println!("rank written to {} ({} bytes)", p.display(), json.len());
-                }
-                None => println!("{json}"),
-            }
-        }
-        Command::FeatureBundle { path, query, dict, rank_query, top, direct_base, out } => {
+        Command::FeatureBundle { path, query, out } => {
             let model = load_model(&path)?;
             let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let digest = digest::query(&model, &terms);
             // The full domain-term index (the non-strong vocabulary menu) from the
             // SAME parsed model — so `feature` never spawns a second `digest`.
             let full = digest::build(&model);
-            // Rank pool: SKIPPED when the dictionary is absent (the fail-open gate
-            // the caller applies — an absent dict must yield an empty rank, never a
-            // direct-seeded one). Present -> personalized PageRank at `top` depth
-            // with the SAME config `rank` uses (only top + direct_base overridden),
-            // so the pool, and its top-10 prefix (the insumos list), is byte-
-            // identical to the two `rank` spawns it replaces.
-            let rank: Vec<pagerank::ScoredFile> = if dict.is_file() {
-                let dictionary: dictionary::Dictionary =
-                    std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-                let rank_terms: Vec<String> =
-                    rank_query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                let cfg = pagerank::RankConfig { top, direct_base_x1024: direct_base, ..Default::default() };
-                pagerank::rank(&model, &dictionary, &rank_terms, &cfg).files
-            } else {
-                Vec::new()
-            };
-            let bundle = FeatureBundleOut { digest: &digest, terms: &full.terms, rank: &rank };
+            let bundle = FeatureBundleOut { digest: &digest, terms: &full.terms };
             let json = serde_json::to_string_pretty(&bundle)?;
             match out {
                 Some(p) => {
@@ -377,8 +236,6 @@ fn main() -> Result<()> {
 /// What one pass produced.
 struct Analysis {
     model: ProjectModel,
-    /// The distinctive-vocabulary dictionary, rebuilt from the modules.
-    dictionary: dictionary::Dictionary,
     /// The files whose content this pass read, sorted.
     read: Vec<String>,
     /// Every file was read (no usable previous model).
@@ -439,12 +296,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                 let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
                     .map(|c| (c.class, c.marker))
                     .unwrap_or_default();
-                // The comment words feed the dictionary, which only takes
-                // hand-written, non-test files.
-                let eligible = !mustard_core::domain::ast::is_test_path(&sf.rel_path)
-                    && classify::anchor_eligible(&file_class);
-                let (comment_terms, foreign_comments) =
-                    if eligible { dictionary::comment_terms(&sf.content) } else { (BTreeMap::new(), 0) };
                 let module = Module {
                     path: sf.rel_path.clone(),
                     language: sf.language,
@@ -459,8 +310,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
                     tests: Vec::new(),
                     has_tests: testmap::has_inline_tests(&sf.content),
                     signals: code_signals(&sf.content),
-                    comment_terms,
-                    foreign_comments,
                 };
                 modules.push(module);
             }
@@ -490,10 +339,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         m.deps = named;
     }
     let mined = mine::mine(&modules, &degrees);
-    // Distinctive-vocabulary dictionary: a stage right after mining, over the
-    // comment words each module keeps, reusing the mined role affixes to demote
-    // structural glue. Built on every pass, from the map alone.
-    let dictionary = dictionary::build(&modules, &mined.roles);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     // The git history: only the commits since the previous pass, when that
@@ -562,7 +407,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
             state,
             history,
         },
-        dictionary,
         read: ing.read,
         full,
     })

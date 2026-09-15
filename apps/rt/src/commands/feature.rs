@@ -21,7 +21,7 @@
 
 use std::path::Path;
 
-use mustard_core::domain::scan::{DigestQuery, DigestTerm, FileDetail, RankFile};
+use mustard_core::domain::scan::{DigestQuery, DigestTerm, FileDetail};
 use mustard_core::domain::text;
 use mustard_core::io::fs as mfs;
 use mustard_core::Scan;
@@ -389,17 +389,11 @@ fn reason_note(q: &DigestQuery) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Rank-query preparation for the ONE `feature-bundle` spawn: the automatic
-// gloss for a non-English intent, the scan-time equivalence expansion and the
-// direct identifier-match floor - the inputs the bundle ranks with. The RRF
-// fusion of that rank pool with the digest anchors now lives in the sibling
-// `feature_retrieval` module. Every rung is FAIL-OPEN: a missing translator /
-// dictionary degrades the rank query; the fused field always renders.
+// Query preparation for the ONE `feature-bundle` spawn: the automatic gloss for
+// a non-English intent. The shaping of the digest audit into the published
+// fields lives in the sibling `feature_retrieval` module. Every rung is
+// FAIL-OPEN: a missing translator degrades the query; the fields always render.
 // ---------------------------------------------------------------------------
-
-/// `scan rank`'s direct identifier-match floor (the tool default, pinned
-/// explicitly — the calibrated product contract).
-const RANK_DIRECT_BASE: u64 = 100_000;
 
 /// `true` when the intent is NOT CONFIDENTLY ENGLISH — the question the gloss
 /// actually needs answered.
@@ -541,33 +535,6 @@ fn auto_gloss(intent: &str) -> Option<String> {
     Some(en)
 }
 
-/// Expand the raw intent with the scan-time equivalence tokens (the measured
-/// query shape: raw PT + added EN tokens): each intent token ≥3 chars is
-/// accent-folded and looked up EXACTLY in the `grain.equivalences.json` map;
-/// hits append their tokens, deduped across the whole intent in
-/// first-occurrence order. No hit → the intent passes through verbatim.
-fn expand_query(intent: &str, equiv: &std::collections::BTreeMap<String, Vec<String>>) -> String {
-    let mut added: Vec<String> = Vec::new();
-    for tok in text::words(intent) {
-        if tok.chars().count() < 3 {
-            continue;
-        }
-        let key = text::fold(tok);
-        if let Some(toks) = equiv.get(&key) {
-            for t in toks {
-                if !added.contains(t) {
-                    added.push(t.clone());
-                }
-            }
-        }
-    }
-    if added.is_empty() {
-        intent.to_string()
-    } else {
-        format!("{intent} {}", added.join(" "))
-    }
-}
-
 /// Attach the ADDITIVE retrieval fields to the insumos payload: `insumos`
 /// (the RRF-fused top-10 short-list — ALWAYS present, possibly empty),
 /// `candidates` (the WIDE fused pool with per-file evidence — ALWAYS present,
@@ -579,31 +546,20 @@ fn attach_retrieval(
     intent: &str,
     gloss: Option<&str>,
     detail: &[FileDetail],
-    rank_rows: &[RankFile],
-    equiv: &std::collections::BTreeMap<String, Vec<String>>,
     // `reason`: the report's strength (`strong` | `weak` | `none`), threaded in
     // rather than re-read from `v`. The caller already holds it, and a function
     // that digs its own inputs back out of the payload it is writing is exactly
     // the hidden dependency this codebase has paid to remove elsewhere.
     reason: &str,
 ) {
-    // The bundle already ran the ranker; slice its pool into the two shapes the
-    // fusion consumes: the top-INSUMOS_MAX file list (insumos) and the full rows
-    // with per-file terms (candidates). rank@10 == rank_detail@25[..10] (the
-    // ranker sorts by a total order, then truncates), so this is byte-identical
-    // to the two separate `rank` spawns it replaces.
-    let insumos_rank: Vec<String> =
-        rank_rows.iter().take(feature_retrieval::INSUMOS_MAX).map(|r| r.file.clone()).collect();
-    let pool_rank: Vec<(String, Vec<String>)> =
-        rank_rows.iter().map(|r| (r.file.clone(), r.terms.clone())).collect();
-    let rows = feature_retrieval::insumos_rows(&insumos_rank, detail);
-    let pool = feature_retrieval::build_pool(&pool_rank, detail);
+    let rows = feature_retrieval::insumos_rows(detail);
+    let pool = feature_retrieval::build_pool(detail);
     // ORDER MATTERS: `uncovered` is computed from the WHOLE pool, before any
     // narrowing. It is the absence radar the flow treats as a gate — every
     // concept with no candidate must be settled by enumeration before planning.
     // Narrowing the pool first would make genuinely covered concepts report as
     // blind spots, turning a context saving into a broken check.
-    let uncovered = uncovered_terms(intent, equiv, &pool);
+    let uncovered = uncovered_terms(intent, &pool);
     let mut pool_rows = feature_retrieval::candidates_rows(&pool);
     // Only the PUBLISHED slice narrows, and only on a strong report. The
     // instruction that consumes this field says to pick 5-10 files and "never
@@ -625,20 +581,16 @@ fn attach_retrieval(
 
 /// The pool's BLIND SPOTS — request concepts with NO representation in the
 /// candidate evidence. For each intent token (≥4 chars, at least one letter,
-/// not an EN/PT function word), the probe set is its accent-folded form plus
-/// every equivalence expansion of it; the concept counts covered when ANY
-/// probe matches ANY candidate's matched-term evidence (folded; exact, or
+/// not an EN/PT function word), the probe is its accent-folded form; the
+/// concept counts covered when the probe matches ANY candidate's matched-term
+/// evidence (folded; exact, or
 /// prefix-either-way with both sides ≥4 chars, so `cliente`/`clientes` and
 /// `lista`/`listar` join). Everything else is emitted as a `{term, tried}`
 /// row, term-ascending (byte-stable). Deliberately a LOWER bound on
 /// blindness: a term matched by an irrelevant file still counts covered — the
 /// field DIRECTS the existence gate (one targeted enumeration per row), it
 /// never replaces it.
-fn uncovered_terms(
-    intent: &str,
-    equiv: &std::collections::BTreeMap<String, Vec<String>>,
-    pool: &[feature_retrieval::Candidate],
-) -> Vec<Value> {
+fn uncovered_terms(intent: &str, pool: &[feature_retrieval::Candidate]) -> Vec<Value> {
     let evidence: Vec<String> = pool
         .iter()
         .flat_map(|c| c.terms.iter())
@@ -668,13 +620,7 @@ fn uncovered_terms(
         if !seen.insert(folded.clone()) {
             continue;
         }
-        let mut tried = vec![folded.clone()];
-        for t in equiv.get(&folded).map(Vec::as_slice).unwrap_or(&[]) {
-            let f = text::fold(t);
-            if !tried.contains(&f) {
-                tried.push(f);
-            }
-        }
+        let tried = vec![folded.clone()];
         if tried.iter().any(|p| hits(p)) {
             continue;
         }
@@ -694,9 +640,9 @@ fn uncovered_terms(
 /// <english>"`), and a non-English-looking intent is ALSO auto-glossed
 /// through the optional local `mustard-translate` sidecar (`"<original> --
 /// <en>"` feeds the digest tokenization; `domain_terms` dedups the union).
-/// The digest is queried once; the pagerank short-list is RRF-fused into the
-/// additive `insumos` field (top-10) and the WIDE `candidates` pool (~25 rows
-/// with per-file evidence) the orchestrator selects from. On a NON-strong
+/// The digest is queried once; its anchor audit shapes the additive `insumos`
+/// field (top-10) and the WIDE `candidates` pool (~25 rows with per-file
+/// evidence) the orchestrator selects from. On a NON-strong
 /// result the `vocabulary` menu still rides along — a deterministic fallback
 /// the orchestrator can re-query against.
 pub fn run(intent: &str, root: &Path) {
@@ -705,7 +651,6 @@ pub fn run(intent: &str, root: &Path) {
         .as_ref()
         .map_or_else(|| intent.to_string(), |en| format!("{intent} -- {en}"));
     let model = root.join(".claude").join("grain.model.json");
-    let dict = root.join(".claude").join("grain.dictionary.json");
     // The gloss is machine translation, and machine translation does not know
     // which words are this project's NAMES. Measured on a real request, it
     // rendered the product's own name as `landlord` and a domain verb as
@@ -720,42 +665,21 @@ pub fn run(intent: &str, root: &Path) {
     // is filtered at all: the asker's vocabulary is the request, and
     // second-guessing it is not this function's business.
     let mut terms = keep_known_gloss_terms(&effective, &model, gloss.is_some());
-    // The equivalence map + expanded rank query are computed ONCE here (they were
-    // reloaded inside each of the removed rank/rank_detail spawns) and fed to the
-    // single bundle call; `uncovered_terms` reuses the same map. `expand_query`
-    // uses the ORIGINAL intent (not the gloss-augmented `effective`), matching the
-    // old insumos_rows/rank_pool contract.
-    let equiv = super::scan_equivalences::load_equivalences(root);
-    let rank_query = expand_query(intent, &equiv);
-    // The equivalence bridge must reach the DIGEST too, not only the rank pool.
-    // It was feeding `rank_query` alone, so a project whose code is written in
-    // another language had its bridge built, written to disk, loaded here — and
-    // then never consulted by the retrieval that decides the answer. Measured on
-    // a Portuguese-identifier fixture: the table held `invoice -> fatura`, and
-    // the request `invoice ledger` still came back `none 0/2`, because the two
-    // English words were the only thing the digest was ever asked about.
-    let mut bridge_fired = gloss.is_some();
-    for bridged in domain_terms(&rank_query) {
-        if !terms.contains(&bridged) {
-            terms.push(bridged);
-            bridge_fired = true;
-        }
-    }
-    // Once ANY bridge has fired — a gloss or an equivalence alias — every
+    // Once the gloss has fired, every
     // concept in the request has a second spelling, and the source-language
     // word the project never declares can no longer match anything. It still
     // counts against the `matched k/n` ratio that decides whether the answer is
     // trustworthy, so keeping it does nothing but hide the answer it was
-    // bridged to. Measured on a Portuguese-identifier fixture: `invoice ledger`
+    // glossed to. Measured on a Portuguese-identifier fixture: `invoice ledger`
     // scored `weak 1/3` and was withheld, when the one term that could match
     // had matched.
-    if bridge_fired
+    if gloss.is_some()
         && let Some(declared) = declared_vocabulary(&model)
             && !declared.is_empty() {
                 terms.retain(|t| declared.contains(t));
             }
 
-    let payload = match Scan::locate().feature_bundle(&model, &dict, &terms, &rank_query, feature_retrieval::POOL_MAX, RANK_DIRECT_BASE) {
+    let payload = match Scan::locate().feature_bundle(&model, &terms) {
         Ok(bundle) => {
             let q = &bundle.digest;
             // The adherence marker is emitted BEFORE the println below so the
@@ -772,10 +696,10 @@ pub fn run(intent: &str, root: &Path) {
                 &[]
             };
             let mut v = payload(intent, q, index);
-            // Additive retrieval fields: the RRF-fused `insumos` short-list + the
-            // wide `candidates` selection pool (+ `gloss` when the auto-gloss
-            // fired), fused IN-SESSION from the bundle rank pool - no spawn.
-            attach_retrieval(&mut v, intent, gloss.as_deref(), &q.files_detail, &bundle.rank, &equiv, q.report.reason.as_str());
+            // Additive retrieval fields: the `insumos` short-list + the wide
+            // `candidates` selection pool (+ `gloss` when the auto-gloss
+            // fired), shaped IN-SESSION from the digest audit - no spawn.
+            attach_retrieval(&mut v, intent, gloss.as_deref(), &q.files_detail, q.report.reason.as_str());
             v
         }
         Err(err) => {
@@ -801,7 +725,7 @@ pub fn run(intent: &str, root: &Path) {
             // `insumos` + `candidates` are part of the stable shape — attached
             // on the fallback too (an unavailable digest usually means an
             // unavailable ranker, so both degrade to empty lists, honestly).
-            attach_retrieval(&mut v, intent, gloss.as_deref(), &[], &[], &equiv, "none");
+            attach_retrieval(&mut v, intent, gloss.as_deref(), &[], "none");
             v
         }
     };
@@ -1363,19 +1287,6 @@ mod tests {
     }
 
     #[test]
-    fn expand_query_folds_keys_exactly_and_dedups_added_tokens() {
-        let mut eq = std::collections::BTreeMap::new();
-        eq.insert("conciliacao".to_string(), vec!["reconciliation".to_string(), "bank".to_string()]);
-        eq.insert("extrato".to_string(), vec!["statement".to_string(), "bank".to_string()]);
-        // Accent-folded lookup hits; `bank` (shared by both terms) appends once.
-        let q = expand_query("onde é feita a conciliação do extrato bancário", &eq);
-        assert_eq!(q, "onde é feita a conciliação do extrato bancário reconciliation bank statement");
-        // No key hit (incl. sub-3-char tokens) → the intent passes verbatim.
-        assert_eq!(expand_query("do it", &eq), "do it");
-        assert_eq!(expand_query("payment handler", &std::collections::BTreeMap::new()), "payment handler");
-    }
-
-    #[test]
     fn looks_non_english_votes_stoplists_and_accents() {
         // Mirrors the scan dictionary's is_non_english contract.
         assert!(
@@ -1393,233 +1304,6 @@ mod tests {
         assert!(
             !looks_non_english("maps the naïve café names into the user profile"),
             "english wins its vote despite an accented word"
-        );
-    }
-
-    #[test]
-    fn insumos_field_always_attaches_and_fails_open_without_sidecars() {
-        // A root with NO dictionary sidecar → the ranker is never spawned and
-        // the digest audit alone carries the field (source: digest).
-        let detail: Vec<FileDetail> = serde_json::from_str(
-            r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]},
-                {"file":"src/b.cs","score_x1024":10,"terms":[]}]"#,
-        )
-        .expect("detail rows");
-        let mut v = json!({ "intent": "x" });
-        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
-        assert_eq!(
-            v["insumos"],
-            json!([
-                { "file": "src/a.cs", "source": "digest" },
-                { "file": "src/b.cs", "source": "digest" }
-            ]),
-            "ranker unavailable → digest top-10 alone: {v}"
-        );
-        assert!(v.get("gloss").is_none(), "no gloss key when the gloss did not fire: {v}");
-        assert_eq!(v["intent"], json!("x"), "existing fields untouched: {v}");
-
-        // Empty digest too → the fields STILL render, as empty arrays; a
-        // fired gloss rides along as the additive `gloss` key.
-        let mut v = json!({});
-        attach_retrieval(&mut v, "x", Some("where is it done"), &[], &[], &std::collections::BTreeMap::new(), "none");
-        assert_eq!(v["insumos"], json!([]), "insumos always present: {v}");
-        assert_eq!(v["candidates"], json!([]), "candidates always present: {v}");
-        assert_eq!(v["gloss"], json!("where is it done"));
-    }
-
-    #[test]
-    fn stdout_never_carries_subprocess_keys() {
-        // The removed `claude -p` selection hop must leave NO residue:
-        // `attach_retrieval` (the only attach) adds exactly `insumos` +
-        // `candidates` + `uncovered` (+ `gloss` when fired) — never
-        // `insumosMode`, never a `hop` audit. Regression guard for the
-        // subprocess removal.
-        let detail: Vec<FileDetail> =
-            serde_json::from_str(r#"[{"file":"src/a.cs","score_x1024":90,"terms":["x"]}]"#).expect("detail rows");
-        let mut v = json!({ "intent": "x" });
-        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
-        assert!(v.get("insumosMode").is_none(), "insumosMode never emitted: {v}");
-        assert!(v.get("hop").is_none(), "the hop audit never emitted: {v}");
-        let mut keys: Vec<&str> = v.as_object().expect("object").keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec!["candidates", "insumos", "intent", "uncovered"],
-            "exactly the additive keys: {v}"
-        );
-    }
-
-    #[test]
-    fn candidates_pool_carries_evidence_and_is_byte_stable() {
-        // The `candidates` field is the in-session selection menu: per row
-        // {file, source, evidence} where evidence is ONE compact line — the
-        // 1-based position per list + up to TERMS_SHOWN matched terms. Built
-        // here from the digest side alone (no dictionary sidecar → no spawn),
-        // the pool order (RRF score desc, path asc) is preserved verbatim.
-        let detail: Vec<FileDetail> = serde_json::from_str(
-            r#"[{"file":"src/a.cs","score_x1024":90,"terms":["contrato","parcela"]},
-                {"file":"src/b.cs","score_x1024":10,"terms":[]}]"#,
-        )
-        .expect("detail rows");
-        let mut v = json!({ "intent": "x" });
-        attach_retrieval(&mut v, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
-        assert_eq!(
-            v["candidates"],
-            json!([
-                { "file": "src/a.cs", "source": "digest", "evidence": "digest#1 terms=contrato,parcela" },
-                { "file": "src/b.cs", "source": "digest", "evidence": "digest#2" }
-            ]),
-            "one evidence line per pool row: {v}"
-        );
-        // Byte-stable: two identical attaches serialize to the same bytes.
-        let mut v2 = json!({ "intent": "x" });
-        attach_retrieval(&mut v2, "x", None, &detail, &[], &std::collections::BTreeMap::new(), "none");
-        let a = serde_json::to_string(&v).expect("ser");
-        let b = serde_json::to_string(&v2).expect("ser");
-        assert_eq!(a, b, "candidates payload is byte-stable across runs");
-
-        // The pool caps at POOL_MAX (25) — wider than the insumos ten, so the
-        // selector sees past the RRF cut but the payload stays bounded.
-        let many: Vec<FileDetail> = (0u64..30)
-            .map(|i| FileDetail {
-                file: format!("src/f{i:02}.cs"),
-                score_x1024: 1024 - i,
-                terms: Vec::new(),
-            })
-            .collect();
-        let mut vm = json!({});
-        attach_retrieval(&mut vm, "x", None, &many, &[], &std::collections::BTreeMap::new(), "none");
-        let pool = vm["candidates"].as_array().expect("candidates array");
-        assert_eq!(pool.len(), feature_retrieval::POOL_MAX, "pool bounded at POOL_MAX: {}", pool.len());
-        assert_eq!(vm["insumos"].as_array().expect("insumos").len(), feature_retrieval::INSUMOS_MAX, "insumos stays top-10");
-        // Evidence terms cap at TERMS_SHOWN per line.
-        let wide: Vec<FileDetail> = vec![FileDetail {
-            file: "src/w.cs".into(),
-            score_x1024: 10,
-            terms: (0..9).map(|i| format!("t{i}")).collect(),
-        }];
-        let rows = feature_retrieval::candidates_rows(&feature_retrieval::build_pool(&[], &wide));
-        let ev = rows[0]["evidence"].as_str().expect("evidence line");
-        assert_eq!(ev, "digest#1 terms=t0,t1,t2,t3,t4,t5", "terms capped at TERMS_SHOWN: {ev}");
-    }
-
-    #[test]
-    fn uncovered_flags_only_unrepresented_concepts() {
-        let pool = vec![feature_retrieval::Candidate {
-            file: "src/a.ts".into(),
-            source: "both",
-            rank_pos: Some(1),
-            digest_pos: Some(1),
-            terms: vec!["contract".into(), "clientes".into(), "tabs".into(), "validacoes".into()],
-        }];
-        let mut equiv = std::collections::BTreeMap::new();
-        equiv.insert("contrato".to_string(), vec!["contract".to_string()]);
-        equiv.insert("abas".to_string(), vec!["tabs".to_string()]);
-        let out = uncovered_terms(
-            "cadastro do cliente para o contrato com abas e validações the ver cadastro",
-            &equiv,
-            &pool,
-        );
-        let terms: Vec<&str> = out.iter().filter_map(|v| v["term"].as_str()).collect();
-        assert_eq!(terms, vec!["cadastro"], "only the blind concept flags: {out:?}");
-        let tried: Vec<&str> = out[0]["tried"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-            .unwrap_or_default();
-        assert_eq!(tried, vec!["cadastro"], "probe set = folded term (no expansion configured)");
-    }
-
-    /// Empty pool → every content concept flags, term-ascending (the radar
-    /// stays honest when retrieval returns nothing).
-    #[test]
-    fn uncovered_on_empty_pool_flags_content_words_sorted() {
-        let out = uncovered_terms("vencimento reajuste", &std::collections::BTreeMap::new(), &[]);
-        let terms: Vec<&str> = out.iter().filter_map(|v| v["term"].as_str()).collect();
-        assert_eq!(terms, vec!["reajuste", "vencimento"], "sorted ascending");
-    }
-
-    /// Build `n` rank rows, each matching one distinct term, so a pool of a
-    /// known width can be produced without touching the ranker.
-    fn rank_rows_for(n: usize) -> Vec<RankFile> {
-        (0..n)
-            .map(|i| {
-                serde_json::from_str::<RankFile>(&format!(
-                    r#"{{"file":"src/f{i:02}.rs","score_x1024":{},"terms":["t{i:02}"]}}"#,
-                    1000 - i
-                ))
-                .expect("rank row")
-            })
-            .collect()
-    }
-
-    /// A strong report publishes the narrowed slice, not the whole pool. The
-    /// instruction that consumes this field says to pick 5-10 files and "never
-    /// all ~25", so the window was paying for rows the contract forbids using.
-    #[test]
-    fn strong_pool_is_narrowed() {
-        let rows = rank_rows_for(25);
-        let mut v = json!({ "intent": "x" });
-        attach_retrieval(&mut v, "x", None, &[], &rows, &std::collections::BTreeMap::new(), "strong");
-        let published = v["candidates"].as_array().expect("candidates array").len();
-        assert_eq!(
-            published,
-            feature_retrieval::STRONG_POOL_MAX,
-            "a strong report publishes the narrowed slice: {v}"
-        );
-        assert!(
-            published < feature_retrieval::POOL_MAX,
-            "the narrowed slice must actually be narrower than the pool"
-        );
-    }
-
-    /// A weak/none report is left alone. There the planning fields are withheld
-    /// anyway, so narrowing would save nothing and only add a second behaviour
-    /// to reason about.
-    #[test]
-    fn non_strong_pool_is_untouched() {
-        let rows = rank_rows_for(25);
-        for reason in ["weak", "none", ""] {
-            let mut v = json!({ "intent": "x" });
-            attach_retrieval(&mut v, "x", None, &[], &rows, &std::collections::BTreeMap::new(), reason);
-            assert_eq!(
-                v["candidates"].as_array().expect("candidates array").len(),
-                feature_retrieval::POOL_MAX,
-                "reason {reason:?} must publish the full pool: {v}"
-            );
-        }
-    }
-
-    /// THE constraint of this unit. `uncovered` is the absence radar the flow
-    /// treats as a gate — every request concept with no candidate must be
-    /// settled by enumeration before planning. It is computed from the WHOLE
-    /// pool, so narrowing the published slice must not change it. If this test
-    /// ever fails, the trim moved above the computation and a context saving
-    /// became a broken check: concepts genuinely covered by candidates 13-25
-    /// would start reporting as blind spots.
-    #[test]
-    fn uncovered_is_computed_before_the_trim() {
-        // A term carried ONLY by a row past the strong cut-off.
-        let rows = rank_rows_for(25);
-        let late_term = "t20";
-        let mut strong = json!({ "intent": late_term });
-        attach_retrieval(&mut strong, late_term, None, &[], &rows, &std::collections::BTreeMap::new(), "strong");
-        let mut full = json!({ "intent": late_term });
-        attach_retrieval(&mut full, late_term, None, &[], &rows, &std::collections::BTreeMap::new(), "none");
-        assert_eq!(
-            strong["uncovered"], full["uncovered"],
-            "the absence radar must not notice the publication trim: {strong}"
-        );
-        // And the row carrying it really is outside the published slice, or the
-        // assertion above would hold vacuously.
-        let published: Vec<&str> = strong["candidates"]
-            .as_array()
-            .expect("candidates")
-            .iter()
-            .filter_map(|c| c["file"].as_str())
-            .collect();
-        assert!(
-            !published.iter().any(|f| f.contains("f20")),
-            "the probe row must sit past the cut for this test to mean anything"
         );
     }
 

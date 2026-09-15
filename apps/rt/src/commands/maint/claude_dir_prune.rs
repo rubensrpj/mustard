@@ -377,9 +377,6 @@ fn classify(
         ".gitkeep",
         // Saídas do `scan`, todas na raiz do `.claude/`.
         "grain.model.json",
-        "grain.dictionary.json",
-        "grain.equivalences.json",
-        "grain.equivalences.learned.json",
         "scan-map.md",
         "scan-declined.json",
         "feature-digest.json",
@@ -650,9 +647,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let owned = [
             "scan-map.md",
-            "grain.dictionary.json",
-            "grain.equivalences.json",
-            "grain.equivalences.learned.json",
             "feature-digest.json",
             "scan-declined.json",
             "grammars-suggestions.json",
