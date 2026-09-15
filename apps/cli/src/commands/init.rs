@@ -53,9 +53,8 @@
 //! is idempotent, **re-running it re-stamps that version** — the job the retired
 //! `mustard update` used to do.
 //!
-//! `.mcp.json` is deliberately **not** written: the `mustard` plugin ships its
-//! own `.mcp.json`, so a project-level copy is redundant once the plugin is
-//! enabled.
+//! `.mcp.json` is deliberately **not** written: the harness declares no MCP
+//! server of its own.
 //!
 //! ## `--private`
 //!
@@ -228,7 +227,7 @@ pub fn init_with_templates(
             "  (dry-run) would write git-flow + commands + runtime/version + inject declarations to {}",
             project_path.join("mustard.json").display()
         );
-        println!("  (dry-run) content payload (commands/skills/agents/refs) + .mcp.json now ship in the `mustard` plugin — not written");
+        println!("  (dry-run) content payload (commands/skills/agents/refs) now ships in the `mustard` plugin — not written");
         return Ok(InitOutcome::DryRun);
     }
 
@@ -306,8 +305,8 @@ pub fn init_with_templates(
         .context("seeding .claude/.gitignore")?;
     report_seed(".claude/.gitignore", outcome);
 
-    // (d) `.mcp.json` is intentionally NOT written — the `mustard` plugin ships
-    // its own, so a project-level copy is redundant once the plugin is enabled.
+    // (d) `.mcp.json` is intentionally NOT written — the harness declares no
+    // MCP server of its own.
 
     // Project-root `.github/` scaffolding (PR template) — not part of the
     // plugin, seeded only when the project has a GitHub remote. Never overwrites.
@@ -1296,10 +1295,10 @@ mod tests {
             !claude.join("commands").exists(),
             "commands/skills/agents/refs ship in the mustard plugin, never .claude/"
         );
-        // The plugin ships `.mcp.json`; init writes no project-level copy.
+        // The harness declares no MCP server, so init writes no `.mcp.json`.
         assert!(
             !project.join(".mcp.json").exists(),
-            "init must not write .mcp.json — the plugin ships it"
+            "init must not write .mcp.json — the harness declares no MCP server"
         );
 
         // settings.json carries the reduced seed keys and NO plugin enablement —

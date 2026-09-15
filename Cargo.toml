@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "apps/cli",
-    "apps/mcp",
     "apps/rt",
     "apps/scan",
     "packages/core",
@@ -49,28 +48,6 @@ ureq = { version = "3.3", features = ["json"] }
 # Tarball extraction for `mustard add` (npm package payloads ship as .tgz).
 tar = "0.4.46"
 flate2 = "1.1.9"
-# Official Rust SDK for the Model Context Protocol — backs the `mcp` face of
-# `mustard-rt` (the re-port of the `mustard-memory` TypeScript MCP server).
-# The `server` feature already pulls `macros` (in `default`) and `schemars`;
-# `transport-io` adds the stdio (JSON-RPC over stdin/stdout) transport.
-#
-# Moved 1.8 -> 3.1 (two majors) because 1.8 ANSWERS the `2026-07-28` protocol
-# revision without serving it: driving a real stdio handshake against both
-# builds, each replies `"protocolVersion":"2026-07-28"`, but 1.8 returns a bare
-# `{"tools":[...]}` while 3.1 returns that revision's tool-list cache metadata
-# (`resultType` / `ttlMs` / `cacheScope`). Advertising a revision we do not
-# serve is the drift worth closing.
-#
-# The two majors cost two lines — `model::Content` became
-# `model::content::ContentBlock`, and nothing else in `apps/mcp` moved. Crate
-# count moved 281 -> 282 here (the 3.x line drops `async-trait` and adds `uuid`),
-# and the pruning wave then took it to 278.
-rmcp = { version = "3.1", features = ["server", "transport-io"] }
-# Async runtime — required only by `rmcp` (async-only). Scoped to the `mcp`
-# face: the handler builds a `current_thread` runtime locally so the `on` /
-# `run` / `check` faces stay fully synchronous. Latest stable verified on
-# crates.io (1.52, May 2026).
-tokio = { version = "1.52.3", features = ["rt", "io-std", "macros"] }
 # BPE tokenizer used by `core::economy::estimator` as a Claude-token
 # approximation (cl100k_base ≈ Anthropic models within ~5%). Latest stable
 # verified on crates.io (0.12.0, 2026-06); the 0.12 line made the low-level
@@ -102,8 +79,8 @@ rust-stemmers = "1.2"
 # table.
 #
 # `unwrap_used` below is `deny`, and clippy does NOT exempt `#[cfg(test)]` code
-# from it on its own: `mustard-core`, `mustard-cli`, `mustard-rt` and
-# `mustard-mcp` each open their crate root with
+# from it on its own: `mustard-core`, `mustard-cli` and `mustard-rt` each open
+# their crate root with
 # `#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]`, and THAT
 # is what exempts their tests.
 [workspace.lints.rust]

@@ -49,13 +49,6 @@ clap = { workspace = true }
 # runtime; events land in per-spec NDJSON via the event router (no SQLite).
 tiny_http = "0.12"
 
-# The `mcp` face moved to the standalone `mustard-mcp` crate so the long-lived
-# MCP server Claude Code spawns holds a different exe than `mustard-rt`. The
-# `mustard-rt mcp` subcommand is kept as a thin compat alias that delegates to
-# `mustard_mcp::run()`; `rmcp` / `tokio` are no longer DIRECT deps of this crate
-# (they arrive transitively via `mustard-mcp`).
-mustard-mcp = { path = "../mcp" }
-
 # `artifact-update` probes external upstreams (crates.io API, skills.directory
 # registry) over HTTP. `ureq` is the workspace's blocking, runtime-free HTTP
 # client — the same one `mustard-cli` uses; no async runtime is pulled in.

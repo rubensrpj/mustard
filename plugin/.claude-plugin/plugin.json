@@ -17,8 +17,7 @@
     "pipeline",
     "code-retrieval",
     "harness",
-    "qa-gate",
-    "mcp"
+    "qa-gate"
   ],
   "defaultEnabled": false
 }

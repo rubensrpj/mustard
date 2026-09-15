@@ -38,11 +38,6 @@
 //! Wave 3 (economia-moat-unification) adds long-lived ingestion daemons under
 //! this face: `otel-collector`.
 //!
-//! A fourth face — `mustard-rt mcp` — serves the `mustard-memory` Model
-//! Context Protocol server over stdio (the re-port of the former TypeScript
-//! `bun` MCP server). Like `run` it never reads the harness stdin contract;
-//! it speaks JSON-RPC on stdin/stdout and is dispatched early in `main`.
-//!
 //! ## Protocol parity with the JS hooks
 //!
 //! The JS hooks (see `_lib/hook-env.js` and each `*.js`) speak a fixed
@@ -76,9 +71,8 @@ struct Cli {
     command: Command,
 }
 
-/// The four-faced binary: the `On` / `Check` enforcement faces, the `Run`
-/// face (the b4 script port), and the `Mcp` face (the `mustard-memory` MCP
-/// server). `Run` and `Mcp` skip the harness stdin read.
+/// The three-faced binary: the `On` / `Check` enforcement faces and the `Run`
+/// face (the b4 script port). `Run` skips the harness stdin read.
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum — single-use stack alloc, indirection adds no value
 enum Command {
@@ -106,8 +100,6 @@ enum Command {
         #[command(subcommand)]
         command: commands::RunCmd,
     },
-    /// Serve the `mustard-memory` MCP server (JSON-RPC over stdio).
-    Mcp,
 }
 
 fn main() {
@@ -129,20 +121,12 @@ fn main() {
     let argv = rewrite_scan_spec(argv);
     let cli = Cli::parse_from(argv);
 
-    // The `Run` and `Mcp` faces are not enforcement faces: they never read
-    // the harness stdin contract. Handle them before the stdin read so they
-    // do not block waiting for harness JSON. `Mcp` *does* own stdin — it
-    // speaks JSON-RPC there — so dispatching it early is mandatory.
+    // The `Run` face is not an enforcement face: it never reads the harness
+    // stdin contract. Handle it before the stdin read so it does not block
+    // waiting for harness JSON.
     match cli.command {
         Command::Run { command } => {
             commands::dispatch(command);
-            return;
-        }
-        Command::Mcp => {
-            // Compat alias: the MCP face now lives in the `mustard-mcp` crate.
-            // Settings still pointing at `mustard-rt mcp` keep working — this
-            // arm delegates to the same entry the `mustard-mcp` binary calls.
-            mustard_mcp::run();
             return;
         }
         // `WorktreeCreate` is an isolation event with its OWN protocol: stdout
@@ -177,9 +161,9 @@ fn main() {
             Trigger::PreToolUse.as_event_name().to_string(),
             dispatch::run_check(&id, &input),
         ),
-        // `Run` / `Mcp` are handled above, before the stdin read.
-        Command::Run { .. } | Command::Mcp => {
-            unreachable!("Run/Mcp are dispatched before stdin read")
+        // `Run` is handled above, before the stdin read.
+        Command::Run { .. } => {
+            unreachable!("Run is dispatched before the stdin read")
         }
     };
 

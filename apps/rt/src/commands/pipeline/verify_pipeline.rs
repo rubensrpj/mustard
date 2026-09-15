@@ -332,7 +332,7 @@ fn discover_defaults(cwd: &Path) -> Vec<VerifyTarget> {
 const ORCHESTRATOR_CRATE: &str = "mustard-rt";
 
 /// Rewrite a whole-workspace `cargo (build|test)` so the in-process close gate
-/// tests every OTHER member (core, cli, mcp, scan) and returns in seconds
+/// tests every OTHER member (core, cli, scan) and returns in seconds
 /// instead of burning the 600 s timeout on the orchestrator crate's tests.
 ///
 /// - A bare `cargo test` (this project's configured command) gets BOTH

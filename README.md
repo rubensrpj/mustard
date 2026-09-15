@@ -35,7 +35,7 @@ Pré-requisito único em todos os ambientes: **[Claude Code](https://docs.claude
 
 ### Passo 1 — instalador do seu sistema
 
-No Windows e no macOS, baixe **um** arquivo na página de [**Releases**](https://github.com/rubensrpj/mustard/releases) (seção *Assets*); no **Linux**, uma linha de terminal resolve. Cada instalador traz o CLI completo (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`):
+No Windows e no macOS, baixe **um** arquivo na página de [**Releases**](https://github.com/rubensrpj/mustard/releases) (seção *Assets*); no **Linux**, uma linha de terminal resolve. Cada instalador traz o CLI completo (`mustard`, `mustard-rt`, `scan`, `rtk`):
 
 | Sistema | O que baixar | O que fazer |
 |---|---|---|
@@ -54,7 +54,7 @@ O passo a passo completo de cada sistema (incluindo problemas comuns e desinstal
 
 ### Passo 2 — plugin no Claude Code
 
-O harness (comandos `/mustard:*`, hooks, gates, agentes e o servidor MCP de memória) é distribuído como **plugin do Claude Code**:
+O harness (comandos `/mustard:*`, hooks, gates e agentes) é distribuído como **plugin do Claude Code**:
 
 ```
 /plugin marketplace add rubensrpj/mustard
@@ -199,9 +199,8 @@ Mudanças no meio do caminho são auto-registradas (`change-requests.ndjson` + `
 | `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan-digest, eventos, gates, hooks, comandos do pipeline. É o motor. |
 | `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.model.json`. |
 | `apps/cli` | `mustard` | Rust | Instalação e *scaffold* — `init`, gramáticas, git-flow, fontes. |
-| `apps/mcp` | `mustard-mcp` | Rust | Servidor MCP (memória/consultas do harness). |
 | `packages/core` | `core` | Rust | Tipos e lógica compartilhados (ex.: `ProjectConfig`). |
-| `plugin/` | — | — | O plugin do Claude Code: comandos, hooks, agentes, MCP e o bootstrap `mustard-boot` (baixa os binários do Release na primeira sessão). |
+| `plugin/` | — | — | O plugin do Claude Code: comandos, hooks, agentes e o bootstrap `mustard-boot` (baixa os binários do Release na primeira sessão). |
 
 O `cargo build --workspace` cobre todos os crates Rust.
 
@@ -252,7 +251,6 @@ apps/
   rt/         mustard-rt — núcleo determinístico (Rust)
   scan/       minerador do repositório (Rust)
   cli/        mustard — instalador/scaffold (Rust)
-  mcp/        servidor MCP (Rust)
 packages/
   core/       tipos/lógica compartilhados (Rust)
 plugin/       plugin do Claude Code (comandos, hooks, agentes, bootstrap)
