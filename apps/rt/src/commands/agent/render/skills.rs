@@ -2,14 +2,6 @@
 //! `<subproject>/.claude/skills/*/SKILL.md` (`- name — description`), names and
 //! trigger descriptions only (never bodies) so the `## SKILLS` section stays
 //! PREFIX-STABLE (cache-safe).
-//!
-//! `{mold_pointer}` — the shelf's other half: which of those molds actually
-//! govern the files THIS wave will touch. The shelf is a catalogue and is
-//! identical for every wave of a spec; the pointer is a prescription for one
-//! wave. They are two placeholders and two sections on purpose — folding the
-//! pointer into the shelf would make the shelf vary per wave and cost the
-//! prefix that sibling waves share, for a line that reads just as well one
-//! section further down.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -60,48 +52,10 @@ pub(crate) fn build_skills_list(project: &Path, subproject: &str) -> String {
     out.trim_end().to_string()
 }
 
-/// Build `{mold_pointer}` — the molds whose `paths:` cover the files this wave
-/// declares, one line each, sorted by mold name for byte-stable output.
-///
-/// Both halves of this answer were already written down, in two places, and
-/// nothing crossed them: the wave declares its files under `## Arquivos`, and
-/// every mold declares under `paths:` the folders it governs. Handing the agent
-/// the whole shelf and leaving the crossing to it is a weak instruction — a
-/// menu asks for a choice where a name asks for obedience, and the choice falls
-/// due at the worst moment, before the agent knows the terrain.
-///
-/// Empty (the section collapses) when nothing matches, when the spec names no
-/// files, or when the subproject carries no mold — a dispatch with nothing to
-/// prescribe prescribes nothing rather than gesturing at the catalogue again.
-/// Fail-open throughout: an unreadable spec or an unparseable mold drops out of
-/// the crossing instead of sinking the block.
-pub(crate) fn build_mold_pointer(project: &Path, subproject: &str, spec_path: &Path) -> String {
-    let Ok(spec_text) = std::fs::read_to_string(spec_path) else {
-        return String::new();
-    };
-    let files = arquivos_paths(&spec_text);
-    let covers = wave_molds(project, subproject, &files);
-    if covers.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from(
-        "These molds govern the files this wave touches — `## SKILLS` above is the \
-         catalogue, this is the PRESCRIPTION. Load each one named here (Skill tool, or \
-         Read its SKILL.md) BEFORE writing the first line of the module it governs; \
-         deviating from a mold named here is a review finding:\n",
-    );
-    for cover in covers {
-        let files: Vec<String> = cover.files.iter().map(|f| format!("`{f}`")).collect();
-        let _ = writeln!(out, "- {} — covers {}", cover.name, files.join(", "));
-    }
-    out.trim_end().to_string()
-}
-
 /// Um molde e TODOS os arquivos da onda que ele cobre.
 ///
-/// A forma estruturada do cruzamento: o prompt da onda a transforma em prosa
-/// (`build_mold_pointer`) e o resumo da spec em HTML, cada um no seu idioma, a
-/// partir da mesma lista — dois leitores do cruzamento com duas contas próprias
+/// A forma estruturada do cruzamento, de onde o resumo da spec em HTML tira o
+/// que mostrar — dois leitores do cruzamento com duas contas próprias
 /// divergiriam sobre qual molde governa qual arquivo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MoldCover {
@@ -259,24 +213,24 @@ mod tests {
         )
         .unwrap();
 
-        let out = build_mold_pointer(root, "apps/rt", &spec);
-        assert!(
-            out.contains("rt-gate-pattern — covers `apps/rt/src/hooks/write/post_edit.rs`"),
-            "the mold the wave's files fall under is named: {out}"
-        );
-        assert!(
-            !out.contains("rt-cmd-pattern"),
-            "a mold governing another folder is NOT named — prose outside `## Arquivos` \
-             must not reach the crossing: {out}"
+        let files = arquivos_paths(&std::fs::read_to_string(&spec).unwrap());
+        let covers = wave_molds(root, "apps/rt", &files);
+        assert_eq!(
+            covers,
+            vec![MoldCover {
+                name: "rt-gate-pattern".to_string(),
+                files: vec!["apps/rt/src/hooks/write/post_edit.rs".to_string()],
+            }],
+            "só o molde sob o qual os arquivos da onda caem; a prosa fora da seção não conta"
         );
     }
 
-    /// The block earns its own section by collapsing when it has nothing to say,
-    /// and by leaving the shelf byte-identical when it does. The shelf is shared
+    /// O cruzamento some quando não tem o que dizer, e a prateleira fica
+    /// igual byte a byte. A prateleira é compartilhada
     /// by every wave of a spec; a pointer folded into it would make it vary per
     /// wave and cost that shared prefix.
     #[test]
-    fn the_pointer_collapses_and_leaves_the_shelf_untouched() {
+    fn the_crossing_collapses_and_leaves_the_shelf_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         seed_mold(root, "rt-gate-pattern", "apps/rt/src/hooks/**");
@@ -284,20 +238,12 @@ mod tests {
         assert!(!shelf_before.is_empty(), "the shelf itself still renders");
 
         // Files that fall under no mold → nothing to prescribe.
-        let spec = root.join("spec.md");
-        std::fs::write(&spec, "## Arquivos\n\n- `docs/leia-me.md`\n").unwrap();
-        assert!(
-            build_mold_pointer(root, "apps/rt", &spec).is_empty(),
-            "no match prescribes nothing"
-        );
+        let files = arquivos_paths("## Arquivos\n\n- `docs/leia-me.md`\n");
+        assert!(wave_molds(root, "apps/rt", &files).is_empty(), "no match prescribes nothing");
 
         // No `## Arquivos` at all (a spec-less or file-less dispatch) → same.
-        let bare = root.join("bare.md");
-        std::fs::write(&bare, "## Contexto\n\nsem seção de arquivos\n").unwrap();
-        assert!(build_mold_pointer(root, "apps/rt", &bare).is_empty(), "no files, no block");
-
-        // An unreadable spec path fails open rather than panicking.
-        assert!(build_mold_pointer(root, "apps/rt", &root.join("nao-existe.md")).is_empty());
+        let none = arquivos_paths("## Contexto\n\nsem seção de arquivos\n");
+        assert!(wave_molds(root, "apps/rt", &none).is_empty(), "no files, no block");
 
         // And through all of it the shelf never moved a byte.
         assert_eq!(shelf_before, build_skills_list(root, "apps/rt"), "the shelf is untouched");
@@ -337,16 +283,6 @@ mod tests {
             }],
             "every covered file is listed, and a mold that covers none is absent"
         );
-
-        let out = build_mold_pointer(root, "apps/rt", &spec);
-        assert!(
-            out.contains(
-                "- rt-entry-pattern — covers `apps/rt/src/commands/spec/cli.rs`, \
-                 `apps/rt/src/commands/spec/mod.rs`, `apps/rt/src/commands/spec/spec_doc.rs`"
-            ),
-            "the prompt line names all three files: {out}"
-        );
-        assert!(!out.contains("rt-gate-pattern"), "{out}");
     }
 
     /// A mold under `<subproject>/.claude/skills/<name>/SKILL.md` governing

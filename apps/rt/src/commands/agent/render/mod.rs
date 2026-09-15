@@ -92,7 +92,7 @@ use sections::{
     read_guards_block, read_reality_obligations, read_wave_acceptance,
     scan_unfilled, strip_unfilled_template_tokens, MaterialCensus,
 };
-use skills::{build_mold_pointer, build_skills_list};
+use skills::build_skills_list;
 
 /// The placeholder keys this renderer substitutes into the embedded template,
 /// in template order.
@@ -125,7 +125,6 @@ pub const TEMPLATE_PLACEHOLDERS: &[&str] = &[
     "{cross_wave_memory}",
     "{reference_files}",
     "{skills_list}",
-    "{mold_pointer}",
     "{why_block}",
     "{acceptance_block}",
     "{retry_context}",
@@ -746,15 +745,6 @@ pub(crate) fn render_prompt_with_census(
         build_skills_list(&project, &subproject_str)
     };
 
-    // The shelf's other half: WHICH of those molds govern the files this wave
-    // declares. Same exclusion as the shelf — the `patterns` role authors the
-    // molds, so it is never prescribed its own previous generation.
-    let mold_pointer = if role.trim().eq_ignore_ascii_case("patterns") {
-        String::new()
-    } else {
-        build_mold_pointer(&project, &subproject_str, &op_spec_path)
-    };
-
     // Remaining deterministic placeholders the dispatch template carries:
     //   {reference_files}  the spec's `## Files`/`## Arquivos` list + public
     //                      signatures of those files via tree-sitter
@@ -802,7 +792,6 @@ pub(crate) fn render_prompt_with_census(
         &cross_wave_memory,
         &reference_files,
         &skills_list,
-        &mold_pointer,
         &why_block,
         &acceptance_block,
         &retry_context,
@@ -1243,7 +1232,6 @@ mod tests {
             ("{cross_wave_memory}", ""),
             ("{reference_files}", &reference_files),
             ("{skills_list}", ""),
-            ("{mold_pointer}", ""),
             ("{why_block}", ""),
             ("{acceptance_block}", ""),
             ("{retry_context}", ""),
