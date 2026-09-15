@@ -45,14 +45,12 @@ fn is_atomic_md_path(path: &Path) -> bool {
         return false;
     }
     normalised.contains("/.claude/memory/")
-        || normalised.contains("/.claude/knowledge/")
         || normalised.contains("/.claude/spec/")
         || normalised.contains("/.claude/capabilities/")
         || normalised.contains("/.claude/graph/")
         // Also accept the bare-prefix case (relative path that does not start
         // with `/`): e.g. `.claude/memory/foo.md`.
         || normalised.starts_with(".claude/memory/")
-        || normalised.starts_with(".claude/knowledge/")
         || normalised.starts_with(".claude/spec/")
         || normalised.starts_with(".claude/capabilities/")
         || normalised.starts_with(".claude/graph/")
@@ -60,8 +58,8 @@ fn is_atomic_md_path(path: &Path) -> bool {
 
 /// Compute the search-dir set the renderer resolves wikilinks against.
 ///
-/// All canonical trees are searched in order: `memory/`, `knowledge/`,
-/// `spec/`, `capabilities/`, `graph/`. Missing directories are tolerated by
+/// All canonical trees are searched in order: `memory/`, `spec/`,
+/// `capabilities/`, `graph/`. Missing directories are tolerated by
 /// `resolve` (it returns `None`), so adding `graph/` ahead of the next task
 /// is harmless. Searching `capabilities/`/`graph/` lets a `[[cap.X]]` or
 /// `[[rt.entity.Y]]` link resolve to a capability/graph node by frontmatter
@@ -71,7 +69,6 @@ fn search_dirs(project: &str) -> Vec<PathBuf> {
     let claude_dir = claude.claude_dir();
     vec![
         claude_dir.join("memory"),
-        claude_dir.join("knowledge"),
         claude.spec_dir(),
         claude.capabilities_dir(),
         claude.graph_dir(),
@@ -135,12 +132,9 @@ mod tests {
     }
 
     #[test]
-    fn is_atomic_md_path_accepts_memory_knowledge_spec() {
+    fn is_atomic_md_path_accepts_memory_spec_capabilities_graph() {
         assert!(is_atomic_md_path(Path::new(
             "/repo/.claude/memory/foo.md"
-        )));
-        assert!(is_atomic_md_path(Path::new(
-            "/repo/.claude/knowledge/bar.md"
         )));
         assert!(is_atomic_md_path(Path::new(
             "/repo/.claude/spec/2026-05-26/spec.md"

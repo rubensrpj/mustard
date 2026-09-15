@@ -9,24 +9,18 @@
 //!   the rest of the runtime uses. No dependency on the legacy
 //!   `.pipeline-states/*.json` sidecar (which can lag the event stream).
 //! - `--epic <name>` folds one such epic: aggregates events for the epic + its
-//!   children, emits an `epic.complete` event, writes an `epic-summary`
-//!   knowledge entry (markdown), transitions the root to `CLOSE`, and emits
-//!   an `epic.fold` tombstone.
+//!   children, emits an `epic.complete` event, transitions the root to
+//!   `CLOSE`, and emits an `epic.fold` tombstone.
 //!
 //! W4C migration: event aggregation reads per-spec NDJSON via
-//! [`mustard_core::EventReader::stream`]; the `epic-summary` knowledge entry
-//! is written as `.claude/knowledge/epic-{epic}.md` via
-//! [`mustard_core::io::atomic_md::MarkdownStore`].
+//! [`mustard_core::EventReader::stream`].
 //!
 //! Fail-open and idempotent.
 
 use mustard_core::time::now_iso8601;
-use mustard_core::io::atomic_md::frontmatter::Frontmatter;
-use mustard_core::io::atomic_md::{MarkdownDoc, MarkdownStore};
-use mustard_core::io::fs;
 use mustard_core::domain::model::event::HarnessEvent;
 use mustard_core::ClaudePaths;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::path::Path;
 
 /// Read every harness event for `spec` from its per-spec NDJSON sink.
@@ -151,44 +145,6 @@ pub fn detect_completed_epics(cwd: &Path) -> Vec<String> {
     candidates
 }
 
-/// Write an `epic-summary` markdown file under `.claude/knowledge/`.
-fn write_knowledge_entry(
-    cwd: &Path,
-    epic: &str,
-    name: &str,
-    description: &str,
-    content: &str,
-    children: &[String],
-    concluded_at: &str,
-) {
-    let Ok(cp) = ClaudePaths::for_project(cwd) else {
-        return;
-    };
-    let dir = cp.claude_dir().join("knowledge");
-    if fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let dest = dir.join(format!("epic-{epic}.md"));
-    let mut fm = Map::new();
-    fm.insert("kind".into(), json!("epic-summary"));
-    fm.insert("name".into(), json!(name));
-    fm.insert("confidence".into(), json!(0.85));
-    fm.insert("source".into(), json!("epic-fold"));
-    fm.insert("concluded_at".into(), json!(concluded_at));
-    fm.insert(
-        "spec_children".into(),
-        json!(children.to_vec()),
-    );
-    fm.insert("status".into(), json!("active"));
-    let body = format!("{description}\n\n{content}\n");
-    let doc = MarkdownDoc {
-        path: dest.clone(),
-        frontmatter: Some(Frontmatter(Value::Object(fm))),
-        body,
-    };
-    let _ = MarkdownStore::write_atomic(&dest, &doc);
-}
-
 /// Fold an epic — returns `true` on success (or when already folded).
 ///
 /// **Idempotent.** Two guards make a re-run a no-op: an epic already in phase
@@ -305,20 +261,6 @@ pub fn fold_epic(cwd: &Path, epic: &str) -> bool {
     let mut content_parts: Vec<String> = Vec::new();
     content_parts.push(format!("Decisions: {decisions_count}"));
     content_parts.push(format!("Lessons: {lessons_count}"));
-
-    write_knowledge_entry(
-        cwd,
-        epic,
-        epic,
-        &format!(
-            "Epic concluded with {} child spec(s): {}",
-            children.len(),
-            children.join(", ")
-        ),
-        &content_parts.join("\n\n"),
-        &children,
-        &ended_at,
-    );
 
     emit_event(
         cwd.to_string_lossy().as_ref(),
