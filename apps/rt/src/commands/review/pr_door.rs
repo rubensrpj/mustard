@@ -169,7 +169,7 @@ pub(crate) fn project_root(root: &Path) -> PathBuf {
 fn bases_and_branch(root: &Path) -> (BaseFlow, String) {
     let cfg = mustard_core::ProjectConfig::load(root);
     let flow = BaseFlow::of_at(&cfg.git, root);
-    let branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let branch = mustard_core::current_branch(root).unwrap_or_default();
     (flow, branch)
 }
 

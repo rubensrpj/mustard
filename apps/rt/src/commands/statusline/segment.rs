@@ -86,7 +86,7 @@ pub fn module_segment(cwd: &Path) -> Segment {
 /// repository or the `git` binary is unavailable.
 #[must_use]
 pub fn git_segment(cwd: &Path) -> Option<Segment> {
-    let branch = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = mustard_core::current_branch(cwd)?;
     let porcelain = git(cwd, &["status", "--porcelain"]).unwrap_or_default();
     let (mut staged, mut modified, mut untracked) = (0u32, 0u32, 0u32);
     for line in porcelain.lines() {

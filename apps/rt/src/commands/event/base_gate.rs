@@ -84,10 +84,10 @@ pub(crate) fn evaluate(project: &Path, config: &ProjectConfig) -> BaseVerdict {
     if config.vcs().is_none() {
         return BaseVerdict::Abstain;
     }
-    let Some(current) = git_out(project, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .map(|b| b.trim().to_string())
-        .filter(|b| !b.is_empty())
-    else {
+    // A leitura compartilhada já apara o texto e já responde ausência para o
+    // checkout destacado e para a branch sem nome; repetir isso aqui era a
+    // mesma pergunta respondida duas vezes.
+    let Some(current) = mustard_core::current_branch(project) else {
         // Not a repository, no git on PATH, an unborn HEAD — unmeasured.
         return BaseVerdict::Abstain;
     };

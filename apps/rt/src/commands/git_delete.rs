@@ -123,7 +123,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // The branch of the INVOCATION, not of the main checkout: called from
     // inside the unit's own worktree the two disagree, and it is the caller's
     // floor that decides whether this is a base-side gesture.
-    let branch = git_out(start, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let branch = mustard_core::current_branch(start).unwrap_or_default();
     let protected = mustard_core::protected_branches(&cfg.git);
     let standing_on = flow.base_of(&branch);
     // Standing on a branch this project holds NO unit record for is standing on

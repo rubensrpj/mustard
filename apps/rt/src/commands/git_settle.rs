@@ -264,7 +264,7 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
             .collect()
     };
 
-    let head = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let head = mustard_core::current_branch(repo).unwrap_or_default();
     let on_unit_branch = same_unit(&head);
     let mut branches: Vec<String> =
         refs_of("refs/heads").into_iter().filter(|b| same_unit(b)).collect();
@@ -399,7 +399,7 @@ fn is_merged(
 /// The `dirty-tree` diagnosis survives the removal — it is now MEASURED after
 /// the refusal instead of standing in for the attempt.
 fn update_bases(main: &Path, bases: &[String]) -> (Value, Vec<Value>) {
-    let current = git_out(main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let current = mustard_core::current_branch(main).unwrap_or_default();
     let current_report = if bases.iter().any(|b| b == &current) {
         if git_ok(main, &["merge", "--ff-only", &format!("origin/{current}")]) {
             json!({ "branch": current, "updated": true })
@@ -470,6 +470,11 @@ fn sync_submodule_pointers(main: &Path, submodules: &[String]) -> Vec<Value> {
     submodules
         .iter()
         .map(|rel| {
+            // A leitura crua, e não a da biblioteca, porque aqui a resposta tem
+            // TRÊS casos e não dois: quem não respondeu, quem está destacado
+            // (`HEAD`) e quem está numa branch. A leitura compartilhada junta
+            // os dois primeiros num `None`, e juntá-los aqui mandaria um
+            // `submodule update` para um repositório que ninguém conseguiu ler.
             let Some(head) = git_out(&main.join(rel), &["rev-parse", "--abbrev-ref", "HEAD"])
             else {
                 // Unreadable is not detached: leave it alone and say so.
@@ -629,7 +634,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
 
     // The user's contract: bare settle NEVER runs from a base — it is the
     // unit's exit ritual. `--unit` is the finish step, allowed anywhere.
-    let inv_branch = git_out(start, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let inv_branch = mustard_core::current_branch(start).unwrap_or_default();
     let unit_branch = match unit {
         Some(u) => u.trim().to_string(),
         None => {
@@ -797,7 +802,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         .map(|s| parse_worktrees(&s))
         .unwrap_or_default();
     let unit_entry = entries.iter().find(|e| e.branch == unit_branch);
-    let main_head = git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let main_head = mustard_core::current_branch(&main).unwrap_or_default();
     let in_place = unit_entry.is_none() && main_head == unit_branch;
     let in_place_exited = in_place && git_ok(&main, &["checkout", &base]);
 
@@ -920,7 +925,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             // than assumed, and nothing is ever forced.
             let _ = git_ok(&main, &["checkout", &unit_branch]);
         }
-        git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default() == unit_branch
+        mustard_core::current_branch(&main).unwrap_or_default() == unit_branch
     };
 
     // One entry per repository the unit lives in. Settle still ACTS only on the
@@ -1681,7 +1686,7 @@ mod tests {
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
         assert_eq!(
-            git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main).as_deref(),
             Some("dev"),
             "main checkout handed back to the base"
         );
@@ -2209,7 +2214,7 @@ mod tests {
             "{v}",
         );
         assert_eq!(
-            git_out(&main.join("sub"), &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main.join("sub")).as_deref(),
             Some("dev_done"),
             "a submodule on a branch is never yanked into detached HEAD",
         );
@@ -2226,6 +2231,11 @@ mod tests {
         let pointer_before = git_out(&main3, &["rev-parse", "HEAD:sub"]).expect("gitlink");
         assert_ne!(parked, pointer_before, "the fixture must park the submodule OFF the pointer");
         git(&sub3, &["checkout", "--detach", &parked]);
+        // A leitura crua, pelo mesmo motivo que `sync_submodule_pointers` usa
+        // ela: só o `HEAD` literal separa "destacado" de "não consegui ler", e
+        // é justamente o destacado que este preparo precisa provar. A leitura
+        // compartilhada devolve ausência nos dois casos, e uma asserção que
+        // aceitasse ausência passaria também com um submódulo ilegível.
         assert_eq!(
             git_out(&sub3, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
             Some("HEAD"),
@@ -2779,7 +2789,7 @@ mod tests {
         // The EFFECT the field cares about: the operator is back where the work
         // is, and the work is back in the tree.
         assert_eq!(
-            git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main).as_deref(),
             Some("dev_inplace"),
             "the checkout returned to the unit branch: {v}",
         );
@@ -2810,7 +2820,7 @@ mod tests {
             "a pruned unit has no branch to return to: {v}",
         );
         assert_eq!(
-            git_out(&main2, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main2).as_deref(),
             Some("dev"),
             "…and the checkout stays on the base it just advanced: {v}",
         );
@@ -2844,7 +2854,7 @@ mod tests {
             "nobody left the unit branch, so the report must not claim otherwise: {v}",
         );
         assert_eq!(
-            git_out(&main3, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main3).as_deref(),
             Some("dev_inplace"),
             "…and the fact backs it: {v}",
         );

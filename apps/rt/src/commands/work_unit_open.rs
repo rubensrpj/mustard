@@ -125,13 +125,10 @@ pub(crate) fn checkout_holding_branch(main: &Path, branch: &str) -> Option<Strin
 /// [`unit_base_of_name`] — the crate's one parser of what
 /// [`super::event::work_branch`] produces.
 fn current_unit_branch(cwd: &Path, flow: &BaseFlow) -> Option<String> {
-    let branch = git_out(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let branch = branch.trim();
-    // `HEAD` is git's answer for a detached checkout — not a branch name.
-    if branch.is_empty() || branch == "HEAD" {
-        return None;
-    }
-    flow.base_of(branch).is_unit().then(|| branch.to_string())
+    // O checkout destacado e a branch sem nome já voltam como ausência da
+    // leitura compartilhada — era ela que esta função reescrevia à mão.
+    let branch = mustard_core::current_branch(cwd)?;
+    flow.base_of(&branch).is_unit().then_some(branch)
 }
 
 /// Start ref for a NON-UNIT worktree name (a subagent's or a desktop session's
@@ -830,7 +827,7 @@ mod tests {
         // The main checkout was not moved.
         assert_eq!(git_out(&main, &["rev-parse", "HEAD"]).expect("head"), head_before);
         assert_eq!(
-            git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).expect("branch"),
+            mustard_core::current_branch(&main).expect("branch"),
             "dev",
             "main checkout stays on its branch"
         );
@@ -975,7 +972,7 @@ mod tests {
         let got = hook_create("recursing-benz-063389", &main).expect("creates");
         assert!(Path::new(&got).is_dir(), "worktree materialized");
         assert_eq!(
-            git_out(Path::new(&got), &["rev-parse", "--abbrev-ref", "HEAD"]).expect("branch"),
+            mustard_core::current_branch(Path::new(&got)).expect("branch"),
             "recursing-benz-063389",
             "own branch, native-style"
         );
@@ -1219,7 +1216,7 @@ mod tests {
             "the kind is a directory, exactly as the run face lays it out: {got}",
         );
         assert_eq!(
-            git_out(Path::new(&got), &["rev-parse", "--abbrev-ref", "HEAD"]).expect("branch"),
+            mustard_core::current_branch(Path::new(&got)).expect("branch"),
             "feature/my-unit",
         );
         // …cut from the fresh origin base its kind implies, like any unit.

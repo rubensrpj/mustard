@@ -108,7 +108,7 @@ pub(crate) fn notebook_at(
     let project = checkout_root(root);
     let branch = match unit.map(str::trim).filter(|u| !u.is_empty()) {
         Some(u) => u.to_string(),
-        None => git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default(),
+        None => mustard_core::current_branch(root).unwrap_or_default(),
     };
     // A name that is nobody's work unit means no notebook — an integration
     // base, a hand-cut branch, a `feature_x` whose prefix names neither a kind

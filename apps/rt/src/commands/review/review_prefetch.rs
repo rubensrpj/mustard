@@ -364,15 +364,11 @@ fn local_files(root: &Path, base: &str, head: &str) -> Result<Vec<Value>, String
     let candidates =
         [(format!("origin/{base}"), format!("origin/{head}")), (base.to_string(), head.to_string())];
     for (b, h) in &candidates {
-        let Ok(out) = Command::new("git")
-            .args(["diff", "--numstat", &format!("{b}...{h}")])
-            .current_dir(root)
-            .output()
-        else {
-            continue;
-        };
-        if out.status.success() {
-            return Ok(files_from_numstat(&String::from_utf8_lossy(&out.stdout)));
+        if let Some(numstat) =
+            mustard_core::platform::git::run(root, &["diff", "--numstat", &format!("{b}...{h}")])
+                .out()
+        {
+            return Ok(files_from_numstat(&numstat));
         }
     }
     Err(format!(

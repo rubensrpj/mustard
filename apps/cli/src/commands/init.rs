@@ -719,14 +719,9 @@ fn install_github_templates(templates_dir: &Path, project_path: &Path) -> Result
 
 /// Whether `origin`'s URL points at github.com.
 fn has_github_remote(project_path: &Path) -> bool {
-    Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
-        .current_dir(project_path)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
-        .is_some_and(|url| url.contains("github.com"))
+    mustard_core::platform::git::run(project_path, &["config", "--get", "remote.origin.url"])
+        .out()
+        .is_some_and(|url| url.to_lowercase().contains("github.com"))
 }
 
 /// Build and write the single project-root `mustard.json`.

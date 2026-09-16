@@ -1,6 +1,12 @@
 //! `pr_provider` — the pull-request ACTIONS (open / edit / ready / view) as a
-//! port, mirroring what [`crate::shared::branch_state`] already does for the
-//! pull-request STATUS query ([`crate::shared::branch_state::PrLookup`]).
+//! port, beside the pull-request STATUS query that
+//! [`crate::shared::branch_state`] answers with
+//! [`crate::shared::branch_state::PrQuery`].
+//!
+//! Só as AÇÕES são porta. A consulta de estado foi porta e deixou de ser: ela
+//! tem dois casos fechados — perguntar ou não perguntar — e um traço para dois
+//! casos era máquina a mais. Já as ações cada provedor faz de um jeito, e é
+//! essa diferença que o traço aqui existe para absorver.
 //!
 //! The trait is what every caller depends on; no consumer ever names a provider
 //! or its CLI. The adapters — [`GithubPrCli`] below, and the REST-speaking
@@ -94,7 +100,7 @@ pub(crate) fn status_from_azure(status: &str) -> PrStatus {
 /// Map GitHub's `state` word onto the canonical [`PrStatus`].
 ///
 /// `gh` answers UPPERCASE (`OPEN` / `MERGED` / `CLOSED`) — the same contract
-/// [`crate::shared::branch_state::ProviderPrCli`] already reduces over, and
+/// [`crate::shared::branch_state::PrQuery::reduce`] already reduces over, and
 /// matched case-insensitively for the same reason it upper-cases there.
 pub(crate) fn status_from_github(state: &str) -> PrStatus {
     match state.to_ascii_uppercase().as_str() {
@@ -296,12 +302,15 @@ pub(crate) enum PrRef<'a> {
 /// The pull-request actions as a PORT.
 ///
 /// Callers depend on this trait and never on a provider's CLI or REST API, so
-/// a new provider is a new adapter and not one line of new caller logic —
-/// the same inversion [`crate::shared::branch_state::PrLookup`] already made
-/// for the status query. Every operation degrades to `Err(String)` (a stable
-/// token where this module decides the words, the CLI's own stderr where it
-/// does not), never a panic — `clippy::unwrap_used` is `deny` crate-wide and
-/// these run on command paths that must keep answering JSON.
+/// a new provider is a new adapter and not one line of new caller logic. Every
+/// operation degrades to `Err(String)` (a stable token where this module
+/// decides the words, the CLI's own stderr where it does not), never a panic —
+/// `clippy::unwrap_used` is `deny` crate-wide and these run on command paths
+/// that must keep answering JSON.
+///
+/// O mesmo NÃO vale para a consulta de estado, que já foi um traço ao lado
+/// deste e não é mais: lá o que muda de provedor para provedor é só a quem
+/// perguntar, e isso cabe em [`crate::shared::branch_state::PrQuery`].
 pub(crate) trait PrProvider {
     /// The provider token this adapter speaks for — what a report prints so
     /// the operator knows WHO was asked. `resolve_provider`'s vocabulary.
@@ -618,7 +627,7 @@ fn rules_protect(doc: &Value) -> bool {
 // ---------------------------------------------------------------------------
 
 /// The one answer of an operation nobody implemented: the stable token
-/// [`PR_UNSUPPORTED`] — the same word `branch_state`'s status port uses for a
+/// [`PR_UNSUPPORTED`] — the same word `branch_state`'s status query uses for a
 /// provider without an adapter, and for the same reason. Never a fabricated
 /// success and never a measured-looking absence.
 fn unsupported<T>() -> Result<T, String> {
@@ -627,7 +636,8 @@ fn unsupported<T>() -> Result<T, String> {
 
 /// The adapter for a provider this module has no adapter FOR (`gitlab`,
 /// `bitbucket`, anything the resolver may learn later): every operation is
-/// [`PR_UNSUPPORTED`]. Separate from [`AzurePrRest`] because the two are
+/// [`PR_UNSUPPORTED`]. Separate from [`crate::shared::pr_azure::AzurePrRest`]
+/// because the two are
 /// different facts — Azure is an adapter that is not written YET; this is the
 /// honest answer for providers that have none at all.
 pub(crate) struct UnsupportedPr {

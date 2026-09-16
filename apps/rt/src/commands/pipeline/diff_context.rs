@@ -62,7 +62,7 @@ pub fn run(parent: Option<&str>, subproject: Option<&str>, phase: Option<&str>) 
     // the project's own declared bases now; this file spells no branch.
     let mut parent_branch = parent.map(str::to_string);
     if parent_branch.is_none() {
-        let branch = git(&cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        let branch = mustard_core::current_branch(&cwd).unwrap_or_default();
         let bases = ProjectConfig::load(&cwd).git.declared_bases();
         if !branch.is_empty() && !bases.contains(&branch) {
             parent_branch = bases
@@ -73,7 +73,7 @@ pub fn run(parent: Option<&str>, subproject: Option<&str>, phase: Option<&str>) 
 
     let mut parts: Vec<String> = Vec::new();
 
-    let current_branch = git(&cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let current_branch = mustard_core::current_branch(&cwd).unwrap_or_default();
     if !current_branch.is_empty() {
         parts.push(format!("## Branch: {current_branch}"));
     }

@@ -442,7 +442,7 @@ fn scan_work_branches(
     let prefix = git_out(root, &["rev-parse", "--show-prefix"]).unwrap_or_default();
     let spec_root = format!("{prefix}.claude/spec");
 
-    let current = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let current = mustard_core::current_branch(root).unwrap_or_default();
 
     let config = mustard_core::ProjectConfig::load(root);
     // ROOTED, and that is what makes the sentence above true: `legacy_base_of`

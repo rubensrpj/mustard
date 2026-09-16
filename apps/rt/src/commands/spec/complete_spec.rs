@@ -120,7 +120,7 @@ pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
     // 2. VCS diff against the parent branch. A project that opted out answers
     //    nothing here, which is the same as having no branch to diff from.
     let config = mustard_core::ProjectConfig::load(cwd);
-    let branch = vcs_run(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let branch = mustard_core::current_branch(cwd).unwrap_or_default();
     if !branch.is_empty() {
         let parent = parent_branch_for(&config, &branch).unwrap_or_default();
         if !parent.is_empty() && branch != parent {

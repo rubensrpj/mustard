@@ -654,8 +654,10 @@ mod tests {
         open_with(&opts(root, kind, name, base), mapped)
     }
 
+    /// A branch em que o checkout está, pela leitura da biblioteca — a mesma
+    /// que o código de produção usa, em vez de uma segunda escrita da pergunta.
     fn head(root: &Path) -> String {
-        git(root, &["rev-parse", "--abbrev-ref", "HEAD"])
+        mustard_core::current_branch(root).unwrap_or_default()
     }
 
     fn branches(root: &Path) -> Vec<String> {
@@ -1367,7 +1369,16 @@ mod tests {
         let report = open(root, Some("feature"), Some("x"), Some("dev"));
         assert_eq!(report["ok"], json!(false), "{report}");
         assert_eq!(report["reason"], json!("io-failed"), "{report}");
-        assert_eq!(head(root), "HEAD", "the checkout is detached again");
+        // A leitura crua aqui, e não a `head`: só o `HEAD` literal separa
+        // "solto" de "não consegui ler", e é o solto que este teste afirma.
+        // A leitura da biblioteca devolve ausência nos dois casos, e uma
+        // asserção que aceitasse ausência passaria também com um repositório
+        // ilegível.
+        assert_eq!(
+            git(root, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "HEAD",
+            "the checkout is detached again",
+        );
         assert_eq!(git(root, &["rev-parse", "HEAD"]), from);
         assert!(!branches(root).contains(&"feature/x".to_string()));
     }

@@ -10,7 +10,7 @@ use mustard_core::domain::model::contract::HookInput;
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::time::now_iso8601;
 use serde_json::json;
-use std::process::{Command, Stdio};
+use std::path::Path;
 
 use super::lex::truncate;
 
@@ -49,20 +49,11 @@ fn classify_pr_segment(segment: &str) -> Option<&'static str> {
     None
 }
 
-/// The git branch via `git rev-parse --abbrev-ref HEAD`. Fail-open `None`.
+/// A branch em que o checkout está, pela leitura compartilhada. Falha aberta
+/// como `None` — sem repositório, sem programa de versões ou num checkout
+/// destacado, o par da entrega fica sem branch em vez de derrubar o gancho.
 fn detect_branch(project_dir: &str) -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(project_dir)
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if branch.is_empty() { None } else { Some(branch) }
+    mustard_core::current_branch(Path::new(project_dir))
 }
 
 /// The spec this PR belongs to, for the DORA pairing key: the one current-spec

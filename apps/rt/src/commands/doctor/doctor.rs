@@ -1136,13 +1136,7 @@ fn check_scan_output(root: &Path, lang: Locale) -> CheckResult {
 /// The paths git sees: tracked, or new and not ignored. `None` when git does
 /// not answer (no git, outside a repository).
 fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
-    let git_ok = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .is_ok_and(|out| out.status.success())
-    };
+    let git_ok = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
     if !git_ok(&["rev-parse", "--is-inside-work-tree"]) {
         return None;
     }

@@ -7,9 +7,10 @@
 //! invert that layering — this module exists to make that impossible.
 //!
 //! - [`branch_state`] — the ONE sweep of work-unit branches (local AND remote)
-//!   and the classifier that says what state each is in, behind a PR-lookup
-//!   port. Both faces ask it: the exit ritual (`commands::git_settle`), the spec
-//!   inventory and the statusline.
+//!   and the classifier that says what state each is in, reading git directly
+//!   and asking about pull requests only when the consumer says to
+//!   ([`branch_state::PrQuery`]). Both faces ask it: the exit ritual
+//!   (`commands::git_settle`), the spec inventory and the statusline.
 //! - [`code_state`] — a fingerprint of the working tree, so a recorded test
 //!   run can be told apart from a stale one. Written by `qa-run`, read by the
 //!   close gate: it answers *did the code move since that green*.
@@ -26,9 +27,9 @@
 //!   environment override, then the checkout's branch, then the session
 //!   binding). Every door that asks "which spec is this" goes through it.
 //! - [`pr_provider`] — the pull-request ACTIONS (open/edit/ready/view) as a
-//!   port, the acting twin of `branch_state`'s read-only `PrLookup`: callers
-//!   depend on the trait, adapters are the only place a provider and its
-//!   CLI/API are named, and the factory picks by the provider in force.
+//!   port: callers depend on the trait, adapters are the only place a provider
+//!   and its CLI/API are named, and the factory picks by the provider in force.
+//!   A leitura do estado, ao lado, não é porta — ver `branch_state` acima.
 //! - [`pr_azure`] — the Azure DevOps adapter behind that port: the Git REST
 //!   API over an injectable transport, the PAT from `AZURE_DEVOPS_EXT_PAT` or
 //!   the git credential vault, every URL derived from the `origin` remote —

@@ -69,7 +69,8 @@ fn refusal(out: &Output) -> Value {
 
 /// Nada nasceu: nem branch nova, nem pasta de spec.
 fn nothing_created(root: &Path) {
-    assert_eq!(git(root, &["rev-parse", "--abbrev-ref", "HEAD"]), "dev");
+    // A leitura da biblioteca, não uma segunda escrita da mesma pergunta.
+    assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev"));
     assert_eq!(git(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]), "dev");
     assert!(!root.join(".claude").join("spec").exists(), "no spec folder");
 }

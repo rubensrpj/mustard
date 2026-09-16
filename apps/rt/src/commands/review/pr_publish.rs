@@ -219,16 +219,10 @@ fn emit(report: &PrPublishReport) {
 /// = the whole `git log --oneline` of the range. Answers `Err` with git's own
 /// words when the range cannot be read, so the report names the reason.
 fn fill_from_commits(repo: &Path, base: &str, head: &str) -> Result<(String, String), String> {
-    let out = std::process::Command::new("git")
-        .args(["log", "--format=%s", &format!("{base}..{head}")])
-        .current_dir(repo)
-        .output()
-        .map_err(|e| format!("git-log-failed: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if err.is_empty() { "git-log-failed".to_string() } else { err });
-    }
-    let subjects: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    let log = mustard_core::platform::git::run(repo, &["log", "--format=%s", &format!("{base}..{head}")])
+        .result()
+        .map_err(|err| if err.is_empty() { "git-log-failed".to_string() } else { err })?;
+    let subjects: Vec<String> = log
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())

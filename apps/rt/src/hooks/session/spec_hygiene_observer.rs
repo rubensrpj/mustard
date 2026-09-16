@@ -344,19 +344,12 @@ mod ac_section_tests {
 /// (no git, no commit, detached worktree) — the candidate path then simply
 /// never fires, which is safe (no auto-close on incomplete evidence).
 fn last_commit_iso(cwd: &Path, spec_dir: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .args(["log", "--pretty=%cI", "-1", "--"])
-        .arg(spec_dir)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(out.stdout).ok()?;
+    let spec_dir = spec_dir.to_string_lossy();
+    let text = mustard_core::platform::git::run(
+        cwd,
+        &["log", "--pretty=%cI", "-1", "--", spec_dir.as_ref()],
+    )
+    .out()?;
     let line = text.lines().next()?.trim();
     if line.is_empty() {
         return None;

@@ -587,7 +587,7 @@ pub(crate) fn evidence_from_rows(rows: &[Value]) -> PrEvidence {
     PrEvidence { status, merged_heads }
 }
 
-/// The [`crate::shared::branch_state::PrLookup`] answer for an Azure branch:
+/// The [`crate::shared::branch_state::PrQuery`] answer for an Azure branch:
 /// resolve the context, run ONE search, reduce it purely. Every failure
 /// degrades to [`PrStatus::Unknown`] with a stable reason — an unreachable
 /// REST API is an unmeasured state, never a measured "no PR" — because a
@@ -683,14 +683,9 @@ pub(crate) fn prefetch(repo: &Path, number: u64) -> Result<AzurePrefetch, String
 /// Run `git` in `root` and return its trimmed stdout — the same degradation
 /// shape as the GitHub adapter's `gh_out`, for the same reason.
 fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
-    let Ok(out) = Command::new("git").args(args).current_dir(root).output() else {
-        return Err("git-not-found".to_string());
-    };
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(if stderr.is_empty() { "git-failed".to_string() } else { stderr });
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    mustard_core::platform::git::run(root, args)
+        .result()
+        .map_err(|err| if err.is_empty() { "git-failed".to_string() } else { err })
 }
 
 /// The Azure DevOps adapter — REST over the injectable transport, credential
@@ -750,8 +745,9 @@ impl PrProvider for AzurePrRest {
             PrRef::Number(n) => do_view_number(&remote, self.transport.as_ref(), &auth, n),
             PrRef::Head(head) => do_view_branch(&remote, self.transport.as_ref(), &auth, head),
             PrRef::Checkout => {
-                let branch = git_out(&self.repo, &["rev-parse", "--abbrev-ref", "HEAD"])
-                    .map_err(|e| format!("azure-branch-unreadable: {e}"))?;
+                let branch = mustard_core::current_branch(&self.repo).ok_or_else(|| {
+                    "azure-branch-unreadable: the checkout names no branch".to_string()
+                })?;
                 do_view_branch(&remote, self.transport.as_ref(), &auth, &branch)
             }
         }
