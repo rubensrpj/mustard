@@ -1624,17 +1624,51 @@ mod tests {
     /// formatador e com o formatador na pasta dele, o arquivo recém-escrito
     /// fica byte a byte como foi gravado, pelas duas portas do gancho. Quem
     /// formata é a rodada, uma vez, antes do commit.
+    ///
+    /// O formatador falso tem dentes: é executável, sobrescreve com um texto
+    /// conhecido todo arquivo que receber, e está na pasta onde a chamada
+    /// removida o procurava. O teste começa provando isso num rascunho — um
+    /// formatador falso que não roda, ou que não mudaria byte nenhum se
+    /// rodasse, faria a asserção do fim valer com o gancho formatando ou não.
+    #[cfg(unix)]
     #[test]
     fn a_write_in_a_project_with_a_formatter_config_leaves_the_file_byte_for_byte() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
         std::fs::write(root.join("package.json"), b"{}").unwrap();
         std::fs::write(root.join(".prettierrc"), b"{}").unwrap();
-        std::fs::write(root.join("node_modules/.bin/prettier"), b"#!/bin/sh\nexit 0\n").unwrap();
-        let file = root.join("src").join("a.ts");
+        let fake = root.join("node_modules").join(".bin").join("prettier");
+        std::fs::write(
+            &fake,
+            b"#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in -*) ;; *) printf 'FORMATADO\\n' > \"$a\" ;; esac; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
         let text = "const   x   =   1\n\n\n";
+
+        // O formatador falso destrói mesmo: no rascunho ele apaga o que estava
+        // escrito. Sem esta parte, o fim do teste passaria por ausência.
+        let scratch = root.join("src").join("rascunho.ts");
+        std::fs::write(&scratch, text).unwrap();
+        let ran = std::process::Command::new(&fake)
+            .arg("--write")
+            .arg(&scratch)
+            .current_dir(root)
+            .status()
+            .expect("o formatador falso tem de ser executável");
+        assert!(ran.success(), "o formatador falso tem de rodar até o fim");
+        assert_eq!(
+            std::fs::read(&scratch).unwrap(),
+            b"FORMATADO\n",
+            "o formatador falso tem de trocar o conteúdo do arquivo que recebe"
+        );
+
+        let file = root.join("src").join("a.ts");
         std::fs::write(&file, text).unwrap();
 
         let cwd = root.to_str().unwrap();

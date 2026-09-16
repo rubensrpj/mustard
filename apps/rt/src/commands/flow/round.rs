@@ -719,25 +719,31 @@ fn reviews_due(log: &SpecLog, built: &[mustard_core::io::wave_prompt::WavePrompt
         .collect()
 }
 
-/// As ondas que já entregaram e ainda não têm veredito: a revisão delas é o
-/// que a rodada seguinte pede.
+/// As ondas cuja entrega mais nova é posterior ao veredito mais novo: a
+/// revisão delas é o que a rodada seguinte pede. Entra a onda que nunca foi
+/// revisada, por não ter veredito nenhum, e entra também a onda reprovada que
+/// já entregou o conserto — o conserto é mais novo que a reprovação. Excluir
+/// toda onda que tem veredito fechava a porta da segunda: o conserto nunca
+/// voltava para a revisão e o fechamento recusava para sempre, porque o último
+/// veredito seguia sendo o que reprovou.
 fn waves_awaiting_review(log: &SpecLog) -> Vec<u64> {
-    let reviewed: BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Review))
+    let mut last_verdict: BTreeMap<u64, u64> = BTreeMap::new();
+    for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
+        if let Some(n) = verdict.wave() {
+            last_verdict.insert(n, verdict.id);
+        }
+    }
+    let mut last_delivered: BTreeMap<u64, u64> = BTreeMap::new();
+    for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
+        if let Some(n) = delivered.wave() {
+            last_delivered.insert(n, delivered.id);
+        }
+    }
+    last_delivered
         .into_iter()
-        .filter(|e| e.event_type == "verdict")
-        .filter_map(SpecEvent::wave)
-        .collect();
-    let mut out: Vec<u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "delivered")
-        .filter_map(SpecEvent::wave)
-        .filter(|n| !reviewed.contains(n))
-        .collect();
-    out.sort_unstable();
-    out.dedup();
-    out
+        .filter(|(n, id)| last_verdict.get(n).is_none_or(|judged| judged < id))
+        .map(|(n, _)| n)
+        .collect()
 }
 
 /// Os itens que o pedido de uma onda leva: os números de tudo que entrou nele.
@@ -896,8 +902,8 @@ mod tests {
         assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
     }
 
-    /// A rodada grava o que cada onda entregou e o veredito da revisão dela,
-    /// e passa a pedir a revisão do que entregou sem veredito.
+    /// A rodada grava o que cada onda entregou e o veredito da revisão dela, e
+    /// passa a pedir a revisão do que entregou depois do último veredito.
     #[test]
     fn what_came_back_becomes_the_delivered_and_the_verdict_of_the_wave() {
         let dir = tempdir().unwrap();
@@ -916,7 +922,7 @@ mod tests {
             "verdict": {"result": "approved", "text": "passou",
                         "criteria": [{"criterion": 1, "tests_rule": "confere a regra"}]}}]});
         let out = round(root, "x", Some(&verdict.to_string()), None);
-        assert_eq!(out["reviews"], json!([]), "{out}");
+        assert_eq!(out["reviews"], json!([]), "o veredito é mais novo que a entrega dele: {out}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 2);
@@ -925,6 +931,8 @@ mod tests {
 
     /// A onda cuja última revisão reprovou volta a ser despachada, e uma vez
     /// só: depois que o conserto sai, a mesma reprovação não a manda de novo.
+    /// Entregue o conserto, ele volta para a revisão — é o que fecha o ciclo,
+    /// porque sem uma revisão nova o veredito que reprovou valeria para sempre.
     #[test]
     fn a_rejected_wave_goes_out_again_and_only_once() {
         let dir = tempdir().unwrap();
@@ -941,6 +949,20 @@ mod tests {
 
         let quiet = round(root, "x", None, None);
         assert_eq!(quiet["dispatch"], json!([]), "o conserto já saiu, e a onda espera a revisão dele: {quiet}");
+        assert_eq!(quiet["reviews"], json!([]), "o conserto ainda não voltou: nada a revisar: {quiet}");
+
+        // O conserto entregue é mais novo que a reprovação, e por isso pede
+        // revisão: é a revisão nova que tira o veredito velho da frente.
+        let fixed = json!({"waves": [{"wave": 1, "delivered": "O teste entrou.", "files": ["src/a.rs"]}]});
+        let back = round(root, "x", Some(&fixed.to_string()), None);
+        let waves: Vec<u64> = back["reviews"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|review| review["wave"].as_u64())
+            .collect();
+        assert_eq!(waves, vec![1], "o conserto entregue volta para a revisão: {back}");
     }
 
     /// O que uma onda entregou acima do teto de caracteres é recusado, e nada
