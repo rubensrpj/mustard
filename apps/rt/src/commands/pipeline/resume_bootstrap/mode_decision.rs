@@ -14,7 +14,7 @@
 
 use super::{AUTO_CONTINUE_TTL_MS, PipelineDispatchFailurePayload, PipelineStateView};
 use crate::commands::event::work_branch::{
-    current_branch, sanitize_git_ref, slug_of_work_branch,
+    sanitize_git_ref, slug_of_work_branch,
 };
 use mustard_core::domain::model::event::{
     EVENT_PIPELINE_RESUME_MODE, EVENT_PIPELINE_WAVE_COMPLETE,
@@ -174,11 +174,7 @@ pub(super) fn inside_own_work_branch(project: &Path, spec: &str) -> bool {
         return false;
     }
     let config = mustard_core::ProjectConfig::load(project);
-    let Some(vcs) = config.vcs() else {
-        return false;
-    };
-    let root = project.to_string_lossy().into_owned();
-    let Some(current) = current_branch(&vcs, &root) else {
+    let Some(current) = mustard_core::current_branch(project) else {
         return false;
     };
     let Some(slug) = slug_of_work_branch(&current, &config) else {

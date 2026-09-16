@@ -37,13 +37,13 @@
 //! mensagem no idioma do projeto em `hint`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use mustard_core::domain::config::GitConfig;
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{birth_event, SpecState, State};
 use mustard_core::domain::text::fold_accents;
+use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::{ClaudePaths, ProjectConfig, Scan};
 use serde_json::{json, Value};
@@ -51,8 +51,8 @@ use serde_json::{json, Value};
 use crate::commands::event::census_settlement::{settle, CensusSettlement, CheckoutPosition};
 use crate::commands::event::pending::{mark_became, pending_id, pending_is_open};
 use crate::commands::event::work_branch::{
-    checkout_work_branch, current_branch, local_branch_exists, name_dirty_paths, remote_branch_exists,
-    BusyCheckout, CheckoutWork, RefusalCause,
+    checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
+    CheckoutWork, RefusalCause,
 };
 use crate::commands::scan::default_model_path;
 use crate::commands::spec_events::{self, write::record_open};
@@ -236,17 +236,19 @@ fn split_full_name(raw: &str) -> Option<(WorkKind, String)> {
     (!tail.is_empty()).then(|| (kind, tail.to_string()))
 }
 
-/// `Some(false)` quando o git diz que `branch` não pode ser nome de branch;
-/// `None` quando ele não responde.
-fn git_accepts(vcs: &str, root: &Path, branch: &str) -> Option<bool> {
-    let out = Command::new(vcs).args(["check-ref-format", "--branch", branch]).current_dir(root).output().ok()?;
-    Some(out.status.success())
+/// `false` quando o programa de versões não aceita `branch` como nome de
+/// branch — e também quando ele não responde, porque abrir uma unidade corta
+/// uma branch e não tem como seguir sem quem a corte. Antes essas duas
+/// respostas eram separadas e a segunda deixava passar, só para o corte falhar
+/// mais adiante, depois de a pasta da spec já ter sido decidida.
+fn git_accepts(root: &Path, branch: &str) -> bool {
+    git::run(root, &["check-ref-format", "--branch", branch]).ok
 }
 
 /// A branch existe no repositório, local ou no `origin`. Sem resposta do git,
 /// não existe.
-fn branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
-    local_branch_exists(vcs, root, branch) || remote_branch_exists(vcs, root, branch)
+fn branch_exists(root: &Path, branch: &str) -> bool {
+    local_branch_exists(root, branch) || remote_branch_exists(root, branch)
 }
 
 /// As bases que o `git.flow` declara, na ordem do fluxo: a do trabalho comum
@@ -273,19 +275,16 @@ fn flow_order(git: &GitConfig) -> Vec<String> {
 
 /// Todas as branches do repositório, locais e do `origin`, cada uma uma vez,
 /// a do commit mais novo primeiro. Vazia quando o git não responde.
-fn repository_branches(vcs: &str, root: &Path) -> Vec<String> {
-    let Ok(out) = Command::new(vcs)
-        .args(["for-each-ref", "--sort=-committerdate", "--format=%(refname)", "refs/heads", "refs/remotes/origin"])
-        .current_dir(root)
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
+fn repository_branches(root: &Path) -> Vec<String> {
+    let listing = git::run(
+        root,
+        &["for-each-ref", "--sort=-committerdate", "--format=%(refname)", "refs/heads", "refs/remotes/origin"],
+    );
+    if !listing.ok {
         return Vec::new();
     }
     let mut names: Vec<String> = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines().map(str::trim) {
+    for line in listing.stdout.lines().map(str::trim) {
         let name = line.strip_prefix("refs/heads/").or_else(|| line.strip_prefix("refs/remotes/origin/"));
         if let Some(name) = name.filter(|name| !name.is_empty() && *name != "HEAD")
             && !names.iter().any(|known| known == name)
@@ -305,26 +304,18 @@ fn spec_folder_taken(project: &Path, name: &str) -> bool {
         .is_some_and(|mut entries| entries.next().is_some())
 }
 
-/// Uma pergunta ao git em `root`: a saída, sem espaço nas pontas, ou `None`
-/// quando ele recusa ou não responde.
-fn git_out(vcs: &str, root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new(vcs).args(args).current_dir(root).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
 /// O commit de que a branch nova sai, pela mesma ordem do corte
 /// ([`checkout_work_branch`]): a base local, a do `origin` e, sem nenhuma
 /// das duas, o commit atual.
-fn cut_start(vcs: &str, root: &Path, base: &str) -> Option<String> {
-    let root_s = root.to_string_lossy();
-    let from = if local_branch_exists(vcs, &root_s, base) {
+fn cut_start(root: &Path, base: &str) -> Option<String> {
+    let from = if local_branch_exists(root, base) {
         base.to_string()
-    } else if remote_branch_exists(vcs, &root_s, base) {
+    } else if remote_branch_exists(root, base) {
         format!("origin/{base}")
     } else {
         "HEAD".to_string()
     };
-    git_out(vcs, root, &["rev-parse", "--verify", "--quiet", &format!("{from}^{{commit}}")])
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("{from}^{{commit}}")]).out()
 }
 
 /// Desfaz a branch `target` que o `open` acabou de criar, quando a spec não
@@ -336,14 +327,14 @@ fn cut_start(vcs: &str, root: &Path, base: &str) -> Option<String> {
 /// Só apaga a branch que não tem commit além de `start`, o commit de que ela
 /// saiu; com commit próprio, ou sem resposta do git, nada é desfeito.
 /// `true` quando desfez.
-fn undo_branch(vcs: &str, root: &Path, back_to: &str, start: Option<&str>, target: &str) -> bool {
+fn undo_branch(root: &Path, back_to: &str, start: Option<&str>, target: &str) -> bool {
     let Some(start) = start else {
         return false;
     };
-    if git_out(vcs, root, &["rev-list", "--count", &format!("{start}..{target}")]).as_deref() != Some("0") {
+    if git::run(root, &["rev-list", "--count", &format!("{start}..{target}")]).out().as_deref() != Some("0") {
         return false;
     }
-    git_out(vcs, root, &["checkout", "-q", back_to]).is_some() && git_out(vcs, root, &["branch", "-D", target]).is_some()
+    git::run(root, &["checkout", "-q", back_to]).ok && git::run(root, &["branch", "-D", target]).ok
 }
 
 /// Por que a pendência dita não serve: a lista não a tem, ou ela já fechou.
@@ -424,7 +415,6 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     let lang = project.lang;
     let refuse = |refusal: OpenRefusal| refusal.report(lang);
     let root = std::path::absolute(&opts.root).unwrap_or_else(|_| opts.root.clone());
-    let root_s = root.to_string_lossy().into_owned();
     let config = ProjectConfig::load(&project.root);
     let given = |value: &Option<String>| value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
     // A pendência de onde a spec vem: só uma aberta vira spec. A lista é a do
@@ -479,15 +469,15 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         });
     }
     let target = kind.branch_name(&name);
-    let Some(vcs) = config.vcs() else {
+    if config.vcs().is_none() {
         return refuse(OpenRefusal::GitFailed { branch: target, detail: "mustard.json: vcs \"\"".to_string() });
-    };
-    if git_accepts(&vcs, &root, &target) == Some(false) {
+    }
+    if !git_accepts(&root, &target) {
         return refuse(OpenRefusal::GitFailed { branch: target, detail: "git check-ref-format --branch".to_string() });
     }
 
     // A mesma chamada de novo, na branch que ela criou: o mesmo relatório.
-    let current = current_branch(&vcs, &root_s);
+    let current = mustard_core::current_branch(&root);
     if current.as_deref() == Some(target.as_str())
         && let Some(state) = DiskSpecState::new(&root)
             .log(&name)
@@ -516,9 +506,9 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     let declared = !config.git.declared_bases().is_empty();
     let candidates = || -> Vec<String> {
         if declared {
-            flow_order(&config.git).into_iter().filter(|base| branch_exists(&vcs, &root_s, base)).collect()
+            flow_order(&config.git).into_iter().filter(|base| branch_exists(&root, base)).collect()
         } else {
-            repository_branches(&vcs, &root)
+            repository_branches(&root)
         }
     };
     let Some(base) = given(&opts.base) else {
@@ -535,7 +525,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         }
         return report;
     };
-    if !branch_exists(&vcs, &root_s, &base) {
+    if !branch_exists(&root, &base) {
         return refuse(OpenRefusal::BaseNotFound { base, candidates: candidates() });
     }
     let pending = match pending() {
@@ -544,7 +534,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     };
 
     // O nome livre, na branch e na pasta da spec.
-    if branch_exists(&vcs, &root_s, &target) {
+    if branch_exists(&root, &target) {
         return refuse(OpenRefusal::BranchTaken { branch: target });
     }
     if spec_folder_taken(&project.root, &name) {
@@ -560,19 +550,19 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     // Onde o checkout estava e de que commit a branch sai: se a spec não
     // puder ser gravada, a branch nova é desfeita a partir daqui. Com o
     // checkout solto, a volta é para o commit em que ele estava.
-    let back_to = current.clone().or_else(|| git_out(&vcs, &root, &["rev-parse", "HEAD"]));
+    let back_to = current.clone().or_else(|| git::run(&root, &["rev-parse", "HEAD"]).out());
     // Numa branch sem nenhum commit, o git não dá nem nome nem commit para
     // voltar, e o desfazer não teria o que fazer: a recusa vem antes de a
     // branch nova nascer.
     let Some(back_to) = back_to else {
         return refuse(OpenRefusal::UnbornBranch { base });
     };
-    let start = cut_start(&vcs, &root, &base);
-    if let Err(detail) = checkout_work_branch(&vcs, &root_s, &target, &base) {
+    let start = cut_start(&root, &base);
+    if let Err(detail) = checkout_work_branch(&root, &target, &base) {
         return refuse(OpenRefusal::GitFailed { branch: target, detail });
     }
     if let Err(refusal) = record_open(&root, &name, &target, &base) {
-        undo_branch(&vcs, &root, &back_to, start.as_deref(), &target);
+        undo_branch(&root, &back_to, start.as_deref(), &target);
         return refuse(OpenRefusal::Spec(refusal));
     }
 
@@ -621,9 +611,9 @@ mod tests {
     const EN: &str = r#"{"language":{"text":"en-US"},"git":{"flow":{"*":"dev","dev":"main"}}}"#;
 
     fn git(root: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(root).output().expect("git");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        let out = git::run(root, args);
+        assert!(out.ok, "git {args:?}: {}", out.stderr);
+        out.stdout.trim().to_string()
     }
 
     /// Um repositório com `main` e `dev`, o `mustard.json` dado e um arquivo
@@ -1387,12 +1377,12 @@ mod tests {
     fn the_undo_keeps_a_branch_with_its_own_commit() {
         let dir = repo(DEV_MAIN);
         let root = dir.path();
-        let start = cut_start("git", root, "dev").expect("the base has a commit");
+        let start = cut_start(root, "dev").expect("the base has a commit");
         git(root, &["checkout", "-q", "-b", "feature/y"]);
         std::fs::write(root.join("src").join("y.rs"), "fn y() {}\n").unwrap();
         git(root, &["add", "-A"]);
         git(root, &["commit", "-q", "-m", "y"]);
-        assert!(!undo_branch("git", root, "dev", Some(&start), "feature/y"));
+        assert!(!undo_branch(root, "dev", Some(&start), "feature/y"));
         assert_eq!(head(root), "feature/y");
         assert!(branches(root).contains(&"feature/y".to_string()));
     }

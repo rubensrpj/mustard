@@ -74,10 +74,7 @@ use mustard_core::platform::git;
 
 use serde_json::{json, Value};
 
-use crate::shared::branch_state::{
-    self, BranchEnumerator, GitReachability, PrEvidence, PrLookup, ProviderPrCli,
-    StateClassifier,
-};
+use crate::shared::branch_state::{self, BranchEnumerator, PrEvidence, PrQuery};
 
 /// Run `git` in `dir`, returning stdout on success.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
@@ -359,19 +356,18 @@ fn is_merged(
     provider: &str,
     flow: &crate::shared::work_kind::BaseFlow,
 ) -> bool {
-    let git_read = |args: &[&str]| git_out(main, args);
     // The sweep enumerates every unit of the project; the `find` below is what
     // narrows it to this one. Restricting the sweep to `base` was a second,
     // redundant filter — and one that could not survive a name that no longer
     // carries its base, since the unit is recognised by the flow now.
-    let swept = BranchEnumerator::sweep(&git_read, flow);
+    let swept = BranchEnumerator::sweep(main, flow);
     let Some(unit) = swept.units().iter().find(|u| u.branch == branch) else {
         // No ref carries it: nothing to prove and nothing to prune.
         return false;
     };
     // Against the SERVER's base — settle has just fetched it, and a local base
     // that lags would call an unintegrated ref settled.
-    let contained = branch_state::refs_merged_into(&git_read, &format!("origin/{base}"));
+    let contained = branch_state::refs_merged_into(main, &format!("origin/{base}"));
     // The provider is asked ONLY when git did not already answer: a repository
     // whose refs all sit on the base must not pay a network round-trip per unit
     // to be told what `for-each-ref` just proved. (`also_mergeable` asks this
@@ -379,10 +375,9 @@ fn is_merged(
     let evidence = if unit.refnames().iter().all(|r| contained.contains(r)) {
         PrEvidence::unqueried()
     } else {
-        ProviderPrCli::new(main, provider).evidence_of(branch)
+        PrQuery::Ask(provider).evidence_of(main, branch)
     };
-    let reach = GitReachability::new(&git_read);
-    let verdicts = branch_state::ref_verdicts(unit, &contained, &evidence, &reach);
+    let verdicts = branch_state::ref_verdicts(unit, &contained, &evidence, main);
     branch_state::all_refs_accounted(&verdicts)
 }
 
@@ -966,9 +961,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // merged units answered `[]`. The enumerator sees local and remote refs
     // alike, so an in-place unit and one that lives only on the server are both
     // reported.
-    let git_read = |args: &[&str]| git_out(&main, args);
-    let enumerated = BranchEnumerator::sweep(&git_read, &flow);
-    let ahead = branch_state::refs_ahead_of_base(&git_read, enumerated.units(), &flow);
+    let enumerated = BranchEnumerator::sweep(&main, &flow);
+    let ahead = branch_state::refs_ahead_of_base(&main, enumerated.units(), &flow);
     let also_mergeable: Vec<String> = enumerated
         .units()
         .iter()
@@ -1097,8 +1091,7 @@ fn repo_inventory(
     flow: &crate::shared::work_kind::BaseFlow,
     provider: &str,
 ) -> Value {
-    let git_read = |args: &[&str]| git_out(repo, args);
-    let Some(units) = BranchEnumerator::try_sweep(&git_read, flow) else {
+    let Some(units) = BranchEnumerator::try_sweep(repo, flow) else {
         return json!({
             "repo": label,
             "ok": false,
@@ -1107,13 +1100,16 @@ fn repo_inventory(
             "awaitingPrune": [],
         });
     };
-    let (merged, measured) = branch_state::try_merged_refs(&git_read, flow);
-    let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), flow);
-    let lookup = ProviderPrCli::new(repo, provider);
-    let reach = GitReachability::new(&git_read);
-    let states = StateClassifier::new(&lookup, &reach)
-        .measured(measured)
-        .classify(units.units(), &merged, &ahead);
+    let (merged, measured) = branch_state::try_merged_refs(repo, flow);
+    let ahead = branch_state::refs_ahead_of_base(repo, units.units(), flow);
+    let states = branch_state::classify(
+        repo,
+        PrQuery::Ask(provider),
+        units.units(),
+        &merged,
+        &ahead,
+        measured,
+    );
     branch_state::report_value(label, &states)
 }
 
@@ -1834,7 +1830,7 @@ mod tests {
         // so the assertion can fail if the mechanism is dropped rather than
         // moved.
         assert!(
-            src.contains("ProviderPrCli::new(main, provider).evidence_of(branch)"),
+            src.contains("PrQuery::Ask(provider).evidence_of(main, branch)"),
             "the merge gate must still consult the provider — a portal that rewrites the commits \
              when it merges is real",
         );
@@ -2142,8 +2138,7 @@ mod tests {
         git(&main, &["fetch", "origin"]);
         git(&main, &["worktree", "remove", side.to_string_lossy().as_ref()]);
 
-        let git_read = |args: &[&str]| git_out(&main, args);
-        let contained = branch_state::refs_merged_into(&git_read, "origin/dev");
+        let contained = branch_state::refs_merged_into(&main, "origin/dev");
         assert!(
             contained.contains("refs/heads/dev_done"),
             "the local head really landed — a name-keyed set would have stopped here: {contained:?}",

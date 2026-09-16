@@ -8,7 +8,7 @@
 
 use super::theme::Color;
 use crate::commands::economy::rtk_gain::get_rtk_gain;
-use crate::shared::branch_state::{awaiting_prune, LocalOnlyPr};
+use crate::shared::branch_state::{awaiting_prune, PrQuery};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
 use serde_json::Value;
@@ -449,8 +449,8 @@ const PRUNE_CACHE_SECS: u64 = 30;
 ///
 /// `None` when the project is not a Mustard install (the bar stays quiet, like
 /// [`mustard_segment`]) or when nothing is owed. The count comes from the ONE
-/// classifier ([`awaiting_prune`]) with the lookup that asks no provider
-/// ([`LocalOnlyPr`]): a status bar must not open a network connection per
+/// classifier ([`awaiting_prune`]) with the query that asks no provider
+/// ([`PrQuery::Skip`]): a status bar must not open a network connection per
 /// branch, so it counts only merges LOCAL ancestry proves. It can therefore
 /// under-report and never over-report — `mustard-rt run git-settle --report` is
 /// the face that also asks the provider.
@@ -513,8 +513,7 @@ fn store_count(path: &Path, count: usize) {
 fn measure_pending_prune(cwd: &Path) -> usize {
     let config = mustard_core::ProjectConfig::load(cwd);
     let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
-    let git_read = |args: &[&str]| git(cwd, args);
-    awaiting_prune(&git_read, &LocalOnlyPr, &flow).len()
+    awaiting_prune(cwd, PrQuery::Skip, &flow).len()
 }
 
 // ---------------------------------------------------------------------------

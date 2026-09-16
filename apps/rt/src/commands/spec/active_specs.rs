@@ -452,8 +452,7 @@ fn scan_work_branches(
     // wrote no flow.
     let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
 
-    let git_read = |args: &[&str]| git_out(root, args);
-    let Some(enumerated) = BranchEnumerator::try_sweep(&git_read, &flow) else {
+    let Some(enumerated) = BranchEnumerator::try_sweep(root, &flow) else {
         scan.reason =
             Some("git não enumerou as refs — branches de trabalho não inspecionados".to_string());
         return (Vec::new(), scan);

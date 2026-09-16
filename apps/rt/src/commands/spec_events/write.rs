@@ -652,10 +652,9 @@ fn complete_missing(
 
 /// A branch do checkout em `start`, quando ela é a da spec `spec`.
 pub(crate) fn branch_of_spec(start: &Path, spec: &str) -> Option<String> {
-    use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
+    use crate::commands::event::work_branch::slug_of_work_branch;
     let config = mustard_core::ProjectConfig::load(start);
-    let vcs = config.vcs()?;
-    let current = current_branch(&vcs, &start.to_string_lossy())?;
+    let current = mustard_core::current_branch(start)?;
     (slug_of_work_branch(&current, &config).as_deref() == Some(spec.trim())).then_some(current)
 }
 

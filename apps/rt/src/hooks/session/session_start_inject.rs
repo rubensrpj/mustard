@@ -85,7 +85,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::commands::maint::scratch_gc::{human_bytes, survey, ScratchRoots};
-use crate::shared::branch_state::{awaiting_prune, LocalOnlyPr};
+use crate::shared::branch_state::{awaiting_prune, PrQuery};
 
 use mustard_core::time::now_iso8601;
 
@@ -493,8 +493,7 @@ pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option
     // derivation — `BranchEnumerator` then files it under an empty base, which
     // is a base group `refs_ahead_of_base` never measures.
     let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
-    let git_read = |args: &[&str]| crate::commands::git_settle::git_out(root, args);
-    let pending = awaiting_prune(&git_read, &LocalOnlyPr, &flow);
+    let pending = awaiting_prune(root, PrQuery::Skip, &flow);
     if pending.is_empty() {
         return None;
     }

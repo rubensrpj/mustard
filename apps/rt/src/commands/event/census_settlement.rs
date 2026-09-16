@@ -208,15 +208,14 @@ pub(crate) fn settle(
 ) -> CensusSettlement {
     // An explicit `vcs: ""` opt-out (or a tree git does not manage) has no
     // base to refresh and nothing to refuse.
-    let Some(vcs) = config.vcs() else {
+    if config.vcs().is_none() {
         return CensusSettlement::Proceed;
-    };
+    }
     // 0. THE ROOT — the repository's toplevel, whatever the door passed. A
     //    tree git cannot place keeps the door's root: the measurement below
     //    then answers `Unproven`, which authorises nothing.
-    let toplevel = toplevel_of(&vcs, root);
+    let toplevel = toplevel_of(root);
     let root: &Path = toplevel.as_deref().unwrap_or(root);
-    let root_s = root.to_string_lossy().into_owned();
     let base = position.base.map(str::trim).filter(|b| !b.is_empty());
 
     // 1. WHAT IS DIRTY — measured here and NOWHERE else in this settlement.
@@ -248,7 +247,7 @@ pub(crate) fn settle(
     //      nobody established cannot be refreshed; offline, nothing can be
     //      measured and the local base is taken as before.
     if let Some(base) = base
-        && fetch_origin(&vcs, &root_s) {
+        && fetch_origin(root) {
             let mut aside = CensusSetAside::none();
             // 4. SET ASIDE — only on the base, only the paths the advance
             //    overwrites, and only when the advance IS a fast-forward (a
@@ -261,7 +260,7 @@ pub(crate) fn settle(
                     CheckoutWork::CensusOnly(census) => (&[], census),
                     CheckoutWork::ProvenClean | CheckoutWork::Unproven => (&[], &[]),
                 };
-                let blocking = paths_the_advance_overwrites(&vcs, &root_s, base, theirs);
+                let blocking = paths_the_advance_overwrites(root, base, theirs);
                 if !blocking.is_empty() {
                     return CensusSettlement::Refuse(BusyCheckout {
                         current: position.current.unwrap_or("HEAD").to_string(),
@@ -273,8 +272,8 @@ pub(crate) fn settle(
                         },
                     });
                 }
-                let overwritten = paths_the_advance_overwrites(&vcs, &root_s, base, census);
-                aside = CensusSetAside::push(&vcs, root, base, &overwritten);
+                let overwritten = paths_the_advance_overwrites(root, base, census);
+                aside = CensusSetAside::push(root, base, &overwritten);
                 if !aside.paths().is_empty() {
                     eprintln!(
                         "base-gate: census output set aside (stashed) so '{base}' can advance \
@@ -285,9 +284,9 @@ pub(crate) fn settle(
             }
             // 5. FAST-FORWARD, and READ the answer. A refusal puts back what
             //    was set aside FIRST: the tree is returned exactly as found.
-            match fast_forward_base(&vcs, &root_s, position.current, base) {
+            match fast_forward_base(root, position.current, base) {
                 BaseRefresh::Stale { base, error } => {
-                    aside.put_back(&vcs, &root_s);
+                    aside.put_back(root);
                     return CensusSettlement::Refuse(BusyCheckout {
                         current: position.current.unwrap_or("HEAD").to_string(),
                         target: position.target.unwrap_or_default().to_string(),
@@ -296,7 +295,7 @@ pub(crate) fn settle(
                     });
                 }
                 BaseRefresh::Current => {
-                    let report = aside.settle_after_advance(&vcs, root);
+                    let report = aside.settle_after_advance(root);
                     if !report.origin_kept.is_empty() {
                         eprintln!(
                             "base-gate: miner output rewritten on origin/{base} — origin's \

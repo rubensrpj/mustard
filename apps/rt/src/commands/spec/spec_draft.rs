@@ -2057,9 +2057,7 @@ fn resolve_slug(
     let config = mustard_core::ProjectConfig::load(project_root);
     let unit_branch = match work_branch {
         Some(branch) => Some(branch.to_string()),
-        None => config.vcs().and_then(|vcs| {
-            work_branch::current_branch(&vcs, &project_root.to_string_lossy())
-        }),
+        None => mustard_core::current_branch(project_root),
     };
     if let Some(from_branch) = unit_branch
         .as_deref()

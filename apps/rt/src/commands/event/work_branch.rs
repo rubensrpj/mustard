@@ -22,7 +22,6 @@
 //! [`mustard_core::domain::config::GitConfig`], the single owner.
 
 use std::path::Path;
-use std::process::Command;
 
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::translate;
@@ -52,18 +51,6 @@ use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind, CUT_BASE_FILE};
 /// The hotfix-versus-work-base refusal is gone with the inference that made it
 /// meaningful. `hotfix/` is a prefix on a name now; where the unit lands is the
 /// base the operator picked, and picking is the whole feature.
-/// The branch the checkout is standing on — `None` when git cannot say, or when
-/// `HEAD` is detached and the answer would be the literal `HEAD`.
-///
-/// The last MEASURED step of the default chain: a repository whose `origin/HEAD`
-/// is unreadable still has a branch under the operator's feet, and it exists,
-/// which is the whole property that matters. Only after this does the chain
-/// reach a literal.
-fn current_branch_of(root: &Path) -> Option<String> {
-    let name = git::run(root, &["rev-parse", "--abbrev-ref", "HEAD"]).out()?;
-    (!name.is_empty() && name != "HEAD").then_some(name)
-}
-
 pub(crate) fn resolve_kind_base(
     root: &Path,
     requested: Option<&str>,
@@ -86,7 +73,7 @@ pub(crate) fn resolve_kind_base(
             .git
             .primary_base()
             .or_else(|| mustard_core::default_branch(root))
-            .or_else(|| current_branch_of(root))
+            .or_else(|| mustard_core::current_branch(root))
             .ok_or_else(|| {
                 translate("base.unmeasured", config.language().text_or_default()).to_string()
             });
@@ -191,37 +178,9 @@ pub(crate) fn compute_work_branch(
 // The cut — git primitives shared by the hook gate and the draft
 // ---------------------------------------------------------------------------
 
-/// The current branch name (`git rev-parse --abbrev-ref HEAD`), or `None`
-/// whenever the checkout stands on no branch it can name: a detached HEAD (git
-/// answers the literal `HEAD`, which is no branch), a branch with no commit
-/// yet (git refuses the question), not a repository, git absent. Callers never
-/// filter the literal themselves.
-pub(crate) fn current_branch(vcs: &str, root: &str) -> Option<String> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    (!name.is_empty() && name != "HEAD").then_some(name)
-}
-
 /// `true` when a local branch `refs/heads/<branch>` exists.
-pub(crate) fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
-    Command::new(vcs)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ])
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+pub(crate) fn local_branch_exists(root: &Path, branch: &str) -> bool {
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok
 }
 
 /// `true` when the remote-tracking ref `refs/remotes/origin/<branch>` exists.
@@ -229,39 +188,25 @@ pub(crate) fn local_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
 /// The clone's ONLY record of a branch nobody checked out locally — which is
 /// every branch of a fresh clone but the default one, and therefore the shape
 /// the pick this module carries lands in most often.
-pub(crate) fn remote_branch_exists(vcs: &str, root: &str, branch: &str) -> bool {
-    Command::new(vcs)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/origin/{branch}"),
-        ])
-        .current_dir(root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+pub(crate) fn remote_branch_exists(root: &Path, branch: &str) -> bool {
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")])
+        .ok
 }
 
-/// Run one git subcommand in `root`, mapping a non-zero exit (or spawn error)
-/// to `Err(<stderr|io error>)`. Never panics.
-fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
-    let out = Command::new(vcs)
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let msg = stderr.trim();
-        Err(if msg.is_empty() {
-            format!("git exited with status {}", out.status)
-        } else {
-            msg.to_string()
-        })
+/// Run one git subcommand in `root`, mapping a non-zero exit (or a program that
+/// could not be spawned) to `Err(<stderr|io error>)`. Never panics.
+///
+/// The one reading this file adds on top of the executor: a step that only has
+/// to have HAPPENED, and whose refusal text the operator must see when it did
+/// not. A refusal git wrote with nothing on stderr still has to say something,
+/// or the failure reaches a report as an empty line.
+fn run_git(root: &Path, args: &[&str]) -> Result<(), String> {
+    let run = git::run(root, args);
+    if run.ok {
+        return Ok(());
     }
+    let msg = run.stderr.trim();
+    Err(if msg.is_empty() { "git refused without saying why".to_string() } else { msg.to_string() })
 }
 
 /// Check out `target`, creating it off `base` when it does not yet exist.
@@ -298,22 +243,21 @@ fn run_git(vcs: &str, root: &str, args: &[&str]) -> Result<(), String> {
 /// 3. the current HEAD, when NEITHER ref carries the base — an unmeasurable
 ///    repository, not a choice. A cut has to come from somewhere.
 pub(crate) fn checkout_work_branch(
-    vcs: &str,
-    root: &str,
+    root: &Path,
     target: &str,
     base: &str,
 ) -> Result<(), String> {
-    if local_branch_exists(vcs, root, target) {
-        return run_git(vcs, root, &["checkout", target]);
+    if local_branch_exists(root, target) {
+        return run_git(root, &["checkout", target]);
     }
-    if local_branch_exists(vcs, root, base) {
-        return run_git(vcs, root, &["checkout", "-b", target, base]);
+    if local_branch_exists(root, base) {
+        return run_git(root, &["checkout", "-b", target, base]);
     }
-    if remote_branch_exists(vcs, root, base) {
-        return run_git(vcs, root, &["checkout", "-b", target, &format!("origin/{base}")]);
+    if remote_branch_exists(root, base) {
+        return run_git(root, &["checkout", "-b", target, &format!("origin/{base}")]);
     }
     // Neither ref carries the base — branch off the current HEAD.
-    run_git(vcs, root, &["checkout", "-b", target])
+    run_git(root, &["checkout", "-b", target])
 }
 
 /// `git fetch origin`, so the remote-tracking refs describe what `origin` has
@@ -331,8 +275,8 @@ pub(crate) fn checkout_work_branch(
 /// Called from ONE place — [`crate::commands::event::census_settlement::settle`]
 /// — never from a door: the refresh is a step of the settlement, in the order
 /// that function's body states.
-pub(crate) fn fetch_origin(vcs: &str, root: &str) -> bool {
-    if run_git(vcs, root, &["fetch", "origin"]).is_err() {
+pub(crate) fn fetch_origin(root: &Path) -> bool {
+    if run_git(root, &["fetch", "origin"]).is_err() {
         return false;
     }
     crate::shared::work_kind::forget_remote_names(Path::new(root));
@@ -342,8 +286,8 @@ pub(crate) fn fetch_origin(vcs: &str, root: &str) -> bool {
 /// `true` when `ancestor` is reachable from `descendant` — `git merge-base
 /// --is-ancestor`. `false` on any failure, including a ref that does not
 /// exist: a relation git could not establish is not a fact.
-fn is_ancestor(vcs: &str, root: &str, ancestor: &str, descendant: &str) -> bool {
-    run_git(vcs, root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
+    run_git(root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
 }
 
 /// Which of `candidates` the advance of the checked-out `base` to
@@ -359,13 +303,12 @@ fn is_ancestor(vcs: &str, root: &str, ancestor: &str, descendant: &str) -> bool 
 /// Read only after [`fetch_origin`] answered `true`: the remote-tracking ref it
 /// compares against is the one that fetch just wrote.
 pub(crate) fn paths_the_advance_overwrites(
-    vcs: &str,
-    root: &str,
+    root: &Path,
     base: &str,
     candidates: &[String],
 ) -> Vec<String> {
     let remote = format!("origin/{base}");
-    if candidates.is_empty() || !is_ancestor(vcs, root, "HEAD", &remote) {
+    if candidates.is_empty() || !is_ancestor(root, "HEAD", &remote) {
         return Vec::new();
     }
     let Some(changed) = crate::commands::git_settle::git_out(
@@ -390,16 +333,8 @@ pub(crate) fn paths_the_advance_overwrites(
 /// and the advance refuses on the very paths it was meant to clear. So the
 /// settlement resolves its root HERE, once, whatever a door
 /// passed it — a door cannot get this wrong because a door no longer chooses.
-pub(crate) fn toplevel_of(vcs: &str, root: &Path) -> Option<std::path::PathBuf> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+pub(crate) fn toplevel_of(root: &Path) -> Option<std::path::PathBuf> {
+    let top = git::run(root, &["rev-parse", "--show-toplevel"]).out()?;
     (!top.is_empty()).then(|| std::path::PathBuf::from(top))
 }
 
@@ -478,16 +413,8 @@ pub(crate) fn set_aside_sibling(path: &str) -> String {
 }
 
 /// The stash entry currently at `refs/stash`, `None` when there is none.
-fn stash_head(vcs: &str, root: &str) -> Option<String> {
-    let out = Command::new(vcs)
-        .args(["rev-parse", "--verify", "--quiet", "refs/stash"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+fn stash_head(root: &Path) -> Option<String> {
+    let sha = git::run(root, &["rev-parse", "--verify", "--quiet", "refs/stash"]).out()?;
     (!sha.is_empty()).then_some(sha)
 }
 
@@ -508,17 +435,16 @@ impl CensusSetAside {
     /// fast-forward then refuses on it, and the refusal says so in git's words.
     /// The entry is identified by its commit, never by position, so a stash the
     /// operator already had is never mistaken for this one.
-    pub(crate) fn push(vcs: &str, root: &Path, base: &str, paths: &[String]) -> Self {
+    pub(crate) fn push(root: &Path, base: &str, paths: &[String]) -> Self {
         if paths.is_empty() {
             return Self::none();
         }
-        let root_s = root.to_string_lossy().into_owned();
         let authored: Vec<(String, Vec<u8>)> = paths
             .iter()
             .filter(|p| census_path_is_authored(p))
             .filter_map(|p| std::fs::read(root.join(p)).ok().map(|bytes| (p.clone(), bytes)))
             .collect();
-        let before = stash_head(vcs, &root_s);
+        let before = stash_head(root);
         let message = format!("mustard: census set aside so '{base}' can advance");
         let mut args: Vec<&str> = vec![
             "stash",
@@ -530,8 +456,8 @@ impl CensusSetAside {
             "--",
         ];
         args.extend(paths.iter().map(String::as_str));
-        let pushed = run_git(vcs, &root_s, &args).is_ok();
-        let after = stash_head(vcs, &root_s);
+        let pushed = run_git(root, &args).is_ok();
+        let after = stash_head(root);
         // A push that saved nothing ("No local changes to save") exits 0 and
         // writes no entry: only a NEW head is ours.
         let stash = (pushed && after != before).then_some(after).flatten();
@@ -552,8 +478,8 @@ impl CensusSetAside {
     }
 
     /// `true` when the stash entry is still the one at `refs/stash`.
-    fn is_at_head(&self, vcs: &str, root: &str) -> bool {
-        self.stash.is_some() && stash_head(vcs, root) == self.stash
+    fn is_at_head(&self, root: &Path) -> bool {
+        self.stash.is_some() && stash_head(root) == self.stash
     }
 
     /// The advance was REFUSED: restore every path — index state included —
@@ -562,11 +488,11 @@ impl CensusSetAside {
     /// entry was consumed; `false` (and a line on stderr naming the entry)
     /// when git could not apply it, in which case nothing was lost: the entry
     /// stays in `git stash list`.
-    pub(crate) fn put_back(&self, vcs: &str, root: &str) -> bool {
+    pub(crate) fn put_back(&self, root: &Path) -> bool {
         let Some(sha) = &self.stash else {
             return true;
         };
-        if !self.is_at_head(vcs, root) {
+        if !self.is_at_head(root) {
             eprintln!(
                 "base-gate: census set-aside {sha} is no longer the newest stash entry; left \
                  in `git stash list` for you to apply — {}",
@@ -574,8 +500,8 @@ impl CensusSetAside {
             );
             return false;
         }
-        let restored = run_git(vcs, root, &["stash", "pop", "--index", "--quiet"]).is_ok()
-            || run_git(vcs, root, &["stash", "pop", "--quiet"]).is_ok();
+        let restored = run_git(root, &["stash", "pop", "--index", "--quiet"]).is_ok()
+            || run_git(root, &["stash", "pop", "--quiet"]).is_ok();
         if !restored {
             eprintln!(
                 "base-gate: census set-aside could not be put back and stays in `git stash \
@@ -599,12 +525,11 @@ impl CensusSetAside {
     /// sibling that could not be written keeps the entry, and the report names
     /// it. The report is returned, not printed: the settlement says it in its
     /// own words.
-    pub(crate) fn settle_after_advance(self, vcs: &str, root: &Path) -> SetAsideReport {
+    pub(crate) fn settle_after_advance(self, root: &Path) -> SetAsideReport {
         let mut report = SetAsideReport::default();
         let Some(sha) = &self.stash else {
             return report;
         };
-        let root_s = root.to_string_lossy().into_owned();
         let mut all_homed = true;
         for (path, bytes) in &self.authored {
             let sibling = set_aside_sibling(path);
@@ -620,8 +545,8 @@ impl CensusSetAside {
                 report.origin_kept.push(path.clone());
             }
         }
-        if all_homed && self.is_at_head(vcs, &root_s) {
-            let _ = run_git(vcs, &root_s, &["stash", "drop", "--quiet"]);
+        if all_homed && self.is_at_head(root) {
+            let _ = run_git(root, &["stash", "drop", "--quiet"]);
         } else if !all_homed {
             eprintln!(
                 "base-gate: census set-aside kept in `git stash list` ({sha}): an authored mold \
@@ -673,19 +598,18 @@ pub(crate) enum BaseRefresh {
 /// Read only after [`fetch_origin`] answered `true`: offline there is no
 /// evidence the base is behind, and the cut takes the local base as before.
 pub(crate) fn fast_forward_base(
-    vcs: &str,
-    root: &str,
+    root: &Path,
     current: Option<&str>,
     base: &str,
 ) -> BaseRefresh {
-    if !remote_branch_exists(vcs, root, base) {
+    if !remote_branch_exists(root, base) {
         return BaseRefresh::Current;
     }
     let remote = format!("origin/{base}");
     let attempt = if current == Some(base) {
-        run_git(vcs, root, &["merge", "--ff-only", &remote])
-    } else if local_branch_exists(vcs, root, base) {
-        run_git(vcs, root, &["fetch", "origin", &format!("{base}:{base}")])
+        run_git(root, &["merge", "--ff-only", &remote])
+    } else if local_branch_exists(root, base) {
+        run_git(root, &["fetch", "origin", &format!("{base}:{base}")])
     } else {
         // No local head to advance: the cut starts from `origin/{base}` itself
         // ([`checkout_work_branch`], step 2), and that ref was just fetched.
@@ -695,7 +619,7 @@ pub(crate) fn fast_forward_base(
         Ok(()) => BaseRefresh::Current,
         // Ahead of (or level with) the remote: nothing to advance, and an
         // unpushed commit of the operator's is kept, not a defect.
-        Err(_) if is_ancestor(vcs, root, &remote, base) => BaseRefresh::Current,
+        Err(_) if is_ancestor(root, &remote, base) => BaseRefresh::Current,
         Err(error) => BaseRefresh::Stale {
             base: base.to_string(),
             error,
@@ -1435,16 +1359,18 @@ pub(crate) enum CutOutcome {
 pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutcome {
     let config = mustard_core::ProjectConfig::load(project);
     // An explicit `vcs: ""` opt-out (or a non-git tree) means there is no
-    // branch to cut and nothing to guard.
-    let Some(vcs) = config.vcs() else {
+    // branch to cut and nothing to guard. The executor would refuse every step
+    // below anyway; answering here keeps the door from reading markers and
+    // reporting a failure for a project that simply does not cut branches.
+    if config.vcs().is_none() {
         return CutOutcome::NoPending;
-    };
+    }
     let root = project.to_string_lossy().into_owned();
     let Some(target) = crate::shared::context::pending_branch_for(&root, session) else {
         return CutOutcome::NoPending;
     };
 
-    let current = current_branch(&vcs, &root);
+    let current = mustard_core::current_branch(project);
     if current.as_deref() == Some(target.as_str()) {
         crate::shared::context::clear_pending_branch(&root, session);
         return CutOutcome::AlreadyThere(target);
@@ -1491,7 +1417,7 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         }
     };
 
-    match checkout_work_branch(&vcs, &root, &target, &base) {
+    match checkout_work_branch(project, &target, &base) {
         Ok(()) => {
             // The marker that carried the operator's answer is about to be
             // consumed, so this is the LAST moment the answer exists. Write it
@@ -1872,7 +1798,7 @@ mod tests {
         assert_eq!(outcome, super::CutOutcome::Cut("hotfix/my-unit".to_string()), "{outcome:?}");
         // The cut itself honoured the pick: the branch sits on `qas`, not `main`.
         assert_eq!(
-            super::current_branch("git", &root_s).as_deref(),
+            mustard_core::current_branch(root).as_deref(),
             Some("hotfix/my-unit"),
         );
         let head = git_rev(root, "HEAD");
@@ -2005,7 +1931,7 @@ mod tests {
             seed_repo_declaring(root, flow);
             let label = flow.unwrap_or("no flow at all");
             assert!(
-                !super::local_branch_exists("git", &root_s, "release/2026-Q3"),
+                !super::local_branch_exists(root, "release/2026-Q3"),
                 "{label}: the fixture IS the clone shape — no local head carries the pick",
             );
 
@@ -2062,7 +1988,7 @@ mod tests {
         clone_project(&bare, &fresh);
         let fresh_s = fresh.to_string_lossy().to_string();
         assert!(
-            !super::local_branch_exists("git", &fresh_s, "release/2026-Q3"),
+            !super::local_branch_exists(&fresh, "release/2026-Q3"),
             "a clone carries a local head for the default branch alone",
         );
         let sid = "sess-real-clone";
@@ -2497,13 +2423,13 @@ mod tests {
 
         // Nothing was touched: the checkout still holds the first unit, its
         // uncommitted work is intact, and the second branch does not exist.
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
         assert_eq!(
             std::fs::read_to_string(root.join(FIRST_UNIT_SPEC)).expect("read"),
             "# first unit\n\nuncommitted\n",
         );
         assert!(
-            !super::local_branch_exists("git", &root_s, "dev_second"),
+            !super::local_branch_exists(root, "dev_second"),
             "a refused cut creates no branch",
         );
         // The marker SURVIVES — the unit was never started, so nothing was
@@ -2541,7 +2467,7 @@ mod tests {
             "precondition: the probe really cannot answer here",
         );
         assert_eq!(
-            super::current_branch("git", &root_s).as_deref(),
+            mustard_core::current_branch(root).as_deref(),
             Some("dev_first"),
             "precondition: the POSITION is still readable — only the WORK is not",
         );
@@ -2566,9 +2492,9 @@ mod tests {
         assert!(lower.contains("stash"), "and what unblocks it: {reason}");
 
         // Nothing was touched.
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
         assert!(
-            !super::local_branch_exists("git", &root_s, "dev_second"),
+            !super::local_branch_exists(root, "dev_second"),
             "a refused cut creates no branch",
         );
     }
@@ -2613,7 +2539,7 @@ mod tests {
         );
         let outcome = super::cut_pending_work_branch(root, sid);
         assert_eq!(outcome, super::CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_second"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_second"));
     }
 
     /// The classifier's TRUNCATION rule, stated once where it can be read.
@@ -2813,7 +2739,7 @@ mod tests {
             busy.reason(mustard_core::platform::i18n::Locale::EnUs).contains(FIRST_UNIT_SPEC),
             "the refusal names the work at risk",
         );
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
     }
 
     /// Com o checkout solto, a branch atual responde "nenhuma", e não o texto
@@ -2823,18 +2749,17 @@ mod tests {
     fn the_current_branch_is_none_on_a_detached_checkout() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        let root_s = root.to_string_lossy().to_string();
         seed_repo(root);
         git(root, &["checkout", "-q", "-b", "dev_first"]);
-        assert_eq!(super::current_branch("git", &root_s).as_deref(), Some("dev_first"));
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_first"));
 
         git(root, &["checkout", "-q", "--detach"]);
-        let detached = super::current_branch("git", &root_s);
+        let detached = mustard_core::current_branch(root);
         assert_eq!(detached, None, "a detached checkout stands on no branch");
         let config = mustard_core::ProjectConfig::load(root);
         assert!(!super::holds_other_work(root, detached.as_deref(), "dev_second", &config));
 
         git(root, &["checkout", "-q", "--orphan", "vazia"]);
-        assert_eq!(super::current_branch("git", &root_s), None, "a branch without any commit");
+        assert_eq!(mustard_core::current_branch(root), None, "a branch without any commit");
     }
 }

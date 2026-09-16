@@ -62,7 +62,6 @@ use mustard_core::domain::spec_state::{SpecState, State};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 
-use crate::commands::event::work_branch::current_branch;
 use crate::commands::git_settle::main_checkout_root;
 use crate::shared::paths::{Access, PathClass, WriteTarget};
 use crate::shared::spec_state::{lock_state, DiskSpecState};
@@ -117,10 +116,7 @@ impl WriteContext {
         }
         at.state = at.spec.as_deref().and_then(|spec| lock_state(Path::new(root), spec));
         let tree = local_tree_of(input, root);
-        at.current_branch = ctx
-            .config
-            .vcs()
-            .and_then(|vcs| current_branch(&vcs, &tree));
+        at.current_branch = mustard_core::current_branch(Path::new(&tree));
         // Só a regra da aprovação pergunta, e só quando há estado e branch.
         at.in_project_repo =
             at.state.is_some() && at.current_branch.is_some() && same_repository(&tree, root);

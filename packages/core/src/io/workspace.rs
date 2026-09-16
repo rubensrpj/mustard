@@ -270,6 +270,27 @@ fn walk_ancestors(start_dir: &Path) -> Result<PathBuf, WorkspaceError> {
     })
 }
 
+/// The project whose directory `start_dir` sits in, by the ancestor walk ALONE
+/// — no git, no memoisation, no worktree redirect — or `None` when no ancestor
+/// is an anchor.
+///
+/// The walk is [`walk_ancestors`], the very one [`workspace_root`] takes, so
+/// this is not a second answer to "which project is this": it is the same walk,
+/// stopped one step earlier. What it deliberately leaves out is the linked-
+/// worktree redirect, and that omission is the reason this face exists at all:
+/// the redirect asks git, and the one caller here — the git executor
+/// ([`crate::platform::git::run`], resolving which program controls versions)
+/// — would then be asking git in order to decide how to ask git.
+///
+/// Leaving the redirect out is also the right answer, not just the possible
+/// one: the redirect exists so specs, events and telemetry land under the ONE
+/// `.claude/`, which is a question about where STATE is written. Which binary
+/// runs a command is not that question.
+#[must_use]
+pub fn anchor_of(start_dir: &Path) -> Option<PathBuf> {
+    walk_ancestors(start_dir).ok()
+}
+
 /// True iff `dir` contains both `mustard.json` (file) and `.claude/` (dir).
 fn is_anchor(dir: &Path) -> bool {
     let mustard_json = dir.join("mustard.json");

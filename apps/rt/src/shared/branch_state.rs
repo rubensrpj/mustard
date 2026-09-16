@@ -11,10 +11,10 @@
 //!   this module replaces each looked at one half — a branch that lives only on
 //!   the server was invisible to one, and an IN-PLACE unit (cut on the main
 //!   checkout, no worktree — the default shape) was invisible to the other.
-//! - [`StateClassifier`] answers **what state each branch is in**, crossing the
+//! - [`classify`] answers **what state each branch is in**, crossing the
 //!   enumerator with TWO local measurements — ancestry ([`try_merged_refs`]) and
-//!   commits of the branch's own ([`refs_ahead_of_base`]) — and the [`PrLookup`]
-//!   port. It never enumerates and it never acts.
+//!   commits of the branch's own ([`refs_ahead_of_base`]) — and whatever the
+//!   provider answered ([`PrQuery`]). It never enumerates and it never acts.
 //!
 //! Why the state needs TWO local measurements and not ancestry alone: a branch
 //! the work-branch gate cut seconds ago is reachable from its base in exactly
@@ -52,17 +52,30 @@
 //!    while pruning asks what EXISTS, and the first answer ages while the branch
 //!    keeps moving.
 //!
-//! **Never depends back on a face.** Per [`super`], `shared` is the leaf both
-//! `hooks` and `commands` may depend on. The git primitive (`git_out`) lives in
-//! the `commands` face, so this module does not import it — it takes the read as
-//! [`GitOut`], a callback the caller supplies. That inverts the dependency the
-//! same way [`PrLookup`] does for the network, and it makes every sweep testable
-//! against a fixed listing instead of a real repository.
+//! **It reads git directly, and it says which repository.** This module used to
+//! take its read as a callback: the crate's only git primitive lived in the
+//! `commands` face, and per [`super`] `shared` may not depend back on a face, so
+//! the read was inverted into a parameter. The primitive moved to the shared
+//! library ([`mustard_core::platform::git`]), which `shared` may import like any
+//! other leaf — and from that moment the callback inverted nothing. What was
+//! left of it was a seam for a test to pretend to be git, and a sweep proved
+//! against a listing somebody typed proves the typing. Every read below is that
+//! one executor, given the repository root; the tests build a real repository in
+//! a temporary directory.
+//!
+//! The same applies to the two PORTS this module used to declare — the pull
+//! request query and the reachability query — and to the three implementations
+//! and two doubles they carried. Reachability is a git read like every other one
+//! here, so it is now one call. The pull request query has exactly two shapes a
+//! consumer ever chooses between, and two closed cases are [`PrQuery`], not a
+//! trait: a surface that cannot afford a round trip asks nothing, and everybody
+//! else asks the declared provider.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+use mustard_core::platform::git;
 use serde_json::{json, Value};
 
 use crate::shared::work_kind::BaseFlow;
@@ -73,14 +86,6 @@ const HEADS: &str = "refs/heads/";
 /// (its first path segment), never hardcoded — a project may call its remote
 /// anything, and this module names no remote, base or provider literally.
 const REMOTES: &str = "refs/remotes/";
-
-/// How this module reads git: one call, argv in, stdout out, `None` when git
-/// could not answer.
-///
-/// A callback rather than an import, so `shared` never depends back on the
-/// `commands` face that owns the git primitive — and so every sweep here is
-/// testable against a fixed listing.
-pub(crate) type GitOut<'a> = &'a dyn Fn(&[&str]) -> Option<String>;
 
 /// Split a full ref name into `(remote, branch)` — `remote` is `None` for a
 /// local head. Any other namespace (tags, notes, stash) answers `None`.
@@ -172,8 +177,8 @@ impl BranchEnumerator {
     /// ONE `for-each-ref` covers both patterns, so the answer is a single
     /// consistent snapshot rather than two reads that can disagree. Fail-open:
     /// a git that cannot answer yields an empty sweep, never a panic.
-    pub(crate) fn sweep(git: GitOut<'_>, flow: &BaseFlow) -> Self {
-        Self::try_sweep(git, flow).unwrap_or_else(|| Self::from_refs("", flow))
+    pub(crate) fn sweep(root: &Path, flow: &BaseFlow) -> Self {
+        Self::try_sweep(root, flow).unwrap_or_else(|| Self::from_refs("", flow))
     }
 
     /// [`sweep`](Self::sweep), keeping apart "git could not answer" (`None`)
@@ -183,9 +188,10 @@ impl BranchEnumerator {
     /// read printed as a verified "nothing in flight" is the same lie as an
     /// unmeasured PR printed as "no PR". A consumer that merely counts degrades
     /// through [`sweep`] and shows one fewer nudge.
-    pub(crate) fn try_sweep(git: GitOut<'_>, flow: &BaseFlow) -> Option<Self> {
+    pub(crate) fn try_sweep(root: &Path, flow: &BaseFlow) -> Option<Self> {
         let listing =
-            git(&["for-each-ref", "--format=%(refname) %(objectname)", HEADS, REMOTES])?;
+            git::run(root, &["for-each-ref", "--format=%(refname) %(objectname)", HEADS, REMOTES])
+                .out()?;
         Some(Self::from_refs(&listing, flow))
     }
 
@@ -278,14 +284,14 @@ impl BranchEnumerator {
     /// LANDS ([`BaseFlow::work_base`]): a unit reachable from the work base was
     /// delivered there, whatever else has since absorbed it. Only when the work
     /// base is not among the holders is the answer withheld.
-    pub(crate) fn resolve_unrecorded_bases(&mut self, git: GitOut<'_>, flow: &BaseFlow) {
+    pub(crate) fn resolve_unrecorded_bases(&mut self, root: &Path, flow: &BaseFlow) {
         if !self.units.iter().any(|u| u.base.is_empty()) {
             return;
         }
         // One reachability read per declared base, reusing the module's ONE
         // primitive — never one read per unrecorded unit.
         let per_base: Vec<(&String, BTreeSet<String>)> =
-            flow.bases().iter().map(|base| (base, refs_merged_into(git, base))).collect();
+            flow.bases().iter().map(|base| (base, refs_merged_into(root, base))).collect();
         let work_base = flow.work_base().unwrap_or_default();
         for unit in self.units.iter_mut().filter(|u| u.base.is_empty()) {
             let refnames = unit.refnames();
@@ -309,20 +315,22 @@ impl BranchEnumerator {
 ///
 /// Two questions fold through it, and they must never drift apart: "is this ref
 /// on its base now" ([`try_merged_refs`], asked of a base) and "does this merge
-/// account for that ref" ([`GitReachability`], asked of a merged pull request's
-/// frozen head). One `for-each-ref` covers both ref namespaces, so a branch that
+/// account for that ref" ([`PrEvidence::covered_refs`], asked of a merged pull
+/// request's frozen head). One `for-each-ref` covers both ref namespaces, so a branch that
 /// exists only on the server is measured by the same call as a local one.
 ///
 /// Fail-open, and always toward silence: a commit git cannot resolve — a squash
 /// head this clone never fetched — yields an EMPTY set, so absent evidence can
 /// only withhold a prune, never authorise one.
-pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String> {
+pub(crate) fn refs_merged_into(root: &Path, commit: &str) -> BTreeSet<String> {
     if commit.is_empty() {
         return BTreeSet::new();
     }
-    let Some(listing) =
-        git(&["for-each-ref", "--format=%(refname)", "--merged", commit, HEADS, REMOTES])
-    else {
+    let Some(listing) = git::run(
+        root,
+        &["for-each-ref", "--format=%(refname)", "--merged", commit, HEADS, REMOTES],
+    )
+    .out() else {
         return BTreeSet::new();
     };
     listing.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
@@ -337,7 +345,7 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 /// ahead — and the deleting side, trusting that name-level evidence, removed a
 /// remote carrying commits nobody had integrated.
 ///
-/// The network only ever CONFIRMS this (via [`PrLookup`]); it is never required
+/// The network only ever CONFIRMS this (via [`PrQuery`]); it is never required
 /// to reach an answer, which is what keeps the sweep honest offline. Fail-open
 /// per base: a base with no local ref simply contributes nothing.
 ///
@@ -348,8 +356,7 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 /// The two are indistinguishable in the set alone, and they ask for opposite
 /// verdicts: the first says a merged branch really moved past its merge, the
 /// second says nobody looked. Handing the flag to
-/// [`StateClassifier::measured`] is what keeps the second from being printed as
-/// the first.
+/// [`classify`] is what keeps the second from being printed as the first.
 ///
 /// **How the answer is recognised.** A `--merged <base>` read that answered
 /// always carries at least the base's own ref — a commit is reachable from
@@ -357,11 +364,11 @@ pub(crate) fn refs_merged_into(git: GitOut<'_>, commit: &str) -> BTreeSet<String
 /// repository), never a repository in which nothing is contained. One base
 /// answering is enough: a base with no local ref legitimately contributes
 /// nothing, so demanding all of them would report a healthy read as unmeasured.
-pub(crate) fn try_merged_refs(git: GitOut<'_>, flow: &BaseFlow) -> (BTreeSet<String>, bool) {
+pub(crate) fn try_merged_refs(root: &Path, flow: &BaseFlow) -> (BTreeSet<String>, bool) {
     let mut merged: BTreeSet<String> = BTreeSet::new();
     let mut measured = false;
     for base in flow.bases() {
-        let listing = refs_merged_into(git, base);
+        let listing = refs_merged_into(root, base);
         if listing.is_empty() {
             continue;
         }
@@ -398,7 +405,7 @@ pub(crate) fn try_merged_refs(git: GitOut<'_>, flow: &BaseFlow) -> (BTreeSet<Str
 /// pruning verdict. Under-reporting costs a nudge; over-reporting offers to
 /// delete a branch that delivered nothing.
 pub(crate) fn refs_ahead_of_base(
-    git: GitOut<'_>,
+    root: &Path,
     units: &[BranchRefs],
     flow: &BaseFlow,
 ) -> BTreeSet<String> {
@@ -408,7 +415,9 @@ pub(crate) fn refs_ahead_of_base(
         if mine.is_empty() {
             continue;
         }
-        let Some(listing) = git(&["rev-list", "--first-parent", base]) else { continue };
+        let Some(listing) = git::run(root, &["rev-list", "--first-parent", base]).out() else {
+            continue;
+        };
         let mainline: BTreeSet<&str> =
             listing.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
         for unit in mine {
@@ -466,7 +475,7 @@ pub(crate) const PR_CLI_FAILED: &str = "provider-cli-failed";
 /// Reason: the CLI answered something this adapter could not read.
 pub(crate) const PR_UNREADABLE: &str = "provider-answer-unreadable";
 
-/// Reason: the consumer deliberately did not ask (see [`LocalOnlyPr`]).
+/// Reason: the consumer deliberately did not ask (see [`PrQuery::Skip`]).
 pub(crate) const PR_NOT_QUERIED: &str = "pr-not-queried";
 
 /// What the PR query answered, WITH the evidence a pruning decision needs.
@@ -485,7 +494,7 @@ pub(crate) struct PrEvidence {
     ///
     /// A SET, not the newest one: a branch can carry several merged pull
     /// requests, and picking one would let ROW ORDER decide which merge counts —
-    /// the same trap [`ProviderPrCli::reduce`] already refuses for the status.
+    /// the same trap [`PrQuery::reduce`] already refuses for the status.
     pub(crate) merged_heads: BTreeSet<String>,
 }
 
@@ -496,82 +505,37 @@ impl PrEvidence {
     }
 
     /// The refs these merges account for: every ref contained in some frozen
-    /// head. Empty when nothing merged, and empty is never evidence.
-    fn covered_refs(&self, reach: &dyn Reachability) -> BTreeSet<String> {
-        self.merged_heads.iter().flat_map(|head| reach.refs_contained_in(head)).collect()
+    /// head, read in `root`. Empty when nothing merged, and empty is never
+    /// evidence.
+    fn covered_refs(&self, root: &Path) -> BTreeSet<String> {
+        self.merged_heads.iter().flat_map(|head| refs_merged_into(root, head)).collect()
     }
 }
 
-/// The PR query as a PORT.
+/// WHETHER to ask about pull requests at all — the only decision a consumer of
+/// this module ever takes about the network, and a closed one.
 ///
-/// The classifier depends on this trait and never on a provider's CLI, so a new
-/// provider is a new adapter and not one line of new logic in the classifier.
-pub(crate) trait PrLookup {
-    /// What is known about the pull requests whose HEAD is `branch`.
-    fn evidence_of(&self, branch: &str) -> PrEvidence;
-}
-
-/// The reachability query as a PORT: "which refs does this commit's history
-/// already account for".
+/// This was a trait with two adapters and a test double. The double went with
+/// the injected git read; what remained were two cases nobody adds a third to
+/// from outside the crate, which is an enum. A consumer chooses:
 ///
-/// A second port rather than a git handle on the classifier: covered-by-PR is a
-/// reachability question, and answering it must not turn the classifier into
-/// something that can reach the repository. The adapter below is built on the
-/// same injected [`GitOut`] every other read here uses.
-pub(crate) trait Reachability {
-    /// The full refnames whose tip IS `commit` or an ancestor of it.
-    fn refs_contained_in(&self, commit: &str) -> BTreeSet<String>;
-}
-
-/// The reachability adapter over the injected git read.
-pub(crate) struct GitReachability<'a> {
-    git: GitOut<'a>,
-}
-
-impl<'a> GitReachability<'a> {
-    /// Bind the adapter to one repository's git reader.
-    pub(crate) fn new(git: GitOut<'a>) -> Self {
-        Self { git }
-    }
-}
-
-impl Reachability for GitReachability<'_> {
-    fn refs_contained_in(&self, commit: &str) -> BTreeSet<String> {
-        refs_merged_into(self.git, commit)
-    }
-}
-
-/// The port for a consumer that asks NOTHING — every branch answers
-/// [`PrStatus::Unknown`]`(`[`PR_NOT_QUERIED`]`)`.
-///
-/// A surface redrawn on every keystroke (the status bar) or blocking the start
-/// of a session cannot afford a network round-trip per branch, so it measures
-/// LOCAL ancestry only. The classifier then reaches a pruning verdict only
-/// where ancestry already proved the merge; everything else stays
-/// [`UnitState::Unmeasured`]. Such a count can only UNDER-report — a merge the
-/// provider squashed leaves no ancestry — and never invent a prunable branch.
-/// A missed nudge is a nuisance; an invented one offers to delete work nobody
-/// verified.
-pub(crate) struct LocalOnlyPr;
-
-impl PrLookup for LocalOnlyPr {
-    fn evidence_of(&self, _branch: &str) -> PrEvidence {
-        PrEvidence::unqueried()
-    }
-}
-
-/// The adapter for the provider declared in `mustard.json#git.provider`.
-///
-/// This is the ONE place in the module where a provider and its CLI are named —
-/// which is what an adapter IS. GitHub is asked through `gh` below; Azure is
-/// routed to the REST-speaking [`crate::shared::pr_azure::evidence_of`], the
-/// same search + reduction over the injectable transport that module already
-/// proves. A provider without an adapter on either side answers
-/// [`PrStatus::Unknown`], never [`PrStatus::Absent`]: an unimplemented query is
-/// an unmeasured state, not a measured "no PR".
-pub(crate) struct ProviderPrCli<'a> {
-    repo: &'a Path,
-    provider: &'a str,
+/// - [`Skip`](PrQuery::Skip) — every branch answers
+///   [`PrStatus::Unknown`]`(`[`PR_NOT_QUERIED`]`)`. A surface redrawn on every
+///   keystroke (the status bar) or blocking the start of a session cannot
+///   afford a round trip per branch, so it measures LOCAL ancestry only. The
+///   classification then reaches a pruning verdict only where ancestry already
+///   proved the merge; everything else stays [`UnitState::Unmeasured`]. Such a
+///   count can only UNDER-report — a merge the provider squashed leaves no
+///   ancestry — and never invent a prunable branch. A missed nudge is a
+///   nuisance; an invented one offers to delete work nobody verified.
+/// - [`Ask`](PrQuery::Ask) — the provider declared in
+///   `mustard.json#git.provider` is asked.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PrQuery<'a> {
+    /// Ask nothing, and say so in the reason.
+    Skip,
+    /// Ask this provider.
+    Ask(&'a str),
 }
 
 /// The one provider this module can currently ask, and the CLI that asks it.
@@ -600,12 +564,7 @@ const GITHUB_CLI: &str = "gh";
 /// verdict, so the strongest status among a handful wins instead.
 const PR_SCAN_LIMIT: &str = "10";
 
-impl<'a> ProviderPrCli<'a> {
-    /// Bind the adapter to one repository and the project's declared provider.
-    pub(crate) fn new(repo: &'a Path, provider: &'a str) -> Self {
-        Self { repo, provider }
-    }
-
+impl PrQuery<'_> {
     /// Reduce the CLI's rows to one piece of evidence: merged beats open beats
     /// closed, an empty array is a measured absence, and every merged row
     /// contributes its frozen head.
@@ -630,17 +589,27 @@ impl<'a> ProviderPrCli<'a> {
             .collect();
         PrEvidence { status, merged_heads }
     }
-}
 
-impl PrLookup for ProviderPrCli<'_> {
-    fn evidence_of(&self, branch: &str) -> PrEvidence {
+    /// What is known about the pull requests whose HEAD is `branch`, in `repo`.
+    ///
+    /// This is the ONE place in the module where a provider and its CLI are
+    /// named. GitHub is asked through `gh` below; Azure is routed to the
+    /// REST-speaking [`crate::shared::pr_azure::evidence_of`], the same search
+    /// and reduction over the injectable transport that module already proves.
+    /// A provider with an adapter on neither side answers
+    /// [`PrStatus::Unknown`], never [`PrStatus::Absent`]: an unimplemented
+    /// query is an unmeasured state, not a measured "no PR".
+    pub(crate) fn evidence_of(&self, repo: &Path, branch: &str) -> PrEvidence {
         let unknown = |reason| PrEvidence { status: PrStatus::Unknown(reason), merged_heads: BTreeSet::new() };
-        if self.provider.eq_ignore_ascii_case(crate::shared::pr_provider::PROVIDER_AZURE) {
-            // Azure speaks REST, not a CLI — same port, same evidence shape,
-            // reduced in `pr_azure` where its fake transport can prove it.
-            return crate::shared::pr_azure::evidence_of(self.repo, branch);
+        let Self::Ask(provider) = *self else {
+            return PrEvidence::unqueried();
+        };
+        if provider.eq_ignore_ascii_case(crate::shared::pr_provider::PROVIDER_AZURE) {
+            // Azure speaks REST, not a CLI — same answer shape, reduced in
+            // `pr_azure` where its fake transport can prove it.
+            return crate::shared::pr_azure::evidence_of(repo, branch);
         }
-        if !self.provider.eq_ignore_ascii_case(PROVIDER_GITHUB) {
+        if !provider.eq_ignore_ascii_case(PROVIDER_GITHUB) {
             return unknown(PR_UNSUPPORTED);
         }
         let Ok(out) = Command::new(GITHUB_CLI)
@@ -658,7 +627,7 @@ impl PrLookup for ProviderPrCli<'_> {
                 // actually accounted for. Two calls could disagree.
                 "state,headRefOid",
             ])
-            .current_dir(self.repo)
+            .current_dir(repo)
             .output()
         else {
             return unknown(PR_CLI_ABSENT);
@@ -760,9 +729,9 @@ pub(crate) fn ref_verdicts(
     unit: &BranchRefs,
     contained: &BTreeSet<String>,
     evidence: &PrEvidence,
-    reach: &dyn Reachability,
+    root: &Path,
 ) -> Vec<RefVerdict> {
-    let covered = evidence.covered_refs(reach);
+    let covered = evidence.covered_refs(root);
     unit.refnames()
         .into_iter()
         .map(|refname| RefVerdict {
@@ -806,88 +775,85 @@ pub(crate) struct BranchState {
     /// Whether it carries a commit of its OWN — measured locally, and the fact
     /// that separates a delivered unit from one that was only cut.
     pub(crate) ahead: bool,
-    /// What the PR port answered.
+    /// What the PR query answered.
     pub(crate) pr: PrStatus,
     /// The single verdict.
     pub(crate) state: UnitState,
 }
 
-/// Crosses the enumerator with local ancestry and the PR port.
+/// One verdict per enumerated branch, in the enumerator's order — the crossing
+/// of the enumerator with local ancestry and the pull request query.
 ///
 /// It does not enumerate and it does not act: everything it needs arrives as an
-/// argument, and everything it produces is data.
-pub(crate) struct StateClassifier<'a> {
-    pr: &'a dyn PrLookup,
-    reach: &'a dyn Reachability,
-    /// Whether the containment read behind `merged` actually ANSWERED.
-    ///
-    /// [`try_merged_refs`] is fail-open: a git that will not answer yields an empty
-    /// set, which is indistinguishable from "nothing is contained". Told apart,
-    /// the two ask for opposite verdicts — the second means the branch really
-    /// moved past its merge, the first means nobody looked — and printing the
-    /// unmeasured one as the measured one is principle 3 of this module broken
-    /// from the other side (found in review, 2026-07-30).
+/// argument, and everything it produces is data. It used to be a struct bound to
+/// two ports and carrying one flag through a builder; with the ports gone the
+/// struct held nothing a call could not say, and a builder for a single boolean
+/// is a second way to spell an argument.
+///
+/// `merged` is the locally measured ancestry set ([`try_merged_refs`]) and
+/// `ahead` the locally measured set of units carrying commits of their own
+/// ([`refs_ahead_of_base`]); the pull request query only ever CONFIRMS a merge
+/// the local measurement missed (a portal that squashes produces no ancestry),
+/// and can never turn a verified merge back into a doubt.
+///
+/// `reach_measured` says whether the containment read behind `merged` actually
+/// ANSWERED. [`try_merged_refs`] is fail-open: a git that will not answer yields
+/// an empty set, indistinguishable from "nothing is contained". Told apart, the
+/// two ask for opposite verdicts — the second means the branch really moved past
+/// its merge, the first means nobody looked — and printing the unmeasured one as
+/// the measured one is principle 3 of this module broken from the other side
+/// (found in review, 2026-07-30).
+pub(crate) fn classify(
+    root: &Path,
+    pr_query: PrQuery<'_>,
+    units: &[BranchRefs],
+    merged: &BTreeSet<String>,
+    ahead: &BTreeSet<String>,
     reach_measured: bool,
+) -> Vec<BranchState> {
+    units
+        .iter()
+        .map(|unit| {
+            let evidence = pr_query.evidence_of(root, &unit.branch);
+            state_of(root, unit, &evidence, merged, ahead, reach_measured)
+        })
+        .collect()
 }
 
-impl<'a> StateClassifier<'a> {
-    /// Bind a classifier to its two ports: what the provider knows, and what
-    /// git can reach.
-    ///
-    /// Assumes the containment read answered; a caller that KNOWS otherwise
-    /// says so with [`measured`](Self::measured). The default is the safe one
-    /// for a hand-built set (a test's fixture is always a measurement).
-    pub(crate) fn new(pr: &'a dyn PrLookup, reach: &'a dyn Reachability) -> Self {
-        Self { pr, reach, reach_measured: true }
-    }
-
-    /// Declare whether the containment read answered — see
-    /// [`try_merged_refs`], which is what produces the flag.
-    #[must_use]
-    pub(crate) fn measured(mut self, measured: bool) -> Self {
-        self.reach_measured = measured;
-        self
-    }
-
-    /// One verdict per enumerated branch, in the enumerator's order.
-    ///
-    /// `merged` is the locally measured ancestry set ([`try_merged_refs`]) and
-    /// `ahead` the locally measured set of units carrying commits of their own
-    /// ([`refs_ahead_of_base`]); the PR port only ever CONFIRMS a merge the
-    /// local measurement missed (a portal that squashes produces no ancestry),
-    /// and can never turn a verified merge back into a doubt.
-    pub(crate) fn classify(
-        &self,
-        units: &[BranchRefs],
-        merged: &BTreeSet<String>,
-        ahead: &BTreeSet<String>,
-    ) -> Vec<BranchState> {
-        units
-            .iter()
-            .map(|unit| {
-                let evidence = self.pr.evidence_of(&unit.branch);
-                let refs = ref_verdicts(unit, merged, &evidence, self.reach);
-                // Reported `ancestry` is the LOCAL half alone — every ref on the
-                // base right now — so a reader can still tell "git proved it"
-                // from "the provider vouched for it".
-                let ancestry = !refs.is_empty() && refs.iter().all(|r| r.contained);
-                let accounted = all_refs_accounted(&refs);
-                let carries_own = ahead.contains(&unit.branch);
-                let pr = evidence.status;
-                let state = verdict(unit, accounted, carries_own, pr, self.reach_measured);
-                BranchState {
-                    branch: unit.branch.clone(),
-                    base: unit.base.clone(),
-                    local: unit.local,
-                    remotes: unit.remotes.clone(),
-                    refs,
-                    ancestry,
-                    ahead: carries_own,
-                    pr,
-                    state,
-                }
-            })
-            .collect()
+/// ONE branch's state, given the evidence the provider returned FOR IT.
+///
+/// Split out of [`classify`] because the evidence is a VALUE: everything the
+/// provider contributes arrives here as [`PrEvidence`], so every situation of
+/// the verdict table can be measured against a real repository by handing this
+/// the evidence a provider would have returned — with no double standing in for
+/// the provider, and no second copy of this body in a test.
+fn state_of(
+    root: &Path,
+    unit: &BranchRefs,
+    evidence: &PrEvidence,
+    merged: &BTreeSet<String>,
+    ahead: &BTreeSet<String>,
+    reach_measured: bool,
+) -> BranchState {
+    let refs = ref_verdicts(unit, merged, evidence, root);
+    // Reported `ancestry` is the LOCAL half alone — every ref on the base right
+    // now — so a reader can still tell "git proved it" from "the provider
+    // vouched for it".
+    let ancestry = !refs.is_empty() && refs.iter().all(|r| r.contained);
+    let accounted = all_refs_accounted(&refs);
+    let carries_own = ahead.contains(&unit.branch);
+    let pr = evidence.status;
+    let state = verdict(unit, accounted, carries_own, pr, reach_measured);
+    BranchState {
+        branch: unit.branch.clone(),
+        base: unit.base.clone(),
+        local: unit.local,
+        remotes: unit.remotes.clone(),
+        refs,
+        ancestry,
+        ahead: carries_own,
+        pr,
+        state,
     }
 }
 
@@ -976,21 +942,18 @@ fn verdict(
 /// any later consumer all fold through this function: same enumeration, same
 /// ancestry measurement, same verdict table.
 pub(crate) fn awaiting_prune(
-    git: GitOut<'_>,
-    pr: &dyn PrLookup,
+    root: &Path,
+    pr_query: PrQuery<'_>,
     flow: &BaseFlow,
 ) -> Vec<BranchState> {
-    let mut units = BranchEnumerator::sweep(git, flow);
+    let mut units = BranchEnumerator::sweep(root, flow);
     // Before any per-base measurement: a unit filed under the empty base is
     // skipped by every one of them, so resolving here is what makes a
     // hand-cut unit visible at all.
-    units.resolve_unrecorded_bases(git, flow);
-    let (merged, measured) = try_merged_refs(git, flow);
-    let ahead = refs_ahead_of_base(git, units.units(), flow);
-    let reach = GitReachability::new(git);
-    StateClassifier::new(pr, &reach)
-        .measured(measured)
-        .classify(units.units(), &merged, &ahead)
+    units.resolve_unrecorded_bases(root, flow);
+    let (merged, measured) = try_merged_refs(root, flow);
+    let ahead = refs_ahead_of_base(root, units.units(), flow);
+    classify(root, pr_query, units.units(), &merged, &ahead, measured)
         .into_iter()
         .filter(|state| state.state.is_awaiting_prune())
         .collect()
@@ -1064,84 +1027,8 @@ fn pr_value(pr: PrStatus) -> Value {
 mod tests {
     use super::*;
 
-    /// A `PrLookup` that answers from a table — the port's payoff: every
-    /// situation is testable without a network, a token or a provider.
-    ///
-    /// A merged entry may carry the head that merge froze; `of` (no head) is the
-    /// shape where the provider says MERGED and accounts for nothing, which is
-    /// exactly the branch-moved-after-merge case.
-    struct FakePr(BTreeMap<String, PrEvidence>);
-
-    impl FakePr {
-        fn of(pairs: &[(&str, PrStatus)]) -> Self {
-            Self(
-                pairs
-                    .iter()
-                    .map(|(b, s)| {
-                        ((*b).to_string(), PrEvidence { status: *s, merged_heads: BTreeSet::new() })
-                    })
-                    .collect(),
-            )
-        }
-
-        /// The same table, plus the frozen head each merged pull request carries.
-        fn with_heads(pairs: &[(&str, PrStatus, &str)]) -> Self {
-            Self(
-                pairs
-                    .iter()
-                    .map(|(b, s, head)| {
-                        let merged_heads = if head.is_empty() {
-                            BTreeSet::new()
-                        } else {
-                            [(*head).to_string()].into_iter().collect()
-                        };
-                        ((*b).to_string(), PrEvidence { status: *s, merged_heads })
-                    })
-                    .collect(),
-            )
-        }
-    }
-
-    impl PrLookup for FakePr {
-        fn evidence_of(&self, branch: &str) -> PrEvidence {
-            self.0.get(branch).cloned().unwrap_or(PrEvidence {
-                status: PrStatus::Absent,
-                merged_heads: BTreeSet::new(),
-            })
-        }
-    }
-
-    /// A `Reachability` that answers from a table of `head -> refs it contains`.
-    struct FakeReach(BTreeMap<String, BTreeSet<String>>);
-
-    impl FakeReach {
-        fn of(pairs: &[(&str, &[&str])]) -> Self {
-            Self(
-                pairs
-                    .iter()
-                    .map(|(head, refs)| {
-                        ((*head).to_string(), refs.iter().map(|r| (*r).to_string()).collect())
-                    })
-                    .collect(),
-            )
-        }
-
-        /// The port that reaches nothing — the honest twin of [`LocalOnlyPr`],
-        /// and what a consumer that never measures a merged head needs.
-        fn none() -> Self {
-            Self(BTreeMap::new())
-        }
-    }
-
-    impl Reachability for FakeReach {
-        fn refs_contained_in(&self, commit: &str) -> BTreeSet<String> {
-            self.0.get(commit).cloned().unwrap_or_default()
-        }
-    }
-
-    /// The base model of a project declaring the ordinary two-tier flow — the
-    /// model every sweep here is read against. Named for what the callers ask
-    /// of it: which bases exist, and which unit belongs to which.
+    /// O fluxo de duas camadas que todo teste daqui lê: o trabalho sobe para
+    /// `dev` e `dev` sobe para `main`.
     fn bases() -> BaseFlow {
         let mut git = mustard_core::domain::config::GitConfig::default();
         git.flow.insert("*".to_string(), "dev".to_string());
@@ -1149,38 +1036,24 @@ mod tests {
         BaseFlow::of(&git)
     }
 
-    /// Run git in `root`, failing the test with git's own words.
+    /// Roda o git em `root`, e falha o teste com as palavras do próprio git.
     fn run(root: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(root).output().expect("spawn git");
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr),
-        );
+        let out = git::run(root, args);
+        assert!(out.ok, "git {args:?} falhou: {}", out.stderr);
     }
 
-    /// Read git in `root` — the test twin of the callback production injects.
-    ///
-    /// Local on purpose: borrowing the command face's reader would invert the
-    /// DAG `shared/mod.rs` declares impossible, and a test that breaks the
-    /// layering still breaks it (found in review, 2026-07-30).
-    fn read(root: &Path, args: &[&str]) -> Option<String> {
-        let out = Command::new("git").args(args).current_dir(root).output().ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let s = String::from_utf8(out.stdout).ok()?;
-        let s = s.trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
+    /// O commit a que `rev` aponta em `root`.
+    fn sha(root: &Path, rev: &str) -> String {
+        git::run(root, &["rev-parse", rev]).out().expect("o git resolve a referência")
     }
 
-    /// A throwaway repository with one commit on a base the project would
-    /// declare, and the repository's own root.
+    /// Um repositório de mentira nenhuma, em pasta temporária: um commit numa
+    /// base que o projeto declararia, e a raiz dele.
     ///
-    /// The two criteria below run against REAL git on purpose. Both defects they
-    /// pin survived every hand-written listing in this file, because a fixture
-    /// author writes down the shape they already have in mind — and neither of
-    /// these shapes was in anyone's mind.
+    /// Tudo que lê o git neste arquivo é medido aqui. A listagem escrita à mão
+    /// que ficava no lugar deste repositório só provava a listagem: quem a
+    /// escreve anota a forma que já tem em mente, e os dois defeitos que este
+    /// arquivo existe para pegar não estavam na cabeça de ninguém.
     fn scratch_repo() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
@@ -1193,6 +1066,48 @@ mod tests {
         run(&root, &["add", "-A"]);
         run(&root, &["commit", "-m", "seed"]);
         (dir, root)
+    }
+
+    /// Corta `branch` de `dev`, entrega um commit nela, e volta para `dev`.
+    /// Devolve o commit entregue.
+    fn deliver(root: &Path, branch: &str) -> String {
+        run(root, &["checkout", "-q", "-b", branch, "dev"]);
+        std::fs::write(root.join(format!("{branch}.txt")), branch).expect("arquivo da unidade");
+        run(root, &["add", "-A"]);
+        run(root, &["commit", "-q", "-m", branch]);
+        let tip = sha(root, branch);
+        run(root, &["checkout", "-q", "dev"]);
+        tip
+    }
+
+    /// A unidade `branch` como o varredor a enxerga no repositório `root`.
+    fn swept_unit(root: &Path, branch: &str) -> BranchRefs {
+        BranchEnumerator::sweep(root, &bases())
+            .units()
+            .iter()
+            .find(|u| u.branch == branch)
+            .cloned()
+            .unwrap_or_else(|| panic!("a unidade {branch} tinha de ser varrida"))
+    }
+
+    /// Uma unidade de mão, para as situações da tabela que não dependem de
+    /// nenhuma leitura do repositório.
+    fn unit(branch: &str, local: bool, remote: bool) -> BranchRefs {
+        BranchRefs {
+            branch: branch.to_string(),
+            base: "dev".to_string(),
+            local,
+            remotes: if remote { vec!["origin".to_string()] } else { Vec::new() },
+            tip: format!("{branch}-tip"),
+        }
+    }
+
+    /// O que o provedor teria respondido: só um valor, nunca um dublê.
+    fn evidence(status: PrStatus, heads: &[&str]) -> PrEvidence {
+        PrEvidence {
+            status,
+            merged_heads: heads.iter().map(|h| (*h).to_string()).collect(),
+        }
     }
 
     /// AC-1 — the enumerator returns BOTH families (local heads and refs that
@@ -1248,10 +1163,13 @@ refs/tags/v1.0_dev aaa7
         );
     }
 
-    /// A ref that only a remote carries is READ from `<remote>/<branch>`, and
-    /// a read that git could not answer stays telling apart from a repository
-    /// with no work branch — the two properties the spec inventory needs to
-    /// stop enumerating on its own.
+    /// A ref que só o remoto carrega é lida por `<remoto>/<branch>`, e a
+    /// varredura que o git não respondeu continua separada do repositório que
+    /// respondeu "nenhuma branch de trabalho".
+    ///
+    /// As duas respostas são medidas em pastas de verdade: um lugar que não é
+    /// repositório é onde o git não responde, e um repositório recém-criado é
+    /// onde ele responde nada.
     #[test]
     fn remote_only_units_carry_their_read_ref_and_a_failed_sweep_is_not_an_empty_one() {
         let found = BranchEnumerator::from_refs(
@@ -1270,42 +1188,38 @@ refs/tags/v1.0_dev aaa7
             "the remote name comes out of the swept ref, never from a literal",
         );
 
-        // Fail to answer vs. answer nothing: the reporting consumer needs both.
-        let silent = |_: &[&str]| None;
-        assert!(BranchEnumerator::try_sweep(&silent, &bases()).is_none(), "git said nothing");
-        let empty = |_: &[&str]| Some(String::new());
-        let swept = BranchEnumerator::try_sweep(&empty, &bases()).expect("git answered");
-        assert!(swept.units().is_empty(), "an answer of no branches is a measurement");
-        // The degrading face keeps the old contract for consumers that count.
-        assert!(BranchEnumerator::sweep(&silent, &bases()).units().is_empty());
+        // Não respondeu × respondeu nada: quem RELATA precisa das duas.
+        let nowhere = tempfile::tempdir().expect("tempdir");
+        assert!(
+            BranchEnumerator::try_sweep(nowhere.path(), &bases()).is_none(),
+            "numa pasta que não é repositório o git não responde",
+        );
+        let (_dir, root) = scratch_repo();
+        run(&root, &["checkout", "-q", "-b", "outra"]);
+        run(&root, &["update-ref", "-d", "refs/heads/dev"]);
+        let swept = BranchEnumerator::try_sweep(&root, &bases()).expect("o git respondeu");
+        assert!(swept.units().is_empty(), "nenhuma branch de trabalho é uma medição");
+        // A face que degrada mantém o contrato de quem só conta.
+        assert!(BranchEnumerator::sweep(nowhere.path(), &bases()).units().is_empty());
     }
 
-    /// The read-only consumers' composition: a lookup that asks NOTHING still
-    /// counts what LOCAL ancestry proved, and can never invent a prunable
-    /// branch out of a merge nobody measured.
+    /// Quem não pergunta ao provedor ainda conta o que a ancestralidade LOCAL
+    /// provou, e nunca inventa uma branch podável a partir de um merge que
+    /// ninguém mediu.
     #[test]
     fn local_only_lookup_counts_verified_merges_and_invents_none() {
-        const SWEPT: &str = "refs/heads/dev_landed 1a\nrefs/remotes/origin/dev_landed 1a\n\
-                             refs/heads/dev_live 2a\nrefs/remotes/origin/dev_live 2a\n\
-                             refs/heads/dev_gone 3a\n";
-        let git = |args: &[&str]| -> Option<String> {
-            // Only `dev_landed` is reachable from its base — and BOTH of its
-            // refs are, which is what a pruning verdict now requires. Naming
-            // only the local head here would leave the remote unaccounted for
-            // and the unit unprunable, which is the whole point of the change.
-            if args.contains(&"--merged") {
-                return Some(
-                    "refs/heads/dev_landed\nrefs/remotes/origin/dev_landed\n".to_string(),
-                );
-            }
-            // The base's mainline: every unit here carries commits of its own,
-            // so none of their tips sits on it.
-            if args.contains(&"rev-list") {
-                return Some("d0\nd1\n".to_string());
-            }
-            Some(SWEPT.to_string())
-        };
-        let pending = awaiting_prune(&git, &LocalOnlyPr, &bases());
+        let (_dir, root) = scratch_repo();
+        // Entregue e mergeada, viva nos dois lados: a única que deve uma poda.
+        deliver(&root, "dev_landed");
+        run(&root, &["merge", "-q", "--no-ff", "dev_landed", "-m", "merge dev_landed"]);
+        run(&root, &["update-ref", "refs/remotes/origin/dev_landed", "refs/heads/dev_landed"]);
+        // Entregue e não mergeada, viva nos dois lados.
+        deliver(&root, "dev_live");
+        run(&root, &["update-ref", "refs/remotes/origin/dev_live", "refs/heads/dev_live"]);
+        // Entregue, não mergeada e sem remoto nenhum.
+        deliver(&root, "dev_gone");
+
+        let pending = awaiting_prune(&root, PrQuery::Skip, &bases());
         let names: Vec<&str> = pending.iter().map(|s| s.branch.as_str()).collect();
         assert_eq!(names, vec!["dev_landed"], "only the verified merge is owed a prune");
         assert_eq!(pending[0].state, UnitState::AwaitingPrune);
@@ -1319,80 +1233,83 @@ refs/tags/v1.0_dev aaa7
             PrStatus::Absent,
             "not asking is never the same as measuring that there is no PR",
         );
-        // `dev_gone` has no remote and an unmeasured PR: dangerous, never
-        // offered for pruning — the whole reason this lookup under-reports.
+        // `dev_gone` não tem remoto e tem o pull request por medir: perigosa,
+        // nunca oferecida para poda — o motivo de quem não pergunta contar
+        // menos do que existe.
         assert!(!names.contains(&"dev_gone"));
     }
 
-    /// AC-4 — `gone` (no remote) alone NEVER authorises deletion. A branch
-    /// deleted without merging and one merged whose remote was auto-deleted look
-    /// identical from the local side; only a VERIFIED merge separates them.
+    /// AC-4 — `gone` (sem remoto) sozinho NUNCA autoriza deleção. Uma branch
+    /// apagada sem merge e uma mergeada cujo remoto foi apagado sozinho são
+    /// idênticas vistas do lado local; só o merge VERIFICADO as separa.
     #[test]
     fn gone_alone_never_authorises_deletion() {
-        let units = vec![
-            // Remote vanished, merge NOT verified — the dangerous one.
-            BranchRefs {
-                branch: "dev_gone-unmerged".into(),
-                base: "dev".into(),
-                local: true,
-                remotes: Vec::new(),
-                tip: "1a".into(),
-            },
-            // Remote vanished AND the merge is verified locally — prunable.
-            BranchRefs {
-                branch: "dev_gone-merged".into(),
-                base: "dev".into(),
-                local: true,
-                remotes: Vec::new(),
-                tip: "2a".into(),
-            },
-        ];
-        // The unmerged one even has a PR on record, so the only difference that
-        // can produce the two verdicts is the ancestry measurement — both carry
-        // commits of their own.
-        let pr = FakePr::of(&[
-            ("dev_gone-unmerged", PrStatus::Open),
-            ("dev_gone-merged", PrStatus::Absent),
-        ]);
-        let merged: BTreeSet<String> =
-            ["refs/heads/dev_gone-merged".to_string()].into_iter().collect();
-        let ahead: BTreeSet<String> = units.iter().map(|u| u.branch.clone()).collect();
-        let reach = FakeReach::none();
-        let states = StateClassifier::new(&pr, &reach).classify(&units, &merged, &ahead);
-
-        assert_eq!(states[0].state, UnitState::Danger, "gone + unverified merge = danger");
+        let unmerged = unit("dev_gone-unmerged", true, false);
+        let landed = unit("dev_gone-merged", true, false);
+        // A não mergeada tem até um pull request aberto no registro, então a
+        // única diferença capaz de produzir os dois veredictos é a medição da
+        // ancestralidade — as duas carregam commits próprios.
+        assert_eq!(
+            verdict(&unmerged, false, true, PrStatus::Open, true),
+            UnitState::Danger,
+            "gone + unverified merge = danger",
+        );
         assert!(
-            !states[0].state.is_awaiting_prune(),
+            !verdict(&unmerged, false, true, PrStatus::Open, true).is_awaiting_prune(),
             "the dangerous branch must never be offered for pruning",
         );
         assert_eq!(
-            states[1].state,
+            verdict(&landed, true, true, PrStatus::Absent, true),
             UnitState::AwaitingPruneLocal,
             "only a verified merge turns a gone remote into a prune",
         );
-        assert!(states[1].state.is_awaiting_prune());
 
-        // And the report agrees: exactly one branch is listed as prunable.
+        // E o relatório concorda: exatamente uma branch é listada como podável.
+        let (_dir, root) = scratch_repo();
+        let states = vec![
+            state_of(&root, &unmerged, &evidence(PrStatus::Open, &[]), &BTreeSet::new(), &ahead_of(&[&unmerged, &landed]), true),
+            state_of(
+                &root,
+                &landed,
+                &evidence(PrStatus::Absent, &[]),
+                &["refs/heads/dev_gone-merged".to_string()].into_iter().collect(),
+                &ahead_of(&[&unmerged, &landed]),
+                true,
+            ),
+        ];
+        assert_eq!(states[0].state, UnitState::Danger);
+        assert_eq!(states[1].state, UnitState::AwaitingPruneLocal);
         let value = report_value(".", &states);
         assert_eq!(value["awaitingPrune"], json!(["dev_gone-merged"]));
     }
 
-    /// AC-5 — an absent or unauthenticated provider CLI answers UNKNOWN with a
-    /// reason, never "no PR". Both halves are asserted: the adapter refuses to
-    /// invent an answer it did not measure, and the classifier refuses to turn
-    /// that non-answer into the negative verdict `pushed-without-pr`.
+    /// Todas as unidades citadas carregam commit próprio.
+    fn ahead_of(units: &[&BranchRefs]) -> BTreeSet<String> {
+        units.iter().map(|u| u.branch.clone()).collect()
+    }
+
+    /// AC-5 — um CLI de provedor ausente ou não autenticado responde
+    /// DESCONHECIDO com um motivo, nunca "não tem pull request". As duas
+    /// metades: a pergunta se recusa a inventar o que não mediu, e a
+    /// classificação se recusa a transformar essa não-resposta no veredicto
+    /// negativo "empurrada sem pull request".
     #[test]
     fn absent_provider_answers_unknown_never_absent() {
-        // --- the adapter half: a provider with no adapter is UNMEASURED ------
-        let cli = ProviderPrCli::new(Path::new("."), "a-provider-with-no-adapter");
-        let answer = cli.evidence_of("dev_anything").status;
+        // --- a metade da pergunta: provedor sem adaptador é NÃO MEDIDO -------
+        let answer =
+            PrQuery::Ask("a-provider-with-no-adapter").evidence_of(Path::new("."), "dev_anything").status;
         assert_eq!(answer, PrStatus::Unknown(PR_UNSUPPORTED), "unimplemented ≠ measured absence");
         assert_ne!(answer, PrStatus::Absent, "an unmeasured query is never reported as no-PR");
 
-        // An empty array IS a measurement, though — that distinction is the
-        // whole point of keeping the two apart.
-        assert_eq!(ProviderPrCli::reduce(&[]).status, PrStatus::Absent);
-        let both = ProviderPrCli::reduce(&[
+        // E quem decide não perguntar diz isso, em vez de medir uma ausência.
+        let skipped = PrQuery::Skip.evidence_of(Path::new("."), "dev_anything");
+        assert_eq!(skipped.status, PrStatus::Unknown(PR_NOT_QUERIED));
+        assert!(skipped.merged_heads.is_empty());
+
+        // Um array vazio É uma medição, e essa diferença é o ponto de manter
+        // as duas separadas.
+        assert_eq!(PrQuery::reduce(&[]).status, PrStatus::Absent);
+        let both = PrQuery::reduce(&[
             json!({"state": "CLOSED", "headRefOid": "c1"}),
             json!({"state": "MERGED", "headRefOid": "m1"}),
         ]);
@@ -1406,10 +1323,10 @@ refs/tags/v1.0_dev aaa7
             ["m1".to_string()].into_iter().collect::<BTreeSet<String>>(),
             "only the MERGED row's frozen head is evidence of a merge",
         );
-        // Two merged pull requests from one branch contribute BOTH heads — the
-        // same refusal to let row order decide, applied to the evidence.
+        // Dois pull requests mergeados da mesma branch contribuem os DOIS
+        // commits — a mesma recusa a deixar a ordem das linhas decidir.
         assert_eq!(
-            ProviderPrCli::reduce(&[
+            PrQuery::reduce(&[
                 json!({"state": "MERGED", "headRefOid": "m1"}),
                 json!({"state": "MERGED", "headRefOid": "m2"}),
             ])
@@ -1417,18 +1334,17 @@ refs/tags/v1.0_dev aaa7
             ["m1".to_string(), "m2".to_string()].into_iter().collect::<BTreeSet<String>>(),
         );
 
-        // --- the classifier half: unknown never becomes a negative verdict ---
-        let units = vec![BranchRefs {
-            branch: "dev_pushed".into(),
-            base: "dev".into(),
-            local: true,
-            remotes: vec!["origin".into()],
-            tip: "1a".into(),
-        }];
-        let pr = FakePr::of(&[("dev_pushed", PrStatus::Unknown(PR_CLI_FAILED))]);
-        let ahead: BTreeSet<String> = ["dev_pushed".to_string()].into_iter().collect();
-        let reach = FakeReach::none();
-        let states = StateClassifier::new(&pr, &reach).classify(&units, &BTreeSet::new(), &ahead);
+        // --- a metade da classificação: desconhecido nunca vira negativo -----
+        let (_dir, root) = scratch_repo();
+        let pushed = unit("dev_pushed", true, true);
+        let states = vec![state_of(
+            &root,
+            &pushed,
+            &evidence(PrStatus::Unknown(PR_CLI_FAILED), &[]),
+            &BTreeSet::new(),
+            &ahead_of(&[&pushed]),
+            true,
+        )];
         assert_eq!(states[0].state, UnitState::Unmeasured);
         assert_ne!(
             states[0].state,
@@ -1436,115 +1352,137 @@ refs/tags/v1.0_dev aaa7
             "reporting an unmeasured state as a negative is the defect this module ends",
         );
 
-        // --- and the report carries the REASON, not just the non-answer ------
+        // --- e o relatório carrega o MOTIVO, não só a não-resposta -----------
         let value = report_value(".", &states);
         assert_eq!(value["units"][0]["pr"]["status"], json!("unknown"));
         assert_eq!(value["units"][0]["pr"]["reason"], json!(PR_CLI_FAILED));
         assert_eq!(value["awaitingPrune"], json!([]), "nothing unmeasured is ever prunable");
     }
 
-    /// T2 — the azure provider is no longer unsupported: `evidence_of` routes
-    /// it to the REST adapter in `pr_azure`. With no `origin` to derive a
-    /// remote from, the adapter refuses at context resolution —
-    /// deterministically, before any network — and the refusal is an
-    /// UNMEASURED state (never a measured absence, never the unsupported
-    /// token), with no fabricated evidence riding along.
+    /// O provedor azure não é mais "sem adaptador": a pergunta o encaminha para
+    /// o adaptador REST em `pr_azure`. Sem um `origin` de onde tirar o remoto,
+    /// o adaptador recusa na resolução do contexto — antes de qualquer rede — e
+    /// a recusa é um estado NÃO MEDIDO, nunca uma ausência medida nem o motivo
+    /// "sem adaptador", e sem nenhuma evidência inventada junto.
     #[test]
     fn an_azure_provider_is_asked_through_the_adapter() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let azure = ProviderPrCli::new(dir.path(), "azure").evidence_of("dev_anything");
+        let azure = PrQuery::Ask("azure").evidence_of(dir.path(), "dev_anything");
         assert_eq!(azure.status, PrStatus::Unknown(PR_CLI_FAILED), "asked, could not answer");
         assert_ne!(azure.status, PrStatus::Unknown(PR_UNSUPPORTED), "azure IS adapted now");
         assert_ne!(azure.status, PrStatus::Absent, "a refusal is never a measured no-PR");
         assert!(azure.merged_heads.is_empty(), "no evidence was fabricated either");
     }
 
-    /// The remaining situations of the table, so all eight are pinned by a test
-    /// and not only the two an acceptance criterion names.
+    /// A tabela inteira, uma situação por linha, para que todas fiquem presas
+    /// por um teste e não só as duas que um critério nomeia.
     #[test]
     fn classifier_answers_one_state_per_situation() {
-        let unit = |branch: &str, local: bool, remote: bool| BranchRefs {
-            branch: branch.to_string(),
-            base: "dev".to_string(),
-            local,
-            remotes: if remote { vec!["origin".to_string()] } else { Vec::new() },
-            tip: format!("{branch}-tip"),
-        };
-        let units = vec![
-            unit("dev_draft", true, false),
-            unit("dev_pushed", true, true),
-            unit("dev_review", true, true),
-            unit("dev_landed", true, true),
-            unit("dev_remote", false, true),
-        ];
-        let pr = FakePr::with_heads(&[
-            ("dev_draft", PrStatus::Absent, ""),
-            ("dev_pushed", PrStatus::Absent, ""),
-            ("dev_review", PrStatus::Open, ""),
-            // Squashed: nothing is contained, and the frozen head of the merged
-            // pull request is what accounts for both of its refs.
-            ("dev_landed", PrStatus::Merged, "squashed-head"),
-        ]);
-        let reach = FakeReach::of(&[(
-            "squashed-head",
-            &["refs/heads/dev_landed", "refs/remotes/origin/dev_landed"],
-        )]);
-        let ahead: BTreeSet<String> = units.iter().map(|u| u.branch.clone()).collect();
-        let states = StateClassifier::new(&pr, &reach).classify(&units, &BTreeSet::new(), &ahead);
-        let tokens: Vec<&str> = states.iter().map(|s| s.state.token()).collect();
+        let local_only = unit("dev_draft", true, false);
+        let pushed = unit("dev_pushed", true, true);
+        let remote_only = unit("dev_remote", false, true);
+
+        // Nada explica as refs, a unidade entregou, e o pull request diz o que
+        // diz: o rodapé da tabela.
         assert_eq!(
-            tokens,
-            vec!["draft-abandoned", "pushed-without-pr", "in-review", "awaiting-prune", "remote-only"],
+            verdict(&local_only, false, true, PrStatus::Absent, true),
+            UnitState::DraftAbandoned,
         );
-        // The provider CONFIRMS a merge local ancestry could not see (a portal
-        // that squashes leaves no ancestry) — the network adds evidence, never
-        // removes it.
-        assert!(!states[3].ancestry, "no local ancestry for the squashed one");
-        assert!(states[3].state.is_awaiting_prune());
-        assert!(
-            states[3].refs.iter().all(|r| r.covered && !r.contained),
-            "every ref is accounted for by the merge, none by containment: {:?}",
-            states[3].refs,
+        assert_eq!(
+            verdict(&pushed, false, true, PrStatus::Absent, true),
+            UnitState::PushedWithoutPr,
+        );
+        assert_eq!(
+            verdict(&pushed, false, true, PrStatus::Closed, true),
+            UnitState::PushedWithoutPr,
+            "um pull request fechado sem merge deixa a branch onde uma sem nenhum está",
+        );
+        assert_eq!(verdict(&pushed, false, true, PrStatus::Open, true), UnitState::InReview);
+        assert_eq!(
+            verdict(&pushed, false, true, PrStatus::Unknown(PR_CLI_FAILED), true),
+            UnitState::Unmeasured,
+        );
+        assert_eq!(
+            verdict(&local_only, false, true, PrStatus::Unknown(PR_CLI_FAILED), true),
+            UnitState::Danger,
+            "sem remoto e sem ausência MEDIDA de pull request, não dá para dizer que foi abandonada",
+        );
+        assert_eq!(
+            verdict(&remote_only, false, true, PrStatus::Absent, true),
+            UnitState::RemoteOnly,
+        );
+
+        // Tudo explicado e entregue: as duas podas, pela existência do remoto.
+        assert_eq!(
+            verdict(&pushed, true, true, PrStatus::Absent, true),
+            UnitState::AwaitingPrune,
+        );
+        assert_eq!(
+            verdict(&local_only, true, true, PrStatus::Absent, true),
+            UnitState::AwaitingPruneLocal,
+        );
+        // Cortada e nunca commitada: alcançável da base porque É a base, e é
+        // isso que mantém o trabalho vivo fora da lista de poda.
+        assert_eq!(
+            verdict(&pushed, true, false, PrStatus::Absent, true),
+            UnitState::PushedWithoutPr,
+            "alcançar a base sem commit próprio não é ter entregado nada",
+        );
+
+        // Mergeada, mas alguma ref passa do que o merge explica — e a mesma
+        // situação sem a leitura de alcance ter RESPONDIDO.
+        assert_eq!(
+            verdict(&pushed, false, true, PrStatus::Merged, true),
+            UnitState::MovedAfterMerge,
+        );
+        assert_eq!(
+            verdict(&pushed, false, true, PrStatus::Merged, false),
+            UnitState::Unmeasured,
+            "dizer que a branch passou do merge sem ninguém ter olhado é a mesma mentira",
         );
     }
 
-    /// The defect this unit exists for: a MERGED pull request whose branch moved
-    /// afterwards is not prunable, and the evidence is per REF.
+    /// O defeito que esta unidade existe para pegar: um pull request MERGEADO
+    /// cuja branch andou depois não é podável, e a prova é por REF.
     ///
-    /// `verdict` used to read `pr == Merged` as sufficient on its own, so the
-    /// record of a merge authorised the deletion forever — including of a remote
-    /// ref that had been pushed to since. GitHub's `headRefOid` is frozen at
-    /// merge time (its own reference: the oid "even if the ref has been
-    /// deleted"), so the merge accounts for exactly the refs that head contains
-    /// and for nothing beyond it.
+    /// O veredicto lia `pr == Merged` como suficiente, então o registro de um
+    /// merge autorizava a deleção para sempre — inclusive de uma ref remota
+    /// empurrada depois dele. O commit que o merge congela explica exatamente
+    /// as refs contidas nele, e nada além.
     ///
-    /// Both halves, so the assertions can fail: the SAME unit, with its remote
-    /// still on the merged head, IS owed its prune.
+    /// As duas metades num repositório de verdade, para as asserções poderem
+    /// falhar: a MESMA unidade, com o remoto parado no commit congelado, deve
+    /// sim a sua poda.
     #[test]
     fn moved_after_merge() {
-        let unit = vec![BranchRefs {
-            branch: "dev_shipped".into(),
-            base: "dev".into(),
-            local: true,
-            remotes: vec!["origin".into()],
-            tip: "1a".into(),
-        }];
-        let pr = FakePr::with_heads(&[("dev_shipped", PrStatus::Merged, "frozen-head")]);
-        let ahead: BTreeSet<String> = ["dev_shipped".to_string()].into_iter().collect();
-        // The local head landed; the REMOTE ref was pushed to after the merge, so
-        // the frozen head does not contain it.
-        let contained: BTreeSet<String> =
-            ["refs/heads/dev_shipped".to_string()].into_iter().collect();
-        let moved = FakeReach::of(&[("frozen-head", &["refs/heads/dev_shipped"])]);
-        let states = StateClassifier::new(&pr, &moved).classify(&unit, &contained, &ahead);
+        let (_dir, root) = scratch_repo();
+        let frozen = deliver(&root, "dev_shipped");
+        run(&root, &["merge", "-q", "--no-ff", "dev_shipped", "-m", "merge dev_shipped"]);
+        // O remoto andou DEPOIS do merge; o local ficou onde o merge o pegou.
+        run(&root, &["checkout", "-q", "dev_shipped"]);
+        std::fs::write(root.join("depois.txt"), "depois").expect("arquivo de depois");
+        run(&root, &["add", "-A"]);
+        run(&root, &["commit", "-q", "-m", "depois do merge"]);
+        let moved = sha(&root, "dev_shipped");
+        run(&root, &["checkout", "-q", "dev"]);
+        run(&root, &["update-ref", "refs/remotes/origin/dev_shipped", &moved]);
+        run(&root, &["update-ref", "refs/heads/dev_shipped", &frozen]);
+
+        let unit = swept_unit(&root, "dev_shipped");
+        let (contained, measured) = try_merged_refs(&root, &bases());
+        assert!(measured, "a leitura de contenção respondeu");
+        let ahead = refs_ahead_of_base(&root, std::slice::from_ref(&unit), &bases());
+        let merged_pr = evidence(PrStatus::Merged, &[&frozen]);
+        let states = vec![state_of(&root, &unit, &merged_pr, &contained, &ahead, measured)];
+
         assert_eq!(states[0].state, UnitState::MovedAfterMerge, "{:?}", states[0]);
         assert_eq!(states[0].state.token(), "moved-after-merge");
         assert!(
             !states[0].state.is_awaiting_prune(),
             "a ref carrying commits the merge never saw must never be offered for deletion",
         );
-        // The report names WHICH ref moved — otherwise the verdict is an
-        // assertion the reader cannot check.
+        // O relatório diz QUAL ref andou — sem isso o veredicto é uma
+        // afirmação que o leitor não tem como conferir.
         let value = report_value(".", &states);
         assert_eq!(value["awaitingPrune"], json!([]));
         assert_eq!(value["units"][0]["state"], json!("moved-after-merge"));
@@ -1558,25 +1496,24 @@ refs/tags/v1.0_dev aaa7
              set could only hold the first of those two answers: {value}",
         );
 
-        // The other half: the remote never moved, so the merge accounts for both
-        // refs and the unit is prunable. Same PR status, same unit — only the
-        // reachability of the refs differs, which is the point.
-        let still = FakeReach::of(&[(
-            "frozen-head",
-            &["refs/heads/dev_shipped", "refs/remotes/origin/dev_shipped"],
-        )]);
-        let landed = StateClassifier::new(&pr, &still).classify(&unit, &BTreeSet::new(), &ahead);
-        assert_eq!(landed[0].state, UnitState::AwaitingPrune, "{:?}", landed[0]);
+        // A outra metade: o remoto nunca andou, então o merge explica as duas
+        // refs e a unidade é podável. Mesmo pull request, mesma unidade — só o
+        // alcance das refs muda, que é justamente o ponto.
+        run(&root, &["update-ref", "refs/remotes/origin/dev_shipped", &frozen]);
+        let still = swept_unit(&root, "dev_shipped");
+        let (contained, measured) = try_merged_refs(&root, &bases());
+        let landed = state_of(&root, &still, &merged_pr, &contained, &ahead, measured);
+        assert_eq!(landed.state, UnitState::AwaitingPrune, "{landed:?}");
     }
 
-    /// AC-6 — the reading phase is structurally unable to delete a branch.
+    /// AC-6 — a fase de leitura é estruturalmente incapaz de apagar uma branch.
     ///
-    /// Read like the plugin-prose tests: BOTH halves, so the assertion can
-    /// actually fail. Half one — this module's own source names no deleting
-    /// argv. Half two — the exit ritual's source DOES, which proves the needles
-    /// are the real spellings and that the capability simply lives elsewhere.
-    /// The needles are assembled at runtime so writing the test does not put the
-    /// forbidden spellings into the file under assertion.
+    /// Lido como as provas de prosa: as DUAS metades, para a asserção poder
+    /// falhar de verdade. Metade um — o código deste módulo não nomeia nenhum
+    /// argumento de deleção. Metade dois — o do ritual de saída nomeia, o que
+    /// prova que as agulhas são as grafias reais e que a capacidade apenas mora
+    /// noutro lugar. As agulhas são montadas em tempo de execução para escrever
+    /// o teste não pôr as grafias proibidas no arquivo sob asserção.
     #[test]
     fn report_module_cannot_reach_deletion() {
         let here = include_str!("branch_state.rs");
@@ -1597,16 +1534,21 @@ refs/tags/v1.0_dev aaa7
             );
         }
 
-        // The READ view is plain data: a consumer handed these cannot reach the
-        // repository, because the type carries no path, no process and no
-        // callback to reach it with.
+        // A visão de LEITURA é dado puro: quem recebe uma destas não alcança o
+        // repositório, porque o tipo não carrega caminho, processo nem função
+        // com que alcançá-lo. As três grafias existem neste arquivo fora da
+        // visão, então a asserção pode falhar.
         let view = here
             .split_once("pub(crate) struct BranchState {")
             .and_then(|(_, rest)| rest.split_once("\n}"))
             .map(|(body, _)| body)
             .unwrap_or_default();
         assert!(!view.is_empty(), "the read view must still be a struct this test can read");
-        for forbidden in ["Path", "Command", "Fn(", "GitOut"] {
+        for forbidden in ["Path", "Command", "Fn("] {
+            assert!(
+                here.contains(forbidden),
+                "{forbidden} tem de existir no arquivo, ou a asserção de baixo não prova nada",
+            );
             assert!(
                 !view.contains(forbidden),
                 "the read view must carry no {forbidden} — it is data, not a capability",
@@ -1614,42 +1556,38 @@ refs/tags/v1.0_dev aaa7
         }
     }
 
-    /// AC-11 — a work branch with NO commit of its own is NEVER offered for
-    /// pruning.
+    /// AC-11 — uma branch de trabalho SEM commit próprio nunca é oferecida para
+    /// poda.
     ///
-    /// The work-branch gate opens every unit with `checkout -b <unit> <base>`
-    /// and nothing else, so from the cut until the first commit the branch is
-    /// reachable from its base in exactly the way a merged one is. Read on
-    /// ancestry alone, the unit the user is EDITING answered "delivered, prune
-    /// me" — and the advisory built on that answer hands out the command that
-    /// deletes it. Cutting a branch is not delivering work.
+    /// O portão abre toda unidade com `checkout -b <unidade> <base>` e mais
+    /// nada, então do corte até o primeiro commit ela é alcançável da base
+    /// exatamente como uma mergeada. Lida só pela ancestralidade, a unidade que
+    /// a pessoa está EDITANDO respondia "entregue, me pode" — e o aviso
+    /// construído sobre essa resposta entrega o comando que a apaga.
     ///
-    /// Both halves, so the assertions can fail: the same branch, one commit and
-    /// one merge later, IS owed its prune.
+    /// As duas metades, para as asserções poderem falhar: a mesma branch, um
+    /// commit e um merge depois, DEVE a sua poda.
     #[test]
     fn a_branch_with_no_commits_ahead_is_never_awaiting_prune() {
         let (_dir, root) = scratch_repo();
-        run(&root, &["checkout", "-b", "dev_fresh"]);
-        let git_read = |args: &[&str]| read(&root, args);
+        run(&root, &["checkout", "-q", "-b", "dev_fresh"]);
 
-        // Ancestry answers YES — the branch IS its base — and that used to be
-        // the whole verdict.
-        let merged = try_merged_refs(&git_read, &bases()).0;
+        // A ancestralidade responde SIM — a branch É a base — e isso já foi o
+        // veredicto inteiro.
+        let merged = try_merged_refs(&root, &bases()).0;
         assert!(
             merged.contains("refs/heads/dev_fresh"),
             "git reports a freshly cut branch as merged into its base — per REF",
         );
-        let swept = BranchEnumerator::sweep(&git_read, &bases());
-        let ahead = refs_ahead_of_base(&git_read, swept.units(), &bases());
+        let swept = BranchEnumerator::sweep(&root, &bases());
+        let ahead = refs_ahead_of_base(&root, swept.units(), &bases());
         assert!(!ahead.contains("dev_fresh"), "a branch just cut carries no commit of its own");
 
         assert!(
-            awaiting_prune(&git_read, &LocalOnlyPr, &bases()).is_empty(),
+            awaiting_prune(&root, PrQuery::Skip, &bases()).is_empty(),
             "the unit being edited must never be announced as delivered",
         );
-        let reach = GitReachability::new(&git_read);
-        let states =
-            StateClassifier::new(&LocalOnlyPr, &reach).classify(swept.units(), &merged, &ahead);
+        let states = classify(&root, PrQuery::Skip, swept.units(), &merged, &ahead, true);
         assert!(!states[0].state.is_awaiting_prune(), "not prunable: {states:?}");
         assert!(
             states[0].ancestry,
@@ -1657,70 +1595,60 @@ refs/tags/v1.0_dev aaa7
              would pass on a sweep that simply saw nothing",
         );
 
-        // The other half: deliver, merge, and the same branch is owed a prune.
+        // A outra metade: entregue, mergeie, e a mesma branch deve a poda.
         std::fs::write(root.join("work.txt"), "w").expect("work file");
         run(&root, &["add", "-A"]);
-        run(&root, &["commit", "-m", "work"]);
-        run(&root, &["checkout", "dev"]);
-        run(&root, &["merge", "--no-ff", "dev_fresh", "-m", "merge dev_fresh"]);
-        let pending = awaiting_prune(&git_read, &LocalOnlyPr, &bases());
+        run(&root, &["commit", "-q", "-m", "work"]);
+        run(&root, &["checkout", "-q", "dev"]);
+        run(&root, &["merge", "-q", "--no-ff", "dev_fresh", "-m", "merge dev_fresh"]);
+        let pending = awaiting_prune(&root, PrQuery::Skip, &bases());
         let names: Vec<&str> = pending.iter().map(|s| s.branch.as_str()).collect();
         assert_eq!(names, vec!["dev_fresh"], "a unit that delivered commits IS owed its prune");
     }
 
-    /// AC-12 — a unit whose merge is verified, whose local ref is already gone
-    /// and whose REMOTE branch is still alive is owed a prune (of the remote),
-    /// instead of being filed away as "only on the server".
+    /// AC-12 — uma unidade cujo merge está verificado, cuja ref local já sumiu
+    /// e cuja branch REMOTA continua viva deve uma poda (a do remoto), em vez
+    /// de ser arquivada como "só no servidor".
     ///
-    /// The verdict table answered `remote-only` before it ever weighed the
-    /// merge, so the REMOTE branches the field report counted alongside the
-    /// local ones could not enter the pending list at all — half the motivating
-    /// measurement stayed invisible to the report meant to surface it.
+    /// A tabela respondia `remote-only` antes de pesar o merge, então as
+    /// branches REMOTAS que o relato de campo contou junto com as locais não
+    /// entravam na lista — metade da medição que motivou o relatório ficava
+    /// invisível para ele.
     #[test]
     fn merged_unit_alive_only_on_the_remote_is_awaiting_prune() {
         let (_dir, root) = scratch_repo();
-        run(&root, &["checkout", "-b", "dev_landed"]);
-        std::fs::write(root.join("work.txt"), "w").expect("work file");
-        run(&root, &["add", "-A"]);
-        run(&root, &["commit", "-m", "work"]);
-        run(&root, &["checkout", "dev"]);
-        run(&root, &["merge", "--no-ff", "dev_landed", "-m", "merge dev_landed"]);
-        // The remote outlives the local ref — the shape a machine that already
-        // pruned locally, or never had the branch, is left in.
+        deliver(&root, "dev_landed");
+        run(&root, &["merge", "-q", "--no-ff", "dev_landed", "-m", "merge dev_landed"]);
+        // O remoto sobrevive à ref local — a forma em que fica a máquina que já
+        // podou localmente, ou que nunca teve a branch.
         run(&root, &["update-ref", "refs/remotes/origin/dev_landed", "refs/heads/dev_landed"]);
         run(&root, &["update-ref", "-d", "refs/heads/dev_landed"]);
 
-        let git_read = |args: &[&str]| read(&root, args);
-        let swept = BranchEnumerator::sweep(&git_read, &bases());
-        let unit = swept.units().iter().find(|u| u.branch == "dev_landed").expect("unit swept");
-        assert!(!unit.local, "no local ref carries it any more");
-        assert_eq!(unit.remotes, vec!["origin"], "…but the remote is still alive");
+        let swept = BranchEnumerator::sweep(&root, &bases());
+        let landed = swept.units().iter().find(|u| u.branch == "dev_landed").expect("unit swept");
+        assert!(!landed.local, "no local ref carries it any more");
+        assert_eq!(landed.remotes, vec!["origin"], "…but the remote is still alive");
 
-        let pending = awaiting_prune(&git_read, &LocalOnlyPr, &bases());
+        let pending = awaiting_prune(&root, PrQuery::Skip, &bases());
         let names: Vec<&str> = pending.iter().map(|s| s.branch.as_str()).collect();
         assert_eq!(names, vec!["dev_landed"], "the remote of a merged unit is owed its prune");
         assert_eq!(pending[0].state, UnitState::AwaitingPrune);
 
-        let merged = try_merged_refs(&git_read, &bases()).0;
-        let ahead = refs_ahead_of_base(&git_read, swept.units(), &bases());
-        let reach = GitReachability::new(&git_read);
-        let states =
-            StateClassifier::new(&LocalOnlyPr, &reach).classify(swept.units(), &merged, &ahead);
+        let merged = try_merged_refs(&root, &bases()).0;
+        let ahead = refs_ahead_of_base(&root, swept.units(), &bases());
+        let states = classify(&root, PrQuery::Skip, swept.units(), &merged, &ahead, true);
         assert_eq!(report_value(".", &states)["awaitingPrune"], json!(["dev_landed"]));
 
-        // And the reordering swallowed nothing: a remote-only unit that did NOT
-        // land is still remote-only.
-        let stranger = vec![BranchRefs {
-            branch: "dev_elsewhere".into(),
-            base: "dev".into(),
-            local: false,
-            remotes: vec!["origin".into()],
-            tip: "9a".into(),
-        }];
-        let unlanded = StateClassifier::new(&LocalOnlyPr, &reach).classify(
-            &stranger,
+        // E a reordenação não engoliu nada: uma unidade só no remoto que NÃO
+        // aterrissou continua sendo só do remoto.
+        let stranger = unit("dev_elsewhere", false, true);
+        let unlanded = classify(
+            &root,
+            PrQuery::Skip,
+            std::slice::from_ref(&stranger),
             &BTreeSet::new(),
             &BTreeSet::new(),
+            true,
         );
         assert_eq!(unlanded[0].state, UnitState::RemoteOnly);
     }

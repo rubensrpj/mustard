@@ -55,7 +55,7 @@ use serde::{Deserialize, Serialize};
 use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::agent::render::skills::{arquivos_paths, wave_molds, MoldCover};
 use crate::commands::event::pending::open_pending;
-use crate::commands::event::work_branch::{current_branch, slug_of_work_branch};
+use crate::commands::event::work_branch::slug_of_work_branch;
 use crate::commands::review::qa_run::{extract_ac_section, parse_ac_items};
 use crate::commands::spec::material_add::{read_material, Material, Severity};
 use crate::commands::spec::spec_sections::section_block;
@@ -402,7 +402,7 @@ fn i18n_for(root: &Path) -> I18n {
 /// O branch da unidade, quando o checkout está nele. Fora dele a página não
 /// adivinha um nome.
 fn unit_branch(root: &Path, slug: &str) -> Option<String> {
-    let branch = current_branch("git", &root.to_string_lossy())?;
+    let branch = mustard_core::current_branch(root)?;
     let config = mustard_core::ProjectConfig::load(root);
     (slug_of_work_branch(&branch, &config).as_deref() == Some(slug)).then_some(branch)
 }

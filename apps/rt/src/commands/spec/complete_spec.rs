@@ -22,6 +22,7 @@
 
 use crate::shared::spec_state::session_from_env;
 use mustard_core::io::fs;
+use mustard_core::platform::git;
 use mustard_core::view::projection::{read_harness_events_from_ndjson_dir, read_workspace_events};
 use mustard_core::ClaudePaths;
 use mustard_core::domain::capability::{
@@ -35,22 +36,15 @@ use mustard_core::domain::model::event::{
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// Run the project VCS binary in `cwd`, returning trimmed stdout or `""` on any
-/// error. The binary is read from `mustard.json#vcs` (default `git`); callers
-/// resolve it once via [`mustard_core::ProjectConfig::vcs`] and thread it
-/// here so the spec affected-files diff/log is not hardcoded to `git`.
-fn vcs_run(vcs_bin: &str, cwd: &Path, args: &[&str]) -> String {
-    Command::new(vcs_bin)
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+/// Ask the project's version-control program in `cwd`, returning trimmed stdout
+/// or `""` on any error — the one reading this file wants, spelled once.
+///
+/// Which program answers is [`mustard_core::platform::git::run`]'s business, not
+/// this file's: it reads `mustard.json` itself, so the affected-files diff is
+/// neither hardcoded to `git` nor threading the project's answer down by hand.
+fn vcs_run(cwd: &Path, args: &[&str]) -> String {
+    git::run(cwd, args).out().unwrap_or_default()
 }
 
 /// Resolve the parent (merge-base) branch for `current_branch` from the
@@ -101,9 +95,9 @@ fn read_events_for_spec(cwd: &Path, spec: &str) -> Vec<mustard_core::domain::mod
 /// `target.file` events + a VCS diff vs the parent branch), so the derivation
 /// lives here once and is called module-qualified rather than duplicated.
 ///
-/// The VCS binary is read from `mustard.json#vcs` (default `git`). A user who
-/// pins `"vcs": ""` opts out of VCS-derived files entirely — only the NDJSON
-/// `target.file` events then feed the set. The diff/log invocation shape stays
+/// A user who pins `"vcs": ""` opts out of VCS-derived files entirely — the
+/// executor spawns nothing there, the branch comes back empty, and only the
+/// NDJSON `target.file` events feed the set. The diff/log invocation shape stays
 /// git-style (`rev-parse` + `diff --name-only`); a full multi-VCS abstraction
 /// (jj/hg argument variants) is intentionally deferred — `vcs_run` fail-opens to
 /// an empty result when the pinned binary does not understand those args, so a
@@ -123,21 +117,19 @@ pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
             }
     }
 
-    // 2. VCS diff against the parent branch — only when a VCS is configured
-    //    (default git; `vcs: ""` is an explicit opt-out → skip this source).
+    // 2. VCS diff against the parent branch. A project that opted out answers
+    //    nothing here, which is the same as having no branch to diff from.
     let config = mustard_core::ProjectConfig::load(cwd);
-    if let Some(vcs_bin) = config.vcs() {
-        let branch = vcs_run(&vcs_bin, cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
-        if !branch.is_empty() {
-            let parent = parent_branch_for(&config, &branch).unwrap_or_default();
-            if !parent.is_empty() && branch != parent {
-                let range = format!("{parent}...HEAD");
-                let diff = vcs_run(&vcs_bin, cwd, &["diff", "--name-only", &range]);
-                for f in diff.lines() {
-                    let t = f.trim();
-                    if !t.is_empty() {
-                        files.insert(t.to_string());
-                    }
+    let branch = vcs_run(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    if !branch.is_empty() {
+        let parent = parent_branch_for(&config, &branch).unwrap_or_default();
+        if !parent.is_empty() && branch != parent {
+            let range = format!("{parent}...HEAD");
+            let diff = vcs_run(cwd, &["diff", "--name-only", &range]);
+            for f in diff.lines() {
+                let t = f.trim();
+                if !t.is_empty() {
+                    files.insert(t.to_string());
                 }
             }
         }

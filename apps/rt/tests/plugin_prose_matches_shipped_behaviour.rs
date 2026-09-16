@@ -1132,13 +1132,17 @@ fn worktree_prose_teaches_the_refusal() {
     let emit = read("apps/rt/src/commands/event/emit_pipeline.rs");
     for (door, src) in [("emit-pipeline (the explicit open)", &emit), ("spec-draft's cut", &branch)] {
         assert!(src.contains("settle("), "{door} no longer asks the shared question");
-        // The steps the answer performs. `fetch_origin(&vcs` and its siblings
-        // are the CALL shapes — `work_branch.rs` still defines the functions.
+        // The steps the answer performs. Each string is the CALL shape and not
+        // the declaration — `work_branch.rs` still defines these functions, and
+        // its declarations spell the root as `root: &Path` (or break the line
+        // right after the paren), so a definition can never satisfy the match.
+        // `discard_paths` used to be listed here and names nothing in the
+        // crate: a string no door could ever contain is an assertion that
+        // cannot fail, so it is gone.
         for step in [
-            "fetch_origin(&vcs",
-            "paths_the_advance_overwrites(&vcs",
-            "discard_paths(&vcs",
-            "fast_forward_base(&vcs",
+            "fetch_origin(root)",
+            "paths_the_advance_overwrites(root,",
+            "fast_forward_base(root,",
         ] {
             assert!(
                 !src.contains(step),
