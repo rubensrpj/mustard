@@ -600,8 +600,8 @@ fn max_parallel(root: &Path) -> usize {
     mustard_core::ProjectConfig::load(root).max_compiling_waves().unwrap_or(DEFAULT_PARALLEL)
 }
 
-/// As ondas que saem nesta rodada: as que ainda não foram despachadas, cujas
-/// dependências já foram entregues, no máximo `limit`, e nunca duas que
+/// As ondas que saem nesta rodada: as que ainda não saíram nem entregaram,
+/// cujas dependências já foram entregues, no máximo `limit`, e nunca duas que
 /// declaram o mesmo arquivo — duas ondas assim seriam dois agentes editando o
 /// mesmo arquivo ao mesmo tempo.
 fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
@@ -610,10 +610,14 @@ fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
     // fecha, porque o fechamento recusa e diz qual refazer e a rodada nunca a
     // despacharia de novo.
     let to_redo = waves_to_redo(log);
-    let sent: BTreeSet<u64> = log
+    // O que já saiu da fila: a onda com pedido e também a onda que já
+    // entregou. Só o pedido não basta, porque a onda entregue antes de a
+    // rodada existir não tem pedido nenhum e apareceria como pronta para
+    // sair — e sairia de novo um trabalho já feito.
+    let already_out: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))
         .into_iter()
-        .filter(|e| e.event_type == "send")
+        .filter(|e| e.event_type == "send" || e.event_type == "delivered")
         .filter_map(SpecEvent::wave)
         .filter(|n| !to_redo.contains(n))
         .collect();
@@ -631,7 +635,7 @@ fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
     }
     let mut out: Vec<u64> = Vec::new();
     let mut taken: BTreeSet<String> = BTreeSet::new();
-    for (n, files) in ready_in_order(&graph, &depends, &sent, &delivered, log) {
+    for (n, files) in ready_in_order(&graph, &depends, &already_out, &delivered, log) {
         if out.len() >= limit {
             break;
         }
@@ -672,11 +676,13 @@ fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
 }
 
 /// As ondas prontas para sair, em ordem de nível e de número, cada uma com os
-/// arquivos que as tarefas dela declaram.
+/// arquivos que as tarefas dela declaram. `already_out` são as ondas que já
+/// saíram da fila e `delivered` as que já entregaram, que é o que solta as
+/// ondas dependentes delas.
 fn ready_in_order(
     graph: &crate::commands::wave::wave_overlap_check::WaveGraph,
     depends: &BTreeMap<u64, Vec<u64>>,
-    sent: &BTreeSet<u64>,
+    already_out: &BTreeSet<u64>,
     delivered: &BTreeSet<u64>,
     log: &SpecLog,
 ) -> Vec<(u64, BTreeSet<String>)> {
@@ -698,7 +704,7 @@ fn ready_in_order(
     }
     let mut ready: Vec<(u32, u64)> = depends
         .iter()
-        .filter(|(n, _)| !sent.contains(n))
+        .filter(|(n, _)| !already_out.contains(n))
         .filter(|(_, on)| on.iter().all(|d| delivered.contains(d)))
         .map(|(n, _)| (graph.level.get(n).copied().unwrap_or(0), *n))
         .collect();
@@ -726,6 +732,11 @@ fn reviews_due(log: &SpecLog, built: &[mustard_core::io::wave_prompt::WavePrompt
 /// toda onda que tem veredito fechava a porta da segunda: o conserto nunca
 /// voltava para a revisão e o fechamento recusava para sempre, porque o último
 /// veredito seguia sendo o que reprovou.
+///
+/// Sem veredito nenhum, só pede revisão a entrega que responde a um pedido da
+/// rodada — a entrega mais nova que o pedido mais novo daquela onda. A onda
+/// entregue antes de a rodada existir não tem pedido nenhum, e cobrar revisão
+/// dela é cobrar de novo um trabalho já feito, provado pelo código que entrou.
 fn waves_awaiting_review(log: &SpecLog) -> Vec<u64> {
     let mut last_verdict: BTreeMap<u64, u64> = BTreeMap::new();
     for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
@@ -734,14 +745,23 @@ fn waves_awaiting_review(log: &SpecLog) -> Vec<u64> {
         }
     }
     let mut last_delivered: BTreeMap<u64, u64> = BTreeMap::new();
-    for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
-        if let Some(n) = delivered.wave() {
-            last_delivered.insert(n, delivered.id);
+    let mut last_send: BTreeMap<u64, u64> = BTreeMap::new();
+    for event in log.block(BlockQuery::Block(Block::Waves)) {
+        let Some(n) = event.wave() else { continue };
+        match event.event_type.as_str() {
+            "delivered" => {
+                last_delivered.insert(n, event.id);
+            }
+            "send" => {
+                last_send.insert(n, event.id);
+            }
+            _ => {}
         }
     }
     last_delivered
         .into_iter()
         .filter(|(n, id)| last_verdict.get(n).is_none_or(|judged| judged < id))
+        .filter(|(n, id)| last_verdict.contains_key(n) || last_send.get(n).is_some_and(|sent| sent < id))
         .map(|(n, _)| n)
         .collect()
 }
@@ -900,6 +920,46 @@ mod tests {
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         let out = round(root, "x", None, None);
         assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
+    }
+
+    /// A onda que já entregou não é despachada de novo, mesmo sem pedido
+    /// nenhum: a onda entregue antes de a rodada existir não tem pedido, e
+    /// mandá-la sair seria mandar refazer um trabalho já feito.
+    #[test]
+    fn a_wave_that_already_delivered_does_not_go_out_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        write(
+            root,
+            "x",
+            "delivered",
+            json!({"wave": 1, "text": "A onda 1 saiu antes da rodada.", "files": ["src/a.rs"]}),
+        );
+
+        let out = round(root, "x", None, None);
+        let waves: Vec<u64> =
+            out["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
+        assert_eq!(waves, vec![2], "a onda 1 já tem entrega: {out}");
+    }
+
+    /// A onda entregue antes de a rodada existir também não entra na lista de
+    /// revisões: sem veredito nenhum e sem pedido, a entrega dela não responde
+    /// a nada que esta rodada tenha mandado fazer.
+    #[test]
+    fn a_wave_delivered_before_the_round_is_not_asked_for_review() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        write(
+            root,
+            "x",
+            "delivered",
+            json!({"wave": 1, "text": "A onda 1 saiu antes da rodada.", "files": ["src/a.rs"]}),
+        );
+
+        let out = round(root, "x", None, None);
+        assert_eq!(out["reviews"], json!([]), "a onda 1 entregou antes e nunca foi pedida: {out}");
     }
 
     /// A rodada grava o que cada onda entregou e o veredito da revisão dela, e
