@@ -68,8 +68,10 @@ pub struct BaseCandidatesReport {
     pub fetched: bool,
     /// The branch the picker opens on — `git.flow`'s primary base. Present even
     /// when it is not in `branches`, because a project may declare a base it
-    /// has not pushed yet.
-    pub primary: String,
+    /// has not pushed yet; ABSENT when the project declares no flow, because
+    /// there is then no base to open on and naming one would be an invention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<String>,
     /// The rows, newest commit first.
     pub branches: Vec<BaseCandidateEntry>,
 }
@@ -153,7 +155,7 @@ mod tests {
         // must not depend on one.
         let report = report_at(root, false);
         assert!(report.measured, "git answered, so the menu is trustworthy");
-        assert_eq!(report.primary, "producao", "the cursor opens on the declared base");
+        assert_eq!(report.primary.as_deref(), Some("producao"), "the cursor opens on the declared base");
 
         let names: Vec<&str> = report.branches.iter().map(|b| b.name.as_str()).collect();
         assert!(

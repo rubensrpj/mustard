@@ -7,13 +7,14 @@
 
 use mustard_core::ClaudePaths;
 use mustard_core::platform::config::Mode;
-use mustard_core::platform::process::rtk_command;
+use mustard_core::platform::git;
 use mustard_core::domain::model::contract::{Ctx, Verdict};
 use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::time::now_iso8601;
 use serde_json::json;
 use std::path::Path;
 use std::process::{Command, Stdio};
+
 use std::time::{Duration, Instant};
 
 use crate::shared::context::current_spec;
@@ -258,16 +259,7 @@ fn run_build(cmd: &str, project_dir: &str) -> BuildOutcome {
 /// `catch` branch — no staged-file warnings produced). Goes through
 /// [`rtk_command`] so the subprocess follows Mustard's Golden Rule.
 fn staged_files(project_dir: &str) -> Option<Vec<String>> {
-    let output = rtk_command("git", &["diff", "--cached", "--name-only"])
-        .current_dir(project_dir)
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = git::run(Path::new(project_dir), &["diff", "--cached", "--name-only"]).out()?;
     Some(
         text.lines()
             .map(str::trim)

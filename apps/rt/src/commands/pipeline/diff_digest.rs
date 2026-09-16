@@ -17,7 +17,7 @@
 //! sorted within each `+`/`-` group, repo-relative paths only, no timestamps.
 
 use mustard_core::domain::ast::{extract_entities, extract_function_signatures, GrammarLoader};
-use mustard_core::platform::process::rtk_command;
+use mustard_core::platform::git as git_exec;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -193,12 +193,8 @@ fn path_in_scope(path: &str, scope: &[String]) -> bool {
 /// Parse `git diff --name-status -M {base} {head}` into changed files. Empty on
 /// any git error (fail-open).
 fn changed_files(cwd: &Path, base: &str, head: &str) -> Vec<ChangedFile> {
-    let out = rtk_command("git", &["diff", "--name-status", "-M", base, head])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+    let out = git_exec::run(cwd, &["diff", "--name-status", "-M", base, head])
+        .out()
         .unwrap_or_default();
     let mut files = Vec::new();
     for line in out.lines() {
@@ -251,13 +247,8 @@ fn changed_files(cwd: &Path, base: &str, head: &str) -> Vec<ChangedFile> {
 
 /// `git show {rev}:{path}` → blob text, or "" on any error (fail-open).
 fn git_show(cwd: &Path, rev: &str, path: &str) -> String {
-    rtk_command("git", &["show", &format!("{rev}:{path}")])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default()
+    let out = git_exec::run(cwd, &["show", &format!("{rev}:{path}")]);
+    if out.ok { out.stdout } else { String::new() }
 }
 
 #[cfg(test)]

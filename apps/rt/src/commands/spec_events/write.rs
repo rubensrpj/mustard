@@ -685,6 +685,7 @@ pub fn run(opts: &WriteOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::platform::git;
     use tempfile::tempdir;
 
     /// Deixa a spec aberta, como o comando que abre uma spec a deixa: com o
@@ -1080,13 +1081,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
         let git = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            assert!(ok, "git {args:?} failed");
+            assert!(git::run(root, args).ok, "git {args:?} failed");
         };
         git(&["init", "-q"]);
         git(&["config", "user.email", "t@example.com"]);
@@ -1119,13 +1114,7 @@ mod tests {
     fn repo_on(root: &std::path::Path, branch: &str) {
         std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
         let git = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            assert!(ok, "git {args:?} failed");
+            assert!(git::run(root, args).ok, "git {args:?} failed");
         };
         git(&["init", "-q"]);
         git(&["config", "user.email", "t@example.com"]);
@@ -1378,8 +1367,7 @@ mod tests {
         born(root);
         witness_approves(root);
         let branches = || {
-            let out = std::process::Command::new("git").args(["branch", "--list"]).current_dir(root).output().unwrap();
-            String::from_utf8_lossy(&out.stdout).to_string()
+            git::run(root, &["branch", "--list"]).stdout
         };
         let before = branches();
 
@@ -1591,13 +1579,10 @@ mod tests {
         repo_on(&main, "dev");
         let id = add_pending(&main, "Medir o antivírus do Windows");
         let wt = tmp.path().join("wt");
-        let ok = std::process::Command::new("git")
-            .args(["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/teste"])
-            .current_dir(&main)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git worktree add failed");
+        assert!(
+            git::run(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/teste"]).ok,
+            "git worktree add failed",
+        );
 
         let msg = write(&wt, "message", r#"{"author":"user","text":"e o antivírus?"}"#)["id"].as_u64().unwrap();
         let out = deferred(&wt, json!(id), msg);
@@ -2142,13 +2127,10 @@ mod tests {
         repo_on(&main, "dev");
         let (said, points) = listed(&main, &["fix"], false);
         let wt = tmp.path().join("wt");
-        let ok = std::process::Command::new("git")
-            .args(["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/teste"])
-            .current_dir(&main)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git worktree add failed");
+        assert!(
+            git::run(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/teste"]).ok,
+            "git worktree add failed",
+        );
         let decision = json!({"text": "Resposta.", "keys": ["k"], "why": "w", "origin": said}).to_string();
         let from_main = write(&main, "decision", &decision);
         let from_wt = write_to(&wt, Some("teste"), "decision", &decision);

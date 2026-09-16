@@ -105,7 +105,6 @@ fn doors() -> Vec<(Vec<&'static str>, &'static str, &'static str, &'static str)>
             "review-result",
         ),
         (vec!["pr-review", "--verdict", "approved"], "wait-for-round", "retired.wait_round", "pr-review --verdict"),
-        (vec!["pr-merge"], "wait-for-merge", "retired.wait_merge", ""),
     ]
 }
 
@@ -181,15 +180,20 @@ fn no_old_command_arms_the_pending_charge() {
     }
 }
 
-/// O merge recusa antes de qualquer coisa: a pendência que virou a spec
-/// continua aberta, e a spec não fica entregue.
+/// O merge não entrega nada quando não há pull request para mergear: a
+/// pendência que virou a spec continua aberta e a spec não fica entregue.
+///
+/// A porta voltou a funcionar, e é por isso que este teste continua valendo
+/// com outro sentido: o que ele prende agora é que ela só entrega depois de um
+/// merge de verdade — sem pull request, nada é gravado.
 #[test]
-fn a_merge_is_refused_and_the_linked_pending_stays_open() {
+fn sem_pull_request_o_merge_nao_entrega_nem_fecha_a_pendencia() {
     let dir = project(PT);
     let root = dir.path();
 
     let out = run(root, &["pr-merge"]);
-    assert_eq!(refusal(&out)["reason"], "wait-for-merge");
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["ok"], Value::Bool(false), "{report}");
 
     let list: Value = serde_json::from_slice(&std::fs::read(ledger(root)).unwrap()).unwrap();
     let item = &list["items"][0];

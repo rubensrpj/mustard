@@ -67,12 +67,13 @@ pub struct GitConfig {
     /// answer as old as the install: a branch created after `mustard init` was
     /// refused for existing. A unit is now cut from any branch git really has
     /// ([`crate::platform::git_branches::branch_catalog`]) and this map only
-    /// PRE-SELECTS — see [`preselected_bases`](GitConfig::preselected_bases).
-    /// A project that never declares one loses nothing.
+    /// PRE-SELECTS — see [`declared_bases`](GitConfig::declared_bases). A
+    /// project that never declares one pre-selects nothing, and protects
+    /// nothing, until it does.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub flow: BTreeMap<String, String>,
-    /// Branches that refuse a direct commit or merge, BEYOND the remote's
-    /// default branch — which is protected whether or not this list exists.
+    /// Branches that refuse a direct commit or merge, BEYOND the bases
+    /// `git.flow` already declares.
     ///
     /// The escape hatch for a team that also protects `develop` or a
     /// `release/*` line. Empty for almost every project, which is why it is
@@ -107,52 +108,17 @@ pub struct GitConfig {
 
 
 impl GitConfig {
-    /// The branches this project's `git.flow` names — the ones a base picker
-    /// offers FIRST, derived from [`flow`](GitConfig::flow): every non-`*` key
-    /// ∪ every value.
+    /// The bases this project REALLY declares, derived from
+    /// [`flow`](GitConfig::flow): every non-`*` key ∪ every value.
     ///
-    /// **Read the name carefully: these are PRE-SELECTED, not permitted.** The
-    /// set used to answer two questions at once — "where may a unit be cut
-    /// from?" and "where is a direct commit forbidden?" — and answering both
-    /// with one closed list is what made the first question refuse branches
-    /// that exist. The questions are now apart: cutting reads git
-    /// ([`crate::platform::git_branches::branch_catalog`]) and forbidding reads
-    /// [`crate::platform::git_branches::protected_branches`]. Nothing here
-    /// refuses anything any more.
-    ///
-    /// ONE reading is neither of those two, and it is named here because it is
-    /// the only one that still consults this set and can end in a refusal: a
-    /// branch this set names is not somebody's WORK UNIT, so `git delete`
-    /// declines to remove a project's own `release/2026-Q3` — whose name splits
-    /// into a kind and a slug exactly like `feature/aba` — the way it declines
-    /// `main`. That refuses the operator no base and no cut; it stops the
-    /// harness from mistaking a branch the project ITSELF called a base for a
-    /// disposable unit.
-    ///
-    /// Examples: `{"*":"dev","dev":"main"}` → `{dev, main}`; `{"*":"main"}` →
-    /// `{main}`; `{"*":"develop","develop":"master"}` → `{develop, master}`.
-    /// An empty / absent flow falls back to `{main, master}` — the ONLY place a
-    /// branch name is hardcoded, and only as a last resort.
-    #[must_use]
-    pub fn preselected_bases(&self) -> BTreeSet<String> {
-        let bases = self.declared_bases();
-        if bases.is_empty() {
-            return ["main", "master"].iter().map(|s| (*s).to_string()).collect();
-        }
-        bases
-    }
-
-    /// What the project REALLY declares — [`preselected_bases`] without its
-    /// last-resort `{main, master}`, so an empty / absent flow yields an empty
-    /// set instead of two names this repository may not carry.
-    ///
-    /// This is the one a REPORT reads. The fallback exists to keep a derivation
-    /// from having no answer at all; printing it to an operator states that the
-    /// project pre-selects `main` and `master` when it pre-selects nothing, and
-    /// the installer writes no flow — so that is what every fresh install would
-    /// otherwise be told about itself.
-    ///
-    /// [`preselected_bases`]: GitConfig::preselected_bases
+    /// **The only source of a base name in this project.** There used to be a
+    /// second accessor that floored to `{main, master}` whenever the flow was
+    /// empty, and an install writes no flow — so every fresh project was told
+    /// it declared two branches it might not even carry, and the doors that
+    /// decide by "is this a base?" decided by two literals. An empty flow
+    /// yields an empty set here, and an empty set means the project has
+    /// declared nothing: nothing is pre-selected and nothing is protected until
+    /// it does.
     #[must_use]
     pub fn declared_bases(&self) -> BTreeSet<String> {
         let mut bases: BTreeSet<String> = BTreeSet::new();
@@ -170,19 +136,22 @@ impl GitConfig {
     }
 
     /// The base a picker opens ON: `flow["*"]` when present, else any single
-    /// pre-selected base (lexically-least, deterministic), else `main`.
-    /// Agnostic — the only literal is the last-resort `main` for a project with
-    /// no `git.flow`. A DEFAULT for the cursor, never a restriction on what the
-    /// operator may pick instead.
+    /// declared base (lexically-least, deterministic).
+    ///
+    /// `None` when the project declares no flow at all. It used to floor to
+    /// `main`, and that literal is precisely what sent a unit whose project
+    /// never named `main` off to a branch nobody measured. A caller with no
+    /// answer here must ask the repository or ask the operator — never carry a
+    /// name this project never wrote.
+    ///
+    /// A DEFAULT for the cursor, never a restriction on what the operator may
+    /// pick instead.
     #[must_use]
-    pub fn primary_base(&self) -> String {
+    pub fn primary_base(&self) -> Option<String> {
         if let Some(star) = self.flow.get("*").map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            return star.to_string();
+            return Some(star.to_string());
         }
-        self.preselected_bases()
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "main".to_string())
+        self.declared_bases().into_iter().next()
     }
 }
 
@@ -976,57 +945,51 @@ mod tests {
         assert!(!glob_matches("*.rb", "x.rs"));
     }
 
+    /// As bases saem das chaves e dos valores do fluxo, e a chave `*` não é
+    /// base nenhuma.
     #[test]
-    fn preselected_bases_derives_from_flow_keys_and_values() {
-        // Standard two-tier flow → {dev, main}.
+    fn as_bases_declaradas_saem_do_fluxo() {
+        // Fluxo de dois degraus → {dev, main}.
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
         cfg.git.flow.insert("dev".into(), "main".into());
-        let bases = cfg.git.preselected_bases();
+        let bases = cfg.git.declared_bases();
         assert!(bases.contains("dev") && bases.contains("main"));
-        assert_eq!(bases.len(), 2, "the `*` key is not itself a base: {bases:?}");
+        assert_eq!(bases.len(), 2, "a chave `*` não é base: {bases:?}");
 
-        // GitHub-flow single main → {main}.
+        // Um degrau só → {main}.
         let mut single = ProjectConfig::default();
         single.git.flow.insert("*".into(), "main".into());
-        assert_eq!(
-            single.git.preselected_bases(),
-            BTreeSet::from(["main".to_string()]),
-        );
+        assert_eq!(single.git.declared_bases(), BTreeSet::from(["main".to_string()]));
 
-        // develop/master flow (agnostic — no dev/main anywhere) → {develop, master}.
+        // Fluxo develop/master — nenhum nome deste projeto aparece no código.
         let mut dm = ProjectConfig::default();
         dm.git.flow.insert("*".into(), "develop".into());
         dm.git.flow.insert("develop".into(), "master".into());
         assert_eq!(
-            dm.git.preselected_bases(),
+            dm.git.declared_bases(),
             BTreeSet::from(["develop".to_string(), "master".to_string()]),
         );
     }
 
+    /// Um projeto que não declara fluxo não declara base nenhuma: a lista sai
+    /// vazia, e não com dois nomes que este repositório pode nem ter.
     #[test]
-    fn preselected_bases_empty_flow_falls_back_to_main_master() {
-        let cfg = ProjectConfig::default();
-        assert_eq!(
-            cfg.git.preselected_bases(),
-            BTreeSet::from(["main".to_string(), "master".to_string()]),
-        );
+    fn sem_fluxo_o_projeto_nao_declara_base_nenhuma() {
+        assert!(ProjectConfig::default().git.declared_bases().is_empty());
+        assert_eq!(ProjectConfig::default().git.primary_base(), None);
     }
 
+    /// A base do cursor é a do `*`; sem ela, a menor das declaradas.
     #[test]
-    fn primary_base_prefers_star_then_first_then_main() {
-        // flow["*"] wins.
+    fn a_base_do_cursor_vem_do_fluxo_e_nunca_de_um_nome_fixo() {
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "develop".into());
         cfg.git.flow.insert("develop".into(), "master".into());
-        assert_eq!(cfg.git.primary_base(), "develop");
+        assert_eq!(cfg.git.primary_base().as_deref(), Some("develop"));
 
-        // No `*` → lexically-least integration base.
         let mut no_star = ProjectConfig::default();
         no_star.git.flow.insert("develop".into(), "master".into());
-        assert_eq!(no_star.git.primary_base(), "develop");
-
-        // Empty flow → last-resort `main`.
-        assert_eq!(ProjectConfig::default().git.primary_base(), "main");
+        assert_eq!(no_star.git.primary_base().as_deref(), Some("develop"));
     }
 }

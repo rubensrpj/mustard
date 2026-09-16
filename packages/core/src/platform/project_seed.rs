@@ -52,7 +52,6 @@
 //!   (the CLI prints didactic lines, the runtime prints the JSON report).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -62,6 +61,7 @@ use crate::domain::config::{Injectable, ProjectConfig, Runtime};
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
 use crate::platform::error::{Error, Result};
+use crate::platform::git;
 use crate::platform::git_exclude;
 use crate::platform::seeds::{
     CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD, ORCHESTRATOR_MD, SETTINGS_SEED,
@@ -1416,7 +1416,7 @@ pub fn record_version_stamp(root: &Path, found_clean: Option<bool>) -> RecordOut
 fn unstage(root: &Path, paths: &[&str]) {
     let mut args: Vec<&str> = vec!["reset", "-q", "--"];
     args.extend(paths);
-    let _ = Command::new("git").args(&args).current_dir(root).output();
+    let _ = git::run(root, &args);
 }
 
 /// Whether git would ignore `path` — an ignore rule, or the clone-local exclude
@@ -1427,11 +1427,7 @@ fn unstage(root: &Path, paths: &[&str]) {
 /// which costs at worst a recorded commit, where the opposite error costs the
 /// dirty tree this whole path exists to prevent.
 fn is_ignored(root: &Path, path: &str) -> bool {
-    Command::new("git")
-        .args(["check-ignore", "-q", "--", path])
-        .current_dir(root)
-        .output()
-        .is_ok_and(|out| out.status.success())
+    git::run(root, &["check-ignore", "-q", "--", path]).ok
 }
 
 /// Stage `paths` alone. Only ever called on a tree that was found CLEAN, where
@@ -1440,11 +1436,7 @@ fn is_ignored(root: &Path, path: &str) -> bool {
 fn stage_path(root: &Path, paths: &[&str]) -> bool {
     let mut args: Vec<&str> = vec!["add", "--"];
     args.extend(paths);
-    Command::new("git")
-        .args(&args)
-        .current_dir(root)
-        .output()
-        .is_ok_and(|out| out.status.success())
+    git::run(root, &args).ok
 }
 
 /// `git status --porcelain` for `root`, optionally narrowed to `pathspecs`.
@@ -1457,8 +1449,7 @@ fn porcelain(root: &Path, pathspecs: &[&str]) -> Option<String> {
         args.push("--");
         args.extend(pathspecs);
     }
-    let out = Command::new("git").args(&args).current_dir(root).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    git::run(root, &args).out()
 }
 
 /// Commit `paths` alone, with `subject`. `false` on any refusal — no git, no
@@ -1468,11 +1459,7 @@ fn porcelain(root: &Path, pathspecs: &[&str]) -> Option<String> {
 fn commit_path(root: &Path, paths: &[&str], subject: &str) -> bool {
     let mut args: Vec<&str> = vec!["commit", "-m", subject, "--"];
     args.extend(paths);
-    Command::new("git")
-        .args(&args)
-        .current_dir(root)
-        .output()
-        .is_ok_and(|out| out.status.success())
+    git::run(root, &args).ok
 }
 
 // ---------------------------------------------------------------------------
@@ -1922,11 +1909,7 @@ mod tests {
     }
 
     fn run_git(root: &std::path::Path, args: &[&str]) {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .expect("git");
+        let _ = git::run(root, args);
     }
 
     fn seed_repo(root: &std::path::Path) {
@@ -2368,11 +2351,8 @@ mod tests {
     fn the_seeded_gitignore_holds_back_the_gate_markers() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git").args(args).current_dir(root).output()
-        };
         assert!(
-            git(&["init", "-q"]).expect("git must be available").status.success(),
+            git::run(root, &["init", "-q"]).ok,
             "the test measures git's decision, so it needs a real repository",
         );
 
@@ -2380,11 +2360,7 @@ mod tests {
         std_fs::create_dir_all(&claude).unwrap();
         seed_gitignore(&claude, false).unwrap();
 
-        let ignored = |rel: &str| {
-            git(&["check-ignore", "-q", rel])
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let ignored = |rel: &str| git::run(root, &["check-ignore", "-q", rel]).ok;
 
         // Held back: presence of either file IS the gate's answer, so a commit
         // would let `git clone` hand a fresh checkout an approval nobody gave.
@@ -3239,13 +3215,7 @@ mod tests {
             vec!["config", "user.email", "t@example.com"],
             vec!["config", "user.name", "t"],
         ] {
-            let ok = std::process::Command::new("git")
-                .args(&args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            assert!(ok, "git {args:?} failed");
+            assert!(git::run(root, &args).ok, "git {args:?} failed");
         }
 
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
@@ -3346,13 +3316,7 @@ mod tests {
     /// exists anywhere, so a `check-ignore` answer here is attributable to the
     /// one rule the caller writes into it.
     fn probe_repo(root: &Path) -> PathBuf {
-        let ok = std::process::Command::new("git")
-            .arg("init")
-            .current_dir(root)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git init failed");
+        assert!(git::run(root, &["init"]).ok, "git init failed");
         let path = git_exclude::exclude_file(root).expect("git resolves the exclude file");
         std_fs::create_dir_all(path.parent().unwrap()).unwrap();
         path

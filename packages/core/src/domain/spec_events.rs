@@ -2270,6 +2270,253 @@ pub fn code_after(log: &SpecLog, event: &Map<String, Value>) -> Option<String> {
     Some(mustard_id::format(spec.code, top + 1))
 }
 
+
+// ---------------------------------------------------------------------------
+// A mensagem do pull request — montada daqui, nunca escrita à mão
+// ---------------------------------------------------------------------------
+
+/// O teto de caracteres do título de um pull request e de um commit.
+pub const MESSAGE_TITLE_MAX: usize = 60;
+/// O teto de caracteres do corpo de um pull request e de um commit.
+pub const MESSAGE_BODY_MAX: usize = 4_000;
+
+/// O que uma mensagem de commit ou de pull request nunca leva, com o texto que
+/// a recusa mostra. A busca é feita sobre o texto dobrado
+/// ([`crate::domain::text::fold`]), por isso cada agulha vem em minúscula e sem
+/// acento.
+///
+/// O caminho da máquina entra aqui pelas duas grafias que ele tem: um pull
+/// request que cita `/home/alguem/projetos` diz o nome de quem trabalha e a
+/// árvore de pastas dessa pessoa, que é dado de usuário como qualquer outro.
+const FORBIDDEN_IN_MESSAGE: &[(&str, &str)] = &[
+    ("claude.ai", "claude.ai"),
+    ("claude", "Claude"),
+    ("anthropic", "Anthropic"),
+    ("co-authored-by", "Co-Authored-By"),
+    ("generated with", "Generated with"),
+    ("/home/", "/home/"),
+    ("c:\\users\\", "C:\\Users\\"),
+];
+
+/// Por que uma mensagem de commit ou de pull request foi recusada.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageRefusal {
+    /// O título ou o corpo passou do teto.
+    TooLong {
+        /// `title` ou `body`.
+        part: &'static str,
+        /// Quantos caracteres a parte tem.
+        chars: usize,
+        /// Quantos ela podia ter.
+        max: usize,
+    },
+    /// A mensagem traz o que ela nunca leva. `found` é o trecho pelo nome e
+    /// `excerpt` é o pedaço da mensagem em que ele apareceu, para que a recusa
+    /// aponte onde está em vez de mandar procurar.
+    Forbidden {
+        /// O trecho proibido, pelo nome.
+        found: String,
+        /// O pedaço da mensagem em que ele apareceu.
+        excerpt: String,
+    },
+    /// A spec não tem objetivo escrito, e é dele que sai o título.
+    NoTitle,
+}
+
+impl MessageRefusal {
+    /// O motivo estável, para quem lê a resposta como dado.
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::TooLong { .. } => "message-too-long",
+            Self::Forbidden { .. } => "message-forbidden-text",
+            Self::NoTitle => "message-no-title",
+        }
+    }
+
+    /// A recusa em palavras, no idioma pedido.
+    #[must_use]
+    pub fn message(&self, lang: Locale) -> String {
+        match self {
+            Self::TooLong { part, chars, max } => translate("message.too_long", lang)
+                .replace("{part}", part)
+                .replace("{chars}", &chars.to_string())
+                .replace("{max}", &max.to_string()),
+            Self::Forbidden { found, excerpt } => translate("message.forbidden", lang)
+                .replace("{found}", found)
+                .replace("{excerpt}", excerpt),
+            Self::NoTitle => translate("message.no_title", lang).to_string(),
+        }
+    }
+}
+
+/// O pedaço de `text` em volta de `at`, com no máximo 40 caracteres de cada
+/// lado: é o que a recusa mostra para que ninguém precise procurar.
+fn excerpt_around(text: &str, at: usize) -> String {
+    let start = text[..at].char_indices().rev().take(40).last().map_or(0, |(i, _)| i);
+    let end = text[at..]
+        .char_indices()
+        .take(40)
+        .last()
+        .map_or(text.len(), |(i, c)| at + i + c.len_utf8());
+    text[start..end].trim().to_string()
+}
+
+/// O primeiro e-mail que o texto traz: uma palavra, um arroba e um domínio com
+/// ponto.
+fn first_email(text: &str) -> Option<(String, usize)> {
+    for (at, _) in text.match_indices('@') {
+        let start = text[..at].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        let end = text[at..].find(char::is_whitespace).map_or(text.len(), |i| at + i);
+        let candidate = text[start..end].trim_matches(|c: char| !c.is_alphanumeric());
+        let Some((user, domain)) = candidate.split_once('@') else { continue };
+        if !user.is_empty() && domain.contains('.') && !domain.starts_with('.') {
+            return Some((candidate.to_string(), start));
+        }
+    }
+    None
+}
+
+/// Confere uma mensagem de commit ou de pull request contra o modelo: título e
+/// corpo dentro do teto, e nada do que ela nunca leva.
+///
+/// A conferência é uma só para as duas mensagens de propósito. Enquanto foram
+/// duas, a regra valia onde alguém lembrou de escrevê-la — e a regra existe
+/// justamente para o caso em que ninguém está olhando.
+///
+/// # Errors
+///
+/// [`MessageRefusal::TooLong`] quando uma das partes passa do teto e
+/// [`MessageRefusal::Forbidden`] quando o texto traz o que nunca leva, com o
+/// trecho pelo nome e o pedaço em que ele apareceu.
+pub fn check_message(
+    title: &str,
+    body: &str,
+    title_max: usize,
+    body_max: usize,
+) -> Result<(), MessageRefusal> {
+    for (part, text, max) in [("title", title, title_max), ("body", body, body_max)] {
+        let chars = text.chars().count();
+        if chars > max {
+            return Err(MessageRefusal::TooLong { part, chars, max });
+        }
+    }
+    let whole = format!("{title}\n{body}");
+    let folded = crate::domain::text::fold(&whole);
+    for (needle, shown) in FORBIDDEN_IN_MESSAGE {
+        if let Some(at) = folded.find(needle) {
+            return Err(MessageRefusal::Forbidden {
+                found: (*shown).to_string(),
+                excerpt: excerpt_around(&folded, at),
+            });
+        }
+    }
+    if let Some((email, at)) = first_email(&folded) {
+        return Err(MessageRefusal::Forbidden { found: email, excerpt: excerpt_around(&folded, at) });
+    }
+    Ok(())
+}
+
+/// A primeira frase de `text`, sem título de markdown e sem negrito.
+fn first_sentence_of(text: &str) -> String {
+    let plain = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .unwrap_or_default()
+        .replace("**", "");
+    match plain.find(". ") {
+        Some(at) => plain[..=at].trim().to_string(),
+        None => plain.trim().to_string(),
+    }
+}
+
+/// O título e o corpo do pull request desta spec, montados do arquivo de
+/// eventos.
+///
+/// **Ninguém escreve este texto à mão.** O título sai do objetivo da spec; o
+/// corpo sai, em ordem de importância, do resumo que o assistente gravou, de
+/// uma linha por onda entregue e da contagem dos critérios com as falhas pelo
+/// nome. Quando o corpo passa do teto, as listas viram contagem — o detalhe
+/// não se perde, porque ele mora na página da spec.
+///
+/// # Errors
+///
+/// A spec sem objetivo escrito ([`MessageRefusal::NoTitle`]), o título acima do
+/// teto ([`MessageRefusal::TooLong`], que pede outro objetivo em vez de cortar
+/// uma frase ao meio) e o texto que traz o que nunca vai num pull request
+/// ([`MessageRefusal::Forbidden`]).
+pub fn pr_message(log: &SpecLog) -> Result<(String, String), MessageRefusal> {
+    let title = crate::domain::spec_index::goal_of(log).ok_or(MessageRefusal::NoTitle)?;
+    let visible = log.visible();
+    let summary = visible
+        .iter()
+        .rev()
+        .find(|e| e.event_type == "pr_summary")
+        .and_then(|e| e.str_field("text"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let mut waves: BTreeMap<u64, String> = BTreeMap::new();
+    for event in &visible {
+        if event.event_type != "delivered" {
+            continue;
+        }
+        if let (Some(wave), Some(text)) = (event.wave(), event.str_field("text")) {
+            waves.insert(wave, first_sentence_of(text));
+        }
+    }
+
+    // Quantos critérios existem e quais falharam é leitura do QA, que já mora
+    // no núcleo e já decide pela execução mais nova de cada um. Contar aqui de
+    // novo seria uma segunda resposta para a mesma pergunta.
+    let qa = crate::domain::spec_state::qa(log);
+    let criteria = qa.criteria;
+    let failed: Vec<String> = qa
+        .failed_ids
+        .iter()
+        .map(|id| {
+            visible
+                .iter()
+                .find(|e| e.id == *id)
+                .and_then(|e| e.str_field("when"))
+                .map_or_else(|| id.to_string(), first_sentence_of)
+        })
+        .collect();
+
+    let wave_lines: Vec<String> =
+        waves.iter().map(|(wave, what)| format!("- onda {wave}: {what}")).collect();
+    let criteria_line = if failed.is_empty() {
+        format!("Critérios: {criteria}, nenhum com falha.")
+    } else {
+        format!("Critérios: {criteria}, {} com falha: {}.", failed.len(), failed.join("; "))
+    };
+
+    let assemble = |lines: &[String]| {
+        let mut parts: Vec<String> = Vec::new();
+        if !summary.is_empty() {
+            parts.push(summary.clone());
+        }
+        if !lines.is_empty() {
+            parts.push(lines.join("\n"));
+        }
+        parts.push(criteria_line.clone());
+        parts.join("\n\n")
+    };
+
+    let mut body = assemble(&wave_lines);
+    if body.chars().count() > MESSAGE_BODY_MAX {
+        // As listas viram contagem: o detalhe fica na página da spec, onde
+        // nada se perde, e o corpo continua legível de uma olhada.
+        let collapsed = vec![format!("Ondas entregues: {}.", waves.len())];
+        body = assemble(&collapsed);
+    }
+
+    check_message(&title, &body, MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX)?;
+    Ok((title, body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2279,6 +2526,104 @@ mod tests {
         match value {
             Value::Object(map) => map,
             other => panic!("not an object: {other}"),
+        }
+    }
+
+
+    /// Uma spec de teste com 8 ondas e 40 critérios abre um pull request: o
+    /// corpo cabe no teto, o título cabe no teto, um título maior é recusado
+    /// com a mensagem do limite, e um resumo com link da conversa, o nome do
+    /// modelo, um e-mail ou um caminho da máquina é recusado apontando o
+    /// trecho.
+    #[test]
+    fn a_mensagem_do_pull_request_cabe_nos_limites_e_recusa_dado_de_usuario() {
+        let mut lines: Vec<String> = Vec::new();
+        let mut id = 0u64;
+        let mut push = |fields: Value| {
+            id += 1;
+            let mut map = obj(fields);
+            map.insert("v".into(), json!(1));
+            map.insert("id".into(), json!(id));
+            map.insert("at".into(), json!("2026-09-16T10:00:00-03:00"));
+            map.insert("author".into(), json!("assistant"));
+            lines.push(render_line(&map));
+            id
+        };
+        push(json!({"type": "context", "text": "Deixar o Mustard enxuto. E o resto da prosa."}));
+        for wave in 1..=8u64 {
+            push(json!({
+                "type": "delivered",
+                "wave": wave,
+                "files": ["a.rs"],
+                // Uma frase só, longa: sem ponto no meio, ela chega inteira ao
+                // corpo, e as oito juntas passam do teto — que é o que faz a
+                // dobra das listas em contagem ser realmente exercida aqui.
+                "text": format!("A onda {wave} entregou {}", "um detalhe e ".repeat(60)),
+            }));
+        }
+        let mut criteria: Vec<u64> = Vec::new();
+        for n in 1..=40u64 {
+            criteria.push(push(json!({
+                "type": "criterion",
+                "when": format!("o caso {n} acontece"),
+                "then": "a resposta é a combinada",
+                "proof": "teste",
+            })));
+        }
+        push(json!({
+            "type": "criterion_run",
+            "criterion": criteria[3],
+            "result": "fail",
+            "exit": 1,
+            "ms": 12,
+        }));
+        let resumo = push(json!({"type": "pr_summary", "text": "O portão lê o estado."}));
+
+        let log = parse_log(&lines.join("\n"));
+        let (title, body) = pr_message(&log).expect("a spec tem objetivo e resumo");
+        assert_eq!(title, "Deixar o Mustard enxuto.");
+        assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "título: {}", title.chars().count());
+        assert!(
+            body.chars().count() <= MESSAGE_BODY_MAX,
+            "corpo com {} caracteres: as listas tinham de virar contagem",
+            body.chars().count(),
+        );
+        assert!(body.contains("O portão lê o estado."), "o resumo abre o corpo: {body}");
+        assert!(body.contains("Ondas entregues: 8."), "as listas viraram contagem: {body}");
+        assert!(body.contains("Critérios: 40"), "os critérios são contados: {body}");
+        assert!(body.contains("1 com falha"), "e a falha é nomeada: {body}");
+
+        // Um título maior é recusado com a mensagem do limite.
+        let longo = "x".repeat(MESSAGE_TITLE_MAX + 1);
+        let refusal = check_message(&longo, "corpo", MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX)
+            .expect_err("um título acima do teto é recusado");
+        assert_eq!(refusal.reason(), "message-too-long");
+        let said = refusal.message(Locale::PtBr);
+        assert!(said.contains(&MESSAGE_TITLE_MAX.to_string()), "a recusa diz o limite: {said}");
+
+        // Cada dado de usuário é recusado apontando o trecho.
+        for (resumo_ruim, esperado) in [
+            ("Veja https://claude.ai/code/x para o resto.", "claude.ai"),
+            ("Escrito com a ajuda do Claude.", "Claude"),
+            ("Dúvidas com fulano@empresa.com.br.", "fulano@empresa.com.br"),
+            ("O arquivo está em /home/fulano/projetos/x.rs.", "/home/"),
+        ] {
+            let mut com_dado = lines.clone();
+            let mut map = obj(json!({"type": "pr_summary", "text": resumo_ruim}));
+            map.insert("v".into(), json!(1));
+            map.insert("id".into(), json!(resumo + 1));
+            map.insert("at".into(), json!("2026-09-16T11:00:00-03:00"));
+            map.insert("author".into(), json!("assistant"));
+            com_dado.push(render_line(&map));
+            let refusal = pr_message(&parse_log(&com_dado.join("\n")))
+                .expect_err(&format!("o resumo com `{esperado}` é recusado"));
+            assert_eq!(refusal.reason(), "message-forbidden-text", "{esperado}");
+            let said = refusal.message(Locale::PtBr);
+            assert!(
+                said.to_lowercase().contains(&esperado.to_lowercase()),
+                "a recusa diz o que achou: {said}",
+            );
+            assert!(said.contains('"'), "e mostra o trecho em que achou: {said}");
         }
     }
 

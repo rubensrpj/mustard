@@ -24,6 +24,9 @@
 use std::path::Path;
 use std::process::Command;
 
+use mustard_core::platform::git;
+use mustard_core::platform::i18n::translate;
+
 use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind, CUT_BASE_FILE};
 
 /// Resolve the base a unit is cut from.
@@ -57,15 +60,7 @@ use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind, CUT_BASE_FILE};
 /// which is the whole property that matters. Only after this does the chain
 /// reach a literal.
 fn current_branch_of(root: &Path) -> Option<String> {
-    let dir = root.to_string_lossy().to_string();
-    let out = std::process::Command::new("git")
-        .args(["-C", &dir, "rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let name = git::run(root, &["rev-parse", "--abbrev-ref", "HEAD"]).out()?;
     (!name.is_empty() && name != "HEAD").then_some(name)
 }
 
@@ -76,26 +71,25 @@ pub(crate) fn resolve_kind_base(
 ) -> Result<String, String> {
     let Some(requested) = requested.map(str::trim).filter(|b| !b.is_empty()) else {
         // **The default must be a branch that EXISTS, not a literal.**
-        // `primary_base()` floors to the hardcoded `main` when no `git.flow` is
-        // written — the shape the installer produces today — so with no `--base`
-        // this recorded `main` in a repository that has no `main`. It used to
-        // pass through unchallenged; once the reader started checking existence,
-        // the invented name was correctly dropped and the write gate DENIED the
-        // first edit of every such project. Measured A/B on one fixture: the
-        // baseline cut the branch, this denied it.
+        // The declared primary used to floor to a hardcoded name when no
+        // `git.flow` was written — the shape the installer produces today — so
+        // with no `--base` this recorded a branch the repository does not have.
+        // It passed through unchallenged; once the reader started checking
+        // existence, the invented name was correctly dropped and the write gate
+        // DENIED the first edit of every such project.
         //
-        // So the default is asked of git — `origin/HEAD`, the remote's own
-        // answer — and the declared primary is used only when the project
-        // states one. A default nobody can check out is not a default.
         // Order: what the project STATES, then what the remote states, then the
-        // branch the operator is standing on — each a name that exists — and the
-        // literal only when nothing at all could be measured.
-        if !config.git.declared_bases().is_empty() {
-            return Ok(config.git.primary_base());
-        }
-        return Ok(mustard_core::default_branch(root)
+        // branch the operator is standing on — each a name that really exists.
+        // There is no fourth rung: when none of the three can answer, the cut
+        // says so instead of naming a branch nobody measured.
+        return config
+            .git
+            .primary_base()
+            .or_else(|| mustard_core::default_branch(root))
             .or_else(|| current_branch_of(root))
-            .unwrap_or_else(|| config.git.primary_base()));
+            .ok_or_else(|| {
+                translate("base.unmeasured", config.language().text_or_default()).to_string()
+            });
     };
     let catalog = mustard_core::branch_catalog(root, &config.git, false);
     if catalog.is_empty() || catalog.iter().any(|b| b.name == requested) {
@@ -741,7 +735,10 @@ pub(crate) fn base_for(
     let flow = BaseFlow::of_at(&config.git, root);
     match flow.base_of(target) {
         UnitBase::Known(base) => Ok(base),
-        UnitBase::NotAUnit => Ok(flow.work_base().to_string()),
+        UnitBase::NotAUnit => flow
+            .work_base()
+            .map(str::to_string)
+            .ok_or_else(Vec::new),
         UnitBase::Ambiguous(candidates) => Err(candidates),
     }
 }
@@ -814,25 +811,27 @@ pub(crate) fn recorded_or_derived_base(
     }
 }
 
-/// `true` when `branch` must never be developed on directly.
+/// `true` when `branch` is one of this repository's INTEGRATION BASES.
 ///
-/// The membership question moved: it used to be "is this one of the branches
-/// `git.flow` declares?", which made protection and CUT POINT the same closed
-/// list — so opening the cut point would have opened protection with it. It is
-/// now `mustard_core::protected_branches`: the remote's own default branch
-/// (`origin/HEAD`) plus whatever `git.protected` adds. Normally a set of ONE.
+/// Two sources, and neither of them is a name written here: what the project
+/// declared (`git.flow`, plus the `git.protected` list), and what the remote
+/// itself calls its default branch. The second matters because the installer
+/// writes no flow — for such a project the declaration is empty, and without
+/// the remote's own answer every branch, `origin/HEAD` included, would read as
+/// somebody's work unit.
 ///
-/// Work branches — `feature/x`, `fix/y`, and the older `{base}_*` shape — are
-/// NOT protected, exactly as before. What changed is that `dev` is no longer
-/// protected merely for appearing in a promotion map: a unit may now be cut
-/// from it AND committed on it, which is what a project that promotes through
-/// several branches always needed.
-pub(crate) fn is_protected(
+/// This used to be spelled as "is it protected?", and the two questions came
+/// apart the moment protection began reading the declaration alone: a project
+/// that declares nothing protects nothing, which is the honest answer to THAT
+/// question and the wrong answer to this one. Standing on a base and standing
+/// on a branch nobody may commit to are different facts.
+pub(crate) fn on_integration_base(
     root: &Path,
     branch: &str,
     config: &mustard_core::ProjectConfig,
 ) -> bool {
-    mustard_core::protected_branches(root, &config.git).contains(branch)
+    mustard_core::protected_branches(&config.git).contains(branch)
+        || mustard_core::default_branch(root).as_deref() == Some(branch)
 }
 
 /// `true` when the tree HOLDS work that is not this unit's — its HEAD names a
@@ -858,7 +857,7 @@ pub(crate) fn holds_other_work(
     let Some(branch) = current else {
         return false;
     };
-    branch != target && !is_protected(root, branch, config)
+    branch != target && !on_integration_base(root, branch, config)
 }
 
 // ---------------------------------------------------------------------------
@@ -1519,24 +1518,18 @@ mod tests {
 
     use crate::shared::work_kind::{BaseFlow, WorkKind, CUT_BASE_FILE};
 
-    /// Protection follows the REPOSITORY, not the promotion map.
+    /// Uma base é o que o projeto declarou, ou o que o próprio remoto chama de
+    /// padrão — e nada mais.
     ///
-    /// The distinction this pins is the whole reason the cut point could open:
-    /// `dev` appears in `git.flow` and is NOT protected by that alone, while
-    /// the branch `origin` itself calls default is — with no configuration
-    /// naming it anywhere.
+    /// A distinção que este teste prende: `dev` e `main` estão no `git.flow`
+    /// deste projeto e por isso são base; `producao` é o que este repositório
+    /// chama de padrão e por isso também é; `feature/x` não é nem uma coisa
+    /// nem outra. Nenhum dos três nomes está escrito no código.
     #[test]
-    fn only_the_remote_default_branch_is_protected() {
+    fn a_base_sai_da_declaracao_ou_do_proprio_remoto() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let git = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
         if !git(&["init", "-q", "-b", "producao", "."]) {
             return; // no usable git here
         }
@@ -1553,20 +1546,27 @@ mod tests {
             return;
         }
 
-        let config = two_tier(); // declares dev and main
+        let config = two_tier(); // declara dev e main
         assert!(
-            super::is_protected(root, "producao", &config),
-            "the branch the remote calls default is protected, unnamed by any config",
+            super::on_integration_base(root, "producao", &config),
+            "a branch que o próprio remoto chama de padrão é base, sem configuração nenhuma",
         );
         assert!(
-            !super::is_protected(root, "dev", &config),
-            "being in git.flow is no longer a reason to be protected",
+            super::on_integration_base(root, "dev", &config),
+            "e a que o `git.flow` declara também é",
         );
         assert!(
-            !super::is_protected(root, "main", &config),
-            "and neither is being called main when the repository disagrees",
+            super::on_integration_base(root, "main", &config),
+            "inclusive a de cima do fluxo",
         );
-        assert!(!super::is_protected(root, "feature/x", &config), "a work branch never is");
+        assert!(
+            !super::on_integration_base(root, "feature/x", &config),
+            "uma branch de trabalho nunca é",
+        );
+        assert!(
+            mustard_core::protected_branches(&config.git).contains("dev"),
+            "e a proteção sai da declaração: sem `git.flow`, nada fica protegido",
+        );
     }
 
     /// A project declaring the ordinary two-tier flow: `dev` for common work,
@@ -1615,7 +1615,7 @@ mod tests {
         for token in WorkKind::SUGGESTED {
             let kind = WorkKind::parse(token).expect("suggested token parses");
             let branch = named(kind);
-            for base in config.git.preselected_bases() {
+            for base in config.git.declared_bases() {
                 assert!(
                     !branch.starts_with(&format!("{base}_")),
                     "the name records the kind, not the cut: {branch}",
@@ -1786,7 +1786,7 @@ mod tests {
 
         assert_eq!(
             super::resolve_kind_base(root, None, &config).as_deref(),
-            Ok(config.git.primary_base().as_str()),
+            Ok(config.git.primary_base().expect("o fluxo declara uma base").as_str()),
             "no answer falls back to the primary base, which is a default",
         );
         assert_eq!(
@@ -2299,13 +2299,9 @@ mod tests {
 
     /// `git rev-parse <rev>` in `root` — test scaffolding only.
     fn git_rev(root: &std::path::Path, rev: &str) -> String {
-        let out = std::process::Command::new("git")
-            .args(["rev-parse", rev])
-            .current_dir(root)
-            .output()
-            .expect("spawn git");
-        assert!(out.status.success(), "git rev-parse {rev} failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        let out = mustard_core::platform::git::run(root, &["rev-parse", rev]);
+        assert!(out.ok, "git rev-parse {rev} failed");
+        out.stdout.trim().to_string()
     }
 
     /// A repo declaring `dev → qas → main`, each base a real local branch at a
@@ -2342,14 +2338,7 @@ mod tests {
     fn resolve_kind_base_validates_against_the_real_catalogue() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let run = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
         if !run(&["init", "-q", "-b", "main", "."]) {
             return;
         }
@@ -2376,7 +2365,7 @@ mod tests {
         );
         assert_eq!(
             super::resolve_kind_base(root, Some("   "), &config).as_deref(),
-            Ok(config.git.primary_base().as_str()),
+            Ok(config.git.primary_base().expect("o fluxo declara uma base").as_str()),
             "blank counts as omitted",
         );
 
@@ -2396,13 +2385,7 @@ mod tests {
 
     /// Run git in `root`, asserting success — test scaffolding only.
     fn git(root: &std::path::Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed");
+        assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?} failed");
     }
 
     /// `.claude/.gitignore` EXACTLY as it shipped in

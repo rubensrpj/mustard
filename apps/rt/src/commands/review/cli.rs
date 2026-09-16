@@ -153,7 +153,9 @@ pub enum ReviewCmd {
     #[command(name = "pr-review")]
     #[command(display_order = 63)]
     PrReview {
-        /// PR number. Omitted: the open PR of the current branch.
+        /// PR number. Omitted: the open pull requests are LISTED, so the
+        /// reviewer picks the colleague's one instead of being handed their
+        /// own branch's.
         #[arg(long)]
         pr: Option<u64>,
         /// Verdict to record: `approved` or `rejected`. Omitted: the brief is
@@ -176,7 +178,9 @@ pub enum ReviewCmd {
     #[command(name = "pr-merge")]
     #[command(display_order = 64)]
     PrMerge {
-        /// PR number. Omitted: the open PR of the current branch.
+        /// PR number. Omitted: the open pull requests are LISTED, so the
+        /// reviewer picks the colleague's one instead of being handed their
+        /// own branch's.
         #[arg(long)]
         pr: Option<u64>,
         /// The operator's answer to the unreviewed-merge question. Without it
@@ -202,15 +206,14 @@ pub enum ReviewCmd {
         /// The work branch the PR is opened FROM (short branch name).
         #[arg(long)]
         head: String,
-        /// File whose content becomes the PR body (`<spec>/pr-body.md`); its
-        /// first heading becomes the title. Unreadable ⇒ `ok:false` +
-        /// `error:"body-file-unreadable"`, nothing is opened. Exactly one body
-        /// source: this or `--fill`.
-        #[arg(long = "body-file")]
-        body_file: Option<PathBuf>,
+        /// A spec whose event file the title and the body are BUILT from.
+        /// Nobody writes them: the goal becomes the title, the recorded
+        /// summary and what each wave delivered become the body.
+        #[arg(long)]
+        spec: Option<String>,
         /// Derive title/body from the commits `base..head` carries (title =
         /// newest subject, body = the subject list) — the submodule flow's
-        /// shape, where no `pr-body.md` exists. Exclusive with `--body-file`.
+        /// shape, where the repository has no spec of its own.
         #[arg(long)]
         fill: bool,
         /// Open as a draft — the parent of a monorepo unit while any submodule
@@ -231,10 +234,10 @@ pub enum ReviewCmd {
         /// The PR number whose body is replaced.
         #[arg(long)]
         number: u64,
-        /// File whose content becomes the new PR body. Unreadable ⇒ `ok:false`
-        /// + `error:"body-file-unreadable"`, nothing is edited.
-        #[arg(long = "body-file")]
-        body_file: PathBuf,
+        /// The spec whose event file the new body is built from — the same
+        /// text `pr-open` builds.
+        #[arg(long)]
+        spec: String,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -370,11 +373,11 @@ pub fn dispatch(cmd: ReviewCmd) {
         ReviewCmd::PrMerge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);
         }
-        ReviewCmd::PrOpen { base, head, body_file, fill, draft, root } => {
-            review::pr_publish::run_open(&root, &base, &head, body_file.as_deref(), fill, draft);
+        ReviewCmd::PrOpen { base, head, spec, fill, draft, root } => {
+            review::pr_publish::run_open(&root, &base, &head, spec.as_deref(), fill, draft);
         }
-        ReviewCmd::PrEdit { number, body_file, root } => {
-            review::pr_publish::run_edit(&root, number, &body_file);
+        ReviewCmd::PrEdit { number, spec, root } => {
+            review::pr_publish::run_edit(&root, number, &spec);
         }
         ReviewCmd::PrReady { number, root } => review::pr_publish::run_ready(&root, number),
         ReviewCmd::FindingCollect { spec } => review::finding_collect::run(spec.as_deref()),

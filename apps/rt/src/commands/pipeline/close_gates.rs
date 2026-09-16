@@ -1527,7 +1527,10 @@ mod tests {
                 ("emit-pipeline", crate::commands::event::emit_pipeline::qa_result_passed(root, spec)),
                 ("complete-spec", crate::commands::spec::complete_spec::close_admission(root, spec).is_ok()),
                 ("close-orchestrate", crate::commands::pipeline::close_orchestrate::qa_gate_passes(root, spec)),
-                ("pr-qa-gate", crate::hooks::bash::pr_qa_gate::pr_qa_gate("gh pr merge 80", cwd).is_none()),
+                (
+                    "pr-open",
+                    crate::commands::review::pr_publish::qa_warning(root, spec).is_none(),
+                ),
                 (
                     "resume",
                     crate::commands::pipeline::resume_bootstrap::post_execute_gate::read_review_qa_state(root, spec).0,

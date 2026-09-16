@@ -340,6 +340,13 @@ pub struct Qa {
     pub stale: usize,
     /// O número da execução mais nova de um critério que a leitura mostra.
     pub last_run: Option<u64>,
+    /// Os critérios cuja última execução falhou, pelo número deles, na ordem
+    /// em que a leitura os mostra.
+    ///
+    /// Preenchido na MESMA passagem que conta as falhas, e não numa segunda
+    /// varredura: quem monta o corpo do pull request precisa nomear as falhas,
+    /// e uma segunda contagem ao lado desta é livre para discordar dela.
+    pub failed_ids: Vec<u64>,
 }
 
 impl Qa {
@@ -382,6 +389,7 @@ pub fn qa(log: &SpecLog) -> Qa {
             qa.passed += 1;
         } else {
             qa.failed += 1;
+            qa.failed_ids.push(*id);
         }
         if id > run {
             qa.stale += 1;

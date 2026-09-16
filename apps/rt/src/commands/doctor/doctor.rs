@@ -633,61 +633,80 @@ fn lsp_check(project_dir: &Path) -> CheckResult {
 // Check: branch-protection
 // ---------------------------------------------------------------------------
 
-/// Report which branches this repository REALLY protects, and warn only when
-/// nothing could be measured.
+/// Ask the PROVIDER whether each base this project declares is protected, and
+/// warn when the project declares none.
 ///
-/// This check used to warn that `mustard.json#git.flow` was empty and prescribe
-/// declaring one. Two things were wrong with it, and both were load-bearing.
-/// The installer writes NO flow — `project_seed` seeds an empty map on purpose,
-/// so the project decides later — which made the warning fire on every correct
-/// installation. And the claim it made, that only `{main, master}` are then
-/// protected, is false in front of [`mustard_core::protected_branches`], which
-/// measures the remote's own default branch (`origin/HEAD`) plus whatever
-/// `git.protected` adds. A diagnostic that fires on a healthy install and
-/// describes the wrong mechanism teaches the operator to ignore diagnostics.
+/// **Why the provider and not this machine.** Everything the harness knows
+/// about a base is true only on this side of the wire: the write gate refuses
+/// an edit here, the doors refuse a merge here. A colleague with a terminal and
+/// push rights is stopped by the server's own rule or by nothing at all — so
+/// the one reading worth reporting is the server's, and it is asked for every
+/// base the project named.
 ///
-/// So it reports the MEASUREMENT. The one condition that still earns a warning
-/// is the one the fallback exists for: `origin/HEAD` was unreadable (no remote,
-/// a clone that never fetched), so protection fell back to literals this project
-/// may not use at all. Skip when there is no `mustard.json` at the project root
-/// (not a mustard project).
-fn check_branch_protection(cwd: &Path) -> CheckResult {
+/// **Why an absent `git.flow` is a finding again.** The bases come from the
+/// declaration alone; with none declared, nothing is protected, nothing is
+/// pre-selected, and no base can be asked about. That used to be reported as a
+/// healthy install because protection then rested on a probe of `origin/HEAD` —
+/// it no longer does, and staying silent would leave the operator believing in
+/// a protection that does not exist.
+///
+/// Skipped when there is no `mustard.json` at the project root (not a mustard
+/// project). Never fails: a provider that cannot be reached is reported as
+/// unasked, which is a different sentence from unprotected.
+fn check_branch_protection(cwd: &Path, lang: Locale) -> CheckResult {
+    const NAME: &str = "branch-protection";
     if !cwd.join("mustard.json").is_file() {
-        return CheckResult::skip("branch-protection", "no mustard.json at project root");
+        return CheckResult::skip(NAME, "no mustard.json at project root");
     }
     let config = mustard_core::ProjectConfig::load(cwd);
-    let protected: Vec<String> =
-        mustard_core::protected_branches(cwd, &config.git).into_iter().collect();
-    if mustard_core::default_branch(cwd).is_none() {
+    let declared: Vec<String> = config.git.declared_bases().into_iter().collect();
+    if declared.is_empty() {
         return CheckResult::warn(
-            "branch-protection",
+            NAME,
             vec![
-                format!(
-                    "origin/HEAD is unreadable here, so protection fell back to its \
-                     literals: {}. Whatever branch this project really integrates on is \
-                     NOT protected until the remote answers.",
-                    protected.join(", ")
-                ),
-                "fix: `git remote set-head origin -a` (or one `git fetch origin`) so the \
-                 default branch is measurable; name any additional branch in \
-                 mustard.json#git.protected"
-                    .to_string(),
+                translate("doctor.protection.flow_missing", lang).to_string(),
+                translate("doctor.protection.fix", lang).to_string(),
             ],
         );
     }
-    let mut r = CheckResult::ok("branch-protection");
-    r.details.push(format!("protected: {}", protected.join(", ")));
-    let declared: Vec<String> = config.git.declared_bases().into_iter().collect();
-    r.details.push(if declared.is_empty() {
-        "pre-selected bases: none declared — the picker opens on the primary base and \
-         offers every branch `origin` has"
-            .to_string()
-    } else {
-        format!(
-            "pre-selected bases (where a picker opens — refuses nothing): {}",
-            declared.join(", ")
-        )
-    });
+
+    protection_report(&declared, crate::shared::pr_provider::provider_for(cwd).as_ref(), lang)
+}
+
+/// The reading itself, over the bases and whoever answers for them.
+///
+/// Apart from [`check_branch_protection`] so the report can be measured
+/// against a provider that answers a KNOWN mix — one base ruled, one base
+/// open — which is the case the whole check exists for and the one no
+/// temporary directory can produce.
+fn protection_report(
+    declared: &[String],
+    provider: &dyn crate::shared::pr_provider::PrProvider,
+    lang: Locale,
+) -> CheckResult {
+    const NAME: &str = "branch-protection";
+    let who = provider.provider().to_string();
+    let mut details = Vec::new();
+    let mut open_bases = false;
+    for base in declared {
+        let line: String = match provider.branch_protection(base) {
+            Ok(true) => translate("doctor.protection.protected", lang).to_string(),
+            Ok(false) => {
+                open_bases = true;
+                translate("doctor.protection.open", lang).to_string()
+            }
+            Err(reason) => {
+                translate("doctor.protection.unasked", lang).replace("{reason}", reason.trim())
+            }
+        };
+        details.push(line.replace("{base}", base).replace("{provider}", &who));
+    }
+    if open_bases {
+        details.push(translate("doctor.protection.fix", lang).to_string());
+        return CheckResult::warn(NAME, details);
+    }
+    let mut r = CheckResult::ok(NAME);
+    r.details = details;
     r
 }
 
@@ -695,85 +714,51 @@ fn check_branch_protection(cwd: &Path) -> CheckResult {
 // Check: state health
 // ---------------------------------------------------------------------------
 
-/// Inspect `.claude/.pipeline-states/` for orphan or stale state files;
-/// also checks for a missing repo model (`grain.model.json`).
+/// The health of the project's STATE, read from the spec event files.
+///
+/// **It used to read the old state folder.** `.claude/.pipeline-states/` held
+/// one JSON per spec, and this check walked it for two findings: a state file
+/// whose spec no longer existed, and a `closed-followup` older than a day.
+/// Both findings were about a folder the harness stopped writing — so on a
+/// project that never had it, the check was silent about everything, and on an
+/// old one it reported the leftovers of a format nobody reads. The state of a
+/// spec lives in its own event file now, and that is what this asks.
+///
+/// Two findings, both about the file the whole harness reads: a spec folder
+/// with no event file at all (nothing states what it is), and an event file
+/// that cannot be read. Plus the repository model (`grain.model.json`) the
+/// scan produces, which is not state but is the other thing whose absence
+/// makes every later answer worse.
 fn check_state_health(claude_dir: &Path) -> CheckResult {
     let mut warnings: Vec<String> = Vec::new();
 
-    // Check the repo model's presence (grain.model.json, produced by `scan`).
-    let model = claude_dir.join("grain.model.json");
-    if !model.exists() {
+    if !claude_dir.join("grain.model.json").exists() {
         warnings.push("grain.model.json missing (run `mustard-rt run scan`)".to_string());
     }
 
-    // Inspect pipeline-states/.
-    let states_dir = claude_dir
+    let root = claude_dir
         .parent()
         .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
-        .and_then(|root| ClaudePaths::for_project(root).ok())
-        .map(|p| p.pipeline_states_dir())
-        .unwrap_or_else(|| claude_dir.to_path_buf());
-    if !states_dir.exists() {
-        // No states dir — clean install, nothing to warn about.
-        if warnings.is_empty() {
-            return CheckResult::ok("state-health");
+        .map_or_else(|| claude_dir.to_path_buf(), Path::to_path_buf);
+    for spec in collect_active_spec_names(claude_dir) {
+        let Ok(path) = mustard_core::io::spec_events::spec_file(&root, &spec) else {
+            warnings.push(format!("'{spec}' is not a name a spec can have"));
+            continue;
+        };
+        if !path.exists() {
+            warnings.push(format!(
+                "'{spec}' has no event file — nothing states what it is or where it stands"
+            ));
+            continue;
         }
-        return CheckResult::warn("state-health", warnings);
-    }
-
-    // Collect spec names from spec/ (flat layout — no buckets).
-    let active_specs = collect_active_spec_names(claude_dir);
-
-    let Ok(entries) = fs::read_dir(&states_dir) else {
-        warnings.push("cannot read .pipeline-states/ directory".to_string());
-        return CheckResult::warn("state-health", warnings);
-    };
-
-    // 24 hours in milliseconds for closed-followup expiry.
-    const FOLLOWUP_EXPIRY_MS: u128 = 24 * 60 * 60 * 1_000;
-    let now_ms = mustard_core::time::now_unix_millis() as u128;
-
-    for entry in entries {
-        let path = entry.path.clone();
-        let file_name = entry.file_name.clone();
-
-        // Parse the state file (JSON with at least a `spec` or `state` field).
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-
-        // Detect closed-followup: state files with status "closed-followup".
-        let state_val = val
-            .get("state")
-            .or_else(|| val.get("status"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-
-        if state_val == "closed-followup" {
-            // Check timestamp for expiry.
-            let ts = val
-                .get("timestamp")
-                .or_else(|| val.get("updatedAt"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            if is_timestamp_expired(ts, now_ms, FOLLOWUP_EXPIRY_MS) {
-                warnings.push(format!("expired closed-followup state: {file_name}"));
+        match mustard_core::io::spec_events::read(&path) {
+            Ok(Some(log)) if log.events.is_empty() => {
+                warnings.push(format!("'{spec}' has an empty event file"));
             }
-            continue;
-        }
-
-        // Detect orphan: state file whose spec is not in spec/ (flat layout).
-        let spec_name = val
-            .get("spec")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if !spec_name.is_empty() && !active_specs.contains(&spec_name) {
-            warnings.push(format!("orphan state file '{file_name}' (spec '{spec_name}' not in spec/)"));
+            Ok(_) => {}
+            Err(refusal) => {
+                warnings.push(format!("'{spec}' has an unreadable event file: {}", refusal.reason()));
+            }
         }
     }
 
@@ -797,17 +782,6 @@ fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
         .filter(|e| e.is_dir)
         .map(|e| e.file_name)
         .collect()
-}
-
-/// Return true if `ts` (ISO-8601 string) is older than `expiry_ms` milliseconds
-/// relative to `now_ms`. Returns false on parse failure (fail-open).
-fn is_timestamp_expired(ts: &str, now_ms: u128, expiry_ms: u128) -> bool {
-    // Fail-open: a malformed / empty timestamp is treated as not-expired.
-    let Some(ts_ms) = mustard_core::time::parse_iso_millis(ts) else {
-        return false;
-    };
-    let ts_ms = ts_ms.max(0) as u128;
-    now_ms.saturating_sub(ts_ms) > expiry_ms
 }
 
 // ---------------------------------------------------------------------------
@@ -1490,7 +1464,10 @@ pub fn run(opts: DoctorOpts) {
         let result = match check_name.as_str() {
             "wave-integrity" => check_wave_integrity(&claude_dir),
             "status-consistency" => check_status_consistency(&claude_dir),
-            "branch-protection" => check_branch_protection(&cwd),
+            "branch-protection" => {
+                let project = crate::commands::spec_events::project(&cwd);
+                check_branch_protection(&cwd, project.lang)
+            }
             "spec-index" => {
                 let project = crate::commands::spec_events::project(&cwd);
                 check_spec_index(&project.root, project.lang)
@@ -1532,10 +1509,13 @@ pub fn run(opts: DoctorOpts) {
         check_wave_integrity(&claude_dir),
         // Status-consistency check — always in the full run.
         check_status_consistency(&claude_dir),
-        // What is really protected, measured — always in the full run: a
-        // protection resting on the unmeasured fallback is invisible until it
-        // fails to stop a commit.
-        check_branch_protection(&cwd),
+        // O que o provedor realmente protege — sempre na rodada inteira: uma
+        // base que só este binário recusa é uma base aberta para todo mundo, e
+        // isso não aparece até um envio direto passar.
+        {
+            let project = crate::commands::spec_events::project(&cwd);
+            check_branch_protection(&cwd, project.lang)
+        },
         // O índice das specs contra os arquivos de eventos: só acusa.
         {
             let project = crate::commands::spec_events::project(&cwd);
@@ -2252,24 +2232,46 @@ mod tests {
 
     // --- state health tests ---
 
+    /// Uma spec cuja pasta existe e cujo arquivo de eventos não: nada diz o
+    /// que ela é nem onde ela está, e o diagnóstico acusa isso pelo nome.
     #[test]
-    fn state_health_orphan_state_warns() {
+    fn a_spec_sem_arquivo_de_eventos_vira_achado() {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
-        let states_dir = claude_dir.join(".pipeline-states");
-        std::fs::create_dir_all(&states_dir).unwrap();
-        // Plant an orphan state file (spec not in spec/ flat dir).
-        write_file(
-            &states_dir.join("orphan.json"),
-            r#"{ "spec": "2026-01-01-nonexistent-spec", "state": "execute" }"#,
-        );
-        // grain.model.json present to isolate the orphan check.
+        std::fs::create_dir_all(claude_dir.join("spec").join("trava")).unwrap();
         write_file(&claude_dir.join("grain.model.json"), "{}");
 
         let result = check_state_health(&claude_dir);
-        assert_eq!(result.status, Status::Warn);
-        let has_orphan = result.details.iter().any(|d| d.contains("orphan"));
-        assert!(has_orphan, "expected orphan warning, got: {:?}", result.details);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        assert!(
+            result.details.iter().any(|d| d.contains("trava")),
+            "a spec é acusada pelo nome: {:?}",
+            result.details
+        );
+    }
+
+    /// Uma spec com arquivo de eventos não é achado nenhum — e a pasta velha
+    /// de estado, com o que quer que tenha sobrado dentro, também não: ela
+    /// deixou de ser lida.
+    #[test]
+    fn uma_spec_com_arquivo_de_eventos_esta_sa() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let claude_dir = root.join(".claude");
+        std::fs::create_dir_all(claude_dir.join("spec").join("trava")).unwrap();
+        write_file(&claude_dir.join("grain.model.json"), "{}");
+        let states = claude_dir.join(".pipeline-states");
+        std::fs::create_dir_all(&states).unwrap();
+        write_file(&states.join("orfa.json"), r#"{ "spec": "nao-existe", "state": "execute" }"#);
+
+        let path = mustard_core::io::spec_events::spec_file(root, "trava").expect("caminho");
+        std::fs::create_dir_all(path.parent().expect("pasta")).unwrap();
+        let draft = |value: serde_json::Value| value.as_object().cloned().expect("um objeto");
+        mustard_core::io::spec_events::write(&path, "state", draft(json!({"phase": "running"})), &[])
+            .expect("estado");
+
+        let result = check_state_health(&claude_dir);
+        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
     }
 
     #[test]
@@ -2277,7 +2279,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        // No grain.model.json, no .pipeline-states/.
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Warn);
         let has_model = result.details.iter().any(|d| d.contains("grain.model.json"));
@@ -2289,82 +2290,148 @@ mod tests {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        // Model present, no .pipeline-states/ directory.
         write_file(&claude_dir.join("grain.model.json"), "{}");
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Ok, "{:?}", result.details);
     }
 
-    // --- timestamp expiry helper ---
-
-    #[test]
-    fn expired_timestamp_detected() {
-        // A timestamp far in the past is expired.
-        assert!(is_timestamp_expired("2020-01-01T00:00:00Z", u128::MAX, 1));
-    }
-
-    #[test]
-    fn future_timestamp_not_expired() {
-        // now_ms = 0, expiry = 24h — everything is in the future.
-        assert!(!is_timestamp_expired("2999-12-31T23:59:59Z", 0, 86_400_000));
-    }
-
-    #[test]
-    fn empty_timestamp_not_expired() {
-        assert!(!is_timestamp_expired("", u128::MAX, 1));
-    }
-
     // --- branch-protection tests ---
 
-    /// An empty `git.flow` is what the installer WRITES, so it can never be the
-    /// warning. What warns is the unmeasured probe — no remote here, so
-    /// `origin/HEAD` says nothing and protection rests on its literals.
+    /// Sem `git.flow`, nada fica protegido — e isso é um achado, não uma
+    /// instalação saudável. O aviso diz o `git.flow` pelo nome e mostra como
+    /// declarar.
     #[test]
-    fn branch_protection_warns_only_when_origin_head_is_unreadable() {
+    fn a_falta_do_fluxo_vira_aviso_porque_nada_fica_protegido() {
         let dir = tempdir().unwrap();
         write_file(
             &dir.path().join("mustard.json"),
-            r#"{"git":{"flow":{},"provider":"github","submodules":false}}"#,
+            r#"{"git":{"flow":{},"provider":"github"}}"#,
         );
-        let result = check_branch_protection(dir.path());
+        let result = check_branch_protection(dir.path(), Locale::PtBr);
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
         assert!(
-            result.details.iter().any(|d| d.contains("origin/HEAD")),
-            "the warning must name what could not be measured, got: {:?}",
+            result.details.iter().any(|d| d.contains("git.flow")),
+            "o aviso precisa dizer o que falta: {:?}",
             result.details
         );
         assert!(
-            !result.details.iter().any(|d| d.contains("git.flow is empty")),
-            "an empty flow is the installed shape — it is not a finding: {:?}",
+            result.details.iter().any(|d| d.contains("mustard init")),
+            "e como declarar: {:?}",
             result.details
         );
     }
 
-    /// A declared `git.flow` does not make the check pass either: the reading
-    /// is the same one, and a flow that names `dev` and `main` protects neither
-    /// by declaring them.
+    /// Com bases declaradas e um provedor que não responde, cada base é
+    /// reportada como PERGUNTA QUE NÃO CHEGOU A SER FEITA — nunca como
+    /// desprotegida, que é uma afirmação sobre o servidor.
     #[test]
-    fn branch_protection_reports_the_measured_set_not_the_declared_one() {
+    fn provedor_fora_de_alcance_nao_vira_base_desprotegida() {
         let dir = tempdir().unwrap();
         write_file(
             &dir.path().join("mustard.json"),
-            r#"{"git":{"flow":{"*":"dev","dev":"main"},"provider":"github","submodules":false}}"#,
+            r#"{"git":{"flow":{"*":"develop","develop":"master"},"provider":"naoexiste"}}"#,
         );
-        let result = check_branch_protection(dir.path());
-        // No remote in a bare temp dir ⇒ unmeasured ⇒ the same warning as
-        // above. The declaration changed nothing, which IS the assertion.
-        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let result = check_branch_protection(dir.path(), Locale::PtBr);
+        for base in ["develop", "master"] {
+            assert!(
+                result.details.iter().any(|d| d.contains(base)),
+                "cada base declarada é reportada, {base} não foi: {:?}",
+                result.details
+            );
+        }
         assert!(
-            result.details.iter().any(|d| d.contains("origin/HEAD")),
-            "declaring a flow does not answer what is protected: {:?}",
+            result.details.iter().all(|d| !d.contains("qualquer pessoa")),
+            "um provedor que não respondeu não prova branch aberta: {:?}",
             result.details
+        );
+    }
+
+    /// Um projeto que declara `develop` e `master` e um provedor que, para a
+    /// `master`, não tem política nenhuma: o diagnóstico acusa a `master`,
+    /// deixa a `develop` em paz e mostra como ligar.
+    ///
+    /// Este é o caso que a conferência existe para pegar, e nenhuma pasta
+    /// temporária o produz — por isso o provedor aqui é um dublê que responde
+    /// uma mistura conhecida.
+    #[test]
+    fn o_diagnostico_acusa_a_base_que_o_provedor_nao_protege() {
+        /// Responde `true` para as bases que nomeia e `false` para as outras.
+        struct ProvedorFalso(&'static [&'static str]);
+        impl crate::shared::pr_provider::PrProvider for ProvedorFalso {
+            fn provider(&self) -> &'static str {
+                "azure"
+            }
+            fn open(
+                &self,
+                _pr: &crate::shared::pr_provider::PrToOpen,
+            ) -> Result<crate::shared::pr_provider::PrOpened, String> {
+                Err("fora do teste".into())
+            }
+            fn edit_body(&self, _n: u64, _b: &str) -> Result<(), String> {
+                Err("fora do teste".into())
+            }
+            fn ready(&self, _n: u64) -> Result<(), String> {
+                Err("fora do teste".into())
+            }
+            fn view(
+                &self,
+                _n: Option<u64>,
+            ) -> Result<crate::shared::pr_provider::PrView, String> {
+                Err("fora do teste".into())
+            }
+            fn checks(
+                &self,
+                _n: u64,
+            ) -> Result<crate::shared::pr_provider::PrChecks, String> {
+                Err("fora do teste".into())
+            }
+            fn branch_protection(&self, branch: &str) -> Result<bool, String> {
+                Ok(self.0.contains(&branch))
+            }
+        }
+
+        let bases = vec!["develop".to_string(), "master".to_string()];
+        let result =
+            protection_report(&bases, &ProvedorFalso(&["develop"]), Locale::PtBr);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        let acusa = result
+            .details
+            .iter()
+            .find(|d| d.contains("master"))
+            .unwrap_or_else(|| panic!("a master não foi acusada: {:?}", result.details));
+        assert!(
+            acusa.contains("qualquer pessoa"),
+            "o aviso precisa dizer o que uma base sem regra significa: {acusa}",
+        );
+        assert!(
+            result.details.iter().any(|d| d.contains("Rulesets") || d.contains("Policies")),
+            "e mostrar como ligar: {:?}",
+            result.details
+        );
+        let develop = result
+            .details
+            .iter()
+            .find(|d| d.contains("develop"))
+            .unwrap_or_else(|| panic!("a develop sumiu do relatório: {:?}", result.details));
+        assert!(
+            !develop.contains("qualquer pessoa"),
+            "a base que o provedor protege não pode ser acusada: {develop}",
+        );
+
+        let tudo_protegido =
+            protection_report(&bases, &ProvedorFalso(&["develop", "master"]), Locale::PtBr);
+        assert_eq!(
+            tudo_protegido.status,
+            Status::Ok,
+            "com as duas protegidas não há achado: {:?}",
+            tudo_protegido.details
         );
     }
 
     #[test]
     fn branch_protection_missing_mustard_json_skips() {
         let dir = tempdir().unwrap();
-        let result = check_branch_protection(dir.path());
+        let result = check_branch_protection(dir.path(), Locale::PtBr);
         assert_eq!(result.status, Status::Skip, "{:?}", result.details);
     }
 

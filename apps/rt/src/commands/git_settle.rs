@@ -69,7 +69,8 @@
 //! never fail-open (guarding a verdict: missing evidence blocks).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use mustard_core::platform::git;
 
 use serde_json::{json, Value};
 
@@ -80,21 +81,12 @@ use crate::shared::branch_state::{
 
 /// Run `git` in `dir`, returning stdout on success.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    git::run(dir, args).out()
 }
 
 /// Run `git` in `dir`, success as a bool.
 pub(crate) fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    git::run(dir, args).ok
 }
 
 /// Resolve the MAIN checkout root from anywhere inside the repo — including
@@ -1138,8 +1130,8 @@ mod tests {
     use tempfile::tempdir;
 
     fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(dir).output().expect("spawn git");
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = git::run(dir, args);
+        assert!(out.ok, "git {args:?} failed: {}", out.stderr);
     }
 
     /// A unit whose base nothing RECORDED is still settled when git can prove

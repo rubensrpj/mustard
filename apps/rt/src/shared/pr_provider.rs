@@ -313,6 +313,21 @@ pub(crate) trait PrProvider {
     /// [`PrChecks::Absent`]: "nobody ran anything" and "nobody could be asked"
     /// are different facts and the door treats them differently.
     fn checks(&self, number: u64) -> Result<PrChecks, String>;
+
+    /// Whether the PROVIDER itself refuses a direct push to `branch`.
+    ///
+    /// The one question the harness cannot answer from this side of the wire.
+    /// Everything else it knows about a base — that the project declared it,
+    /// that the write gate refuses an edit on it — is true only inside this
+    /// machine; a colleague with a terminal and push rights is stopped by the
+    /// server or by nothing at all. So the diagnostic asks the server.
+    ///
+    /// `Ok(false)` means the provider ANSWERED and named no rule. `Err` means
+    /// nobody could be asked — no credential, no CLI, an offline machine — and
+    /// the two must never be folded together: reporting "not protected" for a
+    /// question that was never asked is how a diagnostic teaches the operator
+    /// to ignore it.
+    fn branch_protection(&self, branch: &str) -> Result<bool, String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +561,34 @@ impl PrProvider for GithubPrCli {
         )?;
         checks_from_github(&row)
     }
+
+    fn branch_protection(&self, branch: &str) -> Result<bool, String> {
+        // The RULES endpoint, not `branches/{branch}/protection`.
+        //
+        // Two reasons, both measured on real repositories. The protection
+        // endpoint answers 404 for a branch protected by a RULESET — the shape
+        // GitHub now steers every new repository towards — so a correctly
+        // protected base reads as an open one. And it is admin-only: a
+        // collaborator without admin gets 403, which is "you may not ask",
+        // reported as "no protection". `rules/branches/{branch}` answers with
+        // the rules IN FORCE for that branch, from classic protection and
+        // rulesets alike, to anyone who can read the repository.
+        let row = gh_json(
+            &self.repo,
+            &["api", &format!("repos/{{owner}}/{{repo}}/rules/branches/{branch}")],
+        )?;
+        Ok(rules_protect(&row))
+    }
+}
+
+/// Whether a `rules/branches/{branch}` document names any rule at all.
+///
+/// Pure, so the reading is provable without a network. ANY rule counts: a
+/// repository that has taken the trouble to write one for this branch has
+/// stopped treating it as a branch anybody may push to, and grading the kinds
+/// here would be this harness deciding what a team's policy ought to contain.
+fn rules_protect(doc: &Value) -> bool {
+    doc.as_array().is_some_and(|rules| !rules.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +636,10 @@ impl PrProvider for UnsupportedPr {
     }
 
     fn checks(&self, _number: u64) -> Result<PrChecks, String> {
+        unsupported()
+    }
+
+    fn branch_protection(&self, _branch: &str) -> Result<bool, String> {
         unsupported()
     }
 }

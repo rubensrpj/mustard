@@ -48,21 +48,21 @@
 //! `spec.ndjson` the merge reads is the main checkout's, whatever branch
 //! happens to be out, and recording from the base adds nothing tracked to the
 //! base's tree.
-//! - **`pr-merge`** — STOPPED in this version: the command refuses at the door,
-//!   merges nothing, delivers nothing and closes no pending item. The new merge
-//!   door, which records the delivery and closes the item that became the spec,
-//!   has not arrived yet. The body below stays as it was, with its tests, until
-//!   it does: it merges, then hands the pruning to [`git_settle::settle_at`] —
-//!   returning to the base, pulling it, removing the worktree and deleting the
-//!   local + remote branch IS the exit ritual, already written and already
-//!   covering the in-place unit and the per-repo report.
+//! - **`pr-merge`** — the merge and the tidying up, in ONE call. It merges,
+//!   then hands the pruning to [`git_settle::settle_at`] — returning to the
+//!   base, pulling it, removing the worktree and deleting the local branch IS
+//!   the exit ritual, already written and already covering the in-place unit
+//!   and the per-repo report. The branch on the SERVER is never touched unless
+//!   `mustard.json#git.deleteRemoteBranch` says so: many teams may not delete
+//!   it, because the merge is another area's and the branch is theirs.
 //!
-//!   The `pr.merged` event is the only thing a merge records. The spec's
-//!   `delivered` state, which arms the pending charge at the end of the answer,
-//!   is written by the binary door of the spec file, and nothing in this
-//!   version calls it. The report returns `pendingClosed` and `pendingOpen` —
-//!   the pending items born in the spec that stay open — so the delivery asks
-//!   only about them.
+//!   A merge records three things, in this order: the `pr.merged` event, the
+//!   spec's `delivered` phase — written through the spec file's own phase
+//!   door, which is what ARMS the pending charge at the end of the answer —
+//!   and the closing of the pending item whose note says it became this spec.
+//!   The report returns `pendingClosed` and `pendingOpen` — the pending items
+//!   born in the spec that stay open — so the delivery asks only about them,
+//!   never about the whole list.
 //!
 //! ## The unreviewed merge WARNS and ASKS — it never refuses
 //!
@@ -344,7 +344,7 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
     let config = mustard_core::ProjectConfig::load(&repo);
     let bases: Vec<String> = config.git.declared_bases().into_iter().collect();
     let unit = flow.base_of(&branch);
-    let protected = mustard_core::protected_branches(&repo, &config.git);
+    let protected = mustard_core::protected_branches(&config.git);
     // The project's own RECORD of the unit, not the name's shape: an undeclared
     // base like `release/2026-Q3` splits into a kind and a slug exactly like a
     // unit branch does, and `pr list` was measured refusing to run from it.
@@ -362,11 +362,10 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
         // in a repo whose flow says exactly that. With no flow declared there is
         // nothing to state, and the remote's own default is the last resort, so
         // this module never spells a branch name of its own.
-        let declared = !config.git.declared_bases().is_empty();
         let target = unit
             .known()
             .map(str::to_string)
-            .or_else(|| declared.then(|| config.git.primary_base()))
+            .or_else(|| config.git.primary_base())
             .or_else(|| mustard_core::default_branch(&repo));
         let hint = match &target {
             Some(base) => format!(
@@ -779,6 +778,13 @@ fn merge_core(
     // Mergeado — o fechamento se registra ANTES de qualquer outro passo, nos dois
     // caminhos abaixo: a promoção também é um pull request mergeado.
     let (pending_closed, pending_open) = after_merge(root, facts, spec.as_deref(), session);
+    // O aviso dos critérios viaja com o merge que aconteceu. Ele morava numa
+    // etapa que olhava o `gh pr merge` digitado à mão, e por isso só alcançava
+    // quem digitava a linha de comando do provedor; esta porta, que é a que
+    // realmente faz o merge, não dizia nada.
+    let qa_warning = spec
+        .as_deref()
+        .and_then(|slug| crate::commands::review::pr_publish::qa_warning(root, slug));
 
     // **A promotion has no unit, so it has nothing to settle.** `dev` → `main`
     // is the ordinary end of a cycle and its HEAD is a declared BASE; handing
@@ -825,7 +831,7 @@ fn merge_core(
         spec,
         verdict,
         checks: checks_word,
-        warning: None,
+        warning: qa_warning,
         settle: Some(settled),
         hint: None,
         pending_closed,
@@ -834,16 +840,23 @@ fn merge_core(
 }
 
 /// What a merge leaves recorded besides the merge: the `pr.merged` event, the
-/// spec's `delivered` state and the closing of the pending item that became
+/// spec's `delivered` phase and the closing of the pending item that became
 /// the spec. Returns the closed id (if any) and the pending items born in the
 /// spec that stay open: the delivery asks only about them, never about the
 /// whole list.
+///
+/// **The phase goes through the spec file's own door, and that is the point.**
+/// Writing `delivered` by hand here would record the fact and leave the pending
+/// charge unarmed — which is exactly what happened while nothing recorded the
+/// phase at all: a merge delivered the spec and the end of the answer asked
+/// about nothing. The door that writes the phase is the door that arms the
+/// charge, so the two can never come apart again.
 ///
 /// The reason `PR #N mergeado` puts the pull request number in the ledger, so
 /// whoever rereads the list knows what delivered the item.
 ///
 /// Also runs on the `dev` → `main` promotion: the `pr.merged` is recorded. A
-/// promotion has no spec, so it records no state, arms no charge and asks
+/// promotion has no spec, so it records no phase, arms no charge and asks
 /// about no pending item.
 fn after_merge(
     root: &Path,
@@ -852,6 +865,9 @@ fn after_merge(
     session: Option<&str>,
 ) -> (Option<String>, Vec<OpenPending>) {
     record_merge(root, facts, spec, session);
+    if let Some(slug) = spec.map(str::trim).filter(|s| !s.is_empty()) {
+        crate::commands::spec_events::write::record_phase(root, slug, "delivered", session);
+    }
     let reason = format!("PR #{} mergeado", facts.number);
     // The note "became the spec X" in the list links the pending item to the
     // spec.
@@ -862,10 +878,9 @@ fn after_merge(
     (closed, born)
 }
 
-/// Records this door's `pr.merged`, and nothing else: the spec's `delivered`
-/// phase is written by the binary door of the spec file, which the new merge
-/// will call. `pr_detect` records the event of a `gh pr merge` typed in Bash,
-/// the same way.
+/// Records this door's `pr.merged`, and nothing else — the phase is
+/// [`after_merge`]'s next step, through the spec file's own door. `pr_detect`
+/// records the event of a `gh pr merge` typed in Bash, the same way.
 ///
 /// Declared effect: the event also feeds `pr_metrics` — the merge count when
 /// git does not answer and the opened → merged pairing. The merges made by
@@ -925,7 +940,15 @@ pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical:
             &[("{command}", "pr-review --verdict")],
         );
     }
-    match resolve_pr(&repo, pr) {
+    // Sem número, o comando LISTA os pull requests abertos em vez de adivinhar
+    // um. Ele existe para revisar o de um colega, e o colega não está na branch
+    // desta máquina: resolver pela branch do checkout devolvia o pull request
+    // de quem chamou, que é justamente o que ninguém pediu.
+    let Some(number) = pr else {
+        emit(&list_at(&repo));
+        return;
+    };
+    match resolve_pr(&repo, Some(number)) {
         Ok(facts) => {
             let (flow, _) = bases_and_branch(&repo);
             emit(&review_brief(&repo, &facts, &flow, verdict, critical));
@@ -934,18 +957,10 @@ pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical:
     }
 }
 
-/// Dispatch `mustard-rt run pr-merge`. The command is stopped in this version:
-/// it refuses at the door with exit 1, merges nothing, delivers nothing and
-/// closes no pending item. [`merge_core`] keeps its body, with its tests, until
-/// the new merge door arrives.
-pub fn run_merge(root: &Path, _pr: Option<u64>, _confirm: bool) {
-    crate::commands::retired::refuse(&project_root(root), "wait-for-merge", "retired.wait_merge", &[]);
-}
-
-/// The door's old body, kept until the new merge door arrives.
-// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
-#[allow(dead_code)]
-fn run_merge_old(root: &Path, pr: Option<u64>, confirm: bool) {
+/// Dispatch `mustard-rt run pr-merge`: the merge and the tidying up in one
+/// call, the delivery recorded and the pending item that became the spec
+/// closed.
+pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
     let repo = project_root(root);
     match resolve_pr(&repo, pr) {
         Ok(facts) => {
@@ -1384,6 +1399,66 @@ mod tests {
         assert_eq!(promotion.pending_open, Some(vec![]), "a promotion has no spec to ask about");
     }
 
+    /// O merge entrega a spec e arma a cobrança pela mesma porta.
+    ///
+    /// As duas metades são uma coisa só, e por isso estão num teste só: a fase
+    /// `delivered` é gravada pela porta do arquivo de eventos, e é essa porta
+    /// que arma a cobrança das pendências no fim da resposta. Gravar a fase
+    /// aqui à mão registraria o fato e deixaria a cobrança desarmada — que foi
+    /// exatamente o que aconteceu enquanto ninguém gravava fase nenhuma: o
+    /// merge entregava a spec e o fim da resposta não perguntava nada.
+    ///
+    /// A promoção de base não tem spec: não entrega e não arma.
+    #[test]
+    fn o_merge_entrega_a_spec_e_arma_a_cobranca_pela_mesma_porta() {
+        use crate::commands::event::pending::armed_charges;
+        use crate::hooks::task::pending_gate::seed_spec;
+        let dir = project_with_items(&["Humanize", "HTML padrao"]);
+        let root = dir.path();
+        seed_spec(root, "trava", &[2], "s-entrega");
+        assert!(armed_charges(root).is_empty(), "nada armado antes do merge");
+
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let merge = |_: &Path, _: u64| Ok(());
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let facts = PrFacts { number: 330, head: "feature/trava".to_string() };
+        let done = merge_core(
+            root,
+            &facts,
+            &door_flow(),
+            true,
+            &green,
+            &merge,
+            &settle,
+            Some("s-entrega"),
+        );
+        assert_eq!(done.action, "merged", "{done:?}");
+
+        let events = std::fs::read_to_string(
+            mustard_core::io::spec_events::spec_file(root, "trava").expect("caminho"),
+        )
+        .expect("arquivo de eventos");
+        assert!(events.contains("\"delivered\""), "a spec não ficou entregue: {events}");
+
+        let armed = armed_charges(root);
+        assert_eq!(armed.len(), 1, "a cobrança não foi armada: {armed:?}");
+        assert_eq!(armed[0].spec, "trava", "{armed:?}");
+
+        // A promoção de base não tem spec: nada a entregar, nada a armar.
+        let promotion = PrFacts { number: 331, head: "dev".to_string() };
+        let _ = merge_core(
+            root,
+            &promotion,
+            &door_flow(),
+            true,
+            &green,
+            &merge,
+            &settle,
+            Some("s-entrega"),
+        );
+        assert_eq!(armed_charges(root).len(), 1, "a promoção armou uma cobrança");
+    }
+
     /// The pending item that became the spec gets the note in the list, and
     /// that spec's merge closes it with the pull request number; another
     /// spec's note stays.
@@ -1452,18 +1527,18 @@ mod tests {
         assert_eq!(duplicate["reason"], json!("duplicate"), "{duplicate}");
         assert_eq!(duplicate["id"], json!("P-11"));
 
-        // The delivery asks only about the two.
-        let done = merged(root, 400, "feature/entrega");
+        // The delivery asks only about the two — and records the delivery
+        // itself, through the spec file's own phase door, which is what arms
+        // the charge the end of the answer reads below.
+        let green = |_: &Path, _: u64| Ok(PrChecks::Passed);
+        let merge = |_: &Path, _: u64| Ok(());
+        let settle = |_: &Path, _: &str| json!({ "ok": true });
+        let facts = PrFacts { number: 400, head: "feature/entrega".to_string() };
+        let done =
+            merge_core(root, &facts, &door_flow(), true, &green, &merge, &settle, Some("s-doze"));
         assert_eq!(done.action, "merged");
         let asked: Vec<String> = done.pending_open.clone().unwrap_or_default().into_iter().map(|i| i.id).collect();
         assert_eq!(asked, vec!["P-11", "P-12"], "{done:?}");
-
-        // The end-of-answer lock charges only the two. The delivery is recorded
-        // by the binary door the new merge will use: this one only asks.
-        assert!(
-            crate::commands::spec_events::write::record_phase(root, "entrega", "delivered", Some("s-doze")),
-            "the delivery is recorded",
-        );
         let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::Stop));
         let stop = HookInput {
             hook_event_name: Some("Stop".to_string()),

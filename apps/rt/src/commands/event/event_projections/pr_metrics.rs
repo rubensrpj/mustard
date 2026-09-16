@@ -4,7 +4,7 @@ use mustard_core::domain::model::event::HarnessEvent;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use mustard_core::platform::git;
 
 /// Newest merge commits inspected when reading merges from git. A DORA window is
 /// at most a few months; a bound keeps the read cheap on an old repository.
@@ -89,27 +89,16 @@ fn merged_branch(subject: &str) -> Option<String> {
 /// `%ct` (UNIX seconds) is read rather than `%cI` so no timezone offset ever has
 /// to be parsed — the timestamp is rendered into the canonical UTC shape here.
 fn merges_from_git(cwd: &Path) -> Option<Vec<Moment>> {
-    let output = Command::new("git")
-        .args([
-            "-C",
-            cwd.to_str()?,
-            "log",
-            "--merges",
-            "--max-count",
-            GIT_MERGE_SCAN_LIMIT,
-            "--format=%ct%x1f%s",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    let output = git::run(
+        cwd,
+        &["log", "--merges", "--max-count", GIT_MERGE_SCAN_LIMIT, "--format=%ct%x1f%s"],
+    );
+    if !output.ok {
         // Not a repository, or git is unavailable — "cannot look", so the
         // caller falls back rather than publishing an empty answer as a fact.
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = output.stdout;
     Some(
         text.lines()
             .filter_map(|line| {

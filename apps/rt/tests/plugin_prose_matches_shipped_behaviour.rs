@@ -1548,29 +1548,21 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
              a unit",
         );
     }
-    // The target a refusal names must not end at a LITERAL nobody measured.
+    // O alvo que a recusa nomeia não pode acabar num nome que ninguém mediu.
     //
-    // The first shape of this check forbade `primary_base()` outright, and that
-    // was too blunt in a way that locked in a regression: `primary_base()` only
-    // floors to the hardcoded `main` when NO flow is declared — with a flow it
-    // returns the project's own stated base. Forbidding it wholesale sent a unit
-    // that integrates into `dev` off to `main`, measured in a repo whose flow
-    // says exactly that, and the ratchet then held the wrong answer in place.
-    //
-    // So what is required is the ORDER, not the absence of a source: the
-    // declared base is consulted only behind a declared-flow guard, and
-    // `origin/HEAD` remains the last resort.
+    // A primeira forma desta conferência proibia o `primary_base()` de uma vez,
+    // e isso era cego demais: com um fluxo declarado ele devolve a base que o
+    // próprio projeto escreveu, e proibi-lo mandou para outra branch uma
+    // unidade que integra na `dev`. A segunda forma exigia uma guarda escrita à
+    // mão — "só consulte o declarado quando houver fluxo" — e essa guarda agora
+    // mora no tipo: sem fluxo declarado o acessor devolve ausência, e não um
+    // nome. O que continua exigido é o último degrau: quando o projeto não
+    // declarou nada, a recusa nomeia a branch padrão do próprio remoto.
     for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
         assert!(
             body.contains("mustard_core::default_branch("),
             "{name}'s refusal no longer falls back to origin/HEAD, so the base it \
              names can be a literal nobody measured",
-        );
-        assert!(
-            !body.contains("primary_base()") || body.contains("declared_bases().is_empty()"),
-            "{name} names the base through `primary_base()` with no declared-flow \
-             guard — unguarded it ends at the hardcoded `main` for every project \
-             whose install wrote no flow",
         );
     }
 
@@ -1607,14 +1599,15 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
          grant",
     );
 
-    // --- 2. What replaced it is the measurement, RUN not read ----------------
+    // --- 2. O que entrou no lugar é a medição, RODADA e não lida -------------
     //
-    // This half used to grep `doctor.rs` for the function name and the call it
-    // makes — the practice its own acceptance criterion forbids by name, and for the reason five review
-    // rounds kept demonstrating: a source-substring assertion certifies that a
-    // line is present, never that the behaviour holds. So the check is executed
-    // against a real project in the installed shape (no `git.flow` written) and
-    // the assertions are about its OUTPUT.
+    // Esta metade já grepou o `doctor.rs` atrás do nome da função e da chamada
+    // que ela faz — a prática que o próprio critério proíbe pelo nome, e pelo
+    // motivo que cinco rodadas de revisão mostraram: uma busca no texto do
+    // código prova que a linha existe, nunca que o comportamento vale. Então a
+    // conferência é EXECUTADA contra um projeto de verdade na forma que o
+    // instalador deixa (sem `git.flow` escrito) e o que se afirma é a SAÍDA
+    // dela.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let git = |args: &[&str]| {
@@ -1625,11 +1618,8 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
             .output()
             .expect("git")
     };
-    // A REAL origin, because the thing under test is what the doctor measures.
-    // Without a remote it answers, correctly, that `origin/HEAD` is unreadable
-    // and protection fell back to its literals — an honest answer to a
-    // different question, and asserting against it would pin the fallback
-    // instead of the measurement.
+    // Um origin de verdade: o projeto precisa estar na forma que o instalador
+    // deixa, com remoto e sem `git.flow`.
     let upstream = dir.path().join("upstream.git");
     std::process::Command::new("git")
         .args(["init", "-q", "--bare"])
@@ -1664,14 +1654,17 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
         "`doctor --check branch-protection` does not run — the name the operator is \
          told to type is not the name the binary answers to: {said}",
     );
+    // Sem `git.flow`, nada fica protegido — nem aqui nem no servidor — e o
+    // diagnóstico precisa dizer isso. Ficar calado deixaria o operador
+    // acreditando numa proteção que não existe: a instalação não escreve fluxo
+    // nenhum, e a proteção passou a sair só do que o projeto declara.
     assert!(
-        !said.contains("git.flow") || !said.to_lowercase().contains("declare"),
-        "the doctor still asks a correct install to declare a flow: {said}",
+        said.contains("git.flow"),
+        "o diagnóstico não diz que a falta do `git.flow` deixa tudo desprotegido: {said}",
     );
     assert!(
-        said.contains("producao"),
-        "the doctor does not report the branch it really protects — with no flow \
-         written, protection rests on the remote's own default: {said}",
+        said.contains("mustard init"),
+        "e não diz como declarar as bases: {said}",
     );
 
     // --- 3. The installer really writes no flow -----------------------------
@@ -1771,8 +1764,9 @@ fn the_git_reference_teaches_the_measured_model() {
     );
     let config = read("packages/core/src/domain/config.rs");
     assert!(
-        config.contains("refuses anything any more"),
-        "`preselected_bases` no longer documents itself as a pre-selection",
+        !config.contains("fn preselected_bases"),
+        "o acessor que caía em dois nomes fixos quando o projeto não declarava fluxo \
+         voltou — e com ele a lista que decide por um repositório que nunca a escreveu",
     );
     assert!(
         !config.contains("fn integration_bases"),

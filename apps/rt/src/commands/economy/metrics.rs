@@ -19,6 +19,7 @@ use crate::commands::event::event_projections::pipeline::build_pipeline_state;
 use crate::commands::event::event_projections::read_workspace_events;
 use crate::report::{table, Report};
 use mustard_core::io::fs;
+use mustard_core::platform::git;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -308,19 +309,11 @@ fn is_tag(value: &str) -> bool {
 /// Returns `Err(message)` on a resolution failure (the JS exited `1`).
 fn resolve_endpoint(value: &str) -> Result<Endpoint, String> {
     if is_tag(value) {
-        let output = std::process::Command::new("git")
-            .args(["show", "-s", "--format=%cI", value])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .map_err(|_| format!("could not resolve git tag \"{value}\" (is git available?)"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "could not resolve git tag \"{value}\" (is git available and the tag present?)"
-            ));
-        }
-        let iso = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let iso = git::run(Path::new("."), &["show", "-s", "--format=%cI", value])
+            .out()
+            .ok_or_else(|| {
+                format!("could not resolve git tag \"{value}\" (is git available and the tag present?)")
+            })?;
         if mustard_core::time::parse_iso_millis(&iso).is_none() {
             return Err(format!("git returned unparseable date for \"{value}\": {iso}"));
         }

@@ -14,7 +14,7 @@ use mustard_core::ClaudePaths;
 use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use mustard_core::platform::git as git_exec;
 use std::time::{Duration, SystemTime};
 
 /// All segment kinds the statusline knows how to render. New kinds must be
@@ -522,20 +522,7 @@ fn measure_pending_prune(cwd: &Path) -> usize {
 // ---------------------------------------------------------------------------
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8(out.stdout).ok()?;
-    let s = s.trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    git_exec::run(cwd, args).out().filter(|s| !s.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -623,16 +610,7 @@ mod tests {
         let root = own.path();
         let spec = seed(root, "pagina-ligada");
         let git = |args: &[&str]| {
-            let ok = Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .expect("git")
-                .success();
-            assert!(ok, "git {args:?}");
+            assert!(git_exec::run(root, args).ok, "git {args:?}");
         };
         git(&["init", "."]);
         git(&["symbolic-ref", "HEAD", "refs/heads/feature/pagina-ligada"]);
@@ -830,14 +808,7 @@ mod tests {
         let td = tempfile::tempdir().expect("tempdir");
         let root = td.path();
         let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .expect("git");
+            let _ = git_exec::run(root, args);
         };
         run(&["init", "."]);
         run(&["config", "user.email", "t@t"]);

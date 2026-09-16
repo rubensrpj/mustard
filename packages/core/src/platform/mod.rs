@@ -1,4 +1,5 @@
 pub mod error;
+pub mod git;
 pub mod git_branches;
 pub mod git_exclude;
 pub mod git_provider;

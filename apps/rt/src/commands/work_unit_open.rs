@@ -36,6 +36,8 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::platform::git;
+
 use serde_json::{json, Value};
 
 use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees};
@@ -75,11 +77,7 @@ pub struct WorkUnitOpenOpts {
 /// Run `git` in `dir`, `Err(stderr)` on failure — for the calls whose failure
 /// text the orchestrator must see (worktree add conflicts).
 fn git_try(dir: &Path, args: &[&str]) -> Result<(), String> {
-    match std::process::Command::new("git").args(args).current_dir(dir).output() {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-        Err(e) => Err(e.to_string()),
-    }
+    git::run(dir, args).result().map(|_| ())
 }
 
 /// Whether a git ref exists (branch or remote-tracking), quiet.
@@ -164,11 +162,10 @@ fn non_unit_start(
     if let Some(unit) = current_unit_branch(cwd, flow) {
         return unit;
     }
-    // An ABSENT `git.flow` has no declared primary — `primary_base()` would
-    // answer its hardcoded last resort, which is exactly the guess step 3
-    // already makes better. Only a DECLARED flow speaks here.
-    if !config.git.flow.is_empty() {
-        let primary = config.git.primary_base();
+    // An ABSENT `git.flow` has no declared primary at all, and the guess step 3
+    // makes is better than any name this module could write down. Only a
+    // DECLARED flow speaks here.
+    if let Some(primary) = config.git.primary_base() {
         git_ok(main, &["fetch", "origin", &primary]);
         if ref_exists(main, &format!("refs/remotes/origin/{primary}")) {
             return format!("origin/{primary}");
@@ -609,16 +606,20 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
     // takes an explicit answer.
     let unit_base = match answer.known() {
         Some(_) => answer.into_known(),
-        None if is_unit => {
-            let primary = config.git.primary_base();
-            eprintln!(
-                "work-unit-open: nothing recorded which base '{name}' was cut from; using the \
-                 project's primary base '{primary}' (candidates: {}). To be explicit: \
-                 `mustard-rt run work-unit-open --branch {name} --base <one of them>`.",
-                answer.candidates().join(", "),
-            );
-            Some(primary)
-        }
+        None if is_unit => match config.git.primary_base() {
+            Some(primary) => {
+                eprintln!(
+                    "work-unit-open: nothing recorded which base '{name}' was cut from; using the \
+                     project's primary base '{primary}' (candidates: {}). To be explicit: \
+                     `mustard-rt run work-unit-open --branch {name} --base <one of them>`.",
+                    answer.candidates().join(", "),
+                );
+                Some(primary)
+            }
+            // No flow declared: there is no primary to fall back to, and naming
+            // one would be this module inventing the project's own answer.
+            None => None,
+        },
         None => None,
     };
 
@@ -740,12 +741,11 @@ pub fn run(opts: WorkUnitOpenOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
     use tempfile::tempdir;
 
     fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(dir).output().expect("spawn git");
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = git::run(dir, args);
+        assert!(out.ok, "git {args:?} failed: {}", out.stderr);
     }
 
     fn opts(main: &Path) -> WorkUnitOpenOpts {

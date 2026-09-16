@@ -46,7 +46,8 @@
 //! *nothing changed*.
 
 use std::path::Path;
-use std::process::Command;
+
+use mustard_core::platform::git as git_exec;
 
 use crate::util::sha256::Sha256;
 
@@ -110,15 +111,8 @@ pub fn fingerprint(cwd: &Path) -> Option<String> {
 /// One git read in `cwd`. `None` on a non-zero exit or any spawn failure — the
 /// caller degrades, never propagates.
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    let out = git_exec::run(cwd, args);
+    out.ok.then_some(out.stdout)
 }
 
 #[cfg(test)]
@@ -127,13 +121,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn git_ok(root: &Path, args: &[&str]) {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed");
+        assert!(git_exec::run(root, args).ok, "git {args:?} failed");
     }
 
     fn repo(root: &Path) {

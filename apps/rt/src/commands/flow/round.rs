@@ -26,9 +26,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, DELIVERED_MAX_CHARS};
+use mustard_core::platform::git as git_exec;
+
+use mustard_core::domain::spec_events::{
+    check_message, Block, BlockQuery, MessageRefusal, Refusal, SpecEvent, SpecLog,
+    DELIVERED_MAX_CHARS, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
+};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
-use mustard_core::domain::text;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::prompts;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -54,17 +58,6 @@ pub struct RoundOpts {
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: duas, que é
 /// quanto a máquina aguenta compilando ao mesmo tempo.
 const DEFAULT_PARALLEL: usize = 2;
-
-/// O teto de caracteres do título de um commit.
-const COMMIT_TITLE_MAX: usize = 60;
-/// O teto de caracteres do corpo de um commit.
-const COMMIT_BODY_MAX: usize = 4_000;
-
-/// O que a mensagem de um commit nunca leva: o endereço da conversa, o nome do
-/// modelo, a assinatura de coautoria e o e-mail de quem quer que seja. Cada um
-/// sai pelo nome na recusa.
-const FORBIDDEN_IN_COMMIT: &[(&str, &str)] =
-    &[("claude.ai", "claude.ai"), ("claude", "Claude"), ("co-authored-by", "Co-Authored-By")];
 
 /// Por que a rodada não correu.
 enum RoundRefusal {
@@ -271,6 +264,12 @@ fn run_round(
     // A página sai no fim do passo, uma vez, e a rodada manda publicá-la.
     let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang).ok();
 
+    // Com o pull request aberto, o corpo dele é refeito aqui: ele é montado do
+    // mesmo arquivo de eventos que acabou de mudar, e um corpo que descreve a
+    // rodada anterior é pior do que nenhum — foi por isso que existiu um portão
+    // só para reparar que ele tinha envelhecido.
+    let rewritten = rewrite_open_pr(root, &spec);
+
     let mut out = json!({
         "ok": true,
         "spec": spec,
@@ -294,7 +293,20 @@ fn run_round(
     if !warnings.is_empty() {
         out["warnings"] = json!(warnings);
     }
+    if let Some(number) = rewritten {
+        out["pr"] = json!({ "number": number, "body": "rewritten" });
+    }
     Ok(out)
+}
+
+/// Refaz o corpo do pull request desta spec, quando há um aberto. Devolve o
+/// número do pull request reescrito, `None` quando não há nenhum ou quando o
+/// provedor não respondeu — a rodada nunca para por causa disso.
+fn rewrite_open_pr(root: &Path, spec: &str) -> Option<u64> {
+    let (_, body) = crate::commands::review::pr_publish::message_of(root, spec).ok()?;
+    let provider = crate::shared::pr_provider::provider_for(root);
+    let view = provider.view(None).ok()?;
+    provider.edit_body(view.number, &body).ok().map(|()| view.number)
 }
 
 // ---------------------------------------------------------------------------
@@ -380,42 +392,25 @@ fn commit_message(raw: &str) -> Result<Option<(String, String)>, RoundRefusal> {
     Ok(Some((title, body)))
 }
 
-/// A mensagem de commit cabe no modelo: título e corpo dentro do teto, e nada
-/// do que ela nunca leva. Cada recusa diz o que achou.
+/// A mensagem de commit cabe no modelo, pela MESMA conferência que o pull
+/// request usa.
+///
+/// As duas eram a mesma regra escrita duas vezes — os mesmos tetos, a mesma
+/// lista do que nunca vai, o mesmo achador de e-mail — e uma regra escrita duas
+/// vezes é uma regra que vale em um lugar só assim que alguém mexer no outro.
+/// A conferência mora no núcleo; aqui fica só a tradução para a recusa da
+/// rodada, que é o que muda entre as duas portas.
 fn check_commit_text(title: &str, body: &str) -> Result<(), RoundRefusal> {
-    for (part, text, max) in
-        [("title", title, COMMIT_TITLE_MAX), ("body", body, COMMIT_BODY_MAX)]
+    check_message(title, body, MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX).map_err(|refusal| match refusal
     {
-        let chars = text.chars().count();
-        if chars > max {
-            return Err(RoundRefusal::CommitTooLong { part: part.to_string(), chars, max });
+        MessageRefusal::TooLong { part, chars, max } => {
+            RoundRefusal::CommitTooLong { part: part.to_string(), chars, max }
         }
-    }
-    let folded = text::fold(&format!("{title}\n{body}"));
-    for (needle, shown) in FORBIDDEN_IN_COMMIT {
-        if folded.contains(needle) {
-            return Err(RoundRefusal::CommitForbidden { found: (*shown).to_string() });
-        }
-    }
-    if let Some(email) = first_email(&folded) {
-        return Err(RoundRefusal::CommitForbidden { found: email });
-    }
-    Ok(())
-}
-
-/// O primeiro e-mail que o texto traz: uma palavra, um arroba e um domínio com
-/// ponto. É por ele que o commit é recusado até o dado de usuário sair.
-fn first_email(text: &str) -> Option<String> {
-    for (at, _) in text.match_indices('@') {
-        let start = text[..at].rfind(|c: char| c.is_whitespace()).map_or(0, |i| i + 1);
-        let end = text[at..].find(char::is_whitespace).map_or(text.len(), |i| at + i);
-        let candidate = text[start..end].trim_matches(|c: char| !c.is_alphanumeric());
-        let Some((user, domain)) = candidate.split_once('@') else { continue };
-        if !user.is_empty() && domain.contains('.') && !domain.starts_with('.') {
-            return Some(candidate.to_string());
-        }
-    }
-    None
+        MessageRefusal::Forbidden { found, .. } => RoundRefusal::CommitForbidden { found },
+        // O commit não tira o título da spec: o relatório o traz. Uma spec sem
+        // objetivo não é recusa desta porta.
+        MessageRefusal::NoTitle => RoundRefusal::CommitForbidden { found: String::new() },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -579,16 +574,11 @@ fn repo_name(root: &Path) -> String {
 
 /// Roda o git na raiz do projeto e devolve a saída; o erro vem como texto.
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+    let out = git_exec::run(root, args);
+    if out.ok {
+        return Ok(out.stdout);
     }
-    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    Err(out.stderr.trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -614,18 +604,17 @@ fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
     // entregou. Só o pedido não basta, porque a onda entregue antes de a
     // rodada existir não tem pedido nenhum e apareceria como pronta para
     // sair — e sairia de novo um trabalho já feito.
+    // Quais ondas já entregaram é pergunta do núcleo, e é ele que responde:
+    // recalcular o filtro aqui deixava duas camadas decidindo a mesma coisa,
+    // concordando hoje e livres para divergir amanhã.
+    let delivered = log.delivered_waves();
     let already_out: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))
         .into_iter()
-        .filter(|e| e.event_type == "send" || e.event_type == "delivered")
+        .filter(|e| e.event_type == "send")
         .filter_map(SpecEvent::wave)
+        .chain(delivered.iter().copied())
         .filter(|n| !to_redo.contains(n))
-        .collect();
-    let delivered: BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "delivered")
-        .filter_map(SpecEvent::wave)
         .collect();
     let mut depends: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for wave in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave") {
@@ -1076,8 +1065,8 @@ mod tests {
     fn the_commit_message_is_checked_before_the_commit_is_made() {
         assert!(check_commit_text("feat: a soma", "O corpo.").is_ok());
         let cases = [
-            ("a".repeat(COMMIT_TITLE_MAX + 1), String::new(), "commit-too-long"),
-            ("feat: a soma".into(), "a".repeat(COMMIT_BODY_MAX + 1), "commit-too-long"),
+            ("a".repeat(MESSAGE_TITLE_MAX + 1), String::new(), "commit-too-long"),
+            ("feat: a soma".into(), "a".repeat(MESSAGE_BODY_MAX + 1), "commit-too-long"),
             ("feat: a soma".into(), "https://claude.ai/code/x".into(), "commit-forbidden-text"),
             ("feat: a soma".into(), "Feito com Claude.".into(), "commit-forbidden-text"),
             ("feat: a soma".into(), "Co-Authored-By: alguem".into(), "commit-forbidden-text"),

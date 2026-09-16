@@ -172,6 +172,17 @@ impl AzureRemote {
         )
     }
 
+    /// The REST collection the branch policies of this project live in.
+    ///
+    /// The PROJECT-scoped endpoint, narrowed by `refName`: the repository
+    /// -scoped one addresses the repository by GUID, and the remote spells a
+    /// NAME. Asking for a GUID would mean one extra round trip before the
+    /// question this exists to answer, and the `refName` filter already does
+    /// what the diagnostic needs — name the policies in force on that branch.
+    pub(crate) fn api_policies(&self) -> String {
+        format!("{}/{}/_apis/git/policy/configurations", self.base, self.project)
+    }
+
     /// The canonical https remote — what `git credential fill` is asked for,
     /// so a `useHttpPath=true` vault keys on the same path the push uses.
     pub(crate) fn https_remote(&self) -> String {
@@ -474,6 +485,43 @@ pub(crate) fn do_checks(
     Ok(checks_from_azure(&rows))
 }
 
+/// GET the branch policies in force on `branch`, and answer whether any of
+/// them would stop a direct push.
+///
+/// A document without a `value` array could not be read — `parse-error`,
+/// never an empty answer, because an empty answer here means "this branch is
+/// open to anyone with push rights" and that sentence must only ever be said
+/// about a reading that really happened.
+pub(crate) fn do_branch_policy(
+    remote: &AzureRemote,
+    transport: &dyn AzureTransport,
+    auth: &str,
+    branch: &str,
+) -> Result<bool, String> {
+    let url = format!(
+        "{}?refName={}&api-version={API_VERSION}",
+        remote.api_policies(),
+        query_encode(&format!("{HEADS}{branch}")),
+    );
+    let doc = transport.call("GET", &url, auth, None)?;
+    let rows =
+        doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
+    Ok(policies_protect(&rows))
+}
+
+/// Whether any policy row really stands in the way of a direct push.
+///
+/// A row counts only when it is BOTH enabled and blocking. Azure carries
+/// disabled policies and advisory ones in the same list, and a policy that
+/// merely comments on a pull request stops nobody: counting it would report a
+/// branch as protected while a push to it succeeds.
+pub(crate) fn policies_protect(rows: &[Value]) -> bool {
+    rows.iter().any(|row| {
+        let flag = |key: &str| row.get(key).and_then(Value::as_bool).unwrap_or(false);
+        flag("isEnabled") && flag("isBlocking")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // The evidence read — what the exit ritual's pruning verdict stands on
 // ---------------------------------------------------------------------------
@@ -711,6 +759,11 @@ impl PrProvider for AzurePrRest {
     fn checks(&self, number: u64) -> Result<PrChecks, String> {
         let (remote, auth) = self.context()?;
         do_checks(&remote, self.transport.as_ref(), &auth, number)
+    }
+
+    fn branch_protection(&self, branch: &str) -> Result<bool, String> {
+        let (remote, auth) = self.context()?;
+        do_branch_policy(&remote, self.transport.as_ref(), &auth, branch)
     }
 }
 
@@ -988,6 +1041,49 @@ mod tests {
 
     /// The checks read addresses the PR's own `statuses` sub-resource and
     /// reduces the `GitStatusState` words: a pending pipeline is in flight, an
+    /// A política da branch é perguntada ao Azure pela branch, e só conta a
+    /// que está ligada E bloqueia.
+    ///
+    /// O que isto pega: uma política desligada, e uma que só comenta no pull
+    /// request. Contar qualquer uma das duas reportaria como protegida uma
+    /// branch em que um envio direto passa — que é exatamente a frase que esta
+    /// conferência existe para não dizer errado.
+    #[test]
+    fn a_politica_da_branch_so_conta_quando_liga_e_bloqueia() {
+        let remote = remote();
+        let url = format!(
+            "{}?refName=refs/heads/master&api-version=7.1",
+            remote.api_policies(),
+        );
+        let answer = |value: Value| {
+            let fake = FakeTransport::of(&[("GET", &url, json!({ "value": value }))]);
+            do_branch_policy(&remote, &fake, "a", "master")
+        };
+
+        assert_eq!(answer(json!([])), Ok(false), "sem política nenhuma, a branch está aberta");
+        assert_eq!(
+            answer(json!([{ "isEnabled": true, "isBlocking": true }])),
+            Ok(true),
+            "uma política ligada e bloqueante protege",
+        );
+        assert_eq!(
+            answer(json!([{ "isEnabled": false, "isBlocking": true }])),
+            Ok(false),
+            "uma política desligada não para ninguém",
+        );
+        assert_eq!(
+            answer(json!([{ "isEnabled": true, "isBlocking": false }])),
+            Ok(false),
+            "e uma que só avisa também não",
+        );
+
+        let sem_value = FakeTransport::of(&[("GET", &url, json!({}))]);
+        assert!(
+            do_branch_policy(&remote, &sem_value, "a", "master").is_err(),
+            "resposta ilegível é erro, nunca uma branch aberta medida",
+        );
+    }
+
     /// `error` is a failure like a `failed`, `notApplicable` cannot block, and
     /// a `notSet` is unreadable rather than guessed green. No status row at
     /// all is a MEASURED absence — an Azure project with no pipeline.

@@ -14,7 +14,8 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
+
+use mustard_core::platform::git as git_exec;
 
 use mustard_core::domain::project_map::{History, RawCommit, MAX_COMMITS};
 
@@ -41,13 +42,10 @@ pub(crate) enum Plan {
 /// Run git in `root`, with paths printed as they are (no octal quoting of
 /// accented names). `None` when git is missing or the command fails.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(["-c", "core.quotePath=false"])
-        .args(args)
-        .current_dir(root)
-        .output()
-        .ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let mut full: Vec<&str> = vec!["-c", "core.quotePath=false"];
+    full.extend(args);
+    let out = git_exec::run(root, &full);
+    out.ok.then_some(out.stdout)
 }
 
 /// The commit checked out in `root`, or `None` outside git and on a branch
@@ -129,11 +127,7 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>) -> Plan {
 
 /// `true` when `ancestor` is in the history of `head`.
 fn is_ancestor(root: &Path, ancestor: &str, head: &str) -> bool {
-    Command::new("git")
-        .args(["merge-base", "--is-ancestor", ancestor, head])
-        .current_dir(root)
-        .output()
-        .is_ok_and(|out| out.status.success())
+    git_exec::run(root, &["merge-base", "--is-ancestor", ancestor, head]).ok
 }
 
 /// The history at `head`: the previous one when nothing was committed since,

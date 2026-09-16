@@ -20,11 +20,10 @@
 //!   with `runtime`/`version`, keeping a single write.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 use dialoguer::theme::ColorfulTheme;
-use dialoguer::Select;
+use dialoguer::{Input, Select};
 use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale};
 
 /// Facts probed from the repository, all fail-open.
@@ -35,7 +34,7 @@ use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale};
 /// through any more — so both the guess and the `git branch -r` call that fed it
 /// went with them.
 pub struct GitFacts {
-    default_branch: String,
+    default_branch: Option<String>,
     current_branch: Option<String>,
     has_submodules: bool,
 }
@@ -51,35 +50,17 @@ pub struct Choices {
     text_language: Option<String>,
 }
 
-/// Run a `git` subcommand in `cwd`, returning trimmed stdout on success.
-/// Any failure — `git` missing, non-zero exit, not a repository — yields `None`.
-fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).current_dir(cwd).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 /// Probe the repository at `project_path`.
 #[must_use]
 pub fn probe_git(project_path: &Path) -> GitFacts {
-    let default_branch = git(project_path, &["symbolic-ref", "refs/remotes/origin/HEAD"])
-        .map(|r| r.replace("refs/remotes/origin/", ""))
-        .or_else(|| {
-            let branches = git(project_path, &["branch", "-r"]).unwrap_or_default();
-            if branches.contains("origin/main") {
-                Some("main".to_string())
-            } else if branches.contains("origin/master") {
-                Some("master".to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "main".to_string());
+    // The remote's own answer, through the project's one probe — which reads
+    // `origin/HEAD` and then asks the remote directly. It used to finish with a
+    // ladder of literals (`origin/main`, then `origin/master`, then the bare
+    // string `main`), so an install in a repository that has neither was told,
+    // with no hedge at all, that its default branch was one of them.
+    let default_branch = mustard_core::default_branch(project_path);
 
-    let current_branch =
-        git(project_path, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|s| !s.is_empty());
+    let current_branch = mustard_core::current_branch(project_path);
 
     let has_submodules = project_path.join(".gitmodules").exists();
 
@@ -141,30 +122,47 @@ pub fn collect_choices(
 
     let theme = ColorfulTheme::default();
     println!("\nGit Flow Configuration\n");
-    if let Some(branch) = &facts.current_branch {
-        println!(
-            "  Detected: branch={branch}, default={}, submodules={}",
-            facts.default_branch, facts.has_submodules
-        );
-    }
+    println!(
+        "  Detected: branch={}, default={}, submodules={}",
+        facts.current_branch.as_deref().unwrap_or("not measured"),
+        facts.default_branch.as_deref().unwrap_or("not measured"),
+        facts.has_submodules
+    );
 
-    // The two branch prompts are GONE. They asked the operator to declare, at
-    // install time, which branches the project promotes through — and that
-    // answer then decided both where a unit could be cut from and where a
-    // direct commit was refused, for the whole life of the install. In a client
-    // repository the answer was wrong within a week: branches appear, release
-    // lines are cut, and nobody re-runs `mustard init` to tell us.
+    // The two branch prompts are BACK, and this time they are the only source
+    // of the answer they give.
     //
-    // Both questions are asked of git now, at the moment they matter:
-    // `run base-candidates` lists what really exists when a unit opens, and
-    // `protected_branches` reads the remote's own default branch. Nothing here
-    // needs an answer any more, so nothing here asks for one.
+    // They were removed because a flow declared at install time decided, for
+    // the life of the install, both where a unit could be cut from and where a
+    // direct commit was refused — and the first of those went stale within a
+    // week in a client repository. Cutting is asked of git now
+    // (`run base-candidates` lists what really exists), so that reason is
+    // gone; what remained was the other half, and nothing answers it: with no
+    // flow written, NO branch is protected — not by the write gate here, and
+    // not by the diagnostic that asks the server. An install that writes no
+    // flow therefore leaves a project whose bases nothing defends, and never
+    // says so.
     //
-    // `existing_prod` / `existing_dev` are still READ above: a project that
-    // already declared a flow keeps it, because it still pre-selects a row in
-    // the picker. What stops is CREATING one.
-    let production = existing_prod.unwrap_or_default();
-    let dev_branch = existing_dev.unwrap_or_default();
+    // The remote's own default branch seeds the second answer, so the common
+    // case is one Enter. An empty answer writes no flow at all, which is the
+    // honest recording of "not now" — never an invented pair of names.
+    let detected = facts.default_branch.clone().unwrap_or_default();
+    let dev_branch: String = Input::with_theme(&theme)
+        .with_prompt("Base ordinary work is cut from (empty: declare none)")
+        .allow_empty(true)
+        .default(existing_dev.clone().unwrap_or_else(|| detected.clone()))
+        .interact_text()
+        .context("reading the work base")?;
+    let production = if dev_branch.trim().is_empty() {
+        String::new()
+    } else {
+        Input::with_theme(&theme)
+            .with_prompt("Base that one is promoted into")
+            .allow_empty(true)
+            .default(existing_prod.clone().unwrap_or_else(|| detected.clone()))
+            .interact_text()
+            .context("reading the promotion base")?
+    };
 
     // The provider menu is GONE, for the reason the branch prompts went: the
     // answer is written in the `origin` remote, and freezing it at install time
@@ -281,7 +279,7 @@ mod tests {
 
     fn facts(submodules: bool) -> GitFacts {
         GitFacts {
-            default_branch: "main".to_string(),
+            default_branch: Some("trunk".to_string()),
             current_branch: None,
             has_submodules: submodules,
         }
@@ -295,14 +293,13 @@ mod tests {
     /// from probed facts leaves the same stale declaration behind, and that
     /// declaration is what used to refuse real branches.
     #[test]
-    fn init_does_not_ask_for_branches() {
+    fn fora_do_modo_interativo_o_init_nao_inventa_base() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
 
-        // A repository whose probe supplies a default branch the old code would
-        // have seeded the flow from. It is not used. (The remote branch list the
-        // `dev`/`develop` guess read is gone from `GitFacts` altogether — no
-        // fixture can hand it over any more.)
+        // Um repositório cujo probe traz uma branch padrão. Fora do modo
+        // interativo ela NÃO vira fluxo: a branch padrão do servidor serve para
+        // marcar a resposta da pergunta, e onde não há pergunta não há resposta.
         let probed = facts(false);
         let fresh = ProjectConfig::default();
         let choices = collect_choices(&probed, &fresh, true).expect("no prompt to fail");
@@ -324,12 +321,47 @@ mod tests {
             "an empty flow is written as NO key: {written}",
         );
 
-        // A project that already declared one keeps it — the install stopped
-        // creating flows, it did not start deleting them.
+        // A project that already declared one keeps it — the install never
+        // deletes a flow it did not create.
         let mut existing = ProjectConfig::default();
         existing.git.flow.insert("*".to_string(), "trunk".to_string());
         let kept = collect_choices(&probed, &existing, true).expect("no prompt to fail");
         assert_eq!(kept.dev_branch, "trunk", "the declared base survives untouched");
+    }
+
+    /// A resposta das bases vira `git.flow`, e é dela que a proteção passa a
+    /// sair. Nenhum nome está escrito aqui: os dois vêm da resposta.
+    #[test]
+    fn a_resposta_das_bases_vira_o_fluxo_gravado() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let answered = Choices {
+            production: "master".to_string(),
+            dev_branch: "develop".to_string(),
+            provider: String::new(),
+            text_language: None,
+        };
+        let mut config = ProjectConfig::default();
+        apply_choices(&mut config, &answered, root);
+        assert_eq!(config.git.flow.get("*").map(String::as_str), Some("develop"));
+        assert_eq!(config.git.flow.get("develop").map(String::as_str), Some("master"));
+        assert_eq!(
+            config.git.declared_bases(),
+            std::collections::BTreeSet::from(["develop".to_string(), "master".to_string()]),
+            "e é isso que a proteção passa a ler",
+        );
+
+        // Uma resposta vazia não grava fluxo nenhum: "agora não" registrado
+        // como "agora não", nunca como um par de nomes inventado.
+        let empty = Choices {
+            production: String::new(),
+            dev_branch: String::new(),
+            provider: String::new(),
+            text_language: None,
+        };
+        let mut none = ProjectConfig::default();
+        apply_choices(&mut none, &empty, root);
+        assert!(none.git.flow.is_empty(), "{:?}", none.git.flow);
     }
 
     /// The install stops asking who hosts the repository, and stops writing an

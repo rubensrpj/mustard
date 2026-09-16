@@ -21,7 +21,8 @@
 //! project-level hook alongside the plugin's).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use mustard_core::platform::git;
 
 use anyhow::{Context, Result, bail};
 use mustard_core::io::fs as mfs;
@@ -131,10 +132,9 @@ fn fetch_template(name: &str, work: &Path) -> Result<PathBuf> {
     let repo_url = format!("https://github.com/mustard-templates/{name}.git");
     println!("Fetching from {repo_url}...");
 
-    let cloned = Command::new("git")
-        .args(["clone", "--depth", "1", &repo_url, &work.to_string_lossy()])
-        .output();
-    if matches!(&cloned, Ok(out) if out.status.success()) {
+    let cloned =
+        git::run(Path::new("."), &["clone", "--depth", "1", &repo_url, &work.to_string_lossy()]);
+    if cloned.ok {
         return Ok(work.to_path_buf());
     }
 

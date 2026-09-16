@@ -322,12 +322,12 @@ mod tests {
             "an undeclared branch opens exactly like a declared one",
         );
 
-        let declared = config.git.preselected_bases();
+        let declared = config.git.declared_bases();
         assert!(
             declared.contains("dev") && !declared.contains("squad-b/integration"),
             "the flow still says what it always said — it just no longer refuses: {declared:?}",
         );
-        assert_eq!(config.git.primary_base(), "dev", "and it still seeds the cursor");
+        assert_eq!(config.git.primary_base().as_deref(), Some("dev"), "and it still seeds the cursor");
     }
 
     /// Agnostic: a `develop`/`master` project judges against ITS bases — being
@@ -670,7 +670,7 @@ mod tests {
 
         let config = ProjectConfig::load(root);
         assert!(
-            crate::commands::event::work_branch::is_protected(root, "dev", &config),
+            mustard_core::protected_branches(&config.git).contains("dev"),
             "a fixture precisa de uma posição realmente protegida",
         );
         let dirty_before = porcelain(root);
@@ -845,7 +845,7 @@ mod tests {
 
         let config = ProjectConfig::load(root);
         assert!(
-            config.git.preselected_bases().contains("main"),
+            config.git.declared_bases().contains("main"),
             "a fixture precisa de uma base pré-selecionada que NÃO é a desta abertura",
         );
         let _ = settle_open(root, Some("dev"), Some("dev"), &config);

@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use mustard_core::domain::config::GitConfig;
+use mustard_core::platform::git;
 use mustard_core::io::claude_paths::ClaudePaths;
 
 /// The harness's own worktree-name prefix, tolerated wherever a branch NAME is
@@ -70,11 +71,7 @@ fn unit_dir(project: &Path, slug: &str) -> Option<PathBuf> {
 /// missing entirely. The callers that matter here are asking whether they may
 /// destroy something, so an unanswerable probe must not read as a yes.
 fn ref_carries(project: &Path, rev: &str, path: &str) -> bool {
-    let root = project.to_string_lossy().to_string();
-    std::process::Command::new("git")
-        .args(["-C", &root, "cat-file", "-e", &format!("{rev}:{path}")])
-        .output()
-        .is_ok_and(|out| out.status.success())
+    git::run(project, &["cat-file", "-e", &format!("{rev}:{path}")]).ok
 }
 
 /// The cut's OWN record of the base, inside the unit's directory.
@@ -207,11 +204,7 @@ pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
 
 /// `true` when `refs/heads/<branch>` resolves in `root`.
 fn local_head_exists(root: &Path, branch: &str) -> bool {
-    let dir = root.to_string_lossy().to_string();
-    std::process::Command::new("git")
-        .args(["-C", &dir, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
-        .output()
-        .is_ok_and(|out| out.status.success())
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok
 }
 
 /// `true` when `branch` has an upstream configured — the durable mark that it
@@ -222,11 +215,8 @@ fn local_head_exists(root: &Path, branch: &str) -> bool {
 /// unanswerable probe must not turn a local base into a retired one and drop a
 /// record the operator really made.
 fn has_upstream(root: &Path, branch: &str) -> bool {
-    let dir = root.to_string_lossy().to_string();
-    std::process::Command::new("git")
-        .args(["-C", &dir, "config", "--get", &format!("branch.{branch}.remote")])
-        .output()
-        .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
+    let probe = git::run(root, &["config", "--get", &format!("branch.{branch}.remote")]);
+    probe.ok && !probe.stdout.is_empty()
 }
 
 /// Hand `read` the MEMOISED remote branch names of `root`, measuring them on
@@ -445,12 +435,13 @@ impl UnitBase {
 /// type spells no branch literally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BaseFlow {
-    /// Every base `git.flow` PRE-SELECTS, in
-    /// [`GitConfig::preselected_bases`] order. A hint about where a picker
-    /// opens — it refuses nothing.
+    /// Every base `git.flow` declares, in [`GitConfig::declared_bases`] order.
+    /// A hint about where a picker opens — it refuses nothing.
     bases: Vec<String>,
-    /// The base ordinary work is cut from — `flow["*"]`.
-    work: String,
+    /// The base ordinary work is cut from — `flow["*"]`. `None` for a project
+    /// that declares no flow: it has no ordinary base, and writing one down
+    /// here would be this type inventing the project's own answer.
+    work: Option<String>,
     /// The project root whose UNIT RECORDS this model may consult
     /// ([`BaseFlow::of_at`]), `None` for the pure derivation ([`BaseFlow::of`]).
     ///
@@ -493,7 +484,7 @@ impl BaseFlow {
 
     /// The one derivation, with or without a project to consult.
     fn build(git: &GitConfig, project: Option<PathBuf>) -> Self {
-        let bases: Vec<String> = git.preselected_bases().into_iter().collect();
+        let bases: Vec<String> = git.declared_bases().into_iter().collect();
         let work = git.primary_base();
         Self { bases, work, project }
     }
@@ -504,9 +495,10 @@ impl BaseFlow {
         &self.bases
     }
 
-    /// The base ordinary work is cut from.
-    pub(crate) fn work_base(&self) -> &str {
-        &self.work
+    /// The base ordinary work is cut from, `None` when the project declares
+    /// no flow.
+    pub(crate) fn work_base(&self) -> Option<&str> {
+        self.work.as_deref()
     }
 
     /// The integration base a work branch belongs to.
@@ -788,11 +780,11 @@ impl BaseFlow {
     /// vocabulary is open by design, so `release/2026-Q3` splits into a kind and
     /// a slug exactly like `fix/aba` does, and a project's own release line
     /// therefore read as somebody's disposable unit. The DECLARED set cannot
-    /// answer it either: `mustard init` no longer writes `git.flow`, so
-    /// [`GitConfig::preselected_bases`] degrades to the hardcoded
-    /// `{main, master}` — that guard protected two literals and nothing else,
-    /// and `git delete` was measured removing a real release line from the
-    /// remote in a project shaped exactly the way the installer writes them.
+    /// answer it either: `mustard init` no longer writes `git.flow`, so the
+    /// declared set is EMPTY for the projects the installer produces — a guard
+    /// built on it guards nothing, and `git delete` was measured removing a
+    /// real release line from the remote in a project shaped exactly that
+    /// way.
     ///
     /// A branch this harness CUT has a directory; a branch the project has
     /// always had does not. That is evidence the project itself recorded, and it
@@ -933,11 +925,11 @@ mod tests {
     #[test]
     fn the_flow_derives_its_declared_bases_and_the_work_base() {
         let two = BaseFlow::of(&two_tier());
-        assert_eq!(two.work_base(), "dev");
+        assert_eq!(two.work_base(), Some("dev"));
         assert_eq!(two.bases(), ["dev", "main"]);
 
         let three = BaseFlow::of(&three_tier());
-        assert_eq!(three.work_base(), "dev");
+        assert_eq!(three.work_base(), Some("dev"));
         assert_eq!(three.bases(), ["dev", "main", "qas"], "several candidates to choose from");
 
         // A single-base project has one answer and no choice.
@@ -1144,14 +1136,7 @@ mod tests {
     /// probe reads. `false` when git is unusable here, so a caller can skip
     /// instead of asserting against a probe that measured nothing.
     fn seed_remote_refs(root: &Path, branches: &[&str]) -> bool {
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let git = |args: &[&str]| git::run(root, args).ok;
         if !git(&["init", "-q", "-b", "dev", "."]) {
             return false;
         }

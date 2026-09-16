@@ -11,8 +11,6 @@
 //! - [`review_gate`] — validate before `git commit` (its own
 //!   `MUSTARD_COMMIT_GATE_MODE`, default `warn`).
 //! - [`pr_detect`] — DORA telemetry on `gh pr` commands (PostToolUse).
-//! - [`pr_body_gate`] — advisory when a `gh pr create` carries no `--body-file`
-//! - [`pr_qa_gate`] — advisory when a `gh pr create`/`merge` integrates a spec
 //!   with no passing `qa.result` (the QA ↔ integration coupling).
 //!
 //! Rewriting a command to `rtk` is not done here: rtk's own hook does it.
@@ -27,7 +25,7 @@
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 
-use super::{lex, native_redirect, pr_body_gate, pr_detect, pr_qa_gate, review_gate, safety, windows_redirect};
+use super::{lex, native_redirect, pr_detect, review_gate, safety, windows_redirect};
 
 /// The consolidated Bash-tool enforcement module (dispatcher).
 pub struct BashCommandGate;
@@ -84,20 +82,13 @@ impl Check for BashCommandGate {
         if let Some(verdict) = review_gate::review_gate(&cmd, ctx, review_gate::commit_gate_mode()) {
             return Ok(verdict);
         }
-        // The pull-request advisories come last (`classify_pr` sees through
-        // an `rtk` prefix). Advisory only; never blocks integration.
-        if let Some(verdict) = pr_qa_gate::pr_qa_gate(&cmd, &ctx.project_dir) {
-            return Ok(verdict);
-        }
-        // QA first because integrating unverified work is the graver of the
-        // two — a thin PR body is recoverable with one `gh pr edit`.
-        if let Some(verdict) = pr_body_gate::pr_body_gate(&cmd, &ctx.project_dir) {
-            return Ok(verdict);
-        }
-        // …and its staleness half, on the push that re-targets the same PR.
-        if let Some(verdict) = pr_body_gate::pr_body_stale_gate(&cmd, &ctx.project_dir) {
-            return Ok(verdict);
-        }
+        // Os avisos de pull request saíram daqui. Eles olhavam o `gh pr` que
+        // alguém digitasse, e por isso só alcançavam quem abrisse ou
+        // mergeasse pela linha de comando do provedor — a porta do Mustard,
+        // que é por onde a obra passa, não dizia nada. O aviso dos critérios
+        // mora agora no `pr-open` e no `pr-merge`, junto da ação que ele
+        // qualifica; o do corpo do pull request perdeu o objeto quando o corpo
+        // passou a ser montado pelo binário a cada rodada.
         Ok(Verdict::Allow)
     }
 }

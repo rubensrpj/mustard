@@ -286,7 +286,7 @@ impl BranchEnumerator {
         // primitive — never one read per unrecorded unit.
         let per_base: Vec<(&String, BTreeSet<String>)> =
             flow.bases().iter().map(|base| (base, refs_merged_into(git, base))).collect();
-        let work_base = flow.work_base();
+        let work_base = flow.work_base().unwrap_or_default();
         for unit in self.units.iter_mut().filter(|u| u.base.is_empty()) {
             let refnames = unit.refnames();
             let holders: Vec<&str> = per_base

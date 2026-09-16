@@ -299,7 +299,7 @@ fn cut_base_is_ordinary(opts: &EmitPipelineOpts) -> bool {
     let project = project_dir();
     let config = mustard_core::ProjectConfig::load(Path::new(&project));
     let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, Path::new(&project));
-    requested == flow.work_base()
+    flow.work_base() == Some(requested)
 }
 
 /// Parse the `--payload` JSON, tolerating a PowerShell quoting quirk.

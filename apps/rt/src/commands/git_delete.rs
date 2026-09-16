@@ -110,17 +110,17 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     };
     let cfg = mustard_core::ProjectConfig::load(&main);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &main);
-    // The DECLARED set, echoed in the refusals below purely as context. Not
-    // `preselected_bases`, whose `{main, master}` fallback would report two
-    // branches a project without a flow may not have — and every project the
-    // current installer touches is one.
+    // The DECLARED set, echoed in the refusals below purely as context. It is
+    // empty for a project that never wrote a flow — which is every project the
+    // current installer touches — and an empty set is reported as empty, never
+    // filled in with names this repository may not carry.
     let bases: Vec<String> = cfg.git.declared_bases().into_iter().collect();
 
     // The branch of the INVOCATION, not of the main checkout: called from
     // inside the unit's own worktree the two disagree, and it is the caller's
     // floor that decides whether this is a base-side gesture.
     let branch = git_out(start, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    let protected = mustard_core::protected_branches(&main, &cfg.git);
+    let protected = mustard_core::protected_branches(&cfg.git);
     let standing_on = flow.base_of(&branch);
     // Standing on a branch this project holds NO unit record for is standing on
     // a base, whatever the name looks like — a reviewer measured `release/…`
@@ -132,11 +132,10 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
         // then the DECLARED primary base when the project states one — naming
         // `origin/HEAD` there sends a unit that integrates into `dev` off to
         // `main` — and only then the remote's own default.
-        let declared = !cfg.git.declared_bases().is_empty();
         let target = standing_on
             .known()
             .map(str::to_string)
-            .or_else(|| declared.then(|| cfg.git.primary_base()))
+            .or_else(|| cfg.git.primary_base())
             .or_else(|| mustard_core::default_branch(&main));
         let hint = match &target {
             Some(base) => format!(
@@ -280,12 +279,12 @@ pub fn run(root: &Path, unit: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use mustard_core::platform::git as git_exec;
     use tempfile::tempdir;
 
     fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(dir).output().expect("spawn git");
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = git_exec::run(dir, args);
+        assert!(out.ok, "git {args:?} failed: {}", out.stderr);
     }
 
     /// `dev` (primary) + `main` declared, sitting on `dev`, with one work unit

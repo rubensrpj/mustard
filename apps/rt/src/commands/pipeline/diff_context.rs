@@ -14,27 +14,19 @@
 
 use std::path::Path;
 
-use mustard_core::platform::process::rtk_command;
+use mustard_core::platform::git as git_exec;
+use mustard_core::ProjectConfig;
 
 /// Output cap — mirrors `MAX_CHARS` in `diff-context.js`.
 const MAX_CHARS: usize = 3000;
 
 /// Run a git command in `cwd`, returning trimmed stdout or `""` on any error.
 ///
-/// Goes through [`rtk_command`] so the subprocess follows Mustard's Golden
-/// Rule (every Bash invocation is prefixed with `rtk`). RTK forwards `git`
-/// unchanged when it has no specific filter, so behavior is unchanged when
-/// no filter is registered — only the program name resolves through `rtk`
-/// instead of directly.
+/// Goes through the project's one git executor, which is where the spawn, the
+/// exit status and the decoding of the output live; this wrapper only decides
+/// what a failure means HERE, and here it means an empty section.
 fn git(cwd: &Path, args: &[&str]) -> String {
-    rtk_command("git", args)
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    git_exec::run(cwd, args).out().unwrap_or_default()
 }
 
 /// Run a git command scoped to `sub_path` via a trailing `-- <path>` pathspec.
@@ -61,15 +53,21 @@ pub fn run(parent: Option<&str>, subproject: Option<&str>, phase: Option<&str>) 
     }
 
     // Auto-detect the parent branch when none was given.
+    //
+    // It used to try the two names this file wrote down, in order, and stop at
+    // whichever one the repository happened to resolve. In a project that
+    // promotes through `develop` and `master` that picked the wrong one, and in
+    // a project that carries neither it picked none at all — an empty section
+    // where the whole point is the diff since divergence. The candidates are
+    // the project's own declared bases now; this file spells no branch.
     let mut parent_branch = parent.map(str::to_string);
     if parent_branch.is_none() {
         let branch = git(&cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
-        if !branch.is_empty() && branch != "main" && branch != "master" {
-            if !git(&cwd, &["rev-parse", "--verify", "main"]).is_empty() {
-                parent_branch = Some("main".to_string());
-            } else if !git(&cwd, &["rev-parse", "--verify", "master"]).is_empty() {
-                parent_branch = Some("master".to_string());
-            }
+        let bases = ProjectConfig::load(&cwd).git.declared_bases();
+        if !branch.is_empty() && !bases.contains(&branch) {
+            parent_branch = bases
+                .into_iter()
+                .find(|base| !git(&cwd, &["rev-parse", "--verify", base]).is_empty());
         }
     }
 

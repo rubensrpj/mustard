@@ -72,8 +72,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
+
+use crate::platform::git;
 use std::sync::OnceLock;
 
 /// Errors returned by [`workspace_root`].
@@ -298,21 +299,9 @@ fn canonical(p: &Path) -> PathBuf {
 /// non-zero exit, or empty output. Never panics: this is the fail-open seam of
 /// the worktree redirect.
 fn git_rev_parse(dir: &Path, args: &[&str]) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .arg("rev-parse")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(s))
-    }
+    let mut full: Vec<&str> = vec!["rev-parse"];
+    full.extend(args);
+    git::run(dir, &full).out().filter(|s| !s.is_empty()).map(PathBuf::from)
 }
 
 /// When `dir` is inside a LINKED git worktree, return the MAIN checkout root;

@@ -55,15 +55,24 @@ fn vcs_run(vcs_bin: &str, cwd: &Path, args: &[&str]) -> String {
 
 /// Resolve the parent (merge-base) branch for `current_branch` from the
 /// project's `mustard.json#git.flow` promotion map: the branch's own promotion
-/// target, else the wildcard `*` default, else `main`.
-fn parent_branch_for(config: &mustard_core::ProjectConfig, current_branch: &str) -> String {
+/// target, else the wildcard `*` default.
+///
+/// `None` when the project declares no flow. It used to answer a hardcoded
+/// `main` there, which made this diff range read against a branch the
+/// repository may not carry — an empty or wrong file list, presented as the
+/// spec's affected files. With nothing declared there is nothing to compare
+/// against, and the source is simply skipped.
+fn parent_branch_for(
+    config: &mustard_core::ProjectConfig,
+    current_branch: &str,
+) -> Option<String> {
     config
         .git
         .flow
         .get(current_branch)
         .or_else(|| config.git.flow.get("*"))
-        .cloned()
-        .unwrap_or_else(|| "main".to_string())
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
 }
 
 /// Resolve the per-spec NDJSON `.events/` directory.
@@ -120,7 +129,7 @@ pub fn collect_affected_files(cwd: &Path, spec: &str) -> Vec<String> {
     if let Some(vcs_bin) = config.vcs() {
         let branch = vcs_run(&vcs_bin, cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
         if !branch.is_empty() {
-            let parent = parent_branch_for(&config, &branch);
+            let parent = parent_branch_for(&config, &branch).unwrap_or_default();
             if !parent.is_empty() && branch != parent {
                 let range = format!("{parent}...HEAD");
                 let diff = vcs_run(&vcs_bin, cwd, &["diff", "--name-only", &range]);

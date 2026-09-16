@@ -284,3 +284,99 @@ fn git_prose_routes_destructive_decisions_through_rev_list() {
         );
     }
 }
+
+/// Toda linha de código de produção, com os comentários fora, de um arquivo
+/// Rust sob `dir`.
+///
+/// "Produção" é tudo antes do `#[cfg(test)]`: um nome de branch escrito num
+/// teste é dado de entrada, e dado de entrada não é o projeto decidindo por
+/// outro repositório.
+fn production_lines(dir: &Path, out: &mut Vec<(String, usize, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            production_lines(&path, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let rel = path
+            .strip_prefix(repo_root())
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for (n, line) in body.lines().enumerate() {
+            if line.trim_start().starts_with("#[cfg(test)]") {
+                break;
+            }
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            out.push((rel.clone(), n + 1, line.to_string()));
+        }
+    }
+}
+
+/// Nenhum nome de branch de integração fica escrito no código de produção.
+///
+/// A busca é o próprio critério. As bases de um projeto são o que ele declara
+/// no `mustard.json`; um nome escrito aqui é este projeto decidindo pelo
+/// repositório de outra pessoa — e foi exatamente assim que uma instalação num
+/// repositório cujas branches são `develop` e `master` acabou protegendo dois
+/// nomes que ela não usa e deixando a de verdade aberta.
+///
+/// A lista de exceções abaixo tem uma entrada por linha, e cada uma diz por
+/// que aquele texto não é nome de branch. Uma linha nova que case com a busca
+/// e não esteja na lista derruba o teste — que é o ponto: ela precisa ser
+/// olhada por alguém.
+#[test]
+fn nenhum_nome_de_base_fica_escrito_no_codigo() {
+    // Cada par é (arquivo, trecho da linha) com o motivo de não ser branch.
+    const NAO_SAO_BRANCHES: &[(&str, &str)] = &[
+        // Diretórios da raiz do sistema de arquivos, numa lista de caminhos.
+        ("apps/rt/src/hooks/session/prompt_submit_inject.rs", "\"boot\", \"mnt\""),
+        // Nomes de elemento HTML.
+        ("apps/rt/src/commands/review/dependency_precheck.rs", "\"div\", \"span\""),
+        // Radicais de nome de arquivo genéricos.
+        ("apps/rt/src/commands/review/dependency_precheck.rs", "generic_stems"),
+        // Perfis de compilação do cargo.
+        ("apps/rt/src/commands/review/qa_run/runner.rs", "=> \"debug\".to_string()"),
+        // Radicais de arquivo de índice de um módulo.
+        ("apps/scan/src/graph.rs", "for index in"),
+    ];
+    // Os nomes que um projeto costuma dar às suas bases.
+    const NOMES: &[&str] =
+        &["main", "master", "develop", "dev", "trunk", "producao", "production"];
+
+    let mut lines = Vec::new();
+    for crate_dir in ["apps/cli/src", "apps/rt/src", "apps/scan/src", "packages/core/src"] {
+        production_lines(&repo_root().join(crate_dir), &mut lines);
+    }
+    assert!(lines.len() > 10_000, "a busca não leu o código: {} linhas", lines.len());
+
+    let mut sobrou: Vec<String> = Vec::new();
+    for (rel, n, line) in &lines {
+        if !NOMES.iter().any(|name| line.contains(&format!("\"{name}\""))) {
+            continue;
+        }
+        if NAO_SAO_BRANCHES.iter().any(|(f, trecho)| rel == f && line.contains(trecho)) {
+            continue;
+        }
+        sobrou.push(format!("{rel}:{n}: {}", line.trim()));
+    }
+
+    assert!(
+        sobrou.is_empty(),
+        "o código de produção ainda escreve nome de branch — as bases vêm do \
+         `mustard.json#git.flow`, não daqui:\n{}",
+        sobrou.join("\n"),
+    );
+}

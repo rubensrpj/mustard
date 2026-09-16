@@ -46,7 +46,8 @@
 //! - No `unwrap`/`expect` outside tests; no `println!`.
 
 use std::path::Path;
-use std::process::Command;
+
+use crate::platform::git;
 
 /// What every install assumed before the provider could be detected, and what
 /// an unrecognised remote still answers. Changing this would silently re-route
@@ -108,15 +109,7 @@ pub fn provider_of_url(url: &str) -> Option<&'static str> {
 /// git could not answer or the host is not recognised.
 #[must_use]
 pub fn detect_provider(root: &Path) -> Option<&'static str> {
-    let out = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    provider_of_url(&String::from_utf8_lossy(&out.stdout))
+    provider_of_url(&git::run(root, &["remote", "get-url", "origin"]).out()?)
 }
 
 /// The provider in force for `root`, given whatever `mustard.json` declared.
@@ -137,14 +130,7 @@ mod tests {
     use super::*;
 
     fn repo_with_remote(dir: &Path, url: &str) -> bool {
-        let git = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let git = |args: &[&str]| git::run(dir, args).ok;
         git(&["init", "-q", "."]) && git(&["remote", "add", "origin", url])
     }
 

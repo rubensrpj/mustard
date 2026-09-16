@@ -1820,14 +1820,92 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              recorded by `mustard-rt run round`, which does not exist in this version yet. Nothing \
              was written."
         }
-        ("retired.wait_merge", Locale::PtBr) => {
-            "O `pr-merge` está parado nesta versão. A nova porta de merge, que entrega a spec e \
-             fecha a pendência ligada, ainda não chegou: espere o `pr-merge` novo. Nada foi feito."
+        ("doctor.protection.flow_missing", Locale::PtBr) => {
+            "Este projeto não declara base nenhuma em `mustard.json#git.flow`, então nenhuma \
+             branch fica protegida: nem aqui, nem no servidor, e não há o que perguntar ao \
+             provedor."
         }
-        ("retired.wait_merge", Locale::EnUs) => {
-            "`pr-merge` is stopped in this version. The new merge door, which delivers the spec and \
-             closes the linked pending item, has not arrived yet: wait for the new `pr-merge`. \
-             Nothing was done."
+        ("doctor.protection.flow_missing", Locale::EnUs) => {
+            "This project declares no base in `mustard.json#git.flow`, so no branch is protected \
+             — not here, not on the server — and there is nothing to ask the provider about."
+        }
+        ("doctor.protection.protected", Locale::PtBr) => {
+            "`{base}`: protegida no {provider}."
+        }
+        ("doctor.protection.protected", Locale::EnUs) => {
+            "`{base}`: protected at {provider}."
+        }
+        ("doctor.protection.open", Locale::PtBr) => {
+            "`{base}`: o {provider} não tem regra nenhuma para ela — qualquer pessoa com direito \
+             de envio escreve direto nessa branch."
+        }
+        ("doctor.protection.open", Locale::EnUs) => {
+            "`{base}`: {provider} has no rule for it — anyone with push rights writes straight to \
+             that branch."
+        }
+        ("doctor.protection.unasked", Locale::PtBr) => {
+            "`{base}`: não deu para perguntar ao {provider} ({reason}). Isto não é \
+             \"desprotegida\": é pergunta que não chegou a ser feita."
+        }
+        ("doctor.protection.unasked", Locale::EnUs) => {
+            "`{base}`: {provider} could not be asked ({reason}). That is not \"unprotected\" — it \
+             is a question that was never asked."
+        }
+        ("doctor.protection.fix", Locale::PtBr) => {
+            "como ligar: no GitHub, Settings → Rules → Rulesets (ou Branch protection rules); no \
+             Azure DevOps, Project settings → Repositories → Policies, na branch. Para declarar \
+             as bases, rode `mustard init` e responda a pergunta das bases."
+        }
+        ("doctor.protection.fix", Locale::EnUs) => {
+            "how to turn it on: on GitHub, Settings → Rules → Rulesets (or Branch protection \
+             rules); on Azure DevOps, Project settings → Repositories → Policies, on the branch. \
+             To declare the bases, run `mustard init` and answer the bases question."
+        }
+        ("pr.qa_pending", Locale::PtBr) => {
+            "Nem todo critério de `{spec}` tem uma execução aprovada: {passed} de {criteria} \
+             passaram. A ordem do fluxo roda os critérios ANTES da integração, e integrar agora \
+             integra trabalho que ninguém conferiu."
+        }
+        ("pr.qa_pending", Locale::EnUs) => {
+            "Not every criterion of `{spec}` has a passing run: {passed} of {criteria} passed. The \
+             flow runs the criteria BEFORE integration, and integrating now integrates work \
+             nobody checked."
+        }
+        ("message.too_long", Locale::PtBr) => {
+            "O {part} da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
+             corte automático mentiria sobre o que a mensagem diz. Nada foi enviado."
+        }
+        ("message.too_long", Locale::EnUs) => {
+            "The message {part} has {chars} characters and the limit is {max}. Write another one: \
+             truncating would misstate what the message says. Nothing was sent."
+        }
+        ("message.forbidden", Locale::PtBr) => {
+            "A mensagem traz `{found}`, que nunca vai num commit nem num pull request. O trecho: \
+             \"{excerpt}\". Tire e mande de novo; nada foi enviado."
+        }
+        ("message.forbidden", Locale::EnUs) => {
+            "The message carries `{found}`, which never goes into a commit or a pull request. The \
+             excerpt: \"{excerpt}\". Remove it and send again; nothing was sent."
+        }
+        ("message.no_title", Locale::PtBr) => {
+            "Esta spec não tem objetivo escrito, e é dele que sai o título do pull request. \
+             Escreva o contexto da spec primeiro. Nada foi enviado."
+        }
+        ("message.no_title", Locale::EnUs) => {
+            "This spec has no goal written down, and the pull request title comes from it. Write \
+             the spec's context first. Nothing was sent."
+        }
+        ("base.unmeasured", Locale::PtBr) => {
+            "Não dá para saber de qual branch cortar: este projeto não declara base nenhuma em \
+             `mustard.json#git.flow`, o remoto não respondeu qual é a branch padrão dele e o \
+             checkout não está em branch nenhuma. Diga a base com `--base <branch>` ou declare o \
+             `git.flow`. Nada foi cortado."
+        }
+        ("base.unmeasured", Locale::EnUs) => {
+            "There is no branch to cut from: this project declares no base in \
+             `mustard.json#git.flow`, the remote did not answer which its default branch is, and \
+             the checkout is on no branch. Name the base with `--base <branch>` or declare \
+             `git.flow`. Nothing was cut."
         }
         ("retired.approve_spec", Locale::PtBr) => {
             "O `approve-spec` não aprova nem avança mais uma spec. Quem aprova é o usuário, na \
@@ -3515,7 +3593,6 @@ mod tests {
             ("retired.pipeline_door", &["{kind}"][..], "mustard-rt run open"),
             ("retired.wait_close", &["{command}"][..], "mustard-rt run close"),
             ("retired.wait_round", &["{command}"][..], "mustard-rt run round"),
-            ("retired.wait_merge", &[][..], "pr-merge"),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

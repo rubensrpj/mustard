@@ -183,13 +183,6 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          still calls review-prefetch/diff-context directly - unadopted",
     ),
     (
-        "round",
-        "a round of waves of the flow (commands/flow/round.rs): dispatches the \
-         waves that can go out together, records what came back, formats the \
-         round's files and makes the commit; the flow prose that will call it \
-         is rewritten together with the rest of the flow",
-    ),
-    (
         "security-scan",
         "secret/permission scanner with an exit-code contract \
          (commands/review/security_scan.rs, JS-era port); no product caller \

@@ -241,6 +241,7 @@ pub(crate) fn stand_on_spec_branch(root: &std::path::Path, spec: &str) {
 mod tests {
     use super::*;
     use mustard_core::domain::model::contract::HookInput;
+    use mustard_core::platform::git;
     use tempfile::tempdir;
 
     const SESSION: &str = "s-lado-a-lado";
@@ -396,13 +397,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed");
+        assert!(git::run(dir, args).ok, "git {args:?} failed");
     }
 
     /// Um repositório com um commit na `dev` e, fora do git como o Mustard
