@@ -305,9 +305,9 @@ mod tests {
     }
 
     /// Uma spec de uma onda, já aprovada, despachada, entregue, revisada e
-    /// comitada: pronta para fechar. O critério dela prova com o comando
-    /// `proof`.
-    fn ready_to_close(root: &Path, spec: &str, proof: &str) {
+    /// comitada: pronta para fechar. Ela ganha um critério por comando de
+    /// `proofs`, na ordem em que eles vêm.
+    fn ready_to_close(root: &Path, spec: &str, proofs: &[&str]) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n").unwrap();
@@ -320,9 +320,15 @@ mod tests {
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
-        let crit = id_of(&write(root, spec, "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": proof, "origin": said})));
-        write(root, spec, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit],
+        let crits: Vec<u64> = proofs
+            .iter()
+            .map(|proof| {
+                id_of(&write(root, spec, "criterion",
+                    json!({"when": format!("a onda roda e prova com {proof}"), "then": "a suíte passa",
+                           "proof": proof, "origin": said})))
+            })
+            .collect();
+        write(root, spec, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": crits,
             "done_when": "A suíte passa.", "origin": said}));
         write(root, spec, "task", json!({"wave": 1, "text": "Tarefa.", "files": [{"path": "src/a.rs"}], "origin": said}));
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
@@ -335,9 +341,10 @@ mod tests {
         };
         assert_eq!(round(None)["ok"], json!(true));
         std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
+        let checked: Vec<Value> =
+            crits.iter().map(|id| json!({"criterion": id, "tests_rule": "confere a regra"})).collect();
         let report = json!({"waves": [{"wave": 1, "delivered": "Saiu.", "files": ["src/a.rs"],
-            "verdict": {"result": "approved", "text": "passou",
-                        "criteria": [{"criterion": crit, "tests_rule": "confere a regra"}]}}],
+            "verdict": {"result": "approved", "text": "passou", "criteria": checked}}],
             "commit": {"title": "feat(onda-1): a soma sai", "body": "A onda 1."}});
         assert_eq!(round(Some(report.to_string()))["ok"], json!(true));
     }
@@ -346,25 +353,30 @@ mod tests {
         close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: None }, None)
     }
 
-    /// O fechamento roda cada critério uma vez, grava cada execução, grava a
-    /// fase fechada e deixa a pasta da spec com exatamente três arquivos.
+    /// O fechamento roda cada critério uma vez — os dois critérios da spec
+    /// aparecem, cada um com uma execução —, grava cada execução, grava a fase
+    /// fechada e deixa a pasta da spec com exatamente três arquivos.
     #[test]
     fn closing_runs_each_criterion_once_and_leaves_three_files_in_the_folder() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", "git --version");
+        ready_to_close(root, "x", &["git --version", "git --help"]);
 
         let out = close(root, "x");
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("closed"), "{out}");
-        assert_eq!(out["criteria"].as_array().map(Vec::len), Some(1), "{out}");
+        assert_eq!(out["criteria"].as_array().map(Vec::len), Some(2), "os dois critérios rodaram: {out}");
 
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
+        let criteria: Vec<u64> =
+            log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+        assert_eq!(criteria.len(), 2, "a montagem tem dois critérios");
         let runs: Vec<&SpecEvent> =
             log.visible().into_iter().filter(|e| e.event_type == "criterion_run").collect();
-        assert_eq!(runs.len(), 1, "cada critério roda uma vez");
-        assert_eq!(runs[0].str_field("result"), Some("pass"));
+        let ran: Vec<u64> = runs.iter().filter_map(|e| e.int("criterion")).collect();
+        assert_eq!(ran, criteria, "cada critério roda, e uma vez só");
+        assert!(runs.iter().all(|e| e.str_field("result") == Some("pass")), "{runs:?}");
         assert_eq!(State::from_log(&log).phase, Some("closed"));
 
         let folder = root.join(".claude").join("spec").join("x");
@@ -384,7 +396,7 @@ mod tests {
     fn the_round_and_the_close_order_the_publish_and_never_carry_a_link() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", "git --version");
+        ready_to_close(root, "x", &["git --version"]);
 
         let rounded = crate::commands::flow::round::round_for(
             &crate::commands::flow::round::RoundOpts {
@@ -410,7 +422,7 @@ mod tests {
     fn closing_arms_the_charge_of_the_pending_items() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", "git --version");
+        ready_to_close(root, "x", &["git --version"]);
         assert_eq!(close_for(
             &CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None },
             Some("s-fecha"),
@@ -427,7 +439,7 @@ mod tests {
         // Onda sem commit.
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", "git --version");
+        ready_to_close(root, "x", &["git --version"]);
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "mais uma"})));
         let crit = id_of(&write(root, "x", "criterion",
             json!({"when": "a onda roda", "then": "passa", "proof": "git --version", "origin": said})));
@@ -440,7 +452,7 @@ mod tests {
         // Onda cuja última revisão reprovou.
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", "git --version");
+        ready_to_close(root, "x", &["git --version"]);
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
@@ -452,7 +464,7 @@ mod tests {
         // Pedido do usuário que nenhuma onda entregou.
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", "git --version");
+        ready_to_close(root, "x", &["git --version"]);
         crate::shared::spec_state::seed_request(root, "x", "Quero também a barra de status.");
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("request-not-delivered"), "{refused}");
@@ -464,7 +476,7 @@ mod tests {
     fn a_criterion_whose_proof_fails_blocks_the_close_and_stays_on_the_record() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_to_close(root, "x", "git --nao-existe-esta-opcao");
+        ready_to_close(root, "x", &["git --nao-existe-esta-opcao"]);
 
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-failed"), "{refused}");

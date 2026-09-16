@@ -2074,6 +2074,17 @@ impl SpecLog {
         self.get(id).filter(|e| !hidden.contains_key(&e.id))
     }
 
+    /// As ondas que já têm registro de entrega. O que elas fizeram está
+    /// provado pelo código que entrou, e não pelo texto que o descreveu.
+    #[must_use]
+    pub fn delivered_waves(&self) -> BTreeSet<u64> {
+        self.block(BlockQuery::Block(Block::Waves))
+            .into_iter()
+            .filter(|event| event.event_type == "delivered")
+            .filter_map(SpecEvent::wave)
+            .collect()
+    }
+
     /// Um bloco, só com o que a leitura mostra. Uma onda (`wave-2`) traz a
     /// onda, as tarefas, os envios e os entregou dela, e as skills que as
     /// tarefas dela nomeiam.
@@ -2548,6 +2559,21 @@ mod tests {
         );
         assert_eq!(log.max_id(), 9, "the torn line's number is never reused");
         assert!(log.skipped[0].message(Locale::PtBr).contains("linha 2"));
+    }
+
+    /// As ondas entregues são as que têm registro de entrega, e só elas: a
+    /// onda que só tem tarefa, e a que só foi enviada, ainda vêm.
+    #[test]
+    fn the_delivered_waves_are_the_ones_with_a_delivery_record() {
+        let content = "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Uma.\"}\n\
+                       {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"wave\",\"n\":2,\"text\":\"Duas.\"}\n\
+                       {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"wave\",\"n\":3,\"text\":\"Três.\"}\n\
+                       {\"v\":1,\"id\":4,\"at\":\"t\",\"type\":\"task\",\"wave\":2,\"text\":\"Mexer.\"}\n\
+                       {\"v\":1,\"id\":5,\"at\":\"t\",\"type\":\"send\",\"wave\":2,\"text\":\"Pedido.\"}\n\
+                       {\"v\":1,\"id\":6,\"at\":\"t\",\"type\":\"delivered\",\"wave\":1,\"text\":\"Saiu.\"}\n\
+                       {\"v\":1,\"id\":7,\"at\":\"t\",\"type\":\"delivered\",\"wave\":3,\"text\":\"Saiu.\"}\n";
+        let log = parse_log(content);
+        assert_eq!(log.delivered_waves(), BTreeSet::from([1, 3]));
     }
 
     #[test]

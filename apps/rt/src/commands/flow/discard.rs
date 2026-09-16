@@ -123,7 +123,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     let moved = if opts.delete {
         std::fs::remove_dir_all(&folder).is_ok()
     } else {
-        archive(&project.root, &spec, &folder)
+        archive(&spec, &folder)
     };
     let index_dropped = mustard_core::io::spec_index::drop_line(&project.root, &spec).is_ok();
     if let Some(sid) = session {
@@ -149,10 +149,9 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
 
 /// Guarda a pasta da spec ao lado das outras descartadas. `true` quando ela
 /// saiu do lugar.
-fn archive(root: &Path, spec: &str, folder: &Path) -> bool {
+fn archive(spec: &str, folder: &Path) -> bool {
     let Some(specs) = folder.parent() else { return false };
     let target = specs.join(ARCHIVE_DIR).join(spec);
-    let _ = root;
     if std::fs::create_dir_all(target.parent().unwrap_or(&target)).is_err() {
         return false;
     }
@@ -204,17 +203,58 @@ mod tests {
         assert!(mustard_core::io::spec_index::rebuild(root).is_ok());
     }
 
-    fn discard(root: &Path, spec: &str, confirm: Option<&str>, delete: bool) -> Value {
+    fn discard(root: &Path, spec: &str, confirm: Option<&str>, delete: bool, remote: bool) -> Value {
         discard_for(
             &DiscardOpts {
                 root: root.to_path_buf(),
                 spec: Some(spec.to_string()),
-                remote: false,
+                remote,
                 delete,
                 confirm: confirm.map(str::to_string),
             },
             None,
         )
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// Um projeto com servidor: a base `dev`, a branch da spec no local e no
+    /// servidor, e a spec aberta. Devolve a pasta da obra e a do servidor.
+    fn project_with_server(root: &Path, spec: &str) -> (PathBuf, PathBuf) {
+        let server = root.join("servidor.git");
+        let work = root.join("obra");
+        std::fs::create_dir_all(&work).unwrap();
+        git(root, &["init", "--bare", "-q", "servidor.git"]);
+        git(&work, &["init", "-q", "."]);
+        git(&work, &["checkout", "-q", "-b", "dev"]);
+        std::fs::write(work.join("mustard.json"), br#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-q", "-m", "semente"]);
+        git(&work, &["remote", "add", "origin", &server.to_string_lossy()]);
+        git(&work, &["push", "-q", "origin", "dev"]);
+        let branch = format!("feature/{spec}");
+        git(&work, &["branch", &branch]);
+        git(&work, &["push", "-q", "origin", &branch]);
+        assert_eq!(record_open(&work, spec, &branch, "dev"), Ok(true));
+        assert!(mustard_core::io::spec_index::rebuild(&work).is_ok());
+        (work, server)
+    }
+
+    /// `true` quando o servidor ainda carrega a branch.
+    fn on_server(server: &Path, branch: &str) -> bool {
+        std::process::Command::new("git")
+            .args(["--git-dir", &server.to_string_lossy()])
+            .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+            .output()
+            .is_ok_and(|out| out.status.success())
     }
 
     /// A primeira chamada só mostra o que vai sair e devolve um código; nada
@@ -227,7 +267,7 @@ mod tests {
         project(root, "x");
         let folder = root.join(".claude").join("spec").join("x");
 
-        let preview = discard(root, "x", None, false);
+        let preview = discard(root, "x", None, false, false);
         assert_eq!(preview["preview"], json!(true), "{preview}");
         assert_eq!(preview["leaving"]["branch"], json!("feature/x"), "{preview}");
         assert_eq!(preview["leaving"]["action"], json!("archived"), "{preview}");
@@ -235,11 +275,11 @@ mod tests {
         assert!(!code.is_empty(), "{preview}");
         assert!(folder.join("spec.ndjson").is_file(), "a primeira chamada não tira nada");
 
-        let wrong = discard(root, "x", Some("outro-codigo"), false);
+        let wrong = discard(root, "x", Some("outro-codigo"), false, false);
         assert_eq!(wrong["reason"], json!("confirm-mismatch"), "{wrong}");
         assert!(folder.join("spec.ndjson").is_file(), "o código errado não tira nada");
 
-        let done = discard(root, "x", Some(&code), false);
+        let done = discard(root, "x", Some(&code), false, false);
         assert_eq!(done["ok"], json!(true), "{done}");
         assert!(!folder.exists(), "a pasta saiu do lugar");
         assert!(
@@ -258,13 +298,41 @@ mod tests {
         let root = dir.path();
         project(root, "x");
 
-        let archived = discard(root, "x", None, false)["token"].as_str().unwrap_or_default().to_string();
-        let deleted = discard(root, "x", None, true)["token"].as_str().unwrap_or_default().to_string();
+        let archived = discard(root, "x", None, false, false)["token"].as_str().unwrap_or_default().to_string();
+        let deleted = discard(root, "x", None, true, false)["token"].as_str().unwrap_or_default().to_string();
         assert_ne!(archived, deleted, "cada escolha tem o seu código");
 
-        let done = discard(root, "x", Some(&deleted), true);
+        let done = discard(root, "x", Some(&deleted), true, false);
         assert_eq!(done["ok"], json!(true), "{done}");
         assert!(!root.join(".claude").join("spec").join("x").exists(), "a pasta foi apagada");
         assert!(!root.join(".claude/spec").join(ARCHIVE_DIR).join("x").exists(), "nada foi guardado");
+    }
+
+    /// A branch do servidor sai só com a opção: sem ela o descarte tira a
+    /// local e deixa a do servidor no lugar; com ela, as duas saem. A branch
+    /// do servidor é de todo mundo, e cada escolha tem o seu código.
+    #[test]
+    fn the_server_branch_goes_only_with_the_option() {
+        let dir = tempdir().unwrap();
+        let (work, server) = project_with_server(dir.path(), "x");
+        let kept = discard(&work, "x", None, false, false);
+        let taken = discard(&work, "x", None, false, true);
+        assert_ne!(kept["token"], taken["token"], "cada escolha tem o seu código");
+        assert_eq!(kept["leaving"]["remote"], json!(false), "{kept}");
+
+        let code = kept["token"].as_str().unwrap_or_default().to_string();
+        let done = discard(&work, "x", Some(&code), false, false);
+        assert_eq!(done["ok"], json!(true), "{done}");
+        assert_eq!(done["git"]["branchDeleted"], json!(true), "a local sai: {done}");
+        assert_eq!(done["git"]["remoteDeleted"], json!(false), "{done}");
+        assert!(on_server(&server, "feature/x"), "sem a opção, a do servidor fica");
+
+        let other = tempdir().unwrap();
+        let (work, server) = project_with_server(other.path(), "x");
+        let code = discard(&work, "x", None, false, true)["token"].as_str().unwrap_or_default().to_string();
+        let done = discard(&work, "x", Some(&code), false, true);
+        assert_eq!(done["ok"], json!(true), "{done}");
+        assert_eq!(done["git"]["remoteDeleted"], json!(true), "{done}");
+        assert!(!on_server(&server, "feature/x"), "com a opção, a do servidor sai");
     }
 }

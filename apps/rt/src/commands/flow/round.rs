@@ -210,6 +210,12 @@ fn run_round(
                 return Err(RoundRefusal::DeliveredTooLong { wave: report.wave, chars });
             }
         }
+        // A mensagem do commit é conferida junto das outras travas, antes de
+        // qualquer gravação: recusá-la depois de gravar o entregou e o
+        // veredito faria a chamada seguinte, com a mensagem corrigida,
+        // duplicar os dois.
+        let message = commit_message(raw)?;
+
         // O que voltou vira registro: o entregou de cada onda e o veredito da
         // revisão dela, pela mesma porta de gravação das outras.
         recorded = record_reports(&opts.root, &spec, &reports).map_err(RoundRefusal::Refused)?;
@@ -225,7 +231,7 @@ fn run_round(
             }));
         }
 
-        if let Some(message) = commit_message(raw)? {
+        if let Some(message) = message {
             let waves: Vec<u64> = reports.iter().map(|r| r.wave).collect();
             commit = Some(make_commit(&opts.root, root, &spec, &message, &waves, &files)?);
         }
@@ -600,11 +606,16 @@ fn max_parallel(root: &Path) -> usize {
 /// mesmo arquivo ao mesmo tempo.
 fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
     let graph = wave_graph(log);
+    // A onda reprovada volta para a fila: sem isso o ciclo de conserto não
+    // fecha, porque o fechamento recusa e diz qual refazer e a rodada nunca a
+    // despacharia de novo.
+    let to_redo = waves_to_redo(log);
     let sent: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))
         .into_iter()
         .filter(|e| e.event_type == "send")
         .filter_map(SpecEvent::wave)
+        .filter(|n| !to_redo.contains(n))
         .collect();
     let delivered: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))
@@ -631,6 +642,33 @@ fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
         out.push(n);
     }
     out
+}
+
+/// As ondas que voltam para a fila: a última revisão delas reprovou, e o
+/// conserto ainda não saiu — o pedido mais novo da onda é anterior a essa
+/// reprovação. Depois que o conserto sai, a onda espera a revisão dele, e não
+/// é despachada de novo pela mesma reprovação.
+fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
+    let mut rejected: BTreeMap<u64, u64> = BTreeMap::new();
+    for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
+        let (Some(n), Some(result)) = (verdict.wave(), verdict.str_field("result")) else { continue };
+        if result == "rejected" {
+            rejected.insert(n, verdict.id);
+        } else {
+            rejected.remove(&n);
+        }
+    }
+    let mut last_send: BTreeMap<u64, u64> = BTreeMap::new();
+    for send in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "send") {
+        if let Some(n) = send.wave() {
+            last_send.insert(n, send.id);
+        }
+    }
+    rejected
+        .into_iter()
+        .filter(|(n, id)| last_send.get(n).is_none_or(|sent| sent < id))
+        .map(|(n, _)| n)
+        .collect()
 }
 
 /// As ondas prontas para sair, em ordem de nível e de número, cada uma com os
@@ -885,6 +923,26 @@ mod tests {
         assert_eq!(log.visible().iter().filter(|e| e.event_type == "verdict").count(), 1);
     }
 
+    /// A onda cuja última revisão reprovou volta a ser despachada, e uma vez
+    /// só: depois que o conserto sai, a mesma reprovação não a manda de novo.
+    #[test]
+    fn a_rejected_wave_goes_out_again_and_only_once() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let first = round(root, "x", None, None);
+        assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
+
+        let report = json!({"waves": [{"wave": 1, "delivered": "A soma saiu.", "files": ["src/a.rs"],
+            "verdict": {"result": "rejected", "text": "faltou o teste",
+                        "criteria": [{"criterion": 1, "tests_rule": "confere a regra"}]}}]});
+        let again = round(root, "x", Some(&report.to_string()), None);
+        assert_eq!(again["dispatch"].as_array().map(Vec::len), Some(1), "a onda reprovada volta a sair: {again}");
+
+        let quiet = round(root, "x", None, None);
+        assert_eq!(quiet["dispatch"], json!([]), "o conserto já saiu, e a onda espera a revisão dele: {quiet}");
+    }
+
     /// O que uma onda entregou acima do teto de caracteres é recusado, e nada
     /// é gravado.
     #[test]
@@ -949,6 +1007,33 @@ mod tests {
         }
     }
 
+    /// A mensagem do commit é conferida antes de qualquer gravação: o
+    /// relatório com e-mail no corpo é recusado sem gravar o entregou, e a
+    /// chamada seguinte, com a mensagem limpa, grava uma vez só.
+    #[test]
+    fn a_report_with_a_bad_commit_message_records_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None, None);
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
+        let delivered = |body: &str| {
+            json!({"waves": [{"wave": 1, "delivered": "A soma saiu.", "files": ["src/a.rs"]}],
+                   "commit": {"title": "feat: a soma", "body": body}})
+        };
+        let refused = round(root, "x", Some(&delivered("pedido de fulano@empresa.com.br").to_string()), None);
+        assert_eq!(refused["reason"], json!("commit-forbidden-text"), "{refused}");
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 0, "nada foi gravado");
+
+        let went = round(root, "x", Some(&delivered("O corpo limpo.").to_string()), None);
+        assert_eq!(went["ok"], json!(true), "{went}");
+        let log = store::read(&path).unwrap().unwrap();
+        assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 1, "sem duplicar");
+    }
+
     /// A rodada faz o commit da rodada e grava o código dele na spec.
     #[test]
     fn the_round_commits_and_records_the_commit_on_the_spec() {
@@ -1009,6 +1094,47 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("src/fora.ts")).unwrap(),
             "const x=1\n",
+            "o arquivo fora da rodada fica byte a byte"
+        );
+    }
+
+    /// O ramo do projeto .NET: o formatador roda uma vez por arquivo da
+    /// rodada, sempre com o projeto da raiz, nunca num arquivo de fora, e some
+    /// pelo nome quando não está na máquina.
+    #[test]
+    fn the_dotnet_formatter_runs_once_per_round_file_and_says_when_it_is_missing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for name in ["a.cs", "b.cs", "fora.cs"] {
+            std::fs::write(root.join("src").join(name), "class A {}\n").unwrap();
+        }
+        let files = vec!["src/a.cs".to_string(), "src/b.cs".to_string()];
+
+        let never = |_: &str, _: &[&str]| false;
+        assert_eq!(format_with(root, &files, &never), Formatting::default(), "sem projeto .NET, nada");
+
+        std::fs::write(root.join("Loja.csproj"), b"<Project />").unwrap();
+        let calls: std::cell::RefCell<Vec<Vec<String>>> = std::cell::RefCell::new(Vec::new());
+        let always = |program: &str, args: &[&str]| {
+            assert_eq!(program, "dotnet");
+            calls.borrow_mut().push(args.iter().map(|a| (*a).to_string()).collect());
+            true
+        };
+        let out = format_with(root, &files, &always);
+        assert_eq!(out.formatted, files);
+        assert!(out.missing.is_empty(), "{out:?}");
+        let calls = calls.into_inner();
+        assert_eq!(calls.len(), 2, "uma chamada por arquivo da rodada: {calls:?}");
+        assert!(calls.iter().all(|c| c.contains(&"Loja.csproj".to_string())), "{calls:?}");
+        assert!(!calls.iter().any(|c| c.contains(&"src/fora.cs".to_string())), "{calls:?}");
+
+        let out = format_with(root, &files, &never);
+        assert!(out.formatted.is_empty(), "{out:?}");
+        assert_eq!(out.missing, vec!["dotnet format".to_string()], "o formatador some pelo nome");
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/fora.cs")).unwrap(),
+            "class A {}\n",
             "o arquivo fora da rodada fica byte a byte"
         );
     }

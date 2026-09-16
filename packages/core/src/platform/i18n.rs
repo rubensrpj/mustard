@@ -1447,12 +1447,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              A task that changes no file says so in its own text."
         }
         ("plan.task_wrong_wave", Locale::PtBr) => {
-            "A tarefa {task} está na onda {wave}, mas o texto dela casa melhor com a onda {best}. \
-             Mova a tarefa ou reescreva o texto da onda."
+            "A tarefa {task} está na onda {wave} e o texto dela não casa com o texto dessa onda; \
+             casa melhor com a onda {best}. Mova a tarefa ou reescreva o texto da onda."
         }
         ("plan.task_wrong_wave", Locale::EnUs) => {
-            "Task {task} sits in wave {wave}, but its text matches wave {best} better. \
-             Move the task or rewrite the wave's text."
+            "Task {task} sits in wave {wave} and its text does not match that wave's text; \
+             it matches wave {best} better. Move the task or rewrite the wave's text."
         }
         ("plan.task_could_name_a_skill", Locale::PtBr) => {
             "A tarefa {task} não nomeia skill, e a skill {skill} serve para ela. Nomeie-a na tarefa."

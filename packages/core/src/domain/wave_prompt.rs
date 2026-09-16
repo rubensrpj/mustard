@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::domain::lessons::{applies_to, Scope};
 use crate::domain::search;
-use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use crate::platform::i18n::{translate, Locale};
 
 /// O teto de linhas de um pedido de onda.
@@ -252,6 +252,39 @@ fn matched_by(log: &SpecLog, n: u64, items: &[&SpecEvent]) -> BTreeSet<u64> {
         out.insert(hit.id);
     }
     out
+}
+
+/// `true` quando um texto casa com a onda `n`: a mesma busca do recorte, com
+/// o texto dessa onda como único documento.
+///
+/// É uma pergunta sobre uma onda só, e a resposta é sim ou não. Não é uma
+/// disputa em que uma das ondas vence e todas as outras perdem: essa outra
+/// pergunta é a de [`closest_wave`], e serve só para dizer para onde um texto
+/// iria. A onda que o plano não tem responde que sim, porque a recusa dela é
+/// outra e não sai daqui.
+#[must_use]
+pub fn matches_wave(log: &SpecLog, n: u64, text: &str) -> bool {
+    let docs = wave_docs(log);
+    let Some((_, mine)) = docs.iter().find(|(number, _)| *number == n) else { return true };
+    !search::search([(n, mine.as_str())], text).is_empty()
+}
+
+/// A onda cujo texto casa mais forte com um texto, entre as do plano.
+/// `None` quando ele não casa com onda nenhuma, e aí não há para onde apontar.
+#[must_use]
+pub fn closest_wave(log: &SpecLog, text: &str) -> Option<u64> {
+    let docs = wave_docs(log);
+    let hit = search::search(docs.iter().map(|(n, roots)| (*n, roots.as_str())), text).into_iter().next()?;
+    Some(hit.id)
+}
+
+/// O texto de cada onda do plano, reduzido para a busca.
+fn wave_docs(log: &SpecLog) -> Vec<(u64, String)> {
+    log.block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|event| event.event_type == "wave")
+        .filter_map(|event| Some((event.wave()?, search_field(event.str_field("text"), &[]))))
+        .collect()
 }
 
 /// Os caminhos que uma tarefa declara.
@@ -657,6 +690,26 @@ mod tests {
         let picked = "A barra de status mostra o link".to_string();
         assert!(texts(&plan, 1).contains(&picked), "{:?}", texts(&plan, 1));
         assert!(!texts(&plan, 2).contains(&picked), "{:?}", texts(&plan, 2));
+    }
+
+    /// "Este texto casa com esta onda?" é pergunta sobre uma onda só, e mais
+    /// de uma onda pode responder que sim ao mesmo texto. "Qual das ondas casa
+    /// mais forte?" é outra pergunta, sempre escolhe uma, e serve só para
+    /// dizer para onde o texto iria.
+    #[test]
+    fn matching_a_wave_is_a_yes_or_no_question_and_more_than_one_wave_can_say_yes() {
+        let plan = plan();
+        let both = "A página do relatório sai da leitura do arquivo de eventos";
+        assert!(matches_wave(&plan, 1, both), "casa com a onda da leitura");
+        assert!(matches_wave(&plan, 2, both), "casa também com a onda da página");
+        assert!(closest_wave(&plan, both).is_some(), "uma das duas casa mais forte");
+
+        let neither = "O commit segue o modelo aprovado";
+        assert!(!matches_wave(&plan, 1, neither), "não casa com a onda da leitura");
+        assert!(!matches_wave(&plan, 2, neither), "nem com a onda da página");
+        assert_eq!(closest_wave(&plan, neither), None, "não há para onde apontar");
+
+        assert!(matches_wave(&plan, 9, neither), "onda que o plano não tem não é conferida aqui");
     }
 
     /// A busca liga o item à onda cujo texto fala do mesmo assunto.

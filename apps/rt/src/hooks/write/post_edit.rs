@@ -1619,4 +1619,29 @@ mod tests {
             other => panic!("expected an Inject advisory in warn mode, got {other:?}"),
         }
     }
+
+    /// A formatação automática saiu daqui: num projeto com configuração de
+    /// formatador e com o formatador na pasta dele, o arquivo recém-escrito
+    /// fica byte a byte como foi gravado, pelas duas portas do gancho. Quem
+    /// formata é a rodada, uma vez, antes do commit.
+    #[test]
+    fn a_write_in_a_project_with_a_formatter_config_leaves_the_file_byte_for_byte() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+        std::fs::write(root.join("package.json"), b"{}").unwrap();
+        std::fs::write(root.join(".prettierrc"), b"{}").unwrap();
+        std::fs::write(root.join("node_modules/.bin/prettier"), b"#!/bin/sh\nexit 0\n").unwrap();
+        let file = root.join("src").join("a.ts");
+        let text = "const   x   =   1\n\n\n";
+        std::fs::write(&file, text).unwrap();
+
+        let cwd = root.to_str().unwrap();
+        let input = edit_input(&file.to_string_lossy(), text);
+        assert_eq!(PostEdit.evaluate(&input, &ctx(cwd)).expect("no error"), Verdict::Allow);
+        PostEdit.observe(&input, &ctx(cwd));
+
+        assert_eq!(std::fs::read(&file).unwrap(), text.as_bytes(), "a gravação não passa por formatador");
+    }
 }

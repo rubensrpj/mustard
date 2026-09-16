@@ -118,13 +118,6 @@ fn function_roots() -> &'static BTreeSet<String> {
     })
 }
 
-/// O documento que casa mais forte com o pedido, entre os candidatos.
-/// `None` quando nenhum deles casa com nenhuma palavra do pedido.
-#[must_use]
-pub fn best<'a>(docs: impl IntoIterator<Item = (u64, &'a str)>, query: &str) -> Option<Hit> {
-    SearchIndex::build(docs).top(&query_terms(query), 1).into_iter().next()
-}
-
 /// Monta o índice e devolve as [`TOP`] respostas mais fortes para o pedido.
 #[must_use]
 pub fn search<'a>(docs: impl IntoIterator<Item = (u64, &'a str)>, query: &str) -> Vec<Hit> {
