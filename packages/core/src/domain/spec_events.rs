@@ -2418,17 +2418,12 @@ pub fn check_message(
 }
 
 /// A primeira frase de `text`, sem título de markdown e sem negrito.
+///
+/// Quem lê a frase é a leitura do índice da spec, a mesma que tira o objetivo
+/// do primeiro `context`: uma frase só se lê de um jeito só.
 fn first_sentence_of(text: &str) -> String {
-    let plain = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('#'))
-        .unwrap_or_default()
-        .replace("**", "");
-    match plain.find(". ") {
-        Some(at) => plain[..=at].trim().to_string(),
-        None => plain.trim().to_string(),
-    }
+    let plain = crate::domain::spec_index::after_titles(text).replace("**", "");
+    crate::domain::spec_index::first_sentence(&plain).to_string()
 }
 
 /// O título e o corpo do pull request desta spec, montados do arquivo de
@@ -2625,6 +2620,54 @@ mod tests {
             );
             assert!(said.contains('"'), "e mostra o trecho em que achou: {said}");
         }
+    }
+
+    /// A linha de cada onda no corpo do pull request pula o título — o
+    /// cabeçalho e o trecho em negrito sozinho na linha — e fecha a frase
+    /// também no ponto de exclamação e no de interrogação.
+    ///
+    /// Quem lê a primeira frase é a leitura que já existe no pacote. Uma
+    /// segunda leitura escrita aqui devolveria o título em negrito inteiro no
+    /// lugar da frase, e arrastaria a prosa que vem depois do `!`.
+    #[test]
+    fn a_linha_da_onda_pula_o_titulo_e_fecha_a_frase_em_qualquer_ponto() {
+        let mut lines: Vec<String> = Vec::new();
+        let mut id = 0u64;
+        let mut push = |fields: Value| {
+            id += 1;
+            let mut map = obj(fields);
+            map.insert("v".into(), json!(1));
+            map.insert("id".into(), json!(id));
+            map.insert("at".into(), json!("2026-09-16T10:00:00-03:00"));
+            map.insert("author".into(), json!("assistant"));
+            lines.push(render_line(&map));
+        };
+        push(json!({"type": "context", "text": "Deixar o Mustard enxuto."}));
+        push(json!({
+            "type": "delivered",
+            "wave": 1,
+            "files": ["a.rs"],
+            "text": "**O portão de corte**\nA onda parou de perguntar? Depois vem o resto.",
+        }));
+        push(json!({
+            "type": "delivered",
+            "wave": 2,
+            "files": ["b.rs"],
+            "text": "# A prova do vermelho\nFuncionou! E sobrou prosa depois.",
+        }));
+        push(json!({"type": "pr_summary", "text": "O portão lê o estado."}));
+
+        let log = parse_log(&lines.join("\n"));
+        let (_, body) = pr_message(&log).expect("a spec tem objetivo e resumo");
+        assert!(
+            body.contains("- onda 1: A onda parou de perguntar?"),
+            "a linha da onda 1 não pulou o negrito ou não fechou no ponto de \
+             interrogação: {body}",
+        );
+        assert!(
+            body.contains("- onda 2: Funcionou!"),
+            "a linha da onda 2 não fechou no ponto de exclamação: {body}",
+        );
     }
 
     fn checked(event_type: &str, draft: Value) -> Result<(), Refusal> {

@@ -1085,10 +1085,10 @@ fn success_line(
 /// criterion never run all return `false` — the gate stays *closed*. We are
 /// guarding a verdict, so the conservative outcome on missing data is to block
 /// (not allow). Callers can opt out via `--allow-no-qa`.
-/// `pub(crate)` so the Bash-family `pr_qa_gate` advisory, `complete-spec` and
-/// `close-orchestrate` consult the SAME source of truth as this module's hard
-/// `pipeline.complete` gate — an advisory that could disagree with the gate
-/// that actually blocks would be worse than none.
+/// `pub(crate)` so o aviso que a porta de abrir o pull request carrega no
+/// relatório, `complete-spec` e `close-orchestrate` consultem a MESMA fonte
+/// que o portão duro deste módulo — um aviso que pudesse discordar do portão
+/// que realmente barra seria pior do que nenhum.
 pub(crate) fn qa_result_passed(cwd: &Path, spec: &str) -> bool {
     use mustard_core::domain::spec_state::SpecState as _;
     crate::shared::spec_state::DiskSpecState::new(cwd)

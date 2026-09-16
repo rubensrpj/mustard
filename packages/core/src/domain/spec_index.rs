@@ -110,7 +110,7 @@ pub fn goal_of(log: &SpecLog) -> Option<String> {
 
 /// O texto a partir da primeira linha que não é só título: pula as linhas em
 /// branco, os cabeçalhos `#` e as linhas que são só um trecho em negrito.
-fn after_titles(text: &str) -> &str {
+pub(crate) fn after_titles(text: &str) -> &str {
     let mut rest = text.trim_start();
     while let Some(line) = rest.lines().next() {
         if !is_title_line(line.trim()) {

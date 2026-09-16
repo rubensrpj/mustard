@@ -41,8 +41,8 @@ use serde_json::{json, Value};
 
 use crate::shared::branch_state::{PrEvidence, PrStatus, PR_CLI_FAILED, PR_UNREADABLE};
 use crate::shared::pr_provider::{
-    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrToOpen,
-    PrView, HEADS, PROVIDER_AZURE,
+    checks_from_rows, short_ref, status_from_azure, PrChecks, PrOpened, PrProvider, PrRef,
+    PrToOpen, PrView, HEADS, PROVIDER_AZURE,
 };
 
 /// The Azure DevOps REST API version every call pins. One spelling, so a bump
@@ -744,11 +744,12 @@ impl PrProvider for AzurePrRest {
         do_patch(&remote, self.transport.as_ref(), &auth, number, &json!({ "isDraft": false }))
     }
 
-    fn view(&self, number: Option<u64>) -> Result<PrView, String> {
+    fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
         let (remote, auth) = self.context()?;
-        match number {
-            Some(n) => do_view_number(&remote, self.transport.as_ref(), &auth, n),
-            None => {
+        match which {
+            PrRef::Number(n) => do_view_number(&remote, self.transport.as_ref(), &auth, n),
+            PrRef::Head(head) => do_view_branch(&remote, self.transport.as_ref(), &auth, head),
+            PrRef::Checkout => {
                 let branch = git_out(&self.repo, &["rev-parse", "--abbrev-ref", "HEAD"])
                     .map_err(|e| format!("azure-branch-unreadable: {e}"))?;
                 do_view_branch(&remote, self.transport.as_ref(), &auth, &branch)

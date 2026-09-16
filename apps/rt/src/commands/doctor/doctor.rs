@@ -2375,7 +2375,7 @@ mod tests {
             }
             fn view(
                 &self,
-                _n: Option<u64>,
+                _which: crate::shared::pr_provider::PrRef<'_>,
             ) -> Result<crate::shared::pr_provider::PrView, String> {
                 Err("fora do teste".into())
             }

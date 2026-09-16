@@ -302,11 +302,15 @@ fn run_round(
 /// Refaz o corpo do pull request desta spec, quando há um aberto. Devolve o
 /// número do pull request reescrito, `None` quando não há nenhum ou quando o
 /// provedor não respondeu — a rodada nunca para por causa disso.
+///
+/// O pull request é o da branch DESTA spec, não o da branch em que o checkout
+/// está. Fora da branch da spec não há o que refazer aqui, e perguntar pelo
+/// checkout reescreveria o corpo do pull request de outra unidade.
 fn rewrite_open_pr(root: &Path, spec: &str) -> Option<u64> {
+    let branch = crate::commands::spec_events::write::branch_of_spec(root, spec)?;
     let (_, body) = crate::commands::review::pr_publish::message_of(root, spec).ok()?;
     let provider = crate::shared::pr_provider::provider_for(root);
-    let view = provider.view(None).ok()?;
-    provider.edit_body(view.number, &body).ok().map(|()| view.number)
+    crate::commands::review::pr_publish::rewrite_body(provider.as_ref(), &branch, &body)
 }
 
 // ---------------------------------------------------------------------------

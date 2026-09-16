@@ -45,7 +45,7 @@ use serde::Serialize;
 use mustard_core::domain::spec_events::pr_message;
 
 use crate::commands::review::pr_door::project_root;
-use crate::shared::pr_provider::{provider_for, PrProvider, PrToOpen};
+use crate::shared::pr_provider::{provider_for, PrProvider, PrRef, PrToOpen};
 use mustard_core::domain::spec_state::SpecState;
 
 use crate::shared::spec_state::DiskSpecState;
@@ -160,6 +160,32 @@ pub(crate) fn edit_report(provider: &dyn PrProvider, number: u64, body: &str) ->
     }
 }
 
+/// Abre o pull request de `pr`, ou reescreve o corpo daquele que a branch
+/// dele já carrega.
+///
+/// A pergunta é sempre pela BRANCH que se vai abrir, nunca pela do checkout:
+/// a branch chega por opção, e as duas não são a mesma coisa. Perguntando pelo
+/// checkout, a porta reescrevia o corpo do pull request de outra unidade e
+/// relatava ter editado aquele número.
+#[must_use]
+pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublishReport {
+    match provider.view(PrRef::Head(&pr.head)) {
+        Ok(view) => edit_report(provider, view.number, &pr.body),
+        Err(_) => open_report(provider, pr),
+    }
+}
+
+/// Refaz o corpo do pull request que a branch `head` carrega. Devolve o número
+/// reescrito, `None` quando não há pull request aberto para ela ou quando o
+/// provedor não respondeu.
+///
+/// A mesma pergunta de [`open_or_edit`], feita de uma vez só para as duas
+/// portas: a branch em jogo é quem aponta o pull request.
+pub(crate) fn rewrite_body(provider: &dyn PrProvider, head: &str, body: &str) -> Option<u64> {
+    let view = provider.view(PrRef::Head(head)).ok()?;
+    provider.edit_body(view.number, body).ok().map(|()| view.number)
+}
+
 /// Ask `provider` to mark draft PR `number` ready for review.
 #[must_use]
 pub(crate) fn ready_report(provider: &dyn PrProvider, number: u64) -> PrPublishReport {
@@ -272,21 +298,18 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     };
     let warning = spec.map(str::trim).filter(|s| !s.is_empty()).and_then(|slug| qa_warning(&repo, slug));
     let mut report = match sourced {
-        Ok((title, body)) => match provider.view(None) {
-            // Já existe pull request para esta branch: o corpo é reescrito, e
-            // nenhum segundo pull request nasce.
-            Ok(view) => edit_report(provider.as_ref(), view.number, &body),
-            Err(_) => {
-                let pr = PrToOpen {
-                    title,
-                    body,
-                    head: head.to_string(),
-                    base: base.to_string(),
-                    draft,
-                };
-                open_report(provider.as_ref(), &pr)
-            }
-        },
+        // Já existe pull request para a branch que se ia abrir: o corpo é
+        // reescrito, e nenhum segundo pull request nasce.
+        Ok((title, body)) => {
+            let pr = PrToOpen {
+                title,
+                body,
+                head: head.to_string(),
+                base: base.to_string(),
+                draft,
+            };
+            open_or_edit(provider.as_ref(), &pr)
+        }
         Err(error) => {
             PrPublishReport::failed(ACTION_OPEN, provider.provider().to_string(), None, error)
         }
@@ -335,6 +358,9 @@ mod tests {
         open: Result<PrOpened, String>,
         edit: Result<(), String>,
         ready: Result<(), String>,
+        /// O pull request que este provedor já tem aberto, com a branch que ele
+        /// leva. `None` = nenhum, e a consulta responde erro.
+        opened_for: Option<(String, u64)>,
         seen: RefCell<Vec<String>>,
     }
 
@@ -346,8 +372,15 @@ mod tests {
                 open: Ok(PrOpened { number: 7, url: "https://example.test/pr/7".into() }),
                 edit: Ok(()),
                 ready: Ok(()),
+                opened_for: None,
                 seen: RefCell::new(Vec::new()),
             }
+        }
+
+        /// O mesmo provedor, já com um pull request aberto para a branch
+        /// `head`.
+        fn with_open_pr(name: &'static str, head: &str, number: u64) -> Self {
+            Self { opened_for: Some((head.to_string(), number)), ..Self::green(name) }
         }
 
         /// A provider on which every operation answers `token` — the shape of
@@ -358,6 +391,7 @@ mod tests {
                 open: Err(token.to_string()),
                 edit: Err(token.to_string()),
                 ready: Err(token.to_string()),
+                opened_for: None,
                 seen: RefCell::new(Vec::new()),
             }
         }
@@ -386,8 +420,30 @@ mod tests {
             self.ready.clone()
         }
 
-        fn view(&self, _number: Option<u64>) -> Result<PrView, String> {
-            Err("view-not-under-test".to_string())
+        fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
+            // O que foi perguntado fica registrado: é o ponto do critério —
+            // a pergunta é pela branch em jogo, nunca pela do checkout.
+            self.seen.borrow_mut().push(match which {
+                PrRef::Number(n) => format!("view number={n}"),
+                PrRef::Head(head) => format!("view head={head}"),
+                PrRef::Checkout => "view checkout".to_string(),
+            });
+            let PrRef::Head(asked) = which else {
+                return Err("view-not-under-test".to_string());
+            };
+            let Some((head, number)) = self.opened_for.as_ref().filter(|(h, _)| h == asked) else {
+                return Err("no-pr-for-branch".to_string());
+            };
+            Ok(PrView {
+                number: *number,
+                title: "the unit".into(),
+                head: head.clone(),
+                base: "dev".into(),
+                status: crate::shared::branch_state::PrStatus::Open,
+                merge_status: None,
+                draft: true,
+                url: format!("https://example.test/pr/{number}"),
+            })
         }
 
         fn checks(&self, _number: u64) -> Result<PrChecks, String> {
@@ -439,6 +495,58 @@ mod tests {
         );
         let json = serde_json::to_string(&report).unwrap_or_default();
         assert!(!json.contains("error"), "absent fields are skipped, byte-stably: {json}");
+    }
+
+    /// A porta pergunta ao provedor pelo pull request da BRANCH que ela vai
+    /// abrir, nunca pelo da branch em que o checkout está.
+    ///
+    /// Com a branch chegando por opção as duas são diferentes: perguntando
+    /// pelo checkout, a porta reescrevia o corpo do pull request de outra
+    /// unidade e relatava ter editado aquele número. A reescrita que a rodada
+    /// faz passa pela mesma pergunta, pela mesma porta.
+    #[test]
+    fn a_abertura_pergunta_pelo_pull_request_da_branch_que_vai_abrir() {
+        let pr = to_open();
+
+        // Sem pull request para essa branch, um novo nasce.
+        let fake = FakePub::green("github");
+        let report = open_or_edit(&fake, &pr);
+        assert_eq!(report.action, ACTION_OPEN, "{report:?}");
+        assert_eq!(
+            fake.seen.borrow().first().map(String::as_str),
+            Some("view head=feature/my-unit"),
+            "a pergunta não foi pela branch que se ia abrir: {:?}",
+            fake.seen.borrow(),
+        );
+
+        // Com um pull request aberto para ela, o corpo dele é reescrito, e o
+        // número relatado é o dele.
+        let fake = FakePub::with_open_pr("github", "feature/my-unit", 42);
+        let report = open_or_edit(&fake, &pr);
+        assert_eq!(report.action, ACTION_EDIT, "{report:?}");
+        assert_eq!(report.number, Some(42), "{report:?}");
+
+        // E o pull request de OUTRA branch nunca é tocado.
+        let fake = FakePub::with_open_pr("github", "dev_outra-unidade", 13);
+        let report = open_or_edit(&fake, &pr);
+        assert_eq!(
+            report.action, ACTION_OPEN,
+            "o pull request de outra unidade foi reescrito: {report:?}",
+        );
+        assert!(
+            !fake.seen.borrow().iter().any(|call| call.starts_with("edit 13")),
+            "o corpo de outra unidade foi reescrito: {:?}",
+            fake.seen.borrow(),
+        );
+
+        // A reescrita da rodada faz a mesma pergunta.
+        let fake = FakePub::with_open_pr("github", "feature/my-unit", 42);
+        assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(42));
+        assert_eq!(
+            rewrite_body(&fake, "dev_outra-unidade", "outro corpo"),
+            None,
+            "a rodada reescreveu o corpo de um pull request que não é o da spec",
+        );
     }
 
     /// Every failure — table-driven over the three actions — degrades into the

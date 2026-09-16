@@ -285,12 +285,62 @@ fn git_prose_routes_destructive_decisions_through_rev_list() {
     }
 }
 
+/// O pedaço de `source` que cada item marcado com `#[cfg(test)]` ocupa: do
+/// atributo até o `;` que fecha a declaração, ou até a chave que fecha o bloco
+/// dele.
+///
+/// Só o item anotado sai — o arquivo continua sendo lido depois dele. Cortar o
+/// arquivo na primeira marca deixaria sem olhar tudo o que vem atrás de um
+/// `use` ou de uma constante de teste escritos lá no topo, que é onde essa
+/// marca costuma aparecer primeiro.
+fn test_item_spans(source: &str) -> Vec<(usize, usize)> {
+    const MARK: &str = "#[cfg(test)]";
+    let mut spans = Vec::new();
+    let mut at = 0usize;
+    while let Some(found) = source[at..].find(MARK) {
+        let start = at + found;
+        let after = start + MARK.len();
+        let item = &source[after..];
+        let brace = item.find('{');
+        let semicolon = item.find(';');
+        let end = match (brace, semicolon) {
+            // Declaração de uma linha só: acaba no ponto e vírgula.
+            (None, Some(sc)) => after + sc + 1,
+            (Some(open), Some(sc)) if sc < open => after + sc + 1,
+            // Bloco: acaba na chave que fecha a que abriu.
+            (Some(open), _) => {
+                let mut depth = 0usize;
+                let mut close = item.len();
+                for (i, c) in item[open..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                close = open + i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                after + close
+            }
+            (None, None) => source.len(),
+        };
+        spans.push((start, end));
+        at = end;
+    }
+    spans
+}
+
 /// Toda linha de código de produção, com os comentários fora, de um arquivo
 /// Rust sob `dir`.
 ///
-/// "Produção" é tudo antes do `#[cfg(test)]`: um nome de branch escrito num
-/// teste é dado de entrada, e dado de entrada não é o projeto decidindo por
-/// outro repositório.
+/// "Produção" é o arquivo inteiro menos os itens marcados como teste: um nome
+/// de branch escrito num teste é dado de entrada, e dado de entrada não é o
+/// projeto decidindo por outro repositório. O que vem DEPOIS de um item de
+/// teste volta a ser produção e é lido.
 fn production_lines(dir: &Path, out: &mut Vec<(String, usize, String)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -312,9 +362,15 @@ fn production_lines(dir: &Path, out: &mut Vec<(String, usize, String)>) {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        for (n, line) in body.lines().enumerate() {
-            if line.trim_start().starts_with("#[cfg(test)]") {
-                break;
+        let spans = test_item_spans(&body);
+        let mut offset = 0usize;
+        for (n, raw) in body.split_inclusive('\n').enumerate() {
+            let line = raw.trim_end_matches(['\n', '\r']);
+            let start = offset;
+            let end = start + line.len();
+            offset += raw.len();
+            if spans.iter().any(|(s, e)| *s < end && *e > start) {
+                continue;
             }
             let trimmed = line.trim_start();
             if trimmed.starts_with("//") {

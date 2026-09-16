@@ -47,19 +47,7 @@ disable-model-invocation: true
 
 **It is rewritten for you on every round.** A body is correct for exactly the commits it was written against, and every later push re-targets the SAME pull request — a reviewer believes a wrong explanation more readily than a missing one. `mustard-rt run round` rebuilds it from the event file it has just written, and `mustard-rt run pr-open` rewrites the body instead of opening a second pull request when one is already there. There is nothing here to remember and no file to keep in step.
 
-Compose it from what the unit already recorded — never re-derive and never invent: `## Context` and `## Decisions` (with their reasons) from `spec.md`, the criteria and their commands from `## Acceptance Criteria`, the non-obvious calls from each wave's report, and what was deliberately left out from `## Non-Goals`. Sections, in order:
-
-| Section | What goes in |
-|---|---|
-| Opening | ONE paragraph: what the reader gets that they did not have. No preamble. |
-| Why | the concrete situation that forced it — the case, not the abstraction |
-| What changed | before/after, and a **mermaid** diagram when the change is structural (the provider renders it; ASCII art does not survive their markdown) |
-| How to validate | commands the reader RUNS, in a throwaway directory, that touch nothing of theirs |
-| Tests | one row per criterion: what it guarantees + its command. State that each was proven RED before the code existed |
-| Decisions worth explaining | the non-obvious calls and the reason each one is not the obvious alternative |
-| Out of scope | what was deliberately left out, each with its reason — this is what stops a reviewer filing what you already decided |
-
-Two rules that keep it honest. **Every number is measured, never estimated** — a test count comes from the run, not from memory. Measuring is all it is: a red count goes into the row as a red count, and the run that produced it ends there. **Name what is still open**, including work deliberately not done: a reviewer who finds an omission you did not declare stops trusting the rest of the document.
+What the binary assembles is the recorded summary, one line per delivered wave, and the criteria count with the failures named. So the only prose you write is that summary — and two rules keep it honest. **Every number is measured, never estimated** — a test count comes from the run, not from memory. Measuring is all it is: a red count is recorded as a red count, and the run that produced it ends there. **Name what is still open**, including work deliberately not done: a reviewer who finds an omission you did not declare stops trusting the rest of the document.
 
 Then publish. Work branch: `/mustard:git push` first, then one PR per repo (submodules first) into each prefix base; do NOT return to base. **While ANY submodule PR is still open the parent opens as a DRAFT**: `mustard-rt run pr-open --base "$BASE" --head <parent-work-branch> --spec <spec> --draft` (plus a `Blocked by <sub PR url>` line appended to that body). The provider refuses to merge a draft PR, which is what turns "submodules before parent" from a sentence into a block — the order governed only PR OPENING, and on GitHub the two PRs are siblings anyone can merge in either direction. A draft ALSO does not request review from code owners (CODEOWNERS); those requests fire at `mustard-rt run pr-ready`, which runs in `/mustard:git finish` after the bump lands — so expect no reviewers until then. Every submodule PR already merged → open the parent normally (no `--draft`). Bare base `B`: no push → `mustard-rt run pr-open --base <target|flow[B]> --head "$B" --spec <spec>`. Existing PR in any repo → the same `pr-open` rewrites its body, or `mustard-rt run pr-edit --number <n> --spec <spec>`; then print its URL. Each command answers ONE JSON report (`ok`/`provider`/`number`/`url`) — print it verbatim; the provider it speaks to is its internal detail, never typed here.
 
@@ -155,7 +143,7 @@ Three answers, told apart by `action`:
 mustard-rt run pr-merge --pr <n> --confirm
 ```
 
-`pr-qa-gate` warns separately at PR create/merge time — that warning and gate 3a read the same recorded `qa.result`.
+`open` already carried the same warning in its own report — that warning and gate 3a read the same recorded `qa.result`.
 
 **3c. After the merge — record what the unit taught (max 3 each, skip the trivial; durable prose belongs to native auto-memory).**
 

@@ -13,8 +13,9 @@
 //! - **`pr-list`** — the base gate first: it refuses from INSIDE a work unit,
 //!   because "which PRs are open" is a question about the BASE, not about one
 //!   unit. The test is the unit, never a declared list: a branch that is
-//!   somebody's unit and is not one of the branches
-//!   [`mustard_core::protected_branches`] measures refuses and names the base to
+//!   somebody's unit and is not a base by the project's one base reading
+//!   ([`crate::commands::event::work_branch::on_integration_base`]) refuses and
+//!   names the base to
 //!   switch to, touching nothing; anything else is a base as far as this
 //!   question goes. On a base it answers one row per open PR:
 //!   number, title, whether the provider calls it mergeable, whether it is a
@@ -96,6 +97,7 @@ use serde_json::Value;
 use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
+use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
 use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
@@ -335,8 +337,9 @@ fn pr_entry(row: &Value) -> Option<PrEntry> {
 /// asks is the opposite one: *am I standing INSIDE a unit?* So it refuses on a
 /// positive reading — the branch is somebody's work unit
 /// ([`crate::shared::work_kind::BaseFlow::base_of`], the crate's one parser) —
-/// and lets a branch [`mustard_core::protected_branches`] measures as a base
-/// through even when its name reads like a unit's.
+/// and lets a branch the project's one base reading
+/// ([`crate::commands::event::work_branch::on_integration_base`]) measures as a
+/// base through even when its name reads like a unit's.
 #[must_use]
 pub(crate) fn list_at(root: &Path) -> PrListReport {
     let repo = project_root(root);
@@ -344,11 +347,15 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
     let config = mustard_core::ProjectConfig::load(&repo);
     let bases: Vec<String> = config.git.declared_bases().into_iter().collect();
     let unit = flow.base_of(&branch);
-    let protected = mustard_core::protected_branches(&config.git);
     // The project's own RECORD of the unit, not the name's shape: an undeclared
     // base like `release/2026-Q3` splits into a kind and a slug exactly like a
     // unit branch does, and `pr list` was measured refusing to run from it.
-    if flow.has_unit_record(&branch) && !protected.contains(&branch) {
+    // A pergunta "esta branch é base de integração" tem uma resposta só, a
+    // mesma que as outras portas fazem: o que o projeto declarou MAIS o que o
+    // próprio remoto chama de padrão. Sem a segunda metade, um projeto
+    // recém-instalado — que não declara fluxo nenhum — respondia aqui o
+    // contrário do que responde lá.
+    if flow.has_unit_record(&branch) && !on_integration_base(&repo, &branch, &config) {
         // Name the base rather than the rule. The unit's OWN record answers
         // first — it is a measurement of where the branch really came from —
         // and the remote's own default (`origin/HEAD`) is the last resort, so

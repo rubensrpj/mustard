@@ -32,11 +32,14 @@
 //! never wrote down — and the installer writes no flow at all. What replaces it
 //! is the pair of facts the repository can actually answer: whether the branch
 //! is somebody's WORK UNIT ([`crate::shared::work_kind::BaseFlow::base_of`]) and
-//! whether [`mustard_core::protected_branches`] names it.
+//! whether the project's one base reading
+//! ([`crate::commands::event::work_branch::on_integration_base`]) calls it a
+//! base — what the project declared plus what the remote itself calls its
+//! default branch.
 //!
 //! Two more refusals guard the same edge from the other side: a name that is
-//! nobody's work unit — a bare base, a hand-cut branch, anything
-//! `protected_branches` measures — is never deleted (the command guard refuses
+//! nobody's work unit — a bare base, a hand-cut branch, anything that one
+//! reading measures as a base — is never deleted (the command guard refuses
 //! the same for the branches `git.flow` names; this command restates it where
 //! it can enforce it), and a unit
 //! no ref carries anywhere is reported as `no-such-unit` rather than answered
@@ -51,6 +54,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_ok, git_out, main_checkout_root, parse_worktrees, show};
 use crate::commands::review::pr_door::{gh_json, gh_out};
 
@@ -125,7 +129,13 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // Standing on a branch this project holds NO unit record for is standing on
     // a base, whatever the name looks like — a reviewer measured `release/…`
     // being refused here for the shape of its name alone.
-    if flow.has_unit_record(&branch) && !protected.contains(&branch) {
+    //
+    // Quem responde "esta branch é base de integração" é uma leitura só, a
+    // mesma das outras portas. Ler aqui apenas a declaração dava outra resposta
+    // sobre a MESMA branch num projeto recém-instalado: sem fluxo declarado a
+    // lista é vazia, e a branch que o próprio remoto chama de padrão passava a
+    // contar como unidade de alguém.
+    if flow.has_unit_record(&branch) && !on_integration_base(&main, &branch, &cfg) {
         // The unit's OWN record answers where to go back to; `origin/HEAD` is
         // the last resort, so nothing here spells a branch name of its own.
         // Same three sources, same order, as `pr list`: the unit's own record,
@@ -209,7 +219,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // worktree the guard answered "not a unit", declined to refuse, and this
     // line then permitted the destruction of the caller's own worktree. One
     // reading, in one place, is what makes that impossible to reintroduce.
-    if !flow.has_unit_record(unit) || protected.contains(unit) {
+    if !flow.has_unit_record(unit) || on_integration_base(&main, unit, &cfg) {
         return json!({
             "ok": false,
             "reason": "not-a-work-unit",
@@ -446,6 +456,67 @@ mod tests {
         let done = delete_at(bare_root, "feature/real");
         assert_eq!(done["ok"], json!(true), "the real unit was refused: {done}");
         assert!(!branch_exists(bare_root, "feature/real"), "the unit's branch survived");
+    }
+
+    /// Num projeto recém-instalado, que não declara fluxo nenhum, as portas
+    /// respondem a mesma coisa sobre a mesma branch: a que o próprio remoto
+    /// chama de padrão é base, mesmo que o nome dela se parta em espécie e
+    /// apelido como o de uma unidade.
+    ///
+    /// Sem essa leitura única, a declaração vazia fazia a branch padrão do
+    /// servidor contar como unidade de alguém: `pr list` recusava rodar de cima
+    /// dela e `git delete` aceitava apagá-la.
+    #[test]
+    fn a_branch_padrao_do_servidor_e_base_para_todas_as_portas() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        git(root, &["init", "."]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["checkout", "-b", "release/2026-Q3"]);
+        // O que o instalador escreve hoje: nenhum fluxo declarado.
+        std::fs::write(root.join("mustard.json"), r#"{"git":{"provider":"github"}}"#)
+            .expect("cfg");
+        // Os dois registros: o da linha de release, que dá a ela a mesma forma
+        // de uma unidade, e o da unidade de verdade.
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("2026-Q3"))
+            .expect("record");
+        std::fs::create_dir_all(root.join(".claude").join("spec").join("real"))
+            .expect("record");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-m", "seed"]);
+        git(root, &["branch", "feature/real"]);
+        // É o próprio repositório que diz qual é a sua branch padrão — nenhum
+        // nome disso está escrito no código nem no `mustard.json`.
+        git(root, &["update-ref", "refs/remotes/origin/release/2026-Q3", "HEAD"]);
+        git(
+            root,
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release/2026-Q3"],
+        );
+
+        // De cima dela, a porta dos pull requests não recusa.
+        let listed = crate::commands::review::pr_door::list_at(root);
+        assert!(
+            listed.ok,
+            "`pr list` recusou da branch que o próprio remoto chama de padrão: {:?} / {:?}",
+            listed.reason, listed.hint
+        );
+
+        // E ela mesma nunca é apagada.
+        let refused = delete_at(root, "release/2026-Q3");
+        assert_eq!(
+            refused["reason"],
+            json!("not-a-work-unit"),
+            "a branch padrão do servidor foi aceita para exclusão: {refused}"
+        );
+        assert!(branch_exists(root, "release/2026-Q3"), "a branch padrão foi apagada");
+
+        // A unidade de verdade continua saindo dali — o conserto não pode ser
+        // "recusar tudo", que é o outro jeito de fazer as duas provas acima
+        // passarem.
+        let done = delete_at(root, "feature/real");
+        assert_eq!(done["ok"], json!(true), "a unidade de verdade foi recusada: {done}");
+        assert!(!branch_exists(root, "feature/real"), "a branch da unidade sobreviveu");
     }
 
     /// From the base the unit goes whole: the local branch is deleted, and the

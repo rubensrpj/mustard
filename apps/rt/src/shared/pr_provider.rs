@@ -271,6 +271,24 @@ pub(crate) struct PrOpened {
     pub(crate) url: String,
 }
 
+/// Como um pull request é apontado numa consulta.
+///
+/// Apontar pela BRANCH é o que quem abre e quem refaz o corpo precisam: a
+/// branch em jogo chega por opção, e não é necessariamente aquela em que o
+/// checkout está. Perguntar pelo checkout onde se queria perguntar pela branch
+/// faz a porta reescrever o corpo do pull request de outra unidade e relatar
+/// que editou aquele.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrRef<'a> {
+    /// Pelo número do pull request.
+    Number(u64),
+    /// Pela branch que o pull request leva.
+    Head(&'a str),
+    /// Pela branch em que o checkout está — a forma que as portas usam de
+    /// dentro da unidade.
+    Checkout,
+}
+
 // ---------------------------------------------------------------------------
 // The port
 // ---------------------------------------------------------------------------
@@ -298,10 +316,8 @@ pub(crate) trait PrProvider {
     /// Mark draft pull request `number` ready for review.
     fn ready(&self, number: u64) -> Result<(), String>;
 
-    /// One pull request, normalised. `None` = the PR whose head is the branch
-    /// the checkout is standing on — the shape the doors use from inside a
-    /// unit.
-    fn view(&self, number: Option<u64>) -> Result<PrView, String>;
+    /// One pull request, normalised — the one [`PrRef`] points at.
+    fn view(&self, which: PrRef<'_>) -> Result<PrView, String>;
 
     /// What the PROVIDER'S own checks say about pull request `number`.
     ///
@@ -537,10 +553,16 @@ impl PrProvider for GithubPrCli {
         gh_out(&self.repo, &["pr", "ready", &number.to_string()]).map(|_| ())
     }
 
-    fn view(&self, number: Option<u64>) -> Result<PrView, String> {
-        let number = number.map(|n| n.to_string());
+    fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
+        // `gh pr view` aceita o número ou a branch no mesmo lugar, e sem
+        // argumento nenhum responde pela branch do checkout.
+        let pointed = match which {
+            PrRef::Number(n) => Some(n.to_string()),
+            PrRef::Head(head) => Some(head.to_string()),
+            PrRef::Checkout => None,
+        };
         let mut args: Vec<&str> = vec!["pr", "view"];
-        if let Some(n) = number.as_deref() {
+        if let Some(n) = pointed.as_deref() {
             args.push(n);
         }
         args.extend_from_slice(&[
@@ -631,7 +653,7 @@ impl PrProvider for UnsupportedPr {
         unsupported()
     }
 
-    fn view(&self, _number: Option<u64>) -> Result<PrView, String> {
+    fn view(&self, _which: PrRef<'_>) -> Result<PrView, String> {
         unsupported()
     }
 
@@ -807,7 +829,7 @@ mod tests {
         assert_eq!(provider.open(&to_open), Err(token()));
         assert_eq!(provider.edit_body(1, "body"), Err(token()));
         assert_eq!(provider.ready(1), Err(token()));
-        assert_eq!(provider.view(Some(1)), Err(token()));
+        assert_eq!(provider.view(PrRef::Number(1)), Err(token()));
         assert_eq!(
             provider.checks(1),
             Err(token()),
@@ -921,7 +943,7 @@ mod tests {
         assert_eq!(azure.provider(), "azure");
         // The tempdir has no `origin`, so the REAL Azure adapter refuses at
         // remote derivation — deterministically, before any network.
-        let refusal = azure.view(Some(1)).expect_err("no origin remote to derive from");
+        let refusal = azure.view(PrRef::Number(1)).expect_err("no origin remote to derive from");
         assert!(refusal.starts_with("azure-remote-"), "stable token: {refusal}");
 
         declare("gitlab");
