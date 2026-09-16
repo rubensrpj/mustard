@@ -6,14 +6,14 @@
 //! prontos em [`Material`]; esta função só os escreve, sempre na mesma ordem,
 //! então o mesmo material dá sempre os mesmos bytes.
 //!
-//! O pedido cabe no teto de linhas por construção. Ele copia por inteiro a
-//! especificação, a onda com as tarefas dela, os critérios, o item que vale
-//! para todas as ondas e os itens que as tarefas declaram cobrir; todo o
-//! resto do combinado entra como ponteiro de uma linha, com o código, o
-//! título e o comando que lê o item inteiro. Ainda assim medido em linhas:
-//! acima de [`MAX_LINES`] ele é recusado, e a recusa diz o que ficou inteiro
-//! para quem for dividir a onda. Os eventos entram na versão vigente e sem o
-//! campo de busca: o que aparece é o texto original de cada item.
+//! O pedido leva a lista, não o texto. Nenhum item é copiado: cada um entra
+//! como uma linha com o número, o tipo e o comando que o lê pelo binário, e o
+//! agente da onda lê o que precisa na hora de agir. Os itens da onda saem na
+//! ordem de execução que ela declara; sem essa ordem, na ordem do arquivo. A
+//! lista inteira fica no pedido, porque é ela que mostra o escopo todo de uma
+//! vez. As lições entram pelo texto — elas vêm do banco, não da spec — e cada
+//! skill entra como recomendação de uma linha. O teto de [`MAX_LINES`] linhas
+//! continua conferido aqui, e passa a sobrar.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -22,19 +22,22 @@ use serde_json::Value;
 
 use crate::domain::lessons::{applies_to, Scope};
 use crate::domain::search;
-use crate::domain::spec_events::{type_spec, Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog};
+use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use crate::platform::i18n::{translate, Locale};
 
 /// O teto de linhas de um pedido de onda.
 pub const MAX_LINES: usize = 500;
 
-/// O texto de uma skill que uma tarefa da onda nomeia, copiado no pedido.
+/// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
+/// não entra: a skill mora num arquivo do projeto, e o agente da onda o lê.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     /// O nome pelo qual a tarefa a chama.
     pub name: String,
-    /// O texto inteiro do arquivo da skill.
-    pub text: String,
+    /// Quando usar, na própria descrição da skill.
+    pub when: String,
+    /// O caminho do arquivo, a partir da raiz do projeto.
+    pub path: String,
     /// `true` quando um dos exemplos que a skill usa mudou depois dela: o
     /// pedido a marca como a revisar.
     pub stale: bool,
@@ -59,7 +62,10 @@ pub struct Material<'a> {
     pub delivered: Vec<&'a SpecEvent>,
     /// As lições que valem para os arquivos, o subprojeto ou a skill da onda.
     pub lessons: Vec<&'a SpecEvent>,
-    /// O texto das skills nomeadas pelas tarefas, na ordem dos nomes.
+    /// Os defeitos já vistos nos arquivos da onda, que só o pedido do revisor
+    /// leva: o erro que já aconteceu ali é o que tem mais chance de voltar.
+    pub defects: Vec<&'a SpecEvent>,
+    /// As skills nomeadas pelas tarefas, na ordem dos nomes.
     pub skills: Vec<Skill>,
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
@@ -90,8 +96,8 @@ pub fn build(material: &Material, lang: Locale) -> Result<Prompt, Refusal> {
     Ok(Prompt { text, lines })
 }
 
-/// A recusa do teto de linhas, com as partes que ficaram inteiras e o tamanho
-/// de cada uma: quem divide a onda precisa saber o que tirar dela.
+/// A recusa do teto de linhas, com as partes do pedido e o tamanho de cada
+/// uma: quem divide a onda precisa saber de onde vêm as linhas.
 #[must_use]
 pub fn too_long(material: &Material, lines: usize, lang: Locale) -> Refusal {
     Refusal::WavePromptTooLong {
@@ -106,20 +112,20 @@ pub fn too_long(material: &Material, lines: usize, lang: Locale) -> Refusal {
 /// grande demais, que é justamente o que precisa ser visto antes da aprovação.
 #[must_use]
 pub fn write(material: &Material, lang: Locale) -> String {
-    write_with(material, &copied_whole(material, lang), lang)
+    Writer { material, lang }.text()
 }
 
-/// O texto do pedido com os itens combinados de `whole` copiados por inteiro
-/// e todos os outros como ponteiro.
-fn write_with(material: &Material, whole: &BTreeSet<u64>, lang: Locale) -> String {
-    Writer { material, whole, lang }.text()
+/// O texto do pedido do revisor da onda: a mesma lista de itens e os
+/// critérios que ele confere, mais os defeitos já vistos nos arquivos da onda.
+#[must_use]
+pub fn write_review(material: &Material, lang: Locale) -> String {
+    Writer { material, lang }.review_text()
 }
 
-/// As partes que o pedido copia por inteiro, cada uma com quantas linhas
-/// ocupa, separadas por vírgula.
+/// As partes do pedido, cada uma com quantas linhas ocupa, separadas por
+/// vírgula.
 fn parts(material: &Material, lang: Locale) -> String {
-    let whole = copied_whole(material, lang);
-    let w = Writer { material, whole: &whole, lang };
+    let w = Writer { material, lang };
     let mut out: Vec<String> = Vec::new();
     let mut named = |key: &str, lines: usize| {
         if lines > 0 {
@@ -127,8 +133,8 @@ fn parts(material: &Material, lang: Locale) -> String {
         }
     };
     named("prompt.part.specification", w.part_lines("prompt.part.specification", &material.specification));
-    named("prompt.part.agreed", w.part_lines("prompt.part.agreed", &w.whole_agreed()));
-    named("prompt.part.wave", w.part_lines("prompt.part.wave", &material.block));
+    named("prompt.part.agreed", w.part_lines("prompt.part.agreed", &material.agreed));
+    named("prompt.part.wave", w.part_lines("prompt.part.wave", &w.wave_items()));
     named("prompt.part.criteria", w.part_lines("prompt.part.criteria", &material.criteria));
     named("prompt.part.lessons", w.lessons_lines());
     named("prompt.part.skills", w.skills_lines());
@@ -137,111 +143,16 @@ fn parts(material: &Material, lang: Locale) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// O que entra inteiro e o que entra como ponteiro
+// A linha de cada item
 // ---------------------------------------------------------------------------
 
-/// Os itens combinados que o pedido copia por inteiro: o item que vale para
-/// todas as ondas e os itens que as tarefas da onda declaram cobrir. Todo o
-/// resto entra como ponteiro de uma linha, que o agente lê pelo binário
-/// quando precisar.
-///
-/// A escolha enche por ordem de relevância — a mesma busca que liga item e
-/// onda — até o teto de linhas; o que não couber vira ponteiro também.
-fn copied_whole(material: &Material, lang: Locale) -> BTreeSet<u64> {
-    let mut chosen: BTreeSet<u64> = BTreeSet::new();
-    let candidates = by_relevance(material);
-    if candidates.is_empty() {
-        return chosen;
-    }
-    for id in candidates {
-        let mut with_it = chosen.clone();
-        with_it.insert(id);
-        if count_lines(&write_with(material, &with_it, lang)) <= MAX_LINES {
-            chosen = with_it;
-        }
-    }
-    chosen
-}
-
-/// Os itens que podem ser copiados por inteiro, do mais relevante para o
-/// menos: primeiro os que a busca liga ao texto da onda e das tarefas, na
-/// ordem da nota, depois os que ela não liga, na ordem em que foram gravados.
-fn by_relevance(material: &Material) -> Vec<u64> {
-    let covered: BTreeSet<u64> = material
-        .block
-        .iter()
-        .filter(|event| event.event_type == "task")
-        .flat_map(|task| task.ints("covers"))
-        .collect();
-    let candidates: Vec<&SpecEvent> = material
-        .agreed
-        .iter()
-        .copied()
-        .filter(|item| covered.contains(&item.id) || every_wave(item))
-        .collect();
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-    let mut query = String::new();
-    for event in &material.block {
-        if matches!(event.event_type.as_str(), "wave" | "task")
-            && let Some(text) = event.str_field("text")
-        {
-            query.push_str(text);
-            query.push(' ');
-        }
-    }
-    let docs = candidates.iter().map(|item| (item.id, item.str_field("search").unwrap_or_default()));
-    let index = search::SearchIndex::build(docs);
-    let ranked = index.top(&search::query_terms(&query), candidates.len());
-    let mut out: Vec<u64> = ranked.iter().map(|hit| hit.id).collect();
-    let rest: Vec<u64> =
-        candidates.iter().map(|item| item.id).filter(|id| !out.contains(id)).collect();
-    out.extend(rest);
-    out
-}
-
-/// O item marcado como válido para todas as ondas: o "onde vale" dele cobre
-/// o projeto inteiro, e não um arquivo, um subprojeto ou uma skill.
-fn every_wave(item: &SpecEvent) -> bool {
-    applies_to(item, &Scope::default())
-}
-
-/// O ponteiro de um item: o código, o título e, na mesma linha, o comando que
-/// lê o item inteiro pelo binário.
-fn pointer(material: &Material, item: &SpecEvent) -> String {
+/// A linha de um item no pedido: o código, o tipo em palavras e o comando que
+/// lê o item inteiro pelo binário. Nenhum texto do item entra aqui.
+fn pointer(material: &Material, item: &SpecEvent, lang: Locale) -> String {
     let code = material.codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string());
-    let title = title_of(item);
-    format!(
-        "- {code} — {title} — `mustard-rt run read agreed --spec {} --term {code}`",
-        material.spec
-    )
-}
-
-/// Quantos caracteres do título de um item cabem no ponteiro.
-const TITLE_CHARS: usize = 80;
-
-/// O título de um item: a primeira linha do texto dele, sem o negrito que a
-/// abre e cortada no fim de uma palavra quando é longa demais.
-fn title_of(item: &SpecEvent) -> String {
-    let text = item.str_field("text").unwrap_or_default();
-    let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
-    let first = first.strip_prefix("**").map_or(first, |rest| rest.split("**").next().unwrap_or(rest));
-    let title: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
-    if title.chars().count() <= TITLE_CHARS {
-        return title;
-    }
-    let mut cut = String::new();
-    for word in title.split(' ') {
-        if cut.chars().count() + word.chars().count() + 1 > TITLE_CHARS {
-            break;
-        }
-        if !cut.is_empty() {
-            cut.push(' ');
-        }
-        cut.push_str(word);
-    }
-    format!("{}…", cut.trim_end_matches([' ', ',', ';', '.']))
+    let kind = translate(&format!("page.type.{}", item.event_type), lang);
+    let block = item.block().map_or("waves", Block::name);
+    format!("- {code} ({kind}) — `mustard-rt run read {block} --spec {} --term {code}`", material.spec)
 }
 
 /// Quantas linhas um texto tem; a última conta mesmo sem quebra no fim.
@@ -360,8 +271,6 @@ fn task_files(task: &SpecEvent) -> Vec<String> {
 
 struct Writer<'a> {
     material: &'a Material<'a>,
-    /// Os itens combinados copiados por inteiro; os outros viram ponteiro.
-    whole: &'a BTreeSet<u64>,
     lang: Locale,
 }
 
@@ -381,9 +290,8 @@ impl Writer<'_> {
         out.push_str(self.t("prompt.fixed"));
         out.push_str("\n\n");
         self.part(&mut out, "prompt.part.specification", &m.specification);
-        self.part(&mut out, "prompt.part.agreed", &self.whole_agreed());
-        self.pointers(&mut out);
-        self.part(&mut out, "prompt.part.wave", &m.block);
+        self.part(&mut out, "prompt.part.agreed", &m.agreed);
+        self.part(&mut out, "prompt.part.wave", &self.wave_items());
         self.part(&mut out, "prompt.part.criteria", &m.criteria);
         self.lessons(&mut out);
         self.skills(&mut out);
@@ -394,37 +302,81 @@ impl Writer<'_> {
         out
     }
 
-    /// Os itens combinados que entram por inteiro, na ordem em que o bloco
-    /// foi lido.
-    fn whole_agreed(&self) -> Vec<&SpecEvent> {
-        self.material.agreed.iter().copied().filter(|item| self.whole.contains(&item.id)).collect()
+    /// O pedido do revisor: as instruções fixas dele, a lista de itens da
+    /// onda, os critérios que ele confere e os defeitos já vistos naqueles
+    /// arquivos. Nenhum texto de item é copiado aqui tampouco.
+    fn review_text(&self) -> String {
+        let m = self.material;
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "# {}\n",
+            self.t("prompt.review.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
+        );
+        out.push_str(self.t("prompt.review.fixed"));
+        out.push_str("\n\n");
+        self.part(&mut out, "prompt.part.wave", &self.wave_items());
+        self.part(&mut out, "prompt.part.criteria", &m.criteria);
+        self.defects(&mut out);
+        while out.ends_with("\n\n") {
+            out.pop();
+        }
+        out
     }
 
-    /// Os itens combinados que entram como ponteiro: uma linha cada, com o
-    /// código, o título e o comando que lê o item inteiro.
-    fn pointers(&self, out: &mut String) {
-        let rest: Vec<&SpecEvent> =
-            self.material.agreed.iter().copied().filter(|item| !self.whole.contains(&item.id)).collect();
-        if rest.is_empty() {
+    /// Os defeitos já vistos nos arquivos da onda: o texto original de cada
+    /// um, como as lições. Eles vêm do banco, fora da spec, e não têm número
+    /// para serem lidos depois.
+    fn defects(&self, out: &mut String) {
+        if self.material.defects.is_empty() {
             return;
         }
-        let _ = writeln!(out, "## {}\n", self.t("prompt.part.pointers"));
-        for item in rest {
-            let _ = writeln!(out, "{}", pointer(self.material, item));
+        let _ = writeln!(out, "## {}\n", self.t("prompt.part.defects"));
+        for defect in &self.material.defects {
+            let text = defect.str_field("text").unwrap_or_default().trim();
+            let _ = writeln!(out, "- {text}");
         }
         out.push('\n');
     }
 
-    /// Uma parte do pedido: o título e um item por evento, na ordem em que o
-    /// bloco foi lido. A parte sem nenhum evento não aparece.
+    /// Os itens da onda na ordem de execução que ela declara: primeiro os que
+    /// a onda lista, na ordem em que ela os lista, depois o que sobrou, na
+    /// ordem do arquivo. A onda que não declara ordem sai como está no
+    /// arquivo.
+    fn wave_items(&self) -> Vec<&SpecEvent> {
+        let order: Vec<u64> = self
+            .material
+            .block
+            .iter()
+            .find(|e| e.event_type == "wave")
+            .map(|wave| wave.ints("order"))
+            .unwrap_or_default();
+        let mut out: Vec<&SpecEvent> = Vec::new();
+        for id in &order {
+            if let Some(event) = self.material.block.iter().copied().find(|e| e.id == *id) {
+                out.push(event);
+            }
+        }
+        for event in &self.material.block {
+            if !out.iter().any(|had| had.id == event.id) {
+                out.push(event);
+            }
+        }
+        out
+    }
+
+    /// Uma parte do pedido: o título e uma linha por item, cada uma com o
+    /// código, o tipo e o comando que lê o item. A parte sem nenhum item não
+    /// aparece.
     fn part(&self, out: &mut String, key: &str, events: &[&SpecEvent]) {
         if events.is_empty() {
             return;
         }
         let _ = writeln!(out, "## {}\n", self.t(key));
         for event in events {
-            self.event(out, event);
+            let _ = writeln!(out, "{}", pointer(self.material, event, self.lang));
         }
+        out.push('\n');
     }
 
     /// Quantas linhas uma parte ocupa sozinha.
@@ -448,89 +400,9 @@ impl Writer<'_> {
         count_lines(&out)
     }
 
-    /// Um evento: o código e o tipo no subtítulo, o texto original inteiro e
-    /// os outros campos, um por linha.
-    fn event(&self, out: &mut String, event: &SpecEvent) {
-        let code = self.material.codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
-        let kind = self.t(&format!("page.type.{}", event.event_type));
-        let _ = writeln!(out, "### {code} ({kind})\n");
-        let text = event.str_field("text").map(str::trim).filter(|t| !t.is_empty());
-        if let Some(text) = text {
-            out.push_str(text);
-            out.push('\n');
-        }
-        let fields = self.fields(event);
-        if !fields.is_empty() {
-            if text.is_some() {
-                out.push('\n');
-            }
-            for line in fields {
-                out.push_str(&line);
-                out.push('\n');
-            }
-        }
-        out.push('\n');
-    }
-
-    /// Os campos do evento fora do texto, na ordem em que o tipo os declara.
-    /// As palavras-chave e o campo de busca nunca saem: o pedido mostra só o
-    /// texto original de cada item. O número da onda também não se repete: ele
-    /// já está no título do pedido.
-    fn fields(&self, event: &SpecEvent) -> Vec<String> {
-        let Some(spec) = type_spec(&event.event_type) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for field in spec.fields {
-            if matches!(field.name, "text" | "keys" | "search")
-                || matches!(
-                    (event.event_type.as_str(), field.name),
-                    ("wave", "n") | ("task" | "send" | "delivered", "wave")
-                )
-            {
-                continue;
-            }
-            let Some(value) = event.fields.get(field.name) else {
-                continue;
-            };
-            let shown = self.value(field.name, field.kind, value);
-            if shown.is_empty() {
-                continue;
-            }
-            let label = self.t(&format!("page.field.{}", field.name));
-            out.push(format!("- {label}: {shown}"));
-        }
-        out
-    }
-
-    /// Um valor em uma linha. Os campos que apontam eventos saem pelo código
-    /// do item, que é como o pedido, a página e a conversa o chamam.
-    fn value(&self, name: &str, kind: Kind, value: &Value) -> String {
-        let code = |id: u64| self.material.codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
-        if matches!(name, "closes" | "criterion" | "reply_to")
-            && let Some(id) = value.as_u64()
-        {
-            return code(id);
-        }
-        if matches!(name, "criteria" | "covers" | "items" | "targets" | "contracts")
-            && matches!(kind, Kind::Ints | Kind::Refs)
-        {
-            return join(value.as_array().into_iter().flatten().map(|v| v.as_u64().map_or_else(|| flat(v), code)));
-        }
-        if name == "files" {
-            return join(value.as_array().into_iter().flatten().map(|file| {
-                let path = file.as_str().or_else(|| file.get("path").and_then(Value::as_str)).unwrap_or_default();
-                if file.get("new").and_then(Value::as_bool) == Some(true) {
-                    format!("{path} ({})", self.t("page.value.new"))
-                } else {
-                    path.to_string()
-                }
-            }));
-        }
-        flat(value)
-    }
-
     /// As lições: só o texto original de cada uma, nunca o campo de busca.
+    /// A lição vem do banco, fora da spec, e não tem número para ser lida
+    /// depois.
     fn lessons(&self, out: &mut String) {
         if self.material.lessons.is_empty() {
             return;
@@ -543,41 +415,27 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// O texto inteiro de cada skill que uma tarefa nomeia, copiado aqui
-    /// porque o agente não herda as skills do projeto.
+    /// Uma linha por skill que uma tarefa nomeia: o nome, o quando usar e o
+    /// caminho do arquivo. O texto não vem junto — o agente da onda lê a skill
+    /// no disco pelo caminho recomendado aqui.
     fn skills(&self, out: &mut String) {
         if self.material.skills.is_empty() {
             return;
         }
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.skills"));
+        let _ = writeln!(out, "{}\n", self.t("prompt.skill.read"));
         for skill in &self.material.skills {
-            let _ = write!(out, "### {}", skill.name);
+            let _ = write!(out, "- **{}**", skill.name);
             if skill.stale {
                 let _ = write!(out, " ({})", self.t("prompt.skill.stale"));
             }
-            out.push_str("\n\n");
-            out.push_str(skill.text.trim_end());
-            out.push_str("\n\n");
+            if !skill.when.trim().is_empty() {
+                let _ = write!(out, " — {}", skill.when.trim());
+            }
+            let _ = writeln!(out, " — `{}`", skill.path);
         }
+        out.push('\n');
     }
-}
-
-/// Qualquer valor em uma linha: lista separada por vírgula, objeto como pares.
-fn flat(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.split_whitespace().collect::<Vec<_>>().join(" "),
-        Value::Array(items) => join(items.iter().map(flat)),
-        Value::Object(map) => {
-            map.iter().map(|(k, v)| format!("{k}: {}", flat(v))).collect::<Vec<_>>().join("; ")
-        }
-    }
-}
-
-fn join(items: impl Iterator<Item = String>) -> String {
-    items.filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ")
 }
 
 #[cfg(test)]
@@ -619,8 +477,11 @@ mod tests {
         }
     }
 
+    /// O pedido leva a lista, não o texto: uma linha por item, com o número,
+    /// o tipo em palavras e o comando que lê o item pelo binário. Nenhum
+    /// texto de item é copiado.
     #[test]
-    fn a_request_carries_the_wave_its_tasks_and_its_criteria() {
+    fn a_request_carries_one_line_per_item_with_its_number_type_and_command() {
         let log = log(&[
             (
                 "criterion",
@@ -633,10 +494,23 @@ mod tests {
             ("task", json!({"wave": 1, "text": "Escrever o motor", "files": [{"path": "src/a.rs"}]})),
         ]);
         let prompt = build(&material(&log, 1), Locale::PtBr).expect("cabe nas 500 linhas");
-        assert!(prompt.text.contains("Primeira onda"), "{}", prompt.text);
-        assert!(prompt.text.contains("Escrever o motor"), "{}", prompt.text);
-        assert!(prompt.text.contains("a suíte passa"), "{}", prompt.text);
-        assert!(prompt.text.contains("src/a.rs"), "{}", prompt.text);
+        for text in ["Primeira onda", "Escrever o motor", "a suíte passa", "src/a.rs", "cargo test"] {
+            assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
+        }
+        assert!(
+            prompt.text.contains(
+                "- MSTD-TASK-0001 (tarefa) — `mustard-rt run read waves --spec teste --term MSTD-TASK-0001`"
+            ),
+            "{}",
+            prompt.text
+        );
+        assert!(
+            prompt.text.contains(
+                "- MSTD-CRIT-0001 (critério) — `mustard-rt run read criteria --spec teste --term MSTD-CRIT-0001`"
+            ),
+            "{}",
+            prompt.text
+        );
         assert!(prompt.lines > 0 && prompt.lines == prompt.text.lines().count());
     }
 
@@ -649,15 +523,17 @@ mod tests {
         assert_eq!(first, again);
     }
 
-    /// Um pedido acima do teto de linhas é recusado, e a mensagem diz quantas
-    /// linhas ele tem e qual é o teto.
+    /// Um pedido acima do teto de linhas continua sendo recusado no mesmo
+    /// lugar, e a mensagem diz quantas linhas ele tem e qual é o teto. Com a
+    /// lista no lugar do texto, só uma onda com centenas de itens chega lá.
     #[test]
     fn a_request_over_the_line_limit_is_refused_saying_how_far_it_went() {
-        let long = "uma linha do texto\n".repeat(MAX_LINES + 10);
-        let log = log(&[(
-            "wave",
-            json!({"n": 1, "text": long, "criteria": [], "done_when": "pronto"}),
-        )]);
+        let mut events: Vec<(&str, Value)> =
+            vec![("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))];
+        for _ in 0..=MAX_LINES {
+            events.push(("task", json!({"wave": 1, "text": "Fazer", "files": [{"path": "src/a.rs"}]})));
+        }
+        let log = log(&events);
         let refused = build(&material(&log, 1), Locale::PtBr).unwrap_err();
         assert_eq!(refused.reason(), "wave-prompt-too-long");
         let message = refused.message(Locale::PtBr);
@@ -667,25 +543,41 @@ mod tests {
         assert!(message.contains(&written.to_string()), "{message}");
         assert!(!refused.message(Locale::EnUs).is_empty());
         // A página ainda mostra o pedido grande: é ele que precisa ser visto.
-        assert!(write(&material(&log, 1), Locale::PtBr).contains("uma linha do texto"));
+        assert!(write(&material(&log, 1), Locale::PtBr).contains("--term MSTD-TASK-0001"));
     }
 
-    /// O texto de cada skill nomeada é copiado inteiro no pedido, e a skill
-    /// cujo exemplo mudou depois dela sai marcada como a revisar.
+    /// Cada skill nomeada entra no pedido como uma linha — nome, quando usar e
+    /// o caminho do arquivo —, sem o texto dela, e a skill cujo exemplo mudou
+    /// depois dela sai marcada como a revisar.
     #[test]
-    fn the_named_skills_are_copied_whole_and_a_stale_one_is_marked() {
+    fn a_named_skill_is_recommended_by_path_and_a_stale_one_is_marked() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
         let mut m = material(&log, 1);
         m.skills = vec![
-            Skill { name: "add-run-command".into(), text: "# Passos\n\n1. A regra.\n".into(), stale: false },
-            Skill { name: "add-hook-rule".into(), text: "# Regra nova\n".into(), stale: true },
+            Skill {
+                name: "add-run-command".into(),
+                when: "acrescentar um comando run".into(),
+                path: "apps/rt/.claude/skills/add-run-command/SKILL.md".into(),
+                stale: false,
+            },
+            Skill {
+                name: "add-hook-rule".into(),
+                when: "acrescentar uma regra de gancho".into(),
+                path: ".claude/skills/add-hook-rule/SKILL.md".into(),
+                stale: true,
+            },
         ];
         let prompt = build(&m, Locale::PtBr).unwrap();
-        assert!(prompt.text.contains("1. A regra."), "{}", prompt.text);
-        assert!(prompt.text.contains("# Regra nova"), "{}", prompt.text);
+        assert!(
+            prompt.text.contains("`apps/rt/.claude/skills/add-run-command/SKILL.md`"),
+            "{}",
+            prompt.text
+        );
+        assert!(prompt.text.contains("acrescentar um comando run"), "{}", prompt.text);
+        assert!(prompt.text.contains(translate("prompt.skill.read", Locale::PtBr)), "{}", prompt.text);
         let stale = translate("prompt.skill.stale", Locale::PtBr);
-        assert!(prompt.text.contains(&format!("add-hook-rule ({stale})")), "{}", prompt.text);
-        assert!(!prompt.text.contains(&format!("add-run-command ({stale})")), "{}", prompt.text);
+        assert!(prompt.text.contains(&format!("**add-hook-rule** ({stale})")), "{}", prompt.text);
+        assert!(!prompt.text.contains(&format!("**add-run-command** ({stale})")), "{}", prompt.text);
     }
 
     /// A lição entra pelo texto original; o campo de busca nunca aparece.
@@ -783,37 +675,28 @@ mod tests {
         m
     }
 
-    /// O item que a tarefa declara cobrir entra por inteiro; o resto do
-    /// combinado entra como ponteiro de uma linha, com o código, o título e o
-    /// comando que lê o item inteiro.
+    /// O item combinado escolhido para a onda entra como linha, com o número
+    /// e o comando que o lê; o texto e o exemplo dele nunca entram.
     #[test]
-    fn the_covered_item_comes_whole_and_the_rest_comes_as_a_one_line_pointer() {
+    fn every_agreed_item_comes_as_a_line_and_never_as_text() {
         let plan = plan();
         let prompt = build(&with_agreed(&plan, 1), Locale::PtBr).unwrap();
-        // A onda 1 declara cobrir a regra da barra de status: ela vem inteira,
-        // com o título dela e o exemplo.
-        assert!(prompt.text.contains("### MSTD-RULE-0003"), "{}", prompt.text);
-        assert!(prompt.text.contains("Exemplo: duas linhas"), "{}", prompt.text);
-        // A regra do commit não é coberta por nenhuma tarefa: vira ponteiro, e
-        // o exemplo dela não vai junto.
-        assert!(!prompt.text.contains("### MSTD-RULE-0002"), "{}", prompt.text);
-        assert!(!prompt.text.contains("título curto"), "{}", prompt.text);
-        let pointer = prompt
+        for text in ["O commit segue o modelo aprovado", "título curto", "duas linhas"] {
+            assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
+        }
+        let line = prompt
             .text
             .lines()
             .find(|line| line.starts_with("- MSTD-RULE-0002"))
-            .unwrap_or_else(|| panic!("sem ponteiro da regra do commit: {}", prompt.text));
-        assert!(pointer.contains("O commit segue o modelo aprovado"), "{pointer}");
-        assert!(
-            pointer.contains("mustard-rt run read agreed --spec teste --term MSTD-RULE-0002"),
-            "{pointer}"
-        );
+            .unwrap_or_else(|| panic!("sem a linha da regra do commit: {}", prompt.text));
+        assert!(line.contains("(regra)"), "{line}");
+        assert!(line.contains("mustard-rt run read agreed --spec teste --term MSTD-RULE-0002"), "{line}");
     }
 
-    /// O item marcado como válido para todas as ondas entra por inteiro em
-    /// cada uma delas, sem nenhuma tarefa precisar declará-lo.
+    /// O item marcado como válido para todas as ondas entra na lista de cada
+    /// uma delas, sem nenhuma tarefa precisar declará-lo.
     #[test]
-    fn the_item_that_holds_for_every_wave_comes_whole_in_all_of_them() {
+    fn the_item_that_holds_for_every_wave_is_listed_in_all_of_them() {
         let log = log(&[
             (
                 "rule",
@@ -827,40 +710,53 @@ mod tests {
         ]);
         for wave in [1, 2] {
             let prompt = build(&with_agreed(&log, wave), Locale::PtBr).unwrap();
-            assert!(prompt.text.contains("Nenhuma onda fecha com a suíte vermelha"), "onda {wave}");
+            assert!(prompt.text.contains("--term MSTD-RULE-0001"), "onda {wave}: {}", prompt.text);
+            assert!(!prompt.text.contains("suíte vermelha"), "onda {wave}: {}", prompt.text);
         }
     }
 
-    /// O montador enche por ordem de relevância até o teto: o item coberto
-    /// que não cabe vira ponteiro, e o pedido fica dentro do teto.
+    /// Os itens da onda saem na ordem de execução que ela declara; o que ela
+    /// não lista vem depois, na ordem do arquivo. A onda sem essa ordem sai
+    /// como está no arquivo.
     #[test]
-    fn the_covered_item_that_does_not_fit_becomes_a_pointer_too() {
-        let huge = "uma linha da regra comprida\n".repeat(MAX_LINES);
-        let log = log(&[
-            ("rule", json!({"text": huge, "keys": ["comprida"], "example": "exemplo"})),
-            ("rule", json!({"text": "A regra curta cabe", "keys": ["curta"], "example": "exemplo"})),
-            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
-            (
-                "task",
-                json!({"wave": 1, "text": "Fazer", "files": [{"path": "src/a.rs"}], "covers": [1, 2]}),
-            ),
-        ]);
-        let prompt = build(&with_agreed(&log, 1), Locale::PtBr).expect("cabe depois do recorte");
-        assert!(prompt.lines <= MAX_LINES, "{} linhas", prompt.lines);
-        assert!(prompt.text.contains("### MSTD-RULE-0002"), "{}", prompt.text);
-        assert!(!prompt.text.contains("### MSTD-RULE-0001"), "a regra comprida ficou inteira");
-        assert!(prompt.text.contains("--term MSTD-RULE-0001"), "{}", prompt.text);
+    fn the_wave_items_come_in_the_execution_order_the_wave_declares() {
+        let events = |order: Value| {
+            vec![
+                ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto", "order": order})),
+                ("task", json!({"wave": 1, "text": "Primeira", "files": [{"path": "src/a.rs"}]})),
+                ("task", json!({"wave": 1, "text": "Segunda", "files": [{"path": "src/b.rs"}]})),
+                ("task", json!({"wave": 1, "text": "Terceira", "files": [{"path": "src/c.rs"}]})),
+            ]
+        };
+        let codes_in_order = |prompt: &str| -> Vec<String> {
+            prompt
+                .lines()
+                .filter_map(|line| line.strip_prefix("- MSTD-TASK-"))
+                .filter_map(|rest| rest.split(' ').next().map(str::to_string))
+                .collect()
+        };
+
+        let declared = log(&events(json!([4, 2])));
+        let prompt = build(&material(&declared, 1), Locale::PtBr).unwrap();
+        assert_eq!(codes_in_order(&prompt.text), ["0003", "0001", "0002"], "{}", prompt.text);
+
+        let plain = log(&events(json!([])));
+        let prompt = build(&material(&plain, 1), Locale::PtBr).unwrap();
+        assert_eq!(codes_in_order(&prompt.text), ["0001", "0002", "0003"], "{}", prompt.text);
     }
 
-    /// Quando nem o que fica inteiro cabe, a recusa diz o que tirar: cada
-    /// parte copiada por inteiro, com quantas linhas ela ocupa.
+    /// Quando o pedido não cabe, a recusa diz de onde vêm as linhas: cada
+    /// parte, com quantas ela ocupa.
     #[test]
-    fn a_request_that_still_does_not_fit_is_refused_saying_what_to_take_out() {
-        let long = "uma linha da onda\n".repeat(MAX_LINES + 10);
-        let log = log(&[
+    fn a_request_that_does_not_fit_is_refused_saying_where_the_lines_come_from() {
+        let mut events: Vec<(&str, Value)> = vec![
             ("rule", json!({"text": "Uma regra qualquer", "keys": ["regra"], "example": "exemplo"})),
-            ("wave", json!({"n": 1, "text": long, "criteria": [], "done_when": "pronto"})),
-        ]);
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+        ];
+        for _ in 0..=MAX_LINES {
+            events.push(("task", json!({"wave": 1, "text": "Fazer", "files": [{"path": "src/a.rs"}]})));
+        }
+        let log = log(&events);
         let refused = build(&with_agreed(&log, 1), Locale::PtBr).unwrap_err();
         assert_eq!(refused.reason(), "wave-prompt-too-long");
         for lang in [Locale::PtBr, Locale::EnUs] {
@@ -877,6 +773,22 @@ mod tests {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let prompt = build(&material(&log, 1), lang).unwrap();
             assert!(prompt.text.contains(translate("prompt.fixed", lang)), "{lang:?}");
+        }
+    }
+
+    /// As instruções fixas dizem que ler o item pelo número é parte do
+    /// trabalho, no lugar da frase que mandava nunca procurar o resto em
+    /// outro arquivo. A proibição que sobra é só a de sair caçando o conteúdo
+    /// em outro arquivo do projeto.
+    #[test]
+    fn the_fixed_instructions_say_that_reading_the_item_by_its_number_is_part_of_the_work() {
+        for (lang, reading, forbidden) in [
+            (Locale::PtBr, "Ler o item pelo número é parte do trabalho", "nunca vá procurar o resto em outro arquivo"),
+            (Locale::EnUs, "Reading the item by its number is part of the work", "never go looking for the rest in another file"),
+        ] {
+            let fixed = translate("prompt.fixed", lang);
+            assert!(fixed.contains(reading), "{fixed}");
+            assert!(!fixed.contains(forbidden), "{fixed}");
         }
     }
 }

@@ -468,11 +468,16 @@ fn open_items(ledger: &Ledger, ids: &[String]) -> Vec<OpenPending> {
 /// worktree grave e leia o mesmo arquivo que o principal. Fora de um repositório
 /// git, a âncora fica.
 fn ledger_root(root: &Path) -> PathBuf {
-    let anchor = if root.join("mustard.json").is_file() {
-        root.to_path_buf()
-    } else {
-        PathBuf::from(crate::shared::context::project_dir())
-    };
+    // Num worktree ligado, a lista mora no checkout principal, e é ele que
+    // tem o `mustard.json`: perguntar ao git antes de desistir tira a lista da
+    // pasta do processo, que num worktree fica fora do projeto.
+    if let Some(main) = main_checkout_root(root).filter(|found| found.join("mustard.json").is_file()) {
+        return main;
+    }
+    if root.join("mustard.json").is_file() {
+        return root.to_path_buf();
+    }
+    let anchor = PathBuf::from(crate::shared::context::project_dir());
     main_checkout_root(&anchor).unwrap_or(anchor)
 }
 
@@ -489,11 +494,31 @@ fn load(path: &Path) -> Result<Ledger, Value> {
             "the pending ledger exists and could not be read — fix its permissions; nothing was written",
         ));
     };
-    // Vazio não é corrompido: uma criação interrompida deixa zero bytes.
+    parse_ledger(&raw)
+}
+
+/// Abre a lista com a trava exclusiva presa e devolve o que ela guarda. A
+/// trava fica presa até quem chamou soltar o arquivo: assim dois pedidos ao
+/// mesmo tempo nunca leem a mesma lista e ganham o mesmo número. É a mesma
+/// trava que os fechamentos armados já usavam.
+fn open_locked(path: &Path) -> Result<(LockedFile, Ledger), Value> {
+    let mut file = LockedFile::exclusive(path).map_err(|e| {
+        refused("ledger-unreadable", &format!("the pending ledger could not be locked ({e}); nothing was written"))
+    })?;
+    let raw = file.read_to_string().map_err(|e| {
+        refused("ledger-unreadable", &format!("the pending ledger could not be read ({e}); nothing was written"))
+    })?;
+    let ledger = parse_ledger(&raw)?;
+    Ok((file, ledger))
+}
+
+/// O que um arquivo de lista guarda. Vazio não é corrompido: uma criação
+/// interrompida deixa zero bytes.
+fn parse_ledger(raw: &str) -> Result<Ledger, Value> {
     if raw.trim().is_empty() {
         return Ok(Ledger::default());
     }
-    serde_json::from_str::<Ledger>(&raw).map_err(|e| {
+    serde_json::from_str::<Ledger>(raw).map_err(|e| {
         refused(
             "ledger-corrupt",
             &format!(
@@ -538,7 +563,7 @@ fn item_json(item: &PendingItem) -> Value {
 /// Grava a lista. Antes, todo item sem data ganha a data do dia (é a
 /// primeira gravação dele desde que a data existe), e a revisão conta mais
 /// uma.
-fn write(path: &Path, ledger: &mut Ledger, today: &str) -> Result<(), Value> {
+fn write(file: &mut LockedFile, ledger: &mut Ledger, today: &str) -> Result<(), Value> {
     for item in ledger.items.iter_mut().filter(|i| i.created.is_none()) {
         item.created = Some(today.to_string());
     }
@@ -546,8 +571,7 @@ fn write(path: &Path, ledger: &mut Ledger, today: &str) -> Result<(), Value> {
     let mut body = serde_json::to_string_pretty(ledger)
         .map_err(|e| refused("write-failed", &e.to_string()))?;
     body.push('\n');
-    mustard_core::io::fs::write_atomic(path, body.as_bytes())
-        .map_err(|e| refused("write-failed", &e.to_string()))
+    file.replace(body.as_bytes()).map_err(|e| refused("write-failed", &e.to_string()))
 }
 
 /// O passe do ledger — o núcleo testável de [`run`]. Nunca entra em pânico.
@@ -564,8 +588,10 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
         Err(e) => return refused("bad-root", &e.to_string()),
     };
     let path = paths.pending_ledger_path();
-    let mut ledger = match load(&path) {
-        Ok(l) => l,
+    // A trava fica presa da leitura à gravação: dois pedidos ao mesmo tempo
+    // nunca leem a mesma lista, então nunca ganham o mesmo número.
+    let (mut file, mut ledger) = match open_locked(&path) {
+        Ok(opened) => opened,
         Err(refusal) => return refusal,
     };
     let today = today(opts.now.as_deref());
@@ -594,7 +620,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 swept: None,
                 became: None,
             });
-            if let Err(refusal) = write(&path, &mut ledger, &today) {
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("id".into(), json!(id));
@@ -609,7 +635,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
             }
             item.status = Status::Closed;
             item.reason = Some(reason);
-            if let Err(refusal) = write(&path, &mut ledger, &today) {
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("id".into(), json!(id));
@@ -642,7 +668,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                         item.status = Status::Dropped;
                         item.reason = Some(reason.clone());
                     }
-                    if let Err(refusal) = write(&path, &mut ledger, &today) {
+                    if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                         return refusal;
                     }
                     extra.insert("removed".into(), json!(chosen));
@@ -672,7 +698,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 item.reason = None;
                 item.swept = None;
             }
-            if let Err(refusal) = write(&path, &mut ledger, &today) {
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("id".into(), json!(id));
@@ -692,7 +718,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                         ledger.sweep.push(id.clone());
                     }
                 }
-                if let Err(refusal) = write(&path, &mut ledger, &today) {
+                if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                     return refusal;
                 }
                 extra.insert("question".into(), json!(mustard_core::translate("pending.stale.question", lang)));
@@ -725,7 +751,7 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 item.reason = Some(reason.to_string());
             }
             ledger.sweep.clear();
-            if let Err(refusal) = write(&path, &mut ledger, &today) {
+            if let Err(refusal) = write(&mut file, &mut ledger, &today) {
                 return refusal;
             }
             extra.insert("expired".into(), json!(expired));
@@ -882,7 +908,7 @@ pub(crate) fn mark_became(root: &Path, id: &str, spec: &str) -> bool {
         return false;
     };
     let path = paths.pending_ledger_path();
-    let Ok(mut ledger) = load(&path) else {
+    let Ok((mut file, mut ledger)) = open_locked(&path) else {
         return false;
     };
     let Some(item) = ledger.items.iter_mut().find(|i| i.id == id && i.status == Status::Open) else {
@@ -892,7 +918,7 @@ pub(crate) fn mark_became(root: &Path, id: &str, spec: &str) -> bool {
         return true;
     }
     item.became = Some(spec.to_string());
-    write(&path, &mut ledger, &today(None)).is_ok()
+    write(&mut file, &mut ledger, &today(None)).is_ok()
 }
 
 /// O arquivo dos fechamentos armados, ao lado da lista.

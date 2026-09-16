@@ -59,6 +59,29 @@ pub fn refresh_line(index_path: &Path, name: &str, log: &SpecLog) -> Result<(), 
     Ok(())
 }
 
+/// Tira do índice do projeto `root` a linha da spec `name`. A spec descartada
+/// some do índice no mesmo passo em que some do disco; a linha do projeto e as
+/// das outras specs ficam como estão. Pega a trava do índice, e o arquivo só é
+/// reescrito quando muda.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando a trava, a leitura ou a escrita falham.
+pub fn drop_line(root: &Path, name: &str) -> Result<(), Refusal> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
+    let index_path = paths.spec_index_path();
+    if !index_path.is_file() {
+        return Ok(());
+    }
+    let mut file = LockedFile::exclusive(&index_path).map_err(io_refusal)?;
+    let current = file.read_to_string().map_err(io_refusal)?;
+    let next = index::merge(&current, name, None);
+    if next != current {
+        file.replace(next.as_bytes()).map_err(io_refusal)?;
+    }
+    Ok(())
+}
+
 /// O que o [`rebuild`] fez.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rebuilt {

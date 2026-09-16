@@ -309,6 +309,9 @@ const fn ty(
 const TEXT: Field = req("text", Kind::Text);
 const KEYS: Field = req("keys", Kind::Texts);
 const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
+/// O item combinado que não vira código: o valor é o motivo. Quem o traz sai
+/// do aviso dos itens sem tarefa, porque não há tarefa que o implemente.
+const NO_CODE: Field = opt("no_code", Kind::Text);
 
 const HOOK_ACTIONS: &[&str] = &["warn", "block"];
 const CALL_RESULTS: &[&str] = &["ok", "refused"];
@@ -415,13 +418,13 @@ pub const TYPES: &[TypeSpec] = &[
             opt("reminders", Kind::List),
         ],
     ),
-    ty("rule", "RULE", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO]),
-    ty("limit", "LIMIT", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO]),
-    ty("contract", "CONTR", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO]),
-    ty("error", "ERR", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text)]),
-    ty("edge_case", "EDGE", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text)]),
-    ty("out_of_scope", "SCOPE", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text)]),
-    ty("decision", "DEC", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text)]),
+    ty("rule", "RULE", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, NO_CODE]),
+    ty("limit", "LIMIT", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, NO_CODE]),
+    ty("contract", "CONTR", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, NO_CODE]),
+    ty("error", "ERR", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text), NO_CODE]),
+    ty("edge_case", "EDGE", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text), NO_CODE]),
+    ty("out_of_scope", "SCOPE", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text), NO_CODE]),
+    ty("decision", "DEC", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text), NO_CODE]),
     // Especificação.
     ty("context", "CTX", Block::Specification, true, &[TEXT]),
     ty("concern", "CONC", Block::Specification, true, &[TEXT]),
@@ -463,6 +466,10 @@ pub const TYPES: &[TypeSpec] = &[
             req("criteria", Kind::Ints),
             req("done_when", Kind::Text),
             opt("depends_on", Kind::Ints),
+            // A relação dos itens da onda em ordem de execução. É ela que o
+            // pedido leva, uma linha por item; sem ela, os itens saem na
+            // ordem do arquivo.
+            opt("order", Kind::Ints),
         ],
     ),
     ty(
@@ -502,6 +509,9 @@ pub const TYPES: &[TypeSpec] = &[
         &[
             req("wave", Kind::Int),
             req("role", Kind::OneOf(ROLES)),
+            // O pedido exato, como foi injetado no agente. É por ele que se
+            // confere depois se a onda recebeu o que devia.
+            TEXT,
             req("lines", Kind::Int),
             req("chars", Kind::Int),
             req("items", Kind::Ints),
@@ -609,6 +619,9 @@ pub enum Refusal {
     CitedFileMissing { fact: usize, path: String },
     CitedLineMissing { fact: usize, path: String, line: u64, lines: u64 },
     BinaryOnlyField { field: String },
+    /// Um campo que o tipo não declara. Ele entraria calado e ficaria gravado
+    /// sem ninguém ver, e nunca seria lido por nada.
+    UnknownField { event_type: String, field: String, accepted: String },
     UnknownTarget { target: EventRef },
     ReplacesOtherType { id: u64, found: String, event_type: String },
     FilterMatchesNothing { event_type: String, from: String, to: String },
@@ -705,6 +718,7 @@ impl Refusal {
             Self::CitedFileMissing { .. } => "cited-file-missing",
             Self::CitedLineMissing { .. } => "cited-line-missing",
             Self::BinaryOnlyField { .. } => "binary-only-field",
+            Self::UnknownField { .. } => "unknown-field",
             Self::UnknownTarget { .. } => "unknown-target",
             Self::ReplacesOtherType { .. } => "replaces-other-type",
             Self::FilterMatchesNothing { .. } => "filter-matches-nothing",
@@ -798,6 +812,14 @@ impl Refusal {
             Self::BinaryOnlyField { field } => {
                 fill("spec_events.binary_only_field", &[("{field}", field.clone())])
             }
+            Self::UnknownField { event_type, field, accepted } => fill(
+                "spec_events.unknown_field",
+                &[
+                    ("{type}", event_type.clone()),
+                    ("{field}", field.clone()),
+                    ("{fields}", accepted.clone()),
+                ],
+            ),
             Self::UnknownTarget { target: EventRef::Id(id) } => {
                 fill("spec_events.unknown_target", &[("{id}", id.to_string())])
             }
@@ -972,9 +994,39 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
     for field in spec.fields {
         check_field(event, spec.name, *field)?;
     }
+    // O campo que o tipo não declara é recusado pelo nome: ele entraria
+    // calado e ficaria gravado sem ninguém ver, e um nome escrito errado
+    // nunca mais seria lido por nada.
+    if let Some(found) = event.keys().find(|key| !accepts_field(spec, key)) {
+        return Err(Refusal::UnknownField {
+            event_type: spec.name.to_string(),
+            field: found.clone(),
+            accepted: accepted_fields(spec),
+        });
+    }
     check_nested(event, spec.name)?;
     check_conditions(event, spec.name)?;
     check_fact_sources(event, spec.name)
+}
+
+/// Os campos que toda linha pode trazer, fora os do tipo: o envelope, o campo
+/// de busca, a marca do expurgo, o rótulo, a versão nova de um item e a
+/// mensagem de onde ele veio.
+const COMMON_FIELDS: &[&str] =
+    &["v", "id", "code", "at", "type", "author", "search", "purged", "label", "replaces", "origin", "text", "keys"];
+
+/// O tipo aceita este campo? Aceita os comuns a toda linha e os que ele
+/// declara.
+fn accepts_field(spec: &TypeSpec, name: &str) -> bool {
+    COMMON_FIELDS.contains(&name) || spec.fields.iter().any(|field| field.name == name)
+}
+
+/// Os campos que um tipo aceita, separados por vírgula: os que ele declara,
+/// depois os comuns a toda linha.
+fn accepted_fields(spec: &TypeSpec) -> String {
+    let own: Vec<&str> = spec.fields.iter().map(|field| field.name).collect();
+    let rest: Vec<&str> = COMMON_FIELDS.iter().copied().filter(|name| !own.contains(name)).collect();
+    own.into_iter().chain(rest).collect::<Vec<_>>().join(", ")
 }
 
 pub(crate) fn check_field(event: &Map<String, Value>, event_type: &str, field: Field) -> Result<(), Refusal> {
@@ -1600,16 +1652,99 @@ pub fn search_terms(query: &str) -> Vec<String> {
     roots([query])
 }
 
-/// O `search` que uma linha deve ter, calculado de `text` e de `keys`.
-/// `None` para a linha sem texto e sem chaves, que fica sem o campo.
+/// Os eventos que um termo acha, do mais forte para o menos forte.
+///
+/// O termo que é o código de um item devolve exatamente esse item: é assim que
+/// a conversa e a página citam um item, e um código nunca é uma busca por
+/// assunto. Qualquer outro termo passa pela busca por nota que o projeto já
+/// usa nas lições e no recorte dos itens por onda, sobre o campo de busca de
+/// cada evento: quem casa mais forte vem primeiro, e não é preciso ter todas
+/// as palavras do termo. O termo vazio devolve tudo, na ordem do arquivo.
+#[must_use]
+pub fn found_by<'a>(
+    events: Vec<&'a SpecEvent>,
+    term: &str,
+    codes: &BTreeMap<u64, String>,
+) -> Vec<&'a SpecEvent> {
+    let term = term.trim();
+    if term.is_empty() {
+        return events;
+    }
+    let by_code: BTreeSet<u64> = codes
+        .iter()
+        .filter(|(_, code)| code.eq_ignore_ascii_case(term))
+        .map(|(id, _)| *id)
+        .collect();
+    if !by_code.is_empty() {
+        return events.into_iter().filter(|e| by_code.contains(&e.id)).collect();
+    }
+    let docs = events.iter().map(|e| (e.id, e.str_field("search").unwrap_or_default()));
+    let ranked = crate::domain::search::SearchIndex::build(docs)
+        .top(&crate::domain::search::query_terms(term), events.len());
+    let by_id: BTreeMap<u64, &SpecEvent> = events.iter().map(|e| (e.id, *e)).collect();
+    ranked.into_iter().filter_map(|hit| by_id.get(&hit.id).copied()).collect()
+}
+
+/// O número da onda a que uma linha pertence: `n` na onda, `wave` na tarefa,
+/// no envio, no entregou e no veredito. `None` nos outros tipos.
+fn wave_of(event_type: &str, field: impl Fn(&str) -> Option<u64>) -> Option<u64> {
+    match event_type {
+        "wave" => field("n"),
+        "task" | "send" | "delivered" | "verdict" => field("wave"),
+        _ => None,
+    }
+}
+
+/// Os caminhos dos arquivos que a linha cita: cada item de `files`, que vem
+/// como objeto com o campo do caminho ou já como o caminho em texto.
+fn cited_paths(event: &Map<String, Value>) -> Vec<&str> {
+    event
+        .get("files")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| item.as_str().or_else(|| item.get("path").and_then(Value::as_str)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// O `search` que uma linha deve ter: as raízes do texto e das palavras-chave,
+/// mais o rótulo do item, o nome do tipo em palavras nos dois idiomas, a onda
+/// a que a linha pertence e os caminhos dos arquivos que ela cita. Com isso,
+/// procurar pelo nome de um arquivo acha as tarefas que mexem nele, e procurar
+/// por "onda 13" acha o que é dela. `None` para a linha que não tem nada
+/// disso, que fica sem o campo.
 fn search_of(event: &Map<String, Value>) -> Option<String> {
     let text = event.get("text").and_then(Value::as_str);
-    let keys: Vec<&str> = event
-        .get("keys")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    (text.is_some() || !keys.is_empty()).then(|| search_field(text, &keys))
+    let mut extra: Vec<String> = Vec::new();
+    if let Some(keys) = event.get("keys").and_then(Value::as_array) {
+        extra.extend(keys.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    // A linha sem texto e sem palavras-chave — a expurgada, entre outras —
+    // fica sem o campo; o resto só enriquece quem já tem o que procurar.
+    if text.is_none() && extra.is_empty() {
+        return None;
+    }
+    if let Some(label) = event.get("label").and_then(Value::as_str) {
+        extra.push(label.to_string());
+    }
+    let event_type = event.get("type").and_then(Value::as_str).unwrap_or_default();
+    if type_spec(event_type).is_some() {
+        let key = format!("page.type.{event_type}");
+        extra.push(translate(&key, Locale::PtBr).to_string());
+        extra.push(translate(&key, Locale::EnUs).to_string());
+    }
+    if let Some(n) = wave_of(event_type, |f| event.get(f).and_then(Value::as_u64)) {
+        extra.push(format!(
+            "{} {n} {} {n}",
+            translate("page.type.wave", Locale::PtBr),
+            translate("page.type.wave", Locale::EnUs)
+        ));
+    }
+    extra.extend(cited_paths(event).into_iter().map(str::to_string));
+    let keys: Vec<&str> = extra.iter().map(String::as_str).collect();
+    Some(search_field(text, &keys))
 }
 
 // ---------------------------------------------------------------------------
@@ -1662,11 +1797,7 @@ impl SpecEvent {
     /// tarefa, no envio, no entregou e no veredito.
     #[must_use]
     pub fn wave(&self) -> Option<u64> {
-        match self.event_type.as_str() {
-            "wave" => self.int("n"),
-            "task" | "send" | "delivered" | "verdict" => self.int("wave"),
-            _ => None,
-        }
+        wave_of(&self.event_type, |field| self.int(field))
     }
 
     /// `true` quando o evento tem todas as raízes do termo, somando as do
@@ -1986,13 +2117,11 @@ impl SpecLog {
                 pick(&mut picked,self.block(BlockQuery::Block(Block::Criteria)));
             }
             Step::Question { term } => {
-                let terms = search_terms(term);
                 let codes = self.codes();
-                pick(&mut picked,self
-                    .block(BlockQuery::Block(Block::Conversation))
-                    .into_iter()
-                    .filter(|e| e.matches(&terms, codes.get(&e.id).map(String::as_str)))
-                    .collect());
+                pick(
+                    &mut picked,
+                    found_by(self.block(BlockQuery::Block(Block::Conversation)), term, &codes),
+                );
             }
             Step::Review { wave } => {
                 pick(&mut picked,self.block(BlockQuery::Wave(*wave)));
@@ -2325,8 +2454,38 @@ mod tests {
         let event = stamp(normalize(obj(json!({"text": "x", "keys": ["k"], "origin": 1})), "note"), 7, None, "t");
         let line = render_line(&event);
         assert!(line.starts_with(r#"{"v":1,"id":7,"at":"t","type":"note","author":"assistant","keys":"#), "{line}");
-        assert!(line.ends_with(r#""search":"x k"}"#), "{line}");
+        assert!(line.ends_with(r#""search":"x k anot not"}"#), "{line}");
         assert!(!shown_line(&event).contains("search"));
+    }
+
+    /// Além do texto e das palavras-chave, o campo de busca leva o rótulo, o
+    /// nome do tipo em palavras nos dois idiomas, a onda a que o item pertence
+    /// e os caminhos dos arquivos que ele cita: procurar pelo nome de um
+    /// arquivo acha a tarefa que mexe nele, e procurar por "onda 13" acha o
+    /// que é dela.
+    #[test]
+    fn the_search_of_an_item_carries_its_label_type_wave_and_files() {
+        let task = stamp(
+            normalize(
+                obj(json!({
+                    "text": "A rodada grava o que injetou.",
+                    "keys": ["envio"],
+                    "label": "Onda 13, tarefa 7",
+                    "wave": 13,
+                    "files": [{"path": "apps/rt/src/commands/flow/round.rs", "new": true}],
+                    "origin": 1
+                })),
+                "task",
+            ),
+            7,
+            None,
+            "t",
+        );
+        let event = SpecEvent { id: 7, event_type: "task".into(), line: 1, fields: task };
+        for term in ["round.rs", "commands/flow", "onda 13", "wave 13", "tarefa", "task", "injetou"] {
+            assert!(event.matches(&search_terms(term), None), "{term}: {:?}", event.str_field("search"));
+        }
+        assert!(!event.matches(&search_terms("onda 12"), None), "another wave does not match");
     }
 
     /// Recalcular o `search` reescreve só a linha em que ele faltava ou era
@@ -2353,8 +2512,14 @@ mod tests {
         assert_eq!(lines[4], bare);
         assert_eq!(lines[5], "", "the file still ends with a newline");
         let log = parse_log(&fixed);
-        assert_eq!(log.get(2).unwrap().str_field("search"), Some(search_field(Some("Trava nova."), &["k"]).as_str()));
-        assert_eq!(log.get(3).unwrap().str_field("search"), Some(search_field(Some("Sem busca gravada."), &[]).as_str()));
+        assert_eq!(
+            log.get(2).unwrap().str_field("search"),
+            Some(search_field(Some("Trava nova."), &["k", "anotação", "note"]).as_str())
+        );
+        assert_eq!(
+            log.get(3).unwrap().str_field("search"),
+            Some(search_field(Some("Sem busca gravada."), &["regra", "rule"]).as_str())
+        );
         assert_eq!(refresh_search_lines(&fixed), (fixed.clone(), 0), "a second pass changes nothing");
     }
 

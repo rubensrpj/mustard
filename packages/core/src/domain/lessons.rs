@@ -192,6 +192,18 @@ pub fn in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
     found
 }
 
+/// Os defeitos já vistos nos arquivos de `scope`, em ordem de número: as
+/// lições da classe do defeito que valem ali. É o que o revisor de uma onda
+/// precisa ver antes de olhar o código — o erro que já aconteceu naqueles
+/// arquivos é o que tem mais chance de se repetir.
+#[must_use]
+pub fn defects_in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEvent> {
+    in_scope(bank, scope).into_iter().filter(|lesson| lesson.event_type == DEFECT).collect()
+}
+
+/// A classe da lição que guarda um defeito que pode se repetir.
+pub const DEFECT: &str = "defect";
+
 /// O "onde vale" de um evento casa com `scope`? A mesma leitura serve à lição
 /// e ao item combinado, que declaram o campo do mesmo jeito: sem ela, o
 /// recorte dos itens por onda e a busca de lições discordariam sobre o mesmo

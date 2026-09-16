@@ -255,10 +255,14 @@ impl<'a> Page<'a> {
                 }
                 out.push(Node::Item(item));
             }
-            // O pedido inteiro da onda, recolhido: é por esta página que a
-            // spec é aprovada, e quem aprova tem de ver cada linha que o
-            // agente vai ler, as instruções fixas incluídas.
-            if let Some(prompt) = self.prompts.get(&n) {
+            // Enquanto a onda não foi despachada, o pedido montado aparece
+            // recolhido: é por esta página que a spec é aprovada, e quem
+            // aprova tem de ver cada linha que o agente vai ler, as
+            // instruções fixas incluídas. Depois do despacho quem manda é o
+            // registro do envio, logo acima, que mostra o pedido como foi
+            // injetado, com cada código virando link para o item.
+            let dispatched = self.of_type("send").iter().any(|s| s.wave() == Some(n));
+            if let Some(prompt) = self.prompts.get(&n).filter(|_| !dispatched) {
                 out.push(Node::Section(Section {
                     anchor: None,
                     heading: self.t("page.wave.prompt").replace("{n}", &n.to_string()),

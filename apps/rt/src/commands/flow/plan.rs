@@ -12,13 +12,16 @@
 //! levantamento aberto; erro de montagem do plano (ciclo entre ondas, e
 //! tarefa ou dependência apontando uma onda que não existe); pedido de onda
 //! acima do teto de linhas; skill que a conferência recusa; arquivo citado
-//! que não existe e não está marcado como novo.
+//! que não existe e não está marcado como novo; tarefa que mexe em código
+//! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere; e
+//! tarefa cujo texto casa melhor com outra onda, que volta dizendo qual.
 //!
 //! **O que só avisa**, e a decisão fica com quem aprova: arquivo citado fora
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
 //! mapa não acha; ondas que saem na mesma rodada e dividem arquivo; item
-//! combinado que nenhuma tarefa cobre; contrato que nenhum critério cita; e
-//! tarefa sem arquivo.
+//! combinado que nenhuma tarefa cobre — menos o marcado como "não vira
+//! código", que traz o motivo na linha dele; e contrato que nenhum critério
+//! cita.
 //!
 //! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
 //! no arquivo de eventos quando este comando roda, com o rótulo do achado do
@@ -37,7 +40,8 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
 use mustard_core::domain::project_map::MapRefusal;
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::search;
+use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{open_points, open_refusal};
 use mustard_core::io::citation::DiskWorld;
@@ -82,8 +86,16 @@ enum PlanFinding {
     ItemWithoutTask { code: String },
     /// Um contrato que nenhum critério cita.
     ContractWithoutCriterion { code: String },
-    /// Uma tarefa que não diz em que arquivo mexe.
-    TaskWithoutFile { task: String },
+    /// Uma tarefa que mexe em código e não diz em que arquivo mexe, com os
+    /// arquivos que o mapa sugere para ela.
+    TaskWithoutFile { task: String, files: String },
+    /// Uma tarefa cujo texto casa melhor com outra onda que não a dela.
+    TaskInTheWrongWave { task: String, wave: u64, best: u64 },
+    /// Uma tarefa sem skill para a qual já existe uma skill que serve.
+    TaskCouldNameASkill { task: String, skill: String },
+    /// Uma tarefa sem skill cujo trabalho se repete no projeto: o plano
+    /// precisa da tarefa que faz a skill dela nascer.
+    SkillToBeBorn { task: String },
 }
 
 impl PlanFinding {
@@ -94,13 +106,16 @@ impl PlanFinding {
             | Self::Skill { .. }
             | Self::WaveLoop { .. }
             | Self::DependsOnMissing { .. }
-            | Self::TaskWithoutWave { .. } => true,
+            | Self::TaskWithoutWave { .. }
+            | Self::TaskWithoutFile { .. }
+            | Self::TaskInTheWrongWave { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
             Self::SharedFile { .. }
             | Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
-            | Self::TaskWithoutFile { .. } => false,
+            | Self::TaskCouldNameASkill { .. }
+            | Self::SkillToBeBorn { .. } => false,
         }
     }
 
@@ -124,6 +139,9 @@ impl PlanFinding {
             Self::ItemWithoutTask { .. } => "item-without-task".into(),
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
+            Self::TaskInTheWrongWave { .. } => "task-in-the-wrong-wave".into(),
+            Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
+            Self::SkillToBeBorn { .. } => "skill-to-be-born".into(),
         }
     }
 
@@ -166,7 +184,22 @@ impl PlanFinding {
             Self::ContractWithoutCriterion { code } => {
                 fill("plan.contract_without_criterion", &[("{code}", code.clone())])
             }
-            Self::TaskWithoutFile { task } => fill("plan.task_without_file", &[("{task}", task.clone())]),
+            Self::TaskWithoutFile { task, files } => {
+                let suggested = if files.is_empty() {
+                    translate("plan.no_suggestion", lang).to_string()
+                } else {
+                    files.clone()
+                };
+                fill("plan.task_without_file", &[("{task}", task.clone()), ("{files}", suggested)])
+            }
+            Self::TaskInTheWrongWave { task, wave, best } => fill(
+                "plan.task_wrong_wave",
+                &[("{task}", task.clone()), ("{wave}", wave.to_string()), ("{best}", best.to_string())],
+            ),
+            Self::TaskCouldNameASkill { task, skill } => {
+                fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
+            }
+            Self::SkillToBeBorn { task } => fill("plan.skill_to_be_born", &[("{task}", task.clone())]),
         }
     }
 
@@ -264,9 +297,13 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         return refuse(&refusal);
     }
 
+    // A publicação acontece só nos marcos, e a aprovação é um deles: a
+    // resposta manda publicar as duas páginas, e nenhum endereço entra na
+    // conversa — o link mora na barra de status.
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
         "waves": waves, "warnings": warnings,
+        "publish": ["spec", "project"],
         "next": translate("plan.next", lang),
     });
     if let Some(id) = recorded {
@@ -383,8 +420,12 @@ fn check(
     for task in &tasks {
         let code = code_of(task);
         let files = declared_files(task);
-        if files.is_empty() {
-            out.push(PlanFinding::TaskWithoutFile { task: code.clone() });
+        let text = task.str_field("text").unwrap_or_default();
+        if files.is_empty() && !says_it_touches_no_file(text) {
+            out.push(PlanFinding::TaskWithoutFile {
+                task: code.clone(),
+                files: crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS).join(", "),
+            });
         }
         for (path, new) in &files {
             if !new && world.file_lines(path).is_none() {
@@ -427,11 +468,55 @@ fn check(
         .into_iter()
         .filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty()))
         .collect();
+    // O item marcado como "não vira código" traz o motivo na própria linha e
+    // não tem tarefa que o implemente: avisar sobre ele seria avisar para
+    // sempre.
     for item in &agreed {
-        if !covered.contains(&item.id) {
+        if !covered.contains(&item.id) && item.str_field("no_code").is_none() {
             out.push(PlanFinding::ItemWithoutTask { code: code_of(item) });
         }
     }
+    // Cada tarefa serve ao propósito da onda em que está: o texto da tarefa
+    // contra o texto de cada onda, pela mesma busca do recorte dos itens.
+    let wave_texts: Vec<(u64, String)> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "wave")
+        .filter_map(|e| Some((e.int("n")?, search_field(e.str_field("text"), &[]))))
+        .collect();
+    if wave_texts.len() > 1 {
+        for task in &tasks {
+            let Some(mine) = task.int("wave") else { continue };
+            let text = task.str_field("text").unwrap_or_default();
+            let docs = wave_texts.iter().map(|(n, roots)| (*n, roots.as_str()));
+            let Some(best) = search::best(docs, text) else { continue };
+            if best.id != mine {
+                out.push(PlanFinding::TaskInTheWrongWave { task: code_of(task), wave: mine, best: best.id });
+            }
+        }
+    }
+
+    // A skill nasce por demanda e é escolhida pela tarefa: a tarefa que não
+    // nomeia skill ganha o nome da que já existe e serve; quando nenhuma
+    // serve e o trabalho dela se repete no projeto, o plano precisa da tarefa
+    // que faz a skill nascer.
+    let on_disk = skills_on_disk(root, &tasks);
+    for task in &tasks {
+        if task.str_field("skill").is_some_and(|s| !s.trim().is_empty()) {
+            continue;
+        }
+        let text = task.str_field("text").unwrap_or_default();
+        match best_skill(&on_disk, text) {
+            Some(name) => {
+                out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
+            }
+            None if repeats_in_the_project(root, task) => {
+                out.push(PlanFinding::SkillToBeBorn { task: code_of(task) });
+            }
+            None => {}
+        }
+    }
+
     let with_criterion: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Criteria))
         .into_iter()
@@ -444,6 +529,85 @@ fn check(
         }
     }
     out
+}
+
+/// As skills que existem no disco, pelo nome e pelas raízes do "quando usar"
+/// da descrição delas, prontas para a busca. Procuradas onde o pedido da onda
+/// as procura: nas pastas dos arquivos que as tarefas declaram, subindo até a
+/// raiz, e na raiz do projeto. A skill sem descrição fica de fora, porque é a
+/// descrição que diz se ela serve para a tarefa.
+fn skills_on_disk(root: &Path, tasks: &[&SpecEvent]) -> Vec<(String, String)> {
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for task in tasks {
+        for (file, _) in declared_files(task) {
+            let mut folder = root.join(file);
+            while folder.pop() && folder.starts_with(root) {
+                if !folders.contains(&folder) {
+                    folders.push(folder.clone());
+                }
+            }
+        }
+    }
+    if !folders.contains(&root.to_path_buf()) {
+        folders.push(root.to_path_buf());
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for folder in folders {
+        let Ok(entries) = std::fs::read_dir(folder.join(".claude").join("skills")) else { continue };
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+            if out.iter().any(|(had, _)| *had == name) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(entry.path().join("SKILL.md")) else { continue };
+            let Ok(front) = mustard_core::domain::skill::frontmatter::parse(&text) else { continue };
+            let when = front.description.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !when.is_empty() {
+                out.push((name, search_field(Some(&when), &[])));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A skill que serve para o texto de uma tarefa: a que casa mais forte com
+/// ele, pela mesma busca do recorte dos itens. `None` quando nenhuma casa.
+fn best_skill(on_disk: &[(String, String)], text: &str) -> Option<String> {
+    let docs = on_disk.iter().enumerate().map(|(i, (_, when))| (i as u64, when.as_str()));
+    let hit = search::best(docs, text)?;
+    on_disk.get(hit.id as usize).map(|(name, _)| name.clone())
+}
+
+/// `true` quando o trabalho de uma tarefa se repete no projeto: o mapa acha
+/// arquivos do mesmo tipo dos que ela mexe. É o sinal de que vale uma skill.
+fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
+    let Some((target, _)) = declared_files(task).into_iter().next() else { return false };
+    let Ok(map) = mustard_core::io::project_map::read(root) else { return false };
+    !mustard_core::domain::project_map::examples(&map, &target, Locale::PtBr).picks.is_empty()
+}
+
+/// Quantos arquivos o mapa sugere junto da recusa da tarefa sem arquivo.
+const MAP_SUGGESTIONS: usize = 3;
+
+/// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
+/// nenhum — a de prosa, a de decisão, a de medida e a que só escreve na spec.
+/// Essa tarefa pode vir sem o campo dos arquivos; qualquer outra é recusada.
+const TOUCHES_NO_FILE: &[&str] = &[
+    "nao mexe em arquivo",
+    "nao altera arquivo",
+    "nao mexe em nenhum arquivo",
+    "nao altera nenhum arquivo",
+    "does not change any file",
+    "does not touch any file",
+    "changes no file",
+];
+
+/// `true` quando o texto da tarefa diz, com todas as letras, que ela não mexe
+/// em arquivo.
+fn says_it_touches_no_file(text: &str) -> bool {
+    let folded = mustard_core::domain::text::fold(text);
+    TOUCHES_NO_FILE.iter().any(|phrase| folded.contains(phrase))
 }
 
 /// Os arquivos que uma tarefa declara: o caminho e se ela o marcou como novo.
@@ -609,6 +773,10 @@ mod tests {
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 0);
         assert_eq!(report["next"], json!(translate("plan.next", Locale::PtBr)));
         assert!(report["copy"].is_null(), "sem publicação falha, nada de copiar: {report}");
+        // A aprovação é um marco: a resposta manda publicar as duas páginas, e
+        // nenhum endereço entra na conversa.
+        assert_eq!(report["publish"], json!(["spec", "project"]), "{report}");
+        assert!(!report.to_string().contains("http"), "{report}");
         assert!(root.join(".claude/spec/x/spec.html").is_file());
 
         // A linha da spec no índice sai refeita junto com a página.
@@ -712,9 +880,10 @@ mod tests {
         let root = dir.path();
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
-        let long = "uma linha do texto\n".repeat(600);
-        write(root, Some("x"), "wave", json!({"n": 1, "text": long, "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        for _ in 0..600 {
+            write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "src/a.rs"}], "origin": said}));
+        }
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
@@ -745,8 +914,8 @@ mod tests {
     }
 
     /// Só avisam, e a pergunta segue: arquivo fora do git, ondas da mesma
-    /// rodada dividindo arquivo, item sem tarefa, contrato sem critério e
-    /// tarefa sem arquivo.
+    /// rodada dividindo arquivo, item sem tarefa e contrato sem critério. A
+    /// tarefa que diz no texto que não mexe em arquivo passa sem o campo.
     #[test]
     fn the_advisory_findings_never_block_the_question() {
         let dir = tempdir().unwrap();
@@ -759,20 +928,136 @@ mod tests {
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}, {"path": "src/fora.rs"}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Outra.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 2, "text": "Mexer também.", "files": [{"path": "src/a.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 2, "text": "Sem arquivo.", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 2, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
         let warnings = reasons(&report, "warnings");
-        for reason in [
-            "file-outside-git",
-            "waves-share-a-file",
-            "item-without-task",
-            "contract-without-criterion",
-            "task-without-file",
-        ] {
+        for reason in ["file-outside-git", "waves-share-a-file", "item-without-task", "contract-without-criterion"] {
             assert!(warnings.contains(&reason.to_string()), "{reason}: {report}");
         }
+        assert!(!warnings.contains(&"task-without-file".to_string()), "{report}");
+    }
+
+    /// A tarefa que não nomeia skill ganha o nome da skill que já existe e
+    /// serve para ela; a que não tem skill nenhuma que sirva, e cujo trabalho
+    /// se repete no projeto, pede a tarefa que faz a skill nascer.
+    #[test]
+    fn the_plan_names_the_skill_that_serves_and_asks_for_the_one_that_is_missing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        let skill = root.join(".claude/skills/add-run-command");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: add-run-command\ndescription: Use quando for preciso adicionar um comando \
+             de execução novo, com os registros, a recusa nos dois idiomas e os testes.\n---\n\nPassos.\n",
+        )
+        .unwrap();
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
+            "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
+            "files": [{"path": "src/b.rs"}], "origin": said}));
+
+        let report = plan(root, "x");
+        let named: Vec<&Value> = report["warnings"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|f| f["reason"] == json!("task-could-name-a-skill"))
+            .collect();
+        assert_eq!(named.len(), 1, "só a tarefa sem skill recebe o nome: {report}");
+        let hint = named[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-TASK-0001") && hint.contains("add-run-command"), "{hint}");
+    }
+
+    /// A tarefa cujo texto casa melhor com outra onda trava o plano, e a
+    /// recusa diz em qual onda ela casa melhor; a que casa com a própria onda
+    /// passa.
+    #[test]
+    fn a_task_that_belongs_to_another_wave_blocks_the_plan_and_says_which_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Os ganchos da sessão: bloquear, avisar e injetar texto.",
+            "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "wave", json!({"n": 2, "text": "A página da spec: o desenho, os blocos e a publicação.",
+            "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "O gancho que bloqueia a gravação avisa o motivo.",
+            "files": [{"path": "src/a.rs"}], "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "A publicação da página da spec sai no fim do passo.",
+            "files": [{"path": "src/b.rs"}], "origin": said}));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let wrong: Vec<&Value> = report["blocking"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|f| f["reason"] == json!("task-in-the-wrong-wave"))
+            .collect();
+        assert_eq!(wrong.len(), 1, "só a tarefa fora do lugar é recusada: {report}");
+        let hint = wrong[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-TASK-0002"), "{hint}");
+        assert!(hint.contains('2'), "a recusa diz a onda em que ela casa melhor: {hint}");
+    }
+
+    /// O item combinado marcado como "não vira código", com o motivo na
+    /// própria linha, some do aviso dos itens sem tarefa; o item igual sem a
+    /// marca continua avisando.
+    #[test]
+    fn an_item_marked_as_not_becoming_code_stops_being_warned_about() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "decision", json!({"text": "Quem decidiu sozinho.", "keys": ["registro"],
+            "why": "registro da conversa", "no_code": "é registro de processo, não vira código", "origin": said}));
+        write(root, Some("x"), "decision", json!({"text": "A rodada formata os arquivos dela.", "keys": ["formatador"],
+            "why": "o commit sai formatado", "origin": said}));
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
+
+        let report = plan(root, "x");
+        let uncovered: Vec<String> = report["warnings"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|f| f["reason"] == json!("item-without-task"))
+            .filter_map(|f| f["hint"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(uncovered.len(), 1, "só o item sem a marca avisa: {report}");
+        assert!(uncovered[0].contains("MSTD-DEC-0002"), "{uncovered:?}");
+    }
+
+    /// A tarefa que mexe em código e não nomeia arquivo trava o plano, e a
+    /// recusa traz, na mesma resposta, os arquivos que o mapa sugere para ela.
+    /// A que declara no texto que não mexe em arquivo passa sem o campo.
+    #[test]
+    fn a_code_task_without_a_file_blocks_the_plan_and_comes_back_with_what_the_map_suggests() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar dois números.", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Não mexe em arquivo de código: é escrita na spec.", "origin": said}));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let blocking: Vec<&Value> = report["blocking"].as_array().map(Vec::as_slice).unwrap_or_default().iter().collect();
+        let refused: Vec<&Value> = blocking.iter().copied().filter(|f| f["reason"] == json!("task-without-file")).collect();
+        assert_eq!(refused.len(), 1, "só a tarefa de código é recusada: {report}");
+        let hint = refused[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-TASK-0001"), "{hint}");
+        assert!(hint.contains(translate("plan.no_suggestion", Locale::PtBr)), "o mapa vazio se anuncia: {hint}");
     }
 
     /// Cada achado da conferência é gravado como anotação quando o `plan`
@@ -786,9 +1071,10 @@ mod tests {
         let said = surveyed(root, "x");
         std::fs::write(root.join("src/fora.rs"), "fn tres() {}\n").unwrap();
         let crit = criterion(root, "x", said);
+        write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/fora.rs"}], "origin": said}));
-        write(root, Some("x"), "task", json!({"wave": 1, "text": "Sem arquivo.", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");

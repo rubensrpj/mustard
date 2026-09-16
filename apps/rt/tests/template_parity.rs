@@ -40,6 +40,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          module doc); maintenance escape hatch with no scripted caller",
     ),
     (
+        "close",
+        "the close door of the flow (commands/flow/close.rs): records what came \
+         back from the last round, runs each criterion once and closes the \
+         spec; the flow prose that will call it is rewritten together with the \
+         rest of the flow",
+    ),
+    (
         "context-slice",
         "the glossary slicer (commands/economy/context_slice.rs); the prompt \
          renderer no longer fills `{context_md}` with it, so no prose calls it, \
@@ -50,6 +57,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
         "EXECUTE pre-gate the orchestrator runs from the bare-name instruction \
          in commands/mustard/feature/SKILL.md section 3 (never spelled with \
          the mustard-rt prefix there)",
+    ),
+    (
+        "discard",
+        "the give-up door of the flow (commands/flow/discard.rs): shows what \
+         would leave and, with the code back, closes the pull request, deletes \
+         the branch and takes the spec out of the index; the flow prose that \
+         will call it is rewritten together with the rest of the flow",
     ),
     (
         "docs-stale-check",
@@ -169,6 +183,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
          still calls review-prefetch/diff-context directly - unadopted",
     ),
     (
+        "round",
+        "a round of waves of the flow (commands/flow/round.rs): dispatches the \
+         waves that can go out together, records what came back, formats the \
+         round's files and makes the commit; the flow prose that will call it \
+         is rewritten together with the rest of the flow",
+    ),
+    (
         "security-scan",
         "secret/permission scanner with an exit-code contract \
          (commands/review/security_scan.rs, JS-era port); no product caller \
@@ -234,6 +255,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          callerless",
     ),
     (
+        "close",
+        "report",
+        "the report of the last round, handed back by the same flow prose that \
+         will call the close; a close without it only closes what is already \
+         recorded, which is what the bare command does",
+    ),
+    (
         "complete-spec",
         "archive-followups",
         "a declared NO-OP retained for compatibility: the single-stage close no \
@@ -266,6 +294,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "the comparison branch, which the command auto-detects; every instructed \
          invocation takes the detected one, and naming the flag would teach a \
          reader to pin a base by hand",
+    ),
+    (
+        "discard",
+        "remote",
+        "keeps the server branch, which belongs to everyone: without it only the \
+         local branch goes, and a team that does not allow deleting a branch \
+         never needs to know the flag exists",
     ),
     (
         "docs-stale-check",
@@ -366,6 +401,13 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "repo",
         "project-root override on the harness re-enable door, which `/upsert --on` \
          runs from the project root",
+    ),
+    (
+        "round",
+        "report",
+        "the report of the previous round, handed back by the same flow prose \
+         that will call the round; a round without it only dispatches, which is \
+         what the bare command does",
     ),
     (
         "scratch-gc",

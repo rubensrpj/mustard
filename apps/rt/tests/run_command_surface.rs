@@ -24,7 +24,7 @@ use mustard_rt::commands::RunCmd;
 
 /// Every subcommand `mustard-rt run --help` publishes, sorted by name.
 ///
-/// 83 declared variants + `help`, which clap generates at build time.
+/// 87 declared variants + `help`, which clap generates at build time.
 const RUN_SUBCOMMANDS: &[&str] = &[
     "active-specs",
     "agent-prompt-render",
@@ -34,6 +34,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "base-candidates",
     "capability",
     "claude-dir-prune",
+    "close",
     "close-orchestrate",
     "close-pipeline",
     "complete-spec",
@@ -41,6 +42,7 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "dependency-precheck",
     "diff-context",
     "digest-adherence-finalize",
+    "discard",
     "docs-stale-check",
     "doctor",
     "emit-event",
@@ -84,10 +86,12 @@ const RUN_SUBCOMMANDS: &[&str] = &[
     "rebuild-specs",
     "rehook",
     "reopen",
+    "resume",
     "resume-bootstrap",
     "review-dispatch",
     "review-prefetch",
     "review-result",
+    "round",
     "scan",
     "scan-spec",
     "scope-classify",

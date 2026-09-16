@@ -17,11 +17,16 @@
 //!
 //! Uma linha do arquivo que não se entende entra em `warnings`, no idioma do
 //! projeto, e o resto é lido.
+//!
+//! Com `--term`, a leitura devolve o que o termo acha, do mais forte para o
+//! menos forte: um código de item devolve aquele item, e qualquer outro termo
+//! passa pela busca por nota, que não exige que o item tenha todas as
+//! palavras.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{search_terms, shown_line, BlockQuery, Refusal, SpecEvent};
+use mustard_core::domain::spec_events::{found_by, shown_line, BlockQuery, Refusal, SpecEvent};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
@@ -64,14 +69,10 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     let Some(log) = store::read(&path).map_err(refuse)? else {
         return Err(refuse(Refusal::NoSpecFile { spec }));
     };
-    let terms = opts.term.as_deref().map(search_terms).unwrap_or_default();
     let codes = log.codes();
-    let events: Vec<String> = log
-        .block(query)
-        .into_iter()
-        .filter(|e| e.matches(&terms, codes.get(&e.id).map(String::as_str)))
-        .map(|e| shown_with_code(e, &codes))
-        .collect();
+    let term = opts.term.as_deref().unwrap_or_default();
+    let events: Vec<String> =
+        found_by(log.block(query), term, &codes).into_iter().map(|e| shown_with_code(e, &codes)).collect();
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &warnings))
 }
@@ -202,6 +203,29 @@ mod tests {
         let got = events(&read_at(&opts(root, "conversation", Some("apagar"))).unwrap());
         assert_eq!(got.len(), 1);
         assert_eq!(got[0]["text"], json!("apagando a pasta"));
+    }
+
+    /// Uma frase inteira não exige que o item tenha todas as palavras: a
+    /// leitura devolve o que a nota acha, do mais forte para o menos forte,
+    /// onde a exigência de todas as palavras não devolvia nada.
+    #[test]
+    fn a_whole_phrase_brings_the_strongest_items_first_instead_of_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = put(root, "message", json!({"author": "user", "text": "o pedido"}));
+        let put_rule = |text: &str, key: &str| {
+            put(root, "rule", json!({"text": text, "keys": [key], "example": "e", "origin": said}))
+        };
+        let weak = put_rule("A página mostra o commit da onda.", "página");
+        let strong = put_rule("A rodada formata só os arquivos da rodada antes do commit.", "formatador");
+        put_rule("O levantamento pergunta o tipo de trabalho.", "levantamento");
+
+        let phrase = "a rodada formata os arquivos dela antes do commit da onda";
+        let got = events(&read_at(&opts(root, "agreed", Some(phrase))).unwrap());
+        assert!(!got.is_empty(), "the phrase finds something: {got:?}");
+        let found: Vec<u64> = got.iter().filter_map(|e| e["id"].as_u64()).collect();
+        assert_eq!(found.first(), Some(&strong), "the strongest comes first: {got:?}");
+        assert!(found.contains(&weak), "a partial match still comes: {got:?}");
     }
 
     #[test]

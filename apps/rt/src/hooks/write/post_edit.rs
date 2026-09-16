@@ -2,11 +2,9 @@
 //!
 //! ## Scope (Write/Edit family)
 //!
-//! This module consolidates three JavaScript hooks, all `PostToolUse(Write|Edit)`.
-//! Two are pure side effects (`Observer`), one reaches a verdict (`Check`):
+//! This module consolidates two JavaScript hooks, both `PostToolUse(Write|Edit)`.
+//! One is a pure side effect (`Observer`), one reaches a verdict (`Check`):
 //!
-//! - `auto-format.js` — an **`Observer`**: runs Prettier / `dotnet format` on
-//!   the just-written file. Fire-and-forget — no verdict.
 //! - `checklist-auto-mark.js` — an **`Observer`**: silently marks Checklist
 //!   items in the active spec when the edited file matches an item. No verdict.
 //! - `guard-verify.js` — a **`Check`**: flags an edit that falls outside the
@@ -17,8 +15,13 @@
 //!   advisory.
 //!
 //! `PostEdit` therefore implements **both** [`Check`] (guard-verify) and
-//! [`Observer`] (auto-format + checklist-auto-mark) — the same dual shape
-//! `budget` and `bash_guard` use.
+//! [`Observer`] (checklist-auto-mark) — the same dual shape `budget` and
+//! `bash_guard` use.
+//!
+//! A formatação saiu daqui: ela rodava a cada gravação, e o arquivo mudava
+//! depois de escrito, então a edição seguinte podia não achar o texto que
+//! acabara de gravar. Agora ela roda uma vez por rodada, antes do commit, só
+//! nos arquivos que a rodada mudou (`commands/flow/round.rs`).
 //!
 //! Consolidation **regroups, it does not re-decide** — every verdict is a 1:1
 //! port of the JS decision logic. Parity tests mirror
@@ -48,7 +51,6 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Tri
 use mustard_core::domain::spec;
 use mustard_core::{ClaudePaths, Outcome as SpecOutcome, Stage as SpecStage};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use crate::commands::scan_guards::apply::{critical_guards, CheckableGuard, CriticalGuard};
 use crate::commands::scan_guards::list::subproject_of;
 use crate::util::format_gate_message;
@@ -702,120 +704,6 @@ fn guard_reminder_message(subproject: &str, guard_text: &str) -> String {
     )
 }
 
-// ===========================================================================
-// auto-format — Observer on PostToolUse(Write|Edit)
-// ===========================================================================
-
-/// Extensions Prettier handles. Mirrors `PRETTIER_EXTS`.
-const PRETTIER_EXTS: &[&str] = &[
-    ".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".md", ".html", ".scss",
-];
-
-/// The lowercase extension of a path (including the dot), or `""`.
-fn extension(path: &str) -> String {
-    let base = basename(path);
-    match base.rfind('.') {
-        Some(idx) if idx > 0 => base[idx..].to_ascii_lowercase(),
-        _ => String::new(),
-    }
-}
-
-/// `auto-format`: run the appropriate formatter on the just-written file.
-///
-/// Pure side effect — fail-open throughout, no verdict. Mirrors
-/// `auto-format.js`: Prettier for the JS/TS/CSS/MD family (only when a
-/// Prettier config or `node_modules/.bin/prettier` is present), `dotnet
-/// format` for `.cs`.
-fn run_auto_format(input: &HookInput, cwd: &str) {
-    let Some(file_path) = input.file_path() else {
-        return;
-    };
-    if file_path.is_empty() {
-        return;
-    }
-    // The file must exist on disk (the JS `fs.existsSync` guard).
-    if !Path::new(&file_path).exists() {
-        return;
-    }
-    let ext = extension(&file_path);
-    if PRETTIER_EXTS.contains(&ext.as_str()) {
-        run_prettier(&file_path, cwd);
-    } else if ext == ".cs" {
-        run_dotnet_format(&file_path);
-    }
-}
-
-/// Run Prettier on `file_path` when a Prettier setup is detected under `cwd`
-/// (or its parent — monorepo). Best-effort.
-fn run_prettier(file_path: &str, cwd: &str) {
-    let has_prettier = ["node_modules/.bin/prettier", ".prettierrc", ".prettierrc.js", ".prettierrc.json", "prettier.config.js"]
-        .iter()
-        .any(|rel| Path::new(cwd).join(rel).exists());
-    let parent_has = Path::new(cwd)
-        .parent()
-        .is_some_and(|p| p.join("node_modules/.bin/prettier").exists());
-    if !has_prettier && !parent_has {
-        return;
-    }
-    // `npx prettier --write "<file>"`.
-    let _ = Command::new("npx")
-        .args(["prettier", "--write", file_path])
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-/// Run `dotnet format` on `file_path`, scoping to the nearest `.sln`/`.csproj`.
-/// Best-effort.
-fn run_dotnet_format(file_path: &str) {
-    // Walk up to 5 directories for a `.sln` or `.csproj`.
-    let mut search_dir = Path::new(file_path).parent().map(Path::to_path_buf);
-    let mut project_file: Option<std::path::PathBuf> = None;
-    for _ in 0..5 {
-        let Some(dir) = search_dir.clone() else {
-            break;
-        };
-        if let Ok(entries) = fs::read_dir(&dir) {
-            let mut sln = None;
-            let mut csproj = None;
-            for entry in entries {
-                if std::path::Path::new(&entry.file_name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sln")) {
-                    sln = Some(entry.path.clone());
-                } else if entry.file_name.ends_with(".csproj") {
-                    csproj = Some(entry.path.clone());
-                }
-            }
-            if let Some(p) = sln.or(csproj) {
-                project_file = Some(p);
-                break;
-            }
-        }
-        let parent = search_dir.as_ref().and_then(|d| d.parent()).map(Path::to_path_buf);
-        if parent == search_dir {
-            break;
-        }
-        search_dir = parent;
-    }
-    let Some(project) = project_file else {
-        return;
-    };
-    let Some(project_dir) = project.parent() else {
-        return;
-    };
-    let _ = Command::new("dotnet")
-        .args(["format"])
-        .arg(&project)
-        .args(["--include", file_path, "--no-restore"])
-        .current_dir(project_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
 
 // ===========================================================================
 // checklist-auto-mark — Observer on PostToolUse(Write|Edit)
@@ -1116,8 +1004,8 @@ impl Check for PostEdit {
 }
 
 impl Observer for PostEdit {
-    /// Run the two fire-and-forget side effects of a `PostToolUse(Write|Edit)`:
-    /// `auto-format`, `checklist-auto-mark`. The legacy `pipeline-phase`
+    /// Run the fire-and-forget side effect of a `PostToolUse(Write|Edit)`:
+    /// `checklist-auto-mark`. The legacy `pipeline-phase`
     /// emitter was removed once SKILL.md migrated to `mustard-rt run
     /// emit-phase` (the sole producer of `pipeline.phase` events).
     ///
@@ -1130,7 +1018,6 @@ impl Observer for PostEdit {
             return;
         }
         let cwd = ctx.project_dir_or_cwd(input);
-        run_auto_format(input, &cwd);
         run_checklist_auto_mark(input, &cwd);
     }
 }
@@ -1412,28 +1299,6 @@ mod tests {
     // the dashboard phase moved off SQLite. `mustard-rt run emit-phase`
     // is the sole producer of `pipeline.phase` events; its tests live in
     // `apps/rt/src/run/emit_phase.rs`.
-
-    // --- auto-format -------------------------------------------------------
-
-    #[test]
-    fn auto_format_skips_missing_file() {
-        // The file does not exist — run_auto_format must be a silent no-op.
-        let dir = tempdir().unwrap();
-        let input = edit_input(
-            &dir.path().join("nonexistent.ts").to_string_lossy(),
-            "const x=1;",
-        );
-        // Must not panic.
-        run_auto_format(&input, dir.path().to_str().unwrap());
-    }
-
-    #[test]
-    fn extension_extraction() {
-        assert_eq!(extension("/a/b/file.TS"), ".ts");
-        assert_eq!(extension("/a/b/SKILL.md"), ".md");
-        assert_eq!(extension("/a/b/noext"), "");
-        assert_eq!(extension("/a/.hidden"), "");
-    }
 
     #[test]
     fn observe_is_infallible() {

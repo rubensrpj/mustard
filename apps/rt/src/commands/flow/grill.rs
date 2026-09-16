@@ -35,9 +35,12 @@
 //! Recusa sai com exit 1 e `ok: false`, com a razão curta em `reason` e a
 //! mensagem no idioma do projeto em `hint`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Kind, Refusal, WORK_KINDS};
+use mustard_core::domain::spec_events::{
+    found_by, Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS,
+};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
@@ -231,6 +234,20 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "to_record": to_record,
         "reminders": reminders,
     });
+    // Numa spec que voltou ao levantamento, o motivo da volta é a consulta: o
+    // levantamento traz os itens que ele toca, para o usuário dizer se cada um
+    // fica, muda ou sai. O que o motivo não toca fica como está, e nada é
+    // perguntado de novo.
+    if let Some(reason) = return_reason(&log) {
+        let touched = touched_by(&log, reason, &codes);
+        if !touched.is_empty() {
+            report["reason"] = json!(reason);
+            report["touched"] = json!(touched);
+            report["touched_hint"] = json!(translate("survey.touched", lang)
+                .replace("{count}", &touched.len().to_string())
+                .replace("{reason}", reason));
+        }
+    }
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
     }
@@ -253,6 +270,53 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         report["hint"] = json!(translate("survey.done", lang));
     }
     report
+}
+
+/// O motivo da volta ao levantamento: o do último `state` que pôs a spec em
+/// levantamento trazendo um motivo. `None` numa spec que nunca voltou.
+fn return_reason(log: &SpecLog) -> Option<&str> {
+    log.visible()
+        .into_iter()
+        .filter(|event| event.event_type == "state" && event.str_field("phase") == Some("survey"))
+        .filter_map(|event| event.str_field("reason").map(str::trim).filter(|r| !r.is_empty()))
+        .next_back()
+}
+
+/// Os itens que o motivo da volta toca, do mais forte para o menos forte:
+/// o combinado, a especificação, os critérios e as ondas, pela mesma busca por
+/// nota que a leitura por termo usa. Cada um sai com o código, o tipo e o
+/// começo do texto, que é o que o usuário precisa para dizer se ele fica, muda
+/// ou sai.
+fn touched_by(log: &SpecLog, reason: &str, codes: &BTreeMap<u64, String>) -> Vec<Value> {
+    let blocks = [Block::Agreed, Block::Specification, Block::Criteria, Block::Waves];
+    let items: Vec<&SpecEvent> =
+        blocks.iter().flat_map(|block| log.block(BlockQuery::Block(*block))).collect();
+    found_by(items, reason, codes)
+        .into_iter()
+        .map(|event| {
+            json!({
+                "code": codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string()),
+                "type": event.event_type,
+                "title": title_of(event),
+            })
+        })
+        .collect()
+}
+
+/// Quantos caracteres do texto de um item entram na lista dos tocados.
+const TITLE_CHARS: usize = 120;
+
+/// A primeira linha do texto de um item, cortada: é o bastante para o usuário
+/// reconhecer o item, e o texto inteiro se lê pelo código.
+fn title_of(event: &SpecEvent) -> String {
+    let text = event.str_field("text").unwrap_or_default();
+    let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    let first = first.strip_prefix("**").map_or(first, |rest| rest.split("**").next().unwrap_or(rest));
+    let title: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.chars().count() <= TITLE_CHARS {
+        return title;
+    }
+    format!("{}…", title.chars().take(TITLE_CHARS).collect::<String>().trim_end())
 }
 
 /// Grava o tipo de trabalho, com a mensagem do objetivo como origem, pela
@@ -338,6 +402,52 @@ mod tests {
             condensed,
         };
         grill_for(&opts, None)
+    }
+
+    /// Numa spec que voltou ao levantamento, o motivo da volta vira a
+    /// consulta: o levantamento traz os itens que ele toca, do mais forte para
+    /// o menos forte, e deixa de fora o que o motivo não toca.
+    #[test]
+    fn the_reason_of_the_return_becomes_the_query_of_the_survey() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        let said = surveyed(root, "x");
+        let rule = |text: &str, key: &str| {
+            id_of(&write(root, Some("x"), "rule",
+                json!({"text": text, "keys": [key], "example": "e", "origin": said})))
+        };
+        rule("A rodada formata só os arquivos dela antes do commit.", "formatador");
+        rule("A página da spec sai no fim de cada passo.", "página");
+
+        // Sem volta, a consulta não existe.
+        let before = grill(root, "x", Some("fix"), false);
+        assert!(before["touched"].is_null(), "{before}");
+
+        // A spec aprovada volta ao levantamento com o motivo gravado.
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        let back = crate::commands::flow::reopen::reopen_for(
+            &crate::commands::flow::reopen::ReopenOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                reason: "O formatador da rodada mudou de lugar.".into(),
+            },
+            None,
+        );
+        assert_eq!(back["recorded"], json!(true), "{back}");
+
+        let after = grill(root, "x", Some("fix"), false);
+        let touched = after["touched"].as_array().cloned().unwrap_or_default();
+        assert!(!touched.is_empty(), "{after}");
+        assert!(
+            touched[0]["title"].as_str().unwrap_or_default().contains("formata"),
+            "o mais forte vem primeiro: {touched:?}"
+        );
+        assert!(
+            !touched.iter().any(|item| item["title"].as_str().unwrap_or_default().contains("página")),
+            "o que o motivo não toca fica de fora: {touched:?}"
+        );
+        assert!(after["touched_hint"].as_str().unwrap_or_default().contains("fica, muda ou sai"), "{after}");
     }
 
     /// O `grill` termina refazendo a página e o `.md` da spec: a gravação de

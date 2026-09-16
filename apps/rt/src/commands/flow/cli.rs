@@ -90,6 +90,84 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Uma rodada de ondas, que é uma chamada só. Sem o relatório, despacha:
+    /// escolhe as ondas que podem sair juntas, monta o pedido de cada uma,
+    /// grava o envio com o pedido exato e marca a spec como em execução na
+    /// primeira rodada. Com o relatório da rodada anterior, primeiro grava o
+    /// que cada onda entregou e o veredito da revisão, formata só os arquivos
+    /// da rodada e faz o commit, e só então despacha a rodada seguinte. A
+    /// resposta manda publicar a página da spec e a do projeto.
+    #[command(display_order = 83)]
+    Round {
+        /// A spec cuja rodada corre. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// O relatório da rodada anterior, em JSON: uma entrada por onda, com
+        /// o que ela entregou, os arquivos que mexeu, o veredito da revisão
+        /// e, quando é o caso, a mudança de plano que o agente propõe.
+        #[arg(long)]
+        report: Option<String>,
+        /// O código que a rodada devolveu ao parar numa mudança de plano,
+        /// repetido depois do sim do usuário.
+        #[arg(long)]
+        yes: Option<String>,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Fecha uma spec, numa chamada só: grava o que voltou da última rodada,
+    /// confere se a obra terminou (nenhuma onda sem commit, nenhuma reprovada
+    /// e nenhum pedido do usuário sem onda que o entregue), roda cada critério
+    /// uma vez e grava a execução de cada um, e então grava a fase fechada,
+    /// solta a spec da sessão e refaz a página.
+    #[command(display_order = 84)]
+    Close {
+        /// A spec que fecha. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// O relatório da última rodada, em JSON, no mesmo formato da rodada.
+        #[arg(long)]
+        report: Option<String>,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Retoma uma spec: lê só o estado e devolve, pela fase em que ela está,
+    /// o próximo passo em palavras e o comando que o faz. É o que o
+    /// `/mustard:continue` chama. Nenhum endereço de página entra na resposta.
+    #[command(display_order = 85)]
+    Resume {
+        /// A spec retomada. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Descarta uma spec, em dois passos. A primeira chamada mostra o que vai
+    /// sair — o pull request, a branch local, a do servidor quando a opção
+    /// vier, a pasta da spec e a linha dela no índice — e devolve um código; a
+    /// segunda, com esse código e depois do sim do usuário, faz.
+    #[command(display_order = 86)]
+    Discard {
+        /// A spec descartada. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Apagar também a branch do servidor. Sem ela, só a local sai.
+        #[arg(long)]
+        remote: bool,
+        /// Apagar a pasta da spec em vez de guardá-la ao lado das outras
+        /// descartadas.
+        #[arg(long)]
+        delete: bool,
+        /// O código que a primeira chamada devolveu, passado depois do sim do
+        /// usuário.
+        #[arg(long)]
+        confirm: Option<String>,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Leva a spec de volta ao levantamento, com o motivo gravado no evento
     /// da volta: a fase volta a ser a de levantamento, o `grill` roda de
     /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
@@ -121,6 +199,18 @@ pub fn dispatch(cmd: FlowCmd) {
         }
         FlowCmd::Plan { spec, root } => {
             flow::plan::run(&flow::plan::PlanOpts { root, spec });
+        }
+        FlowCmd::Round { spec, report, yes, root } => {
+            flow::round::run_cmd(&flow::round::RoundOpts { root, spec, report, yes });
+        }
+        FlowCmd::Close { spec, report, root } => {
+            flow::close::run_cmd(&flow::close::CloseOpts { root, spec, report });
+        }
+        FlowCmd::Resume { spec, root } => {
+            flow::resume::run_cmd(&flow::resume::ResumeOpts { root, spec });
+        }
+        FlowCmd::Discard { spec, remote, delete, confirm, root } => {
+            flow::discard::run_cmd(&flow::discard::DiscardOpts { root, spec, remote, delete, confirm });
         }
         FlowCmd::Reopen { reason, spec, root } => {
             flow::reopen::run(&flow::reopen::ReopenOpts { root, spec, reason });

@@ -414,6 +414,11 @@ pub struct ProjectConfig {
     pub architecture: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_active_specs: Option<u64>,
+    /// Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo
+    /// tempo. Ausente ⇒ o padrão do binário; a máquina com mais memória põe
+    /// um número maior aqui.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_compiling_waves: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub role_patterns: Vec<RolePattern>,
     /// Declared context injections (`[{on, file, once}]`) — see [`Injectable`].
@@ -562,6 +567,13 @@ impl ProjectConfig {
     #[must_use]
     pub fn max_active_specs(&self) -> Option<usize> {
         self.max_active_specs.and_then(|n| usize::try_from(n).ok())
+    }
+
+    /// Quantas ondas o projeto deixa compilar ao mesmo tempo; `None` cai no
+    /// padrão do binário. O `0` é obedecido ao pé da letra (nada sai).
+    #[must_use]
+    pub fn max_compiling_waves(&self) -> Option<usize> {
+        self.max_compiling_waves.and_then(|n| usize::try_from(n).ok())
     }
 
     /// Ordered role-classification overrides; `pattern` lowercased, entries with

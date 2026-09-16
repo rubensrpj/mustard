@@ -153,7 +153,9 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 ```
 # demo — onda 1
 
-**O que é isto.** O pedido desta onda, montado pelo binário a partir da spec. Tudo que a onda precisa está escrito aqui; nunca vá procurar o resto em outro arquivo.
+**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo binário a partir da spec. Nenhum texto vem copiado: cada linha traz o número do item, o tipo dele e o comando que o lê.
+
+**Ler o item pelo número é parte do trabalho.** Rode o comando da linha na hora de trabalhar naquele item, um de cada vez, e leia do mesmo jeito qualquer item que o texto dele citar. Nunca procure o conteúdo em outro arquivo do projeto.
 
 **O que fazer.** As tarefas desta onda, e só elas. Cada critério listado abaixo ganha um teste que prova a regra dele.
 
@@ -163,39 +165,25 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
 ## Especificação
 
-### MSTD-CTX-0001 (contexto)
+- MSTD-CTX-0001 (contexto) — `mustard-rt run read specification --spec demo --term MSTD-CTX-0001`
+- MSTD-CONC-0001 (preocupação) — `mustard-rt run read specification --spec demo --term MSTD-CONC-0001`
 
-O Rust roda rápido: 3 a 14 ms por gancho. O custo está nas rodadas do modelo.
+## Combinado
 
-### MSTD-CONC-0001 (preocupação)
-
-Cerca de 11 arquivos de teste prendem frases da prosa atual.
-
-## O resto do combinado — cada linha traz o comando que lê o item inteiro
-
-- MSTD-LIMIT-0001 — Tamanho do pedido de cada onda. — `mustard-rt run read agreed --spec demo --term MSTD-LIMIT-0001`
-- MSTD-CONTR-0001 — A barra de status tem duas linhas: a branch e a spec; a economia e o modelo. — `mustard-rt run read agreed --spec demo --term MSTD-CONTR-0001`
-- MSTD-ERR-0001 — Título do pull request acima de 60 caracteres. — `mustard-rt run read agreed --spec demo --term MSTD-ERR-0001`
-- MSTD-EDGE-0001 — Duas sessões gravam a mesma spec ao mesmo tempo. — `mustard-rt run read agreed --spec demo --term MSTD-EDGE-0001`
-- MSTD-SCOPE-0001 — Supabase. — `mustard-rt run read agreed --spec demo --term MSTD-SCOPE-0001`
-- MSTD-DEC-0001 — A página é publicada só nos marcos, e a MSTD-RULE-0001 continua valendo. — `mustard-rt run read agreed --spec demo --term MSTD-DEC-0001`
+- MSTD-LIMIT-0001 (limite) — `mustard-rt run read agreed --spec demo --term MSTD-LIMIT-0001`
+- MSTD-CONTR-0001 (contrato) — `mustard-rt run read agreed --spec demo --term MSTD-CONTR-0001`
+- MSTD-ERR-0001 (erro) — `mustard-rt run read agreed --spec demo --term MSTD-ERR-0001`
+- MSTD-EDGE-0001 (caso de borda) — `mustard-rt run read agreed --spec demo --term MSTD-EDGE-0001`
+- MSTD-SCOPE-0001 (fora do escopo) — `mustard-rt run read agreed --spec demo --term MSTD-SCOPE-0001`
+- MSTD-DEC-0001 (decisão) — `mustard-rt run read agreed --spec demo --term MSTD-DEC-0001`
 
 ## A onda e as tarefas dela
 
-### MSTD-WAVE-0001 (onda)
-
-A trava lê o comando como o terminal.
-
-- Critérios: MSTD-CRIT-0001
-- Pronta quando: A suíte da trava passa.
+- MSTD-WAVE-0001 (onda) — `mustard-rt run read waves --spec demo --term MSTD-WAVE-0001`
 
 ## Critérios
 
-### MSTD-CRIT-0001 (critério)
-
-- Quando: O pedido montado de uma onda passa de 500 linhas.
-- Então: O binário recusa o despacho, com a mensagem do que passou.
-- Prova: cargo test -p mustard-rt --test wave_request_limit
+- MSTD-CRIT-0001 (critério) — `mustard-rt run read criteria --spec demo --term MSTD-CRIT-0001`
 
 ```
 
@@ -218,6 +206,15 @@ A trava lê o comando como o terminal.
 
 - **MSTD-SEND-0001**
 
+  # demo — onda 2
+
+  **O que é isto.** A lista dos itens desta onda.
+
+  ## A onda e as tarefas dela
+
+  - MSTD-WAVE-0002 (onda) — `mustard-rt run read waves --spec demo --term MSTD-WAVE-0002`
+  - MSTD-TASK-0002 (tarefa) — `mustard-rt run read waves --spec demo --term MSTD-TASK-0002`
+
   - Papel: agente de onda
   - Linhas: 312
   - Caracteres: 21480
@@ -234,83 +231,6 @@ A trava lê o comando como o terminal.
   - nada muda para quem usa.
 
   - Arquivos: `apps/rt/src/hooks/write/scope_guard.rs`
-
-## O pedido da onda 2
-
-```
-# demo — onda 2
-
-**O que é isto.** O pedido desta onda, montado pelo binário a partir da spec. Tudo que a onda precisa está escrito aqui; nunca vá procurar o resto em outro arquivo.
-
-**O que fazer.** As tarefas desta onda, e só elas. Cada critério listado abaixo ganha um teste que prova a regra dele.
-
-**Quando parar.** Se faltar alguma coisa, ou se uma tarefa parecer pedir o que a spec não diz, pare e relate: não decida sozinho e não invente peça nenhuma.
-
-**O que devolver.** O que mudou, arquivo por arquivo; o teste que prova cada critério; e o que ficou aberto.
-
-## Especificação
-
-### MSTD-CTX-0001 (contexto)
-
-O Rust roda rápido: 3 a 14 ms por gancho. O custo está nas rodadas do modelo.
-
-### MSTD-CONC-0001 (preocupação)
-
-Cerca de 11 arquivos de teste prendem frases da prosa atual.
-
-## Combinado
-
-### MSTD-RULE-0001 (regra)
-
-A trava de comandos confere o programa e as opções, nunca o texto entre aspas.
-
-- Exemplo: `git commit -m "... rm -rf ..."` passa; `rm -rf pasta` é barrado.
-
-## O resto do combinado — cada linha traz o comando que lê o item inteiro
-
-- MSTD-LIMIT-0001 — Tamanho do pedido de cada onda. — `mustard-rt run read agreed --spec demo --term MSTD-LIMIT-0001`
-- MSTD-CONTR-0001 — A barra de status tem duas linhas: a branch e a spec; a economia e o modelo. — `mustard-rt run read agreed --spec demo --term MSTD-CONTR-0001`
-- MSTD-ERR-0001 — Título do pull request acima de 60 caracteres. — `mustard-rt run read agreed --spec demo --term MSTD-ERR-0001`
-- MSTD-EDGE-0001 — Duas sessões gravam a mesma spec ao mesmo tempo. — `mustard-rt run read agreed --spec demo --term MSTD-EDGE-0001`
-- MSTD-SCOPE-0001 — Supabase. — `mustard-rt run read agreed --spec demo --term MSTD-SCOPE-0001`
-- MSTD-DEC-0001 — A página é publicada só nos marcos, e a MSTD-RULE-0001 continua valendo. — `mustard-rt run read agreed --spec demo --term MSTD-DEC-0001`
-
-## A onda e as tarefas dela
-
-### MSTD-WAVE-0002 (onda)
-
-A aprovação e as pendências leem o estado.
-
-- Critérios: MSTD-CRIT-0001
-- Pronta quando: A suíte das travas passa lendo só o spec.ndjson.
-- Depende das ondas: 1
-
-### MSTD-TASK-0001 (tarefa)
-
-O portão de escrita lê a aprovação do estado.
-
-- Arquivos: apps/rt/src/hooks/write/scope_guard.rs, apps/rt/src/hooks/write/rule.rs (novo)
-- Skill: add-hook-rule
-- Cobre: MSTD-RULE-0001
-
-### MSTD-SKILL-0001 (skill)
-
-Passos para acrescentar uma regra ao portão de escrita, com o teste.
-
-- Nome: add-hook-rule
-- Ação: create
-- Identificador: 3f9a1c2e
-- Exemplos: path: apps/rt/src/hooks/write/scope_guard.rs; why: mesma pasta e mesmas importações, com teste
-
-## Critérios
-
-### MSTD-CRIT-0001 (critério)
-
-- Quando: O pedido montado de uma onda passa de 500 linhas.
-- Então: O binário recusa o despacho, com a mensagem do que passou.
-- Prova: cargo test -p mustard-rt --test wave_request_limit
-
-```
 
 ### Skills
 

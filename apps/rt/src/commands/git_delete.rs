@@ -92,6 +92,13 @@ fn close_open_pr(root: &Path, branch: &str) -> (Option<u64>, bool, Option<String
 /// panics, and every refusal touches nothing.
 #[must_use]
 pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
+    delete_with(start, unit, true)
+}
+
+/// [`delete_at`] com a escolha de apagar, ou não, a branch do servidor. A do
+/// servidor é de todo mundo: a porta que descarta uma spec só a apaga quando
+/// quem chamou pediu, e num time que não deixa apagar branch ela fica.
+pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     let Some(main) = main_checkout_root(start) else {
         return json!({
             "ok": false,
@@ -238,7 +245,7 @@ pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
     // `-D`, never `-d`: an abandoned unit is unmerged BY DEFINITION, and `-d`
     // would refuse exactly the branches this command exists to remove.
     let branch_deleted = local && floor_clear && git_ok(&main, &["branch", "-D", unit]);
-    let remote_deleted = git_ok(&main, &["push", "origin", "--delete", unit]);
+    let remote_deleted = remote && git_ok(&main, &["push", "origin", "--delete", unit]);
 
     let local_clear = !local || branch_deleted;
     let mut report = json!({

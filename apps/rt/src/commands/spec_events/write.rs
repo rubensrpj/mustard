@@ -108,9 +108,11 @@ use super::pages::SpecPages;
 use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, quando ele
-/// roda o QA, e o veredito, quando ele registra a revisão. O `run write` não
-/// os grava, nem tira ou revê um deles.
-const BINARY_ONLY: &[&str] = &["criterion_run", "verdict"];
+/// roda o QA; o veredito, quando ele registra a revisão; e o envio do pedido
+/// de uma onda, que só a rodada grava, com o pedido exato como foi injetado.
+/// O `run write` não os grava, nem tira ou revê um deles. O `entregou` e o
+/// commit seguem aceitos à mão enquanto os ganchos estiverem desligados.
+const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send"];
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
@@ -1173,6 +1175,33 @@ mod tests {
             assert_eq!(out["reason"], json!("not-an-object"), "{json}: {out}");
         }
         assert_eq!(std::fs::read(&file).unwrap(), b"", "a refusal writes nothing");
+    }
+
+    /// O campo que o tipo não declara é recusado pelo nome, e a recusa diz
+    /// quais campos o tipo aceita, nos dois idiomas. Nada é gravado: um nome
+    /// escrito errado entraria calado e nunca mais seria lido por nada.
+    #[test]
+    fn a_field_the_type_does_not_declare_is_refused_and_the_accepted_ones_are_named() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let file = store::spec_file(root, "teste").unwrap();
+
+        let strange = write(root, "rule", r#"{"text":"t","keys":["k"],"example":"e","origin":1,"ordem":[1]}"#);
+        assert_eq!(strange["reason"], json!("unknown-field"), "{strange}");
+        let hint = strange["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("ordem"), "{hint}");
+        assert!(hint.contains("example"), "a recusa diz o que o tipo aceita: {hint}");
+        assert_eq!(std::fs::read(&file).unwrap_or_default(), b"", "a recusa não grava nada");
+
+        // O mesmo campo, agora declarado pelo tipo da onda, passa.
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let crit = write(root, "criterion",
+            &json!({"when": "a", "then": "b", "proof": "p", "origin": said}).to_string())["id"]
+            .as_u64()
+            .unwrap();
+        let wave = write(root, "wave",
+            &json!({"n": 1, "text": "Onda.", "criteria": [crit], "done_when": "passa", "order": [crit], "origin": said}).to_string());
+        assert_eq!(wave["ok"], json!(true), "{wave}");
     }
 
     /// Um tipo que não existe e um campo que falta são recusados pelo nome; um

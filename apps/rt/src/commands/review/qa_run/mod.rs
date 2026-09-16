@@ -86,6 +86,32 @@ pub(crate) struct AcResult {
     stderr_excerpt: String,
 }
 
+/// Uma prova de critério rodada uma vez, como o fechamento a grava.
+pub(crate) struct ProofRun {
+    /// `pass` quando a prova passou, `fail` em qualquer outro desfecho.
+    pub result: &'static str,
+    /// O código de saída; o que não chegou a rodar sai com o código de erro.
+    pub exit: i64,
+    /// Quanto demorou, em milissegundos.
+    pub ms: u64,
+    /// O começo do que a prova escreveu, quando ela não passou.
+    pub output: String,
+}
+
+/// Roda a prova de um critério uma vez, pelo mesmo executor do QA: o mesmo
+/// shell, o mesmo teto de tempo e a mesma classificação. É por aqui que o
+/// fechamento roda cada critério, para que as duas portas nunca discordem
+/// sobre o que é uma prova que passou.
+pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
+    let out = runner::run_ac_command(command, None, cwd);
+    ProofRun {
+        result: if out.status == "pass" { "pass" } else { "fail" },
+        exit: out.exit.unwrap_or(1),
+        ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
+        output: out.stderr_excerpt,
+    }
+}
+
 /// Locate the markdown carrying a spec's acceptance criteria, by slug — the
 /// SAME locator qa-run uses, exposed so the finding collector cannot disagree
 /// with QA about which file a spec name names.

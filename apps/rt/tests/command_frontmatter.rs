@@ -10,7 +10,8 @@
 //!
 //! What is locked, and why each one matters:
 //!
-//! - **The surface is exactly four doors** — `git`, `pr`, `spec`, `upsert`. A
+//! - **The surface is exactly five doors** — `continue`, `git`, `pr`, `spec`,
+//!   `upsert`. A
 //!   door is a command file the USER types; everything else in the directory is
 //!   an internal flow the router dispatches, which says so with
 //!   `user-invocable: false`. The reduction from fifteen doors to four was the
@@ -38,7 +39,7 @@ fn repo_root() -> PathBuf {
 }
 
 /// The whole exposed surface: the commands a user may type. Kept sorted.
-const DOORS: &[&str] = &["git", "pr", "spec", "upsert"];
+const DOORS: &[&str] = &["continue", "git", "pr", "spec", "upsert"];
 
 /// The marker an internal flow carries to stay OUT of the door surface.
 const NOT_A_DOOR: &str = "user-invocable: false";

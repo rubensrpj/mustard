@@ -9,6 +9,11 @@
 //! `_lib/metrics-emit.js`; this port emits both directly via `mustard_core`.
 //!
 //! No `--format html`: `review-result` only records and echoes the verdict.
+//!
+//! O veredito de uma onda da spec não sai mais por aqui: quem o grava no
+//! arquivo de eventos é a rodada (`commands/flow/round.rs`), junto do que a
+//! onda entregou, numa chamada só. Este comando ficou com o registro antigo do
+//! pipeline — o evento do harness e a medida — e nada do `spec.ndjson`.
 
 use crate::shared::context::{project_dir, session_id};
 use mustard_core::io::fs;

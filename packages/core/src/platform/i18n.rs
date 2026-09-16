@@ -1375,10 +1375,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The plan has {count} things to fix before the approval question. Nothing was written."
         }
         ("plan.next", Locale::PtBr) => {
-            "Publique a página da spec e faça a pergunta de aprovação, com \"Aprovar\" e \"Ajustar\"."
+            "Publique a página da spec e a do projeto, e faça a pergunta de aprovação, com \
+             \"Aprovar\" e \"Ajustar\". O endereço não vai para a conversa: ele fica na barra de status."
         }
         ("plan.next", Locale::EnUs) => {
-            "Publish the spec's page and ask the approval question, with \"Approve\" and \"Adjust\"."
+            "Publish the spec page and the project page, then ask the approval question, with \
+             \"Approve\" and \"Adjust\". The address never goes to the conversation: it lives in the status line."
         }
         ("plan.copy", Locale::PtBr) => {
             "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
@@ -1437,10 +1439,195 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "No criterion cites contract {code}: nothing proves it was met."
         }
         ("plan.task_without_file", Locale::PtBr) => {
-            "A tarefa {task} não diz em que arquivo ela mexe."
+            "A tarefa {task} mexe em código e não diz em que arquivo. O mapa sugere: {files}. \
+             A tarefa que não mexe em arquivo nenhum diz isso no texto dela."
         }
         ("plan.task_without_file", Locale::EnUs) => {
-            "Task {task} does not say which file it changes."
+            "Task {task} changes code and does not say which file. The map suggests: {files}. \
+             A task that changes no file says so in its own text."
+        }
+        ("plan.task_wrong_wave", Locale::PtBr) => {
+            "A tarefa {task} está na onda {wave}, mas o texto dela casa melhor com a onda {best}. \
+             Mova a tarefa ou reescreva o texto da onda."
+        }
+        ("plan.task_wrong_wave", Locale::EnUs) => {
+            "Task {task} sits in wave {wave}, but its text matches wave {best} better. \
+             Move the task or rewrite the wave's text."
+        }
+        ("plan.task_could_name_a_skill", Locale::PtBr) => {
+            "A tarefa {task} não nomeia skill, e a skill {skill} serve para ela. Nomeie-a na tarefa."
+        }
+        ("plan.task_could_name_a_skill", Locale::EnUs) => {
+            "Task {task} names no skill, and skill {skill} fits it. Name it in the task."
+        }
+        ("plan.skill_to_be_born", Locale::PtBr) => {
+            "O trabalho da tarefa {task} se repete no projeto e nenhuma skill serve para ela. \
+             Inclua no plano a tarefa que cria a skill dela."
+        }
+        ("plan.skill_to_be_born", Locale::EnUs) => {
+            "The work of task {task} repeats across the project and no skill fits it. \
+             Add to the plan the task that creates its skill."
+        }
+        ("plan.no_suggestion", Locale::PtBr) => "nada — o mapa não achou arquivo para esta tarefa",
+        ("plan.no_suggestion", Locale::EnUs) => "nothing — the map found no file for this task",
+        // O descarte de uma spec (`commands/flow/discard.rs`).
+        ("discard.preview", Locale::PtBr) => {
+            "Descartar a spec {spec} fecha o pull request dela, apaga a branch {branch} \
+             (no servidor: {remote}), {what} a pasta da spec e tira a linha dela do índice. \
+             Isso não tem volta. Mostre ao usuário e, com o sim dele, repita com o código {token}."
+        }
+        ("discard.preview", Locale::EnUs) => {
+            "Discarding spec {spec} closes its pull request, deletes branch {branch} \
+             (on the server: {remote}), {what} the spec folder and drops its line from the index. \
+             This cannot be undone. Show it to the user and, once they say yes, run again with code {token}."
+        }
+        ("discard.archive", Locale::PtBr) => "guarda",
+        ("discard.archive", Locale::EnUs) => "archives",
+        ("discard.delete", Locale::PtBr) => "apaga",
+        ("discard.delete", Locale::EnUs) => "deletes",
+        ("discard.yes", Locale::PtBr) => "sim",
+        ("discard.yes", Locale::EnUs) => "yes",
+        ("discard.no", Locale::PtBr) => "não",
+        ("discard.no", Locale::EnUs) => "no",
+        ("discard.reason", Locale::PtBr) => "descartada pelo usuário",
+        ("discard.reason", Locale::EnUs) => "discarded by the user",
+        ("discard.confirm_mismatch", Locale::PtBr) => {
+            "O código não é o deste descarte: peça a primeira chamada de novo. Nada saiu."
+        }
+        ("discard.confirm_mismatch", Locale::EnUs) => {
+            "That code is not this discard's: ask for the first call again. Nothing was removed."
+        }
+        ("discard.incomplete", Locale::PtBr) => {
+            "O descarte não terminou: a pasta da spec ou a linha dela no índice ficou onde estava."
+        }
+        ("discard.incomplete", Locale::EnUs) => {
+            "The discard did not finish: the spec folder or its index line stayed where it was."
+        }
+
+        // A retomada de uma spec (`commands/flow/resume.rs`).
+        ("resume.next.survey", Locale::PtBr) => {
+            "A spec está no levantamento: rode o levantamento e grave a resposta de cada ponto."
+        }
+        ("resume.next.survey", Locale::EnUs) => {
+            "The spec is in the survey: run the survey and record the answer to each point."
+        }
+        ("resume.next.plan", Locale::PtBr) => {
+            "O plano está gravado: confira o plano, publique a página da spec e faça a pergunta de aprovação."
+        }
+        ("resume.next.plan", Locale::EnUs) => {
+            "The plan is recorded: check the plan, publish the spec page and ask the approval question."
+        }
+        ("resume.next.running", Locale::PtBr) => {
+            "A spec está aprovada: rode a próxima rodada de ondas."
+        }
+        ("resume.next.running", Locale::EnUs) => "The spec is approved: run the next round of waves.",
+        ("resume.next.closed", Locale::PtBr) => "A spec está fechada: abra o pull request.",
+        ("resume.next.closed", Locale::EnUs) => "The spec is closed: open the pull request.",
+        ("resume.next.pr_open", Locale::PtBr) => {
+            "O pull request está aberto: espere a revisão e faça o merge quando o usuário pedir."
+        }
+        ("resume.next.pr_open", Locale::EnUs) => {
+            "The pull request is open: wait for the review and merge when the user asks."
+        }
+        ("resume.next.delivered", Locale::PtBr) => "A spec foi entregue: não há passo seguinte.",
+        ("resume.next.delivered", Locale::EnUs) => "The spec was delivered: there is no next step.",
+        ("resume.next.discarded", Locale::PtBr) => "A spec foi descartada: não há passo seguinte.",
+        ("resume.next.discarded", Locale::EnUs) => "The spec was discarded: there is no next step.",
+
+        // O fechamento de uma spec (`commands/flow/close.rs`).
+        ("close.bad_report", Locale::PtBr) => {
+            "O relatório da última rodada não se entende: {detail}. Nada foi gravado."
+        }
+        ("close.bad_report", Locale::EnUs) => {
+            "The last round's report cannot be read: {detail}. Nothing was recorded."
+        }
+        ("close.not_running", Locale::PtBr) => {
+            "A spec está na fase {phase} e não está em execução: só fecha o que estava correndo."
+        }
+        ("close.not_running", Locale::EnUs) => {
+            "The spec is in the {phase} phase and is not running: only work in flight closes."
+        }
+        ("close.wave_without_commit", Locale::PtBr) => {
+            "A onda {wave} não tem commit: refaça a onda {wave} antes de fechar."
+        }
+        ("close.wave_without_commit", Locale::EnUs) => {
+            "Wave {wave} has no commit: redo wave {wave} before closing."
+        }
+        ("close.wave_rejected", Locale::PtBr) => {
+            "A última revisão da onda {wave} reprovou: refaça a onda {wave} antes de fechar."
+        }
+        ("close.wave_rejected", Locale::EnUs) => {
+            "The last review of wave {wave} rejected it: redo wave {wave} before closing."
+        }
+        ("close.request_not_delivered", Locale::PtBr) => {
+            "O pedido {code} chegou depois da última entrega e nenhuma onda o entregou: \
+             leve-o para uma onda antes de fechar."
+        }
+        ("close.request_not_delivered", Locale::EnUs) => {
+            "Request {code} arrived after the last delivery and no wave delivered it: \
+             take it into a wave before closing."
+        }
+        ("close.criterion_failed", Locale::PtBr) => {
+            "A prova do critério {code} não passou: {output}"
+        }
+        ("close.criterion_failed", Locale::EnUs) => "The proof of criterion {code} did not pass: {output}",
+        ("close.next", Locale::PtBr) => {
+            "Publique a página da spec e a do projeto, e abra o pull request."
+        }
+        ("close.next", Locale::EnUs) => "Publish the spec page and the project page, and open the pull request.",
+
+        // A rodada de ondas (`commands/flow/round.rs`).
+        ("round.bad_report", Locale::PtBr) => {
+            "O relatório da rodada não se entende: {detail}. Nada foi gravado."
+        }
+        ("round.bad_report", Locale::EnUs) => {
+            "The round report cannot be read: {detail}. Nothing was recorded."
+        }
+        ("round.not_approved", Locale::PtBr) => {
+            "A spec está na fase {phase} e ainda não foi aprovada: nenhuma onda sai antes do sim do usuário."
+        }
+        ("round.not_approved", Locale::EnUs) => {
+            "The spec is in the {phase} phase and is not approved yet: no wave goes out before the user says yes."
+        }
+        ("round.delivered_too_long", Locale::PtBr) => {
+            "O que a onda {wave} entregou tem {chars} caracteres e o teto é {max}. Encurte o relato."
+        }
+        ("round.delivered_too_long", Locale::EnUs) => {
+            "What wave {wave} delivered has {chars} characters and the cap is {max}. Shorten the report."
+        }
+        ("round.commit_too_long", Locale::PtBr) => {
+            "O {part} da mensagem do commit tem {chars} caracteres e o teto é {max}."
+        }
+        ("round.commit_too_long", Locale::EnUs) => {
+            "The commit message {part} has {chars} characters and the cap is {max}."
+        }
+        ("round.commit_forbidden", Locale::PtBr) => {
+            "A mensagem do commit traz {found}, que ela nunca leva. Tire e peça a rodada de novo."
+        }
+        ("round.commit_forbidden", Locale::EnUs) => {
+            "The commit message carries {found}, which it never carries. Take it out and run the round again."
+        }
+        ("round.formatter_missing", Locale::PtBr) => {
+            "O projeto usa {name} e ele não foi achado: os arquivos da rodada ficaram sem formatar."
+        }
+        ("round.formatter_missing", Locale::EnUs) => {
+            "The project uses {name} and it was not found: the round's files were left unformatted."
+        }
+        ("round.replan", Locale::PtBr) => {
+            "A onda {wave} diz que o plano dela não funciona. Mudança proposta: {change}. \
+             Mostre isto ao usuário e, com o sim dele, repita a rodada com o código {code}."
+        }
+        ("round.replan", Locale::EnUs) => {
+            "Wave {wave} says its plan does not work. Proposed change: {change}. \
+             Show this to the user and, once they say yes, run the round again with code {code}."
+        }
+        ("round.git_refused", Locale::PtBr) => "O git recusou o commit da rodada: {detail}",
+        ("round.git_refused", Locale::EnUs) => "Git refused the round's commit: {detail}",
+        ("round.next", Locale::PtBr) => {
+            "Publique a página da spec e a do projeto, e despache os pedidos desta rodada."
+        }
+        ("round.next", Locale::EnUs) => {
+            "Publish the spec page and the project page, and dispatch this round's requests."
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
@@ -1747,6 +1934,19 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Small request: fill every gap in `points` from the request and the code, show it all \
              at once and ask for a single yes. With the yes, record the answers and close each point."
         }
+        ("survey.touched", Locale::PtBr) => {
+            "A spec voltou ao levantamento por: {reason}. {count} itens já gravados são tocados por \
+             esse motivo — mostre cada um ao usuário e pergunte se ele fica, muda ou sai. O que \
+             mudar vira versão nova do item, apontando a antiga, que continua visível na conversa. \
+             O que o motivo não toca fica como está, e não se pergunta de novo."
+        }
+        ("survey.touched", Locale::EnUs) => {
+            "The spec went back to the survey because: {reason}. {count} recorded items are touched \
+             by that reason — show each one to the user and ask whether it stays, changes or goes. \
+             What changes becomes a new version of the item, pointing at the old one, which stays \
+             visible in the conversation. What the reason does not touch stays as it is, and is \
+             never asked again."
+        }
         ("survey.record_points", Locale::PtBr) => {
             "Grave cada ponto de `points` que ainda não tem `id` com `mustard-rt run write point \
              --spec {spec}`, na ordem: copie os campos como vieram, com `status` open, e ponha em \
@@ -1873,6 +2073,14 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The {field} field is written only by the binary and cannot come in --json. To point \
              at an item by its code, use replaces or the targets of remove and purge. Nothing was \
              written."
+        }
+        ("spec_events.unknown_field", Locale::PtBr) => {
+            "O tipo {type} não tem o campo {field}: um campo que o tipo não declara nunca é lido \
+             por nada. Os campos deste tipo são: {fields}. Nada foi gravado."
+        }
+        ("spec_events.unknown_field", Locale::EnUs) => {
+            "Type {type} has no {field} field: a field the type does not declare is never read by \
+             anything. This type's fields are: {fields}. Nothing was written."
         }
         ("spec_events.replaces_other_type", Locale::PtBr) => {
             "O evento {id} é do tipo {found}, e a versão nova veio como {type}; ela precisa ser do \
@@ -2236,8 +2444,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
         ("prompt.fixed", Locale::PtBr) => {
-            "**O que é isto.** O pedido desta onda, montado pelo binário a partir da spec. Tudo que \
-             a onda precisa está escrito aqui; nunca vá procurar o resto em outro arquivo.\n\n\
+            "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
+             binário a partir da spec. Nenhum texto vem copiado: cada linha traz o número do item, \
+             o tipo dele e o comando que o lê.\n\n\
+             **Ler o item pelo número é parte do trabalho.** Rode o comando da linha na hora de \
+             trabalhar naquele item, um de cada vez, e leia do mesmo jeito qualquer item que o \
+             texto dele citar. Nunca procure o conteúdo em outro arquivo do projeto.\n\n\
              **O que fazer.** As tarefas desta onda, e só elas. Cada critério listado abaixo ganha \
              um teste que prova a regra dele.\n\n\
              **Quando parar.** Se faltar alguma coisa, ou se uma tarefa parecer pedir o que a spec \
@@ -2246,9 +2458,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              e o que ficou aberto."
         }
         ("prompt.fixed", Locale::EnUs) => {
-            "**What this is.** This wave's request, assembled by the binary from the spec. \
-             Everything the wave needs is written here; never go looking for the rest in another \
-             file.\n\n\
+            "**What this is.** The list of this wave's items, in execution order, assembled by the \
+             binary from the spec. No text is copied in: each line carries the item's number, its \
+             type and the command that reads it.\n\n\
+             **Reading the item by its number is part of the work.** Run the line's command when \
+             you get to that item, one at a time, and read any item its text cites the same way. \
+             Never look for the content in another project file.\n\n\
              **What to do.** This wave's tasks, and only those. Every criterion listed below gets a \
              test that proves its rule.\n\n\
              **When to stop.** If something is missing, or a task seems to ask for what the spec \
@@ -2256,16 +2471,34 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              **What to return.** What changed, file by file; the test that proves each criterion; \
              and what is left open."
         }
+        ("prompt.review.title", Locale::PtBr) => "{spec} — revisão da onda {n}",
+        ("prompt.review.title", Locale::EnUs) => "{spec} — review of wave {n}",
+        ("prompt.review.fixed", Locale::PtBr) => {
+            "**O que é isto.** O pedido da revisão desta onda, montado pelo binário a partir da \
+             spec. Nenhum texto vem copiado: cada linha traz o número do item, o tipo dele e o \
+             comando que o lê.\n\n\
+             **O que fazer.** Confira o que a onda entregou contra cada critério listado abaixo, \
+             lendo cada item pelo número. Olhe primeiro os defeitos já vistos nestes arquivos: o \
+             erro que já aconteceu ali é o que tem mais chance de voltar.\n\n\
+             **O que devolver.** O veredito — aprovado ou reprovado —, o que cada critério provou, \
+             e a lição que valha para as próximas ondas."
+        }
+        ("prompt.review.fixed", Locale::EnUs) => {
+            "**What this is.** This wave's review request, assembled by the binary from the spec. \
+             No text is copied in: each line carries the item's number, its type and the command \
+             that reads it.\n\n\
+             **What to do.** Check what the wave delivered against every criterion listed below, \
+             reading each item by its number. Look first at the defects already seen in these \
+             files: the mistake that happened there is the one most likely to come back.\n\n\
+             **What to return.** The verdict — approved or rejected —, what each criterion proved, \
+             and any lesson worth keeping for the next waves."
+        }
+        ("prompt.part.defects", Locale::PtBr) => "Defeitos já vistos nestes arquivos",
+        ("prompt.part.defects", Locale::EnUs) => "Defects already seen in these files",
         ("prompt.part.specification", Locale::PtBr) => "Especificação",
         ("prompt.part.specification", Locale::EnUs) => "Specification",
         ("prompt.part.agreed", Locale::PtBr) => "Combinado",
         ("prompt.part.agreed", Locale::EnUs) => "Agreed",
-        ("prompt.part.pointers", Locale::PtBr) => {
-            "O resto do combinado — cada linha traz o comando que lê o item inteiro"
-        }
-        ("prompt.part.pointers", Locale::EnUs) => {
-            "The rest of the agreed items — each line carries the command that reads the whole item"
-        }
         ("prompt.part.wave", Locale::PtBr) => "A onda e as tarefas dela",
         ("prompt.part.wave", Locale::EnUs) => "The wave and its tasks",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
@@ -2278,6 +2511,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("prompt.part.delivered", Locale::EnUs) => "What the earlier waves delivered",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
         ("prompt.skill.stale", Locale::EnUs) => "to review",
+        ("prompt.skill.read", Locale::PtBr) => "Leia o arquivo da skill antes de começar a tarefa que a nomeia.",
+        ("prompt.skill.read", Locale::EnUs) => "Read the skill file before starting the task that names it.",
 
         ("page.block.state", Locale::PtBr) => "Estado",
         ("page.block.state", Locale::EnUs) => "State",
@@ -2470,6 +2705,10 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.field.example", Locale::EnUs) => "Example",
         ("page.field.applies_to", Locale::PtBr) => "Vale para",
         ("page.field.applies_to", Locale::EnUs) => "Applies to",
+        ("page.field.order", Locale::PtBr) => "Ordem de execução",
+        ("page.field.order", Locale::EnUs) => "Execution order",
+        ("page.field.no_code", Locale::PtBr) => "Não vira código",
+        ("page.field.no_code", Locale::EnUs) => "Does not become code",
         ("page.field.value", Locale::PtBr) => "Valor",
         ("page.field.value", Locale::EnUs) => "Value",
         ("page.field.message", Locale::PtBr) => "Mensagem",
@@ -3186,6 +3425,7 @@ mod tests {
             ("spec_events.unknown_target", &["{id}"][..]),
             ("spec_events.unknown_code", &["{code}"][..]),
             ("spec_events.binary_only_field", &["{field}"][..]),
+            ("spec_events.unknown_field", &["{type}", "{field}", "{fields}"][..]),
             ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
@@ -3306,6 +3546,7 @@ mod tests {
             ("survey.present_point".into(), &["{code}", "{id}"][..]),
             ("survey.present_all".into(), &[][..]),
             ("survey.record_points".into(), &["{spec}"][..]),
+            ("survey.touched".into(), &["{count}", "{reason}"][..]),
             ("survey.done".into(), &[][..]),
             ("survey.review_step".into(), &["{block}", "{continue}"][..]),
             ("survey.review_question".into(), &[][..]),
@@ -3408,20 +3649,58 @@ mod tests {
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
-            ("plan.task_without_file", &["{task}"][..]),
+            ("plan.task_without_file", &["{task}", "{files}"][..]),
+            ("plan.task_wrong_wave", &["{task}", "{wave}", "{best}"][..]),
+            ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
+            ("plan.skill_to_be_born", &["{task}"][..]),
+            ("plan.no_suggestion", &[][..]),
             ("plan.finding.label", &[][..]),
+            ("discard.preview", &["{spec}", "{branch}", "{remote}", "{what}", "{token}"][..]),
+            ("discard.archive", &[][..]),
+            ("discard.delete", &[][..]),
+            ("discard.yes", &[][..]),
+            ("discard.no", &[][..]),
+            ("discard.reason", &[][..]),
+            ("discard.confirm_mismatch", &[][..]),
+            ("discard.incomplete", &[][..]),
+            ("resume.next.survey", &[][..]),
+            ("resume.next.plan", &[][..]),
+            ("resume.next.running", &[][..]),
+            ("resume.next.closed", &[][..]),
+            ("resume.next.pr_open", &[][..]),
+            ("resume.next.delivered", &[][..]),
+            ("resume.next.discarded", &[][..]),
+            ("close.bad_report", &["{detail}"][..]),
+            ("close.not_running", &["{phase}"][..]),
+            ("close.wave_without_commit", &["{wave}"][..]),
+            ("close.wave_rejected", &["{wave}"][..]),
+            ("close.request_not_delivered", &["{code}"][..]),
+            ("close.criterion_failed", &["{code}", "{output}"][..]),
+            ("close.next", &[][..]),
+            ("round.bad_report", &["{detail}"][..]),
+            ("round.not_approved", &["{phase}"][..]),
+            ("round.delivered_too_long", &["{wave}", "{chars}", "{max}"][..]),
+            ("round.commit_too_long", &["{part}", "{chars}", "{max}"][..]),
+            ("round.commit_forbidden", &["{found}"][..]),
+            ("round.formatter_missing", &["{name}"][..]),
+            ("round.replan", &["{wave}", "{change}", "{code}"][..]),
+            ("round.git_refused", &["{detail}"][..]),
+            ("round.next", &[][..]),
             ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),
+            ("prompt.review.title", &["{spec}", "{n}"][..]),
+            ("prompt.review.fixed", &[][..]),
+            ("prompt.part.defects", &[][..]),
             ("prompt.part.specification", &[][..]),
             ("prompt.part.agreed", &[][..]),
-            ("prompt.part.pointers", &[][..]),
             ("prompt.part.wave", &[][..]),
             ("prompt.part.criteria", &[][..]),
             ("prompt.part.lessons", &[][..]),
             ("prompt.part.skills", &[][..]),
             ("prompt.part.delivered", &[][..]),
             ("prompt.skill.stale", &[][..]),
+            ("prompt.skill.read", &[][..]),
             ("page.wave.prompt", &["{n}"][..]),
             ("page.wave.prompt.summary", &["{lines}"][..]),
         ] {

@@ -8,7 +8,10 @@
 //! `survey`, e ele guarda quem pediu, quando e por quê.
 //!
 //! O motivo é obrigatório: é ele que explica, daqui a um mês, por que o
-//! levantamento recomeçou. Um `--reason` em branco é recusado.
+//! levantamento recomeçou — e é ele que vira a consulta. O levantamento
+//! seguinte traz os itens que o motivo toca, para o usuário dizer se cada um
+//! fica, muda ou sai; o que o motivo não toca fica como está, e nada é
+//! perguntado de novo. Um `--reason` em branco é recusado.
 //!
 //! A spec fechada, com o pull request aberto, entregue ou descartada não
 //! volta: o que ela decidiu já saiu, e o caminho é uma spec nova pelo `open`.

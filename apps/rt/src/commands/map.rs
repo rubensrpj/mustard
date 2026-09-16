@@ -178,6 +178,15 @@ fn examples(opts: &MapOpts, map: &ProjectMap, lang: Locale) -> Result<Value, Map
     Ok(report)
 }
 
+/// Os arquivos que o mapa sugere para uma tarefa descrita em palavras, do
+/// mais forte para o menos forte. Vazio quando não há mapa gravado ou quando
+/// nada casa: quem pergunta decide o que fazer com a lista, porque o mapa não
+/// preenche a tarefa sozinho.
+pub(crate) fn suggested_files(root: &Path, task: &str, limit: usize) -> Vec<String> {
+    let Ok(map) = store::read(root) else { return Vec::new() };
+    project_map::search(&map, task).into_iter().take(limit).map(|found| found.path).collect()
+}
+
 /// A pasta que a skill descreve: a de cima do `.claude` onde ela mora.
 fn skill_owner(path: &Path) -> Option<PathBuf> {
     path.ancestors().find(|a| a.file_name().is_some_and(|n| n == ".claude")).and_then(Path::parent).map(Path::to_path_buf)
