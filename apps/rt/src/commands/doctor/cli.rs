@@ -21,72 +21,31 @@ use crate::commands::{doctor};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum DoctorCmd {
     /// Read-only installation health diagnostic: wiring, drift, state health,
-    /// wave-integrity, claude-paths, workspace-leaks, i1, and (optionally)
-    /// residue. Prints a compact OK/WARN/FAIL report and exits 1 if any
-    /// category is FAIL, 0 otherwise.
+    /// wave-integrity and (optionally) residue. Prints a compact OK/WARN/FAIL
+    /// report and exits 1 if any category is FAIL, 0 otherwise.
     ///
     /// Pass `--json` as a shortcut for `--format json`.
-    #[command(display_order = 32)]
+    #[command(display_order = 20)]
     Doctor {
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
         residue: bool,
-        /// Run a specific named check in isolation: `wave-integrity`,
-        /// `claude-paths`, `workspace-leaks`, `i1`, `status-consistency`,
-        /// `superseded` (prune candidates — terminal / stale-anchored specs the
-        /// maintainer can archive), `capability-drift`, `guards-scaffold`,
-        /// `inject-delivery` (does the declared router actually REACH the
-        /// window — plugin switched off, a declared file absent, the router
-        /// declared by halves),
-        /// `branch-protection` (which branches this repository REALLY refuses a
-        /// direct write on — the measured set, not what `git.flow` declares),
-        /// `spec-index` (the spec index against every spec's event file: a
-        /// missing index, a line that diverges or a stale `search` field, each
-        /// naming `mustard-rt run index`, which rebuilds it), or `scan-output`
-        /// (what the scan writes under `.claude/` must stay out of git: a
-        /// tracked or unignored map file is named).
-        /// An unknown name exits 1 after printing the list above.
-        #[arg(long)]
+        /// Roda uma conferência sozinha. A lista é fechada: o parser recusa
+        /// um nome que não esteja nela, em vez de o comando responder um
+        /// relatório vazio que se lê como "está tudo certo".
+        #[arg(long, value_parser = [
+            "wave-integrity",
+            "branch-protection",
+            "spec-index",
+            "scan-output",
+        ])]
         check: Option<String>,
-        /// Output format: `text` (default) or `json`.
-        #[arg(long, default_value = "text")]
+        /// O formato da saída. Lista fechada: `text` (padrão) ou `json`.
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
         /// Shorthand for `--format json`.
         #[arg(long)]
         json: bool,
-    },
-    /// Scan markdown docs for obsolete terms declared in `.claude/.docs-audit.json`.
-    ///
-    /// Emits a JSON report of stale-doc hits. With `--strict` (or env
-    /// `MUSTARD_DOCS_AUDIT_MODE=strict` set by the caller), exits `1` when any
-    /// hit is found — the close gate uses this to block CLOSE on narrative
-    /// drift after an architectural spec lands.
-    #[command(display_order = 37)]
-    DocsStaleCheck {
-        /// Limit the audit to a single spec (`from_spec` field). Defaults to
-        /// running every audit declared in the registry.
-        #[arg(long)]
-        from: Option<String>,
-        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
-        #[arg(long)]
-        strict: bool,
-        /// Also recurse into nested `apps/*/.claude/**` installed-payload copies.
-        /// Default `false` — the audit scans only source-of-truth docs (the
-        /// repo-root `.claude/` tree and each subproject's root `CLAUDE.md`).
-        /// Equivalent to `MUSTARD_DOCS_AUDIT_INCLUDE_NESTED=1`.
-        #[arg(long)]
-        include_nested: bool,
-    },
-    /// Audit source files for pt-BR prose in EN-only files (diacritic-seed
-    /// heuristic). Warn-only by default; `--strict` exits `1` on any hit.
-    #[command(display_order = 38)]
-    LanguageAudit {
-        /// Output format: `text` (default) or `json`.
-        #[arg(long, default_value = "text")]
-        format: String,
-        /// Exit `1` when any hit is found. Default is warn-only (exit `0`).
-        #[arg(long)]
-        strict: bool,
     },
 }
 
@@ -102,11 +61,63 @@ pub fn dispatch(cmd: DoctorCmd) {
                 format: effective_format,
             });
         }
-        DoctorCmd::DocsStaleCheck { from, strict, include_nested } => {
-            doctor::docs_stale_check::run(from.as_deref(), strict, include_nested);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    /// O comando montado só para exercitar o parser do diagnóstico.
+    #[derive(Debug, Parser)]
+    struct Harness {
+        #[command(subcommand)]
+        cmd: super::DoctorCmd,
+    }
+
+    /// As três conferências que auditavam o `.claude/` — o catálogo de pastas,
+    /// o `.claude/` aninhado com estado e a sequência `.claude/.claude/` — não
+    /// são conferências que o contrato nomeia, e saíram.
+    ///
+    /// O defeito que este teste pega é o nome voltar para a lista do `--check`
+    /// sem que nada mais volte: o parser aceita, o diagnóstico não tem o que
+    /// rodar, e a pessoa lê um relatório vazio como "está tudo certo".
+    #[test]
+    fn o_diagnostico_recusa_conferencia_que_o_contrato_nao_nomeia() {
+        for nome in ["claude-paths", "workspace-leaks", "i1"] {
+            assert!(
+                Harness::try_parse_from(["x", "doctor", "--check", nome]).is_err(),
+                "--check {nome} tem de ser recusado: não é conferência do contrato",
+            );
         }
-        DoctorCmd::LanguageAudit { format, strict } => {
-            doctor::language_audit::run(doctor::language_audit::LanguageAuditOpts { format, strict });
+    }
+
+    /// E o que o contrato nomeia continua respondendo, para o teste acima não
+    /// passar por um parser que recusa tudo.
+    #[test]
+    fn as_conferencias_do_contrato_continuam_aceitas() {
+        for nome in ["branch-protection", "spec-index"] {
+            assert!(
+                Harness::try_parse_from(["x", "doctor", "--check", nome]).is_ok(),
+                "--check {nome} é do contrato e tem de ser aceito",
+            );
+        }
+    }
+
+    /// A ajuda não pode prometer uma conferência que saiu: a pessoa lê o nome
+    /// ali e o digita.
+    #[test]
+    fn a_ajuda_do_diagnostico_nao_promete_conferencia_que_saiu() {
+        let mut arvore = Harness::command();
+        let diagnostico = arvore
+            .find_subcommand_mut("doctor")
+            .expect("o diagnóstico tem de estar registrado");
+        let ajuda = diagnostico.render_long_help().to_string();
+        for nome in ["claude-paths", "workspace-leaks"] {
+            assert!(
+                !ajuda.contains(nome),
+                "a ajuda ainda promete a conferência '{nome}', que saiu",
+            );
         }
     }
 }

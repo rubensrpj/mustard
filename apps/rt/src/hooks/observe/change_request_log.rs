@@ -28,14 +28,12 @@
 //!   block a turn.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::domain::spec_events::PHASES;
 use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::io::Write;
 
-use crate::shared::context::current_wave;
 use crate::shared::prompt::is_harness_notice;
 
 /// Filename of the per-spec durable change-request log (machine-readable).
@@ -201,25 +199,6 @@ pub(crate) fn append_change_log_md(
     }
 }
 
-/// Emit a `pipeline.change.request` harness event (best-effort, NDJSON route).
-fn emit_event(project_dir: &str, session_id: &str, spec: &str, stage: Option<&str>, prompt: &str) {
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id.to_string(),
-        wave: u32::try_from(current_wave().unwrap_or(0)).unwrap_or(0),
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("change_request_log".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.change.request".to_string(),
-        payload: json!({ "spec": spec, "stage": stage, "prompt": prompt }),
-        spec: Some(spec.to_string()),
-    };
-    let _ = crate::shared::events::route::emit(project_dir, &ev);
-}
-
 impl Observer for ChangeRequestLog {
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::UserPromptSubmit) {
@@ -261,7 +240,6 @@ impl Observer for ChangeRequestLog {
         let session_id = input.session_id.as_deref().unwrap_or("unknown");
         append_change_request(&project_dir, &spec, session_id, phase, &prompt);
         append_change_log_md(&project_dir, &spec, phase, &prompt);
-        emit_event(&project_dir, session_id, &spec, phase, &prompt);
     }
 }
 

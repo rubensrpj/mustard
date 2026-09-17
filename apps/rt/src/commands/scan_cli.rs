@@ -22,7 +22,7 @@ pub enum ScanCmd {
     /// Mine the workspace into `grain.model.json` via the bundled `scan` tool —
     /// THE scan (replaced the old in-tree miner + per-project skill/agent
     /// generation; the model is the single durable artifact).
-    #[command(display_order = 0)]
+    #[command(display_order = 15)]
     Scan {
         /// The workspace root to scan. Defaults to the current directory.
         #[arg(long, default_value = ".")]
@@ -43,7 +43,7 @@ pub enum ScanCmd {
     /// up to 3 kB) or `skill --path <SKILL.md>` (every cited path exists and
     /// the skill stays under 500 lines). Reads `.claude/grain.model.json`;
     /// prints JSON and exits 1 on a refusal.
-    #[command(display_order = 48)]
+    #[command(display_order = 16)]
     Map {
         /// The question to ask.
         #[arg(value_enum)]

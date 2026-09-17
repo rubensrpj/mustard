@@ -51,7 +51,7 @@ flowchart TD
     end
 ```
 
-**Princípio central:** o código-fonte **nunca é lido em massa**. A varredura minera o repositório para `grain.model.json`; os fluxos de pipeline consomem esse modelo via *digest* (`mustard-rt run feature`) e leem apenas as *anchors* (arquivos-âncora) que o digest aponta. É assim que o Mustard economiza contexto.
+**Princípio central:** o código-fonte **nunca é lido em massa**. A varredura minera o repositório para `grain.model.json`; os fluxos de pipeline consomem esse modelo via *digest* (`mustard-rt run map`) e leem apenas as *anchors* (arquivos-âncora) que o digest aponta. É assim que o Mustard economiza contexto.
 
 ---
 
@@ -155,7 +155,7 @@ flowchart TD
     sc --> lap["AI lapida a intenção para<br/>vocabulário de código"]
 
     subgraph an["1. ANALYZE"]
-        lap --> dig["mustard-rt run feature --intent<br/>(digest — chamado UMA vez)"]
+        lap --> dig["mustard-rt run map search --query<br/>(digest — chamado UMA vez)"]
         dig --> res{"cobertura?"}
         res -->|weak / none| requery["lê o menu vocabulary<br/>→ re-query afiada"]
         requery --> dig
@@ -203,7 +203,7 @@ flowchart TD
     start(["router despacha bugfix"]) --> hyg["spec-hygiene + garante grain.model.json"]
     hyg --> triage{"sintoma tem token LITERAL?<br/>(msg de erro, campo, file:line, status HTTP)"}
     triage -->|sim| grep["grep/glob direto<br/>(pula o digest)"]
-    triage -->|"não — só conceito"| dig["digest: mustard-rt run feature --intent<br/>→ LÊ as anchors apontadas"]
+    triage -->|"não — só conceito"| dig["digest: mustard-rt run map search --query<br/>→ LÊ as anchors apontadas"]
     grep --> diag["DIAGNOSE: Task(Explore) + skill diagnose<br/>(≤20 tool uses, ≤3 reads) → causa raiz"]
     dig --> diag
     diag --> cache["root-cause cache (hash em memória)"]
@@ -440,8 +440,6 @@ flowchart TD
     first -->|true| doneU(["atualização aplicada"])
     hint --> doneU
 
-    which -->|--off| off["mustard-rt run unhook --scope"]
-    which -->|--on| on["mustard-rt run rehook --scope"]
     off --> scopeChk{"scope all sem --confirm?"}
     on --> scopeChk
     scopeChk -->|sim| skip["global: state skipped (não toca)"]

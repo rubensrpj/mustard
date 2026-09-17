@@ -1,9 +1,6 @@
+//! A instalação: a atualização e a faxina das cópias abandonadas.
+
 pub mod cli;
 
-pub mod maint_deps;
-pub mod maint_validate;
-pub mod claude_dir_prune;
 pub mod scratch_gc;
-pub mod unhook;
-pub mod rehook;
 pub mod upsert;

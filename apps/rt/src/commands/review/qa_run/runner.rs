@@ -1,15 +1,10 @@
 //! qa-run acceptance-criteria execution engine: locate the spec file, run each
-//! AC command (with per-AC timeouts and self-invocation guards), and emit the
-//! `qa.result` event and metric. Split out of `qa_run`.
+//! AC command (with per-AC timeouts and self-invocation guards). Split out of
+//! `qa_run`.
 
-use crate::shared::context::session_id;
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
-use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
-use mustard_core::time::now_iso8601;
-use mustard_core::platform::metrics::{emit_metric, MetricLine};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use super::{AcResult, QaRunOptions};
@@ -21,7 +16,7 @@ const AC_TIMEOUT_SECS: u64 = 120;
 /// The POSIX shell's "command not found" exit code.
 ///
 /// `pub(crate)` because the judgement it enables belongs to a CALLER, not to
-/// this module: [`crate::commands::review::ac_negative_check`] must not read an
+/// this module: nenhum leitor pode tomar por reprovado um critério que não
 /// unrunnable command as its red proof, while `qa-run` must still fail on one.
 /// Both read the same record and reach opposite, correct verdicts — which only
 /// works while the code is a shared constant instead of a literal each side
@@ -597,7 +592,7 @@ fn run_ac_command_inner(
     // out.
     //
     // The consumer that DOES need 127 apart is
-    // [`crate::commands::review::ac_negative_check`], whose red rule is exit≠0
+    // a regra do vermelho é exit≠0
     // and which would otherwise stamp an unrunnable command `proven: red`. It
     // reads `exit` off this record and decides for itself — the discrimination
     // lives in the ONE caller that needs it, never in the shared status that
@@ -643,42 +638,9 @@ fn run_ac_command_inner(
     }
 }
 
-/// Emit the `qa.result` harness event.
-///
-/// The payload carries a `codeState` fingerprint of the tree the criteria were
-/// actually run against ([`crate::shared::code_state`]). Without it the record
-/// says *these criteria passed* but not *against what*, and the close gate then
-/// had nothing to compare: it watched the mtime of `spec.md` and let a green
-/// observed BEFORE the change under review carry a unit through. The field is
-/// absent — not empty — where no fingerprint can be taken (no repository, no
-/// `git`), and every reader treats an absent one as stale.
-pub(super) fn emit_qa_event(cwd: &Path, spec: &str, overall: &str, criteria: &[Value]) {
-    let mut payload = json!({ "spec": spec, "overall": overall, "criteria": criteria });
-    if let (Some(map), Some(state)) =
-        (payload.as_object_mut(), crate::shared::code_state::fingerprint(cwd))
-    {
-        map.insert(
-            crate::shared::code_state::CODE_STATE_KEY.to_string(),
-            Value::String(state),
-        );
-    }
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Cli,
-            id: Some("qa-run".to_string()),
-            actor_type: None,
-        },
-        event: "qa.result".to_string(),
-        payload,
-        spec: Some(spec.to_string()),
-    };
-    // `qa.result` is non-pipeline → per-spec NDJSON via the event router.
-    let _ = crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &ev);
-}
+/// O gravador velho de eventos saiu, e com ele o destino do resultado dos
+/// critérios: quem guarda a execução hoje é o arquivo de eventos da spec.
+pub(super) fn emit_qa_event(_cwd: &Path, _spec: &str, _overall: &str, _criteria: &[Value]) {}
 
 /// Emit the `qa` metric (fail-silent).
 pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[AcResult]) {
@@ -692,16 +654,7 @@ pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[
             _ => {}
         }
     }
-    let line = MetricLine::new(now_iso8601(), "qa").note(overall).extras(json!({
-        "spec": spec,
-        "overall": overall,
-        "passCount": pass,
-        "failCount": fail,
-        "skipCount": skip,
-        "timeoutCount": timeout,
-        "category": "verification",
-    }));
-    let _ = emit_metric(cwd, &line);
+    let _ = (spec, overall, pass, fail, skip, timeout, cwd);
 }
 
 thread_local! {
@@ -717,53 +670,6 @@ thread_local! {
     };
 }
 
-/// Gather the executable ACs of every capability the spec links in its
-/// `## Capabilities` section.
-///
-/// Reuses the SINGLE `## Capabilities` scanner
-/// ([`crate::commands::capability::linked_capability_ids`]) — the same one
-/// `complete-spec` uses on close — so qa-run and merge-on-close can never drift
-/// on which capabilities a spec links. For each linked `cap.{slug}` whose
-/// `.claude/capabilities/{slug}.md` exists, the doc is parsed
-/// ([`crate::commands::capability::parse`]) and its command-bearing scenarios are
-/// compiled into [`AcceptanceCriterion`]s via the EXISTING
-/// [`mustard_core::domain::capability::Capability::acceptance_criteria`] (no
-/// parallel AC type). The compiled ids are already stable + namespaced
-/// (`cap.{slug}-{scenario}`), so they merge cleanly beside the spec's own AC ids.
-///
-/// Returns `(id, command)` pairs — exactly the two fields [`run_ac_command`]
-/// needs — so the capability ACs run through the SAME execution path as the
-/// spec's own. FAIL-OPEN: a linked-but-missing or unreadable / garbage
-/// capability doc is skipped (never aborts QA), and a documentary scenario with
-/// no command is naturally not compiled.
-pub(super) fn gather_capability_acs(cwd: &Path, spec: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let linked = crate::commands::capability::linked_capability_ids(cwd, spec);
-    if linked.is_empty() {
-        return out; // no `## Capabilities` section (or no `cap.*` links) ⇒ none.
-    }
-    let Ok(caps_dir) = ClaudePaths::for_project(cwd).map(|p| p.capabilities_dir()) else {
-        return out;
-    };
-    for id in linked {
-        // `cap.{slug}` → `{slug}` (the doc file stem). A malformed id with no
-        // slug after the prefix is skipped.
-        let Some(slug) = id.strip_prefix("cap.").map(str::trim).filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        let doc_path = caps_dir.join(format!("{slug}.md"));
-        // Missing doc ⇒ skip (do NOT invent ACs); fail-open like complete-spec.
-        let Ok(md) = fs::read_to_string(&doc_path) else {
-            continue;
-        };
-        let cap = crate::commands::capability::parse(&md);
-        for ac in cap.acceptance_criteria() {
-            out.push((ac.id, ac.command));
-        }
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -912,7 +818,7 @@ mod tests {
 
     /// A command the shell cannot find is graded `fail`, and NAMED.
     ///
-    /// It briefly shipped as `skip`, to keep `ac_negative_check` from reading it
+    /// Chegou a sair como `skip`, para que ninguém o lesse
     /// as red proof. That fixed one consumer and broke the other: `qa-run`
     /// tolerates a `skip` beside a `pass` on the external path, so a criterion
     /// whose program did not exist stopped blocking CLOSE and rode along as a

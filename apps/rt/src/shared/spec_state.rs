@@ -246,33 +246,6 @@ mod tests {
 
     const SESSION: &str = "s-lado-a-lado";
 
-    /// Every door's own resolver, called the way the door calls it.
-    fn every_door(root: &str) -> Vec<(&'static str, Option<String>)> {
-        let input = HookInput { session_id: Some(SESSION.to_string()), ..HookInput::default() };
-        vec![
-            (
-                "clarification_observer",
-                crate::hooks::observe::clarification_observer::active_unit(root, &input),
-            ),
-            (
-                "change_request_log",
-                crate::hooks::observe::change_request_log::resolve_spec(root, Some(SESSION)),
-            ),
-            (
-                "boundary_gate",
-                crate::hooks::write::boundary_gate::resolve_boundary_spec(root, Some(SESSION)),
-            ),
-            ("subagent_inject", crate::hooks::task::subagent_inject::capture_spec(root, SESSION)),
-            ("pr_detect", crate::hooks::bash::pr_detect::detect_recent_spec(root, Some(SESSION))),
-            ("route", crate::shared::events::route::spec_of_event(None, root, Some(SESSION))),
-            (
-                "post_edit",
-                crate::hooks::write::post_edit::find_active_spec(root, Some(SESSION))
-                    .map(|(_, name)| name),
-            ),
-            ("read", DiskSpecState::new(Path::new(root)).active(Some(SESSION))),
-        ]
-    }
 
     /// A spec folder with a `spec.md`, which the checklist door also needs.
     fn spec_with_md(root: &std::path::Path, spec: &str) {
@@ -281,38 +254,7 @@ mod tests {
         std::fs::write(dir.join("spec.md"), "# Spec\n").unwrap();
     }
 
-    fn assert_all_name(root: &str, expected: &str) {
-        for (door, got) in every_door(root) {
-            assert_eq!(got.as_deref(), Some(expected), "the {door} door named another spec");
-        }
-    }
 
-    #[test]
-    fn every_door_names_the_same_spec_for_the_same_session() {
-        // An inherited override answers first at every door by design; the
-        // rungs below it are what is under test.
-        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
-            return;
-        }
-        // The checkout stands on one spec's branch while the session is bound
-        // to another: the branch wins at every door.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        spec_with_md(root, "da-branch");
-        spec_with_md(root, "da-sessao");
-        stand_on_spec_branch(root, "da-branch");
-        context::bind_session_spec(root_str, SESSION, "da-sessao");
-        assert_all_name(root_str, "da-branch");
-
-        // Off any spec branch, the session binding answers at every door.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let root_str = root.to_str().unwrap();
-        spec_with_md(root, "da-sessao");
-        context::bind_session_spec(root_str, SESSION, "da-sessao");
-        assert_all_name(root_str, "da-sessao");
-    }
 
     /// A sessão do ambiente vem da primeira variável dita, na ordem: a do
     /// Mustard, a que o Claude Code põe no ambiente dos comandos, e a antiga.
@@ -380,21 +322,6 @@ mod tests {
         assert_eq!(active_spec(root, None), None);
     }
 
-    /// Cada leitor de "está aprovada?", chamado como ele se chama, sobre o
-    /// checkout em `root` e a pasta `spec_dir` da spec `epic` vista dali.
-    fn readers(root: &Path, spec_dir: &Path) -> Vec<(&'static str, bool)> {
-        let root_str = root.to_string_lossy();
-        vec![
-            ("approve-spec", !crate::commands::spec::approve_spec::approval_missing(&root_str, "epic")),
-            (
-                "resume-bootstrap",
-                crate::commands::pipeline::resume_bootstrap::bootstrap(root, "epic").approved_by_user,
-            ),
-            ("status", crate::commands::pipeline::status::approval_of(root, "epic").is_some()),
-            ("spec-doc", crate::commands::spec::spec_doc::is_approved(root, "epic")),
-            ("wave-scaffold", crate::commands::wave::wave_scaffold::is_approved(spec_dir)),
-        ]
-    }
 
     fn git(dir: &Path, args: &[&str]) {
         assert!(git::run(dir, args).ok, "git {args:?} failed");
@@ -435,73 +362,7 @@ mod tests {
         assert_eq!(active_spec(&wt.to_string_lossy(), None).as_deref(), Some("x"));
     }
 
-    /// Vistos de um worktree ligado, os leitores respondem pelo estado do
-    /// checkout principal: uma spec aprovada ali é aprovada para todos.
-    #[test]
-    fn every_reader_agrees_from_a_linked_worktree() {
-        let tmp = tempdir().unwrap();
-        let (main, wt) = main_and_worktree(tmp.path(), "epic");
-        approve_in(&main.join(".claude").join("spec").join("epic"));
-        let seen_from = wt.join(".claude").join("spec").join("epic");
-        for (reader, approved) in readers(&wt, &seen_from) {
-            assert!(approved, "{reader} misses the approval from the worktree");
-        }
-    }
 
-    /// Os leitores de "está aprovada?" dão a mesma resposta que o estado, lado
-    /// a lado: o `approve-spec`, a retomada, o `status` (pela aprovação que ele
-    /// mostra), a página da spec e o `wave-scaffold`, com a spec em plano e
-    /// depois de aprovada.
-    #[test]
-    fn every_reader_of_the_approval_agrees_with_the_state() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let spec_dir = root.join(".claude").join("spec").join("epic");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        let events = spec_dir.join("spec.ndjson");
-
-        // Lado a lado, as specs sem `state`: sem arquivo nem `meta.json`, com
-        // um recado só e com o `meta.json` só. Nenhum leitor lê aprovada, e a
-        // trava diz o que a regra diz.
-        let unapproved = |case: &str| {
-            for (reader, approved) in readers(root, &spec_dir) {
-                assert!(!approved, "{reader} reads {case} as approved");
-            }
-            assert!(!super::approved(root, "epic"), "{case}");
-        };
-        unapproved("no file and no meta");
-        assert_eq!(lock_state(root, "epic"), None, "the branch the Mustard did not open is free");
-        let note = serde_json::json!({ "author": "user", "text": "oi" });
-        store::write(&events, "message", note.as_object().cloned().unwrap(), &[]).unwrap();
-        unapproved("a note");
-        assert_eq!(lock_state(root, "epic").and_then(|state| state.phase), Some("plan"), "a note alone is a plan");
-        std::fs::remove_file(&events).unwrap();
-        std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan"}"#).unwrap();
-        unapproved("a meta");
-        assert_eq!(lock_state(root, "epic"), None, "an old meta.json alone is free");
-
-        let plan = serde_json::json!({ "phase": "plan" });
-        store::write(&events, "state", plan.as_object().cloned().unwrap(), &[]).unwrap();
-
-        let readers = || readers(root, &spec_dir);
-        let disk = DiskSpecState::new(root);
-        for (reader, approved) in readers() {
-            assert_eq!(approved, disk.state("epic").unwrap().approved, "{reader} disagrees in plan");
-            assert!(!approved, "{reader} reads a plan as approved");
-        }
-
-        let approve = serde_json::json!({
-            "phase": "approved",
-            "author": "user",
-            "witness": { "question": "Aprovar esta spec?", "answer": "Aprovar" }
-        });
-        store::write(&spec_dir.join("spec.ndjson"), "state", approve.as_object().cloned().unwrap(), &[])
-            .unwrap();
-        for (reader, approved) in readers() {
-            assert_eq!(approved, disk.state("epic").unwrap().approved, "{reader} disagrees once approved");
-            assert!(approved, "{reader} misses the approval");
-        }
-    }
 
     #[test]
     fn a_spec_without_its_event_file_has_no_state() {

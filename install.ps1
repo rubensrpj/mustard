@@ -1,18 +1,11 @@
 #!/usr/bin/env pwsh
 # install.ps1 — Build + install Mustard and scaffold .claude/ into a project.
 #
-# Dogfooding installer: it builds the binaries (scan, mustard-translate,
-# mustard-rt, and mustard)
+# Dogfooding installer: it builds the binaries (scan, mustard-rt, and mustard)
 # in release, installs them to ~/.cargo/bin (so the hooks in .claude/settings.json
 # — which invoke `mustard-rt` from PATH — resolve at runtime, and `mustard-rt`
-# finds the `scan` miner AND the `mustard-translate` sidecar as ~/.cargo/bin
-# siblings), then runs `mustard init`
+# finds the `scan` miner as a ~/.cargo/bin sibling), then runs `mustard init`
 # in the target project, pointed at this repo's bundled templates/ payload.
-#
-# `mustard-translate` (apps/translate, outside the workspace) is the LOCAL MT
-# sidecar the retrieval uses for the automatic gloss + `scan-equivalences`;
-# both are fail-open, so skipping it degrades retrieval silently — that is why
-# the installer ships it alongside the core three.
 #
 # Why MUSTARD_TEMPLATES_DIR: `cargo install` copies only the binary to
 # ~/.cargo/bin, not its templates/ payload. Without an explicit pointer the
@@ -40,7 +33,6 @@ $CargoBin     = Join-Path $env:USERPROFILE '.cargo\bin'
 $MustardExe   = Join-Path $CargoBin 'mustard.exe'
 $RtExe        = Join-Path $CargoBin 'mustard-rt.exe'
 $ScanExe      = Join-Path $CargoBin 'scan.exe'
-$TranslateExe = Join-Path $CargoBin 'mustard-translate.exe'
 $TemplatesDir = Join-Path $Root 'apps\cli\templates'
 $BuildNumFile = Join-Path $Root '.mustard-build-number'
 
@@ -163,15 +155,12 @@ if (-not $SkipBuild) {
     # `target\`, and lives under the already-gitignored target/ tree.
     $prevTargetDir     = $env:CARGO_TARGET_DIR
     $env:CARGO_TARGET_DIR = Join-Path $Root 'target\install'
-    Write-Host "==> Installing scan + mustard-translate + mustard-rt + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
+    Write-Host "==> Installing scan + mustard-rt + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
     Write-Host "    CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR (shared cache — later runs are incremental)"
     try {
         # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
-        # (Scan::locate), and the feature/spec/digest/facts flow depends on it.
-        # mustard-translate next: the retrieval's local-MT sidecar (gloss +
-        # scan-equivalences), resolved the same sibling-first way.
+        # (Scan::locate), and the digest/facts projections depend on it.
         Install-Bin $ScanExe      (Join-Path $Root 'apps\scan')      'scan'
-        Install-Bin $TranslateExe (Join-Path $Root 'apps\translate') 'mustard-translate'
         Install-Bin $RtExe        (Join-Path $Root 'apps\rt')        'mustard-rt'
         Install-Bin $MustardExe   (Join-Path $Root 'apps\cli')       'mustard'
     } finally {

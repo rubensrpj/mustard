@@ -28,7 +28,7 @@
 //!    shell the harness runs commands in? (`toolchain-unreachable`)
 //!
 //! Question 4 looks unrelated and is the same failure in a different coat: when
-//! `cargo` is not on `PATH`, `ac-negative-check` and `qa-run` run the criterion,
+//! `cargo` is not on `PATH`, o fechamento roda o critério,
 //! collect exit 127 (`command not found`) and record every cargo-backed
 //! criterion `unproven`. A reader sees a red criterion and hunts the code. The
 //! ledger's own `reason` says the command could not be attempted, but nobody

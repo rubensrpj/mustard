@@ -93,7 +93,7 @@ pub struct AcceptanceCriterion {
     /// The `Control:` command beside `Command:` — one that must come back
     /// GREEN against the tree AS IT IS, so the criterion's own red can be read
     /// as a fact about the behaviour and not about its spelling (the negative
-    /// proof, `ac-negative-check`, takes it in the same pass as the red).
+    /// prova negativa saiu; o fechamento roda cada critério uma vez).
     ///
     /// Optional on READ so a plan or a sidecar that declares none still
     /// parses; absent from the OUTPUT while `None`, so every document written

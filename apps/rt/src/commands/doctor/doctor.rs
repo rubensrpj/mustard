@@ -39,9 +39,7 @@
 //!   WARN e a mensagem no idioma do projeto, que manda rodar
 //!   `mustard-rt run index`.
 
-use mustard_core::domain::model::event::ActorKind;
 use crate::shared::context;
-use crate::shared::events::economy;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -1153,261 +1151,12 @@ fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
 // Check: status-consistency
 // ---------------------------------------------------------------------------
 
-/// Check every spec directory under `.claude/spec/` for lifecycle consistency.
-///
-/// **`meta.json` is the single source of truth.** A spec is consistent when its
-/// `meta.json` declares a valid `(stage, outcome)` combination. The `spec.md`
-/// markdown carries no lifecycle header any more, so its content is never a
-/// FAIL source — a *legacy* `### Stage:` / `### Outcome:` header that diverges
-/// from `meta.json` is surfaced as a non-fatal advisory (it means the spec
-/// predates the header-strip clean-up; delete the header lines from `spec.md`).
-///
-/// FAIL conditions (all driven by `meta.json`):
-/// - `meta.json` missing.
-/// - `meta.json` missing `stage` / `outcome` fields.
-/// - Invalid `(stage, outcome)` combination in `meta.json`.
-///
-/// Recurses into `wave-N-*/` subdirectories within each spec. Returns a single
-/// FAIL result listing every problematic path, a WARN when only legacy-header
-/// drift was seen, or OK when all specs are consistent.
-fn check_status_consistency(claude_dir: &Path) -> CheckResult {
-    use mustard_core::{header_field, read_meta};
-
-    /// Valid `(stage_label, outcome_label)` pairs.
-    fn is_valid_combo(stage: &str, outcome: &str) -> bool {
-        matches!(
-            (stage, outcome),
-            ("Plan" | "Analyze" | "Execute" | "QaReview" | "Close", "Active")
-                | ("Close", "Completed" | "Cancelled" | "Abandoned" | "Superseded" | "Absorbed")
-        )
-    }
-
-    /// Per-pair outcome: hard FAILs and soft advisory WARNs (legacy drift).
-    #[derive(Default)]
-    struct PairCheck {
-        fails: Vec<String>,
-        warns: Vec<String>,
-    }
-
-    /// Check one spec dir. `meta.json` is authoritative; the `spec.md` header
-    /// (when a legacy one is still present) is only a non-fatal drift advisory.
-    fn check_pair(spec_md_path: &std::path::Path) -> PairCheck {
-        let mut out = PairCheck::default();
-        let Some(spec_dir) = spec_md_path.parent() else {
-            out.fails.push(format!("{}: no parent dir", spec_md_path.display()));
-            return out;
-        };
-        let label = spec_md_path.display().to_string();
-
-        // meta.json is the single source of truth.
-        let meta_path = spec_dir.join("meta.json");
-        if !meta_path.exists() {
-            out.fails.push(format!("{label}: meta.json missing"));
-            return out;
-        }
-        let meta = read_meta(&meta_path).unwrap_or_default();
-        let stage_meta = meta.stage.as_deref().unwrap_or("").to_string();
-        let outcome_meta = meta.outcome.as_deref().unwrap_or("").to_string();
-
-        if stage_meta.is_empty() || outcome_meta.is_empty() {
-            out.fails.push(format!(
-                "{label}: meta.json missing stage/outcome fields \
-                 (stage={stage_meta:?}, outcome={outcome_meta:?})"
-            ));
-            return out;
-        }
-
-        if !is_valid_combo(&stage_meta, &outcome_meta) {
-            out.fails.push(format!(
-                "{label}: meta.json invalid combo stage={stage_meta:?} outcome={outcome_meta:?}"
-            ));
-            return out;
-        }
-
-        // Legacy advisory: a stale `### Stage:` / `### Outcome:` header that
-        // diverges from meta.json is a WARN, not a FAIL — the markdown should
-        // no longer carry a lifecycle header at all.
-        if let Ok(content) = fs::read_to_string(spec_md_path) {
-            let stage_spec = header_field(&content, "Stage");
-            let outcome_spec = header_field(&content, "Outcome");
-            if let (Some(stage_spec), Some(outcome_spec)) = (stage_spec, outcome_spec) {
-                if !stage_spec.eq_ignore_ascii_case(&stage_meta)
-                    || !outcome_spec.eq_ignore_ascii_case(&outcome_meta)
-                {
-                    out.warns.push(format!(
-                        "{label}: legacy header drift: spec.md={stage_spec:?}/{outcome_spec:?}, \
-                         meta.json={stage_meta:?}/{outcome_meta:?} \
-                         (meta.json is authoritative — delete the `### Stage:`/`### Outcome:` lines from spec.md)"
-                    ));
-                } else {
-                    out.warns.push(format!(
-                        "{label}: legacy lifecycle header still present in spec.md \
-                         (delete the `### Stage:`/`### Outcome:` lines — meta.json is authoritative)"
-                    ));
-                }
-            }
-        }
-
-        out
-    }
-
-    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
-    // `run()`; re-deriving with `for_project` here would be circular.
-    let spec_root = claude_dir.join("spec");
-    let Ok(entries) = fs::read_dir(&spec_root) else {
-        return CheckResult::skip("status-consistency", "no .claude/spec/ directory");
-    };
-
-    let mut fails: Vec<String> = Vec::new();
-    let mut warns: Vec<String> = Vec::new();
-    let mut scanned = 0usize;
-
-    let mut absorb = |pc: PairCheck| {
-        fails.extend(pc.fails);
-        warns.extend(pc.warns);
-    };
-
-    for entry in entries {
-        if !entry.is_dir {
-            continue;
-        }
-        // Check parent spec.md.
-        let parent_spec_md = entry.path.join("spec.md");
-        if parent_spec_md.exists() {
-            scanned += 1;
-            absorb(check_pair(&parent_spec_md));
-        }
-        // Recurse into wave-N-* subdirectories.
-        if let Ok(sub_entries) = fs::read_dir(&entry.path) {
-            for sub in sub_entries {
-                if !sub.is_dir {
-                    continue;
-                }
-                // Only wave subdirs: name starts with "wave-" followed by a digit.
-                let name = &sub.file_name;
-                let is_wave = name.starts_with("wave-")
-                    && name.chars().nth(5).is_some_and(|c| c.is_ascii_digit());
-                if !is_wave {
-                    continue;
-                }
-                let wave_spec_md = sub.path.join("spec.md");
-                if wave_spec_md.exists() {
-                    scanned += 1;
-                    absorb(check_pair(&wave_spec_md));
-                }
-            }
-        }
-    }
-
-    if scanned == 0 {
-        return CheckResult::skip("status-consistency", "no spec.md files found");
-    }
-    if !fails.is_empty() {
-        // Surface advisory warns alongside the hard fails for context.
-        fails.extend(warns);
-        return CheckResult::fail("status-consistency", fails);
-    }
-    if !warns.is_empty() {
-        return CheckResult::warn("status-consistency", warns);
-    }
-    let mut r = CheckResult::ok("status-consistency");
-    r.details.push(format!("scanned {scanned} spec(s) — all consistent"));
-    r
-}
 
 #[cfg(test)]
 mod status_consistency_tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Write a spec dir with a header-less `spec.md` (pure narrative) and a
-    /// `meta.json` — the canonical post-migration shape.
-    fn make_spec_meta_only(
-        root: &std::path::Path,
-        name: &str,
-        meta_stage: &str,
-        meta_outcome: &str,
-    ) {
-        let spec_dir = root.join(".claude").join("spec").join(name);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), format!("# {name}\n\n## Body\n")).unwrap();
-        std::fs::write(
-            spec_dir.join("meta.json"),
-            format!(r#"{{"stage":"{meta_stage}","outcome":"{meta_outcome}"}}"#),
-        )
-        .unwrap();
-    }
-
-    /// Write a spec dir that still carries a legacy `### Stage:`/`### Outcome:`
-    /// header in `spec.md` alongside its `meta.json` (un-migrated shape).
-    fn make_spec_with_legacy_header(
-        root: &std::path::Path,
-        name: &str,
-        spec_stage: &str,
-        spec_outcome: &str,
-        meta_stage: &str,
-        meta_outcome: &str,
-    ) {
-        let spec_dir = root.join(".claude").join("spec").join(name);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(
-            spec_dir.join("spec.md"),
-            format!("# {name}\n\n### Stage: {spec_stage}\n### Outcome: {spec_outcome}\n### Flags: \n\n## Body\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            spec_dir.join("meta.json"),
-            format!(r#"{{"stage":"{meta_stage}","outcome":"{meta_outcome}"}}"#),
-        )
-        .unwrap();
-    }
-
-    /// Canonical post-migration spec (meta-only, valid combo) → OK.
-    #[test]
-    fn doctor_status_consistency_meta_only_closed_followup_ok() {
-        let dir = tempdir().unwrap();
-        make_spec_meta_only(dir.path(), "fu-spec", "Close", "Active");
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
-    }
-
-    /// Invalid `(stage, outcome)` in meta.json → FAIL.
-    #[test]
-    fn doctor_status_consistency_invalid_meta_combo_fail() {
-        let dir = tempdir().unwrap();
-        make_spec_meta_only(dir.path(), "bad-spec", "Analyze", "Cancelled");
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Fail, "{:?}", result.details);
-        assert!(result.details.iter().any(|d| d.contains("invalid combo")), "{:?}", result.details);
-    }
-
-    /// meta.json missing entirely → FAIL.
-    #[test]
-    fn doctor_status_consistency_missing_meta_fail() {
-        let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join(".claude").join("spec").join("no-meta");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# no-meta\n\n## Body\n").unwrap();
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Fail, "{:?}", result.details);
-        assert!(result.details.iter().any(|d| d.contains("meta.json missing")), "{:?}", result.details);
-    }
-
-    /// A legacy `spec.md` header that diverges from meta.json is now an
-    /// advisory WARN (not a FAIL) — meta.json is authoritative.
-    #[test]
-    fn doctor_status_consistency_legacy_header_drift_warns() {
-        let dir = tempdir().unwrap();
-        make_spec_with_legacy_header(dir.path(), "div-spec", "Execute", "Active", "Plan", "Active");
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
-        let msg = result.details.join(" ");
-        assert!(msg.contains("legacy header drift"), "{msg}");
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,29 +1185,9 @@ pub fn run(opts: DoctorOpts) {
 
     // When a specific --check is requested, run only that check.
     if let Some(ref check_name) = opts.check {
-        // The three single-source claude-paths checks
-        // produce native JSON shapes (not the generic `CheckResult` envelope).
-        // They short-circuit BEFORE the legacy match below so their JSON form
-        // is the only output.
-        if matches!(
-            check_name.as_str(),
-            "claude-paths"
-                | "workspace-leaks"
-                | "i1"
-                | "superseded"
-                | "capability-drift"
-                | "guards-scaffold"
-                | "inject-delivery"
-        ) {
-            run_typed_check(check_name, &cwd, opts.format == "json");
-            economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
-            return;
-        }
-
         let result = match check_name.as_str() {
             "wave-integrity" => check_wave_integrity(&claude_dir),
-            "status-consistency" => check_status_consistency(&claude_dir),
-            "branch-protection" => {
+                "branch-protection" => {
                 let project = crate::commands::spec_events::project(&cwd);
                 check_branch_protection(&cwd, project.lang)
             }
@@ -1473,7 +1202,7 @@ pub fn run(opts: DoctorOpts) {
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, inject-delivery, branch-protection, spec-index, scan-output"
+                     wave-integrity, branch-protection, spec-index, scan-output"
                 );
                 std::process::exit(1);
             }
@@ -1483,7 +1212,6 @@ pub fn run(opts: DoctorOpts) {
         } else {
             render_report(&[result]);
         }
-        economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
         return;
     }
 
@@ -1502,7 +1230,6 @@ pub fn run(opts: DoctorOpts) {
         // Wave-integrity check — always in the full run.
         check_wave_integrity(&claude_dir),
         // Status-consistency check — always in the full run.
-        check_status_consistency(&claude_dir),
         // O que o provedor realmente protege — sempre na rodada inteira: uma
         // base que só este binário recusa é uma base aberta para todo mundo, e
         // isso não aparece até um envio direto passar.
@@ -1529,157 +1256,23 @@ pub fn run(opts: DoctorOpts) {
         ));
     }
 
-    // The claude-paths check trio. Each check renders
-    // its native JSON object under its own top-level key in the JSON path;
-    // in text mode it folds into a `CheckResult` envelope so the OK/WARN/FAIL
-    // summary line still works.
-    let cp_report = crate::commands::doctor::doctor_claude_paths::run(&cwd);
-    let wl_report = crate::commands::doctor::doctor_workspace_leaks::run(&cwd);
-    let i1_report = crate::commands::doctor::doctor_i1::run(&cwd);
-    // Prune/accumulation linter. Read-only; never blocks (WARN at
-    // most) — its job is to surface archivable / likely-superseded specs.
-    let sup_report = crate::commands::doctor::superseded_check::run(&cwd);
-    // Capability/grain drift advisory. ADVISORY ONLY (WARN at
-    // most, never blocks): surfaces capabilities that cover code no longer in
-    // the grain model + emits `capability.drift` events. `None` when there is
-    // no grain model (cannot judge drift → silent no-op).
-    let drift_report = crate::commands::doctor::capability_drift_check::run(&cwd);
-    // Uncurated-rules advisory. ADVISORY ONLY (WARN at most): names the
-    // subprojects whose `## Guards` block is still the `/scan` scaffold, so an
-    // agent dispatched there is silently handed no rules. `None` when there is
-    // no scan census (nothing could carry the sentinel → silent no-op).
-    let scaffold_report = crate::commands::doctor::guards_scaffold_check::run(&cwd);
-    // Delivery of the declared injectables. NOT advisory: a router that does
-    // not reach the window means the harness is not enforcing anything, and
-    // until this check existed every way that happens failed in silence. Joins
-    // `results` so it reaches both renderers and the exit code.
-    let delivery_report = crate::commands::doctor::inject_delivery_check::run(&cwd);
-    results.push(inject_delivery_to_check_result(&delivery_report));
-
     if opts.format == "json" {
-        render_combined_json(
-            &results,
-            &cp_report,
-            &wl_report,
-            &i1_report,
-            &sup_report,
-            drift_report.as_ref(),
-            scaffold_report.as_ref(),
-        );
+        render_combined_json(&results);
     } else {
-        results.push(claude_paths_to_check_result(&cp_report));
-        results.push(workspace_leaks_to_check_result(&wl_report));
-        results.push(i1_to_check_result(&i1_report));
-        results.push(superseded_to_check_result(&sup_report));
-        if let Some(ref drift) = drift_report {
-            results.push(capability_drift_to_check_result(drift));
-        }
-        if let Some(ref scaffold) = scaffold_report {
-            results.push(guards_scaffold_to_check_result(scaffold));
-        }
         render_report(&results);
     }
 
-    // i1 violations are hard errors — exit-non-zero even when every legacy
-    // check returns OK.
-    let any_fail = results.iter().any(|r| r.status == Status::Fail) || !i1_report.ok;
-    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": results.len() + 3, "ok": !any_fail}));
-    if any_fail {
+    if results.iter().any(|r| r.status == Status::Fail) {
         std::process::exit(1);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Typed-check JSON path
+// JSON path
 // ---------------------------------------------------------------------------
 
-/// Run one of the typed checks (`claude-paths`, `workspace-leaks`, `i1`) and
-/// print its native JSON shape. Text mode renders the same payload as
-/// pretty-printed JSON — the typed checks do not have a separate text format,
-/// callers asking for text get JSON regardless (the typed shape IS the
-/// contract).
-fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
-    let value = match name {
-        "claude-paths" => serde_json::to_value(crate::commands::doctor::doctor_claude_paths::run(cwd)),
-        "workspace-leaks" => serde_json::to_value(crate::commands::doctor::doctor_workspace_leaks::run(cwd)),
-        "superseded" => serde_json::to_value(crate::commands::doctor::superseded_check::run(cwd)),
-        "capability-drift" => {
-            // Advisory: `None` when there is no grain model (cannot judge
-            // drift). Surface that explicitly so a direct `--check` is honest.
-            match crate::commands::doctor::capability_drift_check::run(cwd) {
-                Some(report) => serde_json::to_value(report),
-                None => Ok(json!({
-                    "ok": true,
-                    "skipped": "no grain.model.json — cannot judge capability drift",
-                })),
-            }
-        }
-        "guards-scaffold" => {
-            // Advisory: `None` when there is no scan census — nothing seeds a
-            // pending block without Wave 1, so an "all clear" would be vacuous.
-            match crate::commands::doctor::guards_scaffold_check::run(cwd) {
-                Some(report) => serde_json::to_value(report),
-                None => Ok(json!({
-                    "ok": true,
-                    "skipped": "no grain.model.json — no scan census to judge guards scaffolds",
-                })),
-            }
-        }
-        "inject-delivery" => {
-            // Never a no-op: "no injectable declared" is itself an answer, and
-            // the plugin switch is measurable with no project state at all.
-            //
-            // A FAIL exits NON-ZERO, like `i1`. This check is advertised as the
-            // validation command, and a script or CI job gating on it read a
-            // clean exit while the report said `failed: true` — the harness
-            // entirely inert and the gate silently green, which is the exact
-            // shape this unit exists to remove (found in review).
-            let report = crate::commands::doctor::inject_delivery_check::run(cwd);
-            let exit_non_zero = report.failed;
-            let v = serde_json::to_value(report);
-            print_typed_value(v, json_format);
-            if exit_non_zero {
-                std::process::exit(1);
-            }
-            return;
-        }
-        "i1" => {
-            let report = crate::commands::doctor::doctor_i1::run(cwd);
-            let exit_non_zero = !report.ok;
-            let v = serde_json::to_value(report);
-            // Print first so consumers see the body before we exit.
-            print_typed_value(v, json_format);
-            if exit_non_zero {
-                std::process::exit(1);
-            }
-            return;
-        }
-        _ => return,
-    };
-    print_typed_value(value, json_format);
-}
-
-fn print_typed_value(
-    value: Result<serde_json::Value, serde_json::Error>,
-    _json_format: bool,
-) {
-    let v = value.unwrap_or_else(|_| json!({}));
-    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()));
-}
-
-/// Render the default (all-checks) JSON payload. Combines the legacy
-/// `CheckResult` array shape with the three typed reports under fixed
-/// top-level keys (`claude_paths`, `workspace_leaks`, `i1`) so the dashboard
-/// and CI consumers can read each independently.
-fn render_combined_json(
-    legacy: &[CheckResult],
-    cp: &crate::commands::doctor::doctor_claude_paths::ClaudePathsReport,
-    wl: &crate::commands::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
-    i1: &crate::commands::doctor::doctor_i1::I1Report,
-    sup: &crate::commands::doctor::superseded_check::SupersededReport,
-    drift: Option<&crate::commands::doctor::capability_drift_check::CapabilityDriftReport>,
-    scaffold: Option<&crate::commands::doctor::guards_scaffold_check::GuardsScaffoldReport>,
-) {
+/// Render the default (all-checks) JSON payload.
+fn render_combined_json(legacy: &[CheckResult]) {
     let checks: Vec<serde_json::Value> = legacy
         .iter()
         .map(|r| {
@@ -1700,17 +1293,8 @@ fn render_combined_json(
         })
         .collect();
 
-    let any_fail = legacy.iter().any(|r| r.status == Status::Fail) || !i1.ok;
-    // Capability drift and uncurated guards are ADVISORY: they can raise WARN
-    // but NEVER FAIL.
-    let drift_warn = drift.is_some_and(|d| !d.ok);
-    let scaffold_warn = scaffold.is_some_and(|s| !s.ok);
-    let any_warn = legacy.iter().any(|r| r.status == Status::Warn)
-        || !cp.divergences.is_empty()
-        || !wl.leaks.is_empty()
-        || !sup.ok
-        || drift_warn
-        || scaffold_warn;
+    let any_fail = legacy.iter().any(|r| r.status == Status::Fail);
+    let any_warn = legacy.iter().any(|r| r.status == Status::Warn);
     let overall = if any_fail { "fail" } else if any_warn { "warn" } else { "ok" };
 
     let violations: Vec<String> = legacy
@@ -1720,136 +1304,17 @@ fn render_combined_json(
         .cloned()
         .collect();
 
-    let mut body = json!({
+    let body = json!({
         "checks": checks,
         "overall": overall,
         "violations": violations,
-        // Three named, typed reports keyed verbatim.
-        "claude_paths": cp,
-        "workspace_leaks": wl,
-        "i1": i1,
-        // Prune/accumulation linter, keyed verbatim.
-        "superseded": sup,
     });
-    // Capability/grain drift advisory, keyed verbatim. Only
-    // present when a grain model exists (otherwise the check is a no-op and
-    // the key is omitted so consumers can tell "no model" from "no drift").
-    if let Some(d) = drift
-        && let serde_json::Value::Object(ref mut map) = body {
-            map.insert(
-                "capability_drift".to_string(),
-                serde_json::to_value(d).unwrap_or(serde_json::Value::Null),
-            );
-        }
-    // Uncurated-rules advisory, keyed verbatim. Same rule: present only when
-    // there is a scan census, so consumers can tell "no census" from "no
-    // uncurated scaffold".
-    if let Some(s) = scaffold
-        && let serde_json::Value::Object(ref mut map) = body {
-            map.insert(
-                "guards_scaffold".to_string(),
-                serde_json::to_value(s).unwrap_or(serde_json::Value::Null),
-            );
-        }
     println!(
         "{}",
         serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
     );
 }
 
-/// Project a `ClaudePathsReport` onto the legacy `CheckResult` envelope for
-/// text-mode rendering.
-fn claude_paths_to_check_result(
-    report: &crate::commands::doctor::doctor_claude_paths::ClaudePathsReport,
-) -> CheckResult {
-    if report.divergences.is_empty() {
-        let mut r = CheckResult::ok("claude-paths");
-        r.details.push("filesystem matches ClaudePaths catalog".to_string());
-        return r;
-    }
-    let details: Vec<String> = report
-        .divergences
-        .iter()
-        .map(|d| format!("{} {} ({})", d.kind, d.path, d.severity))
-        .collect();
-    CheckResult::warn("claude-paths", details)
-}
-
-/// Project a `WorkspaceLeaksReport` onto the legacy `CheckResult` envelope.
-fn workspace_leaks_to_check_result(
-    report: &crate::commands::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
-) -> CheckResult {
-    if report.leaks.is_empty() {
-        let mut r = CheckResult::ok("workspace-leaks");
-        r.details.push("no nested .claude/ holds pipeline state".to_string());
-        return r;
-    }
-    let details: Vec<String> = report
-        .leaks
-        .iter()
-        .map(|l| format!("{} -> {}", l.path, l.leaked_entries.join(", ")))
-        .collect();
-    CheckResult::warn("workspace-leaks", details)
-}
-
-/// Project a `SupersededReport` onto the legacy `CheckResult` envelope. The
-/// superseded check only warns — surfacing prune candidates never blocks the
-/// doctor run. OK when nothing is archivable / stale.
-fn superseded_to_check_result(
-    report: &crate::commands::doctor::superseded_check::SupersededReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("superseded");
-        r.details.push(format!(
-            "{} spec(s): {} active, {} terminal — nothing to prune",
-            report.total_specs, report.active, report.terminal
-        ));
-        return r;
-    }
-    let mut details: Vec<String> = report
-        .prune_candidates
-        .iter()
-        .map(|c| format!("prune {} ({}, {})", c.slug, c.outcome, c.reason))
-        .collect();
-    details.extend(report.stale_active.iter().map(|c| {
-        format!(
-            "stale-active {} (ratio {}/1000): {}",
-            c.slug,
-            c.stale_ratio_x1000,
-            c.stale_files.join(", ")
-        )
-    }));
-    CheckResult::warn("superseded", details)
-}
-
-/// Project a `CapabilityDriftReport` onto the legacy `CheckResult` envelope.
-/// Capability drift is ADVISORY: drifted covers become WARN, never
-/// FAIL. OK when nothing drifted.
-fn capability_drift_to_check_result(
-    report: &crate::commands::doctor::capability_drift_check::CapabilityDriftReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("capability-drift");
-        r.details.push(format!(
-            "{} capabilit(ies) checked — none cover missing entities",
-            report.total_capabilities
-        ));
-        return r;
-    }
-    let details: Vec<String> = report
-        .drifted
-        .iter()
-        .map(|d| format!("drift {} covers {} (no longer in grain)", d.id, d.entity))
-        .collect();
-    CheckResult::warn("capability-drift", details)
-}
-
-/// Project an `InjectDeliveryReport` onto the legacy `CheckResult` envelope.
-///
-/// Unlike the advisories around it, this one can FAIL: a router that does not
-/// reach the window is not a style problem, it is the harness not running. Each
-/// detail line carries its own remedy, so a failing report is actionable
-/// without opening the JSON.
 /// Fold the bootstrap report into the doctor's OK/WARN/FAIL envelope.
 ///
 /// `binary-missing`, `stamp-mismatch` and `toolchain-unreachable` are FAIL:
@@ -1886,70 +1351,7 @@ fn bootstrap_to_check_result(
     }
 }
 
-fn inject_delivery_to_check_result(
-    report: &crate::commands::doctor::inject_delivery_check::InjectDeliveryReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("inject-delivery");
-        r.details.push(format!(
-            "{} declared injectable(s) reach the window",
-            report.declared
-        ));
-        return r;
-    }
-    let details: Vec<String> = report
-        .findings
-        .iter()
-        .map(|f| format!("{}: {} — {}", f.kind, f.detail, f.remedy))
-        .collect();
-    if report.failed {
-        CheckResult::fail("inject-delivery", details)
-    } else {
-        CheckResult::warn("inject-delivery", details)
-    }
-}
 
-/// Project a `GuardsScaffoldReport` onto the legacy `CheckResult` envelope. The
-/// uncurated-rules advisory is ADVISORY: a scaffold becomes WARN, never FAIL.
-/// OK when every subproject's `## Guards` block has been enriched.
-fn guards_scaffold_to_check_result(
-    report: &crate::commands::doctor::guards_scaffold_check::GuardsScaffoldReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("guards-scaffold");
-        r.details
-            .push("every subproject carries curated Guards".to_string());
-        return r;
-    }
-    let mut details: Vec<String> = report
-        .uncurated
-        .iter()
-        .map(|u| {
-            format!(
-                "{} still carries the uncurated Guards scaffold — agents dispatched there get no rules",
-                u.subproject
-            )
-        })
-        .collect();
-    details.push(
-        "fix: write the Guards of the subprojects above by hand, or delete the empty `## Guards` block"
-            .to_string(),
-    );
-    CheckResult::warn("guards-scaffold", details)
-}
-
-/// Project an `I1Report` onto the legacy `CheckResult` envelope. I1 is a hard
-/// error: any violation becomes FAIL, never WARN.
-fn i1_to_check_result(report: &crate::commands::doctor::doctor_i1::I1Report) -> CheckResult {
-    if report.violations.is_empty() {
-        let mut r = CheckResult::ok("i1");
-        r.details.push("no .claude/.claude/ sequence found".to_string());
-        return r;
-    }
-    CheckResult::fail("i1", report.violations.clone())
-}
-
-// /// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------

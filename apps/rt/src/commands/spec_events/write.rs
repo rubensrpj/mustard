@@ -825,10 +825,12 @@ mod tests {
         let removal = write(root, "remove", &format!(r#"{{"targets":[{failing}],"reason":"engano"}}"#));
         assert_eq!(removal["reason"], json!("binary-only-type"), "taking the red run out is refused too: {removal}");
 
-        assert!(
-            crate::commands::spec::complete_spec::close_admission(root, "teste").is_err(),
-            "the close still refuses"
-        );
+        let fechamento = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
+            spec: Some("teste".to_string()),
+            report: None,
+            root: root.to_path_buf(),
+        });
+        assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
     }
 
     /// Nenhuma gravação refaz a página nem o `.md`: os dois saem no fim do

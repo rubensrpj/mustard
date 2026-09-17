@@ -3,8 +3,8 @@
 //! The full `grain.model.json` is large (every module + declaration + the whole
 //! graph). A decomposition/elicitation step (the `feature` flow) must NOT read
 //! it — that would blow the low-consumption budget. The digest is the bounded
-//! "capability catalog" it queries instead: the recurring slices, roles, shared
-//! contracts, registration hubs, the high-fan-in (often *injected*) contracts,
+//! "capability catalog" it queries instead: the shared contracts, the
+//! registration hubs, the high-fan-in (often *injected*) contracts,
 //! the projects, and a domain-term index so a request like "contas a receber"
 //! can be looked up by term without reading any source.
 //!
@@ -20,14 +20,12 @@ use std::sync::OnceLock;
 /// Caps keep the digest bounded regardless of repo size. `MAX_TERMS` bounds the
 /// PUBLISHED full digest only — `query` searches the uncapped term index, so a
 /// rare discriminative term that falls off this tail stays findable per lookup.
-const MAX_ROLES: usize = 30;
 const MAX_TOUCHPOINTS: usize = 20;
 const MAX_FAN_IN: usize = 15;
 const MAX_TERMS: usize = 120;
 const MAX_TERM_SAMPLES: usize = 3;
 /// Tighter caps for a per-query response so each lookup stays a few KB.
 const Q_MAX_TERMS: usize = 25;
-const Q_MAX_SLICES: usize = 12;
 const Q_MAX_HUBS: usize = 8;
 const Q_MAX_TOUCHPOINTS: usize = 10;
 /// Anchor-file cap for a per-query response (`files` + its `files_detail`).
@@ -42,11 +40,6 @@ pub(crate) struct CapabilityDigest {
     /// ordered by the engine) — copied verbatim, never re-inferred here.
     pub detected_stacks: Vec<StackDetection>,
     pub projects: Vec<ProjD>,
-    /// Top role affixes by frequency; `roles_omitted` is the truncated tail.
-    pub roles: Vec<RoleD>,
-    pub roles_omitted: usize,
-    /// Recurring vertical slices — the build patterns available to compose.
-    pub slices: Vec<SliceD>,
     /// Base types many entities inherit/implement (mined supertypes).
     pub shared_contracts: Vec<ContractD>,
     pub graph: GraphD,
@@ -73,30 +66,6 @@ pub(crate) struct ProjD {
     pub code_files: usize,
 }
 
-#[derive(Serialize)]
-pub struct RoleD {
-    pub affix: String,
-    pub kind: String,
-    pub count: usize,
-    pub common_dir: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub implements: Option<String>,
-}
-
-#[derive(Serialize)]
-pub(crate) struct SliceD {
-    /// Core role affixes joined with '+', e.g. "Handler+Validator".
-    pub label: String,
-    pub recurrence: usize,
-    pub confidence: f32,
-    pub entities: Vec<String>,
-    pub optional_roles: Vec<String>,
-    /// Real file paths that EXEMPLIFY this slice — the "street": the actual
-    /// reference-implementation files to mirror, drawn from the convention's
-    /// exemplars (most complex first), deduped, capped. Lets a consumer go
-    /// straight to the files to copy instead of only the pattern name.
-    pub exemplar_files: Vec<String>,
-}
 
 #[derive(Serialize)]
 pub(crate) struct ContractD {
@@ -171,10 +140,6 @@ pub(crate) struct QueryResult {
     /// Terms that matched but were trimmed by the per-query cap (no silent
     /// loss) — given the rarity ranking, these are the most frequent matches.
     pub terms_omitted: usize,
-    pub slices: Vec<SliceD>,
-    /// Slices that matched but were trimmed by the per-query cap — mirrors
-    /// `terms_omitted` (additive; no silent loss).
-    pub slices_omitted: usize,
     pub contracts: Vec<ContractD>,
     /// High fan-in modules whose path carries a query term — surfaces *injected*
     /// cross-cutting contracts (e.g. a current-tenant accessor) for `--invariant`.
@@ -666,22 +631,19 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
 
     let matched_terms: Vec<TermD> = matched.into_iter().map(|(_, t)| t).collect();
 
-    let mut slices: Vec<SliceD> = dig.slices.into_iter().filter(|s| hit(&s.label) || s.entities.iter().any(|e| hit(e))).collect();
-    let slices_omitted = slices.len().saturating_sub(Q_MAX_SLICES);
-    slices.truncate(Q_MAX_SLICES);
     let contracts: Vec<ContractD> = dig.shared_contracts.into_iter().filter(|c| hit(&c.name)).collect();
     let mut hubs: Vec<HubD> = dig.graph.top_fan_in.into_iter().filter(|h| hit(&h.module)).collect();
     hubs.truncate(Q_MAX_HUBS);
     let mut touchpoints: Vec<TouchD> = dig.graph.touchpoints.into_iter().filter(|t| hit(&t.module)).collect();
     touchpoints.truncate(Q_MAX_TOUCHPOINTS);
 
-    let miss = matched_terms.is_empty() && slices.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty();
+    let miss = matched_terms.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty();
     // A non-miss answer with NO anchorable surface: every matched term lives
     // only in machine-written modules (their samples were filtered down to
-    // nothing) and no slice/contract/hub/touchpoint matched. Say WHY instead
+    // nothing) and no contract/hub/touchpoint matched. Say WHY instead
     // of handing back an empty `files` the caller would misread as "no
     // precedent".
-    let structural = !(slices.is_empty() && contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty());
+    let structural = !(contracts.is_empty() && hubs.is_empty() && touchpoints.is_empty());
     let generated_only = !matched_terms.is_empty() && matched_terms.iter().all(|t| t.samples.is_empty()) && !structural;
     let reason = generated_only.then(|| "generated_only".to_string());
 
@@ -751,8 +713,6 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
         detected_stacks: dig.detected_stacks,
         matched_terms,
         terms_omitted,
-        slices,
-        slices_omitted,
         contracts,
         hubs,
         touchpoints,
@@ -800,59 +760,11 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
     let detected_stacks = model.detected_stacks.clone();
     let projects = model.projects.iter().map(|p| ProjD { name: p.name.clone(), dir: p.dir.clone(), kind: p.kind.clone(), code_files: p.code_files }).collect();
 
-    // Roles: top by count (stable tie-break by affix), tail counted not dropped silently.
-    let mut roles_sorted: Vec<&crate::model::RoleStat> = model.roles.iter().collect();
-    roles_sorted.sort_by(|a, b| b.count.cmp(&a.count).then(a.affix.cmp(&b.affix)));
-    let roles_omitted = roles_sorted.len().saturating_sub(MAX_ROLES);
-    let roles = roles_sorted
-        .iter()
-        .take(MAX_ROLES)
-        .map(|r| RoleD { affix: r.affix.clone(), kind: r.kind.clone(), count: r.count, common_dir: r.common_dir.clone(), implements: r.implements.clone() })
-        .collect();
-
     // Machine-written modules (generated/vendored/…) are never the file a
-    // caller should read or edit: drop them from slice exemplars, hubs and
-    // touchpoints — and therefore from the anchor candidates `query` derives
-    // from these. Policy is owned by `classify` (module-qualified call, no
-    // local wrapper).
+    // caller should read or edit: drop them from the hubs and the touchpoints —
+    // and therefore from the anchor candidates `query` derives from these.
+    // Policy is owned by `classify` (module-qualified call, no local wrapper).
     let eligible = |path: &str| crate::classify::anchor_eligible(c.class_of.get(path).copied().unwrap_or(""));
-
-    // Slices: the multi-role conventions, trimmed (drop the verbose steps/examples).
-    let mut slices: Vec<SliceD> = model
-        .conventions
-        .iter()
-        .filter(|c| c.is_slice)
-        .map(|c| SliceD {
-            label: c.roles.iter().map(|s| s.as_str()).filter(|r| *r != "(core)").collect::<Vec<_>>().join("+"),
-            recurrence: c.recurrence,
-            confidence: c.confidence,
-            entities: c.entities.iter().take(5).cloned().collect(),
-            optional_roles: c.optional_roles.clone(),
-            // The "street": the real files that exemplify this slice. Exemplars
-            // are stored simple→complex (mine.rs push order), so iterate in
-            // REVERSE to put the most complete reference first; DROP test/fixture
-            // files (you mirror the production file, not its test builder — the
-            // same `is_test_path` exclusion the anchors use) AND machine-written
-            // modules (`anchor_eligible`, the same class filter hubs/touchpoints
-            // apply below — a module the census classified generated is never
-            // the reference to mirror); union across exemplars, DEDUP preserving
-            // order, cap at 4 paths.
-            exemplar_files: {
-                let mut seen = std::collections::HashSet::new();
-                c.exemplars
-                    .iter()
-                    .rev()
-                    .flat_map(|e| e.files.iter())
-                    .filter(|&f| !mustard_core::domain::ast::is_test_path(f))
-                    .filter(|&f| eligible(f))
-                    .filter(|f| seen.insert((*f).clone()))
-                    .take(4)
-                    .cloned()
-                    .collect()
-            },
-        })
-        .collect();
-    slices.sort_by(|a, b| b.recurrence.cmp(&a.recurrence).then(a.label.cmp(&b.label)));
 
     let shared_contracts = model.shared_contracts.iter().map(|s| ContractD { name: s.name.clone(), implementors: s.implementors }).collect();
 
@@ -882,7 +794,7 @@ fn catalog(model: &ProjectModel, c: &Corpus) -> CapabilityDigest {
 
     let terms = build_terms(c);
 
-    CapabilityDigest { root: model.root.clone(), languages, frameworks, detected_stacks, projects, roles, roles_omitted, slices, shared_contracts, graph, terms }
+    CapabilityDigest { root: model.root.clone(), languages, frameworks, detected_stacks, projects, shared_contracts, graph, terms }
 }
 
 /// English glue words that occur inside identifiers without carrying domain
@@ -1164,47 +1076,6 @@ mod tests {
 
     fn model(modules: Vec<Module>) -> ProjectModel {
         ProjectModel { root: "/repo".to_string(), modules, ..Default::default() }
-    }
-
-    /// AC-8: a module the census classified MACHINE-WRITTEN never surfaces as
-    /// a slice exemplar — `exemplar_files` applies the same `anchor_eligible`
-    /// class filter hubs and touchpoints already do, beside the existing
-    /// test-path exclusion.
-    #[test]
-    fn exemplar_files_exclude_machine_written_modules() {
-        use crate::model::{Convention, Exemplar};
-        let mut generated = module("src/orders/generated_client.x", vec![decl("OrdersClient", &[])]);
-        generated.file_class = "generated".to_string();
-        let mut m = model(vec![
-            module("src/orders/handler.x", vec![decl("OrderHandler", &[])]),
-            module("src/orders/validator.x", vec![decl("OrderValidator", &[])]),
-            generated,
-        ]);
-        m.conventions = vec![Convention {
-            roles: vec!["Handler".to_string(), "Validator".to_string()],
-            recurrence: 3,
-            entities: vec!["Order".to_string()],
-            is_slice: true,
-            exemplars: vec![Exemplar {
-                files: vec![
-                    "src/orders/handler.x".to_string(),
-                    "src/orders/generated_client.x".to_string(),
-                    "src/orders/__tests__/handler.x".to_string(),
-                    "src/orders/validator.x".to_string(),
-                ],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }];
-        let dig = build(&m);
-        let slice = dig.slices.first().expect("slice published");
-        assert_eq!(
-            slice.exemplar_files,
-            vec!["src/orders/handler.x", "src/orders/validator.x"],
-            "hand-written production files only — the generated module and the \
-             test path are both excluded: {:?}",
-            slice.exemplar_files
-        );
     }
 
     #[test]

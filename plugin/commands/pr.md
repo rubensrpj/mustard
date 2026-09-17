@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 `/pr <action> [<pr-number>] [--confirm]`
 
-**This door owns the pull request on the provider, and the gates that can refuse work.** That is the line against `${CLAUDE_PLUGIN_ROOT}/commands/git.md`, which moves bits in your tree and decides nothing. `open` moved here from `/git pr` for exactly that reason: two doors that both created pull requests read as duplicates of each other, and the one that could not refuse anything was the wrong home.
+**This door owns the pull request on the provider, and the gates that can refuse work.** Uma porta só cria pull request: a que pode recusar.
 
 **Review, QA and close are STEPS here, not doors.** None of them is ever what the operator set out to do — they are what has to happen on the way to a merge, and they were commands only by inheritance. `review` is the second action below; QA and CLOSE are the gate the third action crosses before it touches the provider. Inside a spec's own wave loop the same gates already run deterministically (`wave-advance`'s review round, then `close-pipeline`) — this door is where they come due for a unit that reaches its base.
 
@@ -30,7 +30,7 @@ disable-model-invocation: true
 - **Never invent a verdict.** Record `rejected` honestly when the findings are blocking. Recording `approved` to unblock a merge is the one failure this door cannot detect.
 - **QA is read-only and never inferred.** A pass is an OBSERVED exit code; fixing code mid-QA invalidates the result. Max 3 iterations.
 - **The merge step is the only one that writes to the base.** `list` and `review` touch nothing.
-- **Submodules before parent, always** — for `open` AND for the prune, exactly as `/mustard:git finish` describes it. → `${CLAUDE_PLUGIN_ROOT}/refs/git/submodule-rules.md`
+- **Submodules before parent, always** — for `open` AND for the prune: cada repositório do conjunto fecha antes do principal, que sai como rascunho enquanto algum submódulo tiver pull request aberto.
 - **Cancelling an abandoned unit is not a merge and not a close** — it is `/mustard:git delete <branch>`, from the base. One gesture removes the branch, its remote and its open PR, and everything the unit produced lived on that branch.
 
 ## Procedure
@@ -49,16 +49,16 @@ disable-model-invocation: true
 
 What the binary assembles is the recorded summary, one line per delivered wave, and the criteria count with the failures named. So the only prose you write is that summary — and two rules keep it honest. **Every number is measured, never estimated** — a test count comes from the run, not from memory. Measuring is all it is: a red count is recorded as a red count, and the run that produced it ends there. **Name what is still open**, including work deliberately not done: a reviewer who finds an omission you did not declare stops trusting the rest of the document.
 
-Then publish. Work branch: `/mustard:git push` first, then one PR per repo (submodules first) into each prefix base; do NOT return to base. **While ANY submodule PR is still open the parent opens as a DRAFT**: `mustard-rt run pr-open --base "$BASE" --head <parent-work-branch> --spec <spec> --draft` (plus a `Blocked by <sub PR url>` line appended to that body). The provider refuses to merge a draft PR, which is what turns "submodules before parent" from a sentence into a block — the order governed only PR OPENING, and on GitHub the two PRs are siblings anyone can merge in either direction. A draft ALSO does not request review from code owners (CODEOWNERS); those requests fire at `mustard-rt run pr-ready`, which runs in `/mustard:git finish` after the bump lands — so expect no reviewers until then. Every submodule PR already merged → open the parent normally (no `--draft`). Bare base `B`: no push → `mustard-rt run pr-open --base <target|flow[B]> --head "$B" --spec <spec>`. Existing PR in any repo → the same `pr-open` rewrites its body, or `mustard-rt run pr-edit --number <n> --spec <spec>`; then print its URL. Each command answers ONE JSON report (`ok`/`provider`/`number`/`url`) — print it verbatim; the provider it speaks to is its internal detail, never typed here.
+Then publish. Work branch: `/mustard:git push` first, then one PR per repo (submodules first) into each prefix base; do NOT return to base. **While ANY submodule PR is still open the parent opens as a DRAFT**: `mustard-rt run pr-open --base "$BASE" --head <parent-work-branch> --spec <spec> --draft` (plus a `Blocked by <sub PR url>` line appended to that body). The provider refuses to merge a draft PR, which is what turns "submodules before parent" from a sentence into a block — the order governed only PR OPENING, and on GitHub the two PRs are siblings anyone can merge in either direction. A draft ALSO does not request review from code owners (CODEOWNERS); those requests fire at `mustard-rt run pr-open`, which runs in `/mustard:git finish` after the bump lands — so expect no reviewers until then. Every submodule PR already merged → open the parent normally (no `--draft`). Bare base `B`: no push → `mustard-rt run pr-open --base <target|flow[B]> --head "$B" --spec <spec>`. Existing PR in any repo → the same `pr-open` rewrites its body; then print its URL. Each command answers ONE JSON report (`ok`/`provider`/`number`/`url`) — print it verbatim; the provider it speaks to is its internal detail, never typed here.
 
-**Then close the loop: read the unit's notebook** (`mustard-rt run notebook`) and print its items under the PR URL — the work is now in review, so what the notebook holds is the next cycle's prompt, carried back to the base gate as the next request. An empty notebook prints nothing; do not invent items for it.
+**Then close the loop: read the unit's notebook** (`mustard-rt run write`) and print its items under the PR URL — the work is now in review, so what the notebook holds is the next cycle's prompt, carried back to the base gate as the next request. An empty notebook prints nothing; do not invent items for it.
 
 This is the one action here that crosses NO gate: publishing is not integrating. The gates come due at `merge`.
 
 ### 1. `list` — what is waiting
 
 ```bash
-mustard-rt run pr-list
+mustard-rt run pr-review
 ```
 
 Read `ok` first.
@@ -74,43 +74,24 @@ mustard-rt run pr-review --pr <n>
 
 The brief comes back with `spec`, `spec_path`, `subproject` and `patterns` — the skill shelf the implementer was dispatched with, so the review measures the work against the very molds it was written to. `spec: null` means the head branch names no unit of this project — neither a `{kind}/` one nor a declared `{base}_` prefix; review it as a plain diff.
 
-Then fetch the diff and the phase context:
+The brief carries the pull request itself — title, author, base, head, the changed files and the comments — as the source of truth; do NOT re-fetch it.
 
-```bash
-mustard-rt run review-prefetch <n> --format json
-mustard-rt run diff-context --phase execute --subproject {sub}
-```
-
-`review-prefetch` returns `title`/`body`/`author`/`base`/`head`/`additions`/`deletions`/`changedFiles`/`files[]`/`comments[]`/`reviews[]` — source of truth, do NOT re-fetch. Fallback: `gh pr view --json …` + `gh pr diff`.
-
-Bracket the read with the two review events, so the resume gate and the metrics see the same window. `{spec}` is the `spec` field the `pr-review` brief above returned (skip both emits when it came back `null` — a plain diff has no spec to bracket), and `<n>` is the PR number you were given; substitute both literally — there is no environment variable carrying either, so a `$NAME` here would expand to nothing and record an empty `--spec`:
-
-```bash
-mustard-rt run emit-event --event review.start --spec {spec} --payload "spec={spec}" --payload "target=pr/<n>"
-```
-
-Paste the diff as a `## DIFF` block → `Skill({ skill: "code-review", args: "<n>" })`. Fallback (skill unavailable): `Task(general-purpose)` with the DIFF as source of truth, reading source only when ambiguous. Checklist: SOLID, Security, Performance, Patterns, Integration. Then:
-
-```bash
-mustard-rt run emit-event --event review.complete --spec {spec} --payload "spec={spec}" --payload "target=pr/<n>"
-```
-
-Record the outcome — this is what step 3 reads:
+Paste the diff as a `## DIFF` block → `Skill({ skill: "code-review", args: "<n>" })`. Fallback (skill unavailable): `Task(general-purpose)` with the DIFF as source of truth, reading source only when ambiguous. Checklist: SOLID, Security, Performance, Patterns, Integration. Then record the outcome — this is what step 3 reads:
 
 ```bash
 mustard-rt run pr-review --pr <n> --verdict <approved|rejected> --critical <N>
 ```
 
-`<N>` = count of critical findings (0 when `approved`). **Two records, two readers, and they are not interchangeable:** `pr-review` records the PR-scoped verdict the merge step reads; a review dispatched INSIDE the wave loop records the spec-scoped one with `mustard-rt run review-result --spec {spec} --verdict … --subproject {sub}`, which is what `resume-bootstrap` advances past `ReviewPending`. A unit that never left the loop already carries the second; this door adds the first.
+`<N>` = count of critical findings (0 when `approved`). **Two records, two readers, and they are not interchangeable:** `pr-review` records the PR-scoped verdict the merge step reads; a review dispatched INSIDE the wave loop records the spec-scoped one, which the round records from the reviewer's report. A unit that never left the loop already carries the second; this door adds the first.
 
-**A REJECTED verdict routes through the normal fix-loop** (`${CLAUDE_PLUGIN_ROOT}/refs/spec/resume-loop.md § Fix Loop`), and an APPROVED one is never blocked by a finding the reviewer left as an adjacent suggestion.
+**A REJECTED verdict routes through the normal fix-loop** — a onda volta para a revisão pela própria rodada —, and an APPROVED one is never blocked by a finding the reviewer left as an adjacent suggestion.
 
 ### 3. `merge <pr>` — verify, merge, prune
 
 **3a. The verification gate (skip only when the spec already reads `completed`).** A unit carrying a spec reaches its base through this chain, run while the unit is still live on its branch — merging first integrates unverified work:
 
 ```bash
-mustard-rt run close-orchestrate --spec {spec}
+mustard-rt run close --spec {spec}
 ```
 
 One command runs every gate and, on pass, finalizes in-process. Gates: (1) **build + tests** `verify-pipeline`; (2) **QA** `qa-run` — only a recorded `overall=pass` opens the close; (3) **review-spans** (any red span → block); (4) **docs audit** `docs-stale-check` (`--skip-docs` for a non-architectural spec); (5) **close gates** — the same sub-gates `emit-phase --to CLOSE` runs (debt markers, checklist, **findings**, QA, build), so this door and that one refuse the same trees; the refusal text arrives in the gate's `summary`; (6) **pipeline-summary** (advisory). It derives `overall`.
@@ -123,9 +104,9 @@ Preconditions checked before it runs: an unresolved `BLOCKED` blocks; `CONCERN`/
 
 - **`pass`** → the chain continues into the finalize.
 - **`fail`** → list the failing AC. After 3 failures → `AskUserQuestion`: (a) fix + retry, (b) relax the AC, (c) abort.
-- **`skip`** → a skip is not a verification, so it blocks the close exactly like a fail. Two shapes, told apart by `criteria` in the result. **No AC at all** (`criteria` empty) → the spec has nothing to verify, so it has nothing to claim: author a criterion (one reproduction command, red before the work and green after) and re-run. **ACs exist but every one skipped** (per-AC timeout 120s, spawn failure, or a self-invoked run that cannot rebuild the binary its criteria target) → fix the AC commands (raise the timeout, split the AC) and re-run, or record the verdict from an EXTERNAL `mustard-rt run qa-run --spec {spec}` — that is the run that can actually attempt them.
+- **`skip`** → a skip is not a verification, so it blocks the close exactly like a fail. Two shapes, told apart by `criteria` in the result. **No AC at all** (`criteria` empty) → the spec has nothing to verify, so it has nothing to claim: author a criterion (one reproduction command, red before the work and green after) and re-run. **ACs exist but every one skipped** (per-AC timeout 120s, spawn failure, or a self-invoked run that cannot rebuild the binary its criteria target) → fix the AC commands (raise the timeout, split the AC) and re-run, or record the verdict from an EXTERNAL `mustard-rt run close --spec {spec}` — that is the run that can actually attempt them.
 
-Env: `MUSTARD_QA_GATE_MODE=strict|warn|off`. Any `spec.md`/`wave-plan.md` edit after a pass marks QA STALE — the gate blocks until it is re-run. If `mustard-rt` is unavailable, dispatch `Task(general-purpose)` with `${CLAUDE_PLUGIN_ROOT}/context/qa/qa.core.md`.
+Env: `MUSTARD_QA_GATE_MODE=strict|warn|off`. Any `spec.md`/`wave-plan.md` edit after a pass marks QA STALE — the gate blocks until it is re-run.
 
 **3b. The merge itself.**
 
@@ -148,9 +129,8 @@ mustard-rt run pr-merge --pr <n> --confirm
 **3c. After the merge — record what the unit taught (max 3 each, skip the trivial; durable prose belongs to native auto-memory).**
 
 ```bash
-mustard-rt run emit-event --event decision --spec {spec} --payload "title=…" --payload "rationale=…"
-mustard-rt run emit-event --event lesson --spec {spec} --payload "takeaway=…" --payload "trigger=…"
-mustard-rt run capability create --slug {slug} --title "…"
+mustard-rt run write decision --spec {spec} --json '{"text":"…","why":"…"}'
+mustard-rt run write lesson --spec {spec} --json '{"text":"…","trigger":"…"}'
 ```
 
 The capability line is for a spec that shipped a durable user-facing capability — then link `[[cap.{slug}]]` in the spec.

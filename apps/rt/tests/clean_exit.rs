@@ -23,11 +23,11 @@ fn project_copy(dir: &Path) {
     fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
 }
 
-/// Roda `mustard-rt run scratch-gc <args>` com o temp apontado para `temp`,
+/// Roda `mustard-rt run clean <args>` com o temp apontado para `temp`,
 /// a partir de `cwd`.
 fn scratch_gc(cwd: &Path, temp: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
-        .args(["run", "scratch-gc"])
+        .args(["run", "clean"])
         .args(args)
         .current_dir(cwd)
         .env("TMPDIR", temp)
@@ -39,7 +39,7 @@ fn scratch_gc(cwd: &Path, temp: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn scratch_gc_path_exit_codes() {
+fn clean_path_exit_codes() {
     let base = tempfile::tempdir().unwrap();
     let temp = base.path().join("tmp");
     fs::create_dir_all(&temp).unwrap();
@@ -64,7 +64,7 @@ fn scratch_gc_path_exit_codes() {
 
     // Temp que é a própria home (`TMPDIR=$HOME`): recusado, exit 1, nada tocado.
     let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
-        .args(["run", "scratch-gc", "--path", copy.to_str().unwrap()])
+        .args(["run", "clean", "--path", copy.to_str().unwrap()])
         .current_dir(&cwd)
         .env("TMPDIR", &temp)
         .env("HOME", &temp)

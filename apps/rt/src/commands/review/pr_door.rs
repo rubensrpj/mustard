@@ -99,11 +99,41 @@ use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
-use crate::commands::review::dependency_precheck::detect_subproject;
 use crate::commands::review::review_result;
 use crate::commands::work_unit_open::checkout_holding_branch;
 use crate::shared::pr_provider::{provider_for, PrChecks};
 use crate::shared::work_kind::BaseFlow;
+
+/// O subprojeto que um conjunto de arquivos aponta, ou nada quando eles se
+/// espalham por mais de um.
+///
+/// Lê o par `apps/<nome>` ou `packages/<nome>` de cada caminho; dois pares
+/// diferentes no mesmo conjunto não têm subprojeto comum, e a resposta é nada.
+/// Veio da checagem de dependência quando ela saiu: era a única função dela
+/// com chamador vivo.
+fn detect_subproject(files: &[String], repo_root: &Path) -> Option<PathBuf> {
+    let mut chosen: Option<(String, String)> = None;
+    for raw in files {
+        let normalized = raw.replace('\\', "/");
+        let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+        let mut found: Option<(String, String)> = None;
+        let bases = ["apps", "packages"];
+        for (i, seg) in segments.iter().enumerate() {
+            if bases.contains(seg)
+                && let Some(name) = segments.get(i + 1) {
+                    found = Some(((*seg).to_string(), (*name).to_string()));
+                    break;
+                }
+        }
+        match (&chosen, &found) {
+            (None, Some(f)) => chosen = Some(f.clone()),
+            (Some(c), Some(f)) if c != f => return None,
+            _ => {}
+        }
+    }
+    chosen.map(|(base, name)| repo_root.join(base).join(name))
+}
+
 
 // ---------------------------------------------------------------------------
 // Shared plumbing — the provider, the bases, and the PR↔unit link
@@ -893,24 +923,7 @@ fn after_merge(
 /// git does not answer and the opened → merged pairing. The merges made by
 /// this door, invisible there before, start counting. They do not count
 /// twice: `pr_detect` only records the `gh pr merge` typed in Bash.
-fn record_merge(root: &Path, facts: &PrFacts, spec: Option<&str>, session: Option<&str>) {
-    use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: mustard_core::time::now_iso8601(),
-        session_id: session.unwrap_or_default().to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Orchestrator,
-            id: Some("pr-merge".to_string()),
-            actor_type: None,
-        },
-        event: "pr.merged".to_string(),
-        payload: serde_json::json!({ "branch": facts.head, "spec": spec, "pr": facts.number }),
-        spec: spec.map(str::to_string),
-    };
-    let _ = crate::shared::events::route::emit(&root.to_string_lossy(), &event);
-}
+fn record_merge(_root: &Path, _facts: &PrFacts, _spec: Option<&str>, _session: Option<&str>) {}
 
 /// Ask the provider to merge. The strategy is explicit because it has to be: a
 /// bare `gh pr merge` opens an interactive picker, and a `run`-face command has
@@ -929,10 +942,6 @@ fn emit<T: Serialize>(report: &T) {
     println!("{}", serde_json::to_string_pretty(report).unwrap_or_else(|_| "{}".to_string()));
 }
 
-/// Dispatch `mustard-rt run pr-list`.
-pub fn run_list(root: &Path) {
-    emit(&list_at(root));
-}
 
 /// Dispatch `mustard-rt run pr-review`. The brief still answers; recording a
 /// verdict has left the flow, so `--verdict` refuses at the door with exit 1,

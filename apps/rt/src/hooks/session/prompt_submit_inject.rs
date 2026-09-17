@@ -63,8 +63,6 @@
 //! `crate::shared::events::route::emit` (NDJSON path) instead of the old SQLite
 //! event sink.
 
-use mustard_core::domain::model::event::ActorKind;
-use crate::shared::events::economy;
 use crate::hooks::observe::amend_window_inject::close_amend_windows_for_session;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
@@ -368,7 +366,6 @@ impl Check for PromptSubmitInject {
             .flatten()
             .filter(|s| !s.is_empty())
             .map(|spec| {
-                economy::emit(&cwd, ActorKind::Hook, "prompt_gate", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "prompt_gate.pipeline_in_flight_banner", "duration_ms": 0, "tokens_used": 0}));
                 format!("{PIPELINE_IN_FLIGHT_BANNER}: {spec}")
             });
         // ONE composed Inject, in the order stated here: injectables first,

@@ -76,18 +76,15 @@
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use mustard_core::I18n;
 use mustard_core::SupportedLocale;
-use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::commands::maint::scratch_gc::{human_bytes, survey, ScratchRoots};
 use crate::shared::branch_state::{awaiting_prune, PrQuery};
 
-use mustard_core::time::now_iso8601;
 
 /// Archived sessions older than this are pruned on `SessionStart` (30 days).
 const RETENTION_MS: u128 = 30 * 24 * 60 * 60 * 1000;
@@ -128,44 +125,15 @@ fn current_session_id(input: &HookInput) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// `harness-init`: ensure the harness dirs exist, prune legacy archived
-/// sessions, and emit a `session.start` event. The harness event bus is a
-/// single WAL-mode `SQLite` store, so there is no per-session NDJSON log to
-/// rotate. Pure side effect — fail-open throughout.
-fn run_harness_init(input: &HookInput, cwd: &str) {
+/// `harness-init`: garante as pastas do harness e limpa as sessões
+/// arquivadas antigas. O evento de início de sessão saiu com o gravador velho.
+/// Puro efeito colateral — nunca falha alto.
+fn run_harness_init(_input: &HookInput, cwd: &str) {
     let harness = harness_dir(cwd);
     let sessions = sessions_dir(cwd);
     let _ = fs::create_dir_all(&harness);
     let _ = fs::create_dir_all(&sessions);
-
-    let current_id = current_session_id(input);
-    // Clean up legacy NDJSON session archives; WAL needs no file rotation.
     prune_old_sessions(&sessions);
-
-    // Emit `session.start`.
-    let source = input
-        .raw
-        .get("source")
-        .or_else(|| input.raw.get("matcher"))
-        .cloned()
-        .unwrap_or(Value::Null);
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: current_id,
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("harness-init".to_string()),
-            actor_type: None,
-        },
-        event: "session.start".to_string(),
-        payload: json!({ "cwd": cwd, "source": source }),
-        spec: None,
-    };
-    // `session.start` is non-pipeline → per-spec NDJSON (or session fallback
-    // when there is no active spec yet) via the event router.
-    let _ = crate::shared::events::route::emit(cwd, &event);
 }
 
 /// Delete archived `sessions/*.jsonl` files older than the retention window.
@@ -264,13 +232,6 @@ fn session_start_core(
     let cwd = ctx.project_dir_or_cwd(input);
     run_harness_init(input, &cwd);
     run_spec_hygiene(&cwd);
-    // Advisory probe for drift in the project's `.claude/` directory.
-    // Read-only; emits a single stderr warning when one or more children
-    // classify as `ORPHAN` (no declared consumer in
-    // `apps/{rt,cli,dashboard}`) — the underlying audit now derives its
-    // documented-directory set from `mustard_core::ClaudePaths::documented_dirs`,
-    // the single canonical catalog. Fail-open — never blocks.
-    crate::commands::maint::claude_dir_prune::check_orphans(Path::new(&cwd));
     // Terrain: project `grain.model.json` into a
     // once-per-session terrain map so the AI opens the session already
     // knowing the subprojects instead of grepping to orient. Fail-open: a
@@ -597,6 +558,7 @@ fn scratch_notice(root: &Path, scratch: Option<&ScratchProbe>, i18n: I18n) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     // `session.start` lands in the per-session NDJSON sink.
     use tempfile::tempdir;
 
@@ -881,40 +843,6 @@ mod tests {
 
     // --- harness-init parity -----------------------------------------------
 
-    #[test]
-    fn harness_init_creates_dirs_and_emits_session_start() {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        let input = session_input("s-new");
-        SessionStartInject.evaluate(&input, &ctx(project)).unwrap();
-        assert!(dir.path().join(".claude/.harness/sessions").is_dir());
-
-        // `session.start` is non-pipeline → lands in the per-session NDJSON
-        // sink under `<project>/.claude/.session/<slug>/.events/`.
-        let session_root = dir.path().join(".claude").join(".session");
-        let mut found = false;
-        if session_root.exists() {
-            for entry in std::fs::read_dir(&session_root).unwrap() {
-                let events_dir = entry.unwrap().path().join(".events");
-                if !events_dir.exists() {
-                    continue;
-                }
-                for f in std::fs::read_dir(&events_dir).unwrap() {
-                    let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
-                    if body.lines().any(|l| {
-                        serde_json::from_str::<serde_json::Value>(l)
-                            .ok()
-                            .and_then(|v| v["event"].as_str().map(str::to_string))
-                            .as_deref()
-                            == Some("session.start")
-                    }) {
-                        found = true;
-                    }
-                }
-            }
-        }
-        assert!(found, "session.start NDJSON line must be present");
-    }
 
     #[test]
     fn harness_init_creates_harness_dir_no_jsonl() {

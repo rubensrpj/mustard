@@ -7,7 +7,7 @@
 //! the theme default. Theme renderers honor it.
 
 use super::theme::Color;
-use crate::commands::economy::rtk_gain::get_rtk_gain;
+use crate::shared::rtk_gain::get_rtk_gain;
 use crate::shared::branch_state::{awaiting_prune, PrQuery};
 use mustard_core::io::fs;
 use mustard_core::ClaudePaths;
@@ -328,12 +328,11 @@ pub fn unit_segment(cwd: &Path) -> Option<Segment> {
     }
     let root = cwd.to_string_lossy();
     let slug = crate::shared::context::current_spec(&root).filter(|s| !s.is_empty())?;
-    // The stage is a convenience, not the point: an unreadable or half-written
-    // `meta.json` still leaves the unit NAMED, which is the whole job here.
-    let stage = std::fs::read_to_string(cwd.join(".claude/spec").join(&slug).join("meta.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|m| m.get("phase").and_then(Value::as_str).map(str::to_string));
+    // A etapa é conveniência, não o ponto: um arquivo de eventos ilegível
+    // ainda deixa a unidade NOMEADA, que é o trabalho inteiro aqui.
+    let stage = crate::shared::spec_state::lock_state(cwd, &slug)
+        .and_then(|state| state.phase)
+        .map(str::to_string);
     // A mesma leitura de branch que `current_spec` usa: se ela devolve esta
     // unidade, o nome já está na linha de cima e repeti-lo é ruído. Sem etapa
     // o nome fica, porque uma seta sozinha não diz nada.
@@ -559,18 +558,16 @@ mod tests {
         // A unit in PLAN, with the checkout on its branch: the current-spec
         // ladder every consumer reads names it, and the bar shows its stage
         // (the branch segment already carries the name).
-        let spec = root.join(".claude/spec/roteador-didatico");
-        std::fs::create_dir_all(&spec).unwrap();
-        std::fs::write(spec.join("meta.json"), r#"{"stage":"Plan","phase":"PLAN"}"#).unwrap();
+        crate::shared::spec_state::seed_event(
+            root,
+            "roteador-didatico",
+            "state",
+            serde_json::json!({ "phase": "plan" }),
+        );
         crate::shared::spec_state::stand_on_spec_branch(root, "roteador-didatico");
 
         let seg = unit_segment(root).expect("an active unit must reach the bar");
-        assert!(seg.text.contains("PLAN"), "the stage is missing: {}", seg.text);
-
-        // An unreadable meta still leaves the unit NAMED — that is the job.
-        std::fs::write(spec.join("meta.json"), "{ not json").unwrap();
-        let seg = unit_segment(root).expect("a broken meta must not hide the unit");
-        assert!(seg.text.contains("roteador-didatico"));
+        assert!(seg.text.contains("plan"), "the stage is missing: {}", seg.text);
     }
 
     /// O texto que o terminal mostra: a sequência OSC 8 sai, o rótulo fica.
@@ -598,16 +595,18 @@ mod tests {
         let url = "https://claude.ai/code/artifacts/pagina-ligada";
         let seed = |root: &Path, slug: &str| {
             std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
-            let spec = root.join(".claude/spec").join(slug);
-            std::fs::create_dir_all(&spec).unwrap();
-            std::fs::write(spec.join("meta.json"), r#"{"phase":"PLAN"}"#).unwrap();
-            spec
+            crate::shared::spec_state::seed_event(
+                root,
+                slug,
+                "state",
+                serde_json::json!({ "phase": "plan" }),
+            );
         };
 
         // No branch da própria unidade: o branch mostra o nome, a barra só a etapa.
         let own = tempfile::tempdir().unwrap();
         let root = own.path();
-        let spec = seed(root, "pagina-ligada");
+        seed(root, "pagina-ligada");
         let git = |args: &[&str]| {
             assert!(git_exec::run(root, args).ok, "git {args:?}");
         };
@@ -615,9 +614,14 @@ mod tests {
         git(&["symbolic-ref", "HEAD", "refs/heads/feature/pagina-ligada"]);
 
         let plain = unit_segment(root).expect("the unit on its own branch reaches the bar");
-        assert_eq!(plain.text, "\u{25b8} PLAN", "no address yet: no link, and no repeated name");
+        assert_eq!(plain.text, "\u{25b8} plan", "no address yet: no link, and no repeated name");
 
-        std::fs::write(spec.join("published-url"), format!("{url}\n")).unwrap();
+        crate::shared::spec_state::seed_event(
+            root,
+            "pagina-ligada",
+            "publish",
+            serde_json::json!({ "page": "spec", "milestone": "round", "ok": true, "url": url }),
+        );
         let linked = unit_segment(root).expect("a published unit reaches the bar");
         assert!(
             linked.text.starts_with(&format!("\u{1b}]8;;{url}\u{1b}\\")),
@@ -625,17 +629,16 @@ mod tests {
             linked.text
         );
         assert!(linked.text.ends_with("\u{1b}]8;;\u{1b}\\"), "…and closes it: {:?}", linked.text);
-        assert_eq!(visible(&linked.text), "\u{25b8} PLAN", "the link hides nothing and adds nothing");
+        assert_eq!(visible(&linked.text), "\u{25b8} plan", "the link hides nothing and adds nothing");
 
         // Off a unit's branch, nothing points to it as current: only the
         // environment variable would, and a test does not change it. A file
         // left over in the old state folder does not count.
         let away = tempfile::tempdir().unwrap();
-        let spec = seed(away.path(), "outra-unidade");
+        seed(away.path(), "outra-unidade");
         let states = away.path().join(".claude/.pipeline-states");
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(states.join("outra-unidade.json"), "{}").unwrap();
-        std::fs::write(spec.join("published-url"), format!("{url}\n")).unwrap();
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {
             assert!(unit_segment(away.path()).is_none(), "a leftover state file names no unit");
         }

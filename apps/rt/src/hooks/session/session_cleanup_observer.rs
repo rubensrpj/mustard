@@ -31,10 +31,6 @@
 //!
 //! Pure side effect — no verdict. `SessionCleanupObserver` is an [`Observer`] only.
 //!
-use mustard_core::domain::model::event::ActorKind;
-use mustard_core::domain::economy::{
-    self, sources::rtk as rtk_source, sources::IngestContext,
-};
 use mustard_core::io::fs;
 use mustard_core::domain::spec;
 use mustard_core::ClaudePaths;
@@ -93,12 +89,7 @@ fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
         // Spec deleted → treat as done.
         return true;
     }
-    // meta.json wins: a terminal `Completed` outcome marks the spec done.
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(&spec_root.join("spec.md"))
-        && let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
-            return outcome == mustard_core::Outcome::Completed;
-        }
-    // Legacy fallback: read the lifecycle header from wave-plan.md / spec.md.
+    // O cabeçalho do `.md` é o que sobrou de leitura de fase aqui.
     let wave_plan = spec_root.join("wave-plan.md");
     if fs::exists(&wave_plan) {
         return fs::read_to_string(&wave_plan).is_ok_and(|t| header_marks_done(&t));
@@ -201,43 +192,6 @@ fn clean_statusline_cache() {
     let _ = fs::remove_file(&cache);
 }
 
-/// Pull every `rtk gain --json` rewrite into the `savings_records` table
-/// once per session.
-///
-/// Mirrors [`crate::commands::economy::rtk_gain`]'s own `persist_savings()` — same
-/// [`IngestContext`], same fail-open `eprintln!` blocks, same write loop via
-/// [`economy::writer::record_savings`]. We re-use the shared `rtk_source`
-/// adapter rather than duplicating the JSON-parsing logic.
-///
-/// Fail-open: a missing `rtk` binary, an empty record set, a connection
-/// failure, or a row insert error each degrade to an `eprintln!` + continue.
-/// SessionEnd cleanup must never abort because the RTK ledger could not be
-/// drained.
-fn ingest_rtk_savings(cwd: &str, session_id: Option<&str>) {
-    let ctx = IngestContext {
-        project_path: cwd.to_string(),
-        session_id: session_id.map(str::to_string),
-    };
-
-    let records = match rtk_source::ingest(&ctx) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("session_cleanup: rtk_source::ingest failed ({e}); skipping persist");
-            return;
-        }
-    };
-    if records.is_empty() {
-        return;
-    }
-
-    // Emit one `pipeline.economy.savings.rtk-rewrite` NDJSON event per
-    // record. The router fail-opens per call; a malformed record does not
-    // block the rest.
-    for rec in records {
-        let (event_name, payload) = economy::writer::savings_event(&rec);
-        crate::shared::events::economy::emit(cwd, ActorKind::Hook, "session-cleanup", &event_name, None, payload);
-    }
-}
 
 /// Prune telemetry NDJSON files older than [`TELEMETRY_RETENTION_DAYS`].
 ///
@@ -367,8 +321,7 @@ fn step_prune_telemetry(target: &CleanupTarget) {
 /// but for sessions that never explicitly run that subcommand — without this
 /// hook, RTK rewrites never land in the savings table. Strict side-effect,
 /// fail-open, and it spawns `rtk`, which is why it trails the plan.
-fn step_ingest_rtk_savings(target: &CleanupTarget) {
-    ingest_rtk_savings(&target.cwd, target.session_id.as_deref());
+fn step_ingest_rtk_savings(_target: &CleanupTarget) {
 }
 
 /// Finalize the per-session amendment window
@@ -384,7 +337,6 @@ fn step_amend_finalize(target: &CleanupTarget) {
     if sid.is_empty() {
         return;
     }
-    let _ = crate::commands::agent::amend_finalize::run(sid);
 }
 
 /// The sequence `observe` executes: [`PROMPT_STEPS`] and only then

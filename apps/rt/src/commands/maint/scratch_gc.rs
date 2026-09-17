@@ -71,10 +71,7 @@
 //! (a raiz do disco, a home, ou uma pasta acima da home).
 
 use crate::shared::context;
-use crate::shared::events::economy;
-use mustard_core::domain::model::event::ActorKind;
 use serde::Serialize;
-use serde_json::json;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -803,7 +800,7 @@ pub(crate) fn human_bytes(n: u64) -> String {
 
 /// Dispatch `mustard-rt run scratch-gc [--apply] [--path <dir>]`.
 pub fn run(opts: ScratchGcOpts) {
-    let started = std::time::Instant::now();
+    let _started = std::time::Instant::now();
     let roots = ScratchRoots::from_env();
     let (report, refused) = match opts.path.as_deref() {
         Some(target) => path_report(target, &roots),
@@ -818,14 +815,6 @@ pub fn run(opts: ScratchGcOpts) {
         }
     }
 
-    economy::emit_operation(
-        &context::cwd(),
-        ActorKind::Orchestrator,
-        "scratch-gc",
-        started.elapsed().as_millis() as u64,
-        None,
-        json!({"removed": report.removed.len(), "errors": report.errors.len()}),
-    );
     if refused {
         std::process::exit(1);
     }

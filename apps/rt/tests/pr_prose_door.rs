@@ -21,12 +21,9 @@ use std::path::{Path, PathBuf};
 /// inside a chain or a code fence) contains one of these substrings.
 const FORBIDDEN: &[&str] = &["gh pr create", "gh pr edit", "gh pr ready"];
 
-/// The two door files the ratchet guards.
-const DOOR_FILES: &[&str] = &["plugin/commands/pr.md", "plugin/commands/git.md",
-    // The submodule rules shell the same operations from a ref file — the
-    // review that shipped the port found them still naming raw `gh` there,
-    // exactly because this list stopped at the two door files.
-    "plugin/refs/git/submodule-rules.md"];
+/// A porta que a catraca guarda. A porta `git` e as regras de submódulo
+/// saíram com o fluxo antigo.
+const DOOR_FILES: &[&str] = &["plugin/commands/pr.md"];
 
 /// The repo root, resolved from this crate (`apps/rt`).
 fn repo_root() -> PathBuf {
@@ -119,7 +116,7 @@ fn a_prosa_nao_ensina_o_gancho_que_saiu_nem_manda_montar_o_corpo() {
 
     let mut prose = Vec::new();
     files_under(&root.join("plugin"), "md", &mut prose);
-    assert!(prose.len() > 10, "a varredura não leu a prosa: {} arquivos", prose.len());
+    assert!(prose.len() > 3, "a varredura não leu a prosa: {} arquivos", prose.len());
     let mut in_prose = Vec::new();
     for path in &prose {
         let text = fs::read_to_string(path).unwrap_or_default();

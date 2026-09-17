@@ -44,21 +44,6 @@ impl Default for Scan {
     }
 }
 
-/// What to compile a spec for — the deterministic inputs grain pins. The AI
-/// (decomposition/feature) chooses these; persisting them makes the spec
-/// reproducible (same request → byte-identical draft).
-#[derive(Debug, Clone, Default)]
-pub struct SpecRequest {
-    /// Entity/unit to create (substitutes `<Name>` in the recipe).
-    pub entity: String,
-    /// Existing sibling to mirror; empty = none (grain auto-picks the pattern).
-    pub like: String,
-    /// Operations beyond the base vertical (e.g. `["approve"]`).
-    pub ops: Vec<String>,
-    /// Cross-cutting invariants the unit must obey (e.g. an injected contract).
-    pub invariants: Vec<String>,
-}
-
 /// The FULL capability digest — grain's `digest <model>` output with NO
 /// `--query` (the searchable catalog, not a per-query slice). Mustard owns its
 /// own view and only deserializes the fields it consumes: today the domain-term
@@ -499,15 +484,6 @@ impl Scan {
         Ok(FeatureBundle { digest: wire.digest, terms: wire.terms })
     }
 
-    /// Compile the deterministic spec draft for `req` (`grain spec`). Returns the
-    /// Markdown verbatim (English — the lapidation step localizes per mustard.json).
-    ///
-    /// # Errors
-    /// [`Error::Io`] / [`Error::CheckFailed`] on spawn/exit failure.
-    pub fn spec(&self, model: &Path, req: &SpecRequest) -> Result<String> {
-        self.run(&spec_args(model, req))
-    }
-
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
     /// stderr) to [`Error::CheckFailed`].
     fn run(&self, args: &[String]) -> Result<String> {
@@ -575,27 +551,6 @@ fn feature_bundle_args(model: &Path, query_terms: &[String]) -> Vec<String> {
         "--query".to_string(),
         query_terms.join(","),
     ]
-}
-
-fn spec_args(model: &Path, req: &SpecRequest) -> Vec<String> {
-    let ops = if req.ops.is_empty() { "create".to_string() } else { req.ops.join(",") };
-    let mut args = vec![
-        "spec".to_string(),
-        model.to_string_lossy().into_owned(),
-        "--entity".to_string(),
-        req.entity.clone(),
-        "--ops".to_string(),
-        ops,
-    ];
-    if !req.like.is_empty() {
-        args.push("--like".to_string());
-        args.push(req.like.clone());
-    }
-    if !req.invariants.is_empty() {
-        args.push("--invariant".to_string());
-        args.push(req.invariants.join(","));
-    }
-    args
 }
 
 #[cfg(test)]
@@ -703,30 +658,6 @@ mod tests {
         assert!(!projects[2].own_git_root, "the superproject root `.` is never flagged");
     }
 
-    #[test]
-    fn spec_args_omit_empty_like_and_invariants() {
-        let req = SpecRequest { entity: "Order".into(), ..Default::default() };
-        let a = spec_args(&PathBuf::from("m.json"), &req);
-        assert_eq!(a, vec!["spec", "m.json", "--entity", "Order", "--ops", "create"]);
-    }
-
-    #[test]
-    fn spec_args_include_like_invariant_and_ops() {
-        let req = SpecRequest {
-            entity: "RefundCharge".into(),
-            like: "CancelCharge".into(),
-            ops: vec!["create".into(), "approve".into()],
-            invariants: vec!["ICurrentTenant".into()],
-        };
-        let a = spec_args(&PathBuf::from("m.json"), &req);
-        assert_eq!(
-            a,
-            vec![
-                "spec", "m.json", "--entity", "RefundCharge", "--ops", "create,approve",
-                "--like", "CancelCharge", "--invariant", "ICurrentTenant",
-            ]
-        );
-    }
 
     #[test]
     fn digest_query_detected_stacks_serde_compat() {

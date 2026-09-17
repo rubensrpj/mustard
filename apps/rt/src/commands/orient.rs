@@ -224,15 +224,6 @@ pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> 
 // Command entry — `mustard-rt run orient`.
 // ===========================================================================
 
-/// `run orient`: print the terrain. Empty (missing grain model) prints
-/// nothing and exits 0 — fail-open, byte-stable.
-pub fn run(root: &Path) {
-    let orientation = compute_orientation(root);
-    let lang = crate::shared::context::project_config_cached(root).language().text_or_default();
-    if let Some(t) = render_terrain(&orientation, lang) {
-        println!("{t}");
-    }
-}
 
 #[cfg(test)]
 mod tests {

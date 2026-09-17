@@ -29,7 +29,6 @@ use mustard_core::platform::i18n::{self, Locale};
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::commands::review::gate_regression_check;
 
 /// A spec-memory principle file that matched the dispatch intent: its name
 /// stem (without the `.md`) and the one-line body summary (empty when the
@@ -768,82 +767,7 @@ pub fn render_spec_memory_block(matches: &[MemoryMatch]) -> String {
     out
 }
 
-/// Resolve the (semantic, pattern) layer term lists for the project's
-/// regression vocabulary, with the gate's in-memory defaults as the fallback.
-///
-/// Single owner of the `regression.toml` walk that `agent_prompt_render` and
-/// `subagent_inject` previously duplicated verbatim.
-#[must_use]
-pub(crate) fn vocab_layer_terms(project: &Path) -> (Vec<String>, Vec<String>) {
-    use mustard_core::domain::vocabulary::{Layer as VLayer, VocabularyDoc};
-    let toml_path = project.join(".claude").join("vocab").join("regression.toml");
-    let (mut semantic, mut pattern) = match VocabularyDoc::load_from_file(&toml_path) {
-        Ok(doc) => (
-            doc.layer_terms(VLayer::Semantic)
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect::<Vec<String>>(),
-            doc.layer_terms(VLayer::Pattern)
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect::<Vec<String>>(),
-        ),
-        Err(_) => (Vec::new(), Vec::new()),
-    };
-    if semantic.is_empty() && pattern.is_empty() {
-        semantic = vec![
-            "fail-open".into(),
-            "intent drift".into(),
-            "stub fail-open".into(),
-            "empurrar pra W".into(),
-        ];
-        pattern = vec!["None".into(), "Vec::new()".into(), "Default::default()".into()];
-    }
-    (semantic, pattern)
-}
 
-/// Render the regression-vocabulary inject block (Semantic + Pattern layers).
-///
-/// Reuses [`gate_regression_check::build_vocab_matcher`] for the present/absent
-/// decision so the inject path agrees with the gate's Moment-1 scan, then lists
-/// the layer terms with i18n headings/labels. Empty when the project resolves
-/// no vocabulary (fail-open). Shared by both call sites.
-#[must_use]
-pub fn vocabulary_inject_block(project: &Path, locale: Locale) -> String {
-    if gate_regression_check::build_vocab_matcher(project).is_none() {
-        return String::new();
-    }
-    let (semantic, pattern) = vocab_layer_terms(project);
-    if semantic.is_empty() && pattern.is_empty() {
-        return String::new();
-    }
-    let heading = i18n::translate("gate.vocabulary.inject.heading", locale);
-    let lead = i18n::translate("gate.vocabulary.inject.lead", locale);
-    let semantic_label = i18n::translate("gate.vocabulary.inject.semantic", locale);
-    let pattern_label = i18n::translate("gate.vocabulary.inject.pattern", locale);
-
-    let mut out = String::with_capacity(256);
-    out.push_str("## ");
-    out.push_str(heading);
-    out.push('\n');
-    out.push_str(lead);
-    out.push_str("\n\n");
-    if !semantic.is_empty() {
-        out.push_str("- ");
-        out.push_str(semantic_label);
-        out.push_str(": ");
-        out.push_str(&semantic.join(", "));
-        out.push('\n');
-    }
-    if !pattern.is_empty() {
-        out.push_str("- ");
-        out.push_str(pattern_label);
-        out.push_str(": ");
-        out.push_str(&pattern.join(", "));
-        out.push('\n');
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -1117,11 +1041,4 @@ mod tests {
         assert!(stem.split('-').count() <= 7, "{stem}");
     }
 
-    #[test]
-    fn vocab_layer_terms_falls_back_to_defaults() {
-        let dir = tempdir().unwrap();
-        let (sem, pat) = vocab_layer_terms(dir.path());
-        assert!(sem.iter().any(|s| s == "fail-open"));
-        assert!(pat.iter().any(|s| s == "None"));
-    }
 }

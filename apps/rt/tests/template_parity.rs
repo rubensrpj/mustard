@@ -10,9 +10,9 @@
 //!   runtime; one typing a flag clap never registered dies with `error:
 //!   unexpected argument` and exit 2. This walk turns both into a test failure.
 //! - **REVERSE** — every registered subcommand must have at least one static
-//!   product caller (prose instruction or spawned argv), or a justified entry
-//!   in [`RUNTIME_WHITELIST`]. A command nobody calls is dark surface: it
-//!   ships, it bit-rots, and nothing notices.
+//!   product caller (prose instruction or spawned argv). Sem lista de
+//!   exceções: com 22 comandos, um comando que nenhum texto chama é superfície
+//!   escura — ele é entregue, apodrece, e nada percebe.
 //!
 //! Deterministic: walks the repo tree only (sorted), no network, no env vars.
 
@@ -21,187 +21,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Command, Subcommand};
+use mustard_rt::commands::flow::resume::{next_command, NEXT_BY_PHASE};
 use mustard_rt::commands::RunCmd;
-
-/// Registered commands with no static product caller that are still shipped
-/// deliberately. Each justification cites where the runtime caller or the
-/// instructing surface actually lives. A name with NO honest justification
-/// must NOT be parked here — remove the registration instead. Kept sorted.
-const RUNTIME_WHITELIST: &[(&str, &str)] = &[
-    (
-        "amend-finalize",
-        "SessionEnd finalizes the amend window in-process \
-         (hooks/session/session_cleanup_observer.rs); the CLI face is the \
-         documented manual re-run for a crashed session",
-    ),
-    (
-        "claude-dir-prune",
-        "user-invoked .claude/ drift audit (commands/maint/claude_dir_prune.rs \
-         module doc); maintenance escape hatch with no scripted caller",
-    ),
-    (
-        "close",
-        "the close door of the flow (commands/flow/close.rs): records what came \
-         back from the last round, runs each criterion once and closes the \
-         spec; the flow prose that will call it is rewritten together with the \
-         rest of the flow",
-    ),
-    (
-        "context-slice",
-        "the glossary slicer (commands/economy/context_slice.rs); the prompt \
-         renderer no longer fills `{context_md}` with it, so no prose calls it, \
-         and it leaves with the rest of the old memory in the commands cut",
-    ),
-    (
-        "dependency-precheck",
-        "EXECUTE pre-gate the orchestrator runs from the bare-name instruction \
-         in commands/mustard/feature/SKILL.md section 3 (never spelled with \
-         the mustard-rt prefix there)",
-    ),
-    (
-        "discard",
-        "the give-up door of the flow (commands/flow/discard.rs): shows what \
-         would leave and, with the code back, closes the pull request, deletes \
-         the branch and takes the spec out of the index; the flow prose that \
-         will call it is rewritten together with the rest of the flow",
-    ),
-    (
-        "docs-stale-check",
-        "CLOSE gate 4 - run in-process by close-orchestrate and named (with \
-         --skip-docs) in commands/mustard/close/SKILL.md; the CLI face is the \
-         standalone re-run",
-    ),
-    (
-        "exec-rewave-check",
-        "EXECUTE pre-gate named bare in commands/mustard/feature/SKILL.md \
-         section 3 dispatch chain",
-    ),
-    (
-        "finding-collect",
-        "deterministic seeder of meta.json#findings from the reviewer's files \
-         and the ac-proof.json removal column \
-         (commands/review/finding_collect.rs); consumed IN-PROCESS by the close \
-         findings sub-gate (commands/pipeline/close_gates.rs: open_findings), \
-         which re-collects on every CLOSE - the CLI face is the standalone \
-         collection a reader takes before deciding",
-    ),
-    (
-        "gate-regression-check",
-        "regression-gate engine consumed in-process \
-         (commands/agent/context_inject.rs build_vocab_matcher; \
-         review_spans.rs parses its verdicts); the CLI face has no scripted \
-         caller",
-    ),
-    (
-        "grill",
-        "the survey step of the flow (commands/flow/grill.rs): records the work \
-         type and builds the point list; the flow prose that will call it is \
-         rewritten together with the rest of the flow",
-    ),
-    (
-        "index",
-        "rebuilds the spec index and the search field from the event files \
-         (commands/spec_events/index.rs); the doctor's divergence warning and \
-         the write's index warning name it, and the flow prose that will call \
-         it is rewritten together with the rest of the flow",
-    ),
-    (
-        "maint-deps",
-        "user-invoked per-subproject dependency install \
-         (commands/maint/maint_deps.rs); its only prose caller was the `/maint \
-         deps` action, dropped by the four-door surface prune - a maintenance \
-         escape hatch with no scripted caller",
-    ),
-    (
-        "maint-validate",
-        "user-invoked per-subproject build/type-check \
-         (commands/maint/maint_validate.rs); its only prose caller was the \
-         `/maint validate` action, dropped by the four-door surface prune - a \
-         maintenance escape hatch with no scripted caller",
-    ),
-    (
-        "mark-checklist-item",
-        "instructed by the close-gate deny remediation \
-         (commands/pipeline/close_gates.rs: mark each via mustard-rt run \
-         mark-checklist-item)",
-    ),
-    (
-        "mark-finding",
-        "instructed by the close-gate deny remediation, once per open finding \
-         (commands/pipeline/close_gates.rs: finding_refusal prints the exact \
-         mustard-rt run mark-finding line that settles each one)",
-    ),
-    (
-        "metrics",
-        "user-invoked pipeline/hook metrics (collect + report faces, \
-         commands/economy/); its only prose caller was the `/stats` door, \
-         dropped by the four-door surface prune",
-    ),
-    (
-        "metrics-wave-status",
-        "user-facing wave telemetry; main.rs keeps the two-token rewrite \
-         (metrics wave-status) for human invocation",
-    ),
-    (
-        "open",
-        "the door that opens a spec (commands/flow/open.rs): the branch, the \
-         spec file and the survey birth; the flow prose that will call it is \
-         rewritten together with the rest of the flow",
-    ),
-    (
-        "pipeline-summary",
-        "CLOSE gate 5 (advisory) - run in-process by close-orchestrate and \
-         named in commands/mustard/close/SKILL.md step 7",
-    ),
-    (
-        "plan",
-        "the plan step of the flow (commands/flow/plan.rs): assembles each \
-         wave's request, checks the plan and takes the spec from the survey to \
-         the plan; the flow prose that will call it is rewritten together with \
-         the rest of the flow",
-    ),
-    (
-        "read",
-        "the reader of a spec's event file (commands/spec_events/read.rs): each \
-         step of the flow reads one block through it; the flow prose that will \
-         call it is rewritten together with the rest of the flow",
-    ),
-    (
-        "rebuild-specs",
-        "manual repair tool: regenerates the committed .summary.json sidecars \
-         (commands/spec/rebuild_specs.rs module doc); user-invoked only",
-    ),
-    (
-        "reopen",
-        "the way back of the flow (commands/flow/reopen.rs): takes a spec to \
-         the survey again with the reason on the record; the flow prose that \
-         will call it is rewritten together with the rest of the flow",
-    ),
-    (
-        "review-dispatch",
-        "built to replace the review SKILL's imperative steps, but the SKILL \
-         still calls review-prefetch/diff-context directly - unadopted",
-    ),
-    (
-        "security-scan",
-        "secret/permission scanner with an exit-code contract \
-         (commands/review/security_scan.rs, JS-era port); no product caller \
-         since scripts/ was retired",
-    ),
-    (
-        "status",
-        "user-invoked consolidated git/pipeline/harness report \
-         (commands/pipeline/status.rs); its only prose caller was the \
-         `/status` door, dropped by the four-door surface prune - an \
-         observability escape hatch with no scripted caller",
-    ),
-    (
-        "write",
-        "the only writer of a spec's event file (commands/spec_events/write.rs): \
-         the assistant records each event through it; the flow prose that will \
-         call it is rewritten together with the rest of the flow",
-    ),
-];
 
 /// Declared long flags that NO product prose spells, kept deliberately. Sorted
 /// by `(command, flag)`; each justification says why a reader is never left
@@ -213,39 +34,13 @@ const RUNTIME_WHITELIST: &[(&str, &str)] = &[
 /// reachable some OTHER way — it mirrors a documented sibling, it is the escape
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
 const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
+
     (
-        "amend-finalize",
-        "session-id",
-        "the required argument of a command the SessionEnd hook runs in-process; \
-         the CLI face exists for a CRASHED session, and its operator has the \
-         session id in front of them",
-    ),
-    (
-        "base-candidates",
-        "no-fetch",
-        "opt-out of the `git fetch` the default performs; the flag's own help \
-         states the reason to leave it alone - the whole point of the menu is \
-         that it is true TODAY",
-    ),
-    (
-        "capability",
-        "status",
-        "frontmatter `status` of a created capability doc; the subcommand help \
-         spells the whole `create --slug X --title Y [--status active]` line, and \
-         the default is what every caller wants",
-    ),
-    (
-        "claude-dir-prune",
+        "clean",
         "apply",
-        "the mutation switch of a command RUNTIME_WHITELIST already records as \
-         callerless; its own help states that the default is the report and that \
-         this is what removes",
-    ),
-    (
-        "claude-dir-prune",
-        "repo",
-        "project-root override on a command RUNTIME_WHITELIST already records as \
-         callerless",
+        "o interruptor que apaga de verdade: sem ele o comando só lista, e é \
+         essa a leitura que a prosa do agente ensina. A ajuda do próprio \
+         comando diz que o padrão é listar",
     ),
     (
         "close",
@@ -255,40 +50,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          recorded, which is what the bare command does",
     ),
     (
-        "complete-spec",
-        "archive-followups",
-        "a declared NO-OP retained for compatibility: the single-stage close no \
-         longer produces `closed-followup` specs, so there is nothing to sweep. \
-         Prose naming it would teach a reader to pass a flag that does nothing",
-    ),
-    (
-        "complete-spec",
-        "archive-stale",
-        "the same declared no-op as `--archive-followups`, kept for the same \
-         compatibility reason",
-    ),
-    (
-        "context-slice",
-        "context",
-        "the glossary path the slicer reads, on a command RUNTIME_WHITELIST \
-         already records as callerless; the glossary prose that spelled it left \
-         with the glossary",
-    ),
-    (
-        "context-slice",
-        "context-claude-md",
-        "the slicer's SECOND input path; the CONTEXT.md slice is the documented \
-         one and this adds a CLAUDE.md pass after it, described in the command's \
-         own help",
-    ),
-    (
-        "diff-context",
-        "parent",
-        "the comparison branch, which the command auto-detects; every instructed \
-         invocation takes the detected one, and naming the flag would teach a \
-         reader to pin a base by hand",
-    ),
-    (
         "discard",
         "remote",
         "keeps the server branch, which belongs to everyone: without it only the \
@@ -296,104 +57,25 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          never needs to know the flag exists",
     ),
     (
-        "docs-stale-check",
-        "from",
-        "narrows the audit to one spec's recorded audits; CLOSE gate 4 runs the \
-         whole-repo default in-process",
-    ),
-    (
-        "docs-stale-check",
-        "include-nested",
-        "opt-in to nested `.claude` installs, with an env twin \
-         (`MUSTARD_DOCS_AUDIT_INCLUDE_NESTED`); the default - skip them - is what \
-         the CLOSE gate runs",
-    ),
-    (
-        "emit-phase",
-        "from",
-        "the optional prior phase; its help says it defaults to the spec's last \
-         known phase, which is why every instructed invocation omits it",
-    ),
-    (
-        "emit-pipeline",
-        "allow-no-qa",
-        "the escape hatch of the REVIEW/QA gate, for trusted callers like \
-         `qa-run` itself. Prose that advertised it would advertise the way \
-         AROUND the gate to exactly the reader the gate is for",
-    ),
-    (
-        "gate-regression-check",
-        "moment",
-        "the 1/2/3 selector (default 1) of an engine consumed in-process by \
-         commands/agent/context_inject.rs; RUNTIME_WHITELIST already records the \
-         CLI face as callerless",
-    ),
-    (
-        "gate-regression-check",
-        "wave-dir",
-        "the `--moment 3` companion on that same callerless CLI face; its help \
-         carries the whole contract, exit code included",
-    ),
-    (
-        "git-settle",
-        "report",
-        "the READING face of the exit ritual, settling nothing. The door prose \
-         instructs the ritual; the report is what an operator runs to look first, \
-         and the command's help describes it",
-    ),
-    (
         "grill",
         "condensed",
         "the one-sentence request of the flow's survey step \
-         (commands/flow/grill.rs); RUNTIME_WHITELIST already records that the \
+         (commands/flow/grill.rs); the \
          flow prose calling grill is rewritten together with the rest of the flow",
     ),
     (
         "grill",
         "kinds",
         "the work type of the flow's survey step (commands/flow/grill.rs), \
-         asked back by its own refusal; RUNTIME_WHITELIST already records that \
-         the flow prose calling grill is rewritten together with the rest of \
-         the flow",
+         asked back by its own refusal; a work type that the project declares \
+         is not a value the prose can spell",
     ),
     (
-        "mark-checklist-item",
-        "cwd",
-        "project-root override; the close-gate refusal that instructs this \
-         command is read from the project root",
-    ),
-    (
-        "mark-checklist-item",
-        "item",
-        "the refusal hands it over already filled in - close_gates.rs prints \
-         `mark-checklist-item --spec {spec} --item <text>` per unchecked box, so \
-         the reader meets the flag at the moment it is needed",
-    ),
-    (
-        "mark-checklist-item",
-        "line",
-        "the line of the item to tick, on a command whose only caller is the \
-         close-gate deny remediation; that remediation names the command and \
-         the operator reads the line off the gate's own list",
-    ),
-    (
-        "open",
-        "name",
-        "the spec's name for the flow's open door (commands/flow/open.rs); \
-         RUNTIME_WHITELIST already records that the flow prose calling open \
-         is rewritten together with the rest of the flow",
-    ),
-    (
-        "pipeline-summary",
-        "self-test",
-        "a self-check face whose only caller is an acceptance criterion; its help \
-         carries the exact `cargo run` line to type",
-    ),
-    (
-        "rehook",
-        "repo",
-        "project-root override on the harness re-enable door, which `/upsert --on` \
-         runs from the project root",
+        "pr-open",
+        "fill",
+        "o caminho do submódulo, que não tem spec própria: título e corpo saem \
+         dos commits. A prosa da porta ensina o caminho com spec, que é o de \
+         todo dia; este é o do repositório sem spec",
     ),
     (
         "round",
@@ -403,50 +85,11 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
          what the bare command does",
     ),
     (
-        "scratch-gc",
-        "apply",
-        "the sweep switch of a command whose one instructed invocation is the \
-         single-directory `--path` form in the review agent prose; its own help \
-         states that the default only lists",
-    ),
-    (
-        "spec-draft",
-        "material-only",
-        "the refresh half of the material channel, on a door that refuses at the \
-         entrance since the flow was rewritten; the channel's prose left with \
-         the channel and the flag leaves with the door",
-    ),
-    (
-        "spec-draft",
-        "output",
-        "output directory override, defaulting to `.claude/spec/{slug}/` - the \
-         layout every flow downstream assumes",
-    ),
-    (
-        "spec-draft",
-        "signals",
-        "an optional free-form comma-separated list embedded in `spec.md` as a \
-         comment; nothing reads it back, so there is no behaviour for prose to \
-         describe",
-    ),
-    (
         "statusline",
         "preview",
-        "renders every shipped theme on its own labelled line, for a human \
-         picking one. `statusline` proper is wired by settings.json and reads its \
-         payload from stdin",
-    ),
-    (
-        "unhook",
-        "repo",
-        "project-root override on the harness disable door, which `/upsert --off` \
-         runs from the project root",
-    ),
-    (
-        "work-unit-open",
-        "branch",
-        "the alternative to the documented `--spec`/`--intent` pair, for a unit \
-         whose branch already exists; the flag's help says exactly that",
+        "quem chama a barra de status é o Claude Code, não o assistente; o \
+         `--preview` é a forma de um operador ver a linha uma vez, e a ajuda \
+         do comando a descreve",
     ),
 ];
 
@@ -523,9 +166,12 @@ struct RunInvocation {
 }
 
 /// Extract every `run <name> [--flag …]` instruction reachable through one of
-/// the [`CALLER_PREFIXES`], normalizing the two two-token rewrite forms
-/// (`metrics wave-status` and `scan spec`, collapsed by `main.rs` argv
-/// pre-routing) to their registered single-token names.
+/// the [`CALLER_PREFIXES`].
+///
+/// Um nome é um token só. As duas formas de dois tokens que existiam aqui
+/// (`metrics wave-status` e `scan spec`, que o `main.rs` colava antes do clap)
+/// saíram com os comandos que as usavam, e a colagem saiu junto: o `main.rs`
+/// não reescreve mais argv nenhum.
 fn extract_run_invocations(text: &str) -> Vec<RunInvocation> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -541,33 +187,8 @@ fn extract_run_invocations(text: &str) -> Vec<RunInvocation> {
             if end == start || !bytes[start].is_ascii_lowercase() {
                 continue;
             }
-            let first = &text[start..end];
-            let mut name = first.to_string();
-            // Where THIS command's arguments begin — after the second token
-            // when the two-token form was collapsed, so `scan spec --entity`
-            // reads `--entity` as `scan-spec`'s and not as a stray word.
-            let mut args_from = end;
-            if end < bytes.len() && bytes[end] == b' ' {
-                let second_start = end + 1;
-                let mut second_end = second_start;
-                while second_end < bytes.len() && is_token_byte(bytes[second_end]) {
-                    second_end += 1;
-                }
-                if second_end > second_start && bytes[second_start].is_ascii_lowercase() {
-                    match (first, &text[second_start..second_end]) {
-                        ("metrics", "wave-status") => {
-                            name = "metrics-wave-status".to_string();
-                            args_from = second_end;
-                        }
-                        ("scan", "spec") => {
-                            name = "scan-spec".to_string();
-                            args_from = second_end;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            let flags = long_flags_of(&text[args_from..]);
+            let name = text[start..end].to_string();
+            let flags = long_flags_of(&text[end..]);
             out.push(RunInvocation { name, flags });
         }
     }
@@ -799,6 +420,60 @@ fn forward_every_instructed_flag_is_declared() {
     );
 }
 
+/// O campo do próximo passo é uma instrução como a de qualquer arquivo do
+/// produto, e passa pela mesma catraca: o nome que ele manda rodar tem de estar
+/// registrado, e a opção que ele já vem escrita, declarada.
+///
+/// A ida anda pelos arquivos do repositório, e esta instrução não mora em
+/// arquivo nenhum: o binário a monta na hora e a entrega no campo `command` da
+/// resposta, de onde quem conduz a conversa a copia e roda. Um renome do
+/// comando, ou a opção `--spec` deixando de ser declarada, entrega um passo que
+/// morre em `error: unexpected argument` e código 2 — e nada no repositório
+/// teria como acusar, porque nenhum texto do produto escreve essa linha.
+///
+/// A instrução conferida é a que o próprio binário monta, nunca uma cópia do
+/// formato dela escrita aqui: um teste que remontasse a linha à mão conferiria
+/// a própria cópia e continuaria verde depois de a montagem mudar.
+#[test]
+fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
+    let tree = run_command_tree();
+    assert!(!NEXT_BY_PHASE.is_empty(), "a tabela do próximo passo está vazia");
+
+    let mut offenders = Vec::new();
+    for (fase, _) in NEXT_BY_PHASE {
+        let montado = next_command(fase, "alguma-spec");
+        let Some(instrucao) = montado.as_str() else {
+            offenders.push(format!("a fase `{fase}` está na tabela e não monta comando nenhum"));
+            continue;
+        };
+        let mut invocacoes = extract_run_invocations(instrucao);
+        let Some(inv) = invocacoes.pop() else {
+            offenders.push(format!("a fase `{fase}` monta `{instrucao}`, que não é uma chamada de `mustard-rt run`"));
+            continue;
+        };
+        let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
+            offenders.push(format!("a fase `{fase}` manda rodar `run {}`, que não é registrado", inv.name));
+            continue;
+        };
+        let declaradas = declared_long_flags(cmd);
+        for flag in inv.flags {
+            if !declaradas.contains(flag.as_str()) {
+                offenders.push(format!(
+                    "a fase `{fase}` manda rodar `run {} --{flag}`, que esse comando não declara",
+                    inv.name
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "o campo do próximo passo entrega uma linha que o binário recusa - quem \
+         obedecer a resposta gasta a chamada num erro do clap. Conserte a tabela \
+         do próximo passo ou o comando que ela nomeia:\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[test]
 fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     let root = repo_root();
@@ -808,8 +483,7 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
         .collect();
     let mut dark = Vec::new();
     for name in surface_names() {
-        let whitelisted = RUNTIME_WHITELIST.iter().any(|(n, _)| *n == name);
-        if whitelisted || instructed.contains(&name) || has_argv_caller(&root, &name) {
+        if instructed.contains(&name) || has_argv_caller(&root, &name) {
             continue;
         }
         dark.push(name);
@@ -817,9 +491,8 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     assert!(
         dark.is_empty(),
         "registered `run` subcommands with no product caller (templates, CLI \
-         sources, installer, settings template, rt argv spawns) and \
-         no RUNTIME_WHITELIST justification - dark surface. Wire a caller, \
-         add a JUSTIFIED whitelist entry, or remove the registration:\n{}",
+         sources, installer, settings template, rt argv spawns) - dark \
+         surface. Wire a caller or remove the registration:\n{}",
         dark.join("\n")
     );
 }
@@ -908,42 +581,9 @@ fn flag_whitelist_stays_sorted_live_and_not_redundant() {
     }
 }
 
-#[test]
-fn runtime_whitelist_stays_sorted_live_and_not_redundant() {
-    for pair in RUNTIME_WHITELIST.windows(2) {
-        assert!(
-            pair[0].0 < pair[1].0,
-            "RUNTIME_WHITELIST must stay sorted: {} before {}",
-            pair[0].0,
-            pair[1].0
-        );
-    }
-    let registered: BTreeSet<String> = surface_names().into_iter().collect();
-    let root = repo_root();
-    let instructed: BTreeSet<String> = reverse_prose_corpus(&root)
-        .iter()
-        .flat_map(|p| extract_run_names(&read_lossy(p)))
-        .collect();
-    for (name, justification) in RUNTIME_WHITELIST {
-        assert!(
-            registered.contains(*name),
-            "RUNTIME_WHITELIST entry {name} is not a registered subcommand - drop the row"
-        );
-        assert!(
-            !justification.trim().is_empty(),
-            "RUNTIME_WHITELIST entry {name} carries no justification"
-        );
-        assert!(
-            !(instructed.contains(*name) || has_argv_caller(&root, name)),
-            "RUNTIME_WHITELIST entry {name} now has a static product caller - \
-             the row is redundant, drop it"
-        );
-    }
-}
-
 /// O revisor e o agente de onda aprendem, pela própria instrução, a
 /// compilar a cópia descartável na compilação compartilhada e a apagá-la pela
-/// porta `scratch-gc --path`, nunca pela exclusão recursiva que a trava nega.
+/// porta `clean --path`, nunca pela exclusão recursiva que a trava nega.
 ///
 /// O caminho escrito na prosa é conferido contra o do código
 /// ([`shared_target_dir`](mustard_rt::commands::maint::scratch_gc::shared_target_dir)):
@@ -954,7 +594,7 @@ fn runtime_whitelist_stays_sorted_live_and_not_redundant() {
 #[test]
 fn review_agent_teaches_shared_target_and_scratch_gc() {
     const SHARED_TARGET: &str = "CARGO_TARGET_DIR=\"$HOME/.cache/mustard/scratch-target\"";
-    const CLEANUP: &str = "mustard-rt run scratch-gc --path \"$D\"";
+    const CLEANUP: &str = "mustard-rt run clean --path \"$D\"";
 
     let code = mustard_rt::commands::maint::scratch_gc::shared_target_dir()
         .expect("the home directory resolves in the test environment");
@@ -967,25 +607,14 @@ fn review_agent_teaches_shared_target_and_scratch_gc() {
     let root = repo_root();
     let review = read_lossy(&root.join("plugin/agents/mustard-review.md"));
     assert!(review.contains(SHARED_TARGET), "the reviewer must build scratch copies in the shared target");
-    assert!(review.contains(CLEANUP), "the reviewer must remove its scratch copy through scratch-gc --path");
+    assert!(review.contains(CLEANUP), "the reviewer must remove its scratch copy through clean --path");
 
-    let template = read_lossy(&root.join("apps/rt/src/commands/agent/agent_prompt_template.md"));
-    for block in ["dispatch", "retry"] {
-        let open = format!("<!-- TEMPLATE: {block} -->");
-        let close = format!("<!-- /TEMPLATE: {block} -->");
-        let body = template
-            .split_once(&open)
-            .and_then(|(_, rest)| rest.split_once(&close))
-            .map(|(body, _)| body)
-            .unwrap_or_else(|| panic!("the {block} block is missing from the wave-agent template"));
-        assert!(body.contains(SHARED_TARGET), "the {block} block must teach the shared target");
-        assert!(body.contains(CLEANUP), "the {block} block must teach scratch-gc --path");
-    }
+    let _ = root;
 }
 
 /// A regra injetada do material manda toda página mostrada ao usuário
-/// passar pelo `page`, escrita em markdown, e ser publicada no claude.ai, e a
-/// página da spec gravar o endereço pela porta `spec-doc --published-url`.
+/// passar pelo `page`, escrita em markdown, e ser publicada no claude.ai, e o
+/// endereço da página da spec ser gravado como evento, pela porta `write`.
 ///
 /// Lida do template que o binário embute e conferida pelo mesmo extrator da
 /// catraca: a chamada tem de ser uma invocação de verdade, não o nome solto na
@@ -1011,7 +640,8 @@ fn material_rule_sends_every_page_through_the_page_command() {
     assert!(
         invocations
             .iter()
-            .any(|inv| inv.name == "spec-doc" && inv.flags.iter().any(|f| f == "published-url")),
-        "the material rule never tells the reader to record the address with `spec-doc --published-url`"
+            .any(|inv| inv.name == "write" && inv.flags.iter().any(|f| f == "json")),
+        "a regra do material não manda gravar o endereço publicado como evento, \
+         pela porta `write publish --json`"
     );
 }

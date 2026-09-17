@@ -180,15 +180,15 @@ mod tests {
 
     /// Create `<root>/.claude/spec/<name>/spec.md` + `meta.json` with the given
     /// lifecycle, so `count_active` sees a real candidate.
-    fn make_spec(root: &StdPath, name: &str, stage: &str, outcome: &str) {
-        let dir = root.join(".claude").join("spec").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("spec.md"), format!("# {name}\n\n## Resumo\n\nx\n")).unwrap();
-        std::fs::write(
-            dir.join("meta.json"),
-            format!(r#"{{"stage":"{stage}","outcome":"{outcome}","scope":null,"parent":null,"checkpoint":null}}"#),
-        )
-        .unwrap();
+    /// Uma spec com a fase `phase` gravada no arquivo de eventos dela — a
+    /// única leitura de "está aberta?" que o binário faz.
+    fn make_spec(root: &StdPath, name: &str, phase: &str) {
+        crate::shared::spec_state::seed_event(
+            root,
+            name,
+            "state",
+            json!({ "phase": phase }),
+        );
     }
 
     fn skill_input(skill: &str, cwd: &str) -> HookInput {
@@ -212,8 +212,8 @@ mod tests {
         let root = dir.path();
         write_cap(root, 3);
         // 2 active < cap 3 → allow, even in strict mode.
-        make_spec(root, "2026-01-01-a", "Plan", "Active");
-        make_spec(root, "2026-01-02-b", "Execute", "Active");
+        make_spec(root, "2026-01-01-a", "plan");
+        make_spec(root, "2026-01-02-b", "running");
         let input = skill_input("feature", root.to_str().unwrap());
         assert_eq!(
             verdict_with(&input, root.to_str().unwrap(), LimitMode::Strict),
@@ -227,8 +227,8 @@ mod tests {
         let root = dir.path();
         write_cap(root, 2);
         // N = 2; with N active, opening the (N+1)-th must be denied.
-        make_spec(root, "2026-01-01-a", "Plan", "Active");
-        make_spec(root, "2026-01-02-b", "Analyze", "Active");
+        make_spec(root, "2026-01-01-a", "plan");
+        make_spec(root, "2026-01-02-b", "plan");
         let input = skill_input("mustard:feature", root.to_str().unwrap());
         let verdict = verdict_with(&input, root.to_str().unwrap(), LimitMode::Strict);
         assert!(verdict.is_blocking(), "at cap in strict mode must deny: {verdict:?}");
@@ -239,7 +239,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_cap(root, 1);
-        make_spec(root, "2026-01-01-a", "Plan", "Active");
+        make_spec(root, "2026-01-01-a", "plan");
         let input = skill_input("bugfix", root.to_str().unwrap());
         match verdict_with(&input, root.to_str().unwrap(), LimitMode::Warn) {
             Verdict::Warn { message } => {
@@ -255,8 +255,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_cap(root, 1);
-        make_spec(root, "2026-01-01-a", "Plan", "Active");
-        make_spec(root, "2026-01-02-b", "Execute", "Active");
+        make_spec(root, "2026-01-01-a", "plan");
+        make_spec(root, "2026-01-02-b", "running");
         let input = skill_input("feature", root.to_str().unwrap());
         assert_eq!(
             verdict_with(&input, root.to_str().unwrap(), LimitMode::Off),
@@ -269,7 +269,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_cap(root, 0); // even an aggressive 0 cap...
-        make_spec(root, "2026-01-01-a", "Plan", "Active");
+        make_spec(root, "2026-01-01-a", "plan");
         // ...does not gate a non-pipeline skill.
         let input = skill_input("some-other-skill", root.to_str().unwrap());
         assert_eq!(
@@ -300,7 +300,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
         for i in 0..9 {
-            make_spec(root, &format!("2026-01-{i:02}-s"), "Plan", "Active");
+            make_spec(root, &format!("2026-01-{i:02}-s"), "plan");
         }
         assert_eq!(cap_for(root), DEFAULT_MAX_ACTIVE_SPECS);
         let input = skill_input("feature", root.to_str().unwrap());
@@ -311,22 +311,20 @@ mod tests {
         );
     }
 
+    /// A spec fechada não conta, e uma pasta sem arquivo de eventos também
+    /// não: só o que ainda está em andamento ocupa a vaga.
     #[test]
-    fn closed_followup_and_malformed_do_not_count() {
+    fn a_fechada_e_a_pasta_sem_eventos_nao_contam() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write_cap(root, 1);
-        // 1 genuinely active + 1 closed-followup + 1 malformed.
-        make_spec(root, "2026-01-01-active", "Plan", "Active");
-        make_spec(root, "2026-01-02-followup", "Close", "Active");
-        // Malformed: spec.md with no meta.json and no header lines.
-        let mdir = root.join(".claude").join("spec").join("2026-01-03-broken");
+        make_spec(root, "2026-01-01-active", "plan");
+        make_spec(root, "2026-01-02-fechada", "closed");
+        let mdir = root.join(".claude").join("spec").join("2026-01-03-vazia");
         std::fs::create_dir_all(&mdir).unwrap();
-        std::fs::write(mdir.join("spec.md"), "# broken\n\n## Resumo\n\nx\n").unwrap();
-        // Only the 1 Active counts; 1 active == cap 1 → at cap → deny in strict.
         let input = skill_input("feature", root.to_str().unwrap());
         let verdict = verdict_with(&input, root.to_str().unwrap(), LimitMode::Strict);
-        assert!(verdict.is_blocking(), "only Active specs count; 1 == cap 1 → deny: {verdict:?}");
+        assert!(verdict.is_blocking(), "só a spec em andamento conta; 1 == teto 1 → recusa: {verdict:?}");
     }
 
     #[test]

@@ -110,14 +110,7 @@ fn main() {
     // for why the handover lives here and not in the installers.
     delegate_to_newer_install();
 
-    // Argv pre-routing: rewrite `run metrics wave-status ...` to
-    // `run metrics-wave-status ...` so clap dispatches to the top-level
-    // `RunCmd::MetricsWaveStatus` variant (and therefore renders `--spec` in
-    // `--help` natively). Keeps `run metrics --help` and `run metrics collect`
-    // working unchanged. See wave-network spec AC-6.
-    let argv: Vec<String> = rewrite_metrics_wave_status(std::env::args().collect());
-    let argv = rewrite_scan_spec(argv);
-    let cli = Cli::parse_from(argv);
+    let cli = Cli::parse_from(std::env::args());
 
     // The `Run` face is not an enforcement face: it never reads the harness
     // stdin contract. Handle it before the stdin read so it does not block
@@ -211,50 +204,6 @@ fn delegate_to_newer_install() {
             std::process::exit(status.code().unwrap_or(0));
         }
     }
-}
-
-/// Rewrite `mustard-rt run metrics wave-status [args...]` to
-/// `mustard-rt run metrics-wave-status [args...]` so clap routes to the
-/// top-level `RunCmd::MetricsWaveStatus` variant. All other argv shapes pass
-/// through unchanged. This is the one carve-out needed to keep
-/// `run metrics --help` and `run metrics {collect,report}` working while
-/// surfacing `--spec` in the `wave-status --help` output (AC-6).
-fn rewrite_metrics_wave_status(mut argv: Vec<String>) -> Vec<String> {
-    // Find `run` index; require `metrics` immediately after, then `wave-status`.
-    let Some(run_idx) = argv.iter().position(|a| a == "run") else {
-        return argv;
-    };
-    let metrics_idx = run_idx + 1;
-    let wave_idx = run_idx + 2;
-    if argv.get(metrics_idx).map(String::as_str) == Some("metrics")
-        && argv.get(wave_idx).map(String::as_str) == Some("wave-status")
-    {
-        // Collapse the two tokens into one: `metrics wave-status` → `metrics-wave-status`.
-        argv[metrics_idx] = "metrics-wave-status".to_string();
-        argv.remove(wave_idx);
-    }
-    argv
-}
-
-/// Rewrite `mustard-rt run scan spec [args...]` to
-/// `mustard-rt run scan-spec [args...]` so clap routes to the top-level
-/// `RunCmd::ScanSpec` variant. All other argv shapes pass through unchanged.
-/// Mirrors the `rewrite_metrics_wave_status` pattern (same invariant: the two
-/// tokens immediately follow `run`).
-fn rewrite_scan_spec(mut argv: Vec<String>) -> Vec<String> {
-    let Some(run_idx) = argv.iter().position(|a| a == "run") else {
-        return argv;
-    };
-    let scan_idx = run_idx + 1;
-    let spec_idx = run_idx + 2;
-    if argv.get(scan_idx).map(String::as_str) == Some("scan")
-        && argv.get(spec_idx).map(String::as_str) == Some("spec")
-    {
-        // Collapse the two tokens into one: `scan spec` → `scan-spec`.
-        argv[scan_idx] = "scan-spec".to_string();
-        argv.remove(spec_idx);
-    }
-    argv
 }
 
 /// Read stdin and parse it into a [`HookInput`].

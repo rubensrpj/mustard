@@ -8,7 +8,7 @@ The router's DISPATCH part: the question that OPENS a work unit, the gate that e
 
 The ▸ steps below are ONE unit — THIS one — as it really ran. **▸6 is copied from that run, never written from memory:** invented output teaches a format the runtime does not produce. **A new field defect EXTENDS this trace or REPLACES a paragraph; it never appends.**
 
-**The question is asked against a REAL list.** Get the candidates from git first. `mustard-rt run base-candidates` fetches every branch on `origin`, newest first, each marked `protected` (a direct commit is refused there) and `preselected` (`git.flow` names it; where the cursor opens). `measured:false` means git could not be asked: ask without a menu rather than showing an empty one as complete.
+**The question is asked against a REAL list.** Get the candidates from git first. `mustard-rt run open` sem `--base` responde as bases que existem, cada uma marcada `protected` (um commit direto e recusado ali) e `preselected` (o `git.flow` a nomeia; onde o cursor abre). Sem `git.flow`, a resposta avisa que nenhuma base fica protegida.
 
 Ask the rows together, **`sai de` FIRST**. The operator settles where the unit STARTS before what it is CALLED.
 
@@ -29,10 +29,8 @@ The pre-marked `tipo` is the reading you made in § Intent Routing (Bugfix to `f
 **`branch` is a CORRECTABLE field, not a notice.** It shows `{tipo}/{name derived from the request}` and an Enter accepts it. A deliberate rewrite of that name wins. Editing the row edits `tipo` + name in ONE string: split at the first `/`, the head replaces the `tipo` answer, the tail is the corrected name. There is no third, free-standing name: a branch field allowed to disagree with `tipo` would resurrect the two-names defect. An untouched row is silence, and silence still means derived. Then:
 
 ```
-▸5 mustard-rt run emit-pipeline --kind pipeline.kind --spec prosa-e-binario-voltam-a-bater --intent "o plugin volta a dizer o que o binario faz" --type fix --base dev --payload '{"kind":"feature","scope":"full"}' --unit-name prosa-e-binario-voltam-a-bater
-   # --spec carries {slug-guess}; append --unit-name {name} ONLY when the `branch` row came back edited
-▸6 {"ok":true,"kind":"pipeline.kind","spec":"prosa-binario-voltam-bater","branch":"fix/prosa-binario-voltam-bater","renamedFrom":"prosa-e-binario-voltam-a-bater","nameFrom":"operator","type":"fix","typeFrom":"explicit"}
-▸7 mustard-rt run spec-draft --slug prosa-binario-voltam-bater …   # the `spec` ▸6 returned
+▸5 mustard-rt run open --kind fix --name "prosa e binario voltam a bater" --base dev
+▸6 {"ok":true,"spec":"prosa-e-binario-voltam-a-bater","branch":"fix/prosa-e-binario-voltam-a-bater","base":"dev","next":"levantamento","command":"mustard-rt run grill --spec prosa-e-binario-voltam-a-bater"}
 ```
 
 `--type` is the `tipo` answer; `--base` is the `sai de` one, and omitting it takes the primary base. **`--type` (the BRANCH) and the payload `kind` (the FLOW) are different vocabularies, both needed.** A `bugfix` flow on a `fix/` branch is the ordinary pairing, and neither goes in `--kind`, which names the EVENT. Kind to type, no hole: `feature`,`task` give `feature`; `bugfix`,`tactical-fix` give `fix`; the payload's own `scope` is `light|full|lean`. **A `hotfix` is NEVER cut from the ordinary base**; away from that base `fix` and `hotfix` are both legal readings of one request, which is why `--type` is REQUIRED there and the fork is YOURS. Omitted `--type` is no silent default: on the ordinary base the gate derives it from the payload `kind` and echoes `type`+`typeFrom`; elsewhere, or with no routing kind, it REFUSES, because a silent default may not name a durable artefact. A `--base` the remote lacks is refused, LISTING the branches that exist.

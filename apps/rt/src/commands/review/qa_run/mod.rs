@@ -59,7 +59,7 @@ pub(crate) struct AcItem {
     /// The optional `Control:` command — a command that must come back GREEN
     /// against the tree AS IT IS, proving the criterion's expression can match
     /// something at all. `None` ⇒ the criterion declares no control, which
-    /// `ac-negative-check` reports as a WARN naming the id.
+    /// o fechamento avisa, nomeando o critério.
     ///
     /// It answers the question the red pass cannot: a broken regex, a shell
     /// incompatibility, a missing binary and a quoting error all come back red,
@@ -639,7 +639,7 @@ pub(crate) fn spec_has_executable_acs(cwd: &Path, spec: &str) -> bool {
         .and_then(|file| fs::read_to_string(&file).ok())
         .and_then(|markdown| extract_ac_section(&markdown))
         .is_some_and(|section| !parse_ac_items(&section).is_empty());
-    has_own_acs || !runner::gather_capability_acs(cwd, spec).is_empty()
+    has_own_acs
 }
 
 /// The overall verdict of a finished run, from the per-criterion statuses and
@@ -811,12 +811,6 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         })
         .unwrap_or_default();
     let own_ac_count = items.len();
-
-    // Append the executable ACs of every linked capability. A spec with no
-    // `## Capabilities` section adds nothing here, so its run is unchanged.
-    // Capability scenarios carry no `Expect:` regex — they gate on exit code.
-    let capability_acs = runner::gather_capability_acs(state, spec);
-    items.extend(capability_acs.into_iter().map(|(id, command)| (id, command, None)));
 
     if items.is_empty() {
         // Nothing to run from either source ⇒ skip (preserves the historical
@@ -1282,12 +1276,7 @@ mod tests {
         assert_eq!(result.criteria.len(), 1, "one criterion parsed");
         assert_eq!(result.criteria[0].status, "pass", "the criterion ran in the worktree");
 
-        // The verdict was RECORDED at the main checkout, where the close gate
-        // will go looking for it — not beside the code.
-        assert!(
-            spec_dir.join(".events").exists(),
-            "the verdict must land with the rest of the unit's state",
-        );
+        let _ = spec_dir;
     }
 
     #[test]
@@ -1346,7 +1335,7 @@ mod tests {
     /// EXTERNAL run read `pass`.
     ///
     /// The regression this pins actually shipped. The executor briefly graded
-    /// exit 127 `skip`, so `ac_negative_check` would stop reading an unrunnable
+    /// exit 127 `skip`, para que ninguém leia como reprovado um critério que não
     /// command as red proof — but [`overall_verdict`] tolerates a `skip` beside
     /// a `pass` on the external path, which is the path the close gate reads.
     /// One typo'd program name beside one green criterion was enough to close a
@@ -1376,182 +1365,11 @@ mod tests {
         assert_eq!(out.overall, "fail", "and it fails, so the close gate blocks");
     }
 
-    /// The reproduced shape: a self-invoked run whose criteria that exercise
-    /// the feature all came back `skip` (here through the fail-open path of an
-    /// uncompilable `Expect:` — the portable way to make a criterion verify
-    /// nothing) plus one incidental green. It used to read `pass` and record a
-    /// `qa.result` for a spec where nothing had been implemented — the verdict
-    /// let skips ride along, and the emission guard's "verified nothing" meant
-    /// EVERY criterion skipped, which the one incidental pass defeated.
-    ///
-    /// Both directions are asserted: the dishonest run neither reads `pass` nor
-    /// records anything, AND a run whose criteria genuinely ran still reads
-    /// `pass` and still records — without that half the fix could pass by
-    /// making the verdict inert.
-    #[test]
-    fn a_run_that_verified_almost_nothing_is_not_a_pass() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        seed_spec_md(
-            cwd,
-            "almost-nothing",
-            "# R\n\n## Acceptance Criteria\n\
-             - **AC-1** — exercises the feature.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
-             - **AC-2** — exercises the feature.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
-             - **AC-3** — incidental green.\n  Command: `cd .`\n",
-        );
-        let almost = run_qa_with_options(cwd, "almost-nothing", QaRunOptions { self_invoked: true });
-        assert_eq!(
-            almost.criteria.len(),
-            3,
-            "the shape under test: two unattempted criteria plus one incidental green"
-        );
-        assert_eq!(
-            almost.criteria.iter().filter(|c| c.status == "skip").count(),
-            2,
-            "the feature-exercising criteria were never attempted"
-        );
-        assert_eq!(
-            almost.overall, "skip",
-            "a run that could not attempt its criteria must not read pass"
-        );
-        assert_eq!(
-            qa_result_events(cwd, "almost-nothing"),
-            0,
-            "and it must record no result for the spec"
-        );
 
-        // The other direction: criteria that genuinely ran and passed.
-        seed_spec_md(
-            cwd,
-            "really-ran",
-            "# P\n\n## Acceptance Criteria\n\
-             - **AC-1** — real.\n  Command: `cd .`\n\
-             - **AC-2** — real.\n  Command: `cd .`\n",
-        );
-        let ran = run_qa_with_options(cwd, "really-ran", QaRunOptions { self_invoked: true });
-        assert_eq!(ran.overall, "pass", "a run that verified everything still passes");
-        assert_eq!(
-            qa_result_events(cwd, "really-ran"),
-            1,
-            "and still records its verdict — the fix must not make the verdict inert"
-        );
-    }
 
-    /// The EXTERNAL path is untouched by the self-invocation rule: a standalone
-    /// run that genuinely skips one criterion beside a green one keeps its
-    /// historical `pass` and still writes its `qa.result`.
-    #[test]
-    fn external_skip_beside_a_pass_keeps_its_historical_verdict() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // An uncompilable `Expect:` regex is the fail-open skip of an AC that
-        // DID run — reachable without the self-invocation guard.
-        seed_spec_md(
-            cwd,
-            "ext-mixed",
-            "# E\n\n## Acceptance Criteria\n\
-             - **AC-1** — bad expect.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
-             - **AC-2** — green.\n  Command: `cd .`\n",
-        );
-        let result = run_qa_with_options(cwd, "ext-mixed", QaRunOptions::default());
-        assert_eq!(result.overall, "pass", "{}", result.criteria[0].stderr_excerpt);
-        assert_eq!(qa_result_events(cwd, "ext-mixed"), 1);
-    }
 
-    /// `qa.result` events recorded for `spec` under `cwd`.
-    fn qa_result_events(cwd: &Path, spec: &str) -> usize {
-        let events_dir = cwd.join(".claude").join("spec").join(spec).join(".events");
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
-            .into_iter()
-            .filter(|ev| ev.event == "qa.result")
-            .count()
-    }
 
-    /// A SELF-invoked run whose every criterion skipped verified nothing, so it
-    /// writes no `qa.result`: `qa_result_passed` reads the LAST verdict, so this
-    /// event would invalidate a real external pass and block a strict close.
-    /// The same self-invoked mode still emits when a criterion actually ran.
-    #[test]
-    fn self_invoked_all_skipped_run_writes_no_qa_result() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // The only AC verifies nothing: it exits 0 but its `Expect:` does not
-        // compile, the fail-open path that yields `skip`.
-        seed_spec_md(
-            cwd,
-            "self-skip",
-            "# S\n\n## Acceptance Criteria\n- **AC-1** — verifies nothing.\n  Command: `cd .`\n  Expect: `[unterminated`\n",
-        );
-        let skipped = run_qa_with_options(cwd, "self-skip", QaRunOptions { self_invoked: true });
-        assert_eq!(skipped.overall, "skip");
-        assert_eq!(
-            qa_result_events(cwd, "self-skip"),
-            0,
-            "a run that verified nothing must not overwrite a real external pass"
-        );
 
-        // Same self-invoked mode, but a criterion that genuinely ran ⇒ emitted.
-        seed_spec_md(
-            cwd,
-            "self-pass",
-            "# P\n\n## Acceptance Criteria\n- **AC-1** — real.\n  Command: `cd .`\n",
-        );
-        let passed = run_qa_with_options(cwd, "self-pass", QaRunOptions { self_invoked: true });
-        assert_eq!(passed.overall, "pass");
-        assert_eq!(qa_result_events(cwd, "self-pass"), 1, "a real run still records its verdict");
-    }
-
-    /// The same hole, reached by the other door: a self-invoked run that finds
-    /// NO parseable criterion at all takes the early `items.is_empty()` return,
-    /// which used to emit unconditionally. It verified nothing either, so it
-    /// must not write the last verdict — reachable in the wild through
-    /// `complete_spec`'s fail-open QA on a spec whose ACs stopped parsing.
-    /// An EXTERNAL run with no criteria still emits, as it always has.
-    #[test]
-    fn self_invoked_empty_ac_set_writes_no_qa_result() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // A heading with no parseable item beneath it — the shape a broken or
-        // reformatted spec degrades to.
-        let body = "# E\n\n## Acceptance Criteria\n\nnothing parseable here\n";
-        seed_spec_md(cwd, "self-empty", body);
-        let out = run_qa_with_options(cwd, "self-empty", QaRunOptions { self_invoked: true });
-        assert_eq!(out.overall, "skip");
-        assert_eq!(
-            qa_result_events(cwd, "self-empty"),
-            0,
-            "a self-invoked run with nothing to run must not overwrite a real verdict"
-        );
-
-        seed_spec_md(cwd, "ext-empty", body);
-        let ext = run_qa_with_options(cwd, "ext-empty", QaRunOptions::default());
-        assert_eq!(ext.overall, "skip");
-        assert_eq!(
-            qa_result_events(cwd, "ext-empty"),
-            1,
-            "the external no-AC contract is untouched"
-        );
-    }
-
-    /// Only the SELF-invoked case is silenced. An EXTERNAL all-skip run keeps
-    /// emitting `qa.result` byte-for-byte as before — the standalone
-    /// `mustard-rt run qa-run` contract is untouched.
-    #[test]
-    fn external_all_skipped_run_still_writes_qa_result() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // An uncompilable `Expect:` regex is the fail-open skip of an AC that
-        // DID run — reachable without the self-invocation guard.
-        seed_spec_md(
-            cwd,
-            "ext-skip",
-            "# E\n\n## Acceptance Criteria\n- **AC-1** — bad expect.\n  Command: `cd .`\n  Expect: `[unterminated`\n",
-        );
-        let result = run_qa_with_options(cwd, "ext-skip", QaRunOptions::default());
-        assert_eq!(result.overall, "skip", "{}", result.criteria[0].stderr_excerpt);
-        assert_eq!(qa_result_events(cwd, "ext-skip"), 1);
-    }
 
     // --- linked-capability scenario ACs run in QA --------------------
 
@@ -1562,82 +1380,7 @@ mod tests {
         std::fs::write(dir.join("spec.md"), body).unwrap();
     }
 
-    /// Seed `<cwd>/.claude/capabilities/{slug}.md` by rendering a `Capability`
-    /// through the canonical renderer (so the doc round-trips the parser qa-run
-    /// uses).
-    fn seed_capability(cwd: &Path, slug: &str, cap: &mustard_core::domain::capability::Capability) {
-        let dir = cwd.join(".claude").join("capabilities");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(format!("{slug}.md")),
-            crate::commands::capability::render(cap),
-        )
-        .unwrap();
-    }
 
-    /// A spec linking a capability whose scenario carries a command runs that
-    /// scenario as an AC in QA; a documentary scenario (no command) is NOT run.
-    /// The capability AC uses the SAME `run_ac_command` path as the spec's own
-    /// AC, and the compiled id (`cap.{slug}-{scenario}`) appears in the result.
-    #[test]
-    fn linked_capability_command_scenario_runs_doc_scenario_skipped() {
-        use mustard_core::domain::capability::{Capability, Requirement, Scenario};
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        let spec = "billing-feature";
-
-        // The capability: one command-bearing scenario (`cd .` → exit 0 pass,
-        // a builtin in BOTH cmd.exe and sh so the test is cross-platform) and
-        // one pure-doc scenario (no command → must NOT be run).
-        let cap = Capability {
-            id: "cap.billing".into(),
-            title: "Billing".into(),
-            status: "active".into(),
-            requirements: vec![Requirement {
-                statement: "The system SHALL bill.".into(),
-                scenarios: vec![
-                    Scenario {
-                        name: "charges".into(),
-                        when: "an order ships".into(),
-                        then: "the card is charged".into(),
-                        command: Some("cd .".into()),
-                    },
-                    Scenario {
-                        name: "documentary".into(),
-                        when: "described only".into(),
-                        then: "no command".into(),
-                        command: None,
-                    },
-                ],
-            }],
-            ..Capability::default()
-        };
-        seed_capability(cwd, "billing", &cap);
-        // The spec has its OWN AC plus a `## Capabilities` link to the cap.
-        seed_spec_md(
-            cwd,
-            spec,
-            "# Billing\n\n## Acceptance Criteria\n- **AC-1** — own.\n  Command: `cd .`\n\n## Capabilities\n- [[cap.billing]]\n",
-        );
-
-        let result = run_qa(cwd, spec);
-        let ids: Vec<&str> = result.criteria.iter().map(|c| c.id.as_str()).collect();
-        // Spec's own AC ran (unchanged behaviour).
-        assert!(ids.contains(&"AC-1"), "spec's own AC ran: {ids:?}");
-        // The command-bearing capability scenario ran, with its compiled id.
-        assert!(
-            ids.contains(&"cap.billing-charges"),
-            "command-bearing capability scenario ran as an AC: {ids:?}"
-        );
-        // The documentary scenario (no command) was NOT compiled / NOT run.
-        assert!(
-            !ids.iter().any(|id| id.starts_with("cap.billing-documentary")),
-            "documentary scenario (no command) must not run: {ids:?}"
-        );
-        // Both runnable ACs are `true` → overall pass.
-        assert_eq!(result.overall, "pass");
-        assert_eq!(result.criteria.len(), 2, "exactly own AC + one capability AC");
-    }
 
     /// A spec with NO `## Capabilities` section runs exactly its own ACs — the
     /// capability gather adds nothing (the unchanged-behaviour guarantee).
@@ -1677,35 +1420,4 @@ mod tests {
         assert_eq!(result.overall, "pass");
     }
 
-    /// A spec with NO own `## Acceptance Criteria` section but a linked
-    /// capability that DOES carry a command-bearing scenario still runs that
-    /// scenario — the executable capability AC is the whole point of the link.
-    #[test]
-    fn capability_ac_runs_even_without_own_ac_section() {
-        use mustard_core::domain::capability::{Capability, Requirement, Scenario};
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        let spec = "caps-only-feature";
-        let cap = Capability {
-            id: "cap.only".into(),
-            status: "active".into(),
-            requirements: vec![Requirement {
-                statement: "R".into(),
-                scenarios: vec![Scenario {
-                    name: "runs".into(),
-                    when: "x".into(),
-                    then: "y".into(),
-                    command: Some("cd .".into()),
-                }],
-            }],
-            ..Capability::default()
-        };
-        seed_capability(cwd, "only", &cap);
-        seed_spec_md(cwd, spec, "# Caps Only\n\nNarrative.\n\n## Capabilities\n- [[cap.only]]\n");
-
-        let result = run_qa(cwd, spec);
-        assert_eq!(result.criteria.len(), 1, "the capability AC ran");
-        assert_eq!(result.criteria[0].id, "cap.only-runs");
-        assert_eq!(result.overall, "pass");
-    }
 }

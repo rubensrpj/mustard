@@ -10,8 +10,8 @@
 //!
 //! What is locked, and why each one matters:
 //!
-//! - **The surface is exactly five doors** — `continue`, `git`, `pr`, `spec`,
-//!   `upsert`. A
+//! - **The surface is exactly three doors** — `continue`, `pr` and `upsert`.
+//!   A porta `git` e a porta `spec` sairam com os fluxos que elas abriam. A
 //!   door is a command file the USER types; everything else in the directory is
 //!   an internal flow the router dispatches, which says so with
 //!   `user-invocable: false`. The reduction from fifteen doors to four was the
@@ -39,7 +39,7 @@ fn repo_root() -> PathBuf {
 }
 
 /// The whole exposed surface: the commands a user may type. Kept sorted.
-const DOORS: &[&str] = &["continue", "git", "pr", "spec", "upsert"];
+const DOORS: &[&str] = &["continue", "pr", "upsert"];
 
 /// The marker an internal flow carries to stay OUT of the door surface.
 const NOT_A_DOOR: &str = "user-invocable: false";
@@ -80,7 +80,7 @@ fn shipped_commands() -> Vec<String> {
 }
 
 #[test]
-fn exposed_doors_are_exactly_the_four() {
+fn as_portas_expostas_sao_exatamente_estas() {
     let mut exposed: Vec<String> = Vec::new();
     for name in shipped_commands() {
         if !frontmatter(&name).contains(NOT_A_DOOR) {
@@ -92,7 +92,7 @@ fn exposed_doors_are_exactly_the_four() {
         exposed, expected,
         "the user-invocable surface must stay exactly {expected:?}. A command file with no \
          `{NOT_A_DOOR}` in its frontmatter IS a door — the user sees it and types it. Everything \
-         that is not one of the four is a flow the router dispatches: add the key, or fold the \
+         that is not one of the three is a flow the router dispatches: add the key, or fold the \
          command into the door that already owns its subject (review/QA/close -> pr; off/on/doctor \
          -> upsert; cancelling a unit -> git delete)."
     );

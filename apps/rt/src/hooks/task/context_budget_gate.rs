@@ -50,55 +50,11 @@
 //! dispatcher's module-level mode. The dispatcher repasses the verdict without
 //! downgrade.
 
-use mustard_core::domain::economy::estimator;
 use mustard_core::platform::error::Error;
-use mustard_core::platform::metrics::{MetricLine, emit_metric};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use serde_json::{json};
 
-use crate::shared::context::current_spec;
 use crate::util::format_gate_message;
-use mustard_core::time::now_iso8601;
 
-/// Emit a `pipeline.economy.savings.budget-output-cut` NDJSON event for an
-/// over-budget agent return. The `tokens_saved` field carries the estimated
-/// token count we avoided re-injecting into the parent context.
-/// Fail-open on every error path — telemetry never blocks the verdict.
-fn record_output_cut(
-    project_dir: &str,
-    dropped_tail: &str,
-    role_label: &str,
-    model_hint: Option<&str>,
-) {
-    if dropped_tail.is_empty() {
-        return;
-    }
-    let saved = i64::from(estimator::estimate_output_tokens(dropped_tail, model_hint.unwrap_or("")));
-    let saved = saved.max(1);
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: "unknown".to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("budget".to_string()),
-            actor_type: None,
-        },
-        event: "pipeline.economy.savings.budget-output-cut".to_string(),
-        payload: json!({
-            "source": "BudgetOutputCut",
-            "tokens_saved": saved,
-            "model_target": model_hint,
-            "role": role_label,
-            "spec_id": current_spec(project_dir),
-            "wave_id": std::env::var("MUSTARD_ACTIVE_WAVE").ok().filter(|s| !s.is_empty()),
-        }),
-        spec: current_spec(project_dir),
-    };
-    let _ = crate::shared::events::route::emit(project_dir, &event);
-}
 
 // ---------------------------------------------------------------------------
 // Shared role classification
@@ -297,37 +253,8 @@ fn context_budget(input: &HookInput) -> Verdict {
         let mode = context_budget_mode();
 
         // Emit a metric only when actionable: a block or a >90% near-miss.
-        let would_block = actual > limit;
+        let _would_block = actual > limit;
         #[allow(clippy::cast_precision_loss)]
-        let near_miss = (actual as f64) > (limit as f64) * 0.9;
-        if would_block || near_miss {
-            #[allow(clippy::cast_possible_wrap)] // usize fits i64 in practice; runtime values are prompt char counts
-            let saved = if would_block {
-                ((actual - limit) / 4) as i64
-            } else {
-                0
-            };
-            #[allow(clippy::cast_possible_wrap)]
-            let line = MetricLine::new(now_iso8601(), "budget-check")
-                .tokens_affected((actual / 4) as i64)
-                .tokens_saved(saved)
-                .note(if would_block { "blocked" } else { "near-miss" })
-                .extras(json!({
-                    "role": role_label,
-                    "actual_chars": actual,
-                    "limit": limit,
-                    "would_block": would_block,
-                    "mode": context_budget_mode_str(mode),
-                    "category": if would_block { "prevention" } else { "routing-advisory" },
-                }));
-            // Fail-silent — a metric write never affects the verdict.
-            // Skip when no harness cwd is supplied (would leak under
-            // `cargo test`'s process cwd).
-            if let Some(cwd) = metric_cwd_opt(input) {
-                let _ = emit_metric(std::path::Path::new(cwd), &line);
-            }
-        }
-
         match mode {
             // `observe` / `warn` modes always allow (warn prints stderr in JS;
             // a Rust hook surfaces nothing extra — the verdict is the contract).
@@ -408,14 +335,6 @@ fn context_budget(input: &HookInput) -> Verdict {
     Verdict::Allow
 }
 
-/// The lowercase mode string for a [`ContextBudgetMode`] — used in metrics.
-fn context_budget_mode_str(mode: ContextBudgetMode) -> &'static str {
-    match mode {
-        ContextBudgetMode::Observe => "observe",
-        ContextBudgetMode::Warn => "warn",
-        ContextBudgetMode::Strict => "strict",
-    }
-}
 
 // ---------------------------------------------------------------------------
 // output-budget — PostToolUse(Task) return-size advisory
@@ -460,8 +379,6 @@ fn output_role_label(role: Role, subagent_type: &str) -> String {
 struct OutputBudgetResult {
     /// The advisory text, present only when over budget.
     advisory: Option<String>,
-    /// The metric line to append (`over-budget` or `passed`).
-    metric: MetricLine,
 }
 
 fn evaluate_output_budget(input: &HookInput) -> Option<OutputBudgetResult> {
@@ -487,18 +404,8 @@ fn evaluate_output_budget(input: &HookInput) -> Option<OutputBudgetResult> {
     let tokens_affected = (tool_response.len() / 4) as i64;
     let over_budget = actual > limit;
 
+    let _ = tokens_affected;
     if over_budget {
-        let over_by = actual - limit;
-        let metric = MetricLine::new(now_iso8601(), "output-budget")
-            .tokens_affected(tokens_affected)
-            .tokens_saved(0)
-            .note("over-budget")
-            .extras(json!({
-                "role": role_label,
-                "actual_lines": actual,
-                "limit": limit,
-                "over_by": over_by,
-            }));
         let advisory = format_gate_message(
             "Output Budget",
             &format!(
@@ -509,24 +416,9 @@ fn evaluate_output_budget(input: &HookInput) -> Option<OutputBudgetResult> {
             "on future dispatches return only files changed + non-obvious \
              decisions + blockers",
         );
-        Some(OutputBudgetResult {
-            advisory: Some(advisory),
-            metric,
-        })
+        Some(OutputBudgetResult { advisory: Some(advisory) })
     } else {
-        let metric = MetricLine::new(now_iso8601(), "output-budget")
-            .tokens_affected(0)
-            .tokens_saved(0)
-            .note("passed")
-            .extras(json!({
-                "role": role_label,
-                "actual_lines": actual,
-                "limit": limit,
-            }));
-        Some(OutputBudgetResult {
-            advisory: None,
-            metric,
-        })
+        Some(OutputBudgetResult { advisory: None })
     }
 }
 
@@ -534,45 +426,7 @@ fn evaluate_output_budget(input: &HookInput) -> Option<OutputBudgetResult> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Recompute the over-budget tail of a Task's `tool_response`, i.e. the
-/// lines past the per-role limit that the advisory is asking the agent to
-/// stop emitting next time. Returns `None` when the return is within budget
-/// or non-string. Mirrors the segmentation [`evaluate_output_budget`] uses.
-fn over_budget_tail(input: &HookInput) -> Option<String> {
-    let tool_response = input.raw.get("tool_response").and_then(|v| v.as_str())?;
-    let tool_input = &input.tool_input;
-    let subagent_type = tool_input
-        .get("subagent_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let description = tool_input
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let role = classify_role(subagent_type, description);
-    let limit = output_budget(role);
-    let lines: Vec<&str> = tool_response.split('\n').collect();
-    if lines.len() <= limit {
-        return None;
-    }
-    Some(lines[limit..].join("\n"))
-}
 
-/// Resolve the cwd a metric write should be rooted at: the harness `cwd`,
-/// falling back to `.` (the JS uses `process.cwd()`).
-///
-/// When no harness cwd is supplied, returning `"."` causes the
-/// metric writer to materialise a `.claude/.metrics/` tree under whatever
-/// the process cwd happens to be — under `cargo test -p mustard-rt` that is
-/// `apps/rt/`, producing the forbidden `apps/rt/.claude/` leak.
-/// `metric_cwd_opt` returns `None` in that case so the caller can skip the
-/// emit.
-fn metric_cwd_opt(input: &HookInput) -> Option<&str> {
-    match input.cwd.as_deref() {
-        Some(cwd) if !cwd.is_empty() && cwd != "." => Some(cwd),
-        _ => None,
-    }
-}
 
 
 // ---------------------------------------------------------------------------
@@ -606,49 +460,6 @@ impl Check for ContextBudgetGate {
                 let Some(result) = evaluate_output_budget(input) else {
                     return Ok(Verdict::Allow);
                 };
-                // Emit the return-size metric (fail-silent). Skip when no
-                // harness cwd is supplied (would leak under `cargo test`).
-                if let Some(cwd) = metric_cwd_opt(input) {
-                    let _ = emit_metric(std::path::Path::new(cwd), &result.metric);
-                }
-                // Over budget → record the savings frame (typed writer) +
-                // surface the advisory through the Outcome. Never a raw
-                // stdout write.
-                if result.advisory.is_some() {
-                    // Resolve the project dir to record the savings frame
-                    // against. Skip the write entirely when neither `ctx`
-                    // nor the harness `cwd` carries a valid root (would
-                    // leak under `cargo test`).
-                    let project_dir_opt = if ctx.project_dir.is_empty() {
-                        metric_cwd_opt(input).map(str::to_string)
-                    } else {
-                        Some(ctx.project_dir.clone())
-                    };
-                    // Recompute the dropped tail and labels so the writer call
-                    // stays a pure side-effect of an over-budget verdict.
-                    if let (Some(project_dir), Some(tail)) =
-                        (project_dir_opt, over_budget_tail(input))
-                    {
-                        let subagent_type = input
-                            .tool_input
-                            .get("subagent_type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default();
-                        let description = input
-                            .tool_input
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default();
-                        let role = classify_role(subagent_type, description);
-                        let role_label = output_role_label(role, subagent_type);
-                        let model_hint = input
-                            .tool_input
-                            .get("model")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty());
-                        record_output_cut(&project_dir, &tail, &role_label, model_hint);
-                    }
-                }
                 Ok(match result.advisory {
                     Some(advisory) => Verdict::Inject { context: advisory },
                     None => Verdict::Allow,
@@ -882,38 +693,7 @@ mod tests {
         assert_eq!(output_budget(Role::Unknown), 40);
     }
 
-    #[test]
-    fn output_budget_over_cap_produces_advisory() {
-        // 50-line Explore return vs a 30-line cap → over budget.
-        let response = "line\n".repeat(50);
-        let input = HookInput {
-            tool_name: Some("Task".to_string()),
-            tool_input: json!({ "subagent_type": "Explore", "description": "" }),
-            hook_event_name: Some("PostToolUse".to_string()),
-            raw: json!({ "tool_response": response }),
-            ..HookInput::default()
-        };
-        let result = evaluate_output_budget(&input).expect("string response");
-        let advisory = result.advisory.expect("over budget → advisory");
-        assert!(advisory.contains("Output Budget"));
-        assert!(advisory.contains("Explore"));
-        assert_eq!(result.metric.note, "over-budget");
-    }
 
-    #[test]
-    fn output_budget_within_cap_emits_passed_metric_no_advisory() {
-        let response = "line\n".repeat(10);
-        let input = HookInput {
-            tool_name: Some("Task".to_string()),
-            tool_input: json!({ "subagent_type": "Explore", "description": "" }),
-            hook_event_name: Some("PostToolUse".to_string()),
-            raw: json!({ "tool_response": response }),
-            ..HookInput::default()
-        };
-        let result = evaluate_output_budget(&input).expect("string response");
-        assert!(result.advisory.is_none());
-        assert_eq!(result.metric.note, "passed");
-    }
 
     #[test]
     fn output_budget_non_string_response_is_skipped() {

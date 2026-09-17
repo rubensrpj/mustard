@@ -31,11 +31,6 @@
 //! - cross-cutting foundation — [`config`] (enforcement modes), [`env`] (the
 //!   `hook-env.js` port), and [`metrics`] (the `metrics-emit.js` port).
 
-// Snapshot-and-compare primitive consumed by the regression gate.
-// Reuses `ast::GrammarLoader` / `ast::TreeSitterParser` for the precise path
-// and falls back to a textual diff (via `similar = "2"`) when no grammar is
-// installed for the file's language.
-
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.
 pub mod io;
@@ -89,10 +84,7 @@ pub use platform::seeds::{
 };
 
 pub use domain::model::view::{
-    AcStatus, AcceptanceCriterion, FileCount, Flags, Outcome, Phase, PhaseSegment, QualityRollup,
-    Scope, SegmentState, SpecChild, SpecFilter, SpecState, SpecStatusFilter, SpecSummary,
-    SpecTrack, SpecView, Stage, StateError, TimeWindow, TimelineKind, TimelineNode, WaveStatus,
-    WaveView, WorkspaceAlert, WorkspaceAlertKind, WorkspaceSummary,
+    Flags, Outcome, Phase, Scope, SpecChild, SpecState, SpecSummary, SpecView, Stage, StateError,
 };
 // Spec-document I/O — the single canonical owner of parsing / serializing /
 // rewriting the lifecycle header of a spec `.md` file. See `spec/mod.rs`.
@@ -101,9 +93,6 @@ pub use domain::spec::{
     flags_label, header_field, header_region_lines, outcome_label, parse_state, read_state,
     rewrite_header, serialize_header, stage_label, status_word, write_state,
 };
-
-// Economy domain re-exports — see `economy/mod.rs` for the full surface.
-pub use domain::economy::{EconomyScope, EconomySummary, SavingsSource};
 
 // Project config — the single source of truth for `<root>/mustard.json`
 // (schema + IO + accessors). Replaces the scattered ad-hoc parsers
@@ -123,19 +112,13 @@ pub use domain::command_detect::{detect_commands, detect_commands_for_unit};
 // Mustard consumes the tool's JSON/Markdown, never project source — and never
 // parses `grain.model.json` itself (the scan tool owns that schema). See
 // `domain/scan.rs`.
-pub use domain::scan::{read_entity_names, read_projects, DigestQuery, ModelFacts, Project, Scan, SpecRequest};
+pub use domain::scan::{read_entity_names, read_projects, DigestQuery, ModelFacts, Project, Scan};
 
 // Source-language resolution — the single owner of "what language is this target
 // (a set of file paths), and can the JS/TS-family gates reason about it?".
 // Consulted by `dependency-precheck` and `wave-size-check` so both loosen
 // consistently on a non-JS/TS subproject. See `domain/source_lang.rs`.
 pub use domain::source_lang::{resolve_target_languages, target_understood};
-
-// Meta sidecar — single canonical owner of `meta.json` schema + IO. See
-// `meta.rs`. Sidecar replaces the legacy `### Stage:` / `### Outcome:` /
-// `### Phase:` / `### Scope:` / `### Lang:` / `### Checkpoint:` / `### Parent:`
-// headers under `.claude/spec/**`.
-pub use domain::meta::{normalise_lang, read_meta, write_meta, Meta, MetaFlags};
 
 // i18n — central language module for Mustard banners. See `i18n.rs`.
 //
@@ -168,11 +151,6 @@ pub use io::workspace::{workspace_root, WorkspaceError};
 // git alongside each spec. Re-exported at root so consumers can write
 // `mustard_core::SpecSummaryDoc` without knowing the sub-module path.
 pub use view::summary::SpecSummaryDoc;
-
-// NDJSON event primitives — shared by all no-sqlite sub-specs.
-// `Event` is the single row unit; `EventReader` provides streaming, cached,
-// and filtered access without loading full files into memory.
-pub use io::events::{Event, EventReader};
 
 // Vocabulary matcher — the four-layer term scanner used by the regression
 // gate. Layers are EN identifiers per the hard rule

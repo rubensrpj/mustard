@@ -38,9 +38,6 @@
 //!   probe) plus [`proc::run_shell_with_deadline`]
 //!   — the ONE shell-command runner that drains both pipes concurrently and
 //!   waits under a deadline, shared by `verify-pipeline` and `qa-run`.
-//! - [`translate`] — fail-open client for the optional `mustard-translate`
-//!   sidecar (local MT), shared by the `feature` auto-gloss and the
-//!   `scan-equivalences` artifact generation.
 //! - [`work_kind`] — WHAT a work unit is (`feature`/`fix`/`hotfix`), the
 //!   `{kind}/{slug}` name built from it, and the project's base model derived
 //!   from `git.flow`. The crate's ONE parser of a work-branch name, in both the
@@ -55,7 +52,6 @@ pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about.
 pub mod dag;
-pub mod events;
 pub mod gate_mode;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod paths;
@@ -70,5 +66,9 @@ pub mod spec_state;
 // Test-only: cloning git fixture scenery instead of rebuilding it per test.
 #[cfg(test)]
 pub mod test_fixture;
-pub mod translate;
 pub mod work_kind;
+
+// Vieram da economia quando ela saiu: a barra de status le o ganho do rtk e
+// o carregador da retomada conta a janela.
+pub mod rtk_gain;
+pub mod token_budget;

@@ -15,15 +15,11 @@
 //! onda entregou, numa chamada só. Este comando ficou com o registro antigo do
 //! pipeline — o evento do harness e a medida — e nada do `spec.ndjson`.
 
-use crate::shared::context::{project_dir, session_id};
 use mustard_core::io::fs;
-use mustard_core::time::now_iso8601;
-use mustard_core::platform::metrics::{emit_metric, MetricLine};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::json;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Record a REVIEW outcome: emit the event + metric, return the payload JSON.
 ///
@@ -54,31 +50,7 @@ pub(crate) fn record_review(
     });
 
     // Harness event.
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Cli,
-            id: Some("review-result".to_string()),
-            actor_type: None,
-        },
-        event: "review.result".to_string(),
-        payload: payload.clone(),
-        spec: Some(spec.to_string()),
-    };
     // `review.result` is non-pipeline → per-spec NDJSON via the W5 router.
-    let _ = crate::shared::events::route::emit(cwd.to_string_lossy().as_ref(), &ev);
-
-    // Metric (fail-silent).
-    let line = MetricLine::new(now_iso8601(), "review").note(verdict).extras(json!({
-        "spec": spec,
-        "verdict": verdict,
-        "criticalCount": critical_count,
-        "category": "verification",
-    }));
-    let _ = emit_metric(cwd, &line);
 
     // D4: materialise the human-readable verdict beside the phase dir.
     write_review_verdict_md(cwd, spec, verdict, critical_count, subproject);
@@ -219,95 +191,12 @@ fn write_review_verdict_md(
     let _ = fs::write_atomic(review_dir.join("verdict.md"), body.as_bytes());
 }
 
-/// Dispatch `mustard-rt run review-result`. The command has left the flow: it
-/// refuses at the door with exit 1, records nothing and says to wait for the
-/// round, which will record each wave's verdict. [`record_review`] stays, for
-/// the readers that still record in the old log.
-pub fn run(
-    _spec: Option<&str>,
-    _verdict: Option<&str>,
-    _critical: i64,
-    _subproject: Option<&str>,
-    _findings_file: Option<&Path>,
-) {
-    crate::commands::retired::refuse(
-        Path::new(&project_dir()),
-        "wait-for-round",
-        "retired.wait_round",
-        &[("{command}", "review-result")],
-    );
-}
-
-/// The door's old body, kept until the command leaves.
-// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
-#[allow(dead_code)]
-fn run_record(
-    spec: Option<&str>,
-    verdict: Option<&str>,
-    critical: i64,
-    subproject: Option<&str>,
-    findings_file: Option<&Path>,
-) {
-    let (Some(spec), Some(verdict)) = (spec, verdict) else {
-        eprintln!(
-            "Usage: review-result --spec <name> --verdict approved|rejected [--critical <N>] [--subproject <name>] [--findings-file <path>]"
-        );
-        return;
-    };
-    if verdict != "approved" && verdict != "rejected" {
-        eprintln!("[review-result] Invalid --verdict \"{verdict}\" — expected approved|rejected");
-        return;
-    }
-
-    let cwd = std::env::current_dir()
-        .ok()
-        .or_else(|| Some(PathBuf::from(project_dir())))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let payload = record_review(&cwd, spec, verdict, critical, subproject, findings_file);
-    let out = json!({ "event": "review.result", "payload": payload });
-    println!("{}", serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string()));
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[test]
-    fn record_emits_event_and_metric() {
-        let dir = tempdir().unwrap();
-        let payload = record_review(dir.path(), "demo", "approved", 0, Some("api"), None);
-        assert_eq!(payload["verdict"], json!("approved"));
-        assert_eq!(payload["subproject"], json!("api"));
-
-        // W5: `review.result` is non-pipeline → per-spec NDJSON under
-        // `<project>/.claude/spec/demo/.events/`.
-        let events_dir = dir
-            .path()
-            .join(".claude")
-            .join("spec")
-            .join("demo")
-            .join(".events");
-        assert!(events_dir.exists(), ".events dir must exist");
-        let mut found = false;
-        for f in std::fs::read_dir(&events_dir).unwrap() {
-            let body = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
-            if body.lines().any(|l| {
-                serde_json::from_str::<serde_json::Value>(l)
-                    .ok()
-                    .and_then(|v| v["event"].as_str().map(str::to_string))
-                    .as_deref()
-                    == Some("review.result")
-            }) {
-                found = true;
-            }
-        }
-        assert!(found, "review.result NDJSON line must be present");
-
-        let metric = dir.path().join(".claude").join(".metrics").join("review.jsonl");
-        assert!(metric.exists());
-    }
 
     /// D4: `record_review` materialises `.claude/spec/{spec}/review/verdict.md`
     /// alongside the `review.result` event.

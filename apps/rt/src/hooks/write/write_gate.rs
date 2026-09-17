@@ -726,11 +726,10 @@ mod tests {
         }
     }
 
-    /// Uma spec aberta pelo `run write`, sem `meta.json`, conta como em plano.
-    /// A troca de estágio pela porta de dentro do `emit-pipeline` não cria
-    /// mais o `meta.json`, e a trava continua fechada, em plano.
+    /// Uma spec aberta pelo `run write`, sem `meta.json`, conta como em plano
+    /// e a trava fica fechada.
     #[test]
-    fn a_spec_opened_by_run_write_stays_locked_when_the_stage_moves() {
+    fn a_spec_opened_by_run_write_stays_locked() {
         let dir = project("{}");
         let root = dir.path();
         stand_on_spec_branch(root, "x");
@@ -741,8 +740,6 @@ mod tests {
         let locked = |root: &Path| matches!(gate(root, "Write", &abs(root, "src/main.rs")), Verdict::Deny { .. });
         assert!(locked(root), "a note alone counts as a plan");
 
-        let to = json!({ "stage": "Execute" });
-        crate::commands::event::emit_pipeline::patch_meta_for_transition(root, "x", "pipeline.stage", &to, "2026-09-13T00:00:00Z");
         assert!(!root.join(".claude").join("spec").join("x").join("meta.json").exists(), "no meta.json is born");
         assert!(locked(root), "still locked");
         assert_eq!(lock_state(root, "x").and_then(|state| state.phase), Some("plan"), "still in plan");

@@ -24,10 +24,9 @@ use mustard_core::{translate, SupportedLocale};
 /// against this (or any) ceiling.
 pub const SCAN_MAP_HARD_CAP_BYTES: usize = 8192;
 
-/// Opening marker of a pending `## Guards` block that older scans seeded into
-/// a subproject `CLAUDE.md`. Nothing writes it any more; the doctor's
-/// `guards-scaffold` advisory still recognises it. `pub` so `scan_guards`
-/// reuses it as the single source of the marker literal (no drift).
+/// Marcador de abertura do bloco `## Guards` pendente que o scan semeia num
+/// `CLAUDE.md` de subprojeto. Mora aqui, num lugar só, para o gerador e o
+/// leitor nunca discordarem do literal.
 pub const GUARDS_PENDING_OPEN: &str = "<!-- mustard:guards pending -->";
 /// Opening marker of an authored `## Guards` block — the `pending` token
 /// dropped. Only the tests still write it, as fixtures of old files.
@@ -127,8 +126,6 @@ fn render_commands(commands: &mustard_core::domain::config::Commands) -> String 
 /// when `stacks` is non-empty, so a unit without detections renders the legacy
 /// line byte-for-byte. `frameworks=` stays regardless — it is the raw
 /// frequency-ranked dep list, a different signal than the inferred stacks.
-/// `pub(crate)` so `scan_guards::list` can round-trip the real generator output
-/// through its `parse_facts` in tests (generator/parser never drift).
 #[cfg(test)]
 pub(crate) fn build_guards_block(
     kind: &str,

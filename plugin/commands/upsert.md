@@ -43,8 +43,6 @@ Print nothing raw — read the JSON report and relay it in clear language:
 ### Off / on
 
 ```bash
-mustard-rt run unhook --scope this
-mustard-rt run rehook --scope this
 ```
 
 Print stdout verbatim. The `unhook` report's `revert_with` field tells the user exactly how to restore.

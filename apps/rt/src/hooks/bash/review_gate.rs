@@ -9,15 +9,11 @@ use mustard_core::ClaudePaths;
 use mustard_core::platform::config::Mode;
 use mustard_core::platform::git;
 use mustard_core::domain::model::contract::{Ctx, Verdict};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::time::now_iso8601;
-use serde_json::json;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 use std::time::{Duration, Instant};
 
-use crate::shared::context::current_spec;
 use crate::util::format_gate_message;
 
 use mustard_core::domain::text::has_word_sequence;
@@ -290,36 +286,14 @@ fn active_pipelines(project_dir: &str) -> Vec<String> {
 /// Emit the `commit-gate.check` harness event. Best-effort — telemetry is
 /// never load-bearing, so any failure is swallowed.
 fn emit_commit_gate_event(
-    project_dir: &str,
-    session_id: Option<&str>,
-    mode: Mode,
-    warnings: usize,
-    blocking_findings: &[&str],
-    has_sensitive: bool,
-    build_ok: Option<bool>,
+    _project_dir: &str,
+    _session_id: Option<&str>,
+    _mode: Mode,
+    _warnings: usize,
+    _blocking_findings: &[&str],
+    _has_sensitive: bool,
+    _build_ok: Option<bool>,
 ) {
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id.unwrap_or("unknown").to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("review-gate".to_string()),
-            actor_type: None,
-        },
-        event: "commit-gate.check".to_string(),
-        payload: json!({
-            "mode": mode.as_str(),
-            "warnings": warnings,
-            "blockingFindings": blocking_findings,
-            "hasSensitive": has_sensitive,
-            "buildOk": build_ok,
-        }),
-        spec: current_spec(project_dir),
-    };
-    // `commit-gate.check` is non-pipeline → per-spec NDJSON via the event router.
-    let _ = crate::shared::events::route::emit(project_dir, &event);
 }
 
 /// The `review-gate` gate: validate a `git commit` command.

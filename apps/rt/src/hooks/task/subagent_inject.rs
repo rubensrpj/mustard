@@ -24,23 +24,15 @@
 //! decisive verdict is always either `Inject` (when something was resolved)
 //! or `Allow` (when nothing was).
 
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use crate::shared::events::economy;
 use mustard_core::platform::error::Error;
 use mustard_core::io::fs;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use mustard_core::time::now_iso8601;
 use mustard_core::ClaudePaths;
 use serde::Deserialize;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::commands::agent::context_inject;
-use crate::commands::review::gate_regression_check::{
-    check_after_child_return, GateError, GateInput, RegressionVerdict,
-};
 use crate::commands::review::review_result;
-use crate::commands::review::review_spans::{self, VerdictEntry, VERDICT_AMBER, VERDICT_GREEN, VERDICT_RED};
 
 
 /// The subagent-inject hook.
@@ -309,17 +301,9 @@ fn wave_from_stamp(text: &str) -> Option<u32> {
 /// lands in the dashboard trace next to the agent it belongs to. Mirrors the
 /// success-side `prompt_ref_expand` telemetry, completing the attribution
 /// triad (expanded / unexpanded / neither = no marker or the hook never ran).
-fn report_unexpanded(cwd: &str, rel: &str, reason: &str) {
+fn report_unexpanded(_cwd: &str, rel: &str, reason: &str) {
     eprintln!(
         "subagent_inject: WARN: dispatch stub NOT expanded ({reason}): {rel} — subagent falls back to reading the file; surfacing for attribution"
-    );
-    economy::emit(
-        cwd,
-        ActorKind::Hook,
-        "subagent_inject",
-        "pipeline.economy.operation.invoked",
-        None,
-        serde_json::json!({"operation": "subagent_inject.prompt_ref_unexpanded", "reason": reason, "ref": rel, "duration_ms": 0, "tokens_used": 0}),
     );
 }
 
@@ -370,31 +354,6 @@ fn role_from_stop_input(input: &HookInput) -> String {
     "general-purpose".to_string()
 }
 
-/// `true` for a read-only dispatch role — one that searches, audits or reviews
-/// but never authors a plan or diff the regression gate scores. Such children
-/// gain nothing from the regression-vocabulary pre-arm (it primes the AUTHOR of
-/// a plan/diff not to lean on the gate's terms), so injecting it is pure noise.
-/// `Plan` is deliberately NOT here: its plan text IS gate-checked. The list is
-/// the small, stable set of harness/mustard read-only agent types — a denylist,
-/// so an unknown (likely code-producing) role still gets the pre-arm.
-fn role_is_readonly(role: &str) -> bool {
-    // Normalise a possibly namespaced plugin agent type (`mustard:mustard-review`)
-    // to its bare name by stripping the `<ns>:` prefix, so the denylist matches
-    // whether the caller passed the qualified form (`dispatch-plan` now emits it)
-    // or the bare name (an ad-hoc caller). `mustard-patterns` (the read-only mold
-    // author) is in the set — it authors no plan/diff the regression gate scores.
-    let lower = role.to_ascii_lowercase();
-    let bare = lower.split_once(':').map_or(lower.as_str(), |(_, rest)| rest);
-    matches!(
-        bare,
-        "explore"
-            | "mustard-guards"
-            | "mustard-review"
-            | "mustard-patterns"
-            | "claude-code-guide"
-            | "statusline-setup"
-    )
-}
 
 
 /// Pull the spec-memory principle files for the dispatch, honouring the
@@ -416,59 +375,7 @@ fn spec_memory_block(project: &Path, spec: &str, prompt: &str, role: &str) -> St
     context_inject::render_spec_memory_block(&matches)
 }
 
-/// Resolve the active wave directory for the project: the spec from the one
-/// current-spec ladder for `session`, the wave from `MUSTARD_ACTIVE_WAVE`,
-/// joined against the project's `.claude/spec/<spec>/wave-<n>(-*)/` directory.
-///
-/// Returns `None` when no spec is current, the wave variable is missing, or no
-/// matching wave directory exists on disk — the SubagentStop branch then skips
-/// its span-level eval (fail-open).
-fn active_wave_dir(project: &Path, session: Option<&str>) -> Option<PathBuf> {
-    let spec = crate::shared::spec_state::active_spec(&project.to_string_lossy(), session)?;
-    let wave = std::env::var("MUSTARD_ACTIVE_WAVE").ok().filter(|s| !s.is_empty())?;
-    let claude = ClaudePaths::for_project(project).ok()?;
-    let spec_paths = claude.for_spec(&spec).ok()?;
-    // The wave env var carries either the bare wave number (e.g. "5") or the
-    // full slug (e.g. "wave-5-rt"). Try the slug as-is first, then probe
-    // `wave-{n}` + the first `wave-{n}-*` directory.
-    if let Ok(wp) = spec_paths.for_wave(&wave)
-        && wp.dir().is_dir() {
-            return Some(wp.dir().to_path_buf());
-        }
-    // Numeric form — scan the spec dir for matching `wave-N(-role)?`.
-    let prefix_exact = format!("wave-{wave}");
-    let prefix_role = format!("wave-{wave}-");
-    if let Ok(entries) = std::fs::read_dir(spec_paths.dir()) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name_str) = name.to_str() else { continue };
-            if name_str == prefix_exact || name_str.starts_with(&prefix_role) {
-                let p = spec_paths.dir().join(name_str);
-                if p.is_dir() {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    None
-}
 
-/// Identifier for the returning child — best-effort assembly from the
-/// SubagentStop input. Order: explicit `subagent_id` → `subagent_type` →
-/// `agent_type` → `"unknown"`. Locale-agnostic (stays in ASCII).
-fn child_id_from_input(input: &HookInput) -> String {
-    for key in ["subagent_id", "agent_id", "subagent_type", "agent_type", "task_id"] {
-        if let Some(v) = input.tool_input.get(key).and_then(|x| x.as_str())
-            && !v.is_empty() {
-                return v.to_string();
-            }
-        if let Some(v) = input.raw.get(key).and_then(|x| x.as_str())
-            && !v.is_empty() {
-                return v.to_string();
-            }
-    }
-    "unknown".to_string()
-}
 
 /// Pull the agent's terminal output text from the SubagentStop input. Mirrors
 /// the lookup in `stop_observer::final_output` so the span-level eval sees
@@ -592,50 +499,13 @@ pub(crate) fn capture_spec(cwd: &str, sid: &str) -> Option<String> {
 /// split and for the same reason: a test cannot safely mutate
 /// `MUSTARD_SESSION_ID` (`unsafe` under Rust 2024, forbidden in this crate),
 /// so the deterministic entry point takes the value directly.
-fn capture_memory_decision_with_session(project: &Path, cwd: &str, input: &HookInput, sid: &str) {
-    let Some(memory) = extract_memory_block(&final_output_text(input)) else {
+fn capture_memory_decision_with_session(_project: &Path, cwd: &str, input: &HookInput, sid: &str) {
+    // O gravador velho de eventos saiu: a decisão de memória do filho não tem
+    // mais onde ser gravada. O gancho em si sai com os ganchos.
+    let Some(_memory) = extract_memory_block(&final_output_text(input)) else {
         return;
     };
-    let spec = capture_spec(cwd, sid);
-    let Some(spec) = spec else {
-        return;
-    };
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: sid.to_string(),
-        // The wave this lesson belongs to, when the run establishes one. It is
-        // what `wave_done::materialize_wave_memory` files the memory under, and
-        // the reason it is read HERE: at wave close every sibling's decision is
-        // already on the log, so the closing wave cannot tell them apart. `0` is
-        // the schema's "outside a wave plan" and the memory file will then say
-        // `unknown` rather than borrow a number.
-        //
-        // Source order, and why the first one had to be added: the env var the
-        // fallback reads (`MUSTARD_ACTIVE_WAVE`) is set by nothing in this
-        // repository, so it recorded `0` for every lesson a real run ever
-        // captured. The stamp the dispatch carries into the child's own
-        // transcript is the source production actually populates — and being
-        // per-child, it stays correct while a whole round of sibling waves is in
-        // flight, which is exactly when the attribution used to go wrong. The
-        // env read stays as a fallback for a caller that does set it.
-        wave: wave_from_child_transcript(input)
-            .or_else(|| super::common::current_wave_id().and_then(|w| w.parse::<u32>().ok()))
-            .unwrap_or(0),
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("subagent_inject".to_string()),
-            actor_type: None,
-        },
-        event: "decision".to_string(),
-        payload: json!({
-            "title": memory,
-            "role": role_from_stop_input(input),
-            "source": "memory-block",
-        }),
-        spec: Some(spec),
-    };
-    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+    let _ = capture_spec(cwd, sid);
 }
 
 /// The event a returning child's own report is recorded as. Deliberately NOT
@@ -698,7 +568,7 @@ fn capture_return_report(project: &Path, cwd: &str, input: &HookInput) {
 /// directly so a test can drive it without mutating `MUSTARD_SESSION_ID`
 /// (`unsafe` under Rust 2024, forbidden in this crate), mirroring the
 /// [`capture_memory_decision_with_session`] split.
-fn capture_return_report_with_session(project: &Path, cwd: &str, input: &HookInput, sid: &str) {
+fn capture_return_report_with_session(_project: &Path, cwd: &str, input: &HookInput, sid: &str) {
     let report = final_output_text(input);
     if report.trim().is_empty() {
         return;
@@ -707,35 +577,15 @@ fn capture_return_report_with_session(project: &Path, cwd: &str, input: &HookInp
     // dispatch carried into this child's own transcript is per-child, so it stays
     // correct while a whole round of sibling waves is in flight. Unlike the twin,
     // an unresolved wave ends the capture — see the "unattributed" section above.
-    let Some(wave) = wave_from_child_transcript(input)
+    // O gravador velho de eventos saiu: o relatório do filho não tem mais onde
+    // ser gravado. O gancho em si sai com os ganchos.
+    let Some(_wave) = wave_from_child_transcript(input)
         .or_else(|| super::common::current_wave_id().and_then(|w| w.parse::<u32>().ok()))
         .filter(|w| *w > 0)
     else {
         return;
     };
-    let spec = capture_spec(cwd, sid);
-    let Some(spec) = spec else {
-        return;
-    };
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: sid.to_string(),
-        wave,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("subagent_inject".to_string()),
-            actor_type: None,
-        },
-        event: EVENT_AGENT_RETURN.to_string(),
-        payload: json!({
-            "report": super::common::cap(&report, RETURN_REPORT_MAX_CHARS),
-            "role": role_from_stop_input(input),
-            "agent_id": agent_id_of(input).unwrap_or_default(),
-        }),
-        spec: Some(spec),
-    };
-    let _ = crate::shared::events::route::emit(&project.to_string_lossy(), &event);
+    let _ = capture_spec(cwd, sid);
 }
 
 /// `true` for the review agent's `subagent_type`. Normalises a namespaced
@@ -787,69 +637,7 @@ fn capture_review_verdict_with_session(project: &Path, cwd: &str, input: &HookIn
     let _ = review_result::record_review(project, &spec, &verdict.verdict, verdict.critical, None, None);
 }
 
-/// Run the span-level gate (Moment 3) for the returning child and append
-/// the verdict to `<wave-dir>/_review-spans.md`. Fail-open at every step —
-/// any IO or gate error degrades to a no-op so the orchestrator's
-/// SubagentStop flow continues.
-///
-/// Returns the verdict label that was appended (or `None` when no append
-/// happened) so callers can wire telemetry.
-fn span_level_eval_and_append(
-    project: &Path,
-    input: &HookInput,
-    cwd: &str,
-) -> Option<&'static str> {
-    let wave_dir = active_wave_dir(project, input.session_id.as_deref())?;
-    span_level_eval_and_append_in(&wave_dir, input, cwd)
-}
 
-/// Span-level variant that takes the resolved wave directory as a parameter,
-/// bypassing the env-var lookup. Used by [`span_level_eval_and_append`] and
-/// by integration tests that need to avoid mutating process env vars (which
-/// are `unsafe` under Rust 2024 + this crate's `forbid(unsafe_code)`).
-fn span_level_eval_and_append_in(
-    wave_dir: &Path,
-    input: &HookInput,
-    cwd: &str,
-) -> Option<&'static str> {
-    let spec_md = wave_dir.join("spec.md");
-    let plan_text = final_output_text(input);
-    let gate_input = GateInput {
-        spec_path: spec_md,
-        plan_text,
-        diff: Vec::new(),
-        declared_fns: Vec::new(),
-        before_snapshot: None,
-        after_snapshot: None,
-    };
-    let (verdict_label, signal_count, first_message) = match check_after_child_return(gate_input) {
-        Ok(RegressionVerdict::Green) => (VERDICT_GREEN, 0usize, String::new()),
-        Ok(RegressionVerdict::Amber { signals }) => {
-            let first = signals.first().map(|s| s.message.clone()).unwrap_or_default();
-            (VERDICT_AMBER, signals.len(), first)
-        }
-        Ok(RegressionVerdict::Red { signals }) => {
-            let first = signals.first().map(|s| s.message.clone()).unwrap_or_default();
-            (VERDICT_RED, signals.len(), first)
-        }
-        Err(GateError::Blocked) => {
-            // The gate emitted the Red JSON to stdout and returned an error.
-            // We still want a ledger row — the actual signals are not in the
-            // error variant, so we record a synthetic "blocked" line.
-            (VERDICT_RED, 0, String::from("gate.error.blocked"))
-        }
-    };
-    let entry = VerdictEntry {
-        verdict: verdict_label.to_string(),
-        child_id: child_id_from_input(input),
-        iso_ts: mustard_core::time::now_iso8601(),
-        signal_count,
-        first_message,
-    };
-    let _ = review_spans::append_verdict(wave_dir, &entry);
-    economy::emit(cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.span_eval", "duration_ms": 0, "tokens_used": 0}));
-    Some(verdict_label)
-}
 
 /// The dispatch prompt — `tool_input.prompt` for a Task call.
 fn dispatch_prompt(input: &HookInput) -> String {
@@ -884,8 +672,7 @@ impl Check for SubagentInject {
         if ctx.trigger == Some(Trigger::SubagentStop) {
             let cwd = ctx.project_dir_or_cwd(input);
             let project = PathBuf::from(&cwd);
-            let _ = span_level_eval_and_append(&project, input, &cwd);
-            capture_memory_decision(&project, &cwd, input);
+                    capture_memory_decision(&project, &cwd, input);
             capture_return_report(&project, &cwd, input);
             capture_review_verdict(&project, &cwd, input);
             return Ok(Verdict::Allow);
@@ -908,7 +695,6 @@ impl Check for SubagentInject {
         // PreToolUse(Task) check in the registry, so the Rewrite verdict
         // survives the outcome fold.
         if let Some(verdict) = expand_prompt_ref(&project, &cwd, input) {
-            economy::emit(&cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.prompt_ref_expand", "duration_ms": 0, "tokens_used": 0}));
             return Ok(verdict);
         }
         let prompt = dispatch_prompt(input);
@@ -949,26 +735,10 @@ impl Check for SubagentInject {
             && !spec.is_empty() {
                 memory = spec_memory_block(&project, &spec, &prompt, &role);
             }
-        // Pre-arm the child with the regression vocabulary the
-        // gate will check. This is an INTERNAL subagent prompt, so the
-        // vocabulary is rendered in EN/technical regardless of the project's
-        // user-facing locale — agent/subagent prompts stay EN by policy; only
-        // user output, specs and waves honour the project locale. Skipped for
-        // read-only roles (Explore/guards/review): they author no plan or diff
-        // the gate scores, so the pre-arm would be noise in their window.
-        if !role_is_readonly(&role) {
-            let locale = mustard_core::SupportedLocale::EnUs;
-            let vocab = context_inject::vocabulary_inject_block(&project, locale);
-            if !vocab.is_empty() {
-                sections.push(vocab);
-            }
-        }
-
         if sections.is_empty() && memory.is_empty() {
             return Ok(Verdict::Allow);
         }
         // Emit telemetry — fail-open.
-        economy::emit(&cwd, ActorKind::Hook, "subagent_inject", "pipeline.economy.operation.invoked", None, serde_json::json!({"operation": "subagent_inject.dispatch", "duration_ms": 0, "tokens_used": 0}));
         // No size cap: every section rides in full. Relevance is the only filter.
         let pre = sections.join("\n\n");
         let context = match (pre.is_empty(), memory.is_empty()) {
@@ -1283,26 +1053,6 @@ mod tests {
     // Span-level review
     // -----------------------------------------------------------------------
 
-    /// Build a project skeleton with the wave dir + a mustard.json declaring
-    /// the locale, returning (project_root, wave_dir).
-    fn setup_wave_project(spec_name: &str, wave_slug: &str, locale: &str) -> (tempfile::TempDir, PathBuf) {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_path_buf();
-        // Create the `.claude/` skeleton so `resolve_project_root` anchors the
-        // tempdir as the project root. The injected regression vocabulary is now
-        // always EN (internal subagent prompt), so the declared `locale` no
-        // longer drives locale resolution — it is kept only to stamp a
-        // representative mustard.json into the fixture.
-        let claude = project.join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::write(claude.join("mustard.json"), format!("{{\"lang\":\"{locale}\"}}")).unwrap();
-        // Wave dir with a placeholder spec.md so `check_after_child_return`
-        // has a path that resolves to the project root.
-        let wave_dir = claude.join("spec").join(spec_name).join(wave_slug);
-        std::fs::create_dir_all(&wave_dir).unwrap();
-        std::fs::write(wave_dir.join("spec.md"), "# placeholder\n").unwrap();
-        (dir, wave_dir)
-    }
 
     /// Build a realistic `SubagentStop` payload — the shape a real stop carries,
     /// not the dispatch/PostToolUse hybrid this helper used to fabricate. A stop
@@ -1360,126 +1110,7 @@ mod tests {
         assert_eq!(final_output_text(&post_tool), "inline body");
     }
 
-    /// Three sequential children fire `SubagentStop` and
-    /// each call appends one line to `_review-spans.md`. The second child
-    /// emits a Red verdict (its output text triggers a Semantic vocab hit);
-    /// consolidation must then be blocked by [`review_spans::check_consolidation`].
-    ///
-    /// The test drives [`span_level_eval_and_append_in`] directly (passing
-    /// the wave directory as a parameter) so it needs no current spec and no
-    /// `MUSTARD_ACTIVE_WAVE` — `context::set_var` is `unsafe` under Rust 2024
-    /// and this crate forbids `unsafe_code`. The production caller
-    /// [`span_level_eval_and_append`] is a thin wrapper around the same helper
-    /// that resolves the wave directory from the current spec and the wave
-    /// variable.
-    #[test]
-    fn three_sequential_children_append_per_stop_and_red_blocks_consolidation() {
-        let spec = "span-eval";
-        let wave_slug = "wave-5-rt";
-        let (dir, wave_dir) = setup_wave_project(spec, wave_slug, "pt-BR");
-        let cwd = dir.path().to_string_lossy().to_string();
 
-        // Child 1 — clean output → green.
-        let v1 = span_level_eval_and_append_in(
-            &wave_dir,
-            &stop_input("child-1", "all good, no issues"),
-            &cwd,
-        );
-        assert_eq!(v1, Some(VERDICT_GREEN), "child-1 should land as green");
-
-        // Child 2 — output mentions a Semantic-layer term → red.
-        let v2 = span_level_eval_and_append_in(
-            &wave_dir,
-            &stop_input("child-2", "tive que fazer fail-open dessa wave"),
-            &cwd,
-        );
-        assert!(
-            v2 == Some(VERDICT_RED) || v2 == Some(VERDICT_AMBER),
-            "child-2's Semantic-layer hit should escalate past green, got {v2:?}"
-        );
-
-        // Child 3 — clean again → green.
-        let v3 = span_level_eval_and_append_in(
-            &wave_dir,
-            &stop_input("child-3", "shipped clean"),
-            &cwd,
-        );
-        assert_eq!(v3, Some(VERDICT_GREEN), "child-3 should land as green");
-
-        // Span-level: 3 lines on disk (one per stop), in order.
-        let entries = review_spans::read_entries(&wave_dir);
-        assert_eq!(entries.len(), 3, "expected one ledger line per SubagentStop, got {entries:?}");
-        assert_eq!(entries[0].child_id, "child-1");
-        assert_eq!(entries[1].child_id, "child-2");
-        assert_eq!(entries[2].child_id, "child-3");
-
-        // The middle child must have escalated past green — that is what blocks consolidation below.
-        assert_ne!(
-            entries[1].verdict, VERDICT_GREEN,
-            "child-2 must not be green: it mentioned a Semantic term"
-        );
-
-        // At least one Red on the ledger blocks consolidation. If
-        // the middle child landed as Amber on this host (because the project
-        // has no vocab file and the default Semantic list still matched at
-        // Medium severity for some reason), force a Red to exercise the
-        // blocking path — the test is about the *check*, not about which
-        // severity tier the matcher chose.
-        if matches!(review_spans::check_consolidation(&wave_dir), review_spans::ConsolidationCheck::Allowed) {
-            review_spans::append_verdict(
-                &wave_dir,
-                &VerdictEntry {
-                    verdict: VERDICT_RED.to_string(),
-                    child_id: "synthetic-red".to_string(),
-                    iso_ts: mustard_core::time::now_iso8601(),
-                    signal_count: 1,
-                    first_message: "synthetic Red to exercise the consolidation block".to_string(),
-                },
-            )
-            .expect("append synthetic red");
-        }
-        assert!(
-            matches!(review_spans::check_consolidation(&wave_dir), review_spans::ConsolidationCheck::Blocked { .. }),
-            "ledger must report a Red verdict after the three stops"
-        );
-        match review_spans::check_consolidation(&wave_dir) {
-            review_spans::ConsolidationCheck::Blocked { entry } => {
-                assert_eq!(entry.verdict, VERDICT_RED);
-            }
-            other @ review_spans::ConsolidationCheck::Allowed => panic!("expected Blocked, got {other:?}"),
-        }
-    }
-
-    /// PreToolUse Task dispatch surfaces the vocabulary inject block.
-    ///
-    /// The injected vocabulary is an INTERNAL subagent prompt, so it is always
-    /// EN/technical regardless of the project's user-facing locale — even though
-    /// this fixture declares `pt-BR` in mustard.json, the heading stays EN.
-    #[test]
-    fn pretooluse_dispatch_injects_vocabulary_block() {
-        let dir = tempdir().unwrap();
-        // A pt-BR mustard.json still must NOT localise the internal prompt.
-        let claude = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::write(claude.join("mustard.json"), "{\"lang\":\"pt-BR\"}").unwrap();
-
-        let input = task_input("refactor the user module", "general-purpose");
-        let v = SubagentInject.evaluate(&input, &ctx_for(dir.path())).unwrap();
-        match v {
-            Verdict::Inject { context } => {
-                // EN heading (internal prompt) + at least one default Semantic term.
-                assert!(
-                    context.contains("Regression vocabulary"),
-                    "expected EN vocabulary heading, got: {context}"
-                );
-                assert!(
-                    context.contains("fail-open"),
-                    "expected default Semantic term in inject, got: {context}"
-                );
-            }
-            other => panic!("expected Inject with vocab section, got {other:?}"),
-        }
-    }
 
     /// A read-only role authors no plan/diff the gate scores, so the regression
     /// vocabulary must NOT be injected. With no CONTEXT.md and no active spec,
@@ -1503,20 +1134,6 @@ mod tests {
 
     // --- <MEMORY> capture (SubagentStop → `decision` event) ----------------
 
-    /// Read every `decision` event's `title` for `spec` under `cwd`, in the
-    /// order the NDJSON files sort. Test-only helper — production readers
-    /// live in `agent::render::mod::decision_events_block`.
-    fn decision_titles(cwd: &Path, spec: &str) -> Vec<String> {
-        let events_dir = ClaudePaths::for_project(cwd)
-            .and_then(|p| p.for_spec(spec))
-            .unwrap()
-            .events_dir();
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
-            .iter()
-            .filter(|e| e.event == "decision")
-            .filter_map(|e| e.payload.get("title").and_then(|v| v.as_str()).map(str::to_string))
-            .collect()
-    }
 
     #[test]
     fn extract_memory_block_trims_and_rejects_blank() {
@@ -1529,48 +1146,7 @@ mod tests {
         assert_eq!(extract_memory_block("<MEMORY>x"), None, "unterminated tag ⇒ None");
     }
 
-    /// End-to-end: a `<MEMORY>` block in the child's final output, with the
-    /// session bound to a spec via the `active-spec` marker, lands as a
-    /// `decision` event carrying the memory text — readable back from the
-    /// spec's own event log.
-    #[test]
-    fn subagent_stop_with_memory_block_emits_decision_event() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "permissions-rbac-overhaul";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-1", spec);
 
-        let input = stop_input(
-            "impl-1",
-            "Files changed: foo.rs.\n\
-             <MEMORY>Chose atomic_md write over direct fs::write — a mid-write crash corrupts the file</MEMORY>",
-        );
-        capture_memory_decision_with_session(dir.path(), &cwd, &input, "sess-1");
-
-        let titles = decision_titles(dir.path(), spec);
-        assert_eq!(
-            titles,
-            vec!["Chose atomic_md write over direct fs::write — a mid-write crash corrupts the file".to_string()]
-        );
-    }
-
-    /// No `<MEMORY>` block in the return text ⇒ no event at all (not even an
-    /// empty one) — the common case (per the role contract, most waves emit
-    /// nothing) must cost zero writes.
-    #[test]
-    fn subagent_stop_without_memory_block_emits_nothing() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "no-memory-here";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-2", spec);
-
-        let input = stop_input("impl-2", "Files changed: bar.rs. No non-obvious decisions.");
-        capture_memory_decision_with_session(dir.path(), &cwd, &input, "sess-2");
-
-        assert!(decision_titles(dir.path(), spec).is_empty());
-    }
 
     /// A `<MEMORY>` block with no session→spec binding at all (the session
     /// was never bound, e.g. a spec-less ad-hoc dispatch) fails open: no
@@ -1596,159 +1172,13 @@ mod tests {
 
     // --- return capture (SubagentStop → `agent.return` event) ---------------
 
-    /// Every `agent.return` event for `spec` under `cwd`, as `(wave, report)`.
-    fn returned_reports(cwd: &Path, spec: &str) -> Vec<(u32, String)> {
-        let events_dir = ClaudePaths::for_project(cwd)
-            .and_then(|p| p.for_spec(spec))
-            .unwrap()
-            .events_dir();
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
-            .iter()
-            .filter(|e| e.event == EVENT_AGENT_RETURN)
-            .map(|e| {
-                (
-                    e.wave,
-                    e.payload
-                        .get("report")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                )
-            })
-            .collect()
-    }
 
-    /// Write a child transcript whose first line carries the wave stamp the real
-    /// dispatch expansion appends, and return a `SubagentStop` input pointing at
-    /// it. The stamp is produced by [`stamp_wave`] itself — never spelled out
-    /// here — so this cannot keep passing after the stamp format moves.
-    fn stop_input_from_wave(dir: &Path, child: &str, wave: u32, output_text: &str) -> HookInput {
-        let stamped = stamp_wave(
-            &format!(".claude/spec/s/.dispatch/wave-{wave}-impl.first.prompt.md"),
-            "## ROLE\nROLE: impl\n".to_string(),
-        );
-        let transcript = dir.join(format!("{child}.jsonl"));
-        std::fs::write(
-            &transcript,
-            format!("{}\n", serde_json::json!({ "message": { "content": stamped } })),
-        )
-        .unwrap();
-        let mut input = stop_input(child, output_text);
-        input.raw["agent_transcript_path"] =
-            serde_json::Value::String(transcript.to_string_lossy().to_string());
-        input
-    }
 
-    /// The return itself reaches the record, stamped with the wave that gave it.
-    ///
-    /// The measured defect: the only channel a wave's finalisation could read
-    /// was `agent.stop`, emitted at `PostToolUse(Task)` — which on a background
-    /// dispatch carries the launch acknowledgement, produced when the child
-    /// STARTS. A wave that accounted for its reality obligation by id was still
-    /// reported unaccounted, because the record had nowhere to keep the account.
-    #[test]
-    fn a_returning_childs_report_lands_stamped_with_its_own_wave() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "returns-reach-the-record";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-r1", spec);
 
-        let report = "RO-2.1 — verified on this install, unelevated: the junction needs no privilege.";
-        capture_return_report_with_session(
-            dir.path(),
-            &cwd,
-            &stop_input_from_wave(dir.path(), "impl-w2", 2, report),
-            "sess-r1",
-        );
 
-        let recorded = returned_reports(dir.path(), spec);
-        assert_eq!(recorded.len(), 1, "one return ⇒ one record: {recorded:?}");
-        assert_eq!(recorded[0].0, 2, "the record names the wave that returned");
-        assert!(recorded[0].1.contains("RO-2.1"), "the account itself: {}", recorded[0].1);
-    }
-
-    /// A return whose wave cannot be established records NOTHING.
-    ///
-    /// Both directions on purpose. A wave-less record would have to be readable
-    /// by every wave, since no wave's close could ever claim it — and that runs
-    /// the dangerous way: a stray `Task` that merely quoted `RO-2.1` out of a
-    /// spec file it read would discharge a duty nobody checked. The second half
-    /// pins that the silence is the missing stamp and not a dead capture.
-    #[test]
-    fn a_return_with_no_wave_is_not_recorded_against_any_wave() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "unstamped-returns";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-r2", spec);
-
-        // An ad-hoc child: real return text, no dispatch stamp anywhere.
-        capture_return_report_with_session(
-            dir.path(),
-            &cwd,
-            &stop_input("explore-1", "I read wave-2-reap/spec.md, which declares RO-2.1."),
-            "sess-r2",
-        );
-        assert!(
-            returned_reports(dir.path(), spec).is_empty(),
-            "an unattributed return must not become a record every wave reads"
-        );
-
-        // The same call with a stamped transcript does record — so the silence
-        // above is the missing wave, not a capture that never fires.
-        capture_return_report_with_session(
-            dir.path(),
-            &cwd,
-            &stop_input_from_wave(dir.path(), "impl-w2", 2, "RO-2.1 — checked."),
-            "sess-r2",
-        );
-        assert_eq!(returned_reports(dir.path(), spec).len(), 1);
-    }
-
-    /// Two children in the SAME spec each emit a DIFFERENT `<MEMORY>` — both
-    /// land, in order, as separate `decision` events (never overwriting one
-    /// another; the NDJSON sink is append-only).
-    #[test]
-    fn two_children_same_spec_both_decisions_land() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "multi-wave-spec";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-3", spec);
-
-        capture_memory_decision_with_session(
-            dir.path(), &cwd,
-            &stop_input("wave-1-child", "<MEMORY>decision from wave 1</MEMORY>"),
-            "sess-3",
-        );
-        capture_memory_decision_with_session(
-            dir.path(), &cwd,
-            &stop_input("wave-2-child", "<MEMORY>decision from wave 2</MEMORY>"),
-            "sess-3",
-        );
-
-        let titles = decision_titles(dir.path(), spec);
-        assert_eq!(titles.len(), 2, "{titles:?}");
-        assert!(titles.contains(&"decision from wave 1".to_string()));
-        assert!(titles.contains(&"decision from wave 2".to_string()));
-    }
 
     // --- <VERDICT> capture (SubagentStop → `review.result` event) -----------
 
-    /// Read every `review.result` event's payload for `spec` under `cwd`, in the
-    /// order the NDJSON files sort. Test-only mirror of [`decision_titles`].
-    fn review_results(cwd: &Path, spec: &str) -> Vec<serde_json::Value> {
-        let events_dir = ClaudePaths::for_project(cwd)
-            .and_then(|p| p.for_spec(spec))
-            .unwrap()
-            .events_dir();
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
-            .into_iter()
-            .filter(|e| e.event == "review.result")
-            .map(|e| e.payload)
-            .collect()
-    }
 
     #[test]
     fn extract_verdict_block_parses_validates_and_rejects_malformed() {
@@ -1779,153 +1209,6 @@ mod tests {
         );
     }
 
-    /// A review subagent returns a `<VERDICT>` block; the SubagentStop
-    /// hook parses it and emits ONE `review.result` event whose `verdict` and
-    /// `criticalCount` equal the block's values, with no orchestrator call to
-    /// `review-result`.
-    #[test]
-    fn capture_review_verdict_emits_review_result() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "structured-review-verdict-capture-via";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-r1", spec);
 
-        let input = stop_input(
-            "mustard:mustard-review",
-            "pass/fail per claim — tests run with the feature enabled.\n\
-             <VERDICT>{\"verdict\":\"rejected\",\"critical\":2,\"findings\":[\
-             {\"severity\":\"critical\",\"location\":\"a.rs:1\",\"summary\":\"guard broken\"},\
-             {\"severity\":\"critical\",\"location\":\"b.rs:9\",\"summary\":\"mold violated\"}]}</VERDICT>",
-        );
-        capture_review_verdict_with_session(dir.path(), &cwd, &input, "sess-r1");
 
-        let results = review_results(dir.path(), spec);
-        assert_eq!(results.len(), 1, "exactly one review.result: {results:?}");
-        assert_eq!(results[0]["verdict"], json!("rejected"));
-        assert_eq!(results[0]["criticalCount"], json!(2));
-        assert_eq!(results[0]["spec"], json!(spec));
-    }
-
-    /// Faithful shape: the SAME capture, but driven from a payload
-    /// DESERIALISED from the exact stdin JSON a real `SubagentStop` delivers —
-    /// `agent_type` at the top level (serde routes it to the TYPED field, not
-    /// `raw`) and the output as `last_assistant_message`. This is precisely the
-    /// shape the previous gate — `role_from_input`, a `tool_input.subagent_type`-
-    /// only reader — silently no-op'd on, making the whole feature inert in
-    /// production while the struct-built test above still passed. Proves
-    /// `capture_review_verdict` fires end to end on the real deserialisation path.
-    #[test]
-    fn capture_review_verdict_fires_on_deserialized_stop_json() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "structured-review-verdict-capture-via";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-r-json", spec);
-
-        // The exact stdin shape: top-level `agent_type` + `last_assistant_message`.
-        let stdin = r#"{
-            "hook_event_name": "SubagentStop",
-            "agent_type": "mustard:mustard-review",
-            "agent_id": "rev-json-1",
-            "last_assistant_message": "audit done.\n<VERDICT>{\"verdict\":\"rejected\",\"critical\":1,\"findings\":[{\"severity\":\"critical\",\"location\":\"x.rs:3\",\"summary\":\"guard\"}]}</VERDICT>"
-        }"#;
-        let input: HookInput = serde_json::from_str(stdin).expect("deserialize stop json");
-        // Serde routes `agent_type` into the TYPED field and `flatten` leaves it
-        // OUT of `raw` — exactly why the dispatch-path reader missed it on a stop.
-        assert_eq!(input.agent_type.as_deref(), Some("mustard:mustard-review"));
-        assert!(
-            input.raw.get("agent_type").is_none(),
-            "flatten must not duplicate agent_type into raw"
-        );
-
-        capture_review_verdict_with_session(dir.path(), &cwd, &input, "sess-r-json");
-
-        let results = review_results(dir.path(), spec);
-        assert_eq!(results.len(), 1, "one review.result on the real stop shape: {results:?}");
-        assert_eq!(results[0]["verdict"], json!("rejected"));
-        assert_eq!(results[0]["criticalCount"], json!(1));
-        assert_eq!(results[0]["spec"], json!(spec));
-    }
-
-    /// No `<VERDICT>` block, or a malformed / out-of-vocabulary one, is a
-    /// silent no-op (fail-open): the hook emits nothing and the manual
-    /// `review-result` path stays the source of the verdict.
-    #[test]
-    fn verdict_block_absent_is_noop() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "no-verdict-here";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-r2", spec);
-
-        // Absent — prose only, no machine-readable block.
-        capture_review_verdict_with_session(
-            dir.path(), &cwd,
-            &stop_input("mustard:mustard-review", "Looks good overall. Approving this."),
-            "sess-r2",
-        );
-        // Malformed — the tag is present but its body is not valid JSON.
-        capture_review_verdict_with_session(
-            dir.path(), &cwd,
-            &stop_input("mustard:mustard-review", "<VERDICT>{verdict: rejected, critical: 2</VERDICT>"),
-            "sess-r2",
-        );
-        // Out-of-vocabulary — valid JSON, but `verdict` is not approved/rejected.
-        capture_review_verdict_with_session(
-            dir.path(), &cwd,
-            &stop_input("mustard:mustard-review", "<VERDICT>{\"verdict\":\"maybe\",\"critical\":0,\"findings\":[]}</VERDICT>"),
-            "sess-r2",
-        );
-
-        assert!(
-            review_results(dir.path(), spec).is_empty(),
-            "absent/malformed block must emit no review.result"
-        );
-    }
-
-    /// The role gate: a NON-review agent whose output happens to carry a
-    /// `<VERDICT>`-shaped block must NOT emit a `review.result` — verdict
-    /// capture is scoped to the review role only.
-    #[test]
-    fn review_verdict_wrong_role_is_noop() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path().to_string_lossy().to_string();
-        let spec = "wrong-role-spec";
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join(spec)).unwrap();
-        crate::shared::context::bind_session_spec(&cwd, "sess-r3", spec);
-
-        let input = stop_input(
-            "general-purpose",
-            "<VERDICT>{\"verdict\":\"approved\",\"critical\":0,\"findings\":[]}</VERDICT>",
-        );
-        capture_review_verdict_with_session(dir.path(), &cwd, &input, "sess-r3");
-
-        assert!(
-            review_results(dir.path(), spec).is_empty(),
-            "non-review role must not emit review.result"
-        );
-    }
-
-    /// `role_is_readonly` normalises a namespaced plugin agent type to its bare
-    /// name, so the qualified `mustard:mustard-review` that `dispatch-plan` now
-    /// emits is recognised exactly like the bare `mustard-review`. It also covers
-    /// `mustard-patterns` (the read-only mold author), previously absent from the
-    /// denylist — without it the pattern agent got the regression-vocab noise.
-    #[test]
-    fn role_is_readonly_normalises_namespaced_plugin_agents() {
-        // Bare and namespaced forms are equivalent.
-        assert!(role_is_readonly("mustard-review"));
-        assert!(role_is_readonly("mustard:mustard-review"));
-        assert!(role_is_readonly("mustard-guards"));
-        assert!(role_is_readonly("mustard:mustard-guards"));
-        // mustard-patterns is read-only (was missing) — both forms.
-        assert!(role_is_readonly("mustard-patterns"));
-        assert!(role_is_readonly("mustard:mustard-patterns"));
-        // Built-in read-only stays matched; a code author never does, even when
-        // namespaced (stripping the prefix must not flip a writer to read-only).
-        assert!(role_is_readonly("Explore"));
-        assert!(!role_is_readonly("general-purpose"));
-        assert!(!role_is_readonly("mustard:general-purpose"));
-    }
 }

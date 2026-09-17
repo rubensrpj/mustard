@@ -13,9 +13,9 @@
 //!   `.join(".claude")` on top of a path that was already inside `.claude/`,
 //!   producing the forbidden `.claude/.claude/` sequence. The guard below
 //!   exists to make this a typed error rather than silent corruption.
-//! - **No catalog.** `claude_dir_prune` and `doctor` both maintained their own
-//!   private lists of "known" directories / cache files — every new entry had
-//!   to be added in three places.
+//! - **No catalog.** Cada consumidor mantinha a sua própria lista privada de
+//!   pastas "conhecidas" — cada entrada nova tinha de ser acrescentada em
+//!   três lugares.
 //!
 //! This module replaces all three failures with a single typed handle. Every
 //! consumer in [`apps/rt`] calls [`ClaudePaths::for_project`] once, then asks
@@ -147,14 +147,14 @@ pub struct WavePaths {
     wave_slug: String,
 }
 
-/// Top-level directory names under `<root>/.claude/`. The list is kept in one
-/// place so [`crate::io::claude_paths`] consumers (notably `claude_dir_prune`) can
-/// derive their catalog from it instead of hand-maintaining a duplicate.
+/// Top-level directory names under `<root>/.claude/`. A lista mora num lugar
+/// só para o semeador do projeto derivar dela as regras de exclusão da
+/// instalação privada, em vez de manter uma cópia à mão.
 ///
-/// `.pipeline-states` is included because [`ClaudePaths::pipeline_states_dir`]
-/// exposes it as a first-class accessor — every dir reachable through a
-/// `&self` method on `ClaudePaths` MUST appear here, or the
-/// `doctor --check claude-paths` audit will flag it as unexpected.
+/// `.pipeline-states` entra porque [`ClaudePaths::pipeline_states_dir`] a
+/// expõe como acessador de primeira classe: toda pasta alcançável por um
+/// método `&self` de `ClaudePaths` PRECISA aparecer aqui, ou o que a Mustard
+/// escreve nela fica visível no `git status` do cliente.
 const DOCUMENTED_DIRS: &[&str] = &[
     ".cache",
     ".harness",
@@ -192,19 +192,6 @@ const DOCUMENTED_DIRS: &[&str] = &[
     // Lista de pendências fora de qualquer unidade (`run pending`), resolvida
     // no checkout principal — sobrevive à troca de branch e ao fim da unidade.
     "pending",
-];
-
-/// File names under `<root>/.claude/.cache/` that Mustard owns. Single source
-/// for the `doctor` cache-orphan check.
-const CACHE_FILES: &[&str] = &[
-    "detect.json",
-    "scan-dispatch.json",
-    "knowledge-seen.json",
-    // PLAN-phase materialisation inputs (`plan-materialize`).
-    "plan.json",
-    "plan2.json",
-    // The conversation-material channel `spec-draft --material` reads.
-    "spec-material.json",
 ];
 
 /// O nome do índice das specs, dentro de `.claude/spec/`.
@@ -468,58 +455,6 @@ impl ClaudePaths {
     #[must_use]
     pub fn documented_dirs() -> Vec<&'static str> {
         DOCUMENTED_DIRS.to_vec()
-    }
-
-    /// List of every file under `<root>/.claude/.cache/` that Mustard owns.
-    /// Consumed by `doctor` for the cache-orphan check.
-    #[must_use]
-    pub fn cache_files() -> Vec<&'static str> {
-        CACHE_FILES.to_vec()
-    }
-
-    /// Walk `<root>/.claude/` and return every direct child that is **not**
-    /// in [`Self::documented_dirs`] (top-level) plus every cache file under
-    /// `.cache/` that is not in [`Self::cache_files`].
-    ///
-    /// Fail-open: a missing `.claude/` returns an empty vector rather than
-    /// erroring — callers (the `doctor` face) treat absence as "nothing to
-    /// audit".
-    #[must_use]
-    pub fn audit_orphans(&self) -> Vec<PathBuf> {
-        let mut orphans = Vec::new();
-        let documented: std::collections::HashSet<&str> =
-            DOCUMENTED_DIRS.iter().copied().collect();
-        let claude = self.claude_dir();
-        if let Ok(read) = std::fs::read_dir(&claude) {
-            for entry in read.flatten() {
-                let name = entry.file_name();
-                let Some(name_str) = name.to_str() else { continue };
-                // Top-level files belong in the root-file accessors; skip
-                // them here (they are not "directories Mustard documents").
-                let Ok(ty) = entry.file_type() else { continue };
-                if !ty.is_dir() {
-                    continue;
-                }
-                if !documented.contains(name_str) {
-                    orphans.push(entry.path());
-                }
-            }
-        }
-        let cache_files: std::collections::HashSet<&str> = CACHE_FILES.iter().copied().collect();
-        if let Ok(read) = std::fs::read_dir(self.cache_dir()) {
-            for entry in read.flatten() {
-                let name = entry.file_name();
-                let Some(name_str) = name.to_str() else { continue };
-                let Ok(ty) = entry.file_type() else { continue };
-                if !ty.is_file() {
-                    continue;
-                }
-                if !cache_files.contains(name_str) {
-                    orphans.push(entry.path());
-                }
-            }
-        }
-        orphans
     }
 
     // -- nested constructors --------------------------------------------
@@ -897,30 +832,11 @@ mod tests {
         for name in expected {
             assert!(dirs.contains(&name), "missing {name} from documented_dirs");
         }
-        // Exact, not merely a superset — the same ratchet `cache_files` carries.
+        // Exact, not merely a superset.
         // Every name here becomes a `**/.claude/<name>/` exclude rule in a
         // private install (`project_seed::harness_claude_output`), so a stray
         // entry hides a client directory from their own `git add -A`.
         assert_eq!(dirs.len(), expected.len());
-    }
-
-    #[test]
-    fn cache_files_lists_every_owned_cache() {
-        let files = ClaudePaths::cache_files();
-        let expected = [
-            "detect.json",
-            "scan-dispatch.json",
-            "knowledge-seen.json",
-            "plan.json",
-            "plan2.json",
-            "spec-material.json",
-        ];
-        for name in expected {
-            assert!(files.contains(&name), "missing {name} from cache_files");
-        }
-        // Exact, not merely a superset: a cache file dropped from the catalog
-        // starts being reported as an orphan by `audit_orphans`.
-        assert_eq!(files.len(), expected.len());
     }
 
     #[test]
@@ -933,38 +849,6 @@ mod tests {
         assert_eq!(sp.spec_md_path(), sp.spec_md_path());
         let wp = sp.for_wave("wave-1-rt").unwrap();
         assert_eq!(wp.diff_md_path(), wp.diff_md_path());
-    }
-
-    #[test]
-    fn audit_orphans_returns_empty_on_clean_tree() {
-        let dir = tempdir().unwrap();
-        let cp = ClaudePaths::for_project(dir.path()).unwrap();
-        // Build only documented children — no orphans expected.
-        let claude = cp.claude_dir();
-        std::fs::create_dir_all(&claude).unwrap();
-        for d in ClaudePaths::documented_dirs() {
-            std::fs::create_dir_all(claude.join(d)).unwrap();
-        }
-        // Drop one expected cache file so the cache pass exercises its scan
-        // and still finds no orphan.
-        std::fs::write(cp.detect_cache_path(), b"{}").unwrap();
-        let orphans = cp.audit_orphans();
-        assert!(orphans.is_empty(), "expected no orphans, got {orphans:?}");
-    }
-
-    #[test]
-    fn audit_orphans_flags_unknown_dir_and_cache_file() {
-        let dir = tempdir().unwrap();
-        let cp = ClaudePaths::for_project(dir.path()).unwrap();
-        let claude = cp.claude_dir();
-        std::fs::create_dir_all(&claude).unwrap();
-        // Plant one undocumented top-level directory and one undocumented
-        // cache file.
-        std::fs::create_dir_all(claude.join("legacy-bucket")).unwrap();
-        std::fs::create_dir_all(cp.cache_dir()).unwrap();
-        std::fs::write(cp.cache_dir().join("stale.json"), b"{}").unwrap();
-        let orphans = cp.audit_orphans();
-        assert_eq!(orphans.len(), 2, "got {orphans:?}");
     }
 
     #[test]

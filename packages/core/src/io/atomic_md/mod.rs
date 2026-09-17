@@ -6,8 +6,6 @@
 //! - [`frontmatter`] — [`Frontmatter`]: lenient YAML header extraction.
 //! - [`wikilink`] — pure functions: extract, resolve, render footer.
 
-pub mod frontmatter;
 pub mod wikilink;
 
-pub use frontmatter::Frontmatter;
 pub use wikilink::{find_outgoing_links, render_footer, resolve, scan_links};

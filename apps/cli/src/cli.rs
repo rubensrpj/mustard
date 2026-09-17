@@ -1,21 +1,22 @@
 //! Argument parsing and subcommand dispatch.
 //!
 //! The `mustard` binary exposes a small set of subcommands: `init` (the thin
-//! 2.0 bootstrap), `config` (git-flow), `add` (third-party community template),
-//! and the opt-in `install-nerd-font` / `install-grammars` helpers. `clap`'s
-//! derive API builds the parser from the types below.
+//! 2.0 bootstrap), `config` (git-flow) and the opt-in `install-nerd-font`
+//! helper. `clap`'s derive API builds the parser from the types below.
 //!
 //! Retired: `update` (versioned refreshes come from the plugin marketplace; a
-//! re-run of `init` re-stamps `mustard.json#version`) and `review` (the
-//! `/mustard:pr review` step drives the native code-review skill).
+//! re-run of `init` re-stamps `mustard.json#version`), `review` (the
+//! `/mustard:pr review` step drives the native code-review skill), `add`, o
+//! molde de terceiros que nenhum item da spec pede, e o sugeridor de
+//! gramáticas do tree-sitter, que não baixava nem compilava gramática
+//! nenhuma — só imprimia um repositório e uma linha de shell para a pessoa
+//! rodar à mão.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::commands::add::{self, AddOptions};
 use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
-use crate::commands::install_grammars::{self, InstallGrammarsArgs};
 use crate::commands::install_nerd_font::{self, InstallNerdFontOptions};
 
 /// Framework-agnostic CLI for Claude Code project setup.
@@ -47,14 +48,6 @@ enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
-    /// Install a third-party community template into `.claude/`.
-    Add {
-        /// Template identifier (e.g. `template:dotnet-clean-arch`).
-        template: String,
-        /// Overwrite existing files.
-        #[arg(short, long)]
-        force: bool,
-    },
     /// Install a Nerd Font on the host (required for powerline statusline themes).
     #[command(name = "install-nerd-font")]
     InstallNerdFont {
@@ -68,18 +61,6 @@ enum Commands {
         /// Print intended actions without invoking any package manager.
         #[arg(long = "dry-run")]
         dry_run: bool,
-    },
-    /// Suggest tree-sitter grammar repos for languages detected in the project.
-    ///
-    /// Mustard never downloads or compiles grammars — it only prints the
-    /// canonical repository and a shell-ready install command for each
-    /// detected language. See `mustard_core::domain::ast::GrammarLoader` for how the
-    /// regression gate consumes the grammars once they are installed.
-    #[command(name = "install-grammars")]
-    InstallGrammars {
-        /// Project root to scan. Defaults to the current working directory.
-        #[arg(long = "project-root")]
-        project_root: Option<std::path::PathBuf>,
     },
 }
 
@@ -128,17 +109,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
-        Commands::Add { template, force } => {
-            add::add(&cwd, &template, &AddOptions { force })
-        }
         Commands::InstallNerdFont { font, force, dry_run } => {
             install_nerd_font::install_nerd_font(
                 &cwd,
                 &InstallNerdFontOptions { font, force, dry_run },
             )
-        }
-        Commands::InstallGrammars { project_root } => {
-            install_grammars::run(InstallGrammarsArgs { project_root })
         }
     }
 }
@@ -159,6 +134,27 @@ mod tests {
         }
     }
 
+    /// O sugeridor de gramáticas do tree-sitter não é mais um comando.
+    ///
+    /// Ele não baixava nem compilava gramática nenhuma: imprimia um endereço
+    /// de repositório e uma linha de shell para a pessoa rodar à mão, não
+    /// tinha um único chamador e não está na lista de comandos aprovada.
+    /// Registrá-lo de volta é o defeito que este teste pega — um nome que a
+    /// lista não tem volta a responder, e ninguém percebe porque a compilação
+    /// continua passando.
+    #[test]
+    fn o_sugeridor_de_gramaticas_nao_e_mais_um_comando() {
+        for argv in [
+            vec!["mustard", "install-grammars"],
+            vec!["mustard", "install-grammars", "--project-root", "."],
+        ] {
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{argv:?} tem de ser recusado — o sugeridor de gramáticas saiu da superfície",
+            );
+        }
+    }
+
     /// The install has NO mode switch. A private install is the only install
     /// there is, so `init` takes no flag for it and none against it — nothing
     /// to pass, nothing to remember, and no argv that can produce a visible
@@ -176,12 +172,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parses_add_positional() {
-        let cli = Cli::try_parse_from(["mustard", "add", "template:foo"]).unwrap();
-        match cli.command {
-            Commands::Add { template, .. } => assert_eq!(template, "template:foo"),
-            other => panic!("expected Add, got {other:?}"),
-        }
-    }
 }

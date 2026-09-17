@@ -1,16 +1,9 @@
+//! A página avulsa e as peças de spec que o fluxo e a barra de status leem.
+
 pub mod cli;
 
-pub mod material_add;
 pub mod active_specs;
-pub mod approve_spec;
-pub mod complete_spec;
 pub mod page;
-pub mod mark_finding;
 pub mod spec_doc;
-pub mod spec_draft;
-pub mod spec_scaffold;
 pub mod spec_sections;
 pub mod spec_slug;
-pub mod rebuild_specs;
-pub mod scope_decompose;
-pub mod scan_spec;

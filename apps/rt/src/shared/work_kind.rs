@@ -638,9 +638,7 @@ impl BaseFlow {
         let project = self.project.as_deref()?;
         let slug = self.slug_of(name)?;
         let dir = unit_dir(project, &slug)?;
-        let recorded = mustard_core::read_meta(&dir.join("meta.json"))
-            .and_then(|meta| meta.base)
-            .or_else(|| cut_base_in(&dir))?;
+        let recorded = cut_base_in(&dir)?;
         let recorded = recorded.trim().to_string();
         base_still_on_remote(project, &recorded).then_some(recorded)
     }
@@ -673,9 +671,7 @@ impl BaseFlow {
         let Some(project) = self.project.as_deref() else { return };
         let Some(slug) = self.slug_of(branch) else { return };
         let Some(dir) = unit_dir(project, &slug) else { return };
-        let already = mustard_core::read_meta(&dir.join("meta.json"))
-            .and_then(|meta| meta.base)
-            .or_else(|| cut_base_in(&dir));
+        let already = cut_base_in(&dir);
         if already.as_deref() == Some(base) {
             return; // already says exactly this — write nothing
         }
@@ -998,139 +994,6 @@ mod tests {
         assert_eq!(flow.slug_of("dev_release_thing").as_deref(), Some("thing"));
     }
 
-    /// AC-5, second half — the operator's chosen base SURVIVES the cut.
-    ///
-    /// With three bases a hotfix has two candidates and the pick is the
-    /// operator's. The branch name records what the unit IS, so it cannot carry
-    /// that pick, and the pending marker that did carry it is consumed the
-    /// moment the branch is cut. Without a durable record every later read
-    /// answered the OUTERMOST candidate — which is not the base the unit came
-    /// from, and not the base its pull request should target.
-    #[test]
-    fn a_recorded_base_outlives_the_cut_and_an_unrecorded_one_is_never_guessed() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let project = dir.path();
-        let git = three_tier();
-
-        // Nothing recorded yet: the flow ALONE cannot choose, and naming one
-        // here is exactly the silent replacement of the operator's answer. It
-        // must say it does not know.
-        //
-        // The candidate list widened from the emergency bases to ALL of them,
-        // and that follows from the same change: while the kind implied a base,
-        // a `hotfix/` could only have come from an emergency one, so only those
-        // were candidates. With the prefix carrying nothing, every declared base
-        // is equally possible.
-        let flow = BaseFlow::of_at(&git, project);
-        assert_eq!(
-            flow.base_of("hotfix/my-unit"),
-            UnitBase::Ambiguous(vec![
-                "dev".to_string(),
-                "main".to_string(),
-                "qas".to_string(),
-            ]),
-            "several candidates and no record — the answer was never established",
-        );
-        assert!(flow.base_of("hotfix/my-unit").is_unit(), "it is still a unit of this project");
-        assert_eq!(flow.base_of("hotfix/my-unit").known(), None, "and it is not answered");
-        assert_eq!(flow.base_of("hotfix/my-unit").candidates(), ["dev", "main", "qas"]);
-
-        // The cut records the MIDDLE base — the operator's pick.
-        flow.record_cut_base("hotfix/my-unit", "qas");
-        let after = BaseFlow::of_at(&git, project);
-        assert_eq!(
-            after.base_of("hotfix/my-unit").known(),
-            Some("qas"),
-            "every later read answers the base the unit was really cut from",
-        );
-
-        // The record is HARNESS STATE inside the unit's directory — never the
-        // sidecar, which at this moment does not exist and whose presence is
-        // exactly what makes `spec-draft` refuse the directory as already
-        // drafted. The cut must leave the draft a directory it can still write.
-        let unit = project.join(".claude").join("spec").join("my-unit");
-        assert_eq!(
-            std::fs::read_to_string(unit.join(CUT_BASE_FILE)).expect("the cut's record").trim(),
-            "qas",
-        );
-        assert!(
-            !unit.join("meta.json").exists(),
-            "the cut drafts nothing — a meta.json here is a DRAFT, and writing one \
-             would leave the unit cut and spec-less",
-        );
-
-        // The draft folds it into the sidecar; from then on the sidecar answers
-        // and the cut's record is spent.
-        let sidecar = unit.join("meta.json");
-        let folded = mustard_core::domain::meta::Meta {
-            base: cut_base_in(&unit),
-            ..Default::default()
-        };
-        mustard_core::write_meta(&sidecar, &folded).expect("fold");
-        clear_cut_base_in(&unit);
-        assert_eq!(
-            BaseFlow::of_at(&git, project).base_of("hotfix/my-unit").known(),
-            Some("qas"),
-            "the answer survives the fold — one home at a time, never none",
-        );
-
-        // A flow that no longer declares the recorded base OBEYS it anyway.
-        // The configuration is not the test: `qas` is where this unit really
-        // came from, and a `mustard.json` edited afterwards cannot move a cut
-        // that already happened. What DOES retire a record is the branch itself
-        // disappearing — see `a_vanished_recorded_base_is_ignored`.
-        let moved_on = BaseFlow::of_at(&two_tier(), project);
-        assert_eq!(
-            moved_on.base_of("hotfix/my-unit").known(),
-            Some("qas"),
-            "the operator's answer outlives a flow that never mentioned it",
-        );
-
-        // The condition GENERALISED with the change. It used to mean "a hotfix
-        // where the emergency bases are several", because that was the one case
-        // the kind could not resolve. Now the kind resolves NOTHING, so every
-        // unit of a multi-base project records its base — the feature included.
-        let two = BaseFlow::of_at(&two_tier(), project);
-        assert!(two.base_must_be_recorded("hotfix/other"), "two bases — the pick must survive");
-        assert!(two.base_must_be_recorded("feature/other"), "and a feature makes the same pick");
-
-        // …and where NOTHING can be measured — this `project` is a bare
-        // directory, not a repository — the declared count is the last resort,
-        // so a single declared base still reads as "nothing was chosen". That
-        // is the FALLBACK and not the rule: given a real catalogue the question
-        // is asked of the branches that exist, which is what lets a
-        // single-base project keep the operator's pick
-        // (`the_recorded_base_survives_to_the_cut_in_any_project`).
-        let mut single = GitConfig::default();
-        single.flow.insert("*".to_string(), "main".to_string());
-        let one = BaseFlow::of_at(&single, project);
-        assert!(
-            !one.base_must_be_recorded("feature/other"),
-            "one declared base and no catalogue to ask — nothing to remember",
-        );
-        one.record_cut_base("feature/other", "main");
-        assert!(
-            !project.join(".claude").join("spec").join("other").exists(),
-            "a derivable base is never frozen into a record",
-        );
-
-        // A model with no project consults no record, so it can only say what
-        // the flow leaves undisputed. With three bases declared that is nothing
-        // — for EVERY kind, which is the same generalisation as above.
-        let rootless = BaseFlow::of(&git);
-        for name in ["hotfix/my-unit", "feature/my-unit"] {
-            assert!(
-                matches!(rootless.base_of(name), UnitBase::Ambiguous(_)),
-                "no record and several bases: {name} has no established base",
-            );
-        }
-
-        // …and the single-base project is where it CAN answer without a record,
-        // because there is only one thing the answer could ever have been.
-        let mut single = GitConfig::default();
-        single.flow.insert("*".to_string(), "main".to_string());
-        assert_eq!(BaseFlow::of(&single).base_of("feature/my-unit").known(), Some("main"));
-    }
 
     /// A repository whose REMOTE really has `branches` — the refs the existence
     /// probe reads. `false` when git is unusable here, so a caller can skip

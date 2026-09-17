@@ -653,44 +653,4 @@ mod tests {
         assert!(verdict(root, &stop("s-again", omits)).is_blocking(), "the merge charges again");
     }
 
-    /// Fechar a spec, e gravar os eventos de fechamento e de merge, não deixa
-    /// marca nenhuma na sessão: quem arma a cobrança é a porta do binário, e o bloqueio
-    /// nomeia a spec que fechou.
-    #[test]
-    fn closing_a_spec_leaves_no_session_mark() {
-        let dir = project_with_two_open_items();
-        let root = dir.path();
-        seed_spec(root, SPEC, &[1], "s-marca");
-        let project = root.to_string_lossy().into_owned();
-        for name in ["pipeline.complete", "pr.merged"] {
-            let event = mustard_core::domain::model::event::HarnessEvent {
-                v: mustard_core::domain::model::event::SCHEMA_VERSION,
-                ts: "2026-09-10T12:00:00.000Z".to_string(),
-                session_id: "s-marca".to_string(),
-                wave: 0,
-                actor: mustard_core::domain::model::event::Actor {
-                    kind: mustard_core::domain::model::event::ActorKind::Orchestrator,
-                    id: Some("test".to_string()),
-                    actor_type: None,
-                },
-                event: name.to_string(),
-                payload: json!({}),
-                spec: Some(SPEC.to_string()),
-            };
-            assert!(crate::shared::events::route::emit(&project, &event), "{name} recorded");
-        }
-        assert!(record_phase(root, SPEC, "closed", None), "the spec closes by the binary door");
-
-        let session_dir = root.join(".claude").join(".session").join("s-marca");
-        let names: Vec<String> = std::fs::read_dir(&session_dir)
-            .map(|entries| entries.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
-            .unwrap_or_default();
-        assert!(!names.iter().any(|name| name == "unit-closed"), "no session mark: {names:?}");
-        match verdict(root, &stop("s-marca", "Fechei.")) {
-            Verdict::Deny { reason } => {
-                assert!(reason.contains(SPEC) && reason.contains("Humanize"), "{reason}");
-            }
-            other => panic!("the closed state arms the charge, got {other:?}"),
-        }
-    }
 }

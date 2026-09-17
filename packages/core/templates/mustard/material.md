@@ -44,4 +44,4 @@ The page is written in the project's text language (`language.text` in `mustard.
 
 The Mustard layout IS the project's design system: it beats any page-design guidance that asks for a fresh look per subject. Measured 2026-09-10: a page published in another project with a look of its own — the rule lived in one machine's memory, and memory does not travel.
 
-**Publishing is not an option.** When a publishing tool exists, the page is published on claude.ai, republished at the SAME address whenever it changes, and the link is handed to the user. The spec page records its address: `mustard-rt run spec-doc --spec {slug} --published-url <url>`. With no publishing tool, hand over the ways to open it that exist today.
+**Publishing is not an option.** When a publishing tool exists, the page is published on claude.ai, republished at the SAME address whenever it changes, and the link is handed to the user. The spec page records its address as an event: `mustard-rt run write publish --spec {slug} --json '{"page":"spec","ok":true,"url":"<url>"}'`. With no publishing tool, hand over the ways to open it that exist today.

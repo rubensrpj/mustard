@@ -32,9 +32,7 @@
 //!   `retry.attempt`.
 
 use mustard_core::io::fs;
-use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
 use mustard_core::ClaudePaths;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -303,25 +301,14 @@ fn read_state_objects(paths: &ClaudePaths) -> Vec<StateObject> {
 /// `retry.attempt` lives in the per-spec NDJSON sink, not in `pipeline_events`.
 /// Existence-only probe (a single line is enough), so this returns early.
 fn spec_has_retry_events(cwd: &str, spec: &str) -> bool {
-    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
-        return false;
-    };
-    let Ok(spec_paths) = paths.for_spec(spec) else {
-        return false;
-    };
-    let events_dir = spec_paths.events_dir();
-    for ev in read_harness_events_from_ndjson_dir(&events_dir) {
-        if ev.event == "retry.attempt" {
-            return true;
-        }
-    }
+    // O fluxo de eventos do gravador velho saiu: nenhuma tentativa fica gravada ali.
+    let _ = (cwd, spec);
     false
 }
 
-/// Emit one `retry.attempt` event per measured hook-level retry. Idempotent:
-/// a spec already carrying `retry.attempt` events is skipped. Port of
-/// `emitRetryAttempts`.
-fn emit_retry_attempts(state: &StateObject, input: &HookInput, cwd: &str) {
+/// O gravador velho de eventos saiu, e com ele o destino da tentativa
+/// repetida. O observador em si é gancho, e sai com os ganchos.
+fn emit_retry_attempts(state: &StateObject, _input: &HookInput, cwd: &str) {
     let retries = state
         .json
         .get("metrics")
@@ -336,24 +323,9 @@ fn emit_retry_attempts(state: &StateObject, input: &HookInput, cwd: &str) {
         return;
     }
     for _ in 0..retries {
-        let event = HarnessEvent {
-            v: SCHEMA_VERSION,
-            ts: now_iso8601(),
-            session_id: session_id(input),
-            wave: 0,
-            actor: Actor {
-                kind: ActorKind::Hook,
-                id: Some("session-knowledge".to_string()),
-                actor_type: None,
-            },
-            event: "retry.attempt".to_string(),
-            payload: json!({ "reason": "hook-level", "tool": Value::Null }),
-            spec: Some(spec.clone()),
-        };
         // `retry.attempt` is non-pipeline → routed to the per-spec NDJSON
         // sink by the pipeline/non-pipeline split. `route::emit` is the single
         // classifier; see `apps/rt/src/run/event_route.rs`.
-        let _ = crate::shared::events::route::emit(cwd, &event);
     }
 }
 
@@ -570,71 +542,8 @@ mod tests {
         assert_eq!(parsed["entries"].as_array().unwrap().len(), 1);
     }
 
-    /// Count `retry.attempt` rows across every per-spec NDJSON dir.
-    fn count_retry_events(project: &Path) -> usize {
-        let Ok(paths) = ClaudePaths::for_project(project) else {
-            return 0;
-        };
-        let specs_root = paths.spec_dir();
-        let Ok(entries) = std::fs::read_dir(&specs_root) else {
-            return 0;
-        };
-        let mut total = 0usize;
-        for entry in entries.flatten() {
-            let dir = entry.path().join(".events");
-            for ev in read_harness_events_from_ndjson_dir(&dir) {
-                if ev.event == "retry.attempt" {
-                    total += 1;
-                }
-            }
-        }
-        total
-    }
 
-    #[test]
-    fn session_knowledge_emits_retry_attempt_events() {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        write_state(
-            dir.path(),
-            "retried",
-            &json!({ "specName": "retried", "metrics": { "retries": 3 } }),
-        );
-        let input = HookInput {
-            hook_event_name: Some("SessionEnd".to_string()),
-            session_id: Some("s-1".to_string()),
-            ..HookInput::default()
-        };
-        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, project));
-        assert_eq!(
-            count_retry_events(dir.path()),
-            3,
-            "one retry.attempt per measured retry"
-        );
-    }
 
-    #[test]
-    fn retry_attempt_emission_is_idempotent() {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        write_state(
-            dir.path(),
-            "once",
-            &json!({ "specName": "once", "metrics": { "retries": 2 } }),
-        );
-        let input = HookInput {
-            hook_event_name: Some("SessionEnd".to_string()),
-            ..HookInput::default()
-        };
-        // Run twice — the second run must not double-count.
-        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, project));
-        SessionKnowledgeObserver.observe(&input, &ctx(Trigger::SessionEnd, project));
-        assert_eq!(
-            count_retry_events(dir.path()),
-            2,
-            "idempotent — no re-emission"
-        );
-    }
 
     // --- routing -----------------------------------------------------------
 

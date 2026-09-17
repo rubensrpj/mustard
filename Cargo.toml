@@ -6,10 +6,6 @@ members = [
     "apps/scan",
     "packages/core",
 ]
-# Excluded: the mustard-translate sidecar (apps/translate) — candle +
-# lingua are heavy deps that must not bloat the hook (`mustard-rt`) or the
-# deterministic scanner; it builds standalone, as its own workspace.
-exclude = ["apps/translate"]
 
 [workspace.package]
 # The Mustard version, inherited by every workspace crate with
@@ -48,17 +44,7 @@ ureq = { version = "3.3", features = ["json"] }
 # Tarball extraction for `mustard add` (npm package payloads ship as .tgz).
 tar = "0.4.46"
 flate2 = "1.1.9"
-# BPE tokenizer used by `core::economy::estimator` as a Claude-token
-# approximation (cl100k_base ≈ Anthropic models within ~5%). Latest stable
-# verified on crates.io (0.12.0, 2026-06); the 0.12 line made the low-level
-# `CoreBPE::encode`/`count` fallible (`Result<_, EncodeError>`) — the
-# estimator only calls `encode_with_special_tokens`, which stays infallible.
-tiktoken-rs = "0.12"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-# Data-parallelism primitives — rayon parallelises the per-subproject
-# verification pass (`verify_pipeline`) so targets are checked concurrently.
-# Latest stable on crates.io (1.10, May 2026); pure-Rust, no async runtime.
-rayon = "1.10"
 # Snowball stemmers (MIT/BSD-3) — `mustard-core::domain::spec_events` reduces
 # each word of an event to its root with the Portuguese stemmer, so "apagar",
 # "apagando" and "apagou" land on the same search term. Pure Rust, no build

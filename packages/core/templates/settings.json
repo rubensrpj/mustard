@@ -31,8 +31,8 @@
       "WebFetch",
       "WebSearch",
       "Bash",
-      "Bash(mustard-rt run event-projections:*)",
-      "Bash(mustard-rt run qa-run:*)",
+      "Bash(mustard-rt run read:*)",
+      "Bash(mustard-rt run close:*)",
       "Bash(mustard-rt run pr-merge:*)"
     ],
     "deny": [

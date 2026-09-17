@@ -23,6 +23,14 @@ The command reads the state and nothing else. It answers `phase` (where the spec
 
 **No approval.** A spec that comes back in the plan phase still gets the one question, *"Aprovar esta spec?"*, with **Aprovar** and **Ajustar**, after its page is published. Typing this command approves nothing.
 
+## The commands it can hand you
+
+The answer's `command` is the next step, and it is the only place the order of the steps lives. The names it can hand you are `mustard-rt run grill`, `mustard-rt run plan`, `mustard-rt run round` and `mustard-rt run pr-open` — never a step you chose yourself.
+
+To look without moving: `mustard-rt run read <block> --spec {spec}` answers ONE block of the spec, and `mustard-rt run index` rebuilds the index when it is missing or diverges.
+
 ## Edge cases
 
-Unknown spec name → the command refuses with `no-spec-file`; say the spec was not found and stop. No current spec → it refuses with `no-current-spec`; ask which spec, or open one.
+Unknown spec name → the command refuses with `no-spec-file`; say the spec was not found and stop. No current spec → it refuses with `no-current-spec`; ask which spec, or open one with `mustard-rt run open`.
+
+A spec that must go back to the survey does so through `mustard-rt run reopen --reason "<motivo>"`, the one door back; one that is abandoned goes through `mustard-rt run discard`, in two calls with a code. Neither is ever the answer's `command` — both are the user's own word.

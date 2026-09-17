@@ -6,7 +6,6 @@ pub mod git_provider;
 pub mod harness;
 pub mod hook_resolve;
 pub mod i18n;
-pub mod metrics;
 pub mod process;
 pub mod project_seed;
 pub mod config;

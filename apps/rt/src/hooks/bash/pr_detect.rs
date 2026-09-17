@@ -7,12 +7,8 @@
 //! writing.
 
 use mustard_core::domain::model::contract::HookInput;
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::time::now_iso8601;
-use serde_json::json;
 use std::path::Path;
 
-use super::lex::truncate;
 
 /// Classify a command as a PR event.
 ///
@@ -80,38 +76,11 @@ pub(super) fn bash_failed(input: &HookInput) -> bool {
 /// event is the only thing recorded. A typed merge never touches the spec's
 /// state nor the pending charge, and the hook never asks GitHub anything.
 pub(super) fn emit_pr_event(
-    project_dir: &str,
-    session_id: Option<&str>,
-    event: &str,
-    command: &str,
+    _project_dir: &str,
+    _session_id: Option<&str>,
+    _event: &str,
+    _command: &str,
 ) {
-    let branch = detect_branch(project_dir);
-    let spec = detect_recent_spec(project_dir, session_id);
-    let command_field = if command.len() > 200 {
-        format!("{}...", truncate(command, 200))
-    } else {
-        command.to_string()
-    };
-    let harness_event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id.unwrap_or("unknown").to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("pr-detect".to_string()),
-            actor_type: None,
-        },
-        event: event.to_string(),
-        payload: json!({
-            "branch": branch,
-            "spec": spec,
-            "command": command_field,
-        }),
-        spec: spec.clone(),
-    };
-    // `pr.detect` family events go to the per-spec NDJSON sink through the router.
-    let _ = crate::shared::events::route::emit(project_dir, &harness_event);
 }
 
 #[cfg(test)]

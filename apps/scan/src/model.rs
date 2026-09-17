@@ -1,9 +1,9 @@
 //! The intermediate "project model".
 //!
-//! Produced by the deterministic analysis stages and consumed by synthesis +
-//! generation. Nothing here encodes any framework: conventions are whatever
-//! *recurs* in the repo, named by the repo's own vocabulary offline and
-//! (optionally) given a semantic name by the LLM stage.
+//! Produzido pelas etapas determinísticas da análise e consumido pelas
+//! projeções. Nada aqui codifica framework nenhum. Os grupos por sufixo do nome
+//! (`roles` e `conventions`) saíram do modelo: nenhum leitor sobrou, e era por
+//! eles que as skills fracas nasciam.
 
 use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
@@ -19,10 +19,6 @@ pub struct ProjectModel {
     pub skeleton: Vec<SkeletonEntry>,
     pub modules: Vec<Module>,
     pub graph: GraphStats,
-    /// Role affixes that recur across many names (e.g. "Repository", "use").
-    pub roles: Vec<RoleStat>,
-    /// Recurring vertical slices + single-role conventions, ranked.
-    pub conventions: Vec<Convention>,
     /// What the scan visited vs skipped — verifiable answer to "did you read it all?".
     #[serde(default)]
     pub coverage: Coverage,
@@ -263,53 +259,6 @@ pub struct LayerInfo {
     pub modules: usize,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct CodeExample {
-    pub path: String,
-    pub start_line: usize,
-    pub snippet: String,
-    /// The role this exemplar plays in its slice. Empty for bare entities.
-    #[serde(default)]
-    pub role: String,
-}
-
-/// A role affix discovered by frequency (no hardcoded list).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct RoleStat {
-    pub affix: String,
-    /// Where the affix lives — the signal that revealed the role. FOUR values:
-    /// "suffix" / "prefix" (it sits in the symbol NAME), "nested" (a bare
-    /// recurring declaration inside a role folder), "folder" (the affix IS the
-    /// folder name). Consumers MUST branch on all four: a folder role's affix
-    /// never appears in its members' filenames — that is what makes it a folder
-    /// role — so testing the name resolves nothing and silently discards the
-    /// whole cluster. This doc read "suffix or prefix" while the miner already
-    /// minted all four, and the consumer that believed it dropped every
-    /// folder-borne convention.
-    pub kind: String,
-    pub count: usize,
-    /// Most common folder these live in (relative), for the role->folder map.
-    pub common_dir: String,
-    /// EVERY recurring folder of the role (abstracted, ≥2 members each, count
-    /// desc then name) — a convention spread across several parents
-    /// (`configs/` AND `(dashboard)/<name>s`) keeps all its homes; `common_dir`
-    /// alone loses everything outside the single most frequent one. Additive:
-    /// absent in older models.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dirs: Vec<String>,
-    /// A representative declaration kind (class/function/const/...).
-    pub decl_kind: String,
-    /// The base type these files most often extend/implement, if any (from
-    /// supertypes; populated when AST parsing is available). The role's contract —
-    /// set only when a MAJORITY of the family shares it, so a minority's supertype
-    /// never speaks for a large mixed family.
-    #[serde(default)]
-    pub implements: Option<String>,
-    /// Namespaces/modules files of this role commonly pull in — its collaborators.
-    #[serde(default)]
-    pub collaborators: Vec<String>,
-}
-
 /// A base type / interface that many distinct entities build on — the shared
 /// foundation a slice plugs into (e.g. EntityBase, RepositoryBase). Mined by
 /// frequency over supertypes; never from a catalog.
@@ -317,44 +266,4 @@ pub struct RoleStat {
 pub struct SharedContract {
     pub name: String,
     pub implementors: usize,
-}
-
-/// A concrete reference implementation at a complexity tier.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct Exemplar {
-    /// "simples" | "média" | "complexa"
-    pub level: String,
-    pub entity: String,
-    pub roles_present: Vec<String>,
-    pub files: Vec<String>,
-}
-
-/// A recurring convention mined from the repo. Either a multi-role *slice*
-/// (a vertical recipe) or a single-role convention.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct Convention {
-    /// Repo-vocabulary name offline; may be replaced by a semantic name in synthesis.
-    pub name: String,
-    /// The core role affixes that define this convention (always present).
-    pub roles: Vec<String>,
-    /// Roles that recur but are not universal — added "when needed".
-    #[serde(default)]
-    pub optional_roles: Vec<String>,
-    /// How many distinct entities exhibit this shape (the recurrence count).
-    pub recurrence: usize,
-    /// Example entities that share the shape (e.g. ["Order", "Product"]).
-    pub entities: Vec<String>,
-    pub confidence: f32,
-    /// True when this is a multi-role vertical slice (renders as a recipe).
-    pub is_slice: bool,
-    /// Ordered build steps for the recipe (abstracted with <Name>).
-    pub steps: Vec<String>,
-    /// Simple/medium/complex reference implementations.
-    #[serde(default)]
-    pub exemplars: Vec<Exemplar>,
-    /// One snippet per role from the complex exemplar, abstracted with <Name>.
-    pub examples: Vec<CodeExample>,
-    /// The concrete exemplar entity the snippets were taken from (the complex one).
-    pub exemplar: String,
-    pub summary: String,
 }

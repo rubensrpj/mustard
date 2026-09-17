@@ -9,7 +9,6 @@
 use crate::hooks::observe::amend_window_inject::AmendWindowInject;
 use crate::hooks::observe::change_request_log::ChangeRequestLog;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
-use crate::hooks::observe::clarification_observer::ClarificationObserver;
 use crate::hooks::observe::picker_approval_observer::PickerApprovalObserver;
 use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
 use crate::hooks::bash::bash_command_gate::BashCommandGate;
@@ -21,9 +20,6 @@ use crate::hooks::write::scan_gate::ScanGate;
 use crate::hooks::write::write_gate::WriteGate;
 use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
 use crate::hooks::observe::prompt_observer::PromptObserver;
-use crate::hooks::observe::rewave_observer::RewaveObserver;
-use crate::hooks::observe::wave_complete_observer::WaveCompleteObserver;
-use crate::hooks::observe::wave_start_observer::WaveStartObserver;
 use crate::hooks::write::boundary_gate::BoundaryGate;
 use crate::hooks::write::post_edit::PostEdit;
 use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
@@ -35,10 +31,7 @@ use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::observe::tool_result_observer::ToolResultObserver;
 use crate::hooks::task::main_context_counter::MainContextCounter;
-use crate::hooks::task::metrics_observer::MetricsObserver;
-use crate::hooks::task::skill_usage_observer::SkillUsageObserver;
 use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
-use crate::hooks::task::subagent_observer::SubagentObserver;
 use crate::hooks::task::tool_use_counter::ToolUseCounter;
 use crate::hooks::observe::wikilink_footer_observer::WikilinkFooterObserver;
 use mustard_core::domain::model::contract::{Check, Observer, Trigger};
@@ -169,39 +162,6 @@ impl Registry {
                 ],
                 check: Some(Box::new(MainContextCounter)),
                 observer: None,
-            },
-            Module {
-                id: "subagent_observer",
-                // `subagent-tracker` — `agent.start` / `agent.stop` telemetry.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: None,
-                observer: Some(Box::new(SubagentObserver)),
-            },
-            Module {
-                id: "metrics_observer",
-                // `metrics-tracker` — `tool.use` heartbeat after a tool runs.
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Bash")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Read")),
-                ],
-                check: None,
-                observer: Some(Box::new(MetricsObserver)),
-            },
-            Module {
-                id: "skill_usage_observer",
-                // `skill-usage-tracker` — `skill.invoked` event per Skill call.
-                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("Skill"))],
-                check: None,
-                observer: Some(Box::new(SkillUsageObserver)),
             },
             Module {
                 id: "tool_result_observer",
@@ -420,17 +380,6 @@ impl Registry {
                 check: Some(Box::new(ApprovalWitness)),
                 observer: None,
             },
-            // Gravador de esclarecimentos — na MESMA pergunta, grava pergunta,
-            // resposta escolhida e notas como `clarification` no material da
-            // unidade ativa, sem depender de o assistente registrar. Não
-            // destrava nada, então texto livre também conta. Sem unidade ativa,
-            // nada é gravado. Observer puro, fail-open, nunca bloqueia.
-            Module {
-                id: "clarification_observer",
-                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
-                check: None,
-                observer: Some(Box::new(ClarificationObserver)),
-            },
             // The plan-mode door — accepting a plan approves no spec, and the
             // approval has a single door, the witness above. It stays
             // registered, with nothing to do, until it leaves with the other
@@ -516,45 +465,6 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(ChangeRequestLog)),
             },
-            // ── auto-abertura por tipo (structural → automatic) ──────────────
-            // Both are pure Observers — they emit/restructure as a side effect
-            // and are structurally incapable of denying a write: re-wave and
-            // wave-advance only restructure the plan, and are never gates.
-            Module {
-                id: "rewave_observer",
-                // On the first EXECUTE write of a not-yet-decomposed
-                // spec, fire `exec_rewave_check::decompose_if_signaled` (idempotent
-                // via the `wave-plan.md` guard). PreToolUse(Write|Edit), fail-open.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: None,
-                observer: Some(Box::new(RewaveObserver)),
-            },
-            Module {
-                id: "wave_start_observer",
-                // DEFECT 2 (2026-06-05) — on SubagentStart, when an active wave
-                // is resolvable (MUSTARD_ACTIVE_SPEC/WAVE), auto-emit
-                // `pipeline.wave.start` once (idempotent via the NDJSON event
-                // check; suppressed if the wave already completed). The
-                // counterpart to `wave_complete_observer`: it marks a wave in
-                // progress from an explicit signal. SubagentStart, fail-open,
-                // never denies.
-                applies_to: &[(Trigger::SubagentStart, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(WaveStartObserver)),
-            },
-            Module {
-                id: "wave_complete_observer",
-                // On SubagentStop, when the active wave's
-                // `_review-spans.md` ledger is clean (≥1 child returned, no red),
-                // auto-emit `pipeline.wave.complete` (idempotent via the NDJSON
-                // event check). SubagentStop, fail-open.
-                applies_to: &[(Trigger::SubagentStop, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(WaveCompleteObserver)),
-            },
         ];
         Self { modules }
     }
@@ -628,7 +538,7 @@ mod tests {
     fn task_family_applies_on_pre_tool_use_task() {
         let registry = Registry::new();
         let ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Task"));
-        for want in ["context_budget_gate", "subagent_observer"] {
+        for want in ["context_budget_gate", "subagent_inject"] {
             assert!(ids.contains(&want), "missing {want}");
         }
     }
@@ -643,12 +553,6 @@ mod tests {
         assert!(!ids.contains(&"bash_command_gate"));
     }
 
-    #[test]
-    fn skill_post_tool_use_runs_skill_usage_observer() {
-        let registry = Registry::new();
-        let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("Skill"));
-        assert!(ids.contains(&"skill_usage_observer"));
-    }
 
     #[test]
     fn exit_plan_mode_post_tool_use_runs_plan_approval_observer() {
@@ -692,25 +596,6 @@ mod tests {
         assert!(registry.by_id("approval_marker_observer").is_none(), "the old recorder left");
     }
 
-    #[test]
-    fn ask_user_question_post_tool_use_runs_clarification_observer() {
-        let registry = Registry::new();
-        // Beside the approval witness, on the same answered question.
-        let ids = applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"));
-        assert!(ids.contains(&"clarification_observer"));
-        assert!(ids.contains(&"approval_witness"));
-        // Never on the Pre side, nor on any other tool.
-        assert!(
-            !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
-                .contains(&"clarification_observer")
-        );
-        assert!(
-            !applicable_ids(&registry, Trigger::PostToolUse, Some("Bash"))
-                .contains(&"clarification_observer")
-        );
-        let module = registry.by_id("clarification_observer").expect("registered");
-        assert!(module.check.is_none(), "a pure Observer never carries a verdict");
-    }
 
     /// O fim da resposta é uma conferência só: o `end_of_turn_check` é o único
     /// módulo do `Stop`, um `Check` puro, e nunca roda no `Stop` de um
@@ -734,73 +619,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn by_id_finds_registered_modules() {
-        let registry = Registry::new();
-        for id in [
-            "bash_command_gate",
-            "context_budget_gate",
-            "tool_use_counter",
-            "main_context_counter",
-            "subagent_observer",
-            "metrics_observer",
-            "skill_usage_observer",
-            "tool_result_observer",
-            "approval_witness",
-            "clarification_observer",
-            "plan_approval_observer",
-            "size_gate",
-            "write_gate",
-            "boundary_gate",
-            "scan_gate",
-            "active_spec_limit_gate",
-            "delegation_advisory",
-            "post_edit",
-            "spec_hygiene_observer",
-            "session_start_inject",
-            "session_knowledge_observer",
-            "session_cleanup_observer",
-            "statusline_heal_observer",
-            "prompt_submit_inject",
-            "user_prompt_observer",
-            "amend_window_inject",
-            "rewave_observer",
-            "wave_start_observer",
-            "wave_complete_observer",
-            "end_of_turn_check",
-        ] {
-            assert!(registry.by_id(id).is_some(), "by_id missing {id}");
-        }
-        assert!(registry.by_id("nonexistent").is_none());
-    }
 
-    #[test]
-    fn fase4c_auto_open_observers_apply_to_their_events() {
-        let registry = Registry::new();
-        // `rewave_observer` joins the PreToolUse(Write|Edit) family.
-        for tool in ["Write", "Edit"] {
-            assert!(
-                applicable_ids(&registry, Trigger::PreToolUse, Some(tool))
-                    .contains(&"rewave_observer"),
-                "rewave_observer missing for {tool}"
-            );
-        }
-        // It does not fire on a Read, nor on SubagentStop.
-        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Read"))
-            .contains(&"rewave_observer"));
-        // `wave_complete_observer` fires on SubagentStop (any tool / none).
-        assert!(applicable_ids(&registry, Trigger::SubagentStop, None)
-            .contains(&"wave_complete_observer"));
-        // It does not fire on a plain PreToolUse(Write).
-        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
-            .contains(&"wave_complete_observer"));
-        // `wave_start_observer` is the symmetric counterpart: it fires on
-        // SubagentStart (any tool / none), not on SubagentStop.
-        assert!(applicable_ids(&registry, Trigger::SubagentStart, None)
-            .contains(&"wave_start_observer"));
-        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None)
-            .contains(&"wave_start_observer"));
-    }
 
     #[test]
     fn the_session_families_apply_to_their_events() {

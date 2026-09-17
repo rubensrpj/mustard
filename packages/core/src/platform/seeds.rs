@@ -15,7 +15,7 @@
 //! constants, and no installed-layout `templates/` directory is required for
 //! these seeds. The CLI's `MUSTARD_TEMPLATES_DIR` / `resolve_templates_dir`
 //! machinery remains only for the payloads that stay CLI-side (`.github/`
-//! scaffolding, `grammars-suggestions.json`, `.artifacts.json`).
+//! scaffolding, `.artifacts.json`).
 //!
 //! The seeding logic that consumes these constants lives in
 //! [`crate::platform::project_seed`].

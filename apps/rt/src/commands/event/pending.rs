@@ -808,10 +808,6 @@ pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<String> {
     count_line_of(&ledger, &today(None), lang)
 }
 
-/// A chave, no payload do evento `pipeline.kind`, que liga a unidade a uma
-/// pendência. Um só nome para quem grava (`emit-pipeline --pending`) e para
-/// quem lê (`pr-merge`), para que os dois nunca discordem da grafia.
-pub(crate) const UNIT_PENDING_KEY: &str = "pending";
 
 /// Uma pendência aberta, como a enxergam os leitores de fora do ledger — o
 /// início de sessão, a cobrança de fim de turno, a abertura e o merge da

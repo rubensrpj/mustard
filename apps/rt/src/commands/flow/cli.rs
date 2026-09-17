@@ -25,7 +25,7 @@ pub enum FlowCmd {
     /// (`choose_kind`, `choose_name`, `choose_base`), com os candidatos; nada
     /// é criado enquanto os três não forem sabidos. A resposta termina com a
     /// pergunta do objetivo, para fazer ao usuário.
-    #[command(display_order = 79)]
+    #[command(display_order = 0)]
     Open {
         /// O tipo da branch, como `feature` ou `fix`. Sem ele, um nome
         /// escrito como `<tipo>/<nome>` é partido nos dois.
@@ -56,7 +56,7 @@ pub enum FlowCmd {
     /// dentro desses pontos. O assistente grava cada ponto com `write point`;
     /// rodar o grill de novo com os mesmos tipos não grava nada e devolve o
     /// primeiro ponto aberto.
-    #[command(display_order = 80)]
+    #[command(display_order = 1)]
     Grill {
         /// A spec levantada. Sem ela, a spec atual.
         #[arg(long)]
@@ -81,7 +81,7 @@ pub enum FlowCmd {
     /// que ondas da mesma rodada não dividem arquivo; avisa os itens sem
     /// tarefa; refaz a página e o índice; e responde o próximo passo. Grava a
     /// fase do plano; a spec que já está nela só tem a página refeita.
-    #[command(display_order = 82)]
+    #[command(display_order = 2)]
     Plan {
         /// A spec cujo plano é conferido. Sem ela, a spec atual.
         #[arg(long)]
@@ -97,7 +97,7 @@ pub enum FlowCmd {
     /// que cada onda entregou e o veredito da revisão, formata só os arquivos
     /// da rodada e faz o commit, e só então despacha a rodada seguinte. A
     /// resposta manda publicar a página da spec e a do projeto.
-    #[command(display_order = 83)]
+    #[command(display_order = 3)]
     Round {
         /// A spec cuja rodada corre. Sem ela, a spec atual.
         #[arg(long)]
@@ -120,7 +120,7 @@ pub enum FlowCmd {
     /// e nenhum pedido do usuário sem onda que o entregue), roda cada critério
     /// uma vez e grava a execução de cada um, e então grava a fase fechada,
     /// solta a spec da sessão e refaz a página.
-    #[command(display_order = 84)]
+    #[command(display_order = 4)]
     Close {
         /// A spec que fecha. Sem ela, a spec atual.
         #[arg(long)]
@@ -135,7 +135,7 @@ pub enum FlowCmd {
     /// Retoma uma spec: lê só o estado e devolve, pela fase em que ela está,
     /// o próximo passo em palavras e o comando que o faz. É o que o
     /// `/mustard:continue` chama. Nenhum endereço de página entra na resposta.
-    #[command(display_order = 85)]
+    #[command(display_order = 10)]
     Resume {
         /// A spec retomada. Sem ela, a spec atual.
         #[arg(long)]
@@ -148,7 +148,7 @@ pub enum FlowCmd {
     /// sair — o pull request, a branch local, a do servidor quando a opção
     /// vier, a pasta da spec e a linha dela no índice — e devolve um código; a
     /// segunda, com esse código e depois do sim do usuário, faz.
-    #[command(display_order = 86)]
+    #[command(display_order = 12)]
     Discard {
         /// A spec descartada. Sem ela, a spec atual.
         #[arg(long)]
@@ -173,7 +173,7 @@ pub enum FlowCmd {
     /// novo, e os pontos novos convivem com o que já foi decidido. Nada do
     /// que está gravado é apagado. Uma spec fechada, com o pull request
     /// aberto, entregue ou descartada é recusada, dizendo a fase em que está.
-    #[command(display_order = 81)]
+    #[command(display_order = 11)]
     Reopen {
         /// Por que a spec volta ao levantamento, numa frase. Obrigatório: é
         /// ele que explica depois por que o levantamento recomeçou.

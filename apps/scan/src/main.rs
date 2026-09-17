@@ -2,8 +2,8 @@
 //! rich, language-agnostic model. Framework- and language-agnostic.
 //!
 //! Pipeline: ingest -> extract -> graph -> mine -> condense. Fully deterministic
-//! and blind to any framework/language. `scan` writes the model; `spec` compiles
-//! a per-task implementation draft from it.
+//! and blind to any framework/language. `scan` writes the model; the other
+//! subcommands only project it.
 
 mod classify;
 mod condense;
@@ -18,7 +18,6 @@ mod mine;
 mod model;
 mod rank;
 mod refresh;
-mod spec;
 mod stemmers;
 mod testmap;
 
@@ -52,9 +51,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Emit a small, AI-sized capability DIGEST of the model (slices, roles,
-    /// contracts, hubs, projects + a domain-term index) — the searchable surface
-    /// a decomposition/feature step queries instead of reading source.
+    /// Emit a small, AI-sized capability DIGEST of the model (contracts, hubs,
+    /// projects + a domain-term index) — the searchable surface a
+    /// decomposition/feature step queries instead of reading source.
     ///
     /// With `--query`, returns only the slice of the digest matching the terms
     /// (a few KB instead of the whole catalog) — the cheap per-interaction lookup
@@ -74,30 +73,6 @@ enum Command {
     /// model.json.
     Facts {
         path: PathBuf,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-    /// Compile a self-contained, deterministic implementation SPEC (draft) for an
-    /// entity from the model. `path` is a project dir to scan, or a model.json.
-    Spec {
-        path: PathBuf,
-        /// Entity to create (substitutes <Name> in the recipe).
-        #[arg(long)]
-        entity: String,
-        /// Existing entity to mirror — its slice and its real files (e.g. a new
-        /// entity modeled on an existing one of the same shape).
-        #[arg(long, default_value = "")]
-        like: String,
-        /// Comma-separated operations beyond the base CRUD (e.g. "approve").
-        #[arg(long, default_value = "create")]
-        ops: String,
-        /// Comma-separated cross-cutting invariants the unit must obey (e.g. an
-        /// injected contract like "ICurrentTenant"). Surfaced as a must-obey
-        /// section anchored on the real defining + consumer files (by graph
-        /// fan-in + name), so the AI mirrors the mechanism instead of inventing it.
-        #[arg(long, default_value = "")]
-        invariant: String,
-        /// Write the spec to a file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -129,8 +104,7 @@ fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     } else {
-        // Projections (digest/facts/spec) want only the model; the
-        // dictionary sidecar is a scan-write concern, discarded here.
+        // As projeções (digest/facts) querem só o modelo.
         Ok(analyze(path, None)?.model)
     }
 }
@@ -197,19 +171,6 @@ fn main() -> Result<()> {
                     println!("facts written to {} ({} bytes)", p.display(), json.len());
                 }
                 None => println!("{json}"),
-            }
-        }
-        Command::Spec { path, entity, like, ops, invariant, out } => {
-            let model = load_model(&path)?;
-            let ops_vec: Vec<String> = ops.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let inv_vec: Vec<String> = invariant.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let spec_md = spec::compile(&model, &entity, &like, &ops_vec, &inv_vec);
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &spec_md)?;
-                    println!("spec written to {}", p.display());
-                }
-                None => println!("{spec_md}"),
             }
         }
         Command::FeatureBundle { path, query, out } => {
@@ -338,7 +299,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         named.sort();
         m.deps = named;
     }
-    let mined = mine::mine(&modules, &degrees);
+    let mined = mine::mine(&modules);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     // The git history: only the commits since the previous pass, when that
@@ -399,8 +360,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
             skeleton,
             modules,
             graph: graph_stats,
-            roles: mined.roles,
-            conventions: mined.conventions,
             coverage: ing.coverage,
             projects,
             shared_contracts: mined.shared_contracts,
@@ -548,12 +507,6 @@ fn print_summary(model: &ProjectModel) {
         println!("projects: {}", ps.join("; "));
     }
     println!("graph: {} modules, {} edges, cyclic={}", model.graph.nodes, model.graph.edges, model.graph.cyclic);
-    println!("roles discovered: {}", model.roles.iter().map(|r| format!("{}({})", r.affix, r.count)).collect::<Vec<_>>().join(", "));
-    println!("mined conventions:");
-    for c in &model.conventions {
-        let tag = if c.is_slice { "slice " } else { "single" };
-        println!("  - [{tag}] {} (recurs {}x, conf {:.2})", c.name, c.recurrence, c.confidence);
-    }
 
     let cov = &model.coverage;
     println!("\n== coverage (what was read) ==");

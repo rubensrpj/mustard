@@ -456,52 +456,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Consolidation blocked: child {child} returned a red verdict — {message}"
         }
 
-        // The install-grammars CLI helper.
-        // User-facing strings for `mustard install-grammars`. The helper suggests
-        // tree-sitter grammar repos for detected languages — Mustard never
-        // downloads or compiles. Format is shell-ready markdown so the user can
-        // copy + paste straight into a terminal.
-        ("cli.install_grammars.title", Locale::PtBr) => {
-            "Mustard — sugestões de grammars tree-sitter"
-        }
-        ("cli.install_grammars.title", Locale::EnUs) => {
-            "Mustard — tree-sitter grammar suggestions"
-        }
-        ("cli.install_grammars.lead", Locale::PtBr) => {
-            "Linguagens detectadas neste projeto. Mustard não baixa nem compila — \
-             apenas sugere o repositório canônico e o comando shell."
-        }
-        ("cli.install_grammars.lead", Locale::EnUs) => {
-            "Languages detected in this project. Mustard does not download or build — \
-             it only suggests the canonical repo and the shell command."
-        }
-        ("cli.install_grammars.no_stack", Locale::PtBr) => {
-            "Nenhuma linguagem detectada via sinais de manifesto. Nada a sugerir."
-        }
-        ("cli.install_grammars.no_stack", Locale::EnUs) => {
-            "No language detected via manifest signals. Nothing to suggest."
-        }
-        ("cli.install_grammars.repo_label", Locale::PtBr) => "repositório",
-        ("cli.install_grammars.repo_label", Locale::EnUs) => "repo",
-        ("cli.install_grammars.install_cmd_label", Locale::PtBr) => "instalar",
-        ("cli.install_grammars.install_cmd_label", Locale::EnUs) => "install",
-        ("cli.install_grammars.already_installed", Locale::PtBr) => "já instalada",
-        ("cli.install_grammars.already_installed", Locale::EnUs) => "already installed",
-        ("cli.install_grammars.unknown_lang_fallback", Locale::PtBr) => {
-            "{lang}: grammar não catalogado — buscar em https://tree-sitter.github.io/tree-sitter/#parsers"
-        }
-        ("cli.install_grammars.unknown_lang_fallback", Locale::EnUs) => {
-            "{lang}: grammar not catalogued — search https://tree-sitter.github.io/tree-sitter/#parsers"
-        }
-        ("cli.install_grammars.footer", Locale::PtBr) => {
-            "Copie o bloco `instalar` no seu shell. Mustard volta a usar a grammar \
-             automaticamente assim que `tree-sitter generate` finalizar."
-        }
-        ("cli.install_grammars.footer", Locale::EnUs) => {
-            "Copy the `install` block into your shell. Mustard will pick up the grammar \
-             automatically once `tree-sitter generate` finishes."
-        }
-
         // Work-branch REFUSAL — the checkout holds another unit's branch with
         // uncommitted files, so cutting the second unit here would carry them
         // off. Said by the `spec-draft` cut, in the project's language.

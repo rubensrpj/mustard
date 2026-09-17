@@ -42,8 +42,6 @@
 //! - `auto`  — default; the full behavior described above.
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
-use mustard_core::domain::model::event::{Actor, ActorKind, HarnessEvent, SCHEMA_VERSION};
-use mustard_core::view::projection::read_harness_events_from_ndjson_dir;
 use mustard_core::domain::spec;
 use mustard_core::{ClaudePaths, Flags, Outcome as SpecOutcome, SpecState, Stage};
 use serde_json::{json, Value};
@@ -215,10 +213,7 @@ fn is_active_spec(spec_md: &str) -> bool {
 /// 2. Legacy fallback: the `.md` header via [`is_active_spec`] for un-migrated
 ///    specs (or specs whose sidecar carries no outcome).
 fn is_active_spec_at(spec_md_path: &Path, spec_md: &str) -> bool {
-    if let Some(m) = mustard_core::domain::meta::read_meta_beside(spec_md_path)
-        && let Some(outcome) = m.outcome.as_deref().and_then(mustard_core::Outcome::parse) {
-            return outcome == mustard_core::Outcome::Active;
-        }
+    let _ = spec_md_path;
     is_active_spec(spec_md)
 }
 
@@ -364,26 +359,9 @@ fn last_commit_iso(cwd: &Path, spec_dir: &Path) -> Option<String> {
 // Event emission
 // ---------------------------------------------------------------------------
 
-/// Append a `hygiene.*` event to the per-spec NDJSON sink. Best-effort: a
-/// write failure is swallowed (telemetry is never load-bearing).
-fn emit(project_dir: &str, kind: &str, spec: &str, payload: Value) {
-    let event = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: "spec-hygiene".to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("spec-hygiene".to_string()),
-            actor_type: None,
-        },
-        event: kind.to_string(),
-        payload,
-        spec: Some(spec.to_string()),
-    };
-    // `hygiene.*` is non-pipeline → per-spec NDJSON via the event router.
-    let _ = crate::shared::events::route::emit(project_dir, &event);
-}
+/// O gravador velho de eventos saiu, e com ele o destino destes eventos.
+/// O observador em si é gancho, e sai com os ganchos.
+fn emit(_project_dir: &str, _kind: &str, _spec: &str, _payload: Value) {}
 
 // ---------------------------------------------------------------------------
 // Close-gate (shells out to the run face)
@@ -450,7 +428,11 @@ fn run_close_gate(cwd: &Path, spec: &str) -> Result<(), Blocker> {
     //    same single source of truth the close gate consults. Shelling to the
     //    command that used to run them would read its door refusal as a failed
     //    criterion and fail every spec for a reason that is not true.
-    if crate::commands::event::emit_pipeline::qa_result_passed(cwd, spec) {
+    use mustard_core::domain::spec_state::SpecState as _;
+    let passou = crate::shared::spec_state::DiskSpecState::new(cwd)
+        .log(spec)
+        .is_some_and(|log| mustard_core::domain::spec_state::qa(&log).passed_all());
+    if passou {
         Ok(())
     } else {
         Err(Blocker::AcFailing)
@@ -483,15 +465,9 @@ fn mark_completed(spec_md_path: &Path) {
 /// Replaces the legacy `store.query(Some(spec_name))` SQLite call.
 /// Fail-open: returns `None` when the directory is absent or unreadable.
 fn last_event_at_from_ndjson(cwd: &str, spec_name: &str) -> Option<String> {
-    let Ok(cp) = ClaudePaths::for_project(cwd) else {
-        return None;
-    };
-    let Ok(sp) = cp.for_spec(spec_name) else {
-        return None;
-    };
-    let events_dir = sp.events_dir();
-    let events = read_harness_events_from_ndjson_dir(&events_dir);
-    events.iter().map(|e| e.ts.as_str()).max().map(str::to_string)
+    // O fluxo de eventos do gravador velho saiu: nenhuma hora fica gravada ali.
+    let _ = (cwd, spec_name);
+    None
 }
 
 /// Run hygiene over every spec in `.claude/spec/`. Pure side effect — every

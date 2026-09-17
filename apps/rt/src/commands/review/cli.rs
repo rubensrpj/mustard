@@ -21,129 +21,6 @@ use crate::commands::{review};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ReviewCmd {
-    /// Validate a spec's structure (WARN-level — never blocks).
-    #[command(display_order = 11)]
-    AnalyzeValidation {
-        /// Path to the spec file.
-        #[arg(long, alias = "from-spec")]
-        spec: Option<String>,
-    },
-    /// Pre-dispatch factual gate: greps the spec's subproject for every JSX
-    /// symbol and named import it references, and reports those whose
-    /// `export` is missing. Self-created paths (declared in `## Files`) are
-    /// excluded. Output is single-line JSON; exit code is always 0
-    /// (fail-open) — the orchestrator decides whether to block dispatch.
-    #[command(display_order = 19)]
-    DependencyPrecheck {
-        /// Path to the spec file or its containing directory (resolves
-        /// `<dir>/spec.md`).
-        #[arg(long)]
-        spec: Option<String>,
-        /// Override the auto-detected subproject scan root
-        /// (`apps/<name>` / `packages/<name>` common ancestor of `## Files`).
-        #[arg(long)]
-        subproject: Option<String>,
-    },
-    /// Run the behavior-regression gate at the requested moment.
-    ///
-    /// Reads the spec's `plan.txt` (or `spec.md` body) as the Moment-1 plan
-    /// text and dispatches to `review::gate_regression_check::run`. Moments 2 and 3
-    /// require external `diff` + snapshots that the bare CLI does not
-    /// collect today — those moments are exercised via the span-level
-    /// integration.
-    /// Exit code mirrors the verdict: Green/Amber ⇒ 0, Red ⇒ 2.
-    #[command(name = "gate-regression-check")]
-    #[command(display_order = 21)]
-    GateRegressionCheck {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// Moment to evaluate: 1 (pre-edit), 2 (during diff), 3 (after child return).
-        #[arg(long, default_value_t = 1)]
-        moment: u8,
-        /// Wave directory (e.g. `.claude/spec/<spec>/wave-5-rt`) used
-        /// only with `--moment 3`. When set, the subcommand inspects that
-        /// wave's `_review-spans.md` ledger via
-        /// `review::review_spans::check_consolidation` and exits non-zero (2) when any
-        /// row registered a red verdict. Lets close-gate scripts invoke the
-        /// span-level decision without going through the `SubagentStop` hook.
-        #[arg(long = "wave-dir")]
-        wave_dir: Option<String>,
-    },
-    /// Execute a spec's Acceptance Criteria; emit a `qa.result` event.
-    #[command(display_order = 22)]
-    QaRun {
-        /// Spec name (resolved under `.claude/specs` or `.claude/spec` — flat layout).
-        #[arg(long, alias = "from-spec")]
-        spec: String,
-        /// Output format: `json` (default) or `html` (extra artifact).
-        #[arg(long, default_value = "json")]
-        format: String,
-    },
-    /// Record a REVIEW-phase verdict (emits a `review.result` event + metric).
-    #[command(display_order = 29)]
-    ReviewResult {
-        /// Spec name.
-        #[arg(long)]
-        spec: Option<String>,
-        /// Verdict: `approved` or `rejected`.
-        #[arg(long)]
-        verdict: Option<String>,
-        /// Count of critical findings.
-        #[arg(long, default_value_t = 0)]
-        critical: i64,
-        /// Subproject the review targeted.
-        #[arg(long)]
-        subproject: Option<String>,
-        /// Optional file whose content is persisted to
-        /// `<spec>/review/findings.md` (folded into the retry prompt's
-        /// `## RETRY CONTEXT` on re-dispatch). Absent ⇒ no findings file is
-        /// written; the `review.result` event is unaffected.
-        #[arg(long = "findings-file")]
-        findings_file: Option<PathBuf>,
-    },
-    /// Scan a project tree for committed secrets + misconfigurations.
-    #[command(display_order = 31)]
-    SecurityScan {
-        /// Directory to scan. Defaults to the current directory.
-        dir: Option<String>,
-        /// Emit the machine-readable JSON report.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Prefetch a Pull Request into a structured JSON document, through the
-    /// provider IN FORCE.
-    ///
-    /// GitHub shells out to `gh pr view --json ...`; Azure composes the SAME
-    /// document from the REST reads (PR + threads + reviewers) plus the local
-    /// git diff. `--format table` prints a compact executive summary (title,
-    /// author, scope, comments, review states). Fail-open: a provider that
-    /// could not answer emits `{"error":"..."}` and exits 0.
-    #[command(display_order = 41)]
-    ReviewPrefetch {
-        /// PR reference: a number (`123`) or the PR's web URL.
-        pr_ref: Option<String>,
-        /// Output format: `json` (default) or `table`.
-        #[arg(long, default_value = "json")]
-        format: String,
-        /// Project root override (optional).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// The `/mustard:pr` door's LIST step: every open pull request of the base
-    /// the checkout is standing on, with its number, title, the provider's own
-    /// mergeable word, whether it is a draft and the head branch its unit lives
-    /// on. It asks about a BASE, so it refuses only from INSIDE a work unit —
-    /// and the refusal names the base to switch to. A branch is never refused
-    /// for missing from `git.flow`. Fail-open on `gh`.
-    #[command(name = "pr-list")]
-    #[command(display_order = 62)]
-    PrList {
-        /// Any directory inside the repo (worktrees welcome — the command
-        /// resolves the main checkout itself). Defaults to the current dir.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
     /// The `/mustard:pr` door's REVIEW step: resolve a pull request to its work
     /// unit and print the review brief — the spec the unit belongs to, the
     /// subproject its `## Files` name, and that subproject's skill shelf (the
@@ -151,16 +28,17 @@ pub enum ReviewCmd {
     /// also RECORDS the outcome through the `review-result` path, which is what
     /// `pr-merge` reads back.
     #[command(name = "pr-review")]
-    #[command(display_order = 63)]
+    #[command(display_order = 7)]
     PrReview {
         /// PR number. Omitted: the open pull requests are LISTED, so the
         /// reviewer picks the colleague's one instead of being handed their
         /// own branch's.
         #[arg(long)]
         pr: Option<u64>,
-        /// Verdict to record: `approved` or `rejected`. Omitted: the brief is
-        /// printed and nothing is recorded.
-        #[arg(long)]
+        /// O veredito gravado. Lista fechada: `approved` ou `rejected`; sem
+        /// ele, o pedido é impresso e nada é gravado. Um terceiro valor,
+        /// aceito como texto livre, era gravado e nunca lido como aprovação.
+        #[arg(long, value_parser = ["approved", "rejected"])]
         verdict: Option<String>,
         /// Count of critical findings (0 when `approved`).
         #[arg(long, default_value_t = 0)]
@@ -176,7 +54,7 @@ pub enum ReviewCmd {
     /// `action:"confirm"` and touches nothing; it never refuses. `--confirm` is
     /// the operator's answer coming back.
     #[command(name = "pr-merge")]
-    #[command(display_order = 64)]
+    #[command(display_order = 6)]
     PrMerge {
         /// PR number. Omitted: the open pull requests are LISTED, so the
         /// reviewer picks the colleague's one instead of being handed their
@@ -198,7 +76,7 @@ pub enum ReviewCmd {
     /// JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
     /// `error` field with exit 0, never a panic.
     #[command(name = "pr-open")]
-    #[command(display_order = 70)]
+    #[command(display_order = 5)]
     PrOpen {
         /// The integration base the PR targets (short branch name).
         #[arg(long)]
@@ -224,149 +102,11 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// The push ritual's body re-send: replace the body of pull request
-    /// `--number` with the rewritten `<spec>/pr-body.md`, through the provider
-    /// in force. Same report shape as `pr-open`; failure degrades into the
-    /// `error` field with exit 0.
-    #[command(name = "pr-edit")]
-    #[command(display_order = 71)]
-    PrEdit {
-        /// The PR number whose body is replaced.
-        #[arg(long)]
-        number: u64,
-        /// The spec whose event file the new body is built from — the same
-        /// text `pr-open` builds.
-        #[arg(long)]
-        spec: String,
-        /// Any directory inside the repo. Defaults to the current dir.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// The finish ritual's un-draft: mark draft pull request `--number` ready
-    /// for review (what requests the code owners), through the provider in
-    /// force. Same report shape as `pr-open`; failure degrades into the
-    /// `error` field with exit 0.
-    #[command(name = "pr-ready")]
-    #[command(display_order = 72)]
-    PrReady {
-        /// The draft PR number to mark ready.
-        #[arg(long)]
-        number: u64,
-        /// Any directory inside the repo. Defaults to the current dir.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Seed a spec's `meta.json#findings` from the two producers that already
-    /// wrote their discoveries to disk: the reviewer's `review/findings*.md`
-    /// (one finding per file) and the `removal` column of `ac-proof.json` (one
-    /// per criterion that SURVIVED the removal or whose own evidence the strip
-    /// took away, carrying the reason the ledger already wrote in full).
-    ///
-    /// Reconciles rather than overwrites: a finding whose destination was
-    /// already declared keeps it, one whose source is gone is dropped, and a new
-    /// one enters with no destination — the OPEN position a close gate reads.
-    /// A spec with neither producer collects zero and leaves the sidecar
-    /// untouched. Output is one byte-stable JSON document; this command decides
-    /// nothing.
-    #[command(name = "finding-collect")]
-    #[command(display_order = 67)]
-    FindingCollect {
-        /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
-        /// its directory.
-        #[arg(long, alias = "from-spec")]
-        spec: Option<String>,
-    },
-    /// Orchestrate the REVIEW phase steps (prefetch + diff + DORA emits).
-    #[command(name = "review-dispatch")]
-    #[command(display_order = 53)]
-    ReviewDispatch {
-        /// PR number.
-        #[arg(long)]
-        pr: u64,
-        /// Spec slug for event attribution.
-        #[arg(long)]
-        spec: Option<String>,
-        /// Subproject to scope the diff to.
-        #[arg(long)]
-        subproject: Option<String>,
-    },
 }
 
 /// Dispatch one `review`-family `run` subcommand.
 pub fn dispatch(cmd: ReviewCmd) {
     match cmd {
-        ReviewCmd::AnalyzeValidation { spec } => review::analyze_validation::run(spec.as_deref()),
-        ReviewCmd::DependencyPrecheck { spec, subproject } => {
-            review::dependency_precheck::run(spec.as_deref(), subproject.as_deref());
-        }
-        ReviewCmd::GateRegressionCheck {
-            spec,
-            moment,
-            wave_dir,
-        } => {
-            use crate::commands::review::gate_regression_check::{GateInput, Moment};
-            // Moment-3 + --wave-dir path consults the on-disk
-            // `_review-spans.md` ledger via `review::review_spans::check_consolidation`.
-            // Exits 0 when consolidation is allowed (no red rows) and 2 when
-            // blocked. This is the close-gate path; ledger lives on disk so
-            // we don't need diff + snapshots in argv.
-            if moment == 3
-                && let Some(wd) = wave_dir {
-                    use crate::commands::review::review_spans::{check_consolidation, ConsolidationCheck};
-                    let path = std::path::PathBuf::from(wd);
-                    match check_consolidation(&path) {
-                        ConsolidationCheck::Allowed => std::process::exit(0),
-                        ConsolidationCheck::Blocked { .. } => std::process::exit(2),
-                    }
-                }
-            let spec_path = std::path::PathBuf::from(".claude/spec").join(&spec).join("spec.md");
-            let plan_text = std::fs::read_to_string(&spec_path).unwrap_or_default();
-            let moment_enum = match moment {
-                1 => Moment::One,
-                2 => Moment::Two,
-                3 => Moment::Three,
-                _ => Moment::One,
-            };
-            let input = GateInput {
-                spec_path,
-                plan_text,
-                diff: Vec::new(),
-                declared_fns: Vec::new(),
-                before_snapshot: None,
-                after_snapshot: None,
-            };
-            match review::gate_regression_check::run(input, moment_enum) {
-                Ok(_) => std::process::exit(0),
-                Err(_) => std::process::exit(2),
-            }
-        }
-        ReviewCmd::QaRun { spec, format } => review::qa_run::run(&spec, &format),
-        ReviewCmd::ReviewResult {
-            spec,
-            verdict,
-            critical,
-            subproject,
-            findings_file,
-        } => review::review_result::run(
-            spec.as_deref(),
-            verdict.as_deref(),
-            critical,
-            subproject.as_deref(),
-            findings_file.as_deref(),
-        ),
-        ReviewCmd::SecurityScan { dir, json } => review::security_scan::run(dir.as_deref(), json),
-        ReviewCmd::ReviewPrefetch { pr_ref, format, root } => {
-            let pr_ref = pr_ref.unwrap_or_default();
-            if pr_ref.is_empty() {
-                println!("{}",
-                    serde_json::to_string_pretty(&serde_json::json!({"error":"pr-ref-required"}))
-                        .unwrap_or_default()
-                );
-            } else {
-                review::review_prefetch::run(review::review_prefetch::ReviewPrefetchOpts { pr_ref, format, root });
-            }
-        }
-        ReviewCmd::PrList { root } => review::pr_door::run_list(&root),
         ReviewCmd::PrReview { pr, verdict, critical, root } => {
             review::pr_door::run_review(&root, pr, verdict.as_deref(), critical);
         }
@@ -375,14 +115,6 @@ pub fn dispatch(cmd: ReviewCmd) {
         }
         ReviewCmd::PrOpen { base, head, spec, fill, draft, root } => {
             review::pr_publish::run_open(&root, &base, &head, spec.as_deref(), fill, draft);
-        }
-        ReviewCmd::PrEdit { number, spec, root } => {
-            review::pr_publish::run_edit(&root, number, &spec);
-        }
-        ReviewCmd::PrReady { number, root } => review::pr_publish::run_ready(&root, number),
-        ReviewCmd::FindingCollect { spec } => review::finding_collect::run(spec.as_deref()),
-        ReviewCmd::ReviewDispatch { pr, spec, subproject } => {
-            review::review_dispatch::run(review::review_dispatch::ReviewDispatchOpts { pr, spec, subproject });
         }
     }
 }

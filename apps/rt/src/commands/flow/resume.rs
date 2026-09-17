@@ -88,16 +88,32 @@ fn next_key(phase: &str) -> &'static str {
     }
 }
 
-/// O comando do próximo passo, pronto para rodar. A fase que não tem próximo
-/// passo no binário não devolve comando nenhum.
-fn next_command(phase: &str, spec: &str) -> Value {
+/// O comando que cada fase manda rodar em seguida — a tabela única do próximo
+/// passo.
+///
+/// É daqui que sai o campo `command` de toda resposta de retomada, e é ela que
+/// dá chamador a cada comando do fluxo: nenhum texto precisa dizer a ordem dos
+/// passos, porque cada passo responde qual é o seguinte. A fase que não aparece
+/// aqui não tem próximo passo no binário.
+pub const NEXT_BY_PHASE: &[(&str, &str)] = &[
+    ("survey", "grill"),
+    ("plan", "plan"),
+    ("approved", "round"),
+    ("running", "round"),
+    ("closed", "pr-open"),
+];
+
+/// O comando do próximo passo, pronto para rodar, pela [`NEXT_BY_PHASE`]. A
+/// fase que não tem próximo passo no binário não devolve comando nenhum.
+///
+/// É público porque a catraca da prosa confere esta instrução como confere a
+/// de qualquer arquivo do produto: ela não mora em arquivo nenhum, é montada
+/// aqui na hora, e um teste que copiasse o formato conferiria a cópia.
+pub fn next_command(phase: &str, spec: &str) -> Value {
     let cmd = |name: &str| json!(format!("mustard-rt run {name} --spec {spec}"));
-    match phase {
-        "survey" => cmd("grill"),
-        "plan" => cmd("plan"),
-        "approved" | "running" => cmd("round"),
-        "closed" => cmd("pr-open"),
-        _ => Value::Null,
+    match NEXT_BY_PHASE.iter().find(|(fase, _)| *fase == phase).map(|(_, nome)| *nome) {
+        Some(nome) => cmd(nome),
+        None => Value::Null,
     }
 }
 

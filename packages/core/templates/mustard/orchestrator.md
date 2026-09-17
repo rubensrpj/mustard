@@ -4,7 +4,7 @@ You are the router. Classify every request that touches the codebase, narrate yo
 
 ## Intent Routing (the single door)
 
-Classify intent + coarse scope yourself. There is no pre-spec classifier. Narrate it before anything runs. Once a spec opens, `mustard-rt run scope-classify --from-spec <spec>` checks your call; reclassify if it contradicts you.
+Classify intent + coarse scope yourself. There is no pre-spec classifier. Narrate it before anything runs.
 
 | Intent | Signals | Kind |
 |--------|---------|------|
@@ -43,7 +43,7 @@ Delegate: pipeline EXECUTE/PLAN, exploration >3 files or >2 dirs, multi-file new
 
 ## Locating code
 
-The terrain census is injected at session start, so don't grep to orient. Known literal token: `grep`/`glob`. Concept with an unknown name: `mustard-rt run feature --intent "..."`, then READ the pointed files.
+The terrain census is injected at session start, so don't grep to orient. Known literal token: `grep`/`glob`. Concept with an unknown name: `mustard-rt run map search --query "..."`, then READ the pointed files.
 
 The census is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own.
 

@@ -35,9 +35,9 @@ use mustard_core::time::now_iso8601;
 use mustard_core::platform::error::Error;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Observer, Trigger, Verdict};
 use mustard_core::domain::model::event::{
-    Actor, ActorKind, HarnessEvent, PipelineAmendActivityPayload, PipelineAmendClosePayload,
+    PipelineAmendActivityPayload, PipelineAmendClosePayload,
     PipelineAmendDriftPayload, PipelineAmendIntentPayload, PipelineAmendOpenPayload,
-    SCHEMA_VERSION, EVENT_PIPELINE_AMEND_ACTIVITY, EVENT_PIPELINE_AMEND_CLOSE,
+    EVENT_PIPELINE_AMEND_ACTIVITY, EVENT_PIPELINE_AMEND_CLOSE,
     EVENT_PIPELINE_AMEND_DRIFT, EVENT_PIPELINE_AMEND_INTENT, EVENT_PIPELINE_AMEND_OPEN,
 };
 use mustard_core::ClaudePaths;
@@ -250,24 +250,9 @@ fn is_in_scope(file_path: &str, window: &WindowState) -> bool {
     })
 }
 
-/// Emit a harness event best-effort via the NDJSON route; failures are silently dropped.
-fn emit(project_dir: &str, session_id: &str, event_name: &str, payload: serde_json::Value) {
-    let ev = HarnessEvent {
-        v: SCHEMA_VERSION,
-        ts: now_iso8601(),
-        session_id: session_id.to_string(),
-        wave: 0,
-        actor: Actor {
-            kind: ActorKind::Hook,
-            id: Some("amend_capture".to_string()),
-            actor_type: None,
-        },
-        event: event_name.to_string(),
-        payload,
-        spec: current_spec(project_dir),
-    };
-    let _ = crate::shared::events::route::emit(project_dir, &ev);
-}
+/// O gravador velho de eventos saiu, e com ele o destino destes eventos.
+/// A janela de emenda em si é gancho, e sai com os ganchos.
+fn emit(_project_dir: &str, _session_id: &str, _event_name: &str, _payload: serde_json::Value) {}
 
 // ---------------------------------------------------------------------------
 // Observer — side effects, no decision
@@ -370,36 +355,10 @@ fn observe_pipeline_complete(project_dir: &str, session_id: &str, spec_id: &str)
 /// Derive the file set from the last `pipeline.complete` event for `spec_id`.
 /// Reads the per-spec NDJSON `.events/` directory. Fail-open: empty on error.
 fn gather_pipeline_file_set(project_dir: &str, spec_id: &str) -> Vec<String> {
-    use mustard_core::EventReader;
-
-    let Ok(cp) = ClaudePaths::for_project(project_dir) else {
-        return Vec::new();
-    };
-    let Ok(sp) = cp.for_spec(spec_id) else {
-        return Vec::new();
-    };
-    let events_dir = sp.events_dir();
-    let Ok(entries) = std::fs::read_dir(&events_dir) else {
-        return Vec::new();
-    };
-
-    let mut file_set: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("ndjson") {
-            continue;
-        }
-        for ev in EventReader::stream(&p) {
-            if ev.kind == "pipeline.complete"
-                && let Some(files) = ev.payload.get("affected_files").and_then(|v| v.as_array()) {
-                    file_set = files
-                        .iter()
-                        .filter_map(|f| f.as_str().map(str::to_string))
-                        .collect();
-                }
-        }
-    }
-    file_set
+    // O fluxo de eventos do gravador velho saiu: nenhum conjunto de arquivos
+    // fica gravado ali.
+    let _ = (project_dir, spec_id);
+    Vec::new()
 }
 
 
