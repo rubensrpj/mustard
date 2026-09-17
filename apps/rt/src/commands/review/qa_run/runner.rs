@@ -76,12 +76,6 @@ fn same_file(a: &Path, b: &Path) -> bool {
     comparable(a) == comparable(b)
 }
 
-/// O motivo estável de uma prova que saiu verde sem rodar teste nenhum,
-/// seguido do número que a saída disse: `ran-no-test 0`. Quem lê o resultado
-/// compara o começo com esta constante e lê o número depois dela, nunca uma
-/// frase.
-pub(super) const RAN_NO_TEST: &str = "ran-no-test";
-
 /// Onde cada executor de teste diz quantos testes rodaram. A linha, em
 /// minúsculas, tem de trazer `needs`; o número vem depois de `before` (vazio,
 /// no começo da linha) e a palavra seguinte a ele começa com `after` (vazia,
@@ -104,12 +98,17 @@ const TEST_COUNTS: &[(&str, &str, &str)] = &[
     ("passing", "", "passing"),
 ];
 
-/// Como um executor diz, sem número nenhum, que não rodou teste: o
-/// `no tests ran` do pytest, o `no tests to run` do go, o `No tests found` do
-/// jest, o `Tests  no tests` do vitest. O `[no test files]` do go fica de
-/// fora de propósito: num `go test ./...` ele sai por pacote, ao lado dos
-/// pacotes que rodaram testes de verdade.
-const NO_TEST_LINES: &[&str] = &["no tests", "no test files found"];
+/// Como o go — o único executor da tabela que diz zero sem número nenhum —
+/// marca a corrida que não rodou teste: `ok x/pkg 0.002s [no tests to run]`,
+/// com os colchetes que são dele.
+///
+/// A frase solta não entra, e o motivo é medido: `no tests to skip` na saída
+/// verde de um lint e `no tests found here` numa prova que não é teste diziam
+/// zero e recusavam um verde legítimo. Quem não escreve contagem nem a marca
+/// do próprio executor não respondeu à pergunta. O `[no test files]` do go
+/// fica de fora pelo mesmo cuidado: num `go test ./...` ele sai por pacote, ao
+/// lado dos pacotes que rodaram testes de verdade.
+const NO_TEST_LINES: &[&str] = &["[no tests to run]"];
 
 /// O número que uma linha de saída, já em minúsculas, diz ter rodado, pelo
 /// executor que casar com ela.
@@ -135,13 +134,15 @@ fn counted_in_line(line: &str) -> Option<u64> {
     None
 }
 
-/// Quantos testes a saída de uma prova diz ter rodado, quando um executor que
-/// o projeto usa se reconhece nela: o cargo escreve uma linha por alvo e as
-/// contas se somam, os outros dizem o total numa linha de resumo, e a frase
-/// que diz "nenhum teste" conta zero. `None` quando nenhuma linha responde à
-/// pergunta: verde sem contagem não é verde sem teste, e a prova segue como
-/// veio.
-pub(super) fn tests_run(output: &str) -> Option<u64> {
+/// Quantos testes a saída de um comando diz ter rodado, quando um executor
+/// que o projeto usa se reconhece nela: o cargo escreve uma linha por alvo e
+/// as contas se somam, os outros dizem o total numa linha de resumo, e a
+/// marca do go, que não escreve número, conta zero. `None` quando nenhuma
+/// linha responde à pergunta: verde sem contagem não é verde sem teste.
+///
+/// Isto é leitura, e não veredito: quem decide o que fazer com o número é
+/// quem pediu o comando — só a prova de um critério recusa o zero.
+fn tests_run(output: &str) -> Option<u64> {
     let mut counts: Vec<u64> = Vec::new();
     let mut said_none = false;
     for line in output.split(['\n', '\r']) {
@@ -568,6 +569,7 @@ fn run_ac_command_inner(
                 "self-invocation: this command overwrites `{label}`, the file this process is \
                  executing from; run this AC externally"
             ),
+            tests_run: None,
         };
     }
     // POSIX-style AC commands assume a POSIX shell, and now GET one: the shared
@@ -599,6 +601,7 @@ fn run_ac_command_inner(
                 exit: None,
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("timeout after {}ms", after.as_millis()),
+                tests_run: None,
             };
         }
         // Never ran ⇒ the criterion could not be attempted at all ⇒ `skip`.
@@ -613,6 +616,7 @@ fn run_ac_command_inner(
                 exit: None,
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("could not run the command: {error}"),
+                tests_run: None,
             };
         }
     };
@@ -626,17 +630,11 @@ fn run_ac_command_inner(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    if status.success() && tests_run(&combined_full) == Some(0) {
-        // Verde sem teste nenhum não é prova: o nome do teste não casou. O
-        // motivo leva o número que a saída do executor disse.
-        return AcResult {
-            id: String::new(),
-            status: "fail".to_string(),
-            exit: Some(0),
-            duration_ms,
-            stderr_excerpt: format!("{RAN_NO_TEST} 0"),
-        };
-    }
+    // O que o executor disse sobre quantos testes rodaram viaja no resultado,
+    // como número. O julgamento não mora aqui: este executor responde ao lint
+    // do projeto e à prova de um critério, e só a segunda promete rodar teste
+    // (ver `super::run_proof`).
+    let counted = tests_run(&combined_full);
     if status.success() {
         // Optional `Expect:` evidence gate. Absent ⇒ the legacy exit-0 pass
         // (byte-for-byte). Present ⇒ the regex must match the command's own
@@ -650,6 +648,7 @@ fn run_ac_command_inner(
                 exit: Some(0),
                 duration_ms,
                 stderr_excerpt: String::new(),
+                tests_run: counted,
             },
             ExpectVerdict::Missed => AcResult {
                 id: String::new(),
@@ -660,6 +659,7 @@ fn run_ac_command_inner(
                     "Expect `{pattern}` not found in command output: {}",
                     excerpt(&combined_full)
                 ),
+                tests_run: counted,
             },
             ExpectVerdict::InvalidPattern => AcResult {
                 id: String::new(),
@@ -669,6 +669,7 @@ fn run_ac_command_inner(
                 stderr_excerpt: format!(
                     "Expect `{pattern}` is not a valid regex; skipped (fail-open)"
                 ),
+                tests_run: counted,
             },
         };
     }
@@ -720,6 +721,7 @@ fn run_ac_command_inner(
                 "the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}",
                 excerpt(&combined_full)
             ),
+            tests_run: counted,
         };
     }
     AcResult {
@@ -728,6 +730,7 @@ fn run_ac_command_inner(
         exit: Some(status.code().map_or(1, i64::from)),
         duration_ms,
         stderr_excerpt: excerpt(&combined_full),
+        tests_run: counted,
     }
 }
 
@@ -839,9 +842,15 @@ mod tests {
     /// Quantos testes a saída diz ter rodado, em cada executor que o projeto
     /// usa: o cargo soma os alvos e basta um alvo com teste para o verde
     /// valer; o jest, o vitest, o pytest, o unittest, o dotnet e o mocha dizem
-    /// o total numa linha de resumo; e a frase que diz "nenhum teste", como a
-    /// do go com o filtro que não casou, conta zero. A saída que não responde
-    /// à pergunta não vira contagem nenhuma, e a prova segue como veio.
+    /// o total numa linha de resumo; e a marca do go com o filtro que não
+    /// casou, que é dele e vem entre colchetes, conta zero. A saída que não
+    /// responde à pergunta não vira contagem nenhuma: a frase solta que cita
+    /// "no tests" num lint verde ou numa prova que não é teste não é
+    /// contagem, e quem a lia recusava um verde legítimo.
+    ///
+    /// O número lido viaja no resultado, e o executor não julga: o comando
+    /// que sai verde sem rodar teste sai daqui como `pass`, com o zero que a
+    /// saída disse, e quem recusa é a prova de um critério.
     #[test]
     fn every_runner_the_project_uses_says_how_many_tests_it_ran() {
         let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n\n     Running tests/a.rs\n\nrunning 0 tests\n";
@@ -851,7 +860,6 @@ mod tests {
         assert_eq!(tests_run("Tests:       2 failed, 3 passed, 5 total\n"), Some(5));
         assert_eq!(tests_run("Tests:       0 total\n"), Some(0));
         assert_eq!(tests_run(" Tests  3 passed (3)\n"), Some(3));
-        assert_eq!(tests_run(" Tests  no tests\n"), Some(0));
         assert_eq!(tests_run("collected 3 items\n"), Some(3));
         assert_eq!(tests_run("collected 0 items\n\nno tests ran in 0.01s\n"), Some(0));
         assert_eq!(tests_run("Ran 3 tests in 0.001s\n\nOK\n"), Some(3));
@@ -861,6 +869,19 @@ mod tests {
         assert_eq!(tests_run("testing: warning: no tests to run\nok\tx/pkg\t0.002s [no tests to run]\n"), Some(0));
         assert_eq!(tests_run("?   x/pkg\t[no test files]\nok  \tx/outro\t0.02s\n"), None, "go por pacote não conclui");
         assert_eq!(tests_run("cargo test: 6 passed (1 suite)"), None, "sem contagem, sem veredito");
+        assert_eq!(tests_run("lint ok: no tests to skip\n"), None, "frase num lint verde não é contagem");
+        assert_eq!(tests_run("src/msg.rs: no tests found here\n"), None, "nem numa prova que não é teste");
+        assert_eq!(tests_run(" Tests  no tests\n"), None, "sem número, o executor não disse quantos");
+
+        // O número lido chega no resultado, e o verde sem teste sai daqui
+        // verde: o veredito é de quem pediu a prova.
+        let dir = tempdir().unwrap();
+        let three = run_ac_command("echo running 3 tests", None, dir.path());
+        assert_eq!((three.status.as_str(), three.tests_run), ("pass", Some(3)), "{}", three.stderr_excerpt);
+        let zero = run_ac_command("echo running 0 tests", None, dir.path());
+        assert_eq!((zero.status.as_str(), zero.tests_run), ("pass", Some(0)), "{}", zero.stderr_excerpt);
+        let quiet = run_ac_command("echo lint ok: no tests to skip", None, dir.path());
+        assert_eq!((quiet.status.as_str(), quiet.tests_run), ("pass", None), "{}", quiet.stderr_excerpt);
     }
 
     /// When both `spec.md` and `wave-plan.md` exist in the same dir, the

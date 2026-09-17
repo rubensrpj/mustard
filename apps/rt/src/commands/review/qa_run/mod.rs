@@ -1,7 +1,13 @@
 //! The criteria runner. The `qa-run` command is gone; what stays alive here is
 //! [`run_proof`], which the close and the round call to run each criterion's
-//! proof, and the section reader the page uses. The rest below is the old
-//! command's engine, which nothing outside its own tests reaches any more.
+//! proof, [`run_command`], which the close calls for the project lint, and the
+//! section reader the page uses. The rest below is the old command's engine,
+//! which nothing outside its own tests reaches any more.
+//!
+//! As duas portas rodam o mesmo comando do mesmo jeito e se separam numa
+//! leitura só: quantos testes a saída diz ter rodado. Ela vale na prova de um
+//! critério, que promete rodar teste, e nunca no lint nem em outro comando do
+//! fluxo.
 //!
 //! The engine executes the Acceptance Criteria defined in a spec file: locates the spec,
 //! extracts the `## Acceptance Criteria` section, runs each AC command, and
@@ -87,6 +93,12 @@ pub(crate) struct AcResult {
     exit: Option<i64>,
     duration_ms: u128,
     stderr_excerpt: String,
+    /// Quantos testes a saída do comando disse ter rodado, quando um executor
+    /// que o projeto usa se reconheceu nela; `None` quando a saída não
+    /// responde à pergunta ou quando o comando nem chegou a rodar. É leitura,
+    /// e não veredito: quem julga esse número é a prova de um critério, em
+    /// [`run_proof`], e nunca o lint nem outro comando do fluxo.
+    tests_run: Option<u64>,
 }
 
 /// Uma prova de critério rodada uma vez, como o fechamento a grava.
@@ -99,34 +111,53 @@ pub(crate) struct ProofRun {
     pub ms: u64,
     /// O começo do que a prova escreveu, quando ela não passou.
     pub output: String,
-    /// A prova saiu verde sem rodar teste nenhum, e por isso não passou.
-    pub ran_no_test: bool,
-    /// Quantos testes a saída da prova disse ter rodado, quando ela saiu
-    /// verde sem rodar teste nenhum: é o número que a recusa mostra.
-    pub tests_run: u64,
+    /// A prova de critério saiu verde sem rodar teste nenhum, e por isso não
+    /// passou, com o número que a saída do executor disse — é ele que a
+    /// recusa mostra. `None` quando a prova passou, quando ela falhou por
+    /// outro motivo, e em todo comando que não é prova de critério.
+    pub ran_no_test: Option<u64>,
 }
 
 /// Roda a prova de um critério uma vez, pelo mesmo executor do QA: o mesmo
 /// shell, o mesmo teto de tempo e a mesma classificação. É por aqui que o
 /// fechamento roda cada critério, para que as duas portas nunca discordem
 /// sobre o que é uma prova que passou.
+///
+/// Só a prova de um critério promete rodar teste, e por isso só ela é lida
+/// assim: verde sem rodar teste nenhum não passa, porque o nome do teste não
+/// casou. O comando do fluxo que não é prova de critério — o lint do projeto
+/// — roda por [`run_command`], que não faz essa leitura.
 pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
-    let out = runner::run_ac_command(command, None, cwd);
-    // O motivo da prova sem teste nenhum vem com o número que a saída disse:
-    // `ran-no-test 0`.
-    let ran_no_test = out.status != "pass" && out.stderr_excerpt.starts_with(runner::RAN_NO_TEST);
-    let tests_run = if ran_no_test {
-        out.stderr_excerpt[runner::RAN_NO_TEST.len()..].trim().parse().unwrap_or(0)
-    } else {
-        0
-    };
+    graded(runner::run_ac_command(command, None, cwd), true)
+}
+
+/// Roda um comando do fluxo que não é prova de critério — hoje, o lint do
+/// projeto no fechamento — pelo mesmo executor do QA, com o mesmo shell e o
+/// mesmo teto de tempo.
+///
+/// A leitura de quantos testes o comando rodou não vale aqui: um lint verde
+/// cuja saída cite "no tests" não é uma prova que deixou de provar, e quem
+/// lesse assim recusaria um verde legítimo.
+pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
+    graded(runner::run_ac_command(command, None, cwd), false)
+}
+
+/// Uma execução classificada como o fechamento a grava. As duas portas
+/// entram aqui, e a diferença entre elas é um lugar só: `is_proof`, que diz
+/// se o comando é a prova de um critério. Só nela o verde sem rodar teste
+/// nenhum vira recusa, e a recusa carrega o número que a saída do executor
+/// disse — não há recusa sem contagem lida.
+fn graded(out: AcResult, is_proof: bool) -> ProofRun {
+    let ran_no_test = out.tests_run.filter(|count| *count == 0 && is_proof && out.status == "pass");
     ProofRun {
-        result: if out.status == "pass" { "pass" } else { "fail" },
+        result: if out.status == "pass" && ran_no_test.is_none() { "pass" } else { "fail" },
         exit: out.exit.unwrap_or(1),
         ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
         ran_no_test,
-        tests_run,
-        output: out.stderr_excerpt,
+        output: match ran_no_test {
+            Some(count) => format!("green without running any test: the output says {count} tests"),
+            None => out.stderr_excerpt,
+        },
     }
 }
 
@@ -1303,6 +1334,7 @@ mod tests {
             exit: None,
             duration_ms: 0,
             stderr_excerpt: String::new(),
+            tests_run: None,
         }
     }
 

@@ -1070,6 +1070,37 @@ mod tests {
         assert!(!split[0].contains("MSTD-TASK-0004"), "a onda de uma parte só não entra: {split:?}");
     }
 
+    /// A onda que já tem registro de entrega não é avisada para sair
+    /// dividida: o que ela fez já entrou, e dividir agora não divide nada. A
+    /// onda de partes independentes que ainda vem, ao lado dela, continua
+    /// avisada.
+    #[test]
+    fn a_delivered_wave_is_not_told_to_go_out_split() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        for n in [1, 2] {
+            write(root, Some("x"), "wave", json!({"n": n, "text": "Mexer no código.", "criteria": [crit],
+                "done_when": "passa", "origin": said}));
+            write(root, Some("x"), "task", json!({"wave": n, "text": "Mexer no código de um.",
+                "files": [{"path": format!("src/a{n}.rs"), "new": true}], "origin": said}));
+            write(root, Some("x"), "task", json!({"wave": n, "text": "Mexer no código de dois.",
+                "files": [{"path": format!("src/b{n}.rs"), "new": true}], "origin": said}));
+        }
+        let record = write(root, Some("x"), "delivered",
+            json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a1.rs", "src/b1.rs"]}));
+        assert_eq!(record["ok"], json!(true), "{record}");
+
+        let report = plan(root, "x");
+        let split = hints_of(&report, "warnings", "wave-should-split");
+        assert_eq!(split.len(), 1, "só a onda que ainda vem é avisada: {report}");
+        let expected = translate("plan.wave_should_split", Locale::PtBr)
+            .replace("{wave}", "2")
+            .replace("{parts}", "MSTD-TASK-0003; MSTD-TASK-0004");
+        assert_eq!(split[0], expected, "{split:?}");
+    }
+
     /// A tarefa que não nomeia skill ganha o nome da skill que já existe e
     /// serve para ela; a que não tem skill nenhuma que sirva, e cujo trabalho
     /// se repete no projeto, pede a tarefa que faz a skill nascer.

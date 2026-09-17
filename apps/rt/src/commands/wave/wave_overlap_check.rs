@@ -333,6 +333,41 @@ mod tests {
         assert!(graph.missing_task_waves[0].0.contains("TASK"), "{:?}", graph.missing_task_waves);
     }
 
+    /// As partes de uma onda se juntam pela corrente, e não só pelo par: a
+    /// primeira tarefa toca `a`, a terceira toca `b`, elas não se tocam, e a
+    /// do meio, que toca as duas, junta as três numa parte só. A tarefa de um
+    /// arquivo que ninguém mais toca é a outra parte, e a tarefa que não
+    /// declara arquivo nenhum não entra em parte nenhuma.
+    #[test]
+    fn the_parts_of_a_wave_join_through_the_chain_of_shared_files() {
+        let log = spec_log(&[
+            wave(1, &[]),
+            task(1, &["src/a.rs"]),
+            task(1, &["src/a.rs", "src/b.rs"]),
+            task(1, &["src/b.rs"]),
+            task(1, &["src/solta.rs"]),
+            task(1, &[]),
+        ]);
+        let graph = wave_graph(&log);
+        let parts = graph.parts.get(&1).cloned().unwrap_or_default();
+        assert_eq!(
+            parts,
+            vec![
+                vec![
+                    "MSTD-TASK-0001".to_string(),
+                    "MSTD-TASK-0002".to_string(),
+                    "MSTD-TASK-0003".to_string(),
+                ],
+                vec!["MSTD-TASK-0004".to_string()],
+            ],
+            "a corrente junta as três numa parte, e a solta fica na outra"
+        );
+        assert!(
+            !parts.concat().contains(&"MSTD-TASK-0005".to_string()),
+            "a tarefa sem arquivo fica de fora: {parts:?}"
+        );
+    }
+
 
 
 

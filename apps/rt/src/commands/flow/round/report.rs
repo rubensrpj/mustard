@@ -198,7 +198,7 @@ pub(crate) fn take_report(
     // A prova nova roda uma vez: a que sai verde sem rodar teste nenhum é
     // avisada agora, antes de o fechamento recusá-la.
     for (code, proof) in proofs {
-        if crate::commands::review::qa_run::run_proof(&proof, root).ran_no_test {
+        if crate::commands::review::qa_run::run_proof(&proof, root).ran_no_test.is_some() {
             warnings.push(json!({
                 "reason": "proof-ran-no-test",
                 "hint": translate("round.proof_ran_no_test", lang).replace("{code}", &code),

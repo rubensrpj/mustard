@@ -240,7 +240,9 @@ fn run_close(
 /// rodar; o critério que falha recusa depois de todos rodarem.
 fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<Vec<Value>, CloseRefusal> {
     if let Some(lint) = mustard_core::ProjectConfig::load(root).commands().lint {
-        let out = crate::commands::review::qa_run::run_proof(&lint, root);
+        // O lint não é prova de critério: ele não promete rodar teste nenhum,
+        // e a leitura de quantos testes a saída diz fica fora do caminho dele.
+        let out = crate::commands::review::qa_run::run_command(&lint, root);
         if out.result != "pass" {
             return Err(CloseRefusal::LintFailed { command: lint, output: out.output });
         }
@@ -274,14 +276,13 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<V
             .map_err(CloseRefusal::Refused)?;
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
         if out.result != "pass" && failed.is_none() {
-            failed = Some(if out.ran_no_test {
-                CloseRefusal::CriterionRanNoTest {
+            failed = Some(match out.ran_no_test {
+                Some(tests) => CloseRefusal::CriterionRanNoTest {
                     code: code.clone(),
                     command: proof.clone(),
-                    tests: out.tests_run,
-                }
-            } else {
-                CloseRefusal::CriterionFailed { code: code.clone(), output: out.output.clone() }
+                    tests,
+                },
+                None => CloseRefusal::CriterionFailed { code: code.clone(), output: out.output.clone() },
             });
         }
     }
@@ -945,6 +946,32 @@ mod tests {
             .collect();
         assert_eq!(runs, vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail"))]);
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
+    }
+
+    /// A leitura de quantos testes o comando rodou vale só na prova de um
+    /// critério. O lint do projeto não passa por ela: um lint verde que
+    /// escreve `Tests: 0 total` fecha a spec do mesmo jeito. E a prova de
+    /// critério que não é comando de teste nenhum, cuja saída verde só cita
+    /// "no tests" sem contagem de executor, passa: frase não é contagem.
+    #[test]
+    fn a_proof_that_ran_zero_tests_is_read_only_in_the_proof_of_a_criterion() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let not_a_test = "echo src/msg.rs: no tests found here";
+        ready_to_close(root, "x", &[not_a_test]);
+
+        let closed = close_with_lint(root, "echo Tests: 0 total", None);
+        assert_eq!(closed["ok"], json!(true), "o lint verde não é lido como prova: {closed}");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let runs: Vec<Option<&str>> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "criterion_run")
+            .map(|e| e.str_field("result"))
+            .collect();
+        assert_eq!(runs, vec![Some("pass")], "a prova que não é teste passou: {runs:?}");
+        assert_eq!(State::from_log(&log).phase, Some("closed"));
     }
 
     /// Um critério cuja prova não passa trava o fechamento, e a execução dele

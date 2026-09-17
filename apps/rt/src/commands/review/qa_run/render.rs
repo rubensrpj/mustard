@@ -128,6 +128,7 @@ mod tests {
                 exit: Some(0),
                 duration_ms: 120,
                 stderr_excerpt: String::new(),
+                tests_run: None,
             },
             AcResult {
                 id: "AC-2".into(),
@@ -135,6 +136,7 @@ mod tests {
                 exit: Some(1),
                 duration_ms: 50,
                 stderr_excerpt: "boom | pipe".into(),
+                tests_run: None,
             },
         ];
         write_qa_report_md(dir.path(), "demo", "fail", &criteria);
@@ -167,6 +169,7 @@ mod tests {
             exit: None,
             duration_ms: 600_000,
             stderr_excerpt: "timeout after 600000ms".into(),
+            tests_run: None,
         }];
         write_qa_report_md(dir.path(), "slow", "timeout", &criteria);
 
@@ -192,6 +195,7 @@ mod tests {
             exit: Some(0),
             duration_ms: 12,
             stderr_excerpt: String::new(),
+            tests_run: None,
         }];
         let path = write_html_report(dir.path(), "demo", "pass", &criteria).unwrap();
         let html = std::fs::read_to_string(path).unwrap();
