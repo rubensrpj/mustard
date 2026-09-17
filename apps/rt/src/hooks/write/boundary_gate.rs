@@ -10,7 +10,7 @@
 //! The sensitive-file law that used to live here as `file-guard`
 //! (`credentials*`, `*.pem`, `*.key`, `.git/config`, SSH keys, `*.pfx`,
 //! `*.p12`) is now two-layer: `settings.json permissions.deny`
-//! `Read`/`Edit`/`Write` globs (first line, survives `/unhook`) + the write
+//! `Read`/`Edit`/`Write` globs (first line) + the write
 //! gate's secret rule, which keeps the old case-insensitive full-path
 //! substring semantics the globs cannot express.
 //!

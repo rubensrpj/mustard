@@ -26,11 +26,7 @@
 //! APPENDS it — last of 21 entries — so the bare name resolves to the SYSTEM
 //! copy. The bar would then report the system's own version, `stamped ==
 //! current`, a plain green stamp, and the plugin-vs-system drift that started
-//! the incident would never draw again. The bare token also collides with
-//! `hook_resolve::rewrite_statusline_value`, which absolutises that exact
-//! string because a launcher whose `PATH` omits the install dir loses the bar
-//! entirely on Linux — and since `settings.local.json` outranks
-//! `settings.json`, this observer would silently undo that fix every session.
+//! the incident would never draw again.
 //!
 //! So the answer is a path, just never one this process INFERS. Claude Code's
 //! own plugin registry (`~/.claude/plugins/installed_plugins.json`) records

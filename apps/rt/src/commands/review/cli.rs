@@ -47,9 +47,9 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// The `/mustard:pr` door's MERGE step: merge the pull request, then hand
-    /// the pruning to `git-settle` (back to the base, pull it, remove the
-    /// worktree, delete the local + remote branch). A unit whose review did not
+    /// The `/mustard:pr` door's MERGE step: merge the pull request, then prune
+    /// the unit (back to the base, pull it, remove the worktree, delete the
+    /// local + remote branch). A unit whose review did not
     /// come back `approved` is WARNED about and ASKED — the command answers
     /// `action:"confirm"` and touches nothing; it never refuses. `--confirm` is
     /// the operator's answer coming back.

@@ -1,26 +1,23 @@
 ---
-description: Use when the user runs /upsert, asks to install, set up, or update Mustard in the current project, to disable or re-enable the harness hooks, or to diagnose the installation — and when any /mustard:* command is blocked because Mustard is not installed (no mustard.json at the project root). The installation door — install, update, off, on, doctor.
-argument-hint: [--off | --on | --doctor] [--scope this|monorepo|all] [--confirm]
+description: Use when the user runs /upsert, asks to install, set up, or update Mustard in the current project, or to diagnose the installation — and when any /mustard:* command is blocked because Mustard is not installed (no mustard.json at the project root). The installation door — install, update, doctor.
+argument-hint: [--doctor]
 ---
 <!-- mustard:generated -->
 # /upsert — The Installation Door
 
 ## Trigger
 
-`/mustard:upsert [--off | --on | --doctor] [--scope this|monorepo|all] [--confirm]`
+`/mustard:upsert [--doctor]`
 
 ## Description
 
-One subject, one door: **the state of Mustard's installation in this project**. With no flag it installs or updates. The three flags are the other three questions you can ask about that same state — turn it off, turn it back on, and is it healthy. They were three separate doors once; splitting one subject across four commands was division without a reason.
+One subject, one door: **the state of Mustard's installation in this project**. With no flag it installs or updates. `--doctor` is the other question you can ask about that same state: is it healthy.
 
 | Flag | What it does |
 |------|--------------|
 | *(none)* | Install or update. Seeds `.claude/settings.local.json` (the install is always private-mode, so the hook wiring lands in your local settings file, never the shared `.claude/settings.json`), the injectable instruction files under `.claude/mustard/`, `.claude/.gitignore`, and the project-root `mustard.json`. Idempotent and merge-only — a file you already have is preserved; only what is missing is created. The one exception is the three injectables under `.claude/mustard/` — `orchestrator.md`, `dispatch.md` and `material.md`: those are the harness's own rules, not your configuration, so every run lays the shipped text down again, and a copy that had diverged is reported as updated, never as preserved. A legacy Mustard-planted `.claude/CLAUDE.md` (and the old import/breadcrumb lines in the root `CLAUDE.md`) is migrated away in the same pass. Until this has run, every other `/mustard:*` command is disabled. |
-| `--off` | Harness kill-switch. Sets `"disableAllHooks": true` in `.claude/settings.json` and wipes volatile state — `.agent-state/` and `.cluster-cache.json`, and nothing else. **Worktrees are NOT touched.** The units under `.claude/worktrees/` hold uncommitted work, and silencing the harness is not a reason to destroy it; `git-settle` is the only door that retires them. The rest of the settings file — `permissions.deny`, `permissions.allow`, `statusLine`, `env` — is left untouched, so silencing the harness never removes the safety rules. Plugin-provided hooks are covered too. Reversible with `--on`. |
-| `--on` | Reverses `--off`. For each `.claude/` in scope, removes the `"disableAllHooks"` key from the live `settings.json`. With no live file the legacy path still applies: the most recent `settings.json.disabled*` snapshot is renamed back, so a project unhooked by an older build still recovers. Volatile state directories are **not** recreated — the runtime regenerates them on the next run. |
 | `--doctor` | Read-only installation health report. Never writes. |
 
-Use `--off` when: harness misbehaviour and you want a clean baseline; handing the project to someone without `mustard-rt`; a sensitive operation you want without hook overhead.
 
 ## Action
 
@@ -40,23 +37,6 @@ Print nothing raw — read the JSON report and relay it in clear language:
 4. After a **first install**, add: the defaults work out of the box, and nothing needs a branch declared — bases come from git itself, and protection from `origin/HEAD`. `git.flow` (an OPTIONAL promotion map, which also pre-selects where a base picker opens), `git.protected` and `language` (`text`, `code`) can be adjusted anytime by editing `mustard.json` at the project root.
 5. Next step: describe the work you want done — the router opens the pipeline. The repo map is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own.
 
-### Off / on
-
-```bash
-```
-
-Print stdout verbatim. The `unhook` report's `revert_with` field tells the user exactly how to restore.
-
-| Scope | What it touches |
-|-------|-----------------|
-| `this` | Only `<repo>/.claude/settings.json` (default) |
-| `monorepo` | `<repo>/.claude/` + every `apps/*/.claude/` + `packages/*/.claude/` |
-| `all` | `monorepo` plus the user-global `~/.claude/settings.json` (requires `--confirm`) |
-
-Without `--confirm`, `all`-scope reports the global target as `state: "skipped"` and leaves it alone.
-
-Report each entry's `state`. For `--off`: `disabled` / `missing` / `skipped` / `error`. For `--on`: `restored` (the key removed, or a legacy `settings.json.disabled-<ts>` renamed back) / `already-active` (the file carries no `disableAllHooks` — hooks were never off) / `no-snapshot` (`.claude/` exists, no live `settings.json` and no snapshot) / `missing` / `skipped` / `error` (unreadable or unparseable settings, or the rename failed — the OS message is in the report and the file was left untouched).
-
 ### Doctor
 
 ```bash
@@ -67,8 +47,6 @@ Read-only. Relay the report as it comes; a failing check names its own remediati
 
 ## INVIOLABLE RULES
 
-- Never create or edit `.claude/settings.json`, `.claude/mustard/*.md`, `.claude/.gitignore` or `mustard.json` by hand, and never rename a `settings.json.disabled*` snapshot yourself — the binary is the only writer. An unparseable settings file is reported as `error` and left byte-for-byte untouched; that file is the safety net, so a blind overwrite is the one outcome worse than not acting.
-- Relay every list and every per-entry `state` from the report; if the JSON carries an `error` field, surface it verbatim — never mask it.
+- Never create or edit `.claude/settings.json`, `.claude/mustard/*.md`, `.claude/.gitignore` or `mustard.json` by hand — the binary is the only writer. An unparseable settings file is reported as `error` and left byte-for-byte untouched; that file is the safety net, so a blind overwrite is the one outcome worse than not acting.
+- Relay every list and the `pluginRefresh` state from the report; if the JSON carries an `error` field, surface it verbatim — never mask it.
 - Never say the refreshed plugin is in effect for this session, and never offer to reload it for the user. The update lands on disk; applying it is a restart, which nothing inside a session can perform. A `pluginRefresh` that came back `skipped` is reported, not retried by hand.
-- Never pass `--confirm` automatically — the user types it for `--scope all`.
-- After `--off`, name `--on --scope <same>` as the reversal. If every `--on` entry comes back `already-active`, say so: the user may have meant `--off`.

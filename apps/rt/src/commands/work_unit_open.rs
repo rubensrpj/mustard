@@ -606,9 +606,8 @@ pub(crate) fn hook_create(worktree_name: &str, cwd: &Path) -> Result<String, Str
         None if is_unit => match config.git.primary_base() {
             Some(primary) => {
                 eprintln!(
-                    "work-unit-open: nothing recorded which base '{name}' was cut from; using the \
-                     project's primary base '{primary}' (candidates: {}). To be explicit: \
-                     `mustard-rt run work-unit-open --branch {name} --base <one of them>`.",
+                    "WorktreeCreate: nothing recorded which base '{name}' was cut from; using the \
+                     project's primary base '{primary}' (candidates: {}).",
                     answer.candidates().join(", "),
                 );
                 Some(primary)

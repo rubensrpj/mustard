@@ -138,8 +138,7 @@ pub fn unix_secs_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
 
 /// A filename-safe stamp of `now` — date + time to second precision with the
 /// `:` separators replaced by `-` (so it can name a file on every platform).
-/// Shape: `YYYY-MM-DDTHH-MM-SS`. The single home for what used to be
-/// `cli::timestamp_slug` and `unhook::filename_safe_timestamp`.
+/// Shape: `YYYY-MM-DDTHH-MM-SS`.
 #[must_use]
 pub fn filename_safe_now() -> String {
     let (y, m, d, h, mi, s) = unix_secs_to_ymdhms(now_unix_millis() / 1000);

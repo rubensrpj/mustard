@@ -35,7 +35,7 @@
 //! 4. **Only then prune, and only if the base ADVANCED**: the advance is what
 //!    puts the merged work into the local tree, so it is the ONE authorisation
 //!    for the three irreversible steps. A base left behind answers
-//!    `{ok:false, reason:"base-behind"}` with a `nextAction` and prunes NOTHING —
+//!    `{ok:false, reason:"base-behind"}` and prunes NOTHING —
 //!    worktree, local branch and remote branch all survive, so the failing path's
 //!    worst outcome is "I did not advance, your unit is still here". Authorised,
 //!    the unit's worktree is removed and its local branch deleted (`-D` — merge
@@ -739,9 +739,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "fetched": fetched,
             "hint": if fetched {
                 "unidade sem base registrada, e o trabalho não está contido em exatamente uma \
-                 base — nem o registro do corte nem a medição responderam. Reabra com \
-                 `mustard-rt run work-unit-open --branch <unit> --base <uma delas>` e repita — o \
-                 ritual de saída não escolhe por você"
+                 base — nem o registro do corte nem a medição responderam. O ritual de saída \
+                 não escolhe por você"
             } else {
                 "não foi possível buscar do remoto, então a medição não rodou: as referências \
                  locais podem estar atrasadas em relação a um merge recém-feito. Reconecte e \
@@ -1027,14 +1026,14 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "advanced": false,
             "reason": if named.is_null() { json!("unreported") } else { named },
         });
-        // **`clearFirst` before `nextAction`, and the order is the whole point.**
-        // `nextAction` is the RERUN, correct only once the obstacle is gone;
-        // read alone it is a command that reproduces its own output forever, and
-        // in the field (2026-08-28) it did exactly that — the operator ran it
-        // twice and got byte-identical JSON, with the real move
-        // (`git rebase origin/<base>`) named nowhere. This project's rule is
-        // that every refusal names the command that resolves it, and a refusal
-        // whose only command is itself does not.
+        // **`clearFirst` names the move that clears the obstacle.** The rerun
+        // alone reproduces its own output forever, and in the field
+        // (2026-08-28) it did exactly that — the operator ran it twice and got
+        // byte-identical JSON, with the real move (`git rebase origin/<base>`)
+        // named nowhere. This project's rule is that every refusal names the
+        // command that resolves it. The rerun itself is no longer named: the
+        // command that pruned by hand left the binary, and a next step pointing
+        // at it would send the reader to a command that does not exist.
         //
         // Named per `baseAdvance.reason`, never generically: an unrecognised
         // reason gets NO invented command, because a wrong paste on an
@@ -1042,7 +1041,6 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         if let Some(fix) = clear_first_for(&base, &report["baseAdvance"]["reason"]) {
             report["clearFirst"] = json!(fix);
         }
-        report["nextAction"] = json!(format!("mustard-rt run git-settle --unit {unit_branch}"));
     }
     report
 }
@@ -2125,6 +2123,51 @@ mod tests {
         );
     }
 
+    /// Uma unidade sem base gravada e que nenhuma base contém recusa como base
+    /// ambígua, com as candidatas, e a recusa não manda reabrir a unidade pelo
+    /// comando que saiu do binário.
+    #[test]
+    fn an_ambiguous_base_refusal_names_no_cut_command() {
+        let dir = tempdir().expect("tempdir");
+        let bare = dir.path().join("origin.git");
+        let main = dir.path().join("repo");
+        for p in [&bare, &main] {
+            std::fs::create_dir_all(p).expect("mkdir");
+        }
+        git(&bare, &["init", "--bare", "."]);
+        git(&main, &["init", "."]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-b", "dev"]);
+        std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("cfg");
+        std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
+        std::fs::write(main.join("a.txt"), "a").expect("seed");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "seed"]);
+        git(&main, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
+        git(&main, &["push", "-u", "origin", "dev"]);
+        git(&main, &["branch", "main"]);
+        git(&main, &["push", "-u", "origin", "main"]);
+
+        // A unidade: registro na spec, nenhuma base gravada e trabalho que
+        // nenhuma das duas bases recebeu.
+        git(&main, &["checkout", "-b", "fix/orphan"]);
+        std::fs::create_dir_all(main.join(".claude").join("spec").join("orphan"))
+            .expect("unit record");
+        std::fs::write(main.join("b.txt"), "b").expect("work");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "the work"]);
+        git(&main, &["push", "-u", "origin", "fix/orphan"]);
+        git(&main, &["checkout", "dev"]);
+
+        let v = settle_at(&main, Some("fix/orphan"));
+        assert_eq!(v["ok"], json!(false), "{v}");
+        assert_eq!(v["reason"], json!("ambiguous-base"), "{v}");
+        assert!(v["hint"].as_str().is_some_and(|h| !h.is_empty()), "the refusal still explains itself: {v}");
+        assert!(!v.to_string().contains("work-unit-open"), "the refusal names no cut command: {v}");
+    }
+
     #[test]
     fn settle_refuses_when_a_ref_moved_after_merge() {
         let (_dir, main) = fixture();
@@ -2304,9 +2347,10 @@ mod tests {
         assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
         assert_eq!(
             v["nextAction"],
-            json!("mustard-rt run git-settle --unit dev_done"),
-            "the refusal names the command that finishes the ritual: {v}",
+            json!(null),
+            "the refusal names no next step pointing at the command that left: {v}",
         );
+        assert!(!v.to_string().contains("git-settle"), "nothing in the report names the cut command: {v}");
 
         // The EFFECT, not the report: all three refs of the unit are still there.
         assert!(wt.exists(), "the worktree survives: {v}");
@@ -2364,12 +2408,13 @@ mod tests {
         );
     }
 
-    /// The `base-behind` refusal names the REBASE, not itself.
+    /// The `base-behind` refusal names the REBASE, not a rerun.
     ///
-    /// `nextAction` is the rerun, correct only once the obstacle is gone. Read
-    /// alone it reproduces its own output forever — measured in the field on
-    /// 2026-08-28, where the operator ran it twice and got byte-identical JSON
-    /// while the real move was named nowhere.
+    /// A rerun read alone reproduces its own output forever — measured in the
+    /// field on 2026-08-28, where the operator ran it twice and got
+    /// byte-identical JSON while the real move was named nowhere. And the
+    /// command that reran the prune by hand left the binary, so no field of the
+    /// report may name it.
     #[test]
     fn base_behind_names_the_rebase_not_itself() {
         let (_dir, main) = fixture();
@@ -2386,10 +2431,10 @@ mod tests {
         let clear = v["clearFirst"].as_str().unwrap_or_default();
         assert!(clear.contains("rebase"), "the refusal names the rebase: {v}");
         assert!(
-            !clear.contains("git-settle"),
-            "and the move is NOT the rerun — that is the loop this exists to end: {v}",
+            !v.to_string().contains("git-settle"),
+            "and the move is NOT the rerun of the command that left: {v}",
         );
-        assert_ne!(v["clearFirst"], v["nextAction"], "two different steps, in order: {v}");
+        assert_eq!(v["nextAction"], json!(null), "no next step names the cut command: {v}");
     }
 
     /// The prune is authorised by the BASE ADVANCE, never by the unit's

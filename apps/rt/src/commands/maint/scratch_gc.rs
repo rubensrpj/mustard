@@ -811,7 +811,7 @@ pub fn run(opts: ScratchGcOpts) {
     println!("{body}");
     if refused {
         for e in &report.errors {
-            eprintln!("scratch-gc: {}", e.error);
+            eprintln!("clean: {}", e.error);
         }
     }
 

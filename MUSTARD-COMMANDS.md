@@ -47,7 +47,7 @@ flowchart TD
 
     subgraph apoio["Apoio / fora do pipeline"]
         git["/mustard:git<br/>(commit · push · pr · delete)"]
-        upsert["/mustard:upsert<br/>(instala · --off · --on · --doctor)"]
+        upsert["/mustard:upsert<br/>(instala · --doctor)"]
     end
 ```
 
@@ -414,24 +414,16 @@ flowchart TD
 
 ## `/mustard:upsert` — A porta da instalação
 
-Um assunto, uma porta: **o estado da instalação do Mustard neste projeto**. Sem flag, instala ou atualiza. As três flags são as outras três perguntas sobre esse mesmo estado — desliga, religa, e está saudável. Eram três portas separadas; partir um assunto em quatro comandos era divisão sem motivo.
+Um assunto, uma porta: **o estado da instalação do Mustard neste projeto**. Sem flag, instala ou atualiza. `--doctor` é a outra pergunta sobre esse mesmo estado: está saudável.
 
 | Flag | O que faz | Backend |
 |---|---|---|
 | *(nenhuma)* | Instala/atualiza: `.claude/settings.local.json` (a instalação é sempre em modo privado, então a fiação dos ganchos cai no arquivo local, nunca no `.claude/settings.json` compartilhado), os injetáveis de `.claude/mustard/`, `.claude/.gitignore` e o `mustard.json` da raiz. Idempotente e merge-only — o que já existe é preservado, com UMA exceção: `.claude/mustard/orchestrator.md`, `.claude/mustard/dispatch.md` e `.claude/mustard/material.md` são as regras do próprio harness, não configuração do projeto, então toda execução regrava o texto embarcado — inclusive uma cópia que existe mas não pode ser lida. Uma cópia que divergiu volta em `updated`; uma idêntica volta em `preserved`, porque não havia o que escrever | `upsert` |
-| `--off` | Kill-switch: grava `"disableAllHooks": true` e limpa estado volátil (`.agent-state/` e `.cluster-cache.json`, só isso). **Worktrees não são tocadas** — as unidades em `.claude/worktrees/` guardam trabalho não commitado, e silenciar o harness não é motivo para destruí-lo; quem as retira é o `git-settle`. `permissions.deny/allow`, `statusLine` e `env` ficam intactos — silenciar o harness nunca remove as regras de segurança | `unhook` |
-| `--on` | Reverte o `--off`: remove a chave `disableAllHooks`; sem arquivo vivo, renomeia de volta o snapshot `settings.json.disabled*` mais recente. Diretórios voláteis não são recriados — o runtime os regenera | `rehook` |
 | `--doctor` | Relatório read-only de saúde da instalação. `--residue` audita estado residual; `--check <nome>` estreita para um check | `doctor` |
-
-| Scope (`--off` / `--on`) | O que toca |
-|---|---|
-| `this` | só `<repo>/.claude/settings.json` (default) |
-| `monorepo` | `<repo>/.claude/` + todos `apps/*` e `packages/*` |
-| `all` | monorepo + `~/.claude/settings.json` global (requer `--confirm`) |
 
 ```mermaid
 flowchart TD
-    start(["/mustard:upsert [--off|--on|--doctor]"]) --> which{"flag?"}
+    start(["/mustard:upsert [--doctor]"]) --> which{"flag?"}
 
     which -->|nenhuma| ups["mustard-rt run upsert"]
     ups --> lists["relata created / updated /<br/>preserved / migrated em linguagem clara"]
@@ -440,17 +432,10 @@ flowchart TD
     first -->|true| doneU(["atualização aplicada"])
     hint --> doneU
 
-    off --> scopeChk{"scope all sem --confirm?"}
-    on --> scopeChk
-    scopeChk -->|sim| skip["global: state skipped (não toca)"]
-    scopeChk -->|não| apply["aplica no scope"]
-    skip --> report
-    apply --> report["print verbatim — state por entrada<br/>(disabled/restored/already-active/<br/>no-snapshot/missing/skipped/error)"]
-
     which -->|--doctor| doc["mustard-rt run doctor<br/>(read-only; cada check falho<br/>nomeia a própria remediação)"]
 ```
 
-> Nunca editar `settings.json` à mão nem renomear um snapshot `settings.json.disabled*` — o binário é o único escritor. Arquivo ilegível vira `error` e fica byte a byte intacto: ele é a rede de segurança, e sobrescrever no escuro é o único desfecho pior que não agir.
+> Nunca editar `settings.json` à mão — o binário é o único escritor. Arquivo ilegível vira `error` e fica byte a byte intacto: ele é a rede de segurança, e sobrescrever no escuro é o único desfecho pior que não agir.
 
 ---
 
@@ -464,7 +449,7 @@ flowchart TD
 | `/mustard:git` | **porta** · git | `git-settle`, `git-delete`, `notebook` (+ git nativo via `rtk`) | não |
 | `/mustard:pr` | **porta** · PR | `pr-list`, `pr-review`, `pr-merge`, `review-prefetch`, `diff-context`, `close-orchestrate` | não |
 | `/mustard:spec` | **porta** · core | `active-specs`, `resume-bootstrap`, `wave-advance`, `close-pipeline` | indireto |
-| `/mustard:upsert` | **porta** · instalação | `upsert`, `unhook`, `rehook`, `doctor` | não |
+| `/mustard:upsert` | **porta** · instalação | `upsert`, `doctor` | não |
 | `scan` | fluxo interno | `scan --full` | **produz** |
 | `/mustard:feature` | fluxo interno · core | `feature`, `spec-draft`, `plan-prepare`, `analyze-validation`, `agent-prompt-render` | consome (digest) |
 | `/mustard:bugfix` | fluxo interno · core | `feature`, `agent-prompt-render`, `qa-run`, `scan` | consome (digest) + refresca |

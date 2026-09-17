@@ -35,8 +35,6 @@
 //!   saying only a reload picks the new one up, since an upsert cannot. The
 //!   drift advisory above cannot see this: it compares the stamp against the
 //!   running harness, so a session on an old plugin reads as aligned.
-//! - pending-prune advisory — delivered work units still carrying a live
-//!   branch get one line naming what is owed. Advisory, never blocking.
 //! - leftovers advisory — the old disposable copies `scratch-gc` would delete,
 //!   when they pass the limit (5 GiB, adjustable through
 //!   `MUSTARD_SCRATCH_WARN_BYTES`), become one line with the total and the
@@ -83,7 +81,6 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::commands::maint::scratch_gc::{human_bytes, survey, ScratchRoots};
-use crate::shared::branch_state::{awaiting_prune, PrQuery};
 
 
 /// Archived sessions older than this are pruned on `SessionStart` (30 days).
@@ -298,10 +295,6 @@ fn session_start_core(
     // and leaves the plugin where it was, which is the shape the operator
     // hit on 2026-08-26.
     let behind = plugin_behind_binary_line(&running, installed);
-    // Pending-prune advisory: delivered work units whose branch is still
-    // alive. The prune command already existed and worked; what was missing
-    // was anyone SAYING it was owed, so six units piled up unnoticed.
-    let prune = prune_pending_notice(Path::new(&cwd), terrain_lang);
     // Aviso de sobras: as cópias descartáveis antigas que passam do limite, no
     // idioma e no tom do projeto. Vem antes das pendências, que fecham o bloco.
     let residue = scratch_notice(Path::new(&cwd), scratch, i18n);
@@ -315,7 +308,7 @@ fn session_start_core(
     // here): terrain first, injectables after, the advisories last —
     // blank-line separated. All of it is ONE response under the 10,000
     // character ceiling, which is why the prompt family stays out (above).
-    let parts: Vec<String> = [terrain, injected, drift, stale, behind, prune, residue, pending]
+    let parts: Vec<String> = [terrain, injected, drift, stale, behind, residue, pending]
         .into_iter()
         .flatten()
         .collect();
@@ -415,64 +408,6 @@ fn plugin_behind_binary_line(binary: &str, plugin: Option<&str>) -> Option<Strin
     ))
 }
 
-/// How many unit names the advisory spells out before it just counts the rest.
-/// Six units piled up in the field report; a list that long stops being read.
-const PRUNE_NOTICE_NAMES: usize = 4;
-
-/// One line when delivered work units still carry a live branch — the missing
-/// half of the exit ritual.
-///
-/// The command that prunes them already existed and worked; across six
-/// consecutive units nobody ran it, because nothing ever said it was owed.
-/// This is that saying, and nothing more: advisory, never blocking.
-///
-/// The count comes from the ONE classifier
-/// ([`crate::shared::branch_state::awaiting_prune`]) with the lookup that asks
-/// no provider — a session must not open a network connection per branch
-/// before it starts, so only merges LOCAL ancestry proves are counted. Under-
-/// reporting costs a nudge; over-reporting would point at branches nobody
-/// verified. `shared` may not import the git primitive (it lives in the
-/// `commands` face), so the read is injected here, exactly as `branch_state`
-/// documents.
-///
-/// `None` for a project with no `mustard.json` (never installed — the harness
-/// does not nag it) and whenever nothing is owed. Fail-open throughout: a git
-/// that cannot answer yields no advisory.
-///
-/// **Session start only, since the `stop_gate` left.** It also called this at
-/// the end of every turn, because the debt is BORN mid-session, at the merge;
-/// that end-of-turn copy left with it, and mid-session
-/// the statusline still shows the same count live to the human.
-pub(crate) fn prune_pending_notice(root: &Path, lang: SupportedLocale) -> Option<String> {
-    if !mustard_core::ProjectConfig::exists(root) {
-        return None;
-    }
-    let config = crate::shared::context::project_config_cached(root);
-    // ROOTED: the sweep classifies REAL branches of THIS repository, and a unit
-    // whose base only its own directory recorded (an emergency in a project
-    // declaring several candidates) reads as base-less through the pure
-    // derivation — `BranchEnumerator` then files it under an empty base, which
-    // is a base group `refs_ahead_of_base` never measures.
-    let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
-    let pending = awaiting_prune(root, PrQuery::Skip, &flow);
-    if pending.is_empty() {
-        return None;
-    }
-    let named: Vec<&str> =
-        pending.iter().take(PRUNE_NOTICE_NAMES).map(|state| state.branch.as_str()).collect();
-    let rest = pending.len() - named.len();
-    let branches = if rest > 0 {
-        format!("{listed} (+{rest})", listed = named.join(", "))
-    } else {
-        named.join(", ")
-    };
-    Some(
-        mustard_core::translate("prune.pending.notice", lang)
-            .replace("{count}", &pending.len().to_string())
-            .replace("{branches}", &branches),
-    )
-}
-
 /// A single line with the count of open pending items and the command that
 /// shows the whole list ([`count_line`](crate::commands::event::pending::count_line),
 /// the same line as the `run pending` listing).
@@ -529,7 +464,7 @@ impl ScratchProbe {
 /// Uma linha quando as cópias descartáveis antigas passam do limite: o total,
 /// quantas pastas e o comando que lista e apaga.
 ///
-/// No molde do [`prune_pending_notice`] e do [`pending_notice`]: projeto sem
+/// No molde do [`pending_notice`]: projeto sem
 /// `mustard.json` não é importunado, e abaixo do limite nada aparece. A conta
 /// sai da MESMA varredura do `scratch-gc` e do `doctor --residue`
 /// ([`survey`]), então o total do aviso é exatamente o que o
@@ -706,7 +641,7 @@ mod tests {
         assert_eq!(stale_plugin_line("0.1.42", None), None);
     }
 
-    // --- pending-prune advisory ---------------------------------------------
+    // --- branch mergeada com branch viva ------------------------------------
 
     /// Run git in `dir`, failing the test loudly — a half-built fixture would
     /// make the assertions below prove nothing.
@@ -723,18 +658,12 @@ mod tests {
         );
     }
 
+    /// Uma unidade já mergeada com a branch ainda viva não vira aviso no
+    /// início da sessão: o comando que podava saiu, e um aviso sem comando
+    /// para rodar não diz nada a quem lê. Nada no contexto nomeia a branch nem
+    /// manda rodar o comando cortado.
     #[test]
-    fn prune_advisory_absent_without_mustard_json() {
-        let dir = tempdir().unwrap();
-        assert_eq!(prune_pending_notice(dir.path(), SupportedLocale::default()), None);
-    }
-
-    /// The field cause, closed: a unit whose work landed but whose branch is
-    /// still around gets SAID OUT LOUD at session start. The unmerged unit in
-    /// the same repo is the control — the advisory names what is owed, never
-    /// everything that exists.
-    #[test]
-    fn prune_advisory_names_units_whose_branch_outlived_the_merge() {
+    fn session_start_says_nothing_about_a_merged_unit_with_a_live_branch() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         git(root, &["init", "."]);
@@ -761,18 +690,19 @@ mod tests {
         git(root, &["commit", "--allow-empty", "-m", "in flight"]);
         git(root, &["checkout", "dev"]);
 
-        let notice = prune_pending_notice(root, SupportedLocale::default())
-            .expect("a delivered unit with a live branch must be surfaced");
-        assert!(notice.contains("dev_landed"), "names the unit owed a prune: {notice}");
-        assert!(
-            !notice.contains("dev_live"),
-            "an unmerged unit is not owed anything: {notice}"
-        );
-        assert!(notice.contains('1'), "carries the count: {notice}");
-        assert!(
-            notice.contains("git-settle"),
-            "points at the command that was never called: {notice}"
-        );
+        let context = match session_start_core(
+            &session_input("s-merged"),
+            &ctx(root.to_str().unwrap()),
+            NO_REGISTRY,
+            NO_SCRATCH,
+        )
+        .unwrap()
+        {
+            Verdict::Inject { context } => context,
+            _ => String::new(),
+        };
+        assert!(!context.contains("dev_landed"), "the merged unit is not named: {context}");
+        assert!(!context.contains("git-settle"), "the cut command is not named: {context}");
     }
 
     // --- aviso de pendências -----------------------------------------------
@@ -1002,11 +932,11 @@ mod tests {
 
         let above = context_of(&probe(1024));
         assert!(above.contains(&human_bytes(total)), "carries the total: {above}");
-        assert!(above.contains("mustard-rt run scratch-gc"), "names the cleanup command: {above}");
+        assert!(above.contains("mustard-rt run clean"), "names the cleanup command: {above}");
 
         // No limite exato ainda não passou dele: silêncio.
         let below = context_of(&probe(total));
-        assert!(!below.contains("scratch-gc"), "below the limit nothing shows: {below}");
+        assert!(!below.contains("mustard-rt run clean"), "below the limit nothing shows: {below}");
         assert!(old.exists(), "the notice only reads");
     }
 

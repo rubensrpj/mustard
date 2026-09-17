@@ -279,7 +279,7 @@ fn check_scratch_residue(roots: &crate::commands::maint::scratch_gc::ScratchRoot
     let found = survey(roots);
     let count = found.candidates.len();
     let mut details = vec![format!(
-        "{count} scratch leftover(s) older than {MIN_AGE_HOURS}h: {} - list with `mustard-rt run scratch-gc`, remove with `--apply`",
+        "{count} scratch leftover(s) older than {MIN_AGE_HOURS}h: {} - list with `mustard-rt run clean`, remove with `--apply`",
         human_bytes(found.candidates_bytes())
     )];
     let over_cap = found.shared_target.as_ref().is_some_and(|s| s.over_cap);
@@ -289,7 +289,7 @@ fn check_scratch_residue(roots: &crate::commands::maint::scratch_gc::ScratchRoot
             shared.path,
             human_bytes(shared.size_bytes),
             human_bytes(shared.cap_bytes),
-            if shared.over_cap { " - over the cap, `scratch-gc --apply` empties it" } else { "" }
+            if shared.over_cap { " - over the cap, `mustard-rt run clean --apply` empties it" } else { "" }
         )),
         None => details.push("shared build: not present".to_string()),
     }
@@ -1562,6 +1562,8 @@ mod tests {
             text.contains(&format!("1 scratch leftover(s) older than 12h: {}", human_bytes(candidate_bytes))),
             "{text}"
         );
+        // O comando de limpeza que a linha manda rodar é o que existe.
+        assert!(text.contains("list with `mustard-rt run clean`"), "{text}");
         assert!(
             text.contains(&format!("shared build {}: {}", shared.display(), human_bytes(2048))),
             "{text}"

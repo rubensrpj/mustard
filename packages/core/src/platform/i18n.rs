@@ -693,31 +693,19 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // runs), opposite remedy — so they must never share a label.
         ("statusline.harness.dormant", Locale::PtBr) => "harness dormente",
         ("statusline.harness.dormant", Locale::EnUs) => "harness dormant",
-        ("prune.pending.notice", Locale::PtBr) => {
-            "[Mustard] {count} unidade(s) de trabalho já mergeada(s) ainda têm branch viva: \
-             {branches}. Diga ao usuário que o ritual de saída ficou pendente e ofereça \
-             `mustard-rt run git-settle --report` para conferir o estado de cada uma e \
-             `mustard-rt run git-settle --unit <branch>` para podar. Aviso, nunca bloqueio."
-        }
-        ("prune.pending.notice", Locale::EnUs) => {
-            "[Mustard] {count} merged work unit(s) still have a live branch: {branches}. \
-             Tell the user the exit ritual is outstanding and offer \
-             `mustard-rt run git-settle --report` to check each one's state and \
-             `mustard-rt run git-settle --unit <branch>` to prune. Advisory, never blocking."
-        }
         // Aviso de sobras do início da sessão: `{total}` e `{count}` são
         // preenchidos pelo chamador (`session_start_inject::scratch_notice`).
         ("scratch.residue.notice", Locale::PtBr) => {
             "[Mustard] As cópias descartáveis antigas no diretório temporário somam {total} \
              em {count} pasta(s). Diga ao usuário que o disco está sendo gasto com sobras e \
-             ofereça `mustard-rt run scratch-gc` para listar o que sai e \
-             `mustard-rt run scratch-gc --apply` para apagar. Aviso, nunca bloqueio."
+             ofereça `mustard-rt run clean` para listar o que sai e \
+             `mustard-rt run clean --apply` para apagar. Aviso, nunca bloqueio."
         }
         ("scratch.residue.notice", Locale::EnUs) => {
             "[Mustard] Old throwaway copies in the temp directory add up to {total} across \
              {count} folder(s). Tell the user the disk is being spent on leftovers and offer \
-             `mustard-rt run scratch-gc` to list what would go and \
-             `mustard-rt run scratch-gc --apply` to delete it. Advisory, never blocking."
+             `mustard-rt run clean` to list what would go and \
+             `mustard-rt run clean --apply` to delete it. Advisory, never blocking."
         }
 
         // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
@@ -3282,11 +3270,11 @@ mod tests {
     }
 
     /// Work-unit surfacing copy is catalogue-driven in BOTH locales: the
-    /// listing legend, the status-bar label and the session-start advisory
-    /// carry no language literal at their surface.
+    /// listing legend and the status-bar label carry no language literal at
+    /// their surface.
     #[test]
     fn i18n_translates_work_unit_surfacing_keys() {
-        for key in ["specs.location.remote_only", "statusline.prune.label", "prune.pending.notice"] {
+        for key in ["specs.location.remote_only", "statusline.prune.label"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_ne!(translate(key, lang), "<missing-key>", "{key} missing for {lang}");
             }
@@ -3296,11 +3284,10 @@ mod tests {
                 "{key} must differ per locale (proof it is catalogue-driven)"
             );
         }
-        // The advisory's slots are the caller's contract.
+        // O aviso de poda do início da sessão saiu com o comando que ele
+        // mandava rodar: nenhum idioma guarda o texto.
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let notice = translate("prune.pending.notice", lang);
-            assert!(notice.contains("{count}"), "the advisory interpolates the count: {notice}");
-            assert!(notice.contains("{branches}"), "and names the units: {notice}");
+            assert_eq!(translate("prune.pending.notice", lang), "<missing-key>", "the prune advisory left");
         }
     }
 
@@ -3337,6 +3324,13 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+        // O aviso de sobras manda, nos dois idiomas, para o comando de limpeza
+        // que existe: listar sem nada e apagar com `--apply`.
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let notice = translate("scratch.residue.notice", lang);
+            assert!(notice.contains("`mustard-rt run clean`"), "the notice names the list call: {notice}");
+            assert!(notice.contains("`mustard-rt run clean --apply`"), "and the delete call: {notice}");
         }
         for key in [
             "deliver.order",
