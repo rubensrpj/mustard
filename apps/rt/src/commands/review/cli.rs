@@ -35,14 +35,11 @@ pub enum ReviewCmd {
         /// own branch's.
         #[arg(long)]
         pr: Option<u64>,
-        /// O veredito gravado. Lista fechada: `approved` ou `rejected`; sem
-        /// ele, o pedido é impresso e nada é gravado. Um terceiro valor,
-        /// aceito como texto livre, era gravado e nunca lido como aprovação.
+        /// O comando recusa e não grava nada com ele: o veredito de cada onda
+        /// é gravado pela rodada, da linha do agente de revisão. Lista
+        /// fechada: `approved` ou `rejected`; sem ele, o pedido é impresso.
         #[arg(long, value_parser = ["approved", "rejected"])]
         verdict: Option<String>,
-        /// Count of critical findings (0 when `approved`).
-        #[arg(long, default_value_t = 0)]
-        critical: i64,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -107,8 +104,8 @@ pub enum ReviewCmd {
 /// Dispatch one `review`-family `run` subcommand.
 pub fn dispatch(cmd: ReviewCmd) {
     match cmd {
-        ReviewCmd::PrReview { pr, verdict, critical, root } => {
-            review::pr_door::run_review(&root, pr, verdict.as_deref(), critical);
+        ReviewCmd::PrReview { pr, verdict, root } => {
+            review::pr_door::run_review(&root, pr, verdict.as_deref());
         }
         ReviewCmd::PrMerge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);

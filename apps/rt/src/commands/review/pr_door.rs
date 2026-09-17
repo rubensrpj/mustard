@@ -4,9 +4,9 @@
 //! ONE module for three commands, because they are one ritual over one seam:
 //! the link between a pull request and the work unit behind it. A PR's head
 //! branch is `{kind}/{slug}` (or the older `{base}_{slug}`, still recognised)
-//! and that slug IS the spec — `pr-review` records a
-//! verdict under it and `pr-merge` reads that verdict back. Written once here,
-//! the link cannot drift into three spellings across three files.
+//! and that slug IS the spec — `pr-review` prints the brief of the unit under
+//! it and `pr-merge` reads back the verdicts the round recorded there. Written
+//! once here, the link cannot drift into three spellings across three files.
 //!
 //! ## What each command answers
 //!
@@ -46,7 +46,7 @@
 //! The verdict the merge reads needs no such hop: `.claude/` is redirected
 //! state, resolved to the MAIN checkout from inside any linked worktree, so the
 //! `spec.ndjson` the merge reads is the main checkout's, whatever branch
-//! happens to be out, and recording from the base adds nothing tracked to the
+//! happens to be out, and the round that wrote it adds nothing tracked to the
 //! base's tree.
 //! - **`pr-merge`** — the merge and the tidying up, in ONE call. It merges,
 //!   then hands the pruning to [`git_settle::settle_at`] — returning to the
@@ -104,8 +104,6 @@ use crate::commands::event::pending::{became_of, close_pending, open_pending_bor
 use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
 use crate::commands::review::pr_publish::{spec_pr, submodules_landed, SubmodulePrs};
-use crate::commands::review::review_result;
-use crate::commands::work_unit_open::checkout_holding_branch;
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{provider_for, provider_in, PrChecks};
 use crate::shared::work_kind::BaseFlow;
@@ -478,28 +476,16 @@ pub(crate) struct PrReviewReport {
     /// was dispatched with.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub patterns: Option<String>,
-    /// True when `--verdict` was supplied and the verdict was recorded.
-    pub recorded: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verdict: Option<String>,
 }
 
-/// Build the review brief for a resolved PR, recording `verdict` when one is
-/// supplied.
+/// Build the review brief for a resolved PR.
 ///
-/// The door refuses `--verdict` before it gets here, so nothing is recorded
-/// in this version. Kept as it was: recording goes through
-/// [`review_result::record_review`] — the same path the `review-result` CLI
-/// takes, into the old log. `pr-merge` reads the per-wave verdicts of the
-/// spec's `spec.ndjson`, which the round writes.
+/// It records nothing. The door refuses `--verdict` before anything gets
+/// here, so a recorder reachable from this step would be a recorder nobody
+/// can reach: the per-wave verdicts `pr-merge` reads are the ones the round
+/// writes into the spec's `spec.ndjson`.
 #[must_use]
-fn review_brief(
-    root: &Path,
-    facts: &PrFacts,
-    flow: &BaseFlow,
-    verdict: Option<&str>,
-    critical: i64,
-) -> PrReviewReport {
+fn review_brief(root: &Path, facts: &PrFacts, flow: &BaseFlow) -> PrReviewReport {
     let spec = spec_of_branch(&facts.head, flow);
     let spec_text = spec
         .as_deref()
@@ -516,30 +502,6 @@ fn review_brief(
         .map(|sub| build_skills_list(root, sub))
         .filter(|shelf| !shelf.is_empty());
 
-    // Record where the UNIT can see it. The spec directory rides the work
-    // branch now, so a base checkout does not track it and a verdict written
-    // there would land in a tree the unit never reads. The checkout that HOLDS
-    // the head branch is that tree — the main checkout after an in-place cut,
-    // or the unit's own worktree. With none (the branch exists only on the
-    // server) the main checkout's shared `.claude/` is the only home there is.
-    let unit_root = checkout_holding_branch(root, &facts.head)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.to_path_buf());
-    let recorded = match (spec.as_deref(), verdict) {
-        (Some(slug), Some(v)) => {
-            review_result::record_review(
-                &unit_root,
-                slug,
-                v,
-                critical,
-                subproject.as_deref(),
-                None,
-            );
-            true
-        }
-        _ => false,
-    };
-
     PrReviewReport {
         ok: true,
         reason: None,
@@ -551,8 +513,6 @@ fn review_brief(
         spec_path,
         subproject,
         patterns,
-        recorded,
-        verdict: verdict.map(str::to_string),
     }
 }
 
@@ -809,11 +769,13 @@ fn merge_or_ask(
                      authenticated, then run `pr merge` again; `--confirm` merges without it"
                         .to_string()
                 }
-                _ => format!(
-                    "ask the operator, then re-run with `--confirm` to merge anyway, or record a \
-                     verdict first with `mustard-rt run pr-review --pr {} --verdict approved`",
-                    facts.number
-                ),
+                // No line that records a verdict: this door records none, and
+                // the verdict read here is the one the round writes into the
+                // spec, wave by wave. Naming a recording command the binary
+                // refuses spent the reader's next call on a refusal.
+                _ => "ask the operator, then re-run with `--confirm` to merge anyway — the verdict \
+                      read here is the one `mustard-rt run round` records for each wave"
+                    .to_string(),
             }),
             spec,
             verdict,
@@ -1152,7 +1114,7 @@ fn emit<T: Serialize>(report: &T) {
 /// Dispatch `mustard-rt run pr-review`. The brief still answers; recording a
 /// verdict has left the flow, so `--verdict` refuses at the door with exit 1,
 /// records nothing and says to wait for the round.
-pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical: i64) {
+pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>) {
     let repo = project_root(root);
     if verdict.is_some() {
         crate::commands::retired::refuse(
@@ -1173,7 +1135,7 @@ pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical:
     match resolve_pr(&repo, Some(number)) {
         Ok(facts) => {
             let (flow, _) = bases_and_branch(&repo);
-            emit(&review_brief(&repo, &facts, &flow, verdict, critical));
+            emit(&review_brief(&repo, &facts, &flow));
         }
         Err(e) => emit(&serde_json::json!({ "ok": false, "reason": e, "pr": pr })),
     }
@@ -1844,10 +1806,10 @@ mod tests {
     }
 
     /// The brief points at the spec and hands back the SAME shelf the
-    /// implementer got; with a verdict it records through `review-result`'s own
-    /// path, which is what `pr-merge` then reads.
+    /// implementer got, and records nothing on the way: the verdicts
+    /// `pr-merge` reads are the ones the round writes into the spec.
     #[test]
-    fn pr_review_brief_names_the_spec_and_records_the_verdict() {
+    fn pr_review_brief_names_the_spec_and_records_nothing() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         let spec_dir = root.join(".claude").join("spec").join("my-unit");
@@ -1868,7 +1830,7 @@ mod tests {
         let bases = door_flow();
         let facts = PrFacts { number: 7, head: "dev_my-unit".to_string() };
 
-        let brief = review_brief(root, &facts, &bases, None, 0);
+        let brief = review_brief(root, &facts, &bases);
         assert!(brief.ok);
         assert_eq!(brief.spec.as_deref(), Some("my-unit"));
         assert_eq!(brief.subproject.as_deref(), Some("apps/rt"));
@@ -1880,10 +1842,9 @@ mod tests {
             brief.patterns.unwrap_or_default().contains("rt-demo-pattern"),
             "the review reads the implementer's own shelf"
         );
-        assert!(!brief.recorded, "no --verdict → nothing recorded");
-
-        let recorded = review_brief(root, &facts, &bases, Some("approved"), 0);
-        assert!(recorded.recorded);
-        assert_eq!(recorded.verdict.as_deref(), Some("approved"));
+        assert!(
+            !root.join(".claude").join("spec").join("my-unit").join("review").exists(),
+            "the brief writes no verdict of its own"
+        );
     }
 }

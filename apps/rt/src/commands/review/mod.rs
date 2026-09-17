@@ -6,4 +6,3 @@ pub mod pr_door;
 pub mod pr_publish;
 pub mod qa_run;
 pub mod review_prefetch;
-pub mod review_result;

@@ -489,7 +489,10 @@ pub const TYPES: &[TypeSpec] = &[
             req("wave", Kind::Int),
             req("result", Kind::OneOf(VERDICTS)),
             TEXT,
-            req("criteria", Kind::Objects),
+            // Os critérios conferidos. A revisão de uma onda os traz sempre; a
+            // revisão final do conjunto não confere critério nenhum, e a
+            // cobrança do campo fica com a situação (veja `check_conditions`).
+            opt("criteria", Kind::Objects),
             opt("lessons", Kind::Objects),
             // A revisão final do conjunto, que o fechamento pede à spec de
             // duas ondas ou mais: aprovada, fica na última onda do plano;

@@ -176,8 +176,8 @@ fn check_nested(event: &Map<String, Value>, event_type: &str) -> Result<(), Refu
 /// Os campos que só são obrigatórios numa situação: a testemunha na
 /// aprovação, o motivo no descarte, o endereço da publicação que deu certo, a
 /// fonte dos fatos do ponto aberto, os exemplos da skill que nasce, o alvo da
-/// remoção. O ponto que fecha outro (`closes`) nunca fica aberto, e o que
-/// "não se aplica" leva o motivo.
+/// remoção, os critérios da revisão de uma onda. O ponto que fecha outro
+/// (`closes`) nunca fica aberto, e o que "não se aplica" leva o motivo.
 fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), Refusal> {
     let has = |f: &str| event.get(f).is_some_and(|v| !is_empty(v));
     let need = |f: &str| if has(f) { Ok(()) } else { Err(missing(event_type, f)) };
@@ -194,6 +194,17 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                 need("url")
             } else {
                 need("reason")
+            }
+        }
+        // A revisão de uma onda diz quais critérios conferiu. A revisão final
+        // do conjunto não confere critério: ela confere o encaixe das ondas, e
+        // cobrar o campo dela travava o fechamento da spec de duas ondas ou
+        // mais, que não fecha sem essa revisão.
+        "verdict" => {
+            if event.get("final").and_then(Value::as_bool) == Some(true) {
+                Ok(())
+            } else {
+                need("criteria")
             }
         }
         "point" => {
@@ -405,6 +416,36 @@ mod tests {
             checked("remove", bad_time).unwrap_err(),
             Refusal::InvalidValue { ref field, .. } if field == "filter.from"
         ));
+    }
+
+    /// A revisão de uma onda diz quais critérios conferiu, e a que não diz é
+    /// recusada pelo campo. A revisão final do conjunto confere o encaixe das
+    /// ondas, e não critério: ela entra sem o campo, aprovada ou reprovada, e
+    /// a que traz critérios continua conferida item a item.
+    #[test]
+    fn only_the_final_review_of_the_whole_is_recorded_without_criteria() {
+        let wave = json!({"author": "review", "wave": 1, "result": "approved", "text": "passou"});
+        assert_eq!(
+            checked("verdict", wave.clone()).unwrap_err(),
+            Refusal::MissingField { event_type: "verdict".into(), field: "criteria".into() }
+        );
+        let mut judged = wave.clone();
+        judged["criteria"] = json!([{"criterion": 7, "tests_rule": true}]);
+        assert_eq!(checked("verdict", judged), Ok(()));
+
+        for result in ["approved", "rejected"] {
+            let mut whole = wave.clone();
+            whole["result"] = json!(result);
+            whole["final"] = json!(true);
+            assert_eq!(checked("verdict", whole), Ok(()), "a revisão final {result} entra sem critérios");
+        }
+        let mut half = wave;
+        half["final"] = json!(true);
+        half["criteria"] = json!([{"criterion": 7}]);
+        assert_eq!(
+            checked("verdict", half).unwrap_err(),
+            Refusal::MissingField { event_type: "verdict".into(), field: "criteria[1].tests_rule".into() }
+        );
     }
 
     /// O código não vem de quem grava: o evento que o traz é recusado, com a

@@ -8,6 +8,11 @@
 //! eventos da spec e a lista de pendências ficam com os mesmos bytes, e
 //! nenhuma cobrança é armada.
 //!
+//! E nenhum texto publicado ensina essa gravação: nem a ajuda que o binário
+//! imprime, nem as dicas das portas, nem a referência de comandos, nem a prosa
+//! do plugin. Um texto que ensina o que o binário recusa gasta a chamada de
+//! quem obedece.
+//!
 //! A recusa encerra o processo, então o teste roda pelo binário, com o
 //! `CLAUDE_PROJECT_DIR` na pasta temporária e sem as variáveis de sessão, para
 //! nada cair no projeto de verdade.
@@ -108,4 +113,107 @@ fn pr_review_with_a_verdict_refuses_and_records_nothing() {
             assert!(!charges(root).exists(), "{args:?} armed a charge");
         }
     }
+}
+
+/// A raiz do repositório, a partir desta crate (`apps/rt`), para a varredura
+/// não depender da pasta de onde o teste foi chamado.
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Os arquivos de extensão `ext` sob `dir`, em qualquer profundidade.
+fn collect(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect(&path, ext, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+            out.push(path);
+        }
+    }
+}
+
+/// Os textos publicados desta porta: a referência de comandos e os READMEs
+/// que apontam para ela, a prosa que o plugin entrega ao agente, e o que o
+/// binário imprime — a ajuda, as dicas e o próximo passo da porta de revisão e
+/// da de merge, mais o catálogo de mensagens.
+fn published_texts() -> Vec<(String, String)> {
+    let root = repo_root();
+    let mut files =
+        vec![root.join("MUSTARD-COMMANDS.md"), root.join("README.md"), root.join("README.en.md")];
+    for (dir, ext) in [
+        ("plugin", "md"),
+        ("apps/rt/src/commands/review", "rs"),
+        ("packages/core/src/platform/i18n", "rs"),
+    ] {
+        let dir = root.join(dir);
+        // A superfície é afirmada, e não pulada: uma pasta renomeada faria a
+        // varredura passar sem ler nada, que é indistinguível de uma limpa.
+        assert!(dir.is_dir(), "a superfície publicada `{}` sumiu", dir.display());
+        let before = files.len();
+        collect(&dir, ext, &mut files);
+        assert!(files.len() > before, "a superfície publicada `{}` não rendeu arquivo", dir.display());
+    }
+    files
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{} não abriu: {e}", path.display()));
+            (path.display().to_string(), text)
+        })
+        .collect()
+}
+
+/// A gravação do veredito saiu deste comando, e nenhum texto publicado pode
+/// continuar ensinando-a: nem a linha com o veredito, nem a contagem de
+/// críticos, que só existia para ser gravada com ele. A contagem também saiu
+/// da linha de comando — quem a passa recebe o erro do clap, não uma gravação
+/// que não acontece — e a ajuda que o binário imprime diz que o comando
+/// recusa.
+#[test]
+fn no_published_text_teaches_the_recording_the_command_refuses() {
+    /// O que um texto publicado não pode trazer: a opção da contagem de
+    /// críticos e o veredito com um valor, que juntos são a chamada que grava.
+    /// O `--verdict <VERDICT>` da própria ajuda do clap não é um valor: é a
+    /// vaga da opção que existe só para recusar.
+    const TEACHES: &[&str] =
+        &["--critical", "--verdict approved", "--verdict rejected", "--verdict <approved"];
+
+    let mut offenders = Vec::new();
+    for (name, text) in published_texts() {
+        for (n, line) in text.lines().enumerate() {
+            for taught in TEACHES {
+                if line.contains(taught) {
+                    offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "texto publicado ensinando a gravação que o `pr-review` recusa desde a onda 10 — \
+         quem obedecer gasta a chamada numa recusa:\n{}",
+        offenders.join("\n")
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let help = run(root, &["pr-review", "--help"]);
+    assert_eq!(help.status.code(), Some(0), "{}", String::from_utf8_lossy(&help.stderr));
+    let printed = String::from_utf8_lossy(&help.stdout).to_string();
+    for taught in TEACHES {
+        assert!(!printed.contains(taught), "a ajuda impressa ainda ensina `{taught}`:\n{printed}");
+    }
+    assert!(printed.contains("recusa"), "a ajuda impressa não diz que o comando recusa:\n{printed}");
+
+    let gone = run(root, &["pr-review", "--pr", "1", "--critical", "3"]);
+    assert_eq!(gone.status.code(), Some(2), "a contagem de críticos ainda é uma opção");
+    assert!(
+        String::from_utf8_lossy(&gone.stderr).contains("--critical"),
+        "o erro nomeia a opção que não existe mais"
+    );
 }

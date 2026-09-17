@@ -528,6 +528,10 @@ mod tests {
     /// reprovada volta como conserto da onda que ela aponta, e a spec só fecha
     /// e só devolve o pull request com a revisão final aprovada depois da
     /// última mudança, sem rodar a máquina de novo.
+    ///
+    /// As duas linhas da revisão final vêm sem critério nenhum, que é como o
+    /// revisor do conjunto a devolve: ela confere o encaixe das ondas, e não
+    /// critério. As duas são gravadas assim mesmo.
     #[test]
     fn closing_runs_the_project_lint_and_a_spec_of_two_waves_opens_the_pull_request_only_after_the_final_review() {
         let lint = "git init -q lint-rodou";
@@ -573,7 +577,7 @@ mod tests {
 
         // A revisão final reprova apontando a onda 2: a onda 2 volta como
         // conserto, e o fechamento recusa enquanto ela não sai.
-        let rejected = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1.", "criteria": checked});
+        let rejected = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
         let out = close_with_lint(root, lint, Some(format!("<VERDICT>{rejected}</VERDICT>")));
         assert_eq!(out["reason"], json!("wave-rejected"), "{out}");
         assert!(out["hint"].as_str().unwrap_or_default().contains('2'), "{out}");
@@ -595,7 +599,7 @@ mod tests {
         assert!(ran(root), "{again}");
         std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
         let before = criterion_runs(root);
-        let approved = json!({"final": true, "result": "approved", "text": "As ondas se encaixam.", "criteria": checked});
+        let approved = json!({"final": true, "result": "approved", "text": "As ondas se encaixam."});
         let closed = close_with_lint(root, lint, Some(format!("<VERDICT>{approved}</VERDICT>")));
         assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
@@ -606,6 +610,14 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let last = log.visible().into_iter().rfind(|e| e.event_type == "verdict").unwrap();
         assert_eq!((last.wave(), last.fields.get("final")), (Some(2), Some(&json!(true))), "a aprovação fica na última onda");
+        let finals: Vec<&SpecEvent> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&json!(true)))
+            .collect();
+        let results: Vec<Option<&str>> = finals.iter().map(|e| e.str_field("result")).collect();
+        assert_eq!(results, [Some("rejected"), Some("approved")], "as duas revisões finais ficaram gravadas");
+        assert!(finals.iter().all(|e| e.fields.get("criteria").is_none()), "e nenhuma delas confere critério");
     }
 
     /// A resposta da rodada e a do fechamento mandam publicar a página da
