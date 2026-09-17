@@ -169,6 +169,11 @@ mod tests {
             }
         }
         git_at(root, &["init", "-q"]);
+        // O fim de linha do repositório de teste é fixo: no Windows o git
+        // converteria os arquivos ao criar a cópia da onda, e a junção
+        // devolveria CRLF onde o teste espera LF.
+        git_at(root, &["config", "core.autocrlf", "false"]);
+        git_at(root, &["config", "core.eol", "lf"]);
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
         git_at(root, &["config", "user.email", "t@t"]);
@@ -211,6 +216,8 @@ mod tests {
         git_at(&seed, &["commit", "-q", "-m", "biblioteca"]);
         git_at(&seed, &["push", "-q", &server.to_string_lossy(), "main"]);
         git_at(root, &["init", "-q"]);
+        git_at(root, &["config", "core.autocrlf", "false"]);
+        git_at(root, &["config", "core.eol", "lf"]);
         let url = server.to_string_lossy().to_string();
         git_at(root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &url, "libs/sub"]);
         git_at(root, &["commit", "-q", "-m", "submodulo"]);
