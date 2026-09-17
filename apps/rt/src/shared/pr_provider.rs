@@ -1,5 +1,6 @@
-//! `pr_provider` — the pull-request ACTIONS (open / edit / ready / view) as a
-//! port, beside the pull-request STATUS query that
+//! `pr_provider` — the pull-request ACTIONS (open / edit / ready / view) and
+//! the two readings only the provider can give (its checks, and whether it
+//! protects a branch) as a port, beside the pull-request STATUS query that
 //! [`crate::shared::branch_state`] answers with
 //! [`crate::shared::branch_state::PrQuery`].
 //!
@@ -636,10 +637,8 @@ fn unsupported<T>() -> Result<T, String> {
 
 /// The adapter for a provider this module has no adapter FOR (`gitlab`,
 /// `bitbucket`, anything the resolver may learn later): every operation is
-/// [`PR_UNSUPPORTED`]. Separate from [`crate::shared::pr_azure::AzurePrRest`]
-/// because the two are
-/// different facts — Azure is an adapter that is not written YET; this is the
-/// honest answer for providers that have none at all.
+/// [`PR_UNSUPPORTED`] — the honest answer for a provider nobody wrote an
+/// adapter for, where GitHub and Azure each have one.
 pub(crate) struct UnsupportedPr {
     /// The resolved provider token, kept so a report can still NAME who was
     /// asked-for even though nothing could be asked.
@@ -845,7 +844,40 @@ mod tests {
             Err(token()),
             "an unasked provider never answers a green check",
         );
+        assert_eq!(
+            provider.branch_protection("main"),
+            Err(token()),
+            "an unasked provider never answers an open branch",
+        );
         assert_eq!(provider.provider(), "gitlab");
+    }
+
+    /// O lado GitHub da conferência de proteção, que é o caminho de todo
+    /// projeto no github.com. O endpoint de regras responde uma lista: a lista
+    /// vazia é o servidor dizendo que ninguém escreveu regra para a branch, e
+    /// qualquer regra nela — de qualquer tipo — a protege.
+    ///
+    /// A leitura é pura, então se prova sem rede. As regras abaixo têm o
+    /// formato que o endpoint devolve para um conjunto de regras.
+    #[test]
+    fn no_github_qualquer_regra_protege_e_a_lista_vazia_deixa_aberta() {
+        assert!(!rules_protect(&json!([])), "sem regra nenhuma, a branch está aberta");
+        assert!(
+            rules_protect(&json!([{
+                "type": "pull_request",
+                "ruleset_source_type": "Repository",
+                "ruleset_source": "org/repo",
+                "ruleset_id": 7,
+            }])),
+            "uma regra que exige pull request protege",
+        );
+        assert!(
+            rules_protect(&json!([
+                { "type": "deletion", "ruleset_source_type": "Organization", "ruleset_id": 3 },
+                { "type": "non_fast_forward", "ruleset_source_type": "Organization", "ruleset_id": 3 },
+            ])),
+            "qualquer tipo de regra conta: julgar os tipos seria decidir a política da equipe",
+        );
     }
 
     /// The reduction the merge door stands on: a decided failure outranks a

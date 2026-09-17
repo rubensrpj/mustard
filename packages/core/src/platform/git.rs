@@ -34,6 +34,11 @@
 //! [`crate::io::workspace::anchor_of`], the workspace resolver's own ancestor
 //! walk, so this is not a second opinion about where a project begins.
 //!
+//! When that walk finds no project, nobody declared anything, and the program
+//! is the default one. A `mustard.json` lying beside the directory without its
+//! `.claude/` is not a project, and it is not read: reading it would be a
+//! second rule for where a project begins.
+//!
 //! ## What it deliberately is not
 //!
 //! **No trait, and no test double.** An injectable seam existed to let a test
@@ -124,21 +129,27 @@ impl GitRun {
 /// [`OPTED_OUT`], which every caller already degrades from the same way it
 /// degrades from an absent binary.
 ///
-/// Standard input is closed. Every call here is a probe made on the operator's
-/// behalf while they are waiting on something else, and a git that decides to
-/// ask for a credential would hang the whole invocation with nobody watching
-/// for the question. With no input to read, it fails instead, and a failure is
-/// something every caller already knows how to degrade from.
+/// Nothing here may stop to ask the operator anything. Every call is a probe
+/// made on their behalf while they wait on something else, and a question
+/// nobody is watching for hangs the whole invocation. Standard input is
+/// closed, and that is not enough on its own: git asks for a credential on the
+/// TERMINAL, not on standard input, so the terminal question is turned off
+/// too. A credential that is already stored still answers; a missing one
+/// makes the call fail, and a failure is something every caller already knows
+/// how to degrade from.
 #[must_use]
 pub fn run(root: &Path, args: &[&str]) -> GitRun {
-    let owner = crate::io::workspace::anchor_of(root);
-    let Some(binary) = ProjectConfig::load(owner.as_deref().unwrap_or(root)).vcs() else {
+    let config = crate::io::workspace::anchor_of(root)
+        .map(|owner| ProjectConfig::load(&owner))
+        .unwrap_or_default();
+    let Some(binary) = config.vcs() else {
         return GitRun { ok: false, stdout: String::new(), stderr: OPTED_OUT.to_string() };
     };
     match Command::new(binary)
         .args(args)
         .current_dir(root)
         .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
     {
         Ok(out) => GitRun {
@@ -206,32 +217,60 @@ mod tests {
         assert!(!message.is_empty(), "o motivo da recusa é passado adiante");
     }
 
+    /// A marca que só o programa falso imprime: o git nunca a responderia.
+    const MARK: &str = "quem-respondeu-foi-o-escolhido";
+
+    /// Não prova comportamento nenhum: é o programa falso que os testes abaixo
+    /// declaram como controle de versão. Rodado pela suíte, só passa. Chamado
+    /// pelo executor, imprime a marca e o valor que recebeu para o pedido de
+    /// credencial por terminal.
+    #[test]
+    fn programa_falso() {
+        let prompt = std::env::var("GIT_TERMINAL_PROMPT").unwrap_or_default();
+        println!("{MARK} pedido-de-credencial={prompt}");
+    }
+
+    /// Declara o próprio executável destes testes como o programa de controle
+    /// de versão no `mustard.json` de `dir`.
+    ///
+    /// O executável de testes existe nos três sistemas e roda de verdade
+    /// quando chamado, então o programa falso não depende de script de shell.
+    /// Quando `project` é verdadeiro, `dir` ganha também a `.claude/`, e só
+    /// então passa a ser a raiz de um projeto.
+    fn declare_fake_program(dir: &Path, project: bool) {
+        let exe = std::env::current_exe().expect("o executável dos testes");
+        std::fs::write(dir.join("mustard.json"), serde_json::json!({ "vcs": exe }).to_string())
+            .unwrap();
+        if project {
+            std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        }
+    }
+
+    /// Chama o executor com os argumentos que fazem o executável de testes
+    /// rodar só o [`programa_falso`]. Os nomes de teste não levam o nome do
+    /// pacote, que vem na frente do caminho do módulo.
+    fn run_fake(dir: &Path) -> GitRun {
+        let module = module_path!();
+        let module = module.split_once("::").map_or(module, |(_, rest)| rest);
+        let test = format!("{module}::programa_falso");
+        run(dir, &[&test, "--exact", "--nocapture"])
+    }
+
     /// Quem escolhe o programa é o `mustard.json`, não o executor: com outro
     /// programa nomeado ali, é ele que roda, e é a resposta dele que volta.
     ///
-    /// O programa falso responde uma marca que o git nunca responderia, e
-    /// responde a qualquer argumento — então esta asserção só passa se a
-    /// configuração tiver sido lida de verdade.
-    #[cfg(unix)]
+    /// O programa falso responde uma marca que o git nunca responderia, então
+    /// esta asserção só passa se a configuração tiver sido lida de verdade.
     #[test]
     fn o_programa_que_roda_e_o_que_o_mustard_json_nomeia() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let fake = root.join("controle-de-versao-falso");
-        std::fs::write(&fake, b"#!/bin/sh\nprintf 'quem-respondeu-foi-o-escolhido\\n'\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::write(
-            root.join("mustard.json"),
-            format!("{{\"vcs\": \"{}\"}}\n", fake.display()),
-        )
-        .unwrap();
+        declare_fake_program(root, true);
 
-        assert_eq!(
-            run(root, &["rev-parse", "--abbrev-ref", "HEAD"]).out().as_deref(),
-            Some("quem-respondeu-foi-o-escolhido"),
-            "o programa nomeado no mustard.json é quem responde",
+        let answer = run_fake(root);
+        assert!(
+            answer.out().is_some_and(|out| out.contains(MARK)),
+            "o programa nomeado no mustard.json é quem responde: {answer:?}",
         );
     }
 
@@ -239,40 +278,60 @@ mod tests {
     /// chama roda o git onde precisa — a pasta do arquivo que vai escrever,
     /// uma subpasta, o `.claude/` — e só a raiz carrega o `mustard.json`.
     ///
-    /// O programa falso responde uma marca que o git nunca responderia, e a
-    /// chamada é feita de uma subpasta: ler ao lado do diretório de trabalho
-    /// devolveria "git" e a marca não apareceria.
-    #[cfg(unix)]
+    /// A chamada é feita de uma subpasta, onde não há `mustard.json` nenhum:
+    /// sem a subida até a raiz, o programa seria o padrão e a marca não
+    /// apareceria.
     #[test]
     fn a_configuracao_lida_e_a_do_projeto_dono_da_pasta() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let fake = root.join("controle-de-versao-falso");
-        std::fs::write(&fake, b"#!/bin/sh\nprintf 'quem-respondeu-foi-o-escolhido\\n'\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::write(
-            root.join("mustard.json"),
-            format!("{{\"vcs\": \"{}\"}}\n", fake.display()),
-        )
-        .unwrap();
-        // A raiz de um projeto é `mustard.json` mais `.claude/`, e é essa a
-        // âncora que a subida procura.
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        declare_fake_program(root, true);
         let deep = root.join("src").join("dentro");
         std::fs::create_dir_all(&deep).unwrap();
 
-        assert_eq!(
-            run(&deep, &["status"]).out().as_deref(),
-            Some("quem-respondeu-foi-o-escolhido"),
-            "a pergunta é feita de dentro, e quem responde é o programa do projeto",
+        let answer = run_fake(&deep);
+        assert!(
+            answer.out().is_some_and(|out| out.contains(MARK)),
+            "a pergunta é feita de dentro, e quem responde é o programa do projeto: {answer:?}",
         );
         // E a pasta `.claude`, que nunca é raiz de projeto, chega à mesma
         // resposta em vez de derrubar a leitura.
-        assert_eq!(
-            run(&root.join(".claude"), &["status"]).out().as_deref(),
-            Some("quem-respondeu-foi-o-escolhido"),
+        let answer = run_fake(&root.join(".claude"));
+        assert!(answer.out().is_some_and(|out| out.contains(MARK)), "{answer:?}");
+    }
+
+    /// Um `mustard.json` numa pasta que não é projeto — sem a `.claude/` ao
+    /// lado — não escolhe o programa: sem projeto dono, vale o padrão, e a
+    /// marca do programa falso não aparece.
+    #[test]
+    fn um_mustard_json_fora_de_projeto_nao_escolhe_o_programa() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        declare_fake_program(root, false);
+
+        let answer = run_fake(root);
+        assert!(
+            !answer.stdout.contains(MARK),
+            "a pasta sem projeto não é lida, e o programa falso não é chamado: {answer:?}",
+        );
+    }
+
+    /// O programa chamado recebe desligado o pedido de credencial por
+    /// terminal. Fechar a entrada não basta: o git pede a credencial no
+    /// terminal, e uma sondagem parada ali trava a chamada inteira sem
+    /// ninguém para responder.
+    #[test]
+    fn o_programa_chamado_nao_pede_credencial_no_terminal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        declare_fake_program(root, true);
+
+        let answer = run_fake(root);
+        assert!(
+            answer
+                .out()
+                .is_some_and(|out| out.contains(&format!("{MARK} pedido-de-credencial=0"))),
+            "o pedido de credencial chega desligado ao programa: {answer:?}",
         );
     }
 
@@ -284,6 +343,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::write(root.join("mustard.json"), b"{\"vcs\": \"\"}\n").unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
 
         let refused = run(root, &["init", "-q", "."]);
         assert!(!refused.ok, "sem programa declarado não há corrida que dê certo");

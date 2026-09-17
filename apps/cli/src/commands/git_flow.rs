@@ -1,7 +1,7 @@
 //! Git-flow + language configuration for the project-root `mustard.json`.
 //!
 //! Probes the repository (default branch, current branch, submodules),
-//! collects the user's choice of **text language** (names in the code are
+//! collects the two bases and the user's choice of **text language** (names in the code are
 //! always English, so there is no code language to ask for), detects the
 //! build/test/lint/type-check command set
 //! agnostically (no hardcoded `npm`), and folds all of it into the single
@@ -28,11 +28,9 @@ use mustard_core::{detect_commands, GitConfig, ProjectConfig, SupportedLocale};
 
 /// Facts probed from the repository, all fail-open.
 ///
-/// It used to carry the remote branch list too, read by a `dev_branch()` helper
-/// that guessed `dev`/`develop` for the branch prompts. Those prompts are gone
-/// (see [`collect_choices`]) — nothing asks which branches the project promotes
-/// through any more — so both the guess and the `git branch -r` call that fed it
-/// went with them.
+/// They inform the prompts and nothing else: the remote's default branch is
+/// what the two base questions suggest (see [`ask_bases`]), never an answer
+/// written for the operator.
 pub struct GitFacts {
     default_branch: Option<String>,
     current_branch: Option<String>,
@@ -129,44 +127,22 @@ pub fn collect_choices(
         facts.has_submodules
     );
 
-    // The two branch prompts are BACK, and this time they are the only source
-    // of the answer they give.
-    //
-    // They were removed because a flow declared at install time decided, for
-    // the life of the install, both where a unit could be cut from and where a
-    // direct commit was refused — and the first of those went stale within a
-    // week in a client repository. Cutting is asked of git now
-    // (`run base-candidates` lists what really exists), so that reason is
-    // gone; what remained was the other half, and nothing answers it: with no
-    // flow written, NO branch is protected — not by the write gate here, and
-    // not by the diagnostic that asks the server. An install that writes no
-    // flow therefore leaves a project whose bases nothing defends, and never
-    // says so.
-    //
-    // The remote's own default branch seeds the second answer, so the common
-    // case is one Enter. An empty answer writes no flow at all, which is the
-    // honest recording of "not now" — never an invented pair of names.
-    let detected = facts.default_branch.clone().unwrap_or_default();
-    let dev_branch: String = Input::with_theme(&theme)
-        .with_prompt("Base ordinary work is cut from (empty: declare none)")
-        .allow_empty(true)
-        .default(existing_dev.clone().unwrap_or_else(|| detected.clone()))
-        .interact_text()
-        .context("reading the work base")?;
-    let production = if dev_branch.trim().is_empty() {
-        String::new()
-    } else {
-        Input::with_theme(&theme)
-            .with_prompt("Base that one is promoted into")
-            .allow_empty(true)
-            .default(existing_prod.clone().unwrap_or_else(|| detected.clone()))
-            .interact_text()
-            .context("reading the promotion base")?
-    };
+    let (dev_branch, production) = ask_bases(
+        existing_dev,
+        existing_prod,
+        facts.default_branch.clone().unwrap_or_default(),
+        &mut |prompt, default| {
+            Ok(Input::with_theme(&theme)
+                .with_prompt(prompt)
+                .allow_empty(true)
+                .default(default)
+                .interact_text()?)
+        },
+    )?;
 
-    // The provider menu is GONE, for the reason the branch prompts went: the
-    // answer is written in the `origin` remote, and freezing it at install time
-    // made every project carry a decision taken before anyone knew the project.
+    // The provider menu is GONE: the answer is written in the `origin` remote,
+    // and freezing it at install time made every project carry a decision
+    // taken before anyone knew the project.
     // It is detected now (`mustard_core::resolve_provider`), and what survives
     // in the config is an override for the self-hosted case — which is why an
     // EXISTING declaration is carried forward untouched here.
@@ -191,6 +167,45 @@ pub fn collect_choices(
         provider,
         text_language: Some(texts[text_idx].to_string()),
     })
+}
+
+/// Ask the two bases in the interactive mode, through `answer`.
+///
+/// `answer` receives the question and its suggestion and returns what the
+/// operator typed; the install hands it the terminal. The questions are the
+/// only source of the answer they give.
+///
+/// They were removed once, because a flow declared at install time decided,
+/// for the life of the install, both where a unit could be cut from and where a
+/// direct commit was refused — and the first of those went stale within a week
+/// in a client repository. Cutting is asked of git now, so that reason is gone;
+/// what remained was the other half, and nothing else answers it: with no flow
+/// written, NO branch is protected — not by the write gate, and not by the
+/// diagnostic that asks the server. An install that writes no flow leaves a
+/// project whose bases nothing defends, and never says so.
+///
+/// Each suggestion is what the project already declared or, without a
+/// declaration, the remote's own default branch, so the common case is one
+/// Enter. An empty first answer asks nothing more and writes no flow at all,
+/// which is the honest recording of "not now" — never an invented pair of
+/// names.
+fn ask_bases(
+    existing_dev: Option<String>,
+    existing_prod: Option<String>,
+    detected: String,
+    answer: &mut dyn FnMut(&str, String) -> Result<String>,
+) -> Result<(String, String)> {
+    let dev_branch = answer(
+        "Base ordinary work is cut from (empty: declare none)",
+        existing_dev.unwrap_or_else(|| detected.clone()),
+    )
+    .context("reading the work base")?;
+    if dev_branch.trim().is_empty() {
+        return Ok((dev_branch, String::new()));
+    }
+    let production = answer("Base that one is promoted into", existing_prod.unwrap_or(detected))
+        .context("reading the promotion base")?;
+    Ok((dev_branch, production))
 }
 
 /// Fold `choices` + detected commands into `config`.
@@ -285,12 +300,12 @@ mod tests {
         }
     }
 
-    /// The install stops asking which branches the project promotes through,
-    /// and stops writing an answer nobody gave.
+    /// Outside the interactive mode the install asks no base, and writes no
+    /// answer nobody gave.
     ///
     /// Both halves are asserted, because either one alone would pass while the
     /// feature was half-done: a run that asks nothing but still seeds a flow
-    /// from probed facts leaves the same stale declaration behind, and that
+    /// from probed facts leaves a stale declaration behind, and that
     /// declaration is what used to refuse real branches.
     #[test]
     fn fora_do_modo_interativo_o_init_nao_inventa_base() {
@@ -327,6 +342,57 @@ mod tests {
         existing.git.flow.insert("*".to_string(), "trunk".to_string());
         let kept = collect_choices(&probed, &existing, true).expect("no prompt to fail");
         assert_eq!(kept.dev_branch, "trunk", "the declared base survives untouched");
+    }
+
+    /// No modo interativo a instalação volta a perguntar as duas bases, e o
+    /// que foi respondido vira o fluxo gravado. A sugestão de cada pergunta é
+    /// o que o projeto já declarou ou, sem declaração, a branch padrão do
+    /// remoto; e uma primeira resposta vazia não faz a segunda pergunta.
+    ///
+    /// Quem responde aqui é uma lista escrita, no lugar do terminal que a
+    /// instalação usa; as perguntas são as mesmas.
+    #[test]
+    fn o_modo_interativo_volta_a_perguntar_as_bases() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let ask = |existing_dev: Option<&str>, existing_prod: Option<&str>, typed: &[&str]| {
+            let mut asked: Vec<String> = Vec::new();
+            let mut typed = typed.iter();
+            let bases = ask_bases(
+                existing_dev.map(str::to_string),
+                existing_prod.map(str::to_string),
+                "trunk".to_string(),
+                &mut |_prompt, suggested| {
+                    asked.push(suggested);
+                    Ok(typed.next().map(|t| (*t).to_string()).unwrap_or_default())
+                },
+            )
+            .expect("the typed answers are read");
+            (bases, asked)
+        };
+
+        // Projeto novo: as duas perguntas, cada uma sugerindo a branch padrão
+        // do remoto, e a resposta vira o fluxo.
+        let ((dev_branch, production), asked) = ask(None, None, &["develop", "master"]);
+        assert_eq!(asked, ["trunk", "trunk"], "as duas bases são perguntadas");
+        let answered =
+            Choices { production, dev_branch, provider: String::new(), text_language: None };
+        let mut config = ProjectConfig::default();
+        apply_choices(&mut config, &answered, root);
+        assert_eq!(
+            config.git.declared_bases(),
+            std::collections::BTreeSet::from(["develop".to_string(), "master".to_string()]),
+            "o que foi respondido é o que a proteção passa a ler",
+        );
+
+        // Projeto que já declarou: a pergunta volta, sugerindo o declarado.
+        let (_, asked) = ask(Some("dev"), Some("main"), &["dev", "main"]);
+        assert_eq!(asked, ["dev", "main"], "a sugestão é o que o projeto declarou");
+
+        // "Agora não": a segunda pergunta não é feita e nada vira fluxo.
+        let ((dev_branch, production), asked) = ask(None, None, &[""]);
+        assert_eq!(asked.len(), 1, "sem base de trabalho, não há para onde promover");
+        assert!(dev_branch.is_empty() && production.is_empty());
     }
 
     /// A resposta das bases vira `git.flow`, e é dela que a proteção passa a
