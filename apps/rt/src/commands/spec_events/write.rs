@@ -452,10 +452,7 @@ fn record_in(
     }
     let path = store::spec_file(&project.root, spec)?;
     let roots = store::citation_roots(start, &project.root);
-    let carried = (event_type == "state")
-        .then(|| draft.get("phase").and_then(Value::as_str).map(|phase| phase.trim().to_string()))
-        .flatten();
-    let replaces = (event_type == "state").then(|| draft.get("replaces").and_then(Value::as_u64)).flatten();
+    let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
     // A página e o `.md` saem no fim de cada passo e no fim de cada onda, não
     // a cada gravação. O fim de uma onda é o `entregou`, e ele passa por
@@ -476,10 +473,7 @@ fn record_in(
         &roots,
         &super::pages::secret::secret_excerpts,
         |before, after| {
-            phase_rule(&name, before, after, carried.as_deref(), replaces, by)?;
-            goal_rule(&name, before, after)?;
-            survey_rule(&name, before, after)?;
-            owner_rule(before, after)?;
+            record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
             // O passo do levantamento só vai ao relatório do modelo.
             if by.is_none() {
                 survey = survey_report(&project.root, &name, before, after, lang);
@@ -496,6 +490,81 @@ fn record_in(
         },
     )?;
     Ok(Recorded { written, pages, grew, survey })
+}
+
+/// A fase que uma gravação de `state` traz e o `state` que ela revê; nos
+/// outros tipos, nenhum dos dois.
+fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String>, Option<u64>) {
+    if event_type != "state" {
+        return (None, None);
+    }
+    let carried = draft.get("phase").and_then(Value::as_str).map(|phase| phase.trim().to_string());
+    (carried, draft.get("replaces").and_then(Value::as_u64))
+}
+
+/// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
+/// depois dela: a mudança de fase, o objetivo, o levantamento e o dono do
+/// item combinado.
+fn record_rules(
+    spec: &str,
+    before: &SpecLog,
+    after: &SpecLog,
+    carried: Option<&str>,
+    replaces: Option<u64>,
+    by: Option<PhaseWriter>,
+) -> Result<(), Refusal> {
+    phase_rule(spec, before, after, carried, replaces, by)?;
+    goal_rule(spec, before, after)?;
+    survey_rule(spec, before, after)?;
+    owner_rule(before, after)
+}
+
+/// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
+/// passa pela mesma conferência de [`record`] — a do evento, a do arquivo e as
+/// regras da spec —, sobre o arquivo como as anteriores o deixariam. É assim
+/// que a rodada sabe, antes do commit, que nenhuma gravação depois dele será
+/// recusada.
+pub(crate) struct RecordCheck {
+    dry: store::DryRun<'static>,
+    name: String,
+    by: PhaseWriter,
+}
+
+impl RecordCheck {
+    /// Começa a conferência na spec `spec`, vista de `start`, com as
+    /// gravações de `by`.
+    ///
+    /// # Errors
+    ///
+    /// A recusa que [`record`] daria antes de ler o arquivo, ou a da leitura.
+    pub(crate) fn open(start: &Path, spec: &str, by: PhaseWriter) -> Result<Self, Refusal> {
+        let project = super::project(start);
+        if super::pages::old_format_spec(&project.root, spec) {
+            return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
+        }
+        let path = store::spec_file(&project.root, spec)?;
+        let roots = store::citation_roots(start, &project.root);
+        let dry = store::DryRun::open(&path, roots, &super::pages::secret::secret_excerpts)?;
+        Ok(Self { dry, name: spec.trim().to_string(), by })
+    }
+
+    /// O arquivo como as gravações conferidas até aqui o deixariam.
+    pub(crate) fn log(&self) -> &SpecLog {
+        self.dry.log()
+    }
+
+    /// Confere a gravação que [`record`] faria com estes campos.
+    ///
+    /// # Errors
+    ///
+    /// A recusa que a gravação daria.
+    pub(crate) fn record(&mut self, event_type: &str, draft: Map<String, Value>) -> Result<(), Refusal> {
+        let (carried, replaces) = phase_carried(event_type, &draft);
+        let (name, by) = (&self.name, self.by);
+        self.dry.write(event_type, draft, |before, after| {
+            record_rules(name, before, after, carried.as_deref(), replaces, Some(by))
+        })
+    }
 }
 
 /// O passo do levantamento depois de uma gravação na spec `spec`, lido do

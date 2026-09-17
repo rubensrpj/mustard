@@ -154,6 +154,86 @@ fn the_page_has_the_approved_layout_and_the_round_wave_states() {
     }
 }
 
+/// Depois de duas rodadas, uma delas com reprovação, o painel da página da
+/// spec de teste mostra a medida de cada onda pelo último pedido dela: as
+/// linhas e os caracteres, quantos itens o pedido deu para o agente ler
+/// (contados no envio, sem registro de cada leitura), o tempo do envio até a
+/// entrega e as reprovações. A página continua com cada pedido inteiro.
+#[test]
+fn the_panel_measures_each_wave_after_two_rounds_and_keeps_every_request() {
+    let first = "# demo — onda 1\n\n## A onda e as tarefas dela\n\n- MSTD-WAVE-0001 (onda) — `mustard-rt run read waves --spec demo --term MSTD-WAVE-0001`\n- MSTD-CRIT-0001 (critério) — `mustard-rt run read criteria --spec demo --term MSTD-CRIT-0001`";
+    let fix = "# demo — onda 1, conserto\n\n## Conserto\n\n- MSTD-VERD-0002 (veredito) — `mustard-rt run read review --spec demo --term MSTD-VERD-0002`\n- MSTD-WAVE-0001 (onda) — `mustard-rt run read waves --spec demo --term MSTD-WAVE-0001`\n- MSTD-CRIT-0001 (critério) — `mustard-rt run read criteria --spec demo --term MSTD-CRIT-0001`";
+    let send = |id: u64, at: &str, text: &str, items: &[u64]| {
+        serde_json::json!({"v": 1, "id": id, "at": at, "type": "send", "author": "binary", "wave": 1, "role": "wave",
+            "text": text, "lines": text.lines().count(), "chars": text.chars().count(), "items": items, "mustard": "0.2.0"})
+    };
+    let delivered = |id: u64, at: &str| {
+        serde_json::json!({"v": 1, "id": id, "at": at, "type": "delivered", "author": "wave", "wave": 1,
+            "text": "A trava lê o comando.", "files": ["apps/rt/src/hooks/tool/command_guard.rs"]})
+    };
+    let verdict = |id: u64, at: &str, result: &str| {
+        serde_json::json!({"v": 1, "id": id, "at": at, "type": "verdict", "author": "review", "wave": 1,
+            "result": result, "text": "Revisão.", "criteria": [{"criterion": 19, "tests_rule": true}]})
+    };
+    let rounds = [
+        send(40, "2026-09-12T10:20:00-03:00", first, &[20, 19]),
+        delivered(41, "2026-09-12T11:05:00-03:00"),
+        verdict(42, "2026-09-12T11:30:00-03:00", "rejected"),
+        send(43, "2026-09-12T11:40:00-03:00", fix, &[42, 20, 19]),
+        delivered(44, "2026-09-12T12:02:30-03:00"),
+        verdict(45, "2026-09-12T12:30:00-03:00", "approved"),
+    ]
+    .map(|event| event.to_string())
+    .join("\n")
+        + "\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let [(md, html), _] = generate_with(dir.path(), &rounds);
+
+    let panel = html
+        .split_once("<details class=\"group\" id=\"progress-metrics\"")
+        .and_then(|(_, tail)| tail.split_once("</details>"))
+        .map(|(panel, _)| panel)
+        .expect("the measurement group");
+    let cells = |row: &[&str], tag: &str| row.iter().map(|c| format!("<{tag}>{c}</{tag}>")).collect::<Vec<_>>().concat();
+    let head = [
+        "Onda",
+        "Linhas do pedido",
+        "Caracteres do pedido",
+        "Itens lidos",
+        "Tempo até a entrega",
+        "Reprovações",
+        "Última revisão",
+    ];
+    let (fix_lines, fix_chars) = (fix.lines().count().to_string(), fix.chars().count().to_string());
+    for piece in [
+        "<h3>Medida por onda</h3>".to_string(),
+        format!("<thead><tr>{}</tr></thead>", cells(&head, "th")),
+        format!("<tr>{}</tr>", cells(&["1", &fix_lines, &fix_chars, "3", "22 min", "1", "aprovada"], "td")),
+        format!("<tr>{}</tr>", cells(&["2", "312", "21480", "6", "34 min", "0", "aprovada"], "td")),
+        "<tr><td>Pedidos enviados aos agentes</td><td>3, o maior com 312 linhas</td></tr>".to_string(),
+    ] {
+        assert!(panel.contains(&piece), "{piece} is missing from the panel:\n{panel}");
+    }
+
+    // Os três pedidos saem inteiros, cada um como o agente o recebeu.
+    let fixture = fs::read_to_string(fixture("spec.ndjson")).expect("fixture");
+    let sent_before: Value = fixture
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|e| e["type"] == "send")
+        .expect("the fixture has a request");
+    for text in [first, fix, sent_before["text"].as_str().expect("the request text")] {
+        assert!(md.contains(&format!("```\n{text}\n```")), "a request is not whole in the page:\n{text}");
+    }
+    for code in ["MSTD-SEND-0001", "MSTD-SEND-0002", "MSTD-SEND-0003"] {
+        assert!(
+            html.contains(&format!("<details class=\"item\" id=\"{code}\">")),
+            "the request {code} is not on the page"
+        );
+    }
+    assert_eq!(html.matches("Pedido enviado (agente de onda)").count(), 3, "each request keeps its text");
+}
+
 /// O script que a conferência acrescenta a uma cópia da página: busca
 /// `term`, espera a busca terminar e escreve num `<pre id="probe">` o que
 /// ficou à vista.

@@ -800,12 +800,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.metrics.col.wave", Locale::EnUs) => "Wave",
         ("page.metrics.col.lines", Locale::PtBr) => "Linhas do pedido",
         ("page.metrics.col.lines", Locale::EnUs) => "Request lines",
+        ("page.metrics.col.chars", Locale::PtBr) => "Caracteres do pedido",
+        ("page.metrics.col.chars", Locale::EnUs) => "Request characters",
+        ("page.metrics.col.items", Locale::PtBr) => "Itens lidos",
+        ("page.metrics.col.items", Locale::EnUs) => "Items read",
+        ("page.metrics.col.delivery", Locale::PtBr) => "Tempo até a entrega",
+        ("page.metrics.col.delivery", Locale::EnUs) => "Time to delivery",
         ("page.metrics.col.rejected", Locale::PtBr) => "Reprovações",
         ("page.metrics.col.rejected", Locale::EnUs) => "Rejections",
         ("page.metrics.col.last", Locale::PtBr) => "Última revisão",
         ("page.metrics.col.last", Locale::EnUs) => "Last review",
-        ("page.metrics.by_wave", Locale::PtBr) => "Tamanho do pedido e revisão, por onda",
-        ("page.metrics.by_wave", Locale::EnUs) => "Request size and review, per wave",
+        ("page.metrics.by_wave", Locale::PtBr) => "Medida por onda",
+        ("page.metrics.by_wave", Locale::EnUs) => "Measure per wave",
         ("page.metrics.calls", Locale::PtBr) => "Passos do fluxo contra trabalho",
         ("page.metrics.calls", Locale::EnUs) => "Flow steps against work",
         ("page.metrics.calls.value", Locale::PtBr) => {
@@ -945,8 +951,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            380,
-            0x9986_d168_5220_0ec7,
+            383,
+            0x1185_49f0_4b29_8d8b,
         );
     }
 

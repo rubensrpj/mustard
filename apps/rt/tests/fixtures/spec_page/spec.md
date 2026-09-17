@@ -22,11 +22,11 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 | Lembretes que apareceram | 0 mensagens antigas lembradas nos pontos |
 | Pedidos enviados aos agentes | 1, o maior com 312 linhas |
 
-### Tamanho do pedido e revisão, por onda
+### Medida por onda
 
-| Onda | Linhas do pedido | Reprovações | Última revisão |
-|---|---|---|---|
-| 2 | 312 | 0 | aprovada |
+| Onda | Linhas do pedido | Caracteres do pedido | Itens lidos | Tempo até a entrega | Reprovações | Última revisão |
+|---|---|---|---|---|---|---|
+| 2 | 312 | 21480 | 6 | 34 min | 0 | aprovada |
 
 ### Fases e publicações
 

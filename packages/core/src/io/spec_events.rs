@@ -179,45 +179,13 @@ fn write_inner(
     guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
-    let mut event = model::normalize(draft, event_type);
-    model::validate(&event)?;
-    // O trecho que o pedido indica serve ao expurgo e nunca vai para o
-    // arquivo: gravá-lo seria gravar de novo o que se quer tirar.
-    let asked = event.remove("excerpt").and_then(|v| v.as_str().map(str::to_string));
-    let citation_warnings = check_citations(cite_roots, &event)?;
+    let Prepared { event, asked, citation_warnings } = prepare(event_type, draft, cite_roots)?;
 
     let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
     let content = file.read_to_string().map_err(io_refusal)?;
     let log = model::parse_log(&content);
-    let id = log.max_id().saturating_add(1);
-    model::resolve_codes(&log, &mut event)?;
-    model::carry_closed_identity(&log, &mut event)?;
-    let effects = model::check_against(&log, &event, id)?;
-    let code = model::code_after(&log, &event);
-    let line = model::render_line(&model::stamp(event, id, code.as_deref(), at));
-
     // O arquivo como ficaria, conferido antes de qualquer escrita.
-    let redactions = if effects.purged.is_empty() {
-        std::collections::BTreeMap::new()
-    } else {
-        model::purge_excerpts(&log, &effects.purged, asked.as_deref(), find)?
-    };
-    let (next, appended) = if effects.purged.is_empty() {
-        // Uma última linha pela metade fica sozinha na linha dela, e a
-        // gravação começa numa linha nova.
-        let clean = content.is_empty() || content.ends_with('\n');
-        let added = if clean { line } else { format!("\n{line}") };
-        (format!("{content}{added}\n"), Some(added))
-    } else {
-        let mut body = model::purge_lines(&content, &redactions);
-        if !body.is_empty() && !body.ends_with('\n') {
-            body.push('\n');
-        }
-        body.push_str(&line);
-        body.push('\n');
-        (body, None)
-    };
-    let after = model::parse_log(&next);
+    let Staged { next, appended, after, id, code, effects } = stage(&content, &log, event, asked, at, find)?;
     guard(&log, &after)?;
     match appended {
         Some(added) => file.append_line(&added).map_err(io_refusal)?,
@@ -241,6 +209,140 @@ fn write_inner(
     then(&log);
     drop(file);
     Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning, citation_warnings })
+}
+
+/// O evento conferido sozinho, antes de a trava ser pega.
+struct Prepared {
+    event: Map<String, Value>,
+    /// O trecho que o pedido de expurgo indica.
+    asked: Option<String>,
+    citation_warnings: Vec<(usize, Finding)>,
+}
+
+/// Confere o evento sozinho: a forma dele e os arquivos que um ponto cita.
+fn prepare(event_type: &str, draft: Map<String, Value>, cite_roots: &[PathBuf]) -> Result<Prepared, Refusal> {
+    let mut event = model::normalize(draft, event_type);
+    model::validate(&event)?;
+    // O trecho que o pedido indica serve ao expurgo e nunca vai para o
+    // arquivo: gravá-lo seria gravar de novo o que se quer tirar.
+    let asked = event.remove("excerpt").and_then(|v| v.as_str().map(str::to_string));
+    let citation_warnings = check_citations(cite_roots, &event)?;
+    Ok(Prepared { event, asked, citation_warnings })
+}
+
+/// O arquivo como ficaria com o evento, ainda sem nada escrito.
+struct Staged {
+    /// O conteúdo inteiro depois da gravação.
+    next: String,
+    /// A linha acrescentada, quando a gravação só acrescenta; `None` no
+    /// expurgo, que reescreve o arquivo.
+    appended: Option<String>,
+    after: SpecLog,
+    id: u64,
+    code: Option<String>,
+    effects: model::Effects,
+}
+
+/// Monta, a partir do arquivo `content` já lido como `log`, o arquivo como
+/// ficaria com o evento: o número, o código, os alvos conferidos e, num
+/// expurgo, os trechos trocados.
+fn stage(
+    content: &str,
+    log: &SpecLog,
+    mut event: Map<String, Value>,
+    asked: Option<String>,
+    at: &str,
+    find: &dyn Fn(&str) -> Vec<String>,
+) -> Result<Staged, Refusal> {
+    let id = log.max_id().saturating_add(1);
+    model::resolve_codes(log, &mut event)?;
+    model::carry_closed_identity(log, &mut event)?;
+    let effects = model::check_against(log, &event, id)?;
+    let code = model::code_after(log, &event);
+    let line = model::render_line(&model::stamp(event, id, code.as_deref(), at));
+
+    let redactions = if effects.purged.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        model::purge_excerpts(log, &effects.purged, asked.as_deref(), find)?
+    };
+    let (next, appended) = if effects.purged.is_empty() {
+        // Uma última linha pela metade fica sozinha na linha dela, e a
+        // gravação começa numa linha nova.
+        let clean = content.is_empty() || content.ends_with('\n');
+        let added = if clean { line } else { format!("\n{line}") };
+        (format!("{content}{added}\n"), Some(added))
+    } else {
+        let mut body = model::purge_lines(content, &redactions);
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&line);
+        body.push('\n');
+        (body, None)
+    };
+    let after = model::parse_log(&next);
+    Ok(Staged { next, appended, after, id, code, effects })
+}
+
+/// Uma sequência de gravações conferida sem gravar nada: cada uma passa pela
+/// mesma conferência de [`write_guarded`], sobre o arquivo como as anteriores
+/// o deixariam. É como quem precisa fazer algo que não se desfaz antes de
+/// gravar — o commit da rodada — sabe que a gravação depois dele não será
+/// recusada.
+pub struct DryRun<'a> {
+    content: String,
+    log: SpecLog,
+    cite_roots: Vec<PathBuf>,
+    find: &'a dyn Fn(&str) -> Vec<String>,
+}
+
+impl<'a> DryRun<'a> {
+    /// Lê o arquivo `path` como ele está, com a trava compartilhada. A spec
+    /// sem arquivo começa vazia, como a gravação a começaria.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Io`] quando o arquivo existe e não pode ser lido.
+    pub fn open(
+        path: &Path,
+        cite_roots: Vec<PathBuf>,
+        find: &'a dyn Fn(&str) -> Vec<String>,
+    ) -> Result<Self, Refusal> {
+        let content = match read_shared(path) {
+            Ok(content) => content,
+            Err(Error::NotFound(_)) => String::new(),
+            Err(e) => return Err(io_refusal(e)),
+        };
+        let log = model::parse_log(&content);
+        Ok(Self { content, log, cite_roots, find })
+    }
+
+    /// O arquivo como as gravações conferidas até aqui o deixariam.
+    #[must_use]
+    pub fn log(&self) -> &SpecLog {
+        &self.log
+    }
+
+    /// Confere a gravação de um evento do tipo `event_type` com os campos de
+    /// `draft`, como [`write_guarded`] a conferiria, e passa a contar com ela.
+    ///
+    /// # Errors
+    ///
+    /// A recusa que a gravação daria; nesse caso, nada muda.
+    pub fn write(
+        &mut self,
+        event_type: &str,
+        draft: Map<String, Value>,
+        guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
+    ) -> Result<(), Refusal> {
+        let Prepared { event, asked, .. } = prepare(event_type, draft, &self.cite_roots)?;
+        let staged = stage(&self.content, &self.log, event, asked, &now(), self.find)?;
+        guard(&self.log, &staged.after)?;
+        self.content = staged.next;
+        self.log = staged.after;
+        Ok(())
+    }
 }
 
 /// Lê o arquivo inteiro, com a trava compartilhada. `Ok(None)` quando a spec

@@ -129,8 +129,9 @@ impl Block {
 
 /// Os tipos de que o painel de medição é montado: o texto colocado, os
 /// bloqueios dos ganchos, as chamadas dos comandos, o tempo de cada fase, o
-/// retrabalho, os lembretes do levantamento e o tamanho de cada pedido.
-pub const METRIC_TYPES: &[&str] = &["injection", "hook", "call", "state", "verdict", "point", "send"];
+/// retrabalho, os lembretes do levantamento, o tamanho de cada pedido e a
+/// entrega que responde a ele.
+pub const METRIC_TYPES: &[&str] = &["injection", "hook", "call", "state", "verdict", "point", "send", "delivered"];
 
 /// O que o `read` pede: um bloco inteiro ou uma onda só (`wave-2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3161,6 +3162,10 @@ mod tests {
                        {\"v\":1,\"id\":7,\"at\":\"t\",\"type\":\"delivered\",\"wave\":3,\"text\":\"Saiu.\"}\n";
         let log = parse_log(content);
         assert_eq!(log.delivered_waves(), BTreeSet::from([1, 3]));
+        // O painel mede o tempo do pedido até a entrega: a leitura dele traz
+        // os dois, e não a onda nem a tarefa.
+        let panel: Vec<u64> = log.block(BlockQuery::Block(Block::Metrics)).iter().map(|e| e.id).collect();
+        assert_eq!(panel, [5, 6, 7]);
     }
 
     #[test]

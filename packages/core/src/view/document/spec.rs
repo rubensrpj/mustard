@@ -709,8 +709,8 @@ impl<'a> Page<'a> {
         self.of_type("commit").iter().any(|c| c.ints("waves").contains(&n))
     }
 
-    /// O painel: uma linha por medida que tem dado, e depois o tamanho do
-    /// pedido de cada onda ao lado do que a revisão achou dela.
+    /// O painel: uma linha por medida que tem dado, e depois a medida de cada
+    /// onda: o pedido, a entrega e o que a revisão achou dela.
     fn metrics(&self) -> Vec<Node> {
         let count = |events: &[&SpecEvent], field: &str, word: &str| {
             events.iter().filter(|e| e.str_field(field) == Some(word)).count()
@@ -838,34 +838,43 @@ impl<'a> Page<'a> {
         out
     }
 
-    /// Para cada onda enviada ao agente dela: as linhas do último pedido,
-    /// quantas vezes a revisão a reprovou e o resultado da última revisão.
+    /// Para cada onda enviada ao agente dela, pelo último pedido: as linhas e
+    /// os caracteres dele, quantos itens ele deu para o agente ler (contados
+    /// no envio, sem registro de cada leitura), o tempo até a entrega que
+    /// respondeu a ele, quantas vezes a revisão reprovou a onda e o resultado
+    /// da última revisão. O pedido ainda sem entrega fica sem tempo.
     fn size_against_review(&self, sends: &[&SpecEvent], verdicts: &[&SpecEvent]) -> Option<Node> {
-        let mut last_lines: BTreeMap<u64, u64> = BTreeMap::new();
-        for send in sends.iter().filter(|s| s.str_field("role") == Some("wave")) {
-            if let (Some(n), Some(lines)) = (send.wave(), send.int("lines")) {
-                last_lines.insert(n, lines);
+        let mut last_send: BTreeMap<u64, &SpecEvent> = BTreeMap::new();
+        for send in sends.iter().copied().filter(|s| s.str_field("role") == Some("wave") && s.int("lines").is_some()) {
+            if let Some(n) = send.wave() {
+                last_send.insert(n, send);
             }
         }
-        if last_lines.is_empty() {
+        if last_send.is_empty() {
             return None;
         }
-        let rows = last_lines
+        let deliveries = self.of_type("delivered");
+        let none = || "—".to_string();
+        let rows = last_send
             .into_iter()
-            .map(|(n, lines)| {
+            .map(|(n, send)| {
                 let of: Vec<&SpecEvent> = verdicts.iter().copied().filter(|v| v.wave() == Some(n)).collect();
                 let rejected = of.iter().filter(|v| v.str_field("result") == Some("rejected")).count();
-                let last = of
-                    .last()
-                    .and_then(|v| v.str_field("result"))
-                    .map_or_else(|| "—".to_string(), |r| self.value_label(r));
-                vec![n.to_string(), lines.to_string(), rejected.to_string(), last]
+                let last = of.last().and_then(|v| v.str_field("result")).map_or_else(none, |r| self.value_label(r));
+                let delivery = deliveries
+                    .iter()
+                    .find(|d| d.wave() == Some(n) && d.id > send.id)
+                    .and_then(|d| seconds_between(send.at(), d.at()))
+                    .map_or_else(none, duration);
+                let number = |field: &str| send.int(field).map_or_else(none, |v| v.to_string());
+                let items = send.ints("items").len().to_string();
+                vec![n.to_string(), number("lines"), number("chars"), items, delivery, rejected.to_string(), last]
             })
             .collect();
         Some(Node::Table(Table {
-            headers: ["page.metrics.col.wave", "page.metrics.col.lines", "page.metrics.col.rejected", "page.metrics.col.last"]
+            headers: ["wave", "lines", "chars", "items", "delivery", "rejected", "last"]
                 .iter()
-                .map(|k| self.t(k).to_string())
+                .map(|column| self.t(&format!("page.metrics.col.{column}")).to_string())
                 .collect(),
             rows,
         }))
@@ -1912,9 +1921,9 @@ mod tests {
 
     /// O painel sai dos eventos: o texto colocado, os bloqueios de cada
     /// gancho, as chamadas dos passos contra as ondas prontas, o tempo de cada
-    /// fase, o retrabalho, os lembretes, o tamanho de cada pedido contra a
-    /// revisão e a economia do rtk nos dias da spec. Ele é o grupo aberto do
-    /// andamento.
+    /// fase, o retrabalho, os lembretes, a medida de cada onda (o pedido, os
+    /// itens que ele deu para ler, o tempo até a entrega e a revisão) e a
+    /// economia do rtk nos dias da spec. Ele é o grupo aberto do andamento.
     #[test]
     fn the_panel_measures_hooks_steps_phases_rework_reminders_sizes_and_rtk() {
         let at = |id: u64, when: &str, event_type: &str, extra: &str| {
@@ -1935,11 +1944,14 @@ mod tests {
             at(12, "2026-09-11T10:36:00-03:00", "state", ",\"author\":\"user\",\"phase\":\"approved\",\"witness\":{\"question\":\"q\",\"answer\":\"a\"}"),
             at(13, "2026-09-11T10:36:00-03:00", "state", ",\"phase\":\"running\""),
             at(14, "2026-09-11T10:37:00-03:00", "send", ",\"wave\":1,\"role\":\"wave\",\"text\":\"p\",\"lines\":300,\"chars\":9,\"items\":[11],\"mustard\":\"0\""),
-            at(15, "2026-09-12T11:00:00-03:00", "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"rejected\",\"text\":\"x\",\"criteria\":[]"),
-            at(16, "2026-09-12T11:30:00-03:00", "send", ",\"wave\":1,\"role\":\"wave\",\"text\":\"p\",\"lines\":320,\"chars\":9,\"items\":[11],\"mustard\":\"0\""),
-            at(17, "2026-09-12T12:00:00-03:00", "commit", ",\"sha\":\"abc\",\"title\":\"t\",\"waves\":[1],\"files\":[],\"repo\":\".\""),
-            at(18, "2026-09-12T13:00:00-03:00", "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"approved\",\"text\":\"x\",\"criteria\":[]"),
-            at(19, "2026-09-13T12:36:00-03:00", "call", ",\"command\":\"round\",\"ms\":5,\"result\":\"ok\""),
+            at(15, "2026-09-11T11:07:00-03:00", "delivered", ",\"author\":\"wave\",\"wave\":1,\"text\":\"e\",\"files\":[]"),
+            at(16, "2026-09-12T11:00:00-03:00", "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"rejected\",\"text\":\"x\",\"criteria\":[]"),
+            at(17, "2026-09-12T11:30:00-03:00", "send", ",\"wave\":1,\"role\":\"wave\",\"text\":\"p\",\"lines\":320,\"chars\":12000,\"items\":[11,1,6],\"mustard\":\"0\""),
+            at(18, "2026-09-12T11:50:00-03:00", "delivered", ",\"author\":\"wave\",\"wave\":1,\"text\":\"e\",\"files\":[]"),
+            at(19, "2026-09-12T12:00:00-03:00", "commit", ",\"sha\":\"abc\",\"title\":\"t\",\"waves\":[1],\"files\":[],\"repo\":\".\""),
+            at(20, "2026-09-12T13:00:00-03:00", "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"approved\",\"text\":\"x\",\"criteria\":[]"),
+            at(21, "2026-09-13T12:36:00-03:00", "call", ",\"command\":\"round\",\"ms\":5,\"result\":\"ok\""),
+            at(22, "2026-09-13T12:36:00-03:00", "send", ",\"wave\":2,\"role\":\"wave\",\"text\":\"p\",\"lines\":5,\"chars\":40,\"items\":[11],\"mustard\":\"0\""),
         ]
         .concat();
         let day = |date: &str, commands: u64, input: u64, saved: u64| RtkDay { date: date.into(), commands, input, saved };
@@ -1971,12 +1983,29 @@ mod tests {
         assert_eq!(rows["Tempo por fase"], "levantamento 2 h 05 min, plano 31 min, aprovada < 1 min, em execução 2 d 2 h");
         assert_eq!(rows["Revisões"], "1 aprovadas, 1 reprovadas; voltaram da revisão as ondas 1");
         assert_eq!(rows["Lembretes que apareceram"], "2 mensagens antigas lembradas nos pontos");
-        assert_eq!(rows["Pedidos enviados aos agentes"], "2, o maior com 320 linhas");
+        assert_eq!(rows["Pedidos enviados aos agentes"], "3, o maior com 320 linhas");
         assert_eq!(rows["Economia do rtk"], "4 comandos, 400 tokens a menos na saída (20%), de 2026-09-11 a 2026-09-13");
-        assert_eq!(metrics.body[1], Node::Heading { level: 3, text: "Tamanho do pedido e revisão, por onda".into() });
+        assert_eq!(metrics.body[1], Node::Heading { level: 3, text: "Medida por onda".into() });
         let Node::Table(by_wave) = &metrics.body[2] else { panic!("{metrics:?}") };
-        assert_eq!(by_wave.headers, ["Onda", "Linhas do pedido", "Reprovações", "Última revisão"]);
-        assert_eq!(by_wave.rows, [["1", "320", "1", "aprovada"]]);
+        assert_eq!(
+            by_wave.headers,
+            [
+                "Onda",
+                "Linhas do pedido",
+                "Caracteres do pedido",
+                "Itens lidos",
+                "Tempo até a entrega",
+                "Reprovações",
+                "Última revisão"
+            ]
+        );
+        // Cada onda sai pelo último pedido: o tamanho dele, os itens que ele
+        // deu para ler e o tempo até a entrega que respondeu a ele. O pedido
+        // ainda sem entrega fica sem tempo.
+        assert_eq!(
+            by_wave.rows,
+            [["1", "320", "12000", "3", "20 min", "1", "aprovada"], ["2", "5", "40", "1", "—", "0", "—"]]
+        );
 
         // Sem comando do rtk nos dias da spec, a linha não aparece.
         let quiet = panel(&[day("2026-09-10", 5, 10, 1)]);
@@ -2142,6 +2171,9 @@ mod tests {
             "page.metrics.by_wave",
             "page.metrics.col.wave",
             "page.metrics.col.lines",
+            "page.metrics.col.chars",
+            "page.metrics.col.items",
+            "page.metrics.col.delivery",
             "page.metrics.col.rejected",
             "page.metrics.col.last",
             "page.field.wave_commit",
