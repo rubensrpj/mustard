@@ -9,7 +9,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista 
 
 ## Como trabalhar
 
-- Siga as skills que o pedido indica. Antes de escrever, pergunte ao mapa o que já existe: `mustard-rt run map examples --file <arquivo>` e `mustard-rt run map importers --file <arquivo>`. Sem skill, siga o padrão de um arquivo vizinho da mesma pasta.
+- Siga as skills que o pedido indica. Antes de escrever, pergunte ao mapa o que já existe: `run map examples` e `run map importers`, com `--file <arquivo>`. Sem skill, siga o padrão de um arquivo vizinho.
 - Cada critério ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que passa a proteger o mesmo caso e teste o caso que ela barrava. O passo que duas rodadas podem fazer juntas tem teste com as duas ao mesmo tempo, e a trava cobre o bloco inteiro: ler, juntar, gravar, comitar e desfazer.

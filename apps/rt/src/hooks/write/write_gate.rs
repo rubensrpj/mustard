@@ -785,7 +785,10 @@ mod tests {
     #[test]
     fn an_edit_inside_a_linked_worktree_is_judged_by_the_worktree_branch() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let main = tmp.path().join("repo");
+        // No macOS a pasta temporária é um atalho (`/var` aponta para
+        // `/private/var`), e o portão compara caminhos já resolvidos.
+        let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
+        let main = tmp_root.join("repo");
         std::fs::create_dir_all(&main).expect("main");
         std::fs::write(main.join("mustard.json"), DEV_MAIN).expect("config");
         repo_on(&main, "dev");

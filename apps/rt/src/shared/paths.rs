@@ -304,11 +304,15 @@ mod tests {
             assert!(ok, "git {args:?} failed in {}", dir.display());
         };
         let tmp = tempfile::tempdir().expect("tempdir");
-        let main = tmp.path().join("principal");
+        // No macOS a pasta temporária é um atalho (`/var` aponta para
+        // `/private/var`), e o classificador compara caminhos já resolvidos:
+        // sem resolver aqui, o arquivo pareceria fora do repositório.
+        let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
+        let main = tmp_root.join("principal");
         std::fs::create_dir_all(&main).expect("main");
         git(&main, &["init", "-q"]);
         git(&main, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
-        let wt = tmp.path().join("trabalho");
+        let wt = tmp_root.join("trabalho");
         git(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/x"]);
 
         let main_str = main.to_string_lossy().replace('\\', "/");
