@@ -101,6 +101,9 @@ pub(crate) struct ProofRun {
     pub output: String,
     /// A prova saiu verde sem rodar teste nenhum, e por isso não passou.
     pub ran_no_test: bool,
+    /// Quantos testes a saída da prova disse ter rodado, quando ela saiu
+    /// verde sem rodar teste nenhum: é o número que a recusa mostra.
+    pub tests_run: u64,
 }
 
 /// Roda a prova de um critério uma vez, pelo mesmo executor do QA: o mesmo
@@ -109,11 +112,20 @@ pub(crate) struct ProofRun {
 /// sobre o que é uma prova que passou.
 pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
     let out = runner::run_ac_command(command, None, cwd);
+    // O motivo da prova sem teste nenhum vem com o número que a saída disse:
+    // `ran-no-test 0`.
+    let ran_no_test = out.status != "pass" && out.stderr_excerpt.starts_with(runner::RAN_NO_TEST);
+    let tests_run = if ran_no_test {
+        out.stderr_excerpt[runner::RAN_NO_TEST.len()..].trim().parse().unwrap_or(0)
+    } else {
+        0
+    };
     ProofRun {
         result: if out.status == "pass" { "pass" } else { "fail" },
         exit: out.exit.unwrap_or(1),
         ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
-        ran_no_test: out.status != "pass" && out.stderr_excerpt == runner::RAN_NO_TEST,
+        ran_no_test,
+        tests_run,
         output: out.stderr_excerpt,
     }
 }

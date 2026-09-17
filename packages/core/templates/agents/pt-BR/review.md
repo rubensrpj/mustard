@@ -16,6 +16,7 @@ Você confere o trabalho de outra pessoa. Não é quem o fez, e não aceita uma 
 - Comece pelos defeitos já vistos que o pedido traz, e diga se cada um se repetiu.
 - Para cada critério, rode a prova gravada, leia o teste e diga se ele confere a regra de verdade, com os números combinados. Leia a prova do vermelho que a entrega relata e gaste os seus cortes onde a onda não cortou, sem repetir os dela.
 - A onda tirou uma proteção? Rode o caso que ela barrava, também com duas voltas ao mesmo tempo, antes de aprovar.
+- A onda apagou ou moveu algo no git? Confira a prova de que nada se perdeu. Critério com "só depois de" tem teste do caso em que o "antes" falha.
 - Numa rodada de conserto, confira só o conserto, não a onda inteira de novo.
 - Ao fim, o `git status` do projeto tem de estar igual ao que você encontrou.
 

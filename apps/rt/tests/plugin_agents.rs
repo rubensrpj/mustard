@@ -123,7 +123,10 @@ fn template(lang: &str, name: &str) -> String {
 
 /// O projeto recebe exatamente os três agentes, no idioma do `language.text`
 /// e com até 3.072 bytes cada; os dois idiomas existem como molde; e o
-/// plugin não entrega agente nenhum, porque entregaria os dois idiomas.
+/// plugin não entrega agente nenhum, porque entregaria os dois idiomas. Os
+/// textos que o instalador escreve trazem as duas guardas desta obra: provar
+/// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
+/// do caso em que o "antes" falha quando o critério diz "só depois de".
 #[test]
 fn the_project_receives_exactly_three_agents_in_its_text_language() {
     for (lang, other) in [("pt-BR", "en-US"), ("en-US", "pt-BR")] {
@@ -145,6 +148,40 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
                 installed.starts_with(&format!("---\nname: mustard-{name}\n")),
                 "the `{name}` file does not declare the agent `mustard-{name}`",
             );
+        }
+
+        // As duas guardas que esta obra aprendeu viajam com o produto: quem
+        // apaga ou move alguma coisa no git prova antes que nada se perde, e
+        // o critério que diz "só depois de" ganha o teste do caso em que o
+        // "antes" falha. O agente de onda as cumpre; o revisor as confere.
+        let guards: [(&str, [&str; 2]); 2] = if lang == "pt-BR" {
+            [
+                ("wave", [
+                    "apagar ou mover algo no git, prove que nada se perde",
+                    "\"só depois de\" ganha também o teste do caso em que o \"antes\" falha",
+                ]),
+                ("review", [
+                    "apagou ou moveu algo no git? Confira a prova de que nada se perdeu",
+                    "\"só depois de\" tem teste do caso em que o \"antes\" falha",
+                ]),
+            ]
+        } else {
+            [
+                ("wave", [
+                    "deleting or moving anything in git, prove nothing is lost",
+                    "\"only after\" also gets a test of the case where the \"before\" fails",
+                ]),
+                ("review", [
+                    "delete or move anything in git? Check the proof that nothing was lost",
+                    "\"only after\" has a test of the case where the \"before\" fails",
+                ]),
+            ]
+        };
+        for (name, lines) in guards {
+            let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            for line in lines {
+                assert!(installed.contains(line), "the {lang} `{name}` agent does not say `{line}`");
+            }
         }
     }
     assert!(!repo_root().join("plugin/agents").exists(), "the plugin ships agent texts of its own");

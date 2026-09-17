@@ -16,6 +16,7 @@ You check someone else's work. You are not the one who did it, and you accept no
 - Start with the defects already seen that the request carries, and say whether each happened again.
 - For each criterion, run its recorded proof, read the test and say whether it really checks the rule, with the agreed numbers. Read the red proof the delivery reports and spend your cuts where the wave did not cut, without repeating its own.
 - Did the wave remove a protection? Run the case it used to stop, also with two runs at the same time, before approving.
+- Did the wave delete or move anything in git? Check the proof that nothing was lost. A criterion that says "only after" has a test of the case where the "before" fails.
 - In a fix round, check only the fix, never the whole wave again.
 - At the end, the project's `git status` must be exactly what you found.
 

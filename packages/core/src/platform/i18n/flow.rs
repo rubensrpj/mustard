@@ -65,6 +65,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Waves {waves} go out in the same round and both touch {files}. Chain one after the other \
              or split the file between them ({chain})."
         }
+        ("plan.wave_should_split", Locale::PtBr) => {
+            "A onda {wave} tem partes que não dividem arquivo entre si ({parts}): ela sai dividida, \
+             uma onda por parte, e as partes rodam em paralelo."
+        }
+        ("plan.wave_should_split", Locale::EnUs) => {
+            "Wave {wave} has parts that share no file with each other ({parts}): it goes out split, \
+             one wave per part, and the parts run in parallel."
+        }
         ("plan.file_outside_git", Locale::PtBr) => {
             "A tarefa {task} cita {path}, que o git não guarda: um agente noutra sessão ou noutra \
              máquina não o vê."
@@ -263,12 +271,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.criterion_failed", Locale::EnUs) => "The proof of criterion {code} did not pass: {output}",
         ("close.criterion_ran_no_test", Locale::PtBr) => {
-            "A prova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não casa com \
-             nenhum teste. Grave a versão nova do critério com a prova certa e feche de novo."
+            "A prova do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
+             {count} testes. Grave a versão nova do critério com a prova certa e feche de novo."
         }
         ("close.criterion_ran_no_test", Locale::EnUs) => {
-            "The proof of criterion {code} came out green without running any test: the test name \
-             matches no test. Record the criterion's new version with the right proof and close again."
+            "The proof of criterion {code} came out green without running any test: `{command}` says \
+             it ran {count} tests. Record the criterion's new version with the right proof and close again."
         }
         ("close.lint_failed", Locale::PtBr) => {
             "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}"
@@ -774,8 +782,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            108,
-            0xaf7a_73b4_2706_a28c,
+            109,
+            0xb631_3285_abf9_1dd8,
         );
     }
 
@@ -851,6 +859,7 @@ mod tests {
             ("plan.depends_on_missing", &["{wave}", "{on}"][..]),
             ("plan.task_without_wave", &["{task}", "{wave}"][..]),
             ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
+            ("plan.wave_should_split", &["{wave}", "{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
             ("plan.item_without_owner", &["{code}"][..]),
@@ -886,7 +895,7 @@ mod tests {
             ("close.wave_rejected", &["{wave}"][..]),
             ("close.request_not_delivered", &["{code}"][..]),
             ("close.criterion_failed", &["{code}", "{output}"][..]),
-            ("close.criterion_ran_no_test", &["{code}"][..]),
+            ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.final_review", &["{count}", "{spec}"][..]),
             ("close.next", &["{command}"][..]),

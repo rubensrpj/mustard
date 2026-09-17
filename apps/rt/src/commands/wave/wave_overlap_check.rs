@@ -109,6 +109,38 @@ fn same_level_collisions(waves: &[(u32, u32, BTreeSet<String>)]) -> Vec<FileColl
     out
 }
 
+/// As partes independentes de uma onda: os grupos de tarefas que não dividem
+/// arquivo nenhum entre si, cada um com os códigos das tarefas dele, em ordem.
+///
+/// Duas tarefas ficam na mesma parte quando declaram um arquivo em comum, e a
+/// ligação é transitiva: a tarefa que toca as duas junta as três numa parte
+/// só. A tarefa que não declara arquivo nenhum fica de fora — sem arquivo não
+/// há como dizer de que parte ela é —, e a onda cujas tarefas se tocam todas
+/// sai com uma parte só.
+fn independent_parts(tasks: &[(String, BTreeSet<String>)]) -> Vec<Vec<String>> {
+    let mut parts: Vec<(Vec<String>, BTreeSet<String>)> = Vec::new();
+    for (code, files) in tasks.iter().filter(|(_, files)| !files.is_empty()) {
+        // A tarefa junta numa parte só todas as que já tocam um arquivo dela.
+        let mut codes = vec![code.clone()];
+        let mut touched = files.clone();
+        let mut apart: Vec<(Vec<String>, BTreeSet<String>)> = Vec::new();
+        for (part_codes, part_files) in parts.drain(..) {
+            if part_files.intersection(files).next().is_some() {
+                codes.extend(part_codes);
+                touched.extend(part_files);
+            } else {
+                apart.push((part_codes, part_files));
+            }
+        }
+        codes.sort();
+        apart.push((codes, touched));
+        parts = apart;
+    }
+    let mut out: Vec<Vec<String>> = parts.into_iter().map(|(codes, _)| codes).collect();
+    out.sort();
+    out
+}
+
 /// O grafo das ondas de um plano gravado no arquivo de eventos.
 ///
 /// As ondas se montam por grafo: cada onda é um nó, o `depends_on` dela é uma
@@ -133,6 +165,9 @@ pub(crate) struct WaveGraph {
     pub(crate) missing_task_waves: Vec<(String, u64)>,
     /// Os pares de ondas do mesmo nível que declaram o mesmo arquivo.
     pub(crate) collisions: Vec<FileCollision>,
+    /// As partes independentes das ondas que têm mais de uma: os códigos das
+    /// tarefas de cada parte. A onda de uma parte só não entra aqui.
+    pub(crate) parts: BTreeMap<u64, Vec<Vec<String>>>,
     /// Os arquivos que as tarefas de cada onda declaram.
     pub(crate) files: BTreeMap<u64, BTreeSet<String>>,
 }
@@ -160,13 +195,17 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
     let codes = log.codes();
     let mut missing_task_waves: Vec<(String, u64)> = Vec::new();
     let mut files: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    // Os arquivos de cada tarefa, por onda: é por eles que as partes
+    // independentes de uma onda se separam.
+    let mut by_task: BTreeMap<u64, Vec<(String, BTreeSet<String>)>> = BTreeMap::new();
     for task in events.iter().filter(|e| e.event_type == "task") {
         let Some(n) = task.wave() else { continue };
+        let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
         if !declared.contains(&n) {
-            let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
             missing_task_waves.push((code, n));
             continue;
         }
+        let mut mine: BTreeSet<String> = BTreeSet::new();
         let entry = files.entry(n).or_default();
         for path in task
             .fields
@@ -179,10 +218,17 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
         {
             let path = normalise_declared_path(path);
             if !path.is_empty() {
-                entry.insert(path);
+                entry.insert(path.clone());
+                mine.insert(path);
             }
         }
+        by_task.entry(n).or_default().push((code, mine));
     }
+    let parts: BTreeMap<u64, Vec<Vec<String>>> = by_task
+        .iter()
+        .map(|(n, tasks)| (*n, independent_parts(tasks)))
+        .filter(|(_, parts)| parts.len() > 1)
+        .collect();
 
     let levels = assign_levels(&deps);
     let census: Vec<(u32, u32, BTreeSet<String>)> = declared
@@ -199,6 +245,7 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
         missing_depends,
         missing_task_waves,
         collisions: same_level_collisions(&census),
+        parts,
         files,
     }
 }

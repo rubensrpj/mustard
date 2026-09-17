@@ -19,9 +19,9 @@
 //! **O que trava.** Onda sem commit; onda cuja última revisão foi reprovada;
 //! pedido do usuário que nenhuma onda entregou; o lint que falha, com a saída
 //! dele; critério cuja prova não passou; e critério cuja prova saiu verde sem
-//! rodar teste nenhum — no cargo, `running 0 tests` em todos os alvos, que é o
-//! que um nome de teste errado dá. Cada recusa diz qual onda refazer — não
-//! basta os testes passarem.
+//! rodar teste nenhum — a saída do executor diz zero teste, que é o que um
+//! nome de teste errado dá, e a recusa traz o comando e o número que ela leu.
+//! Cada recusa diz qual onda refazer — não basta os testes passarem.
 //!
 //! O fechamento não chama a função antiga de fechar, que grava arquivos do
 //! formato velho: ela ficou onde estava, e a fase `closed` passa a sair só por
@@ -67,8 +67,9 @@ enum CloseRefusal {
     LintFailed { command: String, output: String },
     /// Um critério cuja prova não passou.
     CriterionFailed { code: String, output: String },
-    /// Um critério cuja prova saiu verde sem rodar teste nenhum.
-    CriterionRanNoTest { code: String },
+    /// Um critério cuja prova saiu verde sem rodar teste nenhum, com o
+    /// comando dela e o número de testes que a saída dele disse.
+    CriterionRanNoTest { code: String, command: String, tests: u64 },
 }
 
 impl CloseRefusal {
@@ -107,7 +108,10 @@ impl CloseRefusal {
             Self::CriterionFailed { code, output } => {
                 fill("close.criterion_failed", &[("{code}", code.clone()), ("{output}", output.clone())])
             }
-            Self::CriterionRanNoTest { code } => fill("close.criterion_ran_no_test", &[("{code}", code.clone())]),
+            Self::CriterionRanNoTest { code, command, tests } => fill(
+                "close.criterion_ran_no_test",
+                &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
+            ),
         }
     }
 
@@ -271,7 +275,11 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog) -> Result<V
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
         if out.result != "pass" && failed.is_none() {
             failed = Some(if out.ran_no_test {
-                CloseRefusal::CriterionRanNoTest { code: code.clone() }
+                CloseRefusal::CriterionRanNoTest {
+                    code: code.clone(),
+                    command: proof.clone(),
+                    tests: out.tests_run,
+                }
             } else {
                 CloseRefusal::CriterionFailed { code: code.clone(), output: out.output.clone() }
             });
@@ -860,8 +868,9 @@ mod tests {
     }
 
     /// Uma prova do cargo com o nome do teste errado e `--exact` sai verde sem
-    /// rodar teste nenhum: o fechamento recusa, diz qual critério e grava a
-    /// execução como reprovada. A prova com o nome certo passa.
+    /// rodar teste nenhum: o fechamento recusa, diz qual critério, o comando
+    /// dela e o número de testes que a saída dele disse, e grava a execução
+    /// como reprovada. A prova com o nome certo passa.
     #[test]
     fn a_proof_that_ran_zero_tests_blocks_the_close() {
         let dir = tempdir().unwrap();
@@ -889,7 +898,44 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
-        let expected = translate("close.criterion_ran_no_test", Locale::PtBr).replace("{code}", &codes[&criteria[1]]);
+        let wrong_name = "cargo test --lib -- tests::soma --exact";
+        let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
+            .replace("{code}", &codes[&criteria[1]])
+            .replace("{command}", wrong_name)
+            .replace("{count}", "0");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(wrong_name) && hint.contains('0'), "a recusa diz o comando e o número: {hint}");
+        let runs: Vec<(Option<u64>, Option<&str>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "criterion_run")
+            .map(|e| (e.int("criterion"), e.str_field("result")))
+            .collect();
+        assert_eq!(runs, vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail"))]);
+        assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
+    }
+
+    /// A leitura do número de testes não é só do cargo: a prova que roda outro
+    /// executor e sai verde dizendo zero teste trava o fechamento do mesmo
+    /// jeito, com o comando e o número na recusa; a que roda pelo menos um
+    /// teste passa.
+    #[test]
+    fn a_proof_that_ran_zero_tests_outside_cargo_blocks_the_close_too() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let zero = "echo Tests: 0 total";
+        ready_to_close(root, "x", &["echo Tests: 3 total", zero]);
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+        let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
+            .replace("{code}", &codes[&criteria[1]])
+            .replace("{command}", zero)
+            .replace("{count}", "0");
         assert_eq!(refused["hint"], json!(expected), "{refused}");
         let runs: Vec<(Option<u64>, Option<&str>)> = log
             .visible()

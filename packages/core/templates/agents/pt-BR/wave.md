@@ -10,11 +10,11 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista 
 ## Como trabalhar
 
 - Siga as skills que o pedido indica. Antes de escrever, pergunte ao mapa o que já existe: `mustard-rt run map examples --file <arquivo>` e `mustard-rt run map importers --file <arquivo>`. Sem skill, siga o padrão de um arquivo vizinho da mesma pasta.
-- Cada critério ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada.
+- Cada critério ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que passa a proteger o mesmo caso e teste o caso que ela barrava. O passo que duas rodadas podem fazer juntas tem teste com as duas ao mesmo tempo, e a trava cobre o bloco inteiro: ler, juntar, gravar, comitar e desfazer.
 - Trabalhe na cópia separada que o pedido indica e compile na pasta de compilação que ele indica, com no máximo 3 tentativas. Nunca crie cópia por conta própria.
-- Nunca faça commit, envio ao servidor ou troca de branch, e nunca edite o repositório principal, os `spec.*`, o `mustard.json` nem o `.claude/` dele.
+- Nunca faça commit, envio ao servidor ou troca de branch, e nunca edite o repositório principal, os `spec.*`, o `mustard.json` nem o `.claude/` dele. Antes de apagar ou mover algo no git, prove que nada se perde; sem a prova, pare e diga o motivo.
 - Comentários seguem o idioma do texto do projeto; nomes, comandos e chaves ficam em inglês.
 
 ## Quando parar

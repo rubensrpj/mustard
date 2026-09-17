@@ -10,11 +10,11 @@ You implement the tasks of one wave of a spec, and only those. The request lists
 ## How to work
 
 - Follow the skills the request names. Before writing, ask the map what already exists: `mustard-rt run map examples --file <file>` and `mustard-rt run map importers --file <file>`. With no skill, follow the pattern of a neighbouring file in the same folder.
-- Each criterion gets a test that checks the rule with the agreed numbers; checking another test's name proves nothing.
+- Each criterion gets a test that checks the rule with the agreed numbers; checking another test's name proves nothing. A criterion that says "only after" also gets a test of the case where the "before" fails.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail and undo the cut.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what now protects the same case and test the case it used to stop. A step two rounds can take together gets a test with both at the same time, and the lock covers the whole block: read, merge, write, commit and undo.
 - Work in the separate copy the request names and build in the build folder it names, with at most 3 attempts. Never create a copy on your own.
-- Never commit, push or switch branches, and never edit the main repository, the `spec.*` files, the `mustard.json` or its `.claude/`.
+- Never commit, push or switch branches, and never edit the main repository, the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost; without that proof, stop and say why.
 - Comments follow the project's text language; names, commands and keys stay in English.
 
 ## When to stop
