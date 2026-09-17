@@ -167,12 +167,30 @@ fn published_texts() -> Vec<(String, String)> {
         .collect()
 }
 
+/// A linha ensina o relatório da rodada como um objeto agregado, que o
+/// binário não lê: a chave `waves` com a entrega ou o veredito aninhados
+/// dentro dela. O relatório de verdade são as linhas do fim de cada agente,
+/// cada uma entre as marcas dela; quem mandar o objeto manda um texto sem
+/// marca nenhuma, recebe `round-line-missing` e não grava nada — no comando
+/// central do fluxo.
+///
+/// As duas chaves aninhadas são exigidas junto da `waves` porque `delivered` e
+/// `verdict` sozinhos são palavras do produto (o tipo de evento, a fase, a
+/// coluna da página) e aparecem em texto publicado que está certo.
+fn teaches_an_aggregate_round_report(line: &str) -> bool {
+    line.contains("\"waves\"") && (line.contains("\"delivered\"") || line.contains("\"verdict\""))
+}
+
 /// A gravação do veredito saiu deste comando, e nenhum texto publicado pode
 /// continuar ensinando-a: nem a linha com o veredito, nem a contagem de
 /// críticos, que só existia para ser gravada com ele. A contagem também saiu
 /// da linha de comando — quem a passa recebe o erro do clap, não uma gravação
 /// que não acontece — e a ajuda que o binário imprime diz que o comando
 /// recusa.
+///
+/// A mesma varredura pega o outro caminho que o binário recusa e que a mesma
+/// referência de comandos ensinava: o relatório da rodada como objeto
+/// agregado.
 #[test]
 fn no_published_text_teaches_the_recording_the_command_refuses() {
     /// O que um texto publicado não pode trazer: a opção da contagem de
@@ -185,17 +203,19 @@ fn no_published_text_teaches_the_recording_the_command_refuses() {
     let mut offenders = Vec::new();
     for (name, text) in published_texts() {
         for (n, line) in text.lines().enumerate() {
-            for taught in TEACHES {
-                if line.contains(taught) {
-                    offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
-                }
+            let teaches = TEACHES.iter().any(|taught| line.contains(taught))
+                || teaches_an_aggregate_round_report(line);
+            if teaches {
+                offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "texto publicado ensinando a gravação que o `pr-review` recusa desde a onda 10 — \
-         quem obedecer gasta a chamada numa recusa:\n{}",
+        "texto publicado ensinando um caminho que o binário recusa — a gravação do veredito \
+         pelo `pr-review`, recusada desde a onda 10, ou o relatório da rodada como objeto \
+         agregado, que a rodada recusa com `round-line-missing`; quem obedecer gasta a \
+         chamada numa recusa:\n{}",
         offenders.join("\n")
     );
 
