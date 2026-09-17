@@ -38,6 +38,8 @@ pub enum DoctorCmd {
             "branch-protection",
             "spec-index",
             "scan-output",
+            "switches",
+            "claude-md",
         ])]
         check: Option<String>,
         /// O formato da saída. Lista fechada: `text` (padrão) ou `json`.

@@ -15,14 +15,18 @@
 # (packaging/windows/mustard.nsi), not here. O .deb Linux instala tudo via `apt`
 # — ver packaging/linux/Dockerfile + packaging/linux/build-deb.sh.
 #
+# O rtk entra em todos os pacotes na versão fixa do checksums.txt da raiz, e o
+# arquivo baixado só entra se a soma dele bater com a linha de lá.
+#
 # Uso:
 #   .\packaging\build-packages.ps1                 # windows + linux
 #   .\packaging\build-packages.ps1 -Targets windows
 #   .\packaging\build-packages.ps1 -Targets linux
+#   .\packaging\build-packages.ps1 -Targets rtk     # só o rtk.exe conferido, em dist\_rtk
 # ============================================================================
 [CmdletBinding()]
 param(
-    [ValidateSet('windows', 'linux', 'both')][string]$Targets = 'both'
+    [ValidateSet('windows', 'linux', 'both', 'rtk')][string]$Targets = 'both'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -39,9 +43,43 @@ function New-CleanDir([string]$p) {
     New-Item -ItemType Directory -Force -Path $p | Out-Null
 }
 
+# O rtk.exe da release fixa do checksums.txt, conferido pela soma. Devolve o
+# caminho dele; qualquer falha (sem a versão, sem a soma, soma diferente, pacote
+# sem o binário) para o script.
+function Get-PinnedRtk {
+    $sums = Join-Path $Root 'checksums.txt'
+    if (-not (Test-Path $sums)) { throw "checksums.txt não encontrado em $Root." }
+    $lines = Get-Content $sums
+    $versionLine = $lines | Select-String -Pattern '^# rtk v([0-9][0-9.]*)' | Select-Object -First 1
+    if (-not $versionLine) { throw "o checksums.txt não diz a versão do rtk." }
+    $version = $versionLine.Matches[0].Groups[1].Value
+    $asset = 'rtk-x86_64-pc-windows-msvc.zip'
+    $sumLine = $lines | Where-Object { $_ -match ('^[0-9a-f]{64}  ' + [regex]::Escape($asset) + '$') } | Select-Object -First 1
+    if (-not $sumLine) { throw "o checksums.txt não traz a soma de $asset." }
+    $expected = ($sumLine -split '\s+')[0]
+    $dir = Join-Path $Dist '_rtk'
+    New-CleanDir $dir
+    $zip = Join-Path $dir $asset
+    Invoke-WebRequest -Uri "https://github.com/rtk-ai/rtk/releases/download/v$version/$asset" -OutFile $zip
+    $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { throw "o rtk baixado não confere com o checksums.txt (soma $actual)." }
+    Expand-Archive -Path $zip -DestinationPath $dir -Force
+    $exe = Join-Path $dir 'rtk.exe'
+    if (-not (Test-Path $exe)) { throw "o pacote do rtk não trouxe o rtk.exe." }
+    Write-Host "  rtk v$version conferido: $exe"
+    return $exe
+}
+
+New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+
+# ------------------------------------------------------------------- rtk ----
+if ($Targets -eq 'rtk') {
+    Get-PinnedRtk | Out-Null
+    return
+}
+
 if (-not (Test-Path $TemplatesSrc)) { throw "templates payload não encontrado em $TemplatesSrc — rode da raiz do repo." }
 if (-not (Test-Path $Installer))    { throw "instaladores não encontrados em $Installer." }
-New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 # ---------------------------------------------------------------- Windows ----
 if ($Targets -in 'windows', 'both') {
@@ -59,14 +97,9 @@ if ($Targets -in 'windows', 'both') {
         if (-not (Test-Path $src)) { throw "binário Windows ausente: $src" }
         Copy-Item $src (Join-Path $pkg 'bin') -Force
     }
-    # rtk empacotado (best-effort, a partir do que estiver no PATH desta máquina)
-    $rtk = (Get-Command rtk -ErrorAction SilentlyContinue).Source
-    if ($rtk) {
-        Copy-Item $rtk (Join-Path $pkg 'bin\rtk.exe') -Force
-        Write-Host "  rtk empacotado: $rtk"
-    } else {
-        Write-Warning "  rtk não está no PATH — pacote Windows vai sem rtk (o instalador instrui)."
-    }
+    # rtk empacotado na versão fixa, conferida; sem ele o pacote não sai.
+    $rtk = Get-PinnedRtk
+    Copy-Item $rtk (Join-Path $pkg 'bin\rtk.exe') -Force
     Copy-Item $TemplatesSrc (Join-Path $pkg 'templates') -Recurse -Force
     Copy-Item (Join-Path $Installer 'install.ps1') $pkg -Force
     Copy-Item (Join-Path $Installer 'README.txt')  $pkg -Force

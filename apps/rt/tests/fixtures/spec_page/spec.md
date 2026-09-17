@@ -26,12 +26,20 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
 | Medida | Valor |
 |---|---|
-| Comandos do Mustard | 1 chamadas, 0 recusadas |
-| Ganchos | 1 bloqueios, 0 avisos |
 | Texto colocado pelos ganchos | 2870 caracteres, cerca de 717 tokens |
-| Pedidos enviados aos agentes | 1, o maior com 312 linhas |
+| Bloqueios por gancho | 1 bloqueios, 0 avisos — `command_guard`: 1 bloqueios, 0 avisos |
+| Passos do fluxo contra trabalho | 1 chamadas, 0 recusadas, para 1 ondas prontas — `grill` 1 |
+| Tempo por fase | levantamento 1 d 0 h, aprovada 2 h 10 min |
 | Revisões | 1 aprovadas, 0 reprovadas |
 | Pontos do levantamento | 1 pendentes, 0 fechados |
+| Lembretes que apareceram | 0 mensagens antigas lembradas nos pontos |
+| Pedidos enviados aos agentes | 1, o maior com 312 linhas |
+
+### Tamanho do pedido e revisão, por onda
+
+| Onda | Linhas do pedido | Reprovações | Última revisão |
+|---|---|---|---|
+| 2 | 312 | 0 | aprovada |
 
 ## Combinado
 
@@ -147,8 +155,9 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Pronta quando: A suíte da trava passa.
   - Origem: MSTD-MSG-0001
   - Estado da onda: a fazer
+  - Recebe: Especificação (2), Combinado (6), A onda e as tarefas dela (1), Critérios (1)
 
-## O pedido da onda 1
+**O pedido da onda 1 · 33 linhas, como o agente as recebe**
 
 ```
 # demo — onda 1
@@ -196,6 +205,8 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Depende das ondas: 1
   - Origem: MSTD-MSG-0001
   - Estado da onda: revisada
+  - Commit: `5e0c7a91` (MSTD-COMMIT-0001)
+  - Recebe: A onda e as tarefas dela (2)
 
 - **MSTD-TASK-0001** — O portão de escrita lê a aprovação do estado.
 
@@ -206,15 +217,6 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
 - **MSTD-SEND-0001**
 
-  # demo — onda 2
-
-  **O que é isto.** A lista dos itens desta onda.
-
-  ## A onda e as tarefas dela
-
-  - MSTD-WAVE-0002 (onda) — `mustard-rt run read waves --spec demo --term MSTD-WAVE-0002`
-  - MSTD-TASK-0002 (tarefa) — `mustard-rt run read waves --spec demo --term MSTD-TASK-0002`
-
   - Papel: agente de onda
   - Linhas: 312
   - Caracteres: 21480
@@ -222,6 +224,19 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Versão do Mustard: `0.2.0`
   - Lições: 7
   - Skills: `add-hook-rule` (`3f9a1c2e`)
+
+**Pedido enviado (agente de onda) · 8 linhas, como o agente o recebeu**
+
+```
+# demo — onda 2
+
+**O que é isto.** A lista dos itens desta onda.
+
+## A onda e as tarefas dela
+
+- MSTD-WAVE-0002 (onda) — `mustard-rt run read waves --spec demo --term MSTD-WAVE-0002`
+- MSTD-TASK-0002 (tarefa) — `mustard-rt run read waves --spec demo --term MSTD-TASK-0002`
+```
 
 - **MSTD-DELIV-0001**
 

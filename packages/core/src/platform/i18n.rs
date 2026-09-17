@@ -1402,12 +1402,14 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The plan has {count} things to fix before the approval question. Nothing was written."
         }
         ("plan.next", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto, e faça a pergunta de aprovação, com \
-             \"Aprovar\" e \"Ajustar\". O endereço não vai para a conversa: ele fica na barra de status."
+            "Publique a página da spec e a do projeto (`.claude/spec/project.html`), e faça a \
+             pergunta de aprovação, com \"Aprovar\" e \"Ajustar\". O endereço não vai para a conversa: \
+             ele fica na barra de status."
         }
         ("plan.next", Locale::EnUs) => {
-            "Publish the spec page and the project page, then ask the approval question, with \
-             \"Approve\" and \"Adjust\". The address never goes to the conversation: it lives in the status line."
+            "Publish the spec page and the project page (`.claude/spec/project.html`), then ask the \
+             approval question, with \"Approve\" and \"Adjust\". The address never goes to the \
+             conversation: it lives in the status line."
         }
         ("plan.copy", Locale::PtBr) => {
             "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
@@ -1609,9 +1611,13 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("close.criterion_failed", Locale::EnUs) => "The proof of criterion {code} did not pass: {output}",
         ("close.next", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto, e abra o pull request."
+            "Publique a página da spec e a do projeto (`.claude/spec/project.html`), e abra o pull \
+             request."
         }
-        ("close.next", Locale::EnUs) => "Publish the spec page and the project page, and open the pull request.",
+        ("close.next", Locale::EnUs) => {
+            "Publish the spec page and the project page (`.claude/spec/project.html`), and open the \
+             pull request."
+        }
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => {
@@ -1665,10 +1671,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("round.git_refused", Locale::PtBr) => "O git recusou o commit da rodada: {detail}",
         ("round.git_refused", Locale::EnUs) => "Git refused the round's commit: {detail}",
         ("round.next", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto, e despache os pedidos desta rodada."
+            "Publique a página da spec e a do projeto (`.claude/spec/project.html`), e despache os \
+             pedidos desta rodada."
         }
         ("round.next", Locale::EnUs) => {
-            "Publish the spec page and the project page, and dispatch this round's requests."
+            "Publish the spec page and the project page (`.claude/spec/project.html`), and dispatch \
+             this round's requests."
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
@@ -2498,6 +2506,74 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The scan map is visible to git: {paths}. The scan only writes outside git: take these \
              files out of git (the private install already excludes them)."
         }
+        // The switches `mustard.json` holds, as the `doctor` reads them.
+        ("doctor.switches.off", Locale::PtBr) => {
+            "O Mustard está desligado neste projeto (`enabled: false` no mustard.json): nenhum \
+             gancho dele age aqui. Para religar, tire a chave ou ponha `true`."
+        }
+        ("doctor.switches.off", Locale::EnUs) => {
+            "Mustard is turned off in this project (`enabled: false` in mustard.json): none of its \
+             hooks act here. To turn it back on, remove the key or set it to `true`."
+        }
+        ("doctor.switches.rtk_missing", Locale::PtBr) => {
+            "A opção `rtk` do mustard.json está ligada, mas o gancho `rtk hook claude` não está no \
+             .claude/settings.local.json. Rode `mustard-rt run upsert` para alinhar os dois."
+        }
+        ("doctor.switches.rtk_missing", Locale::EnUs) => {
+            "The `rtk` option in mustard.json is on, but the `rtk hook claude` hook is not in \
+             .claude/settings.local.json. Run `mustard-rt run upsert` to line the two up."
+        }
+        ("doctor.switches.rtk_left", Locale::PtBr) => {
+            "A opção `rtk` do mustard.json está desligada, mas o gancho `rtk hook claude` continua no \
+             .claude/settings.local.json. Rode `mustard-rt run upsert` para alinhar os dois."
+        }
+        ("doctor.switches.rtk_left", Locale::EnUs) => {
+            "The `rtk` option in mustard.json is off, but the `rtk hook claude` hook is still in \
+             .claude/settings.local.json. Run `mustard-rt run upsert` to line the two up."
+        }
+        ("doctor.switches.signature_on", Locale::PtBr) => {
+            "A assinatura do Claude Code nos commits e pull requests está ligada no \
+             .claude/settings.local.json (`attribution`). Rode `mustard-rt run upsert` para desligá-la."
+        }
+        ("doctor.switches.signature_on", Locale::EnUs) => {
+            "Claude Code's signature on commits and pull requests is on in \
+             .claude/settings.local.json (`attribution`). Run `mustard-rt run upsert` to turn it off."
+        }
+        ("doctor.claude_md.leftovers", Locale::PtBr) => {
+            "Sobras do Mustard em arquivos que não são dele: {paths}. Rode `mustard-rt run upsert`, \
+             confira a lista e, com o sim, tire-as."
+        }
+        ("doctor.claude_md.leftovers", Locale::EnUs) => {
+            "Mustard leftovers in files that are not its own: {paths}. Run `mustard-rt run upsert`, \
+             check the list and, after a yes, take them out."
+        }
+        // The cleanup the `upsert` lists and applies only after a yes.
+        ("upsert.cleanup.ask", Locale::PtBr) => {
+            "Mostre a lista `cleanup` à pessoa, dizendo que as Guards que saem viram lições e que o \
+             commit fica com ela. Só com o sim, rode `mustard-rt run upsert --confirm {token}`."
+        }
+        ("upsert.cleanup.ask", Locale::EnUs) => {
+            "Show the `cleanup` list to the person, saying that the Guards that leave become lessons \
+             and that the commit is theirs. Only after a yes, run `mustard-rt run upsert --confirm {token}`."
+        }
+        ("upsert.cleanup.mismatch", Locale::PtBr) => {
+            "O código não é o da lista de agora, e nada foi tirado: a lista mudou desde que foi \
+             mostrada. Rode `mustard-rt run upsert`, mostre a lista nova e peça o sim de novo."
+        }
+        ("upsert.cleanup.mismatch", Locale::EnUs) => {
+            "The code is not the one of the current list, and nothing was taken out: the list \
+             changed since it was shown. Run `mustard-rt run upsert`, show the new list and ask again."
+        }
+        ("upsert.cleanup.nothing", Locale::PtBr) => "Não há nada do Mustard a tirar neste projeto.",
+        ("upsert.cleanup.nothing", Locale::EnUs) => "There is nothing of Mustard's to take out in this project.",
+        ("upsert.cleanup.done", Locale::PtBr) => {
+            "A lista saiu. O commit dessas mudanças fica com a pessoa: nada foi preparado nem \
+             gravado no git."
+        }
+        ("upsert.cleanup.done", Locale::EnUs) => {
+            "The list is out. Committing these changes is the person's call: nothing was staged or \
+             committed."
+        }
         ("spec_index.no_specs", Locale::PtBr) => {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
         }
@@ -2689,6 +2765,40 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.wave.heading", Locale::EnUs) => "Wave {n}",
         ("page.conversation.summary", Locale::PtBr) => "{count} registros",
         ("page.conversation.summary", Locale::EnUs) => "{count} entries",
+        ("page.conversation.cut", Locale::PtBr) => {
+            "Os {count} registros mais antigos da conversa ficaram só no `spec.md`: com eles, a página \
+             passaria de 16 MB, o tamanho que o claude.ai aceita."
+        }
+        ("page.conversation.cut", Locale::EnUs) => {
+            "The {count} oldest conversation entries stayed only in `spec.md`: with them, the page \
+             would pass 16 MB, the size claude.ai accepts."
+        }
+        ("page.withheld", Locale::PtBr) => {
+            "Retido: este trecho tem texto com cara de segredo (chave, token ou senha) e não vai para a \
+             página. Expurgue o item antes de publicar."
+        }
+        ("page.withheld", Locale::EnUs) => {
+            "Withheld: this part has text that looks like a secret (key, token or password) and does not \
+             go on the page. Purge the item before publishing."
+        }
+        ("page.withheld_found", Locale::PtBr) => {
+            "{count} trechos têm texto com cara de segredo e ficaram fora da página: {codes}. Expurgue \
+             cada item com `mustard-rt run write purge` antes de publicar."
+        }
+        ("page.withheld_found", Locale::EnUs) => {
+            "{count} parts have text that looks like a secret and were left off the page: {codes}. Purge \
+             each item with `mustard-rt run write purge` before publishing."
+        }
+        ("page.too_big", Locale::PtBr) => {
+            "A página tem {bytes} bytes mesmo sem a conversa, e o claude.ai aceita até {max}: assim \
+             ela não pode ser publicada."
+        }
+        ("page.too_big", Locale::EnUs) => {
+            "The page has {bytes} bytes even without the conversation, and claude.ai takes up to {max}: \
+             it cannot be published like this."
+        }
+        ("page.wave.sent", Locale::PtBr) => "Pedido enviado ({role}) · {lines} linhas, como o agente o recebeu",
+        ("page.wave.sent", Locale::EnUs) => "Request sent ({role}) · {lines} lines, exactly as the agent got it",
 
         ("page.type.message", Locale::PtBr) => "mensagem",
         ("page.type.message", Locale::EnUs) => "message",
@@ -2918,6 +3028,10 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.field.last_run", Locale::EnUs) => "Last run",
         ("page.field.wave_state", Locale::PtBr) => "Estado da onda",
         ("page.field.wave_state", Locale::EnUs) => "Wave state",
+        ("page.field.wave_commit", Locale::PtBr) => "Commit",
+        ("page.field.wave_commit", Locale::EnUs) => "Commit",
+        ("page.field.wave_receives", Locale::PtBr) => "Recebe",
+        ("page.field.wave_receives", Locale::EnUs) => "Receives",
 
         ("page.value.warn", Locale::PtBr) => "aviso",
         ("page.value.warn", Locale::EnUs) => "warning",
@@ -3042,12 +3156,40 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.metrics.col.measure", Locale::EnUs) => "Measure",
         ("page.metrics.col.value", Locale::PtBr) => "Valor",
         ("page.metrics.col.value", Locale::EnUs) => "Value",
-        ("page.metrics.calls", Locale::PtBr) => "Comandos do Mustard",
-        ("page.metrics.calls", Locale::EnUs) => "Mustard commands",
-        ("page.metrics.calls.value", Locale::PtBr) => "{count} chamadas, {refused} recusadas",
-        ("page.metrics.calls.value", Locale::EnUs) => "{count} calls, {refused} refused",
-        ("page.metrics.hooks", Locale::PtBr) => "Ganchos",
-        ("page.metrics.hooks", Locale::EnUs) => "Hooks",
+        ("page.metrics.col.wave", Locale::PtBr) => "Onda",
+        ("page.metrics.col.wave", Locale::EnUs) => "Wave",
+        ("page.metrics.col.lines", Locale::PtBr) => "Linhas do pedido",
+        ("page.metrics.col.lines", Locale::EnUs) => "Request lines",
+        ("page.metrics.col.rejected", Locale::PtBr) => "Reprovações",
+        ("page.metrics.col.rejected", Locale::EnUs) => "Rejections",
+        ("page.metrics.col.last", Locale::PtBr) => "Última revisão",
+        ("page.metrics.col.last", Locale::EnUs) => "Last review",
+        ("page.metrics.by_wave", Locale::PtBr) => "Tamanho do pedido e revisão, por onda",
+        ("page.metrics.by_wave", Locale::EnUs) => "Request size and review, per wave",
+        ("page.metrics.calls", Locale::PtBr) => "Passos do fluxo contra trabalho",
+        ("page.metrics.calls", Locale::EnUs) => "Flow steps against work",
+        ("page.metrics.calls.value", Locale::PtBr) => {
+            "{count} chamadas, {refused} recusadas, para {done} ondas prontas"
+        }
+        ("page.metrics.calls.value", Locale::EnUs) => "{count} calls, {refused} refused, for {done} waves done",
+        ("page.metrics.phases", Locale::PtBr) => "Tempo por fase",
+        ("page.metrics.phases", Locale::EnUs) => "Time per phase",
+        ("page.metrics.rework", Locale::PtBr) => "; voltaram da revisão as ondas {waves}",
+        ("page.metrics.rework", Locale::EnUs) => "; waves sent back by the review: {waves}",
+        ("page.metrics.reminders", Locale::PtBr) => "Lembretes que apareceram",
+        ("page.metrics.reminders", Locale::EnUs) => "Reminders that showed up",
+        ("page.metrics.reminders.value", Locale::PtBr) => "{count} mensagens antigas lembradas nos pontos",
+        ("page.metrics.reminders.value", Locale::EnUs) => "{count} old messages recalled in the points",
+        ("page.metrics.rtk", Locale::PtBr) => "Economia do rtk",
+        ("page.metrics.rtk", Locale::EnUs) => "rtk savings",
+        ("page.metrics.rtk.value", Locale::PtBr) => {
+            "{commands} comandos, {saved} tokens a menos na saída ({pct}%), de {from} a {to}"
+        }
+        ("page.metrics.rtk.value", Locale::EnUs) => {
+            "{commands} commands, {saved} fewer output tokens ({pct}%), from {from} to {to}"
+        }
+        ("page.metrics.hooks", Locale::PtBr) => "Bloqueios por gancho",
+        ("page.metrics.hooks", Locale::EnUs) => "Blocks per hook",
         ("page.metrics.hooks.value", Locale::PtBr) => "{blocks} bloqueios, {warns} avisos",
         ("page.metrics.hooks.value", Locale::EnUs) => "{blocks} blocks, {warns} warnings",
         ("page.metrics.injected", Locale::PtBr) => "Texto colocado pelos ganchos",
@@ -3066,6 +3208,40 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.metrics.points", Locale::EnUs) => "Survey points",
         ("page.metrics.points.value", Locale::PtBr) => "{open} pendentes, {closed} fechados",
         ("page.metrics.points.value", Locale::EnUs) => "{open} open, {closed} closed",
+
+        // A página do projeto (`view::document::project`).
+        ("project.kind", Locale::PtBr) => "projeto",
+        ("project.kind", Locale::EnUs) => "project",
+        ("project.specs", Locale::PtBr) => "Specs",
+        ("project.specs", Locale::EnUs) => "Specs",
+        ("project.stages", Locale::PtBr) => "Por fase: {stages}.",
+        ("project.stages", Locale::EnUs) => "By phase: {stages}.",
+        ("project.no_phase", Locale::PtBr) => "sem fase",
+        ("project.no_phase", Locale::EnUs) => "with no phase",
+        ("project.col.spec", Locale::PtBr) => "Spec",
+        ("project.col.spec", Locale::EnUs) => "Spec",
+        ("project.col.state", Locale::PtBr) => "Estado",
+        ("project.col.state", Locale::EnUs) => "State",
+        ("project.col.branch", _) => "Branch",
+        ("project.col.goal", Locale::PtBr) => "Objetivo",
+        ("project.col.goal", Locale::EnUs) => "Goal",
+        ("project.col.created", Locale::PtBr) => "Aberta em",
+        ("project.col.created", Locale::EnUs) => "Opened",
+        ("project.col.updated", Locale::PtBr) => "Última mudança",
+        ("project.col.updated", Locale::EnUs) => "Last change",
+        ("project.stalled", Locale::PtBr) => "Specs paradas",
+        ("project.stalled", Locale::EnUs) => "Idle specs",
+        ("project.stalled.line", Locale::PtBr) => "{spec} ({phase}): parada desde {since}, há {days} d",
+        ("project.stalled.line", Locale::EnUs) => "{spec} ({phase}): idle since {since}, {days} d ago",
+        ("project.titles", Locale::PtBr) => "Regras e decisões de cada spec",
+        ("project.titles", Locale::EnUs) => "Each spec's rules and decisions",
+        ("project.titles.summary", Locale::PtBr) => "{spec} · {count} títulos",
+        ("project.titles.summary", Locale::EnUs) => "{spec} · {count} titles",
+        ("project.meta.specs", _) => "specs",
+        ("project.meta.today", Locale::PtBr) => "em",
+        ("project.meta.today", Locale::EnUs) => "on",
+        ("project.footer", Locale::PtBr) => "Índice das specs: {path}",
+        ("project.footer", Locale::EnUs) => "Spec index: {path}",
 
         // As recusas do comando `page`.
         ("page.missing_body", Locale::PtBr) => {
@@ -4007,6 +4183,31 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), create.len(), "no duplicates: {create:?}");
+    }
+
+    /// As mensagens do diagnóstico das chaves do projeto e da limpeza do
+    /// `upsert` saem nos dois idiomas, com as vagas que o chamador preenche.
+    #[test]
+    fn i18n_translates_switch_and_cleanup_keys() {
+        for (key, slots) in [
+            ("doctor.switches.off", &[][..]),
+            ("doctor.switches.rtk_missing", &[][..]),
+            ("doctor.switches.rtk_left", &[][..]),
+            ("doctor.switches.signature_on", &[][..]),
+            ("doctor.claude_md.leftovers", &["{paths}"][..]),
+            ("upsert.cleanup.ask", &["{token}"][..]),
+            ("upsert.cleanup.mismatch", &[][..]),
+            ("upsert.cleanup.nothing", &[][..]),
+            ("upsert.cleanup.done", &[][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
     }
 
     #[test]

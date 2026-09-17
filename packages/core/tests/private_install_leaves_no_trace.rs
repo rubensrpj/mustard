@@ -40,6 +40,14 @@
 //!   verifies it: a backup sits outside `.claude/`, so nothing that covers the
 //!   harness's own directory reaches it.
 //!
+//! ## Nothing is ever committed, and this repository versions none of it
+//!
+//! The same criterion has two more halves. An install never records anything
+//! in git: in a host that already versions `mustard.json`, the new stamp stays
+//! a change for the person, and the history gains no commit. And this very
+//! repository — the one Mustard is built in — versions no file of Mustard's:
+//! `git ls-files` asked with the footprint's own rules answers nothing.
+//!
 //! ## The negative control is half the proof
 //!
 //! A test that reported a clean tree because nothing had been written at all
@@ -50,7 +58,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mustard_core::{footprint_pathspecs, upsert_project, InstallMode, UpsertReport};
+use mustard_core::{footprint_pathspecs, footprint_rules, upsert_project, InstallMode, UpsertReport};
 
 /// The subproject whose own `CLAUDE.md` the host repository versions. Nested one
 /// level down so the fixture really exercises depth, which is where a
@@ -113,6 +121,38 @@ fn ac8_host_repo_stays_clean_and_untouched() {
             "the install hid {theirs}, which it never wrote: {visible:?}",
         );
     }
+
+    // --- NOTHING IS COMMITTED ------------------------------------------------
+    // A host that versions `mustard.json` from an older install, with a clean
+    // tree: the install re-stamps it and leaves the change there. No commit, and
+    // nothing staged.
+    let tracked = host_repo(work.path(), "tracked-host");
+    write(&tracked.join("mustard.json"), b"{\n  \"version\": \"0.0.0-old\"\n}\n");
+    git(&tracked, &["add", "mustard.json"]);
+    git(&tracked, &["commit", "-q", "-m", "an older install"]);
+    let head = git_out(&tracked, &["rev-parse", "HEAD"]);
+    upsert_project(&tracked, Some("9.9.9"), InstallMode::Private).expect("upsert");
+    assert_eq!(git_out(&tracked, &["rev-parse", "HEAD"]), head, "the install made a commit");
+    assert_eq!(git_out(&tracked, &["diff", "--cached", "--name-only"]), "", "the install staged something");
+    assert_eq!(
+        git_out(&tracked, &["diff", "--name-only"]),
+        "mustard.json",
+        "the new stamp is the one change, left for the person to commit",
+    );
+
+    // --- THIS REPOSITORY -----------------------------------------------------
+    // The repository Mustard is built in versions no file of Mustard's. Asked
+    // with the footprint's own rules, plus the root `.claude/`, which holds
+    // nothing but Mustard's here.
+    let versioned = mustard_files_in_this_repository();
+    assert!(
+        versioned.is_empty(),
+        "this repository still versions {} file(s) of Mustard's, starting with {:?}. Take them out \
+         of git (the files stay on disk): git rm -r --cached -- .claude mustard.json \
+         '**/.claude/scan-map.md' '**/.claude/skills/*-pattern/*', then commit.",
+        versioned.len(),
+        versioned.iter().take(5).collect::<Vec<_>>(),
+    );
 
     // --- THE NEGATIVE CONTROL ----------------------------------------------
     // The same fixture, installed SHARED. Without this a green run above would
@@ -242,9 +282,37 @@ fn footprint_on_disk(root: &Path, report: &UpsertReport) -> Vec<String> {
     found
 }
 
+/// Every file this repository versions that the footprint's rules name, plus
+/// anything under the root `.claude/`.
+///
+/// `git ls-files --cached --ignored` answers with the tracked paths the given
+/// rules match, and only those: no `.gitignore` and no global ignore file take
+/// part, so the answer is the footprint's alone.
+fn mustard_files_in_this_repository() -> Vec<String> {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let rules = tempfile::NamedTempFile::new().expect("rules file");
+    let mut body = footprint_rules().join("\n");
+    body.push_str("\n/.claude/\n");
+    assert!(std::fs::write(rules.path(), body).is_ok(), "write the rules");
+    let exclude = format!("--exclude-from={}", rules.path().display());
+    let out = Command::new("git")
+        .args(["-c", "core.excludesFile=", "ls-files", "--cached", "--ignored", &exclude])
+        .current_dir(&repo)
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git could not list this repository: {out:?}");
+    String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+}
+
 // ---------------------------------------------------------------------------
 // git + IO scaffolding
 // ---------------------------------------------------------------------------
+
+/// What a git command prints, trimmed.
+fn git_out(root: &Path, args: &[&str]) -> String {
+    let out = Command::new("git").args(args).current_dir(root).output().expect("git runs");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
 
 /// The repository's dirt, trimmed. `--untracked-files=all` because the default
 /// collapses a wholly untracked directory into ONE line, which would let an

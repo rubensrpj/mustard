@@ -196,8 +196,8 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let by_hand = rt(root, &["write", "delivered", "--spec", "teste", "--json", &delivered]).output().expect("run");
     assert_eq!(by_hand.status.code(), Some(1));
     assert_eq!(stdout_json(&by_hand)["reason"], json!("binary-only-type"));
-    let speech = json!({"author": "user", "text": "Aceitar"}).to_string();
-    let forged = rt(root, &["write", "message", "--spec", "teste", "--json", &speech]).output().expect("run");
+    let click = json!({"author": "user", "text": "Aceitar", "witness": {"question": "Seguir?", "answer": "Aceitar"}});
+    let forged = rt(root, &["write", "message", "--spec", "teste", "--json", &click.to_string()]).output().expect("run");
     assert_eq!(forged.status.code(), Some(1));
     assert_eq!(stdout_json(&forged)["reason"], json!("user-message-by-hook"));
     let fields = json!({"text": "t", "keys": ["k"], "origin": msg}).to_string();

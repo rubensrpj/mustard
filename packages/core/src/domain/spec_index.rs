@@ -4,8 +4,10 @@
 //! A primeira linha é a do projeto, que guarda o endereço da página do
 //! projeto quando ele existe: `{"v":1,"type":"project"}`. Depois vem uma linha
 //! por spec, em ordem de nome, com o nome, a hora do primeiro e a do último
-//! evento, a fase, a branch, o objetivo numa frase, os títulos das regras e
-//! das decisões vigentes e o campo `search` calculado deles.
+//! evento, a fase, a branch, o objetivo numa frase, o endereço em que a página
+//! da spec foi publicada por último, os títulos das regras e das decisões
+//! vigentes e o campo `search` calculado deles. A página do projeto sai só
+//! destas linhas.
 //!
 //! Cada linha de spec sai só do arquivo de eventos dela e é montada por
 //! `render_line`: os mesmos eventos dão sempre os mesmos bytes, e o índice
@@ -76,6 +78,7 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
     let phase = state.phase;
     let branch = state.branch;
     let goal = goal_of(log);
+    let url = page_url(log);
     let mut titled: Vec<&SpecEvent> =
         visible.iter().copied().filter(|e| TITLED_TYPES.contains(&e.event_type.as_str())).collect();
     titled.sort_by_key(|e| e.id);
@@ -96,6 +99,9 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
     if let Some(goal) = &goal {
         line.insert("goal".into(), Value::from(goal.as_str()));
     }
+    if let Some(url) = url {
+        line.insert("url".into(), Value::from(url));
+    }
     if !titles.is_empty() {
         line.insert("titles".into(), Value::from(titles.clone()));
     }
@@ -105,6 +111,17 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
         line.insert("search".into(), Value::String(search));
     }
     Some(render_line(&line))
+}
+
+/// O endereço da última publicação da página da spec que deu certo. Uma
+/// publicação que falhou não apaga o endereço de antes, e a página refeita e
+/// publicada num endereço novo passa a valer no lugar dele.
+fn page_url(log: &SpecLog) -> Option<&str> {
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "publish" && e.fields.get("ok").and_then(Value::as_bool) == Some(true))
+        .filter_map(|e| e.str_field("url").map(str::trim))
+        .rfind(|url| !url.is_empty())
 }
 
 /// O objetivo da spec numa frase: a primeira frase do primeiro `context`, na
@@ -230,23 +247,75 @@ pub struct IndexLine {
     pub search: String,
 }
 
+/// A linha de uma spec como a página do projeto a mostra: o nome, as datas, a
+/// fase, a branch, o objetivo, o endereço da página e os títulos.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectRow {
+    pub name: String,
+    pub created: Option<String>,
+    pub updated: Option<String>,
+    pub phase: Option<String>,
+    pub branch: Option<String>,
+    pub goal: Option<String>,
+    pub url: Option<String>,
+    pub titles: Vec<String>,
+}
+
+/// Cada linha de spec do índice `content`, lida, em ordem de nome, pelo mesmo
+/// leitor da gravação: a linha do projeto e a que não se entende ficam de
+/// fora, e um nome repetido vale pela primeira linha.
+fn parsed_specs(content: &str) -> Vec<(String, Value)> {
+    read_lines(content)
+        .specs
+        .into_iter()
+        .filter_map(|(name, line)| serde_json::from_str::<Value>(line).ok().map(|parsed| (name, parsed)))
+        .collect()
+}
+
+fn text_of(parsed: &Value, key: &str) -> Option<String> {
+    parsed.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn titles_of(parsed: &Value) -> Vec<String> {
+    parsed
+        .get("titles")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// As linhas de spec do índice `content`, em ordem de nome, pelo mesmo leitor
 /// da gravação: a linha do projeto e a que não se entende ficam de fora, e um
 /// nome repetido vale pela primeira linha.
 #[must_use]
 pub fn spec_lines(content: &str) -> Vec<IndexLine> {
-    read_lines(content)
-        .specs
+    parsed_specs(content)
         .into_iter()
-        .filter_map(|(name, line)| {
-            let parsed = serde_json::from_str::<Value>(line).ok()?;
-            let text = |key: &str| parsed.get(key).and_then(Value::as_str).map(str::to_string);
-            let titles = parsed
-                .get("titles")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                .unwrap_or_default();
-            Some(IndexLine { goal: text("goal"), phase: text("phase"), titles, search: text("search").unwrap_or_default(), name })
+        .map(|(name, parsed)| IndexLine {
+            goal: text_of(&parsed, "goal"),
+            phase: text_of(&parsed, "phase"),
+            titles: titles_of(&parsed),
+            search: text_of(&parsed, "search").unwrap_or_default(),
+            name,
+        })
+        .collect()
+}
+
+/// As linhas de spec do índice `content` como a página do projeto as mostra,
+/// pelo mesmo leitor de [`spec_lines`].
+#[must_use]
+pub fn project_rows(content: &str) -> Vec<ProjectRow> {
+    parsed_specs(content)
+        .into_iter()
+        .map(|(name, parsed)| ProjectRow {
+            created: text_of(&parsed, "created"),
+            updated: text_of(&parsed, "updated"),
+            phase: text_of(&parsed, "phase"),
+            branch: text_of(&parsed, "branch"),
+            goal: text_of(&parsed, "goal"),
+            url: text_of(&parsed, "url"),
+            titles: titles_of(&parsed),
+            name,
         })
         .collect()
 }
@@ -465,6 +534,37 @@ mod tests {
         for field in ["goal", "titles", "phase", "branch"] {
             assert!(bare.get(field).is_none(), "{field}: {bare}");
         }
+    }
+
+    /// A linha leva o endereço da última publicação da página que deu certo:
+    /// a que falhou porque a página foi apagada não o tira, e a página
+    /// publicada de novo num endereço novo passa a valer. Sem publicação que
+    /// deu certo, a linha fica sem endereço.
+    #[test]
+    fn the_index_line_points_at_the_last_page_that_was_published() {
+        let publish = |id: u64, hm: &str, ok: bool, url: &str| {
+            let draft = if ok {
+                json!({"page": "spec", "milestone": "round", "ok": true, "url": url})
+            } else {
+                json!({"page": "spec", "milestone": "round", "ok": false, "reason": "a página foi apagada"})
+            };
+            ev(id, hm, "publish", draft)
+        };
+        let url = |content: &str| parsed(&spec_line("teste", &parse_log(content)).unwrap()).get("url").cloned();
+        let failed_only = [spec(), publish(7, "09:00", false, "")].concat();
+        assert_eq!(url(&failed_only), None);
+        let first = [spec(), publish(7, "09:00", true, "https://claude.ai/a")].concat();
+        assert_eq!(url(&first), Some(json!("https://claude.ai/a")));
+        let deleted = [first.clone(), publish(8, "09:10", false, "")].concat();
+        assert_eq!(url(&deleted), Some(json!("https://claude.ai/a")), "a failed publish keeps the address");
+        let again = [deleted, publish(9, "09:20", true, "https://claude.ai/b")].concat();
+        assert_eq!(url(&again), Some(json!("https://claude.ai/b")), "the new address wins");
+        let line = spec_line("teste", &parse_log(&again)).unwrap();
+        let read = project_rows(&format!("{}\n{line}\n", project_line(None)));
+        assert_eq!(read[0].url.as_deref(), Some("https://claude.ai/b"));
+        assert_eq!(read[0].branch.as_deref(), Some("feature/teste"));
+        assert_eq!(read[0].created.as_deref(), Some(at("08:40").as_str()));
+        assert_eq!(read[0].updated.as_deref(), Some(at("09:20").as_str()));
     }
 
     /// O objetivo de uma spec cujo primeiro contexto tem `text`.

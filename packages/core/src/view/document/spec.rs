@@ -4,6 +4,13 @@
 //! combinado, especificação, critérios, ondas, revisão e QA, andamento,
 //! anotações e conversa, esta recolhida. Um bloco sem nada diz que está vazio.
 //!
+//! Cada onda mostra o estado dela, o commit que a fechou, o que o agente dela
+//! recebe e o pedido, recolhido: o que foi enviado, com o texto exato, ou,
+//! antes do envio, o que o binário montou para enviar.
+//!
+//! O painel de medição sai só dos eventos, mais a economia do rtk nos dias da
+//! spec, que chega pronta de quem roda o rtk.
+//!
 //! Entre o andamento e as anotações entra "O que o plano achou", montada com
 //! as anotações que a conferência do plano gravou, reconhecidas pelo rótulo
 //! do achado do plano: quem vai aprovar vê o que o plano encontrou sem
@@ -26,7 +33,7 @@ use serde_json::Value;
 
 use super::{Document, Field, Item, Meta, Node, Section, Table};
 use crate::domain::spec_events::{type_spec, Block, Hidden, Kind, SpecEvent, SpecLog, TYPES};
-use crate::domain::spec_state::approval_boundary;
+use crate::domain::spec_state::{approval_boundary, original_of};
 use crate::domain::survey;
 use crate::platform::i18n::{translate, Locale};
 
@@ -53,11 +60,40 @@ const LITERAL: &[&str] =
 /// a página continua sendo função só do que recebe.
 pub type WavePrompts = BTreeMap<u64, String>;
 
+/// Um dia da economia do rtk neste projeto, como o próprio rtk a conta.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RtkDay {
+    /// O dia, `2026-09-11`.
+    pub date: String,
+    /// Quantos comandos passaram pelo rtk nesse dia.
+    pub commands: u64,
+    /// Os tokens que a saída dos comandos teria sem o rtk.
+    pub input: u64,
+    /// Os tokens que o rtk tirou da saída.
+    pub saved: u64,
+}
+
+/// O que a página recebe pronto de quem lê o disco e roda o rtk.
+#[derive(Debug, Clone, Copy)]
+pub struct SpecInputs<'a> {
+    /// O pedido montado de cada onda.
+    pub prompts: &'a WavePrompts,
+    /// A economia do rtk no projeto, um dia por linha.
+    pub rtk: &'a [RtkDay],
+}
+
 /// A página da spec `spec`, com os rótulos no idioma `lang`, mostrando em cada
-/// onda o pedido que `prompts` traz para ela.
+/// onda o pedido que `prompts` traz para ela. O painel sai sem a economia do
+/// rtk; [`spec_page`] a recebe.
 #[must_use]
 pub fn spec_document(spec: &str, log: &SpecLog, prompts: &WavePrompts, lang: Locale) -> Document {
-    let page = Page::new(log, prompts, lang);
+    spec_page(spec, log, SpecInputs { prompts, rtk: &[] }, lang)
+}
+
+/// A página da spec `spec` com tudo o que `inputs` traz pronto.
+#[must_use]
+pub fn spec_page(spec: &str, log: &SpecLog, inputs: SpecInputs<'_>, lang: Locale) -> Document {
+    let page = Page::new(log, inputs, lang);
     let mut body = Vec::new();
     for block in Block::ALL {
         // O que o plano achou vem logo antes das anotações, e só quando há
@@ -79,6 +115,53 @@ pub fn spec_document(spec: &str, log: &SpecLog, prompts: &WavePrompts, lang: Loc
     }
 }
 
+/// Quantos registros a conversa da página mostra.
+#[must_use]
+pub fn conversation_len(doc: &Document) -> usize {
+    conversation(doc).map_or(0, |section| section.body.iter().filter(|n| matches!(n, Node::Item(_))).count())
+}
+
+/// Tira da página os `count` registros mais antigos da conversa e diz, no
+/// começo dela, quantos ficaram só no `.md`. Devolve quantos saíram. A página
+/// que passaria do tamanho que o claude.ai aceita é a única que perde algo.
+pub fn cut_oldest_conversation(doc: &mut Document, count: usize, lang: Locale) -> usize {
+    let Some(section) = conversation_mut(doc) else {
+        return 0;
+    };
+    let mut cut = 0;
+    section.body.retain(|node| {
+        if cut < count && matches!(node, Node::Item(_)) {
+            cut += 1;
+            false
+        } else {
+            true
+        }
+    });
+    if cut == 0 {
+        return 0;
+    }
+    let left = section.body.iter().filter(|n| matches!(n, Node::Item(_))).count();
+    section.collapsed = Some(translate("page.conversation.summary", lang).replace("{count}", &left.to_string()));
+    section
+        .body
+        .insert(0, Node::Paragraph(translate("page.conversation.cut", lang).replace("{count}", &cut.to_string())));
+    cut
+}
+
+fn conversation(doc: &Document) -> Option<&Section> {
+    doc.body.iter().find_map(|node| match node {
+        Node::Section(section) if section.anchor.as_deref() == Some(Block::Conversation.name()) => Some(section),
+        _ => None,
+    })
+}
+
+fn conversation_mut(doc: &mut Document) -> Option<&mut Section> {
+    doc.body.iter_mut().find_map(|node| match node {
+        Node::Section(section) if section.anchor.as_deref() == Some(Block::Conversation.name()) => Some(section),
+        _ => None,
+    })
+}
+
 /// A anotação que nasceu de um achado da conferência do plano: é a que leva o
 /// rótulo do achado, escrito pelo `plan` no idioma do projeto. O rótulo é
 /// reconhecido nos dois idiomas, para a página achar a anotação gravada antes
@@ -93,6 +176,7 @@ fn is_plan_finding(event: &SpecEvent) -> bool {
 struct Page<'a> {
     log: &'a SpecLog,
     prompts: &'a WavePrompts,
+    rtk: &'a [RtkDay],
     lang: Locale,
     codes: BTreeMap<u64, String>,
     visible: Vec<&'a SpecEvent>,
@@ -102,9 +186,17 @@ struct Page<'a> {
 }
 
 impl<'a> Page<'a> {
-    fn new(log: &'a SpecLog, prompts: &'a WavePrompts, lang: Locale) -> Self {
+    fn new(log: &'a SpecLog, inputs: SpecInputs<'a>, lang: Locale) -> Self {
         let approval = approval_boundary(log);
-        Self { log, prompts, lang, codes: log.codes(), visible: log.visible(), approval }
+        Self {
+            log,
+            prompts: inputs.prompts,
+            rtk: inputs.rtk,
+            lang,
+            codes: log.codes(),
+            visible: log.visible(),
+            approval,
+        }
     }
 
     fn t(&self, key: &str) -> &'static str {
@@ -239,39 +331,67 @@ impl<'a> Page<'a> {
 
     /// Uma parte por onda, em ordem de número, com a onda, as tarefas, os
     /// envios e os entregou dela; as skills vêm no fim.
+    ///
+    /// A onda leva o estado, o commit que a fechou e o que o agente dela
+    /// recebe. O pedido vem recolhido e literal, linha por linha: cada envio
+    /// mostra o texto exato que foi injetado; a onda ainda não enviada mostra
+    /// o pedido que o binário montou, porque é por esta página que a spec é
+    /// aprovada, e quem aprova tem de ver cada linha que o agente vai ler, as
+    /// instruções fixas incluídas.
     fn waves(&self) -> Vec<Node> {
         let events = self.of_block(Block::Waves);
         let numbers: BTreeSet<u64> = events.iter().filter_map(|e| e.wave()).collect();
+        let sends = self.of_type("send");
         let mut out = Vec::new();
         for n in numbers {
             out.push(Node::Heading {
                 level: 3,
                 text: self.t("page.wave.heading").replace("{n}", &n.to_string()),
             });
+            let sent: Vec<&SpecEvent> = sends.iter().copied().filter(|s| s.wave() == Some(n)).collect();
+            let last_wave_send = sent.iter().rev().find(|s| s.str_field("role") == Some("wave"));
+            let prompt = last_wave_send
+                .and_then(|s| s.str_field("text"))
+                .or_else(|| self.prompts.get(&n).map(String::as_str));
             for event in events.iter().filter(|e| e.wave() == Some(n)) {
                 let mut item = self.item(event, true, None);
                 if event.event_type == "wave" {
                     item.fields.push(self.field("page.field.wave_state", self.t(self.wave_state(n)).to_string()));
+                    let commits = self.wave_commits(n);
+                    if !commits.is_empty() {
+                        item.fields.push(self.field("page.field.wave_commit", commits));
+                    }
+                    if let Some(parts) = prompt.map(receives).filter(|p| !p.is_empty()) {
+                        item.fields.push(self.field("page.field.wave_receives", parts));
+                    }
+                }
+                if event.event_type == "send" {
+                    // O texto enviado vem logo abaixo, recolhido.
+                    let text = std::mem::take(&mut item.text);
+                    out.push(Node::Item(item));
+                    if !text.is_empty() {
+                        let role = event.str_field("role").map_or_else(String::new, |r| self.value_label(r));
+                        out.push(Node::Details {
+                            summary: self
+                                .t("page.wave.sent")
+                                .replace("{role}", &role)
+                                .replace("{lines}", &count_lines(&text).to_string()),
+                            body: vec![Node::Code(text)],
+                        });
+                    }
+                    continue;
                 }
                 out.push(Node::Item(item));
             }
-            // Enquanto a onda não foi despachada, o pedido montado aparece
-            // recolhido: é por esta página que a spec é aprovada, e quem
-            // aprova tem de ver cada linha que o agente vai ler, as
-            // instruções fixas incluídas. Depois do despacho quem manda é o
-            // registro do envio, logo acima, que mostra o pedido como foi
-            // injetado, com cada código virando link para o item.
-            let dispatched = self.of_type("send").iter().any(|s| s.wave() == Some(n));
-            if let Some(prompt) = self.prompts.get(&n).filter(|_| !dispatched) {
-                out.push(Node::Section(Section {
-                    anchor: None,
-                    heading: self.t("page.wave.prompt").replace("{n}", &n.to_string()),
-                    collapsed: Some(
-                        self.t("page.wave.prompt.summary")
-                            .replace("{lines}", &prompt.lines().count().to_string()),
-                    ),
+            if sent.is_empty()
+                && let Some(prompt) = self.prompts.get(&n)
+            {
+                let heading = self.t("page.wave.prompt").replace("{n}", &n.to_string());
+                let lines = self.t("page.wave.prompt.summary").replace("{lines}", &count_lines(prompt).to_string());
+                out.push(Node::Details {
+                    summary: format!("{heading} · {lines}"),
                     body: vec![Node::Code(prompt.clone())],
-                }));
+                });
             }
         }
         let skills: Vec<&SpecEvent> = events.iter().copied().filter(|e| e.wave().is_none()).collect();
@@ -282,6 +402,16 @@ impl<'a> Page<'a> {
         out
     }
 
+    /// Os commits que fecharam a onda `n`: o `sha` e o código de cada um.
+    fn wave_commits(&self, n: u64) -> String {
+        join(
+            self.of_type("commit")
+                .into_iter()
+                .filter(|c| c.ints("waves").contains(&n))
+                .map(|c| format!("{} ({})", code_span(c.str_field("sha").unwrap_or_default()), self.code(c.id))),
+        )
+    }
+
     /// Sem envio, a onda está por fazer; com envio e sem commit, em execução;
     /// com commit, pronta; com veredito aprovado, revisada.
     fn wave_state(&self, n: u64) -> &'static str {
@@ -289,7 +419,7 @@ impl<'a> Page<'a> {
             .of_type("verdict")
             .iter()
             .any(|v| v.wave() == Some(n) && v.str_field("result") == Some("approved"));
-        let committed = self.of_type("commit").iter().any(|c| c.ints("waves").contains(&n));
+        let committed = self.wave_committed(n);
         let sent = self.of_type("send").iter().any(|s| s.wave() == Some(n));
         if reviewed {
             "page.value.wave_reviewed"
@@ -302,32 +432,20 @@ impl<'a> Page<'a> {
         }
     }
 
-    /// O painel: uma linha por medida que tem dado.
+    /// A onda `n` tem commit.
+    fn wave_committed(&self, n: u64) -> bool {
+        self.of_type("commit").iter().any(|c| c.ints("waves").contains(&n))
+    }
+
+    /// O painel: uma linha por medida que tem dado, e depois o tamanho do
+    /// pedido de cada onda ao lado do que a revisão achou dela.
     fn metrics(&self) -> Vec<Node> {
         let count = |events: &[&SpecEvent], field: &str, word: &str| {
-            events.iter().filter(|e| e.str_field(field) == Some(word)).count().to_string()
+            events.iter().filter(|e| e.str_field(field) == Some(word)).count()
         };
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut row = |key: &str, value: String| rows.push(vec![self.t(key).to_string(), value]);
 
-        let calls = self.of_type("call");
-        if !calls.is_empty() {
-            row(
-                "page.metrics.calls",
-                self.t("page.metrics.calls.value")
-                    .replace("{count}", &calls.len().to_string())
-                    .replace("{refused}", &count(&calls, "result", "refused")),
-            );
-        }
-        let hooks = self.of_type("hook");
-        if !hooks.is_empty() {
-            row(
-                "page.metrics.hooks",
-                self.t("page.metrics.hooks.value")
-                    .replace("{blocks}", &count(&hooks, "action", "block"))
-                    .replace("{warns}", &count(&hooks, "action", "warn")),
-            );
-        }
         let injections = self.of_type("injection");
         if !injections.is_empty() {
             let chars: u64 = injections.iter().filter_map(|e| e.int("chars")).sum();
@@ -337,6 +455,86 @@ impl<'a> Page<'a> {
                     .replace("{chars}", &chars.to_string())
                     .replace("{tokens}", &(chars / 4).to_string()),
             );
+        }
+        let hooks = self.of_type("hook");
+        if !hooks.is_empty() {
+            let names: BTreeSet<&str> = hooks.iter().filter_map(|e| e.str_field("hook")).collect();
+            let hook_value = |events: &[&SpecEvent]| {
+                self.t("page.metrics.hooks.value")
+                    .replace("{blocks}", &count(events, "action", "block").to_string())
+                    .replace("{warns}", &count(events, "action", "warn").to_string())
+            };
+            let by_hook = names
+                .into_iter()
+                .map(|name| {
+                    let of: Vec<&SpecEvent> =
+                        hooks.iter().copied().filter(|e| e.str_field("hook") == Some(name)).collect();
+                    format!("{}: {}", code_span(name), hook_value(&of))
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            row("page.metrics.hooks", format!("{} — {by_hook}", hook_value(&hooks)));
+        }
+        let calls = self.of_type("call");
+        if !calls.is_empty() {
+            let mut by_command: BTreeMap<&str, usize> = BTreeMap::new();
+            for call in &calls {
+                *by_command.entry(call.str_field("command").unwrap_or("?")).or_default() += 1;
+            }
+            let done = self.of_type("wave").iter().filter_map(|w| w.wave()).filter(|n| self.wave_committed(*n)).count();
+            row(
+                "page.metrics.calls",
+                format!(
+                    "{} — {}",
+                    self.t("page.metrics.calls.value")
+                        .replace("{count}", &calls.len().to_string())
+                        .replace("{refused}", &count(&calls, "result", "refused").to_string())
+                        .replace("{done}", &done.to_string()),
+                    join(by_command.into_iter().map(|(command, n)| format!("{} {n}", code_span(command)))),
+                ),
+            );
+        }
+        if let Some(phases) = self.phase_times() {
+            row("page.metrics.phases", phases);
+        }
+        let verdicts = self.of_type("verdict");
+        if !verdicts.is_empty() {
+            let rejected: BTreeSet<u64> = verdicts
+                .iter()
+                .filter(|v| v.str_field("result") == Some("rejected"))
+                .filter_map(|v| v.wave())
+                .collect();
+            let mut value = self
+                .t("page.metrics.verdicts.value")
+                .replace("{approved}", &count(&verdicts, "result", "approved").to_string())
+                .replace("{rejected}", &count(&verdicts, "result", "rejected").to_string());
+            if !rejected.is_empty() {
+                value.push_str(
+                    &self
+                        .t("page.metrics.rework")
+                        .replace("{waves}", &join(rejected.iter().map(u64::to_string))),
+                );
+            }
+            row("page.metrics.verdicts", value);
+        }
+        // Os pontos contam pela mesma leitura do levantamento: o ponto revisto
+        // e fechado pela primeira versão aparece fechado aqui e no `grill`.
+        let points = self.of_type("point");
+        if !points.is_empty() {
+            let open = survey::open_points(self.log).len();
+            let closed = survey::closed_points(self.log).len();
+            row(
+                "page.metrics.points",
+                self.t("page.metrics.points.value")
+                    .replace("{open}", &open.to_string())
+                    .replace("{closed}", &closed.to_string()),
+            );
+            let reminders: usize = points
+                .iter()
+                .filter_map(|p| p.fields.get("reminders").and_then(Value::as_array))
+                .map(Vec::len)
+                .sum();
+            row("page.metrics.reminders", self.t("page.metrics.reminders.value").replace("{count}", &reminders.to_string()));
         }
         let sends = self.of_type("send");
         if !sends.is_empty() {
@@ -348,37 +546,119 @@ impl<'a> Page<'a> {
                     .replace("{lines}", &largest.to_string()),
             );
         }
-        let verdicts = self.of_type("verdict");
-        if !verdicts.is_empty() {
-            row(
-                "page.metrics.verdicts",
-                self.t("page.metrics.verdicts.value")
-                    .replace("{approved}", &count(&verdicts, "result", "approved"))
-                    .replace("{rejected}", &count(&verdicts, "result", "rejected")),
-            );
-        }
-        // Os pontos contam pela mesma leitura do levantamento: o ponto revisto
-        // e fechado pela primeira versão aparece fechado aqui e no `grill`.
-        if !self.of_type("point").is_empty() {
-            let open = survey::open_points(self.log).len();
-            let closed = survey::closed_points(self.log).len();
-            row(
-                "page.metrics.points",
-                self.t("page.metrics.points.value")
-                    .replace("{open}", &open.to_string())
-                    .replace("{closed}", &closed.to_string()),
-            );
+        if let Some(rtk) = self.rtk_savings() {
+            row("page.metrics.rtk", rtk);
         }
         if rows.is_empty() {
             return Vec::new();
         }
-        vec![Node::Table(Table {
+        let mut out = vec![Node::Table(Table {
             headers: vec![
                 self.t("page.metrics.col.measure").to_string(),
                 self.t("page.metrics.col.value").to_string(),
             ],
             rows,
-        })]
+        })];
+        if let Some(table) = self.size_against_review(&sends, &verdicts) {
+            out.push(self.heading("page.metrics.by_wave"));
+            out.push(table);
+        }
+        out
+    }
+
+    /// Para cada onda enviada ao agente dela: as linhas do último pedido,
+    /// quantas vezes a revisão a reprovou e o resultado da última revisão.
+    fn size_against_review(&self, sends: &[&SpecEvent], verdicts: &[&SpecEvent]) -> Option<Node> {
+        let mut last_lines: BTreeMap<u64, u64> = BTreeMap::new();
+        for send in sends.iter().filter(|s| s.str_field("role") == Some("wave")) {
+            if let (Some(n), Some(lines)) = (send.wave(), send.int("lines")) {
+                last_lines.insert(n, lines);
+            }
+        }
+        if last_lines.is_empty() {
+            return None;
+        }
+        let rows = last_lines
+            .into_iter()
+            .map(|(n, lines)| {
+                let of: Vec<&SpecEvent> = verdicts.iter().copied().filter(|v| v.wave() == Some(n)).collect();
+                let rejected = of.iter().filter(|v| v.str_field("result") == Some("rejected")).count();
+                let last = of
+                    .last()
+                    .and_then(|v| v.str_field("result"))
+                    .map_or_else(|| "—".to_string(), |r| self.value_label(r));
+                vec![n.to_string(), lines.to_string(), rejected.to_string(), last]
+            })
+            .collect();
+        Some(Node::Table(Table {
+            headers: ["page.metrics.col.wave", "page.metrics.col.lines", "page.metrics.col.rejected", "page.metrics.col.last"]
+                .iter()
+                .map(|k| self.t(k).to_string())
+                .collect(),
+            rows,
+        }))
+    }
+
+    /// O tempo que a spec passou em cada fase, na ordem em que as fases
+    /// apareceram. Cada fase vai do estado que a abriu ao estado seguinte que
+    /// mudou a fase; a fase atual vai até o último evento da spec. Um estado
+    /// revisto conta do lugar e da hora da primeira versão dele, como na
+    /// leitura do estado.
+    fn phase_times(&self) -> Option<String> {
+        let mut states: Vec<(u64, &SpecEvent)> = self
+            .of_type("state")
+            .into_iter()
+            .map(|state| (original_of(self.log, state), state))
+            .collect();
+        states.sort_by_key(|(first, state)| (*first, state.id));
+        let mut spans: Vec<(&str, &str)> = Vec::new();
+        for (first, state) in states {
+            let Some(phase) = state.str_field("phase") else {
+                continue;
+            };
+            if spans.last().is_none_or(|(current, _)| *current != phase) {
+                let at = self.log.get(first).map_or_else(|| state.at(), SpecEvent::at);
+                spans.push((phase, at));
+            }
+        }
+        let end = self.log.events.last()?.at();
+        let mut totals: Vec<(&str, i64)> = Vec::new();
+        for (i, (phase, from)) in spans.iter().enumerate() {
+            let to = spans.get(i + 1).map_or(end, |(_, at)| *at);
+            let secs = seconds_between(from, to)?;
+            match totals.iter_mut().find(|(p, _)| p == phase) {
+                Some((_, total)) => *total += secs,
+                None => totals.push((phase, secs)),
+            }
+        }
+        (!totals.is_empty())
+            .then(|| join(totals.into_iter().map(|(phase, secs)| format!("{} {}", self.phase(phase), duration(secs)))))
+    }
+
+    /// A economia do rtk nos dias em que a spec teve eventos, somada dos
+    /// números que o próprio rtk dá, com o primeiro e o último dia que
+    /// contaram. Sem comando nenhum nesses dias, nada.
+    fn rtk_savings(&self) -> Option<String> {
+        let from = self.log.events.first()?.at().get(..10)?;
+        let to = self.log.events.last()?.at().get(..10)?;
+        let days: Vec<&RtkDay> =
+            self.rtk.iter().filter(|d| d.date.as_str() >= from && d.date.as_str() <= to).collect();
+        let commands: u64 = days.iter().map(|d| d.commands).sum();
+        if commands == 0 {
+            return None;
+        }
+        let input: u64 = days.iter().map(|d| d.input).sum();
+        let saved: u64 = days.iter().map(|d| d.saved).sum();
+        let pct = (saved * 100 + input / 2).checked_div(input).unwrap_or(0);
+        let counted: Vec<&str> = days.iter().filter(|d| d.commands > 0).map(|d| d.date.as_str()).collect();
+        Some(
+            self.t("page.metrics.rtk.value")
+                .replace("{commands}", &commands.to_string())
+                .replace("{saved}", &saved.to_string())
+                .replace("{pct}", &pct.to_string())
+                .replace("{from}", counted.iter().min().copied().unwrap_or(from))
+                .replace("{to}", counted.iter().max().copied().unwrap_or(to)),
+        )
     }
 
     /// A conversa, em ordem de número: as mensagens, as respostas, o que os
@@ -613,10 +893,51 @@ fn in_the_heading(event_type: &str, field: &str) -> bool {
     matches!((event_type, field), ("wave", "n") | ("task" | "send" | "delivered", "wave"))
 }
 
+/// O que o agente de uma onda recebe, lido do próprio pedido: cada parte, com
+/// quantos itens ela traz, na ordem em que o pedido as escreve.
+fn receives(prompt: &str) -> String {
+    let mut parts: Vec<(String, usize)> = Vec::new();
+    for line in prompt.lines() {
+        if let Some(title) = line.strip_prefix("## ") {
+            parts.push((title.trim().to_string(), 0));
+        } else if line.starts_with("- ")
+            && let Some((_, count)) = parts.last_mut()
+        {
+            *count += 1;
+        }
+    }
+    join(parts.into_iter().filter(|(_, n)| *n > 0).map(|(title, n)| format!("{title} ({n})")))
+}
+
+/// Quantas linhas um texto tem; a última conta mesmo sem quebra no fim.
+fn count_lines(text: &str) -> usize {
+    text.lines().count()
+}
+
 /// A hora que o evento gravou, até o minuto: "2026-09-11 21:03".
 fn when(event: &SpecEvent) -> Option<String> {
     let at = event.at();
     (!at.is_empty()).then(|| at.get(..16).unwrap_or(at).replace('T', " "))
+}
+
+/// Os segundos entre duas horas gravadas com o fuso; `None` se uma delas não
+/// se lê.
+fn seconds_between(from: &str, to: &str) -> Option<i64> {
+    let from = chrono::DateTime::parse_from_rfc3339(from).ok()?;
+    let to = chrono::DateTime::parse_from_rfc3339(to).ok()?;
+    Some((to - from).num_seconds().max(0))
+}
+
+/// Uma duração curta de ler: "< 1 min", "35 min", "2 h 05 min",
+/// "3 d 4 h".
+fn duration(secs: i64) -> String {
+    let minutes = secs / 60;
+    match minutes {
+        0 => "< 1 min".to_string(),
+        1..=59 => format!("{minutes} min"),
+        60..=1439 => format!("{} h {:02} min", minutes / 60, minutes % 60),
+        _ => format!("{} d {} h", minutes / 1440, minutes % 1440 / 60),
+    }
 }
 
 fn ints(value: &Value) -> Vec<u64> {
@@ -932,6 +1253,172 @@ mod tests {
         );
     }
 
+    fn field<'a>(item: &'a Item, label: &str) -> Option<&'a str> {
+        item.fields.iter().find(|f| f.label == label).map(|f| f.value.as_str())
+    }
+
+    /// Cada onda mostra o estado, o commit que a fechou e o que o agente
+    /// recebe, lido do próprio pedido. A onda enviada traz o texto exato do
+    /// envio recolhido logo abaixo dele; a que ainda não foi enviada traz,
+    /// recolhido, o pedido que o binário montou.
+    #[test]
+    fn each_wave_shows_its_state_commit_what_it_receives_and_the_request() {
+        let sent = "# s — onda 1\n\n**O que é isto.** A lista.\n\n## Especificação\n\n- MSTD-CTX-0001 (contexto) — `ler`\n\n## Critérios\n\n- MSTD-CRIT-0001 (critério) — `ler`\n- MSTD-CRIT-0002 (critério) — `ler`\n";
+        let content = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "wave", ",\"n\":1,\"text\":\"Um.\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"),
+            line(3, "wave", ",\"n\":2,\"text\":\"Dois.\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"),
+            line(4, "send", &format!(",\"author\":\"binary\",\"wave\":1,\"role\":\"wave\",\"text\":{},\"lines\":12,\"chars\":200,\"items\":[2],\"mustard\":\"0.2.0\"", serde_json::to_string(sent).unwrap())),
+            line(5, "commit", ",\"author\":\"binary\",\"sha\":\"5e0c7a91\",\"title\":\"t\",\"waves\":[1],\"files\":[\"a.rs\"],\"repo\":\".\""),
+        ]
+        .concat();
+        let mut prompts = WavePrompts::new();
+        prompts.insert(1, "não aparece: a onda já foi enviada".into());
+        prompts.insert(2, "# s — onda 2\n\n## Combinado\n\n- MSTD-RULE-0001 (regra) — `ler`\n".into());
+        let doc = spec_document("s", &parse_log(&content), &prompts, Locale::PtBr);
+        let waves = sections(&doc)[5];
+
+        let one = items(waves).into_iter().find(|i| i.code == "MSTD-WAVE-0001").unwrap();
+        assert_eq!(field(one, "Estado da onda"), Some("pronta"));
+        assert_eq!(field(one, "Commit"), Some("`5e0c7a91` (MSTD-COMMIT-0001)"));
+        assert_eq!(field(one, "Recebe"), Some("Especificação (1), Critérios (2)"), "{one:?}");
+        let send = items(waves).into_iter().find(|i| i.code == "MSTD-SEND-0001").unwrap();
+        assert!(send.text.is_empty(), "the sent text goes in the collapsed part");
+        let position = waves.body.iter().position(|n| matches!(n, Node::Item(i) if i.code == "MSTD-SEND-0001")).unwrap();
+        assert_eq!(
+            waves.body[position + 1],
+            Node::Details {
+                summary: "Pedido enviado (agente de onda) · 12 linhas, como o agente o recebeu".into(),
+                body: vec![Node::Code(sent.trim().into())],
+            }
+        );
+        assert!(
+            !waves.body.iter().any(|n| matches!(n, Node::Details { body, .. } if body == &[Node::Code("não aparece: a onda já foi enviada".into())])),
+            "a sent wave does not show the assembled request again"
+        );
+
+        let two = items(waves).into_iter().find(|i| i.code == "MSTD-WAVE-0002").unwrap();
+        assert_eq!(field(two, "Estado da onda"), Some("a fazer"));
+        assert_eq!(field(two, "Commit"), None);
+        assert_eq!(field(two, "Recebe"), Some("Combinado (1)"));
+        let prompt = waves.body.last().unwrap();
+        let Node::Details { summary, body } = prompt else { panic!("{prompt:?}") };
+        assert_eq!(summary, "O pedido da onda 2 · 5 linhas, como o agente as recebe");
+        assert_eq!(body, &[Node::Code(prompts[&2].clone())]);
+    }
+
+    /// O painel sai dos eventos: o texto colocado, os bloqueios de cada
+    /// gancho, as chamadas dos passos contra as ondas prontas, o tempo de cada
+    /// fase, o retrabalho, os lembretes, o tamanho de cada pedido contra a
+    /// revisão e a economia do rtk nos dias da spec.
+    #[test]
+    fn the_panel_measures_hooks_steps_phases_rework_reminders_sizes_and_rtk() {
+        let at = |id: u64, when: &str, event_type: &str, extra: &str| {
+            format!("{{\"v\":1,\"id\":{id},\"at\":\"{when}\",\"type\":\"{event_type}\",\"author\":\"binary\"{extra}}}\n")
+        };
+        let content = [
+            at(1, "2026-09-11T08:00:00-03:00", "state", ",\"phase\":\"survey\""),
+            at(2, "2026-09-11T08:00:30-03:00", "injection", ",\"hook\":\"session_start_inject\",\"chars\":400,\"text\":\"t\""),
+            at(3, "2026-09-11T08:01:00-03:00", "hook", ",\"hook\":\"command_guard\",\"action\":\"block\",\"tool\":\"Bash\",\"reason\":\"r\""),
+            at(4, "2026-09-11T08:02:00-03:00", "hook", ",\"hook\":\"command_guard\",\"action\":\"block\",\"tool\":\"Bash\",\"reason\":\"r\""),
+            at(5, "2026-09-11T08:03:00-03:00", "hook", ",\"hook\":\"write_gate\",\"action\":\"warn\",\"tool\":\"Edit\",\"reason\":\"r\""),
+            at(6, "2026-09-11T08:04:00-03:00", "point", ",\"author\":\"assistant\",\"block\":\"b\",\"gap\":\"g\",\"from\":\"gap\",\"status\":\"open\",\"facts\":[{\"text\":\"f\",\"source\":\"a.rs:1\"}],\"reminders\":[1,2],\"origin\":1"),
+            at(7, "2026-09-11T08:05:00-03:00", "call", ",\"command\":\"grill\",\"ms\":5,\"result\":\"ok\""),
+            at(8, "2026-09-11T10:05:00-03:00", "state", ",\"phase\":\"plan\""),
+            at(9, "2026-09-11T10:06:00-03:00", "call", ",\"command\":\"plan\",\"ms\":5,\"result\":\"refused\""),
+            at(10, "2026-09-11T10:35:00-03:00", "call", ",\"command\":\"plan\",\"ms\":5,\"result\":\"ok\""),
+            at(11, "2026-09-11T10:35:00-03:00", "wave", ",\"author\":\"assistant\",\"n\":1,\"text\":\"w\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"),
+            at(12, "2026-09-11T10:36:00-03:00", "state", ",\"author\":\"user\",\"phase\":\"approved\",\"witness\":{\"question\":\"q\",\"answer\":\"a\"}"),
+            at(13, "2026-09-11T10:36:00-03:00", "state", ",\"phase\":\"running\""),
+            at(14, "2026-09-11T10:37:00-03:00", "send", ",\"wave\":1,\"role\":\"wave\",\"text\":\"p\",\"lines\":300,\"chars\":9,\"items\":[11],\"mustard\":\"0\""),
+            at(15, "2026-09-12T11:00:00-03:00", "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"rejected\",\"text\":\"x\",\"criteria\":[]"),
+            at(16, "2026-09-12T11:30:00-03:00", "send", ",\"wave\":1,\"role\":\"wave\",\"text\":\"p\",\"lines\":320,\"chars\":9,\"items\":[11],\"mustard\":\"0\""),
+            at(17, "2026-09-12T12:00:00-03:00", "commit", ",\"sha\":\"abc\",\"title\":\"t\",\"waves\":[1],\"files\":[],\"repo\":\".\""),
+            at(18, "2026-09-12T13:00:00-03:00", "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"approved\",\"text\":\"x\",\"criteria\":[]"),
+            at(19, "2026-09-13T12:36:00-03:00", "call", ",\"command\":\"round\",\"ms\":5,\"result\":\"ok\""),
+        ]
+        .concat();
+        let day = |date: &str, commands: u64, input: u64, saved: u64| RtkDay { date: date.into(), commands, input, saved };
+        let rtk = [
+            day("2026-09-10", 99, 9_999, 9_999),
+            day("2026-09-11", 3, 1_000, 300),
+            day("2026-09-13", 1, 1_000, 100),
+            day("2026-09-14", 99, 9_999, 9_999),
+        ];
+        let prompts = WavePrompts::new();
+        let doc = spec_page("s", &parse_log(&content), SpecInputs { prompts: &prompts, rtk: &rtk }, Locale::PtBr);
+        let panel = sections(&doc)[1];
+        let Node::Table(table) = &panel.body[0] else { panic!("{panel:?}") };
+        let rows: BTreeMap<&str, &str> = table.rows.iter().map(|r| (r[0].as_str(), r[1].as_str())).collect();
+        assert_eq!(rows["Texto colocado pelos ganchos"], "400 caracteres, cerca de 100 tokens");
+        assert_eq!(
+            rows["Bloqueios por gancho"],
+            "2 bloqueios, 1 avisos — `command_guard`: 2 bloqueios, 0 avisos; `write_gate`: 0 bloqueios, 1 avisos"
+        );
+        assert_eq!(
+            rows["Passos do fluxo contra trabalho"],
+            "4 chamadas, 1 recusadas, para 1 ondas prontas — `grill` 1, `plan` 2, `round` 1"
+        );
+        assert_eq!(rows["Tempo por fase"], "levantamento 2 h 05 min, plano 31 min, aprovada < 1 min, em execução 2 d 2 h");
+        assert_eq!(rows["Revisões"], "1 aprovadas, 1 reprovadas; voltaram da revisão as ondas 1");
+        assert_eq!(rows["Lembretes que apareceram"], "2 mensagens antigas lembradas nos pontos");
+        assert_eq!(rows["Pedidos enviados aos agentes"], "2, o maior com 320 linhas");
+        assert_eq!(rows["Economia do rtk"], "4 comandos, 400 tokens a menos na saída (20%), de 2026-09-11 a 2026-09-13");
+        assert_eq!(panel.body[1], Node::Heading { level: 3, text: "Tamanho do pedido e revisão, por onda".into() });
+        let Node::Table(by_wave) = &panel.body[2] else { panic!("{panel:?}") };
+        assert_eq!(by_wave.headers, ["Onda", "Linhas do pedido", "Reprovações", "Última revisão"]);
+        assert_eq!(by_wave.rows, [["1", "320", "1", "aprovada"]]);
+
+        // Sem comando do rtk nos dias da spec, a linha não aparece.
+        let quiet = [day("2026-09-10", 5, 10, 1)];
+        let doc = spec_page("s", &parse_log(&content), SpecInputs { prompts: &prompts, rtk: &quiet }, Locale::PtBr);
+        let Node::Table(table) = &sections(&doc)[1].body[0] else { panic!() };
+        assert!(table.rows.iter().all(|r| r[0] != "Economia do rtk"), "{table:?}");
+    }
+
+    /// Um estado revisto depois conta do lugar e da hora da primeira versão:
+    /// corrigir a branch do primeiro estado não muda o tempo das fases.
+    #[test]
+    fn a_revised_state_keeps_the_time_of_its_first_version() {
+        let at = |id: u64, when: &str, extra: &str| {
+            format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-11T{when}:00-03:00\",\"type\":\"state\",\"author\":\"binary\"{extra}}}\n")
+        };
+        let content = [
+            at(1, "08:00", ",\"phase\":\"survey\""),
+            at(2, "09:00", ",\"phase\":\"plan\""),
+            at(3, "09:30", ",\"phase\":\"survey\",\"branch\":\"feature/x\",\"replaces\":1"),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
+        let Node::Table(table) = &sections(&doc)[1].body[0] else { panic!() };
+        let phases = table.rows.iter().find(|r| r[0] == "Tempo por fase").map(|r| r[1].as_str());
+        assert_eq!(phases, Some("levantamento 1 h 00 min, plano 30 min"));
+    }
+
+    /// Cortar a conversa tira os registros mais antigos, diz quantos ficaram
+    /// só no `.md` e acerta a contagem do resumo; o resto da página fica igual.
+    #[test]
+    fn cutting_the_conversation_drops_the_oldest_entries_and_says_how_many() {
+        let content = (1..=5)
+            .map(|id| line(id, "message", &format!(",\"author\":\"user\",\"text\":\"mensagem {id}\"")))
+            .collect::<String>();
+        let full = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
+        assert_eq!(conversation_len(&full), 5);
+        let mut doc = full.clone();
+        assert_eq!(cut_oldest_conversation(&mut doc, 2, Locale::PtBr), 2);
+        assert_eq!(conversation_len(&doc), 3);
+        let talk = sections(&doc)[9];
+        assert_eq!(talk.collapsed.as_deref(), Some("3 registros"));
+        let Node::Paragraph(said) = &talk.body[0] else { panic!("{talk:?}") };
+        assert!(said.starts_with("Os 2 registros mais antigos da conversa ficaram só no `spec.md`"), "{said}");
+        let texts: Vec<&str> = items(talk).iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["mensagem 3", "mensagem 4", "mensagem 5"]);
+        assert_eq!(doc.body[..9], full.body[..9], "only the conversation changes");
+        let mut none = full.clone();
+        assert_eq!(cut_oldest_conversation(&mut none, 0, Locale::PtBr), 0);
+        assert_eq!(none, full);
+    }
+
     /// Todo rótulo que a página usa existe nos dois idiomas: blocos, tipos,
     /// campos, valores, fases e autores.
     #[test]
@@ -1003,6 +1490,43 @@ mod tests {
             "page.metrics.verdicts.value",
             "page.metrics.points",
             "page.metrics.points.value",
+            "page.metrics.phases",
+            "page.metrics.rework",
+            "page.metrics.reminders",
+            "page.metrics.reminders.value",
+            "page.metrics.rtk",
+            "page.metrics.rtk.value",
+            "page.metrics.by_wave",
+            "page.metrics.col.wave",
+            "page.metrics.col.lines",
+            "page.metrics.col.rejected",
+            "page.metrics.col.last",
+            "page.field.wave_commit",
+            "page.field.wave_receives",
+            "page.wave.prompt",
+            "page.wave.prompt.summary",
+            "page.wave.sent",
+            "page.conversation.cut",
+            "page.withheld",
+            "page.withheld_found",
+            "page.too_big",
+            "project.kind",
+            "project.specs",
+            "project.stages",
+            "project.no_phase",
+            "project.col.spec",
+            "project.col.state",
+            "project.col.branch",
+            "project.col.goal",
+            "project.col.created",
+            "project.col.updated",
+            "project.stalled",
+            "project.stalled.line",
+            "project.titles",
+            "project.titles.summary",
+            "project.meta.specs",
+            "project.meta.today",
+            "project.footer",
         ] {
             keys.push(key.to_string());
         }

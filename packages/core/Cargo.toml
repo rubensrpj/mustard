@@ -36,6 +36,10 @@ chrono = { workspace = true }
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.
 tempfile = { workspace = true }
+# The YAML reader of `tests/workflows.rs`, which checks what the verification
+# and the release workflows promise. Pure Rust, YAML 1.2 (so `on:` stays a
+# key), test-only; the encoding feature is off because the workflows are UTF-8.
+yaml-rust2 = { version = "0.13", default-features = false }
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
 # unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.

@@ -1,7 +1,7 @@
 //! O motor de página do Mustard: o único lugar que escreve uma página HTML.
 //!
-//! A página de uma spec, uma página avulsa escrita em markdown e
-//! os relatórios da face `run` saem daqui, no layout padrão do Mustard (v4,
+//! A página de uma spec, a do projeto, uma página avulsa escrita em markdown
+//! e os relatórios da face `run` saem daqui, no layout padrão do Mustard (v4,
 //! mostarda e carvão), com as fontes Geist e Geist Mono buscadas do Google
 //! Fonts. Nenhuma fonte vai gravada dentro da página; quem abre o arquivo sem
 //! internet vê a fonte do sistema.
@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 pub mod markdown;
 mod render;
 
-pub use render::{markdown_html, Render};
+pub use render::Render;
 
 /// Folha de estilo do layout padrão do Mustard (v4, mostarda e carvão), a
 /// mesma para toda página. Mora em `layout.css` para ser lida e revisada como
@@ -125,13 +125,6 @@ impl Report {
         self
     }
 
-    /// Append a `.card` whose body is a `<pre>` block of escaped text — used
-    /// to embed the raw JSON projection alongside the rendered view.
-    pub fn pre_section(&mut self, heading: &str, text: &str) -> &mut Self {
-        let inner = format!("<pre>{}</pre>", escape(text));
-        self.section(heading, &inner)
-    }
-
     /// Render the finished standalone HTML document.
     #[must_use]
     pub fn render(&self) -> String {
@@ -188,16 +181,27 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
 /// Os endereços de fora que uma página do motor carrega: só o das fontes.
 #[cfg(test)]
 pub(crate) fn assert_only_the_fonts_are_external(html: &str) {
+    assert_only_the_fonts_are_external_but(html, "https://fonts.googleapis.com/");
+    assert_eq!(html.matches("href=\"https://").count(), 1, "only the fonts link leaves the page");
+}
+
+/// Como [`assert_only_the_fonts_are_external`], mas aceitando também os links
+/// que começam por `links`, como os das páginas publicadas das specs: um link
+/// leva quem lê para outra página, e não é nada que a página carregue.
+#[cfg(test)]
+pub(crate) fn assert_only_the_fonts_are_external_but(html: &str, links: &str) {
     for (at, _) in html.match_indices("://") {
         let start = html[..at].rfind('"').map_or(0, |q| q + 1);
+        let address = &html[start..];
+        let link = address.starts_with(links) && html[..start].ends_with("<a href=\"");
         assert!(
-            html[start..].starts_with("https://fonts.googleapis.com/"),
+            address.starts_with("https://fonts.googleapis.com/") || link,
             "an external address other than the fonts: {}",
             &html[start..(at + 40).min(html.len())]
         );
     }
     assert!(!html.contains("src="), "the page loads a script or an image");
-    assert_eq!(html.matches("href=\"https://").count(), 1, "only the fonts link leaves the page");
+    assert_eq!(html.matches("<link ").count(), 1, "only the fonts are loaded");
 }
 
 #[cfg(test)]
@@ -212,7 +216,7 @@ mod tests {
     #[test]
     fn report_renders_standalone_document() {
         let mut r = Report::new("QA", "spec: demo");
-        r.pre_section("Raw", "{\"ok\":true}");
+        r.section("Raw", "<p>ok</p>");
         let html = r.render();
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<style>"));
@@ -308,6 +312,35 @@ mod tests {
             "td.where: {}",
             place.1
         );
+
+        // A tabela larga rola dentro da própria moldura, e nenhuma palavra
+        // dela quebra no meio: nem o texto das células, nem o código, que
+        // continua sem quebra também numa tabela dentro de um item.
+        let rule = |selector: &str| {
+            rules
+                .iter()
+                .find(|(sel, _)| sel == selector)
+                .map(|(_, decls)| decls.as_str())
+                .unwrap_or_else(|| panic!("regra {selector} ausente"))
+        };
+        let frame = rule(".table");
+        assert!(frame.contains("overflow-x:auto") && frame.contains("max-width:100%"), ".table: {frame}");
+        let cells = rule("th,td");
+        assert!(cells.contains("overflow-wrap:normal") && cells.contains("word-break:normal"), "th,td: {cells}");
+        let table_code = rule(".table td code,.table th code,.table a");
+        assert!(table_code.contains("white-space:nowrap") && table_code.contains("overflow-wrap:normal"), "{table_code}");
+        for (selector, decls) in &rules {
+            let in_table = selector.split(',').any(|s| s.split_whitespace().any(|part| matches!(part, "td" | "th" | "table")));
+            assert!(
+                !(in_table && (decls.contains("word-break:break-all") || decls.contains("overflow-wrap:break-word"))),
+                "a table rule breaks words: {selector}{{{decls}}}"
+            );
+        }
+        // Uma tabela dentro de um item não alarga a página: a coluna da grade
+        // dos itens e o próprio item podem encolher.
+        assert!(rule("dl").contains("grid-template-columns:minmax(0,1fr)"), "dl: {}", rule("dl"));
+        assert!(rule("dl>div").contains("min-width:0"), "dl>div: {}", rule("dl>div"));
+        assert!(rule("pre").contains("overflow-x:auto"), "pre: {}", rule("pre"));
 
         // Nenhum li (nem pseudo-elemento dele) vira grid.
         for (selector, decls) in &rules {

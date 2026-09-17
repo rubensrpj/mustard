@@ -210,6 +210,23 @@ pub fn read(root: &Path) -> Vec<index::IndexLine> {
     read_shared(&paths.spec_index_path()).map(|content| index::spec_lines(&content)).unwrap_or_default()
 }
 
+/// As linhas de spec do índice do projeto `root` como a página do projeto as
+/// mostra, pelo mesmo leitor de [`read`]. Sem índice, nenhuma.
+#[must_use]
+pub fn read_rows(root: &Path) -> Vec<index::ProjectRow> {
+    let Ok(paths) = ClaudePaths::for_project(root) else {
+        return Vec::new();
+    };
+    read_shared(&paths.spec_index_path()).map(|content| index::project_rows(&content)).unwrap_or_default()
+}
+
+/// A data de hoje na hora local, a mesma das horas que as gravações
+/// escrevem: `2026-09-17`. É o dia em que a página do projeto é vista.
+#[must_use]
+pub fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
 /// O arquivo de eventos de cada spec do projeto `root`, lido com a trava
 /// compartilhada, em ordem de nome. A pasta sem arquivo de eventos (o formato
 /// antigo) e o arquivo que não se lê ficam de fora.

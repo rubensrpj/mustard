@@ -1,9 +1,13 @@
 //! A árvore de uma página escrita como `.md` ou como `.html`.
 //!
 //! [`Render::Html`] é a única saída de página do Mustard: a página de uma
-//! spec e uma página avulsa escrita em markdown passam por ela,
+//! spec, a do projeto e uma página avulsa escrita em markdown passam por ela,
 //! com o mesmo layout e as mesmas fontes. [`Render::Md`] escreve a mesma
 //! árvore como texto.
+//!
+//! No HTML, a página com mais de uma seção endereçada abre com um sumário de
+//! links para elas, e os títulos escritos dentro de um item ficam três níveis
+//! abaixo, sob o subtítulo que os cerca.
 //!
 //! As duas saídas são função só da árvore: a mesma árvore dá sempre os mesmos
 //! bytes.
@@ -40,16 +44,6 @@ impl Render {
 // HTML
 // ---------------------------------------------------------------------------
 
-/// Um trecho de markdown como HTML, sem a página em volta: o miolo de uma
-/// página que o chamador ainda monta seção por seção.
-#[must_use]
-pub fn markdown_html(md: &str) -> String {
-    let anchors = BTreeSet::new();
-    let mut out = String::new();
-    Html { anchors: &anchors }.nodes(&blocks(md), &mut out);
-    out
-}
-
 fn html_document(doc: &Document) -> String {
     let anchors = doc.anchors();
     let mut report = Report::new(doc.title.clone(), "").with_lang(doc.lang.clone());
@@ -64,6 +58,7 @@ fn html_document(doc: &Document) -> String {
     }
     let html = Html { anchors: &anchors };
     let mut body = String::new();
+    html.toc(&doc.body, &mut body);
     html.nodes(&doc.body, &mut body);
     if let Some(footer) = &doc.footer {
         let _ = write!(body, "<footer>{}</footer>", html.inline(footer));
@@ -79,6 +74,26 @@ struct Html<'a> {
 impl Html<'_> {
     fn inline(&self, text: &str) -> String {
         inline(text, self.anchors)
+    }
+
+    /// O sumário: um link para cada seção endereçada do corpo, quando há mais
+    /// de uma.
+    fn toc(&self, body: &[Node], out: &mut String) {
+        let sections: Vec<(&str, &str)> = body
+            .iter()
+            .filter_map(|node| match node {
+                Node::Section(section) => section.anchor.as_deref().map(|a| (a, section.heading.as_str())),
+                _ => None,
+            })
+            .collect();
+        if sections.len() < 2 {
+            return;
+        }
+        out.push_str("<nav class=\"toc\">");
+        for (anchor, heading) in sections {
+            let _ = write!(out, "<a href=\"#{}\">{}</a>", escape(anchor), inline(heading, &BTreeSet::new()));
+        }
+        out.push_str("</nav>");
     }
 
     /// Os blocos em ordem; itens seguidos ficam numa lista de definições só.
@@ -139,6 +154,11 @@ impl Html<'_> {
             Node::Code(text) => {
                 let _ = write!(out, "<pre>{}</pre>", escape(text));
             }
+            Node::Details { summary, body } => {
+                let _ = write!(out, "<details><summary>{}</summary>", self.inline(summary));
+                self.nodes(body, out);
+                out.push_str("</details>");
+            }
             Node::Quote(inner) => {
                 out.push_str("<div class=\"callout\">");
                 self.nodes(inner, out);
@@ -194,7 +214,8 @@ impl Html<'_> {
         out.push_str("</dt>");
         if !item.text.is_empty() {
             out.push_str("<dd>");
-            self.nodes(&blocks(&item.text), out);
+            // Os títulos do texto ficam abaixo do subtítulo que cerca o item.
+            self.nodes(&demoted(blocks(&item.text)), out);
             out.push_str("</dd>");
         }
         for field in &item.fields {
@@ -207,6 +228,22 @@ impl Html<'_> {
         }
         out.push_str("</div>");
     }
+}
+
+/// Os blocos com cada título três níveis abaixo: o `#` de um texto escrito
+/// dentro de um item vira um título menor que o subtítulo da onda.
+fn demoted(nodes: Vec<Node>) -> Vec<Node> {
+    nodes
+        .into_iter()
+        .map(|node| match node {
+            Node::Heading { level, text } => Node::Heading { level: level.saturating_add(3), text },
+            Node::List { ordered, items } => {
+                Node::List { ordered, items: items.into_iter().map(demoted).collect() }
+            }
+            Node::Quote(inner) => Node::Quote(demoted(inner)),
+            other => other,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -262,14 +299,10 @@ fn md_node(node: &Node) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         Node::Table(table) => md_table(table),
-        Node::Code(text) => {
-            let longest = text
-                .lines()
-                .map(|l| l.trim_start().chars().take_while(|c| *c == '`').count())
-                .max()
-                .unwrap_or(0);
-            let fence = "`".repeat(longest.max(2) + 1);
-            format!("{fence}\n{text}\n{fence}")
+        Node::Code(text) => fenced(text),
+        Node::Details { summary, body } => {
+            let body = md_blocks(body);
+            if body.is_empty() { format!("**{summary}**") } else { format!("**{summary}**\n\n{body}") }
         }
         Node::Quote(inner) => md_blocks(inner)
             .lines()
@@ -279,6 +312,18 @@ fn md_node(node: &Node) -> String {
         Node::Rule => "---".to_string(),
         Node::Item(item) => md_item(item),
     }
+}
+
+/// Um bloco cercado por crases a mais do que qualquer sequência de crases que
+/// abre uma linha dele.
+fn fenced(text: &str) -> String {
+    let longest = text
+        .lines()
+        .map(|l| l.trim_start().chars().take_while(|c| *c == '`').count())
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}\n{text}\n{fence}")
 }
 
 /// O texto depois do marcador, e cada linha seguinte recuada até ele.
@@ -418,6 +463,56 @@ mod tests {
             assert!(!page.contains("/home/") && !page.contains("C:\\"), "{page}");
             assert!(!page.contains(&mustard_core::time::now_iso8601()[..10]) || page.contains("2026-09-11"));
         }
+    }
+
+    /// A página com mais de uma seção endereçada abre com um sumário de links
+    /// para elas; o pedido recolhido sai num `<details>`, linha por linha como
+    /// o agente o lê, e no `.md` ele vai cercado.
+    #[test]
+    fn the_page_opens_with_its_sections_and_collapses_the_request() {
+        let mut prompts = WavePrompts::new();
+        prompts.insert(1, "# demo — onda 1\n\n## Combinado\n\n- MSTD-RULE-0001 (regra)".into());
+        let log = [
+            LOG,
+            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"wave\",\"author\":\"assistant\",\"n\":1,\"text\":\"Onda.\",\"criteria\":[3],\"done_when\":\"d\",\"origin\":2}\n",
+        ]
+        .concat();
+        let doc = spec_document("demo", &parse_log(&log), &prompts, Locale::PtBr);
+        let html = Render::Html.render(&doc);
+        assert!(
+            html.contains("</header><nav class=\"toc\"><a href=\"#state\">Estado</a><a href=\"#metrics\">Painel de medição</a>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<details><summary>O pedido da onda 1 · 5 linhas, como o agente as recebe</summary><pre># demo — onda 1\n\n## Combinado\n\n- MSTD-RULE-0001 (regra)</pre></details>"),
+            "{html}"
+        );
+        assert!(!html.contains("<h2>O pedido da onda"), "the request is not a section of its own");
+        let md = Render::Md.render(&doc);
+        assert!(md.contains("**O pedido da onda 1 · 5 linhas, como o agente as recebe**\n\n```\n# demo — onda 1\n"), "{md}");
+
+        let single = Document {
+            lang: "pt-BR".into(),
+            kind: None,
+            title: "Avulsa".into(),
+            meta: Vec::new(),
+            body: crate::report::markdown::page("## Uma\n\nTexto."),
+            footer: None,
+        };
+        assert!(!Render::Html.render(&single).contains("<nav"), "one section needs no summary");
+    }
+
+    /// Um título escrito dentro do texto de um item fica abaixo do subtítulo
+    /// que cerca o item.
+    #[test]
+    fn a_heading_inside_an_item_sits_below_the_section_headings() {
+        let log = [
+            LOG,
+            "{\"v\":1,\"id\":8,\"at\":\"2026-09-11T09:05:00-03:00\",\"type\":\"note\",\"author\":\"assistant\",\"text\":\"# Grande\\n\\n## Menor\\n\\nTexto.\",\"keys\":[\"k\"],\"origin\":2}\n",
+        ]
+        .concat();
+        let html = Render::Html.render(&spec_document("demo", &parse_log(&log), &WavePrompts::new(), Locale::PtBr));
+        assert!(html.contains("<dd><h4>Grande</h4><h5>Menor</h5><p>Texto.</p></dd>"), "{html}");
     }
 
     /// A página de uma spec e uma página avulsa em markdown saem da mesma

@@ -38,6 +38,13 @@
 //!   difere, e campo `search` calculado por outro redutor. Só lê e acusa, com
 //!   WARN e a mensagem no idioma do projeto, que manda rodar
 //!   `mustard-rt run index`.
+//! - **switches** — as escolhas do `mustard.json` contra as configurações
+//!   locais: WARN quando o Mustard está desligado no projeto, quando a opção
+//!   `rtk` e o gancho do rtk divergem, e quando a assinatura do Claude Code
+//!   está ligada.
+//! - **claude-md** — sobras do Mustard em arquivos que não são dele (as marcas
+//!   nos `CLAUDE.md`, as linhas do molde no `settings.json` da equipe), pela
+//!   mesma lista que o `upsert` mostra.
 
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
@@ -1147,15 +1154,50 @@ fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// Check: status-consistency
+// Check: switches
 // ---------------------------------------------------------------------------
 
+/// The choices `mustard.json` holds for the project against what the local
+/// settings carry. Only reads. A WARN when Mustard is off here, when the `rtk`
+/// option and rtk's hook disagree, and when Claude Code's signature is on — each
+/// in the language `lang`, naming what to run.
+fn check_switches(root: &Path, lang: Locale) -> CheckResult {
+    const NAME: &str = "switches";
+    let switches = mustard_core::Switches::read(root);
+    let mut details = Vec::new();
+    if !switches.enabled {
+        details.push(translate("doctor.switches.off", lang).to_string());
+    }
+    if switches.rtk_diverges() {
+        let key = if switches.rtk { "doctor.switches.rtk_missing" } else { "doctor.switches.rtk_left" };
+        details.push(translate(key, lang).to_string());
+    }
+    if switches.signature_on == Some(true) {
+        details.push(translate("doctor.switches.signature_on", lang).to_string());
+    }
+    if details.is_empty() {
+        CheckResult::ok(NAME)
+    } else {
+        CheckResult::warn(NAME, details)
+    }
+}
 
-#[cfg(test)]
-mod status_consistency_tests {
-    use super::*;
-    use tempfile::tempdir;
+// ---------------------------------------------------------------------------
+// Check: claude-md
+// ---------------------------------------------------------------------------
 
+/// What an older Mustard left in files that are not its own — the marks in
+/// the `CLAUDE.md` files, the seed's lines in the team's settings, a planted
+/// orchestrator. Only reads, through the same list the `upsert` shows; a WARN
+/// names the files and says how to take them out.
+fn check_claude_md(root: &Path, lang: Locale) -> CheckResult {
+    const NAME: &str = "claude-md";
+    let plan = mustard_core::platform::project_seed::cleanup::plan(root);
+    if plan.files.is_empty() {
+        return CheckResult::ok(NAME);
+    }
+    let paths: Vec<&str> = plan.files.iter().map(|change| change.path.as_str()).collect();
+    CheckResult::warn(NAME, vec![translate("doctor.claude_md.leftovers", lang).replace("{paths}", &paths.join(", "))])
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,7 +1217,6 @@ pub struct DoctorOpts {
 
 /// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
 pub fn run(opts: DoctorOpts) {
-    let started = std::time::Instant::now();
     let cwd = crate::shared::context::env::workspace_root_strict()
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let claude_dir = ClaudePaths::for_project(&cwd)
@@ -1198,10 +1239,18 @@ pub fn run(opts: DoctorOpts) {
                 let project = crate::commands::spec_events::project(&cwd);
                 check_scan_output(&project.root, project.lang)
             }
+            "switches" => {
+                let project = crate::commands::spec_events::project(&cwd);
+                check_switches(&project.root, project.lang)
+            }
+            "claude-md" => {
+                let project = crate::commands::spec_events::project(&cwd);
+                check_claude_md(&project.root, project.lang)
+            }
             other => {
                 eprintln!(
                     "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, branch-protection, spec-index, scan-output"
+                     wave-integrity, branch-protection, spec-index, scan-output, switches, claude-md"
                 );
                 std::process::exit(1);
             }
@@ -1228,7 +1277,6 @@ pub fn run(opts: DoctorOpts) {
         check_nerd_font(),
         // Wave-integrity check — always in the full run.
         check_wave_integrity(&claude_dir),
-        // Status-consistency check — always in the full run.
         // O que o provedor realmente protege — sempre na rodada inteira: uma
         // base que só este binário recusa é uma base aberta para todo mundo, e
         // isso não aparece até um envio direto passar.
@@ -1245,6 +1293,16 @@ pub fn run(opts: DoctorOpts) {
         {
             let project = crate::commands::spec_events::project(&cwd);
             check_scan_output(&project.root, project.lang)
+        },
+        // The switches of `mustard.json` against the local settings.
+        {
+            let project = crate::commands::spec_events::project(&cwd);
+            check_switches(&project.root, project.lang)
+        },
+        // What an older Mustard left in files that are not its own.
+        {
+            let project = crate::commands::spec_events::project(&cwd);
+            check_claude_md(&project.root, project.lang)
         },
     ];
 
@@ -1399,6 +1457,55 @@ mod tests {
 
         std::fs::write(root.join(".git").join("info").join("exclude"), "**/.claude/grain.model.json\n").unwrap();
         assert_eq!(check_scan_output(root, Locale::PtBr).status, Status::Ok);
+    }
+
+    // --- switches tests ---
+
+    /// O diagnóstico avisa o Mustard desligado, a opção do rtk que diverge do
+    /// gancho nas configurações locais e a assinatura ligada; com tudo
+    /// alinhado, fica quieto.
+    #[test]
+    fn the_doctor_flags_mustard_off_a_diverging_rtk_and_the_signature() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let local = root.join(".claude").join("settings.local.json");
+        write_file(
+            &local,
+            r#"{"attribution":{"commit":"","pr":""},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#,
+        );
+        assert_eq!(check_switches(root, Locale::PtBr).status, Status::Ok, "aligned: nothing to say");
+
+        write_file(&root.join("mustard.json"), r#"{"enabled":false,"rtk":false}"#);
+        let off = check_switches(root, Locale::PtBr);
+        assert_eq!(off.status, Status::Warn);
+        let said = off.details.join(" ");
+        assert!(said.contains("desligado neste projeto"), "{said}");
+        assert!(said.contains("continua no"), "the hook left behind is named: {said}");
+
+        write_file(&root.join("mustard.json"), "{}");
+        write_file(&local, r#"{"attribution":{"commit":"assistant","pr":"assistant"}}"#);
+        let en = check_switches(root, Locale::EnUs);
+        let said = en.details.join(" ");
+        assert!(said.contains("is not in"), "the missing hook is named: {said}");
+        assert!(said.contains("signature"), "{said}");
+        assert!(!said.contains("turned off in this project"), "{said}");
+    }
+
+    /// As sobras do Mustard nos `CLAUDE.md` viram aviso com os arquivos; sem
+    /// sobra, a conferência passa.
+    #[test]
+    fn the_doctor_flags_mustard_leftovers_in_claude_md() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(check_claude_md(root, Locale::PtBr).status, Status::Ok);
+        write_file(
+            &root.join("apps/api/CLAUDE.md"),
+            "# Api\n<!-- mustard:guards -->\n- A guard.\n<!-- /mustard:guards -->\n",
+        );
+        let found = check_claude_md(root, Locale::PtBr);
+        assert_eq!(found.status, Status::Warn);
+        assert!(found.details[0].contains("apps/api/CLAUDE.md"), "{:?}", found.details);
+        assert!(found.details[0].contains("mustard-rt run upsert"), "{:?}", found.details);
     }
 
     // --- spec-index tests ---

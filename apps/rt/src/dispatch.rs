@@ -11,6 +11,9 @@
 //!
 //! ## O que se grava
 //!
+//! Num projeto cujo `mustard.json` traz `enabled: false`, nada disso roda: a
+//! chamada termina em `Allow` antes do primeiro gancho.
+//!
 //! O gancho só grava quando age, e quem grava é o despachante: um gancho que
 //! barra ou avisa vira um evento `hook`, e um que coloca texto vira um evento
 //! `injection`, com o tamanho. O que deixou passar não grava nada. No fim da
@@ -33,9 +36,14 @@ pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
     let Some(trigger) = trigger else {
         return Outcome::allow();
     };
+    let ctx = build_ctx(trigger, input);
+    // O projeto que desligou o Mustard no `mustard.json` não tem gancho que
+    // aja: nem barra, nem avisa, nem coloca texto, nem grava.
+    if !ctx.config.enabled() {
+        return Outcome::allow();
+    }
     let registry = Registry::new();
     let tool = input.tool_name.as_deref();
-    let ctx = build_ctx(trigger, input);
     let root = PathBuf::from(&ctx.project_dir);
     let mut outcome = Outcome::allow();
     for module in registry.applicable(trigger, tool) {
@@ -160,6 +168,24 @@ mod tests {
         let input = bash_input(dir.path(), "rm -rf /", "PreToolUse");
         let outcome = run_event(Some(Trigger::PreToolUse), &input);
         assert!(outcome.is_blocking());
+    }
+
+    /// Com o Mustard desligado no `mustard.json`, o comando que a trava barra
+    /// passa, e nada é gravado; religado, a trava volta a barrar.
+    #[test]
+    fn a_project_with_mustard_off_has_no_hook_acting() {
+        let dir = project_on("desligado");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"enabled":false}"#).unwrap();
+        let input = HookInput { session_id: Some("s1".to_string()), ..bash_input(root, "rm -rf /", "PreToolUse") };
+        let outcome = run_event(Some(Trigger::PreToolUse), &input);
+        assert_eq!(outcome.verdict, Verdict::Allow, "{outcome:?}");
+        assert!(outcome.warnings.is_empty(), "{outcome:?}");
+        assert!(recorded(root, "desligado").is_empty(), "nothing is recorded while Mustard is off");
+
+        let on = tempfile::tempdir().unwrap();
+        std::fs::write(on.path().join("mustard.json"), r#"{"enabled":true}"#).unwrap();
+        assert!(run_event(Some(Trigger::PreToolUse), &bash_input(on.path(), "rm -rf /", "PreToolUse")).is_blocking());
     }
 
     /// Um comando comum de leitura passa pelo despachante.

@@ -1,5 +1,9 @@
 //! Um motor de página só.
 //!
+//! A página de uma spec, a do projeto e uma página avulsa escrita em markdown
+//! saem do mesmo motor: o mesmo estilo, as fontes do Google Fonts por um link,
+//! e nenhuma fonte gravada dentro da página.
+//!
 //! Fora de `apps/rt/src/report/`, nenhum arquivo de código do Mustard escreve
 //! o começo de uma página HTML (`<!doctype html>`) ou uma folha de estilo
 //! (`<style>`), nem converte markdown em HTML. A conversão aparece pelas
@@ -9,6 +13,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde_json::Value;
 
 /// O que só o motor de página escreve.
 const ENGINE_ONLY: &[&str] = &["<!doctype", "<style", "<code>", "<strong>", "<em>"];
@@ -82,8 +89,70 @@ fn violations(path: &Path) -> Vec<&'static str> {
     ENGINE_ONLY.iter().copied().filter(|mark| code.contains(mark)).collect()
 }
 
+/// Roda `mustard-rt run page` com `args` no projeto `root` e devolve o
+/// relatório.
+fn page(root: &Path, args: &[&str]) -> Value {
+    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "page"])
+        .args(args)
+        .arg("--root")
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("run page");
+    let report: Value = serde_json::from_slice(&out.stdout).expect("a JSON report");
+    assert!(out.status.success(), "{report}");
+    report
+}
+
+/// A folha de estilo de uma página.
+fn style(html: &str) -> &str {
+    html.split_once("<style>")
+        .and_then(|(_, tail)| tail.split_once("</style>"))
+        .map_or("", |(css, _)| css)
+}
+
+/// As três páginas geradas pelo binário: a da spec, a do projeto e a avulsa.
+fn three_pages(root: &Path) -> [String; 3] {
+    fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
+    let spec = root.join(".claude").join("spec").join("demo");
+    fs::create_dir_all(&spec).expect("spec dir");
+    fs::write(
+        spec.join("spec.ndjson"),
+        concat!(
+            r#"{"v":1,"id":1,"at":"2026-09-11T08:40:00-03:00","type":"state","author":"binary","phase":"survey"}"#,
+            "\n",
+            r#"{"v":1,"id":2,"at":"2026-09-11T08:41:00-03:00","type":"message","author":"user","text":"Revise `tudo`."}"#,
+            "\n",
+        ),
+    )
+    .expect("events");
+    let report = page(root, &["--spec", "demo"]);
+    fs::write(root.join("corpo.md"), "# Avulsa\n\n## Seção\n\nTexto com **negrito**.\n").expect("body");
+    page(root, &["--body", "corpo.md", "--out", "avulsa.html"]);
+    let read = |relative: &str| fs::read_to_string(root.join(relative)).unwrap_or_else(|_| panic!("{relative}"));
+    let project = report["project"].as_str().expect("the project page comes with the spec page");
+    [read(".claude/spec/demo/spec.html"), read(project), read("avulsa.html")]
+}
+
 #[test]
 fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
+    // As três páginas saem do mesmo motor: o mesmo estilo e as mesmas fontes.
+    let project = tempfile::tempdir().expect("tempdir");
+    let pages = three_pages(project.path());
+    let fonts = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Geist";
+    for (name, html) in ["spec", "project", "loose"].iter().zip(&pages) {
+        assert!(html.starts_with("<!doctype html>"), "{name}: {html}");
+        assert!(!style(html).is_empty(), "{name} has no style");
+        assert_eq!(style(html), style(&pages[0]), "{name} has another style");
+        assert!(html.contains(fonts), "{name} does not link the Geist fonts");
+        assert!(!html.contains("@font-face") && !html.contains("data:font"), "{name} carries a font");
+        assert_eq!(html.matches("<style>").count(), 1, "{name} carries a second style");
+    }
+    assert!(pages[0].contains("<code>tudo</code>"), "the spec page did not convert markdown");
+    assert!(pages[1].contains("<code>demo</code>"), "the project page does not list the spec");
+    assert!(pages[2].contains("<strong>negrito</strong>"), "the loose page did not convert markdown");
+
     let root = repo_root();
     let mut files = Vec::new();
     for top in ["apps", "packages"] {

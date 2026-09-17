@@ -1,6 +1,6 @@
 //! `view::document` — a árvore de blocos de uma página do Mustard.
 //!
-//! Toda página (a de uma spec, uma avulsa escrita em markdown)
+//! Toda página (a de uma spec, a do projeto, uma avulsa escrita em markdown)
 //! é esta árvore antes de virar texto. Quem monta a árvore não sabe de HTML
 //! nem de markdown; quem a escreve (o motor de página do `mustard-rt`) não sabe
 //! de eventos. Assim a mesma árvore sai como `.md` e como `.html`, e toda
@@ -8,16 +8,18 @@
 //!
 //! O texto guardado na árvore é markdown de linha: código entre crases,
 //! negrito entre asteriscos duplos e link. [`Item::text`] é a exceção e pode
-//! ter parágrafos e listas.
+//! ter parágrafos, listas e títulos.
 //!
 //! Tudo aqui é puro: sem disco, sem relógio e sem caminho da máquina. A mesma
 //! entrada dá sempre a mesma árvore.
 
 use std::collections::BTreeSet;
 
+mod project;
 mod spec;
 
-pub use spec::{spec_document, WavePrompts};
+pub use project::project_document;
+pub use spec::{conversation_len, cut_oldest_conversation, spec_document, spec_page, RtkDay, SpecInputs, WavePrompts};
 
 /// Uma página inteira.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +64,8 @@ pub enum Node {
     Table(Table),
     /// Um bloco de texto monoespaçado, mostrado como está.
     Code(String),
+    /// Um trecho recolhido: o resumo aparece, e os blocos abrem ao clicar.
+    Details { summary: String, body: Vec<Node> },
     /// Um destaque, com os blocos dentro.
     Quote(Vec<Node>),
     /// Um traço de separação.
@@ -121,6 +125,89 @@ impl Document {
         collect_anchors(&self.body, &mut out);
         out
     }
+
+    /// Tira da página todo trecho em que `hit` acha algo, e põe `notice` no
+    /// lugar: o item inteiro sai, com o texto e os campos, e fica só o código
+    /// dele com o aviso; fora de um item, sai o trecho. Devolve o código de
+    /// cada item retido e quantos trechos fora de item saíram.
+    pub fn withhold(&mut self, hit: &dyn Fn(&str) -> bool, notice: &str) -> (Vec<String>, usize) {
+        let mut codes = Vec::new();
+        let mut loose = 0;
+        let mut plain = |text: &mut String| {
+            if hit(text) {
+                *text = notice.to_string();
+                loose += 1;
+            }
+        };
+        plain(&mut self.title);
+        if let Some(kind) = self.kind.as_mut() {
+            plain(kind);
+        }
+        for meta in &mut self.meta {
+            match meta {
+                Meta::Pair { label, value } => {
+                    plain(label);
+                    plain(value);
+                }
+                Meta::Note(text) => plain(text),
+            }
+        }
+        if let Some(footer) = self.footer.as_mut() {
+            plain(footer);
+        }
+        withhold_nodes(&mut self.body, hit, notice, &mut codes, &mut loose);
+        (codes, loose)
+    }
+}
+
+fn withhold_nodes(nodes: &mut [Node], hit: &dyn Fn(&str) -> bool, notice: &str, codes: &mut Vec<String>, loose: &mut usize) {
+    let plain = |text: &mut String, loose: &mut usize| {
+        if hit(text) {
+            *text = notice.to_string();
+            *loose += 1;
+        }
+    };
+    for node in nodes {
+        match node {
+            Node::Section(section) => {
+                plain(&mut section.heading, loose);
+                if let Some(summary) = section.collapsed.as_mut() {
+                    plain(summary, loose);
+                }
+                withhold_nodes(&mut section.body, hit, notice, codes, loose);
+            }
+            Node::Heading { text, .. } | Node::Paragraph(text) | Node::Code(text) => {
+                plain(text, loose);
+            }
+            Node::List { items, .. } => {
+                for item in items {
+                    withhold_nodes(item, hit, notice, codes, loose);
+                }
+            }
+            Node::Table(table) => {
+                for cell in table.headers.iter_mut().chain(table.rows.iter_mut().flatten()) {
+                    plain(cell, loose);
+                }
+            }
+            Node::Quote(inner) => withhold_nodes(inner, hit, notice, codes, loose),
+            Node::Details { summary, body } => {
+                plain(summary, loose);
+                withhold_nodes(body, hit, notice, codes, loose);
+            }
+            Node::Rule => {}
+            Node::Item(item) => {
+                let found = hit(&item.text)
+                    || item.note.as_deref().is_some_and(hit)
+                    || item.fields.iter().any(|f| hit(&f.label) || hit(&f.value));
+                if found {
+                    item.text = notice.to_string();
+                    item.note = None;
+                    item.fields.clear();
+                    codes.push(item.code.clone());
+                }
+            }
+        }
+    }
 }
 
 fn collect_anchors(nodes: &[Node], out: &mut BTreeSet<String>) {
@@ -140,7 +227,7 @@ fn collect_anchors(nodes: &[Node], out: &mut BTreeSet<String>) {
                     collect_anchors(item, out);
                 }
             }
-            Node::Quote(inner) => collect_anchors(inner, out),
+            Node::Quote(inner) | Node::Details { body: inner, .. } => collect_anchors(inner, out),
             _ => {}
         }
     }

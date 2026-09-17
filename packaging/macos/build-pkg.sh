@@ -4,7 +4,7 @@
 #
 # Roda num Mac (runner macos-* do GitHub Actions ou máquina local — NÃO há
 # cross-compile confiável de macOS a partir de outro SO). Gera UM instalador
-# com o CLI:
+# com o CLI e o rtk na versão fixa do checksums.txt:
 #
 #   dist/Mustard-<versao>-universal.pkg
 #
@@ -72,13 +72,25 @@ for b in $CLI_BINS; do
     "$REPO/target/aarch64-apple-darwin/release/$b"
 done
 
-# rtk (best-effort; o job já tenta instalá-lo antes)
-RTK=""
-for p in "$HOME/.local/bin/rtk" "$HOME/.cargo/bin/rtk" \
-         /usr/local/bin/rtk /opt/homebrew/bin/rtk; do
-  if [ -x "$p" ]; then RTK="$p"; break; fi
+# rtk: a release fixa do checksums.txt da raiz, os dois pacotes do Mac
+# conferidos pela soma antes de virarem um binário universal, como os outros.
+# Qualquer falha (sem rede, soma diferente, pacote sem o binário) para o build.
+SUMS="$REPO/checksums.txt"
+RTK_VERSION=$(sed -n 's/^# rtk v\([0-9][0-9.]*\).*/\1/p' "$SUMS" | head -1)
+[ -n "$RTK_VERSION" ] || { echo "erro: o checksums.txt não diz a versão do rtk." >&2; exit 1; }
+RTK_DIR="$DIST/_rtk"
+rm -rf "$RTK_DIR"
+mkdir -p "$RTK_DIR"
+for arch in x86_64 aarch64; do
+  asset="rtk-$arch-apple-darwin.tar.gz"
+  curl -fsSL -o "$RTK_DIR/$asset" \
+    "https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/$asset"
+  ( cd "$RTK_DIR" && grep "  $asset\$" "$SUMS" | shasum -a 256 -c - )
+  mkdir -p "$RTK_DIR/$arch"
+  tar -xzf "$RTK_DIR/$asset" -C "$RTK_DIR/$arch" rtk
 done
-if [ -n "$RTK" ]; then cp "$RTK" "$BIN/rtk"; echo "    rtk: $RTK"; else echo "    aviso: rtk ausente"; fi
+lipo -create -output "$BIN/rtk" "$RTK_DIR/x86_64/rtk" "$RTK_DIR/aarch64/rtk"
+echo "    rtk: v$RTK_VERSION (universal)"
 chmod 0755 "$BIN"/*
 
 # templates um nível acima -> <exe>/../templates resolve (igual ao .deb)

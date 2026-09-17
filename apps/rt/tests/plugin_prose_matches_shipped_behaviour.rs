@@ -190,7 +190,7 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
 
     // --- 2. The seed is really the file a session reads -------------------
     // Without this half the sentence is a template nobody is served.
-    let project_seed = read("packages/core/src/platform/project_seed.rs");
+    let project_seed = read("packages/core/src/platform/project_seed/files.rs");
     assert!(
         project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD)"),
         "nothing seeds orchestrator.md any more, so the rule reaches no window",
@@ -199,21 +199,6 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
     assert!(
         config.contains(".claude/mustard/orchestrator.md"),
         "the default inject no longer declares the orchestrator injectable",
-    );
-
-    // --- 3. This repository's own delivered copy has not drifted -----------
-    // `seed_injectable_files` rewrites the file, but only when it RUNS: editing
-    // the template alone leaves this repository's committed copy behind until
-    // an install or an update lays the new body down. Silent drift is the whole
-    // failure mode: the rule would ship to new projects while the one that
-    // wrote it kept reading the old text.
-    let delivered = read(".claude/mustard/orchestrator.md");
-    let delivered_verdict = line_with(&delivered, "Verdict rule")
-        .expect("the delivered injectable states no Verdict rule");
-    assert_eq!(
-        delivered_verdict, verdict,
-        "the delivered .claude/mustard/orchestrator.md drifted from the seed — \
-         re-seed it, or this project never reads the rule it just wrote",
     );
 }
 
@@ -237,19 +222,14 @@ fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
 #[test]
 fn router_asks_the_base_before_the_type() {
     let seed = mustard_core::DISPATCH_MD;
-    let delivered = read(".claude/mustard/dispatch.md");
 
-    for (label, body) in [("the seed", seed), ("the delivered copy", delivered.as_str())] {
-        let base = line_index(body, "  sai de:")
-            .unwrap_or_else(|| panic!("{label} shows no `sai de` row — the base is never asked"));
-        let kind = line_index(body, "  tipo:")
-            .unwrap_or_else(|| panic!("{label} shows no `tipo` row — the type is never asked"));
-        assert!(
-            base < kind,
-            "{label} shows `tipo` above `sai de`, so the base reads as a consequence \
-             of the type — the implication a real catalogue removed",
-        );
-    }
+    let base = line_index(seed, "  sai de:").expect("the seed shows no `sai de` row — the base is never asked");
+    let kind = line_index(seed, "  tipo:").expect("the seed shows no `tipo` row — the type is never asked");
+    assert!(
+        base < kind,
+        "the seed shows `tipo` above `sai de`, so the base reads as a consequence \
+         of the type — the implication a real catalogue removed",
+    );
 
     // Both rows still open on a pre-marked answer: an Enter accepts, and the
     // re-order must not cost the operator a decision it never used to cost.
@@ -559,7 +539,7 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
     // --- 3. The installer really writes no flow -----------------------------
     // Without this half the assertions above outlive their reason: they are
     // right only while an empty flow is the INSTALLED shape.
-    let seed = read("packages/core/src/platform/project_seed.rs");
+    let seed = read("packages/core/src/platform/project_seed/mod.rs");
     assert!(
         seed.contains("git.flow starts empty — the project decides"),
         "the installer seeds a flow again, which would make the removed warning \
@@ -1380,7 +1360,7 @@ fn every_project_learns_that_a_door_does_what_it_names() {
 /// correction, with a green build both times, because every criterion pinned
 /// the BEHAVIOUR and none pinned the prose that describes it.
 ///
-/// `project_seed.rs` is here because that is where the ENGINE states the
+/// `project_seed/files.rs` is here because that is where the ENGINE states the
 /// contract, and two of the four original offenders lived in it. A ratchet that
 /// reads the doors and not the engine leaves the sentence closest to the code
 /// unguarded.
@@ -1402,7 +1382,7 @@ const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
         &["ALWAYS rewritten", "`Updated`", "`Preserved`"],
     ),
     (
-        "packages/core/src/platform/project_seed.rs",
+        "packages/core/src/platform/project_seed/files.rs",
         &["Always rewritten", "`SeedOutcome::Updated`", "`SeedOutcome::Preserved`"],
     ),
     (
@@ -1725,10 +1705,9 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
 
 /// Where a document that enumerates the injectables can live.
 ///
-/// `.claude/spec/` is deliberately absent: a spec is a FROZEN record of a unit
-/// that shipped, and a record naming what existed then is not drift. Only the
-/// delivered copies under `.claude/mustard/` are read from that tree.
-const PROSE_SCAN_ROOTS: &[&str] = &[".claude/mustard", "apps", "packages", "plugin"];
+/// `.claude/` is deliberately absent: it is Mustard's own, personal to whoever
+/// programs, and this repository versions none of it.
+const PROSE_SCAN_ROOTS: &[&str] = &["apps", "packages", "plugin"];
 
 /// Blocks that name SOME injectables and not all, kept deliberately.
 ///
@@ -1756,7 +1735,7 @@ const SUBSET_EXEMPT_BLOCKS: &[(&str, &str, &str)] = &[
          files that were measured",
     ),
     (
-        "packages/core/src/platform/project_seed.rs",
+        "packages/core/src/platform/project_seed/files.rs",
         "on the theory that siblings share one ceiling",
         "the 2026-08-25 experiment, reported as it ran: two sibling hooks on one \
          event, 6,000 characters each, both intact. Re-typing the number as the \

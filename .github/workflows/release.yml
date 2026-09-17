@@ -13,6 +13,10 @@ name: Release
 #   Windows : Mustard_<versao>_x64-setup.exe            (NSIS: CLI + PATH)
 #   macOS   : Mustard-<versao>-universal.pkg            (CLI no PATH)
 #   Linux   : mustard_<versao>_amd64.deb + install.sh   (apt: CLI + symlinks)
+#
+# Os três levam o rtk na versão fixa do `checksums.txt` da raiz, conferido pela
+# soma antes de entrar no pacote. Nenhum passo compila o rtk, e sem ele a
+# publicação falha.
 
 on:
   push:
@@ -116,9 +120,11 @@ jobs:
       - name: Compila os binários
         run: cargo build --release --locked --bin scan --bin mustard-rt --bin mustard
 
-      - name: rtk (best-effort — embutido no instalador se compilar)
-        continue-on-error: true
-        run: cargo install --git https://github.com/rtk-ai/rtk --locked
+      # O rtk na versão fixa do checksums.txt, conferido pela soma. Nada aqui o
+      # compila, e sem ele a publicação para: o instalador não sai sem o rtk.
+      - name: rtk (versão fixa, conferida)
+        shell: pwsh
+        run: ./packaging/build-packages.ps1 -Targets rtk
 
       # The installer is assembled from a staging tree, so makensis only has to
       # copy three folders and mustard.nsi never has to know where a build put
@@ -132,8 +138,7 @@ jobs:
           for b in scan mustard-rt mustard; do
             cp "target/release/$b.exe" "$PAYLOAD/bin/$b.exe"
           done
-          RTK="$(command -v rtk || true)"
-          if [ -n "$RTK" ]; then cp "$RTK" "$PAYLOAD/bin/rtk.exe"; else echo "rtk ausente — instalador sai sem rtk"; fi
+          cp dist/_rtk/rtk.exe "$PAYLOAD/bin/rtk.exe"
           cp -R apps/cli/templates "$PAYLOAD/templates"
 
       # NSIS ships with some runner images and not others (it left windows-2025),
@@ -162,7 +167,7 @@ jobs:
           if (-not (Test-Path $out)) { throw "makensis não gerou $out." }
 
       # Binários avulsos que o bootstrap do plugin baixa na primeira sessão
-      # (mustard-boot): o CLI completo + rtk (se compilou).
+      # (mustard-boot): o CLI completo + o rtk conferido.
       - name: Empacota binários avulsos (bootstrap do plugin)
         shell: bash
         env:
@@ -172,8 +177,7 @@ jobs:
           for b in scan mustard-rt mustard; do
             cp "target/release/$b.exe" dist/bins/
           done
-          RTK="$(command -v rtk || true)"
-          if [ -n "$RTK" ]; then cp "$RTK" dist/bins/rtk.exe; else echo "rtk ausente — pacote sai sem rtk"; fi
+          cp dist/_rtk/rtk.exe dist/bins/rtk.exe
           # O `mustard init` procura o templates/ AO LADO do binário. Sem ele o
           # CLI que veio por esta via morre com "could not locate the Mustard
           # templates/ directory" — os instaladores por SO levam o seu, este
@@ -220,11 +224,9 @@ jobs:
           shared-key: mustard-workspace
           save-if: false
 
-      - name: rtk (best-effort — embutido no .pkg se disponível)
-        continue-on-error: true
-        run: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh
-
-      - name: Build do instalador .pkg (CLI)
+      # O build-pkg.sh baixa o rtk na versão fixa do checksums.txt e confere a
+      # soma; sem ele o .pkg não sai.
+      - name: Build do instalador .pkg (CLI + rtk)
         run: bash packaging/macos/build-pkg.sh
 
       # Binários avulsos universais (lipo dos dois targets que o build-pkg.sh
@@ -264,7 +266,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Empacota o CLI num .deb (build-deb.sh via Docker)
+      # O build-deb.sh baixa o rtk na versão fixa do checksums.txt e confere a
+      # soma; sem ele o .deb não sai.
+      - name: Empacota o CLI e o rtk num .deb (build-deb.sh via Docker)
         shell: pwsh
         run: ./packaging/build-packages.ps1 -Targets linux
 

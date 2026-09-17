@@ -388,6 +388,16 @@ pub struct ProjectConfig {
     /// um número maior aqui.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_compiling_waves: Option<u64>,
+    /// A chave que liga e desliga o Mustard no projeto. Desligado (`false`),
+    /// nenhum gancho do Mustard age aqui; ausente, ele está ligado. Lida só
+    /// por [`ProjectConfig::enabled`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Liga e desliga o gancho do rtk nas configurações locais do projeto.
+    /// Ausente, ligado. Desligar não desinstala o rtk. Lida só por
+    /// [`ProjectConfig::rtk`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtk: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub role_patterns: Vec<RolePattern>,
     /// Declared context injections (`[{on, file, once}]`) — see [`Injectable`].
@@ -543,6 +553,20 @@ impl ProjectConfig {
     #[must_use]
     pub fn max_compiling_waves(&self) -> Option<usize> {
         self.max_compiling_waves.and_then(|n| usize::try_from(n).ok())
+    }
+
+    /// O Mustard está ligado neste projeto: só um `enabled: false` escrito no
+    /// arquivo o desliga. Um arquivo que não se lê não desliga nada.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.enabled != Some(false)
+    }
+
+    /// O gancho do rtk deve estar nas configurações locais: só um
+    /// `rtk: false` escrito no arquivo o tira.
+    #[must_use]
+    pub fn rtk(&self) -> bool {
+        self.rtk != Some(false)
     }
 
     /// Ordered role-classification overrides; `pattern` lowercased, entries with
@@ -991,5 +1015,24 @@ mod tests {
         let mut no_star = ProjectConfig::default();
         no_star.git.flow.insert("develop".into(), "master".into());
         assert_eq!(no_star.git.primary_base().as_deref(), Some("develop"));
+    }
+
+    /// As duas chaves do projeto valem ligadas quando faltam; só o `false`
+    /// escrito as desliga, e voltam ao arquivo como foram escritas.
+    #[test]
+    fn as_chaves_do_mustard_e_do_rtk_so_desligam_com_false_escrito() {
+        let dir = tempdir().unwrap();
+        let absent = ProjectConfig::load(dir.path());
+        assert!(absent.enabled() && absent.rtk());
+
+        std::fs::write(dir.path().join("mustard.json"), r#"{"enabled":false,"rtk":false}"#).unwrap();
+        let off = ProjectConfig::load(dir.path());
+        assert!(!off.enabled() && !off.rtk());
+        off.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"enabled\": false") && raw.contains("\"rtk\": false"), "{raw}");
+
+        std::fs::write(dir.path().join("mustard.json"), "{ not json").unwrap();
+        assert!(ProjectConfig::load(dir.path()).enabled(), "an unreadable file turns nothing off");
     }
 }

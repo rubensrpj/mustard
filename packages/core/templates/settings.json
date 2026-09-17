@@ -4,8 +4,8 @@
   "plansDirectory": ".claude/plans",
   "cleanupPeriodDays": 30,
   "attribution": {
-    "commit": "assistant",
-    "pr": "assistant"
+    "commit": "",
+    "pr": ""
   },
   "env": {
     "MUSTARD_SPEC_SIZE_MODE": "warn",
@@ -53,12 +53,9 @@
       "Bash(git checkout -- .:*)",
       "Bash(git restore .:*)",
       "Bash(git clean:*)",
-      "Bash(git branch -D main:*)",
-      "Bash(git branch -D master:*)",
-      "Bash(git branch -d main:*)",
-      "Bash(git branch -d master:*)",
       "Bash(chmod 777:*)",
       "Bash(mkfs*)",
+      "Bash(format:*)",
       "Bash(dd if=*)",
       "Bash(shutdown:*)",
       "Bash(reboot:*)",

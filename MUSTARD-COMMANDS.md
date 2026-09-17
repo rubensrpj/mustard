@@ -20,7 +20,7 @@ Instalado como plugin do Claude Code, todo comando vive no namespace **`/mustard
 
 Como os comandos se encaixam. Tudo entra pela **porta única**, nasce do mapa do projeto, que `mustard-rt run scan` atualiza lendo só o que mudou, e converge para o merge auditável de `/mustard:pr`.
 
-**São QUATRO portas, e só quatro** — `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`. Todo o resto é fluxo interno: o roteador despacha, o usuário não digita. Revisão, QA e fechamento são passos de `/mustard:pr merge`; a varredura é o fluxo interno `scan`; ligar/desligar o harness e diagnosticar a instalação são flags de `/mustard:upsert`; cancelar uma unidade abandonada é `/mustard:git delete`.
+**São QUATRO portas, e só quatro** — `/mustard:git`, `/mustard:pr`, `/mustard:spec`, `/mustard:upsert`. Todo o resto é fluxo interno: o roteador despacha, o usuário não digita. Revisão, QA e fechamento são passos de `/mustard:pr merge`; a varredura é o fluxo interno `scan`; ligar/desligar o harness é a chave `enabled` do `mustard.json`, e diagnosticar a instalação é flag de `/mustard:upsert`; cancelar uma unidade abandonada é `/mustard:git delete`.
 
 ```mermaid
 flowchart TD
@@ -418,7 +418,7 @@ Um assunto, uma porta: **o estado da instalação do Mustard neste projeto**. Se
 
 | Flag | O que faz | Backend |
 |---|---|---|
-| *(nenhuma)* | Instala/atualiza: `.claude/settings.local.json` (a instalação é sempre em modo privado, então a fiação dos ganchos cai no arquivo local, nunca no `.claude/settings.json` compartilhado), os injetáveis de `.claude/mustard/`, `.claude/.gitignore` e o `mustard.json` da raiz. Idempotente e merge-only — o que já existe é preservado, com UMA exceção: `.claude/mustard/orchestrator.md`, `.claude/mustard/dispatch.md` e `.claude/mustard/material.md` são as regras do próprio harness, não configuração do projeto, então toda execução regrava o texto embarcado — inclusive uma cópia que existe mas não pode ser lida. Uma cópia que divergiu volta em `updated`; uma idêntica volta em `preserved`, porque não havia o que escrever | `upsert` |
+| *(nenhuma)* | Instala/atualiza: `.claude/settings.local.json` (a instalação é sempre em modo privado, então a fiação dos ganchos cai no arquivo local, nunca no `.claude/settings.json` compartilhado), os injetáveis de `.claude/mustard/`, `.claude/.gitignore` e o `mustard.json` da raiz. Idempotente e merge-only — o que já existe é preservado, com UMA exceção: `.claude/mustard/orchestrator.md`, `.claude/mustard/dispatch.md` e `.claude/mustard/material.md` são as regras do próprio harness, não configuração do projeto, então toda execução regrava o texto embarcado — inclusive uma cópia que existe mas não pode ser lida. Uma cópia que divergiu volta em `updated`; uma idêntica volta em `preserved`, porque não havia o que escrever. O que um Mustard antigo deixou em arquivos que não são dele (marcas nos `CLAUDE.md`, linhas do molde no `settings.json` da equipe) só é listado em `cleanup`, e sai com `--confirm <token>` depois do sim | `upsert` |
 | `--doctor` | Relatório read-only de saúde da instalação. `--residue` audita estado residual; `--check <nome>` estreita para um check | `doctor` |
 
 ```mermaid

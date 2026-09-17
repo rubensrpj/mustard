@@ -32,10 +32,13 @@ concurrency:
   group: bump-on-main
   cancel-in-progress: false
 
+# Todo job para em 30 minutos: sem isso, um passo travado segura a máquina
+# pelas seis horas do padrão do GitHub.
 jobs:
   bump:
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:

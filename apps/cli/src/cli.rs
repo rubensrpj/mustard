@@ -93,17 +93,15 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run })?;
             // Environment acts live HERE, never in the library: putting software
-            // on the operator's machine, and writing their global settings, are
-            // things a library call must never take on its caller's behalf.
+            // on the operator's machine is something a library call must never
+            // take on its caller's behalf. Nothing here writes under `~/.claude/`.
             //
             // The condition is `Installed`, not "no error". `Ok` used to cover
             // the operator answering Cancel to an existing `.claude/` — and on
-            // that path this arm still ran `rtk init -g --no-patch`, a GLOBAL
-            // write, after an explicit refusal. Measured through a pty in
-            // review. `InitOutcome` exists so the caller can tell the two apart.
+            // that path this arm still ran a machine-wide act after an explicit
+            // refusal. Measured through a pty in review. `InitOutcome` exists so
+            // the caller can tell the two apart.
             if outcome == init::InitOutcome::Installed {
-                init::ensure_global_permissions_if_opted_in();
-                init::ensure_rtk();
                 init::ensure_ripgrep();
             }
             Ok(())

@@ -59,11 +59,13 @@
 //! rodada, o fechamento e o despachante. O autor `binary` é só das gravações
 //! de dentro do binário.
 //!
-//! A mensagem do usuário (`message` de autor `user`) também não passa por
-//! aqui, nem para ser tirada ou revista: ela chega pelo gancho da entrada e,
-//! a resposta a uma pergunta com opções, pela testemunha. É o que faz do
-//! clique do usuário um fato que o modelo não escreve. O expurgo de uma
-//! mensagem do usuário continua valendo: um segredo colado na conversa sai.
+//! O clique do usuário (a `message` de autor `user` com `witness`, a resposta
+//! a uma pergunta com opções) também não passa por aqui, nem para ser tirado
+//! ou revisto: quem o grava é a testemunha, e é isso que faz dele um fato que o
+//! modelo não escreve. A fala digitada do usuário ainda é gravada à mão, e
+//! também tirada ou revista: a recusa dela espera os ganchos voltarem neste
+//! projeto, quando ela passa a chegar só pelo gancho da entrada. O expurgo de
+//! uma mensagem do usuário continua valendo: um segredo colado na conversa sai.
 //!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
 //! fluxo e da testemunha da aprovação. As portas que gravam `state` são
@@ -131,14 +133,26 @@ fn by_user(event: &Map<String, Value>) -> bool {
     event.get("author").and_then(Value::as_str).map(str::trim) == Some("user")
 }
 
-/// Os números das mensagens do usuário que a leitura de `log` mostra, contando
-/// também as expurgadas: o expurgo tira o texto de um segredo, e não a fala
-/// do usuário da conversa.
-fn user_messages(log: &SpecLog) -> Vec<u64> {
+/// A fala digitada do usuário ainda é gravada, tirada e revista à mão: a recusa
+/// dela espera os ganchos do Mustard voltarem neste projeto. Com eles de volta,
+/// este valor vira `false` e a fala passa a chegar só pelo gancho da entrada.
+/// O clique fica recusado nos dois casos.
+const TYPED_SPEECH_BY_HAND: bool = true;
+
+/// A mensagem é do usuário e só um gancho a grava: o clique, que traz a
+/// testemunha, e, sem a fala digitada à mão, qualquer fala dele.
+fn hook_only_message(event: &Map<String, Value>) -> bool {
+    by_user(event) && (!TYPED_SPEECH_BY_HAND || event.get("witness").is_some_and(|w| !w.is_null()))
+}
+
+/// Os números das mensagens do usuário que só um gancho grava, como a leitura
+/// de `log` as mostra, contando também as expurgadas: o expurgo tira o texto
+/// de um segredo, e não a fala do usuário da conversa.
+fn hook_only_messages(log: &SpecLog) -> Vec<u64> {
     let hidden = log.hidden();
     log.events
         .iter()
-        .filter(|event| event.event_type == "message" && by_user(&event.fields))
+        .filter(|event| event.event_type == "message" && hook_only_message(&event.fields))
         .filter(|event| hidden.get(&event.id).is_none_or(|why| matches!(why, Hidden::Purged { .. })))
         .map(|event| event.id)
         .collect()
@@ -194,7 +208,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
     }
-    if event_type == "message" && by_user(&draft) {
+    if event_type == "message" && hook_only_message(&draft) {
         return refuse(Refusal::UserMessageByHook { spec: spec.trim().to_string() });
     }
     if event_type == "deferred"
@@ -562,8 +576,8 @@ fn phase_rule(
         if visible_of(before, "work_type") != visible_of(after, "work_type") {
             return Err(Refusal::WorkTypeByGrill);
         }
-        // A fala do usuário é dos ganchos: o modelo não a tira nem a revê.
-        if user_messages(before) != user_messages(after) {
+        // O que só um gancho grava, o modelo não tira nem revê.
+        if hook_only_messages(before) != hook_only_messages(after) {
             return Err(Refusal::UserMessageByHook { spec: spec.to_string() });
         }
         return if was == now { Ok(()) } else { Err(Refusal::StateByFlowOnly { spec: spec.to_string() }) };
@@ -1064,16 +1078,25 @@ mod tests {
         assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("A onda 1 ficou pronta."));
     }
 
-    /// O que cada onda entregou, o commit e a mensagem do usuário não são
+    /// O que cada onda entregou, o commit e o clique do usuário não são
     /// gravados à mão: o `run write` recusa os três, e recusa tirar ou rever
-    /// uma entrega ou uma fala do usuário, sem gravar nada. A mensagem do
-    /// assistente segue aceita, e o expurgo da fala do usuário também: o
-    /// segredo colado na conversa precisa poder sair.
+    /// uma entrega ou um clique, sem gravar nada. A fala digitada do usuário
+    /// ainda é gravada, revista e tirada à mão enquanto os ganchos não voltam;
+    /// a mensagem do assistente segue aceita, e o expurgo da fala do usuário
+    /// também: o segredo colado na conversa precisa poder sair.
     #[test]
-    fn deliveries_commits_and_user_messages_are_never_written_by_hand() {
+    fn deliveries_commits_and_user_clicks_are_never_written_by_hand() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = message(root, "user", "a senha é abc123");
+        let clicked = seed_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            event_type: "message".into(),
+            json: json!({"author": "user", "text": "Seguir?\nSim", "witness": {"question": "Seguir?", "answer": "Sim"}})
+                .to_string(),
+        });
+        let clicked = clicked["id"].as_u64().unwrap();
         let delivered = write(root, "delivered", r#"{"wave":1,"text":"A onda 1 saiu.","files":["src/a.rs"]}"#);
         let delivered = delivered["id"].as_u64().unwrap();
         let by_hand = |event_type: &str, body: Value| {
@@ -1084,23 +1107,27 @@ mod tests {
                 json: body.to_string(),
             })
         };
+        let witness = json!({"question": "Seguir?", "answer": "Sim"});
         let before = lines(root);
         for (event_type, body, reason) in [
             ("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["src/a.rs"]}), "binary-only-type"),
             ("commit", json!({"sha": "abc", "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": "r"}), "binary-only-type"),
             ("remove", json!({"targets": [delivered], "reason": "engano"}), "binary-only-type"),
-            ("message", json!({"author": "user", "text": "sim, pode seguir"}), "user-message-by-hook"),
-            ("message", json!({"author": "user", "text": "outra fala", "replaces": said}), "user-message-by-hook"),
-            ("message", json!({"text": "a fala revista", "replaces": said}), "user-message-by-hook"),
-            ("remove", json!({"targets": [said], "reason": "engano"}), "user-message-by-hook"),
+            ("message", json!({"author": "user", "text": "Seguir?\nSim", "witness": witness}), "user-message-by-hook"),
+            ("message", json!({"author": "user", "text": "outro", "replaces": clicked}), "user-message-by-hook"),
+            ("remove", json!({"targets": [clicked], "reason": "engano"}), "user-message-by-hook"),
         ] {
             let refused = by_hand(event_type, body.clone());
             assert_eq!(refused["reason"], json!(reason), "{event_type} {body}: {refused}");
         }
         assert_eq!(lines(root), before, "nothing was written");
 
+        let typed = by_hand("message", json!({"author": "user", "text": "sim, pode seguir"}));
+        assert_eq!(typed["ok"], json!(true), "the typed speech is still written by hand: {typed}");
+        let revised = by_hand("message", json!({"author": "user", "text": "a fala revista", "replaces": said}));
+        assert_eq!(revised["ok"], json!(true), "{revised}");
         assert_eq!(by_hand("message", json!({"text": "Anotado."}))["ok"], json!(true));
-        let purged = by_hand("purge", json!({"targets": [said], "reason": "secret"}));
+        let purged = by_hand("purge", json!({"targets": [revised["id"]], "reason": "secret"}));
         assert_eq!(purged["ok"], json!(true), "the secret goes: {purged}");
     }
 

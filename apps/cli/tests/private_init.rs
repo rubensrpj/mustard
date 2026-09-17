@@ -29,8 +29,8 @@
 //!
 //! Moving the gate alone was not enough, and the second half is worth recording
 //! because it nearly shipped. While the gate exited at the top of
-//! `init_with_templates`, the best-effort installers below it (`ensure_rtk`,
-//! `ensure_ripgrep`) could only run with the tools ALREADY present — their
+//! `init_with_templates`, the best-effort installers below it (the rtk and the
+//! ripgrep ones) could only run with the tools ALREADY present — their
 //! install branches were unreachable from `init`. Removing the exit made them
 //! live for library callers, and a shimmed-PATH run of that other crate's test
 //! caught it spawning `sh -c "curl … | sh"` twice. Both now sit beside the gate
@@ -89,11 +89,10 @@ fn git_project_with_github_remote(root: &Path, name: &str) -> PathBuf {
 ///
 /// Both are copies of the `mustard` binary under test, chosen because it is the
 /// one executable this test is guaranteed to have and because its surface is
-/// ours: `--version` exits 0 (which is all the two probes read), and the
-/// follow-up `rtk init -g --no-patch` is rejected by `clap` as an unknown
-/// argument before it can do anything. Answering the probes here — rather than
-/// hoping the runner has RTK and ripgrep — is what keeps the best-effort
-/// installers from reaching for `scoop`/`cargo install` on CI.
+/// ours: `--version` exits 0, which is all the two probes read. Answering the
+/// probes here — rather than hoping the runner has RTK and ripgrep — is what
+/// keeps the rtk gate open and the ripgrep installer from reaching for
+/// `scoop`/`cargo install` on CI.
 fn tool_shims(root: &Path) -> PathBuf {
     let bin = root.join("shims");
     std::fs::create_dir_all(&bin).expect("shim dir");
@@ -130,10 +129,7 @@ fn run_init(project: &Path, templates: &Path, shims: &Path, home: &Path, extra: 
         // everywhere else — and this test is NOT unix-gated, so setting only one
         // would leave the Windows runner writing the real file.
         .env("HOME", home)
-        .env("USERPROFILE", home)
-        // Never touch the operator's ~/.claude from a test — the write is
-        // opt-in, and this pins it off no matter what the environment says.
-        .env("MUSTARD_GLOBAL_PERMISSIONS", "0");
+        .env("USERPROFILE", home);
     cmd.output().expect("running the mustard binary")
 }
 

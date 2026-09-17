@@ -1,6 +1,6 @@
 ---
 description: Use when the user runs /upsert, asks to install, set up, or update Mustard in the current project, or to diagnose the installation — and when any /mustard:* command is blocked because Mustard is not installed (no mustard.json at the project root). The installation door — install, update, doctor.
-argument-hint: [--doctor]
+argument-hint: [--doctor | --confirm <token>]
 ---
 <!-- mustard:generated -->
 # /upsert — The Installation Door
@@ -15,7 +15,8 @@ One subject, one door: **the state of Mustard's installation in this project**. 
 
 | Flag | What it does |
 |------|--------------|
-| *(none)* | Install or update. Seeds `.claude/settings.local.json` (the install is always private-mode, so the hook wiring lands in your local settings file, never the shared `.claude/settings.json`), the injectable instruction files under `.claude/mustard/`, `.claude/.gitignore`, and the project-root `mustard.json`. Idempotent and merge-only — a file you already have is preserved; only what is missing is created. The one exception is the three injectables under `.claude/mustard/` — `orchestrator.md`, `dispatch.md` and `material.md`: those are the harness's own rules, not your configuration, so every run lays the shipped text down again, and a copy that had diverged is reported as updated, never as preserved. A legacy Mustard-planted `.claude/CLAUDE.md` (and the old import/breadcrumb lines in the root `CLAUDE.md`) is migrated away in the same pass. Until this has run, every other `/mustard:*` command is disabled. |
+| *(none)* | Install or update. Seeds `.claude/settings.local.json` (the install is always private-mode, so the hook wiring lands in your local settings file, never the shared `.claude/settings.json`), the injectable instruction files under `.claude/mustard/`, `.claude/.gitignore`, and the project-root `mustard.json`. Idempotent and merge-only — a file you already have is preserved; only what is missing is created. The one exception is the three injectables under `.claude/mustard/` — `orchestrator.md`, `dispatch.md` and `material.md`: those are the harness's own rules, not your configuration, so every run lays the shipped text down again, and a copy that had diverged is reported as updated, never as preserved. What an older Mustard left in files that are not its own — the marks in `CLAUDE.md` files, the seed's lines in a team `.claude/settings.json`, a planted `.claude/CLAUDE.md` — is only listed, and leaves only with `--confirm <token>` after the person's yes. Until this has run, every other `/mustard:*` command is disabled. |
+| `--confirm <token>` | Takes out exactly the `cleanup` list the person said yes to; the Guards that leave become project-rule lessons. Nothing is committed. |
 | `--doctor` | Read-only installation health report. Never writes. |
 
 
@@ -34,8 +35,9 @@ Print nothing raw — read the JSON report and relay it in clear language:
 3. `pluginRefresh` — the run's last step updates **the plugin itself**, so there is no "now go to /plugin and reload" left over.
    - `state: "refreshed"` → name the resulting `version` **when the field is there** (it is optional: the refresh ran, but the registry could not be read back — say the refresh succeeded and the version could not be confirmed, never invent one), and then say the other half plainly: **this session keeps running the plugin it loaded at start; only restarting Claude Code picks up the new one.** Never imply the new version is already active here — the host loads a plugin once per session and nothing inside the session changes that.
    - `state: "skipped"` → relay the `skipped` reason as it comes. The project install still succeeded; only the plugin update did not run.
-4. After a **first install**, add: the defaults work out of the box, and nothing needs a branch declared — bases come from git itself, and protection from `origin/HEAD`. `git.flow` (an OPTIONAL promotion map, which also pre-selects where a base picker opens), `git.protected` and `language` (`text`, `code`) can be adjusted anytime by editing `mustard.json` at the project root.
-5. Next step: describe the work you want done — the router opens the pipeline. The repo map is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own.
+4. `cleanup` present → show the person the list as it came: each file with its `action` (`edit`, with the lines in `removes`, or `delete`), the `unmarked` files that are theirs to decide, and the Guards that become lessons. Say the commit stays with them. Only after their yes, run `mustard-rt run upsert --confirm <confirm.token>` and relay `cleaned`. A `confirm-mismatch` means the list changed: run the upsert again and show the new list.
+5. After a **first install**, add: the defaults work out of the box, and nothing needs a branch declared — bases come from git itself, and protection from `origin/HEAD`. `git.flow` (an OPTIONAL promotion map, which also pre-selects where a base picker opens), `git.protected`, `language` (`text`, `code`), `enabled` (`false` turns every Mustard hook off in this project) and `rtk` (`false` takes rtk's hook out of `.claude/settings.local.json`; the next upsert applies it) can be adjusted anytime by editing `mustard.json` at the project root.
+6. Next step: describe the work you want done — the router opens the pipeline. The repo map is updated by `mustard-rt run scan`, which reads only what changed and never writes to git; nothing runs it on its own.
 
 ### Doctor
 

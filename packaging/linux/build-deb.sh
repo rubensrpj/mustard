@@ -2,7 +2,8 @@
 # ============================================================================
 # build-deb.sh — roda DENTRO do container (packaging/linux/Dockerfile).
 #
-# Compila os binários do CLI (scan, mustard-rt, mustard, rtk) e empacota tudo
+# Compila os binários do CLI (scan, mustard-rt, mustard), baixa o rtk na versão
+# fixa do checksums.txt e empacota tudo
 # num único pacote Debian:
 #
 #   dist/mustard_<versao>_amd64.deb
@@ -65,15 +66,25 @@ echo "==> [2/5] cargo build --release (CLI)"
     cargo build --release --locked \
       --bin scan --bin mustard-rt --bin mustard )
 
-# --- 3. rtk (binário pré-compilado oficial) ---------------------------------
+# --- 3. rtk (a release fixa do checksums.txt, conferida) -------------------
+# A versão e a soma de cada pacote moram no checksums.txt da raiz. O pacote
+# baixado só entra no .deb se a soma dele bater com a linha de lá; qualquer
+# falha (sem rede, soma diferente, pacote sem o binário) para o build.
 echo "==> [3/5] obtendo o rtk"
-RTK=""
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh || true
-for p in "$HOME/.local/bin/rtk" "$HOME/.cargo/bin/rtk" /opt/cargo/bin/rtk \
-         /usr/local/bin/rtk /usr/bin/rtk; do
-  if [ -x "$p" ]; then RTK="$p"; echo "    rtk: $p"; break; fi
-done
-[ -n "$RTK" ] || { echo "erro: rtk não pôde ser obtido — pacote incompleto." >&2; exit 1; }
+SUMS="$REPO/checksums.txt"
+RTK_VERSION=$(sed -n 's/^# rtk v\([0-9][0-9.]*\).*/\1/p' "$SUMS" | head -1)
+[ -n "$RTK_VERSION" ] || { echo "erro: o checksums.txt não diz a versão do rtk." >&2; exit 1; }
+RTK_ASSET=rtk-x86_64-unknown-linux-musl.tar.gz
+RTK_DIR=/tmp/rtk-download
+rm -rf "$RTK_DIR"
+mkdir -p "$RTK_DIR"
+curl -fsSL -o "$RTK_DIR/$RTK_ASSET" \
+  "https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/$RTK_ASSET"
+( cd "$RTK_DIR" && grep "  $RTK_ASSET\$" "$SUMS" | sha256sum -c - )
+tar -xzf "$RTK_DIR/$RTK_ASSET" -C "$RTK_DIR" rtk
+RTK="$RTK_DIR/rtk"
+[ -x "$RTK" ] || { echo "erro: o pacote do rtk não trouxe o binário — pacote incompleto." >&2; exit 1; }
+echo "    rtk: v$RTK_VERSION"
 
 # --- 4. monta a árvore do .deb ----------------------------------------------
 echo "==> [4/5] montando o .deb"

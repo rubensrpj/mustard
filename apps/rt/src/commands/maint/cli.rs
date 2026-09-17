@@ -62,10 +62,21 @@ pub enum MaintCmd {
     /// rules, not project configuration, so a copy you edited is replaced and
     /// listed under `updated`, while one that already matched the shipped
     /// text comes back under `preserved` because there was nothing left to
-    /// write. The legacy planted-orchestrator footprint is migrated away.
-    /// Emits the `UpsertReport` as deterministic pretty JSON.
+    /// write. Emits the `UpsertReport` as deterministic pretty JSON.
+    ///
+    /// What an older Mustard wrote into files that are not its own — the
+    /// marks in the `CLAUDE.md` files, the seed's lines in the team's
+    /// `.claude/settings.json`, a planted `.claude/CLAUDE.md` — comes back as
+    /// a list under `cleanup`, with a `token`, and nothing of it is touched.
+    /// After the person says yes to that list, `--confirm <token>` takes it
+    /// out and turns the Guards that leave into project-rule lessons. The
+    /// commit stays with the person.
     #[command(display_order = 19)]
-    Upsert {},
+    Upsert {
+        /// The `token` the list came with, after the person said yes to it.
+        #[arg(long)]
+        confirm: Option<String>,
+    },
 }
 
 /// Dispatch one `maint`-family `run` subcommand.
@@ -79,7 +90,7 @@ pub fn dispatch(cmd: MaintCmd) {
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
-        MaintCmd::Upsert {} => maint::upsert::run(),
+        MaintCmd::Upsert { confirm } => maint::upsert::run(confirm.as_deref()),
     }
 }
 

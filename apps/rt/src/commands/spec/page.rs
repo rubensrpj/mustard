@@ -11,12 +11,15 @@
 //!   `--title`, o título é a primeira linha `# Título` do markdown, que sai
 //!   do corpo.
 //! - `page --spec <nome>` refaz o `spec.md` e o `spec.html` da spec a partir
-//!   do `spec.ndjson`. O `write` já refaz os dois a cada evento gravado; esta
-//!   forma refaz sem gravar nada no arquivo de eventos.
+//!   do `spec.ndjson`, e a página do projeto a partir do índice, sem gravar
+//!   nada no arquivo de eventos.
 //!
 //! Saída: `{ok, path}` na página avulsa, com `path` exatamente como `--out`
-//! foi passado (barras normais), e `{ok, spec, md, html}` na da spec, com os
-//! caminhos relativos ao projeto. Recusa sai com exit 1, `ok: false`, a razão
+//! foi passado (barras normais), e `{ok, spec, md, html, project}` na da spec,
+//! com os caminhos relativos ao projeto. A conferência antes de publicar
+//! acrescenta `withheld` (os itens que ficaram fora da página por terem texto
+//! com cara de segredo), `trimmed` (quantos registros da conversa ficaram só
+//! no `.md`) e `warnings`, quando há o que dizer. Recusa sai com exit 1, `ok: false`, a razão
 //! em `reason` e a mensagem no idioma do projeto em `hint`, e não grava nada.
 
 use std::path::{Path, PathBuf};
@@ -88,7 +91,22 @@ pub(crate) fn build(opts: &PageOpts) -> Value {
     let lang = project.lang;
     if let Some(spec) = opts.spec.as_deref() {
         return match pages::refresh(&project.root, spec, lang) {
-            Ok(written) => json!({ "ok": true, "spec": spec.trim(), "md": written.md, "html": written.html }),
+            Ok(written) => {
+                let mut report = json!({ "ok": true, "spec": spec.trim(), "md": written.md, "html": written.html });
+                if let Some(page) = written.project {
+                    report["project"] = json!(page);
+                }
+                if !written.withheld.is_empty() {
+                    report["withheld"] = json!(written.withheld);
+                }
+                if written.trimmed > 0 {
+                    report["trimmed"] = json!(written.trimmed);
+                }
+                if !written.warnings.is_empty() {
+                    report["warnings"] = json!(written.warnings);
+                }
+                report
+            }
             Err(refusal) => refused(&refusal, lang),
         };
     }
