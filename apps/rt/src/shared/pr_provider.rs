@@ -688,11 +688,18 @@ impl PrProvider for UnsupportedPr {
 /// commands that open/edit/ready a PR ask for "the provider", and WHICH one
 /// answers stays an internal detail of this module.
 pub(crate) fn provider_for(root: &Path) -> Box<dyn PrProvider> {
-    let cfg = mustard_core::ProjectConfig::load(root);
-    let provider = mustard_core::resolve_provider(root, &cfg.git.provider);
+    provider_in(root, root)
+}
+
+/// O adaptador do repositório `repo`, com o provedor que o projeto de
+/// `config_root` declara e, sem declaração, o que o `origin` de `repo` diz. É
+/// como um submódulo, que não tem `mustard.json`, fala com o provedor dele.
+pub(crate) fn provider_in(config_root: &Path, repo: &Path) -> Box<dyn PrProvider> {
+    let cfg = mustard_core::ProjectConfig::load(config_root);
+    let provider = mustard_core::resolve_provider(repo, &cfg.git.provider);
     match provider.as_str() {
-        PROVIDER_GITHUB => Box::new(GithubPrCli::new(root)),
-        PROVIDER_AZURE => Box::new(crate::shared::pr_azure::AzurePrRest::new(root)),
+        PROVIDER_GITHUB => Box::new(GithubPrCli::new(repo)),
+        PROVIDER_AZURE => Box::new(crate::shared::pr_azure::AzurePrRest::new(repo)),
         _ => Box::new(UnsupportedPr { provider }),
     }
 }

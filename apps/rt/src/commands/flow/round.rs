@@ -51,7 +51,9 @@
 //! checkout fazem cada um desses passos uma depois da outra, e nunca soltam a
 //! mesma onda duas vezes. O commit leva só os arquivos da rodada, por caminho;
 //! a recusa do git volta o disco e o índice deles, e nada da onda recusada
-//! entra no commit de outra.
+//! entra no commit de outra. O arquivo de dentro de um submódulo é comitado no
+//! submódulo, na branch de mesmo nome da spec, e o commit do principal leva o
+//! ponteiro novo; a cópia da onda traz os submódulos que ela toca.
 //!
 //! **O que avisa.** O formatador que o projeto declara e que não foi achado
 //! sai pelo nome, em vez de a formatação ser pulada em silêncio; a prova nova
@@ -193,6 +195,34 @@ mod tests {
                 "files": declared, "origin": said}));
         }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+    }
+
+    /// O projeto em `root` com o submódulo `libs/sub`, clonado de um servidor
+    /// em `servers` cuja base é `main`, com o arquivo `lib.txt` e quem comita
+    /// configurado no submódulo. Chame antes de [`approved`].
+    pub(super) fn with_submodule(root: &Path, servers: &Path) {
+        let (server, seed) = (servers.join("sub.git"), servers.join("semente"));
+        std::fs::create_dir_all(&seed).unwrap();
+        std::fs::create_dir_all(root).unwrap();
+        git_at(servers, &["init", "-q", "--bare", "-b", "main", "sub.git"]);
+        git_at(&seed, &["init", "-q", "-b", "main"]);
+        std::fs::write(seed.join("lib.txt"), "fn um() {}\n").unwrap();
+        git_at(&seed, &["add", "-A"]);
+        git_at(&seed, &["commit", "-q", "-m", "biblioteca"]);
+        git_at(&seed, &["push", "-q", &server.to_string_lossy(), "main"]);
+        git_at(root, &["init", "-q"]);
+        let url = server.to_string_lossy().to_string();
+        git_at(root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &url, "libs/sub"]);
+        git_at(root, &["commit", "-q", "-m", "submodulo"]);
+        for (key, value) in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")] {
+            git_at(&root.join("libs/sub"), &["config", key, value]);
+        }
+    }
+
+    /// A saída do git em `dir`, sem as bordas.
+    pub(super) fn git_text(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").args(args).current_dir(dir).output().expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     pub(super) fn round(root: &Path, spec: &str, report: Option<&str>) -> Value {

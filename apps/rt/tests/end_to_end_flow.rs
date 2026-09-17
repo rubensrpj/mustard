@@ -12,6 +12,12 @@
 //! ensinam, e o provedor do pull request é um `gh` falso no começo do `PATH`.
 //! No fim, cada passo do fluxo gravou uma chamada só — a aprovação nenhuma — e
 //! a pasta da spec tem os três arquivos dela.
+//!
+//! A mesma spec, num projeto com um submódulo e servidores locais, prova o
+//! fluxo de submódulo: a branch de mesmo nome nos dois repositórios, o pull
+//! request do submódulo aberto antes e o do principal como rascunho até o do
+//! submódulo entrar e o ponteiro ser atualizado — pelo `pr-merge` e pela
+//! conferência do início da sessão.
 
 #![cfg(unix)]
 
@@ -29,11 +35,65 @@ use serde_json::{json, Value};
 const SPEC: &str = "ponta";
 const GOAL: &str = "Trocar a saudação do programa.";
 const SESSION: &str = "s-ponta";
+/// A branch da spec, a mesma no principal e no submódulo.
+const BRANCH: &str = "feature/ponta";
+/// O submódulo do projeto de teste e o arquivo dele que a onda muda.
+const SUB: &str = "libs/sub";
+const SUB_FILE: &str = "libs/sub/lib.txt";
 
 fn git(root: &Path, args: &[&str]) {
+    git_out(root, args);
+}
+
+/// A saída do git, que precisa responder.
+fn git_out(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git").args(args).current_dir(root).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
+
+/// O repositório `repo` com o nome e o e-mail de quem comita.
+fn identify(repo: &Path) {
+    git(repo, &["config", "user.email", "t@example.com"]);
+    git(repo, &["config", "user.name", "t"]);
+    git(repo, &["config", "commit.gpgsign", "false"]);
+}
+
+/// O `gh` falso do projeto com submódulo: anota cada chamada com o
+/// repositório de onde veio (`sub` ou `main`), abre o pull request 3 no
+/// submódulo e o 7 no principal, lembra quais estão abertos, em rascunho e
+/// mergeados, e faz o merge do submódulo de verdade no servidor dele, por um
+/// commit de merge.
+const SUBMODULE_GH: &str = r#"#!/bin/sh
+case "$(pwd -P)" in
+  */libs/sub) repo=sub; number=3 ;;
+  *) repo=main; number=7 ;;
+esac
+echo "$repo $*" >> "$GH_LOG"
+mark="$GH_STATE/$repo"
+case "$1 $2" in
+"pr create")
+  touch "$mark.open"
+  case " $* " in *" --draft "*) touch "$mark.draft" ;; esac
+  echo "https://github.com/exemplo/$repo/pull/$number"
+  exit 0 ;;
+"pr view")
+  [ -f "$mark.open" ] || { echo 'no pull requests found' >&2; exit 1; }
+  case "$*" in *statusCheckRollup*) echo '{"statusCheckRollup":[]}'; exit 0 ;; esac
+  state=OPEN; [ -f "$mark.merged" ] && state=MERGED
+  draft=false; [ -f "$mark.draft" ] && draft=true
+  printf '{"number":%s,"title":"t","state":"%s","headRefName":"feature/ponta","baseRefName":"b","isDraft":%s,"url":"https://github.com/exemplo/%s/pull/%s"}
+' "$number" "$state" "$draft" "$repo" "$number"
+  exit 0 ;;
+"pr merge")
+  work="$GH_STATE/merge-$repo"
+  git clone -q "$(git config --get remote.origin.url)" "$work"     && git -C "$work" -c user.email=t@example.com -c user.name=t merge -q --no-ff origin/feature/ponta -m "Merge pull request #$number"     && git -C "$work" push -q origin HEAD:main     && touch "$mark.merged"
+  exit $? ;;
+"pr ready") rm -f "$mark.draft"; exit 0 ;;
+"api --method") exit 0 ;;
+esac
+exit 1
+"#;
 
 /// O projeto de teste: um repositório com `main` e `dev`, parado em `dev`, com
 /// as bases declaradas, o provedor do GitHub, o lint do projeto e o Mustard
@@ -44,21 +104,33 @@ struct Project {
     root: PathBuf,
     home: PathBuf,
     bin: PathBuf,
+    /// Os servidores locais do projeto com submódulo.
+    remotes: PathBuf,
 }
 
 impl Project {
     fn new() -> Self {
+        Self::build(false)
+    }
+
+    /// O projeto com o submódulo `libs/sub`, que vem de um servidor local com
+    /// a base `main`; o principal tem o servidor dele, com `main` e `dev`; e o
+    /// `gh` falso responde por repositório ([`SUBMODULE_GH`]).
+    fn with_submodule() -> Self {
+        Self::build(true)
+    }
+
+    fn build(submodule: bool) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().join("projeto");
         let home = dir.path().join("casa");
         let bin = dir.path().join("bin");
-        for folder in [&root, &home, &bin] {
+        let remotes = dir.path().join("servidores");
+        for folder in [&root, &home, &bin, &remotes] {
             std::fs::create_dir_all(folder).expect("folder");
         }
         git(&root, &["init", "-q"]);
-        git(&root, &["config", "user.email", "t@example.com"]);
-        git(&root, &["config", "user.name", "t"]);
-        git(&root, &["config", "commit.gpgsign", "false"]);
+        identify(&root);
         git(&root, &["checkout", "-q", "-b", "main"]);
         std::fs::write(root.join(".git/info/exclude"), ".claude/\nmustard.json\ntarget/\n").expect("exclude");
         let config = json!({
@@ -71,31 +143,72 @@ impl Project {
         std::fs::write(root.join("src/main.rs"), "fn main() {\n    println!(\"oi\");\n}\n").expect("code");
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-q", "-m", "init"]);
+        if submodule {
+            let sub_server = remotes.join("sub.git");
+            let seed = remotes.join("semente");
+            git(&remotes, &["init", "-q", "--bare", "-b", "main", "sub.git"]);
+            git(&remotes, &["init", "-q", "-b", "main", "semente"]);
+            identify(&seed);
+            std::fs::write(seed.join("lib.txt"), "a biblioteca\n").expect("the submodule file");
+            git(&seed, &["add", "-A"]);
+            git(&seed, &["commit", "-q", "-m", "biblioteca"]);
+            git(&seed, &["push", "-q", &sub_server.to_string_lossy(), "main"]);
+            let sub_url = sub_server.to_string_lossy().to_string();
+            git(&root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub_url, SUB]);
+            identify(&root.join(SUB));
+            git(&root, &["commit", "-q", "-m", "submodulo"]);
+            git(&remotes, &["init", "-q", "--bare", "projeto.git"]);
+            git(&root, &["remote", "add", "origin", &remotes.join("projeto.git").to_string_lossy()]);
+            git(&root, &["push", "-q", "origin", "main"]);
+        }
         git(&root, &["checkout", "-q", "-b", "dev"]);
+        if submodule {
+            git(&root, &["push", "-q", "origin", "dev"]);
+        }
 
         let gh = bin.join("gh");
-        std::fs::write(
-            &gh,
+        let script = if submodule {
+            SUBMODULE_GH.to_string()
+        } else {
             "#!/bin/sh\necho \"$*\" >> \"$GH_LOG\"\ncase \"$1 $2\" in\n\
              \"pr view\") echo 'no pull requests found' >&2; exit 1 ;;\n\
              \"pr create\") echo 'https://github.com/exemplo/projeto/pull/7'; exit 0 ;;\n\
-             esac\nexit 1\n",
-        )
-        .expect("the fake gh");
+             esac\nexit 1\n"
+                .to_string()
+        };
+        std::fs::write(&gh, script).expect("the fake gh");
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        Self { _dir: dir, root, home, bin }
+        Self { _dir: dir, root, home, bin, remotes }
     }
 
     /// O binário com `args`, no projeto, com a pasta pessoal falsa, o `gh`
     /// falso à frente do `PATH` e nenhuma sessão nem spec forçada.
     fn command(&self, args: &[&str], stdin: &str) -> Output {
-        let path = format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap_or_default());
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut binary = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+        let mut child = self
+            .env(&mut binary)
             .args(args)
             .current_dir(&self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary runs");
+        if let Some(mut pipe) = child.stdin.take() {
+            let _ = pipe.write_all(stdin.as_bytes());
+        }
+        child.wait_with_output().expect("the binary finishes")
+    }
+
+    /// O ambiente de quem roda: a pasta pessoal falsa, o `gh` falso à frente
+    /// do `PATH` e nenhuma sessão nem spec forçada.
+    fn env<'a>(&self, command: &'a mut Command) -> &'a mut Command {
+        let path = format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap_or_default());
+        command
             .env("PATH", path)
             .env("GH_LOG", self.gh_log())
+            .env("GH_STATE", &self.remotes)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -107,15 +220,6 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("the binary runs");
-        if let Some(mut pipe) = child.stdin.take() {
-            let _ = pipe.write_all(stdin.as_bytes());
-        }
-        child.wait_with_output().expect("the binary finishes")
     }
 
     /// Um comando `run`, que precisa responder `ok`.
@@ -135,10 +239,17 @@ impl Project {
         self.run(&["write", event_type, "--spec", SPEC, "--json", &fields.to_string()])
     }
 
-    /// Um evento do harness entregue ao gancho, como a sessão entrega.
-    fn hook(&self, event: &str, payload: &Value) {
+    /// Um evento do harness entregue ao gancho, como a sessão entrega; devolve
+    /// o que o gancho disse.
+    fn hook(&self, event: &str, payload: &Value) -> String {
         let out = self.command(&["on", event], &payload.to_string());
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// As chamadas ao `gh` falso, na ordem.
+    fn gh_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.gh_log()).unwrap_or_default().lines().map(str::to_string).collect()
     }
 
     fn gh_log(&self) -> PathBuf {
@@ -200,6 +311,11 @@ fn survey(project: &Project) {
 
 /// O plano de uma onda: o critério com a prova, a onda e a tarefa.
 fn plan(project: &Project) {
+    plan_files(project, &["src/main.rs"]);
+}
+
+/// [`plan`] com a tarefa mudando os arquivos `files`.
+fn plan_files(project: &Project, files: &[&str]) {
     let said = user_says(project, "O plano é uma onda só, que muda a saudação.");
     let criterion = project.write(
         "criterion",
@@ -211,10 +327,10 @@ fn plan(project: &Project) {
         &json!({"n": 1, "text": "Onda 1: a saudação nova.", "criteria": [criterion["id"]],
             "done_when": "A saudação nova aparece.", "origin": said}),
     );
+    let files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
     project.write(
         "task",
-        &json!({"wave": 1, "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
-            "origin": said}),
+        &json!({"wave": 1, "text": "Trocar a saudação no programa.", "files": files, "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
@@ -315,4 +431,157 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .collect();
     names.sort();
     assert_eq!(names, ["spec.html", "spec.md", "spec.ndjson"], "the spec folder ends with three files");
+}
+
+/// A spec do projeto com submódulo, da abertura ao pull request: a onda muda
+/// um arquivo do principal e um do submódulo, a rodada comita os dois e o
+/// fechamento devolve a linha do `pr-open`, que roda. Confere o que a rodada
+/// deixou nos dois repositórios e devolve a resposta do `pr-open`.
+fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
+    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
+    survey(project);
+    plan_files(project, &["src/main.rs", SUB_FILE]);
+    approve(project);
+
+    // A cópia da onda traz o submódulo que a onda toca.
+    let first = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    assert!(copy.join(SUB).join(".git").is_file(), "the copy brings the submodule the wave touches: {first}");
+
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    std::fs::write(copy.join(SUB_FILE), "a biblioteca nova\n").expect("the submodule change");
+    let delivered = json!({"wave": 1, "text": "A saudação e a biblioteca mudaram.",
+        "files": ["src/main.rs", SUB_FILE], "commit": "a saudação e a biblioteca mudam"});
+    let second = project.run(&["round", "--spec", SPEC, "--report", &format!("<DELIVERED>{delivered}</DELIVERED>")]);
+    assert!(!copy.exists(), "the copy and the submodule copy inside it are removed: {second}");
+
+    // O commit sai dentro do submódulo, na branch de mesmo nome, e o do
+    // principal leva o ponteiro novo junto com o arquivo dele.
+    let sub = project.root.join(SUB);
+    assert_eq!(git_out(&sub, &["rev-parse", "--abbrev-ref", "HEAD"]), BRANCH, "{second}");
+    assert_eq!(git_out(&project.root, &["rev-parse", "--abbrev-ref", "HEAD"]), BRANCH);
+    assert_eq!(std::fs::read_to_string(sub.join("lib.txt")).unwrap(), "a biblioteca nova\n");
+    assert_eq!(git_out(&sub, &["show", "-s", "--format=%s", "HEAD"]), "feat(onda-1): a saudação e a biblioteca mudam");
+    assert_eq!(git_out(&sub, &["show", "--name-only", "--format=", "HEAD"]), "lib.txt");
+    assert_eq!(
+        git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]),
+        git_out(&sub, &["rev-parse", "HEAD"]),
+        "the main commit carries the new pointer"
+    );
+    let changed = git_out(&project.root, &["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(changed.lines().collect::<Vec<_>>(), [SUB, "src/main.rs"], "{second}");
+    assert_eq!(second["commit"]["submodules"][0]["path"], json!(SUB), "{second}");
+
+    let verdict = json!({"wave": 1, "result": "approved", "text": "Mudaram.",
+        "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+    let closed = project.run(&["close", "--spec", SPEC, "--report", &format!("<VERDICT>{verdict}</VERDICT>")]);
+    let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
+    let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
+    project.run(&argv)
+}
+
+/// Quando uma spec mexe no principal e num submódulo, as duas branches têm o
+/// mesmo nome, o pull request do submódulo abre primeiro, contra a base dele,
+/// e o do principal abre como rascunho. Enquanto o do submódulo não entra, o
+/// início da sessão diz qual falta e o principal segue rascunho; quando ele
+/// entra pelo `pr-merge`, o principal recebe o ponteiro da base do submódulo,
+/// envia a branch e fica pronto.
+#[test]
+fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_only_after_the_submodule_one() {
+    let project = Project::with_submodule();
+    let pr = open_pull_requests_with_a_submodule(&project);
+
+    // O do submódulo abre primeiro, da branch de mesmo nome contra a base
+    // dele; o do principal, depois, como rascunho.
+    let calls = project.gh_calls();
+    let created = |repo: &str| {
+        calls
+            .iter()
+            .position(|call| call.starts_with(&format!("{repo} pr create")))
+            .unwrap_or_else(|| panic!("no pull request opened in {repo}: {calls:#?}"))
+    };
+    let (sub_at, main_at) = (created("sub"), created("main"));
+    assert!(sub_at < main_at, "the submodule pull request opens first: {calls:#?}");
+    assert!(calls[sub_at].contains(&format!("--head {BRANCH} --base main")), "{}", calls[sub_at]);
+    assert!(!calls[sub_at].contains("--draft"), "{}", calls[sub_at]);
+    assert!(calls[main_at].contains(&format!("--head {BRANCH} --base dev")), "{}", calls[main_at]);
+    assert!(calls[main_at].contains("--draft"), "the main pull request opens as a draft: {}", calls[main_at]);
+    let sub_server = project.remotes.join("sub.git");
+    assert!(
+        !git_out(&sub_server, &["for-each-ref", &format!("refs/heads/{BRANCH}")]).is_empty(),
+        "the submodule branch, with the same name, is on its server"
+    );
+    assert_eq!(pr["number"], json!(7), "{pr}");
+    assert_eq!(pr["submodules"][0]["path"], json!(SUB), "{pr}");
+    assert_eq!(pr["submodules"][0]["url"], json!("https://github.com/exemplo/sub/pull/3"), "{pr}");
+    let waiting = translate("pr.submodules.waiting", Locale::PtBr).replace("{pr}", "7").replace("{paths}", SUB);
+    assert_eq!(pr["hint"], json!(waiting), "{pr}");
+
+    // Enquanto o do submódulo não entra, o início da sessão diz qual falta, e
+    // o principal segue rascunho.
+    let start = json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": SESSION,
+        "cwd": project.root.to_string_lossy()});
+    let said = project.hook("SessionStart", &start);
+    assert!(said.contains(&waiting), "the session start names the missing pull request: {said}");
+    assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
+
+    // O do submódulo entra pelo `pr-merge`: o ponteiro vai para a base do
+    // submódulo, a branch do principal é enviada, e o principal fica pronto.
+    let sub = project.root.join(SUB);
+    let before = git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]);
+    let merged = project.run(&["pr-merge", "--pr", "3", "--root", &sub.to_string_lossy()]);
+    assert_eq!(merged["action"], json!("merged"), "{merged}");
+    assert_eq!(merged["submodules"]["ready"], json!(true), "{merged}");
+    let sub_base = git_out(&sub_server, &["rev-parse", "refs/heads/main"]);
+    let pointer = git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]);
+    assert_ne!(pointer, before, "the pointer moved: {merged}");
+    assert_eq!(pointer, sub_base, "the pointer is the submodule base after the merge: {merged}");
+    assert_eq!(
+        git_out(&project.remotes.join("projeto.git"), &["rev-parse", &format!("refs/heads/{BRANCH}")]),
+        git_out(&project.root, &["rev-parse", "HEAD"]),
+        "the main branch was pushed with the pointer"
+    );
+    let calls = project.gh_calls();
+    let merged_at = calls.iter().position(|call| call.starts_with("sub pr merge 3")).expect("the submodule merge");
+    let ready_at = calls.iter().position(|call| call.starts_with("main pr ready 7")).expect("the main pull request is ready");
+    assert!(merged_at < ready_at, "{calls:#?}");
+    assert!(git_out(&sub, &["branch", "--list", BRANCH]).is_empty(), "the submodule branch left this machine");
+}
+
+/// O pull request do submódulo que outra pessoa mergeou é achado no início da
+/// sessão: o ponteiro vai para a base do submódulo, a branch do principal é
+/// enviada, o principal fica pronto e o aviso diz isso.
+#[test]
+fn a_submodule_pull_request_merged_by_someone_else_readies_the_main_one_at_session_start() {
+    let project = Project::with_submodule();
+    open_pull_requests_with_a_submodule(&project);
+
+    let sub = project.root.join(SUB);
+    let merged = project.env(&mut Command::new(project.bin.join("gh"))).args(["pr", "merge", "3", "--merge"]).current_dir(&sub).output();
+    assert!(merged.expect("the fake gh").status.success(), "someone else merges the submodule pull request");
+    assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
+
+    let start = json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": SESSION,
+        "cwd": project.root.to_string_lossy()});
+    let said = project.hook("SessionStart", &start);
+    let ready = translate("pr.submodules.ready", Locale::PtBr).replace("{pr}", "7").replace("{paths}", SUB);
+    assert!(said.contains(&ready), "the session start says the main pull request is ready: {said}");
+    let sub_base = git_out(&project.remotes.join("sub.git"), &["rev-parse", "refs/heads/main"]);
+    assert_eq!(git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]), sub_base, "the pointer moved");
+    assert_eq!(
+        git_out(&project.remotes.join("projeto.git"), &["rev-parse", &format!("refs/heads/{BRANCH}")]),
+        git_out(&project.root, &["rev-parse", "HEAD"]),
+        "the main branch was pushed with the pointer"
+    );
+    assert!(project.gh_calls().iter().any(|call| call.starts_with("main pr ready 7")), "the main pull request is ready");
+
+    // A conferência seguinte não refaz nada: o principal já está pronto.
+    let commits = git_out(&project.root, &["rev-list", "--count", "HEAD"]);
+    let again = project.hook("SessionStart", &start);
+    assert!(!again.contains(&ready), "{again}");
+    assert_eq!(git_out(&project.root, &["rev-list", "--count", "HEAD"]), commits, "no second pointer commit");
 }

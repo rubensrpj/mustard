@@ -19,6 +19,7 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
+use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::spec_events::write::record;
 
 /// A mensagem do commit da rodada, montada do resumo que cada entrega traz e
@@ -213,6 +214,35 @@ pub(super) fn head(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string()
 }
 
+/// Os arquivos da rodada separados por repositório: os do principal e, por
+/// submódulo, os de dentro dele, escritos a partir do principal.
+#[derive(Debug, Default)]
+pub(super) struct RoundRepos {
+    own: Vec<String>,
+    pub(super) subs: BTreeMap<String, Vec<String>>,
+}
+
+/// Os arquivos `files` da rodada do checkout `root`, cada um no repositório
+/// que o guarda.
+pub(super) fn round_repos(root: &Path, files: &[String]) -> RoundRepos {
+    let subs = submodules_of(root);
+    let mut repos = RoundRepos::default();
+    for file in files {
+        match submodule_holding(&subs, file) {
+            Some((sub, _)) => repos.subs.entry(sub.to_string()).or_default().push(file.clone()),
+            None => repos.own.push(file.clone()),
+        }
+    }
+    repos
+}
+
+/// Os commits da rodada: o do principal e o de cada submódulo, pelo caminho
+/// dele.
+pub(super) struct Made {
+    pub(super) sha: String,
+    pub(super) subs: Vec<(String, String)>,
+}
+
 /// Faz o commit da rodada com a mensagem já conferida e devolve o código dele.
 /// Não grava nada na spec: roda antes de qualquer gravação, e a recusa do git
 /// para a rodada com a spec intacta. Roda com a trava do passo do git que quem
@@ -221,26 +251,76 @@ pub(super) fn head(root: &Path) -> String {
 /// O commit leva só os arquivos da rodada, por caminho, com o conteúdo do
 /// disco, e nada do que estiver preparado fora deles. O preparo do checkout só
 /// muda quando o commit sai: a rodada que morre no meio dele não deixa nada
-/// preparado. Quando o git recusa, o bloco inteiro é desfeito ali mesmo,
-/// dentro da trava: o registro dos arquivos novos sai do índice e cada arquivo
-/// que a junção mudou (`joined`) volta ao que era no disco.
+/// preparado. O arquivo de dentro de um submódulo é comitado no submódulo, na
+/// branch `unit` da spec, criada na primeira vez sobre a base dele, e o commit
+/// do principal leva o ponteiro novo junto com os arquivos dele. Quando o git
+/// recusa, o bloco inteiro é desfeito ali mesmo, dentro da trava: o commit já
+/// feito num submódulo volta, o registro dos arquivos novos sai do índice e
+/// cada arquivo que a junção mudou (`joined`) volta ao que era no disco.
 pub(super) fn make_commit(
     root: &Path,
     _held: &LockedFile,
-    title: &str,
-    body: &str,
-    files: &[String],
+    unit: &str,
+    message: (&str, &str),
+    repos: &RoundRepos,
     joined: &[Joined],
-) -> Result<String, RoundRefusal> {
-    let mut registered: Vec<String> = Vec::new();
-    let made = commit_paths(root, title, body, files, &mut registered);
+) -> Result<Made, RoundRefusal> {
+    let mut done: Vec<SubCommit> = Vec::new();
+    let made = commit_repos(root, unit, message, repos, &mut done);
     if made.is_err() {
-        if !registered.is_empty() {
-            let mut undo: Vec<&str> = vec!["rm", "-q", "--cached", "--ignore-unmatch", "--"];
-            undo.extend(registered.iter().map(String::as_str));
-            let _ = git(root, &undo);
+        for one in done.iter().rev() {
+            let dir = root.join(&one.sub);
+            let _ = git(&dir, &["reset", "-q", "--soft", &one.before]);
+            let mut undo: Vec<&str> = vec!["reset", "-q", &one.before, "--"];
+            undo.extend(one.inner.iter().map(String::as_str));
+            let _ = git(&dir, &undo);
         }
         write_joined(root, joined, false)?;
+    }
+    made.map(|sha| Made { sha, subs: done.into_iter().map(|one| (one.sub, one.sha)).collect() })
+}
+
+/// O commit feito num submódulo: onde, o commit em que ele estava, os
+/// arquivos dele e o código do novo.
+struct SubCommit {
+    sub: String,
+    before: String,
+    inner: Vec<String>,
+    sha: String,
+}
+
+/// Os commits de [`make_commit`], primeiro os dos submódulos, em `done`, e
+/// por último o do principal, que leva o ponteiro de cada um.
+fn commit_repos(
+    root: &Path,
+    unit: &str,
+    (title, body): (&str, &str),
+    repos: &RoundRepos,
+    done: &mut Vec<SubCommit>,
+) -> Result<String, RoundRefusal> {
+    let mut own = repos.own.clone();
+    for (sub, files) in &repos.subs {
+        let dir = root.join(sub);
+        enter_unit_branch(&dir, unit).map_err(|detail| RoundRefusal::Git { detail })?;
+        let inner: Vec<String> =
+            files.iter().filter_map(|file| file.strip_prefix(&format!("{sub}/")).map(str::to_string)).collect();
+        let before = head(&dir);
+        let sha = committed(&dir, title, body, &inner)?;
+        done.push(SubCommit { sub: sub.clone(), before, inner, sha });
+        own.push(sub.clone());
+    }
+    committed(root, title, body, &own)
+}
+
+/// O commit por caminho de [`commit_paths`] no repositório `dir`; na recusa,
+/// o registro dos arquivos novos sai do índice.
+fn committed(dir: &Path, title: &str, body: &str, files: &[String]) -> Result<String, RoundRefusal> {
+    let mut registered: Vec<String> = Vec::new();
+    let made = commit_paths(dir, title, body, files, &mut registered);
+    if made.is_err() && !registered.is_empty() {
+        let mut undo: Vec<&str> = vec!["rm", "-q", "--cached", "--ignore-unmatch", "--"];
+        undo.extend(registered.iter().map(String::as_str));
+        let _ = git(dir, &undo);
     }
     made
 }
@@ -318,14 +398,17 @@ pub(super) fn record_commit(
 /// Cada arquivo entregue está no disco ou no índice, do repositório principal
 /// ou da cópia da onda, contando o que saiu do índice desde o último commit;
 /// senão, a recusa vem antes de gravar, e não do commit, depois (a remoção
-/// aceita calada o caminho que não existe).
+/// aceita calada o caminho que não existe). O arquivo de dentro de um
+/// submódulo é procurado no índice do submódulo.
 pub(super) fn unknown_file(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> Result<(), RoundRefusal> {
+    let subs = submodules_of(root);
     for wave in waves {
         let copy = copy_of(log, wave.wave);
         for file in &wave.files {
             let known = std::iter::once(root).chain(copy.as_deref()).any(|dir| {
+                let (repo, inner) = repo_of(dir, &subs, file);
                 dir.join(file).exists()
-                    || git(dir, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", file]).is_ok()
+                    || git(&repo, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", &inner]).is_ok()
             });
             if !known {
                 return Err(RoundRefusal::FileUnknown { file: file.clone(), wave: wave.wave });
@@ -333,6 +416,16 @@ pub(super) fn unknown_file(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> 
         }
     }
     Ok(())
+}
+
+/// O repositório que guarda o arquivo `file` na pasta `dir` — o principal, ou
+/// a cópia dele, ou o submódulo que o guarda ali — e o caminho do arquivo
+/// dentro desse repositório.
+fn repo_of(dir: &Path, subs: &[String], file: &str) -> (PathBuf, String) {
+    match submodule_holding(subs, file) {
+        Some((sub, inner)) => (dir.join(sub), inner),
+        None => (dir.to_path_buf(), file.to_string()),
+    }
 }
 
 /// A pasta da cópia que a rodada criou para a onda `wave`, quando o envio
@@ -372,28 +465,37 @@ impl Held {
 /// trecho que a fusão não resolve é segurada inteira, com os trechos e a
 /// cópia dela, e nada dela entra na junção; as outras seguem. Duas ondas do
 /// mesmo relatório no mesmo arquivo se somam, na ordem do relatório. O
-/// caminho que sai do repositório não é tocado: o git o recusa no commit.
+/// arquivo de dentro de um submódulo é comparado no submódulo, com o commit
+/// da cópia dele como base. O caminho que sai do repositório não é tocado: o
+/// git o recusa no commit.
 pub(super) fn join_copies(
     root: &Path,
     log: &SpecLog,
     waves: &[WaveReport],
 ) -> Result<(Vec<Joined>, Vec<Held>), RoundRefusal> {
+    let subs = submodules_of(root);
     let mut joined: BTreeMap<String, Joined> = BTreeMap::new();
     let mut held: Vec<Held> = Vec::new();
     for wave in waves {
         let Some(copy) = copy_of(log, wave.wave) else { continue };
-        let base = git(&copy, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
-        let base = base.trim();
+        let mut bases: BTreeMap<PathBuf, String> = BTreeMap::new();
         let mut conflicts: Vec<String> = Vec::new();
         // O que esta onda muda só entra na junção quando nenhum arquivo dela
         // conflita.
         let mut staged: Vec<(String, Option<Vec<u8>>)> = Vec::new();
         for file in wave.files.iter().filter(|file| inside(file)) {
+            let (copy_repo, inner) = repo_of(&copy, &subs, file);
+            let (root_repo, _) = repo_of(root, &subs, file);
+            if !bases.contains_key(&copy_repo) {
+                let base = git(&copy_repo, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
+                bases.insert(copy_repo.clone(), base.trim().to_string());
+            }
+            let base = bases.get(&copy_repo).cloned().unwrap_or_default();
             let theirs = std::fs::read(copy.join(file)).ok();
-            let base_id = git(&copy, &["rev-parse", "--verify", "-q", &format!("{base}:{file}")])
+            let base_id = git(&copy_repo, &["rev-parse", "--verify", "-q", &format!("{base}:{inner}")])
                 .ok()
                 .map(|id| id.trim().to_string());
-            if blob_id(&copy, file, theirs.as_deref()) == base_id {
+            if blob_id(&copy_repo, &inner, theirs.as_deref()) == base_id {
                 continue;
             }
             let ours = match joined.get(file) {
@@ -403,11 +505,11 @@ pub(super) fn join_copies(
             if ours == theirs {
                 continue;
             }
-            let after = if blob_id(root, file, ours.as_deref()) == base_id {
+            let after = if blob_id(&root_repo, &inner, ours.as_deref()) == base_id {
                 theirs
             } else {
                 let base_text = match base_id.as_deref() {
-                    Some(id) => blob_text(&copy, id).ok(),
+                    Some(id) => blob_text(&copy_repo, id).ok(),
                     None => Some(String::new()),
                 };
                 match merge_texts(root, ours.as_deref(), base_text.as_deref(), theirs.as_deref()) {
@@ -513,18 +615,30 @@ fn merge_texts(dir: &Path, ours: Option<&[u8]>, base: Option<&str>, theirs: Opti
     Err(out.stdout.lines().enumerate().filter(|(_, line)| line.starts_with("<<<<<<< ")).map(|(at, _)| at + 1).collect())
 }
 
-/// Apaga a cópia de cada onda do relatório, depois do commit. A cópia com
-/// mudança fora da lista de arquivos entregue fica, e o aviso diz quais: ela
-/// se perderia com a cópia.
+/// Apaga a cópia de cada onda do relatório, depois do commit, com a cópia de
+/// cada submódulo dentro dela. A cópia com mudança fora da lista de arquivos
+/// entregue fica, e o aviso diz quais: ela se perderia com a cópia.
 pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<Value> {
+    let subs = submodules_of(root);
     let mut warnings = Vec::new();
     for wave in waves {
         let Some(copy) = copy_of(log, wave.wave) else { continue };
         let shown = copy.to_string_lossy().replace('\\', "/");
-        let changed = git(&copy, &["status", "--porcelain", "-z", "--untracked-files=all"]).unwrap_or_default();
-        let left: Vec<String> = changed_paths(&changed).into_iter().filter(|path| !wave.files.contains(path)).collect();
+        let status = ["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=all"];
+        let mut changed = changed_paths(&git(&copy, &status).unwrap_or_default());
+        let inner: Vec<&String> = subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()).collect();
+        for sub in &inner {
+            let theirs = changed_paths(&git(&copy.join(sub), &status).unwrap_or_default());
+            changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
+        }
+        let left: Vec<String> = changed.into_iter().filter(|path| !wave.files.contains(path)).collect();
         let removed = left.is_empty()
-            && git_lock(root).is_ok_and(|_held| git(root, &["worktree", "remove", "--force", &shown]).is_ok());
+            && git_lock(root).is_ok_and(|_held| {
+                inner.iter().all(|sub| {
+                    let target = copy.join(sub).to_string_lossy().replace('\\', "/");
+                    git(&root.join(sub), &["worktree", "remove", "--force", &target]).is_ok()
+                }) && git(root, &["worktree", "remove", "--force", &shown]).is_ok()
+            });
         if !removed {
             let files = if left.is_empty() { shown.clone() } else { left.join(", ") };
             let hint = translate("round.copy_kept", lang)
@@ -798,6 +912,50 @@ mod tests {
 
         let wrong = [delivered(root, 1, "Saiu.", &["src/a.rs"])];
         refused_by_git_records_nothing(root, &wrong, || std::fs::remove_file(&hook).unwrap(), &["src/a.rs"]);
+    }
+
+    /// O arquivo de dentro de um submódulo é comitado no submódulo, e o
+    /// principal leva o ponteiro. Quando o git recusa o commit do principal,
+    /// o commit já feito no submódulo volta, com o disco e o índice dele; a
+    /// chamada depois de o gancho sair comita uma vez só nos dois.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_main_commit_undoes_the_submodule_commit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = &dir.path().join("principal");
+        with_submodule(root, dir.path());
+        approved(root, "x", &[(1, &["src/a.rs", "libs/sub/lib.txt"], &[])]);
+        round(root, "x", None);
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
+        assert!(copy.join("libs/sub/.git").is_file(), "the copy brings the submodule");
+        std::fs::write(copy.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(copy.join("libs/sub/lib.txt"), "fn um() {}\nfn sub() {}\n").unwrap();
+        let sub = root.join("libs/sub");
+        assert_eq!(git_text(&sub, &["rev-parse", "--abbrev-ref", "HEAD"]), "feature/x", "the same branch name");
+        let before = git_text(&sub, &["rev-parse", "HEAD"]);
+
+        let hooks = dir.path().join("ganchos");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+        let report = line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "libs/sub/lib.txt"],
+            "commit": "a onda 1 sai"}));
+        let refused = round(root, "x", Some(&report));
+        assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
+        assert_eq!(git_text(&sub, &["rev-parse", "HEAD"]), before, "the submodule commit was undone");
+        assert_eq!(git_text(&sub, &["status", "--porcelain"]), "", "the submodule disk and index are back");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n");
+
+        std::fs::remove_file(&hook).unwrap();
+        let went = round(root, "x", Some(&report));
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(git_text(&sub, &["rev-list", "--count", &format!("{before}..HEAD")]), "1", "one submodule commit");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD:libs/sub"]), git_text(&sub, &["rev-parse", "HEAD"]));
+        assert_eq!(std::fs::read_to_string(sub.join("lib.txt")).unwrap(), "fn um() {}\nfn sub() {}\n");
+        assert!(!copy.exists(), "the copy is gone, with the submodule copy inside it: {went}");
     }
 
     /// O passo do git roda com uma trava própria, e não com a da spec:

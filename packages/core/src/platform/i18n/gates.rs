@@ -477,6 +477,7 @@ mod tests {
             ("session.merged", &["{count}", "{branches}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),
             ("session.provider_silent", &["{spec}", "{reason}"][..]),
+            ("session.submodules", &["{spec}", "{text}"][..]),
             ("session.version.drift", &["{stamped}", "{running}"][..]),
             ("session.version.stale", &["{running}", "{installed}"][..]),
             ("session.version.behind", &["{running}", "{plugin}"][..]),

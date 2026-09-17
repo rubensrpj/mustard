@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
+use mustard_core::domain::spec_state::State;
 use mustard_core::domain::wave_prompt::WaveCopy;
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::{copy_path, recorded_copy, shown};
@@ -15,6 +16,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
 use super::stops::waves_replanned;
+use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: duas, que é
@@ -97,8 +99,9 @@ fn build_dirs(root: &Path, count: usize) -> Vec<PathBuf> {
 /// compilação livre: a pasta que nenhuma onda em andamento (`running`) usa,
 /// primeiro as que também não esperam a revisão de uma onda entregue — a
 /// revisão compila na pasta da onda que ela revisa. Cada cópia sai do commit
-/// atual; a que já existe, de um envio anterior da mesma onda, é a mesma. A
-/// onda cuja cópia não pôde ser criada não sai, e o aviso diz por quê; a
+/// atual; a que já existe, de um envio anterior da mesma onda, é a mesma, e
+/// ela traz cada submódulo que as tarefas da onda tocam. A onda cuja cópia
+/// não pôde ser criada não sai, e o aviso diz por quê; a
 /// onda sem pasta livre também não sai, e fica para a rodada seguinte. Roda
 /// com a trava do passo do git que o despacho já prendeu (`_held`): duas
 /// rodadas ao mesmo tempo não criam a mesma cópia duas vezes.
@@ -125,14 +128,24 @@ pub(super) fn open_copies(
         json!({ "reason": "copy-not-created", "wave": wave, "hint": hint })
     };
     let head = git::run(root, &["rev-parse", "HEAD"]).result();
+    let subs = submodules_of(root);
+    let files = if subs.is_empty() { BTreeMap::new() } else { wave_graph(log).files };
+    let unit = State::from_log(log).branch.unwrap_or_default();
     for wave in waves.iter().copied() {
         if free.is_empty() {
             break;
         }
         let path = copy_path(root, spec, wave, false);
+        let touched: BTreeSet<&str> = files
+            .get(&wave)
+            .into_iter()
+            .flatten()
+            .filter_map(|file| submodule_holding(&subs, file).map(|(sub, _)| sub))
+            .collect();
         let made = match &head {
             Err(detail) => Err(detail.clone()),
-            Ok(head) => ensure_copy(root, &path, head),
+            Ok(head) => ensure_copy(root, &path, head)
+                .and_then(|()| touched.iter().try_for_each(|sub| copy_submodule(root, &path, sub, &unit))),
         };
         match made {
             Ok(()) => {
@@ -153,6 +166,21 @@ fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<(), String> {
     }
     let target = path.to_string_lossy();
     git::run(root, &["worktree", "add", "--detach", &target, head]).result().map(|_| ())
+}
+
+/// A cópia do submódulo `sub` dentro da cópia `copy`: o submódulo do
+/// repositório principal entra na branch `unit` da spec, criada na primeira
+/// vez sobre a base dele, e a cópia dele sai do commit em que ele fica. A que
+/// já existe, de um envio anterior da mesma onda, é a mesma.
+fn copy_submodule(root: &Path, copy: &Path, sub: &str, unit: &str) -> Result<(), String> {
+    let inner = copy.join(sub);
+    if inner.join(".git").is_file() {
+        return Ok(());
+    }
+    let repo = root.join(sub);
+    enter_unit_branch(&repo, unit)?;
+    let target = inner.to_string_lossy();
+    git::run(&repo, &["worktree", "add", "--detach", &target, "HEAD"]).result().map(|_| ())
 }
 
 /// As ondas em andamento, cada uma com o número do pedido dela: a onda tem

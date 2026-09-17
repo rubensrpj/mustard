@@ -655,6 +655,33 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              flow runs the criteria BEFORE integration, and integrating now integrates work \
              nobody checked."
         }
+        // Os pull requests de uma spec que mexe em submódulo: o principal fica
+        // como rascunho até os dos submódulos entrarem.
+        ("pr.submodules.waiting", Locale::PtBr) => {
+            "O pull request #{pr} do principal segue como rascunho: falta entrar o pull request do \
+             submódulo {paths}."
+        }
+        ("pr.submodules.waiting", Locale::EnUs) => {
+            "The main pull request #{pr} stays a draft: the pull request of the submodule {paths} \
+             has not been merged yet."
+        }
+        ("pr.submodules.ready", Locale::PtBr) => {
+            "O pull request do submódulo {paths} entrou: o ponteiro foi atualizado e enviado, e o \
+             pull request #{pr} do principal ficou pronto."
+        }
+        ("pr.submodules.ready", Locale::EnUs) => {
+            "The pull request of the submodule {paths} was merged: the pointer was updated and \
+             pushed, and the main pull request #{pr} is ready."
+        }
+        ("pr.submodules.stuck", Locale::PtBr) => {
+            "O pull request #{pr} do principal segue como rascunho: {reason}. A próxima conferência \
+             tenta de novo."
+        }
+        ("pr.submodules.stuck", Locale::EnUs) => {
+            "The main pull request #{pr} stays a draft: {reason}. The next check tries again."
+        }
+        ("pr.pointer_commit", Locale::PtBr) => "chore(submódulo): atualiza o ponteiro",
+        ("pr.pointer_commit", Locale::EnUs) => "chore(submodule): update the pointer",
         ("message.too_long", Locale::PtBr) => {
             "A parte `{part}` da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
              corte automático mentiria sobre o que a mensagem diz. Nada foi enviado."
@@ -747,8 +774,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            104,
-            0xa7d8_f4a8_e677_9675,
+            108,
+            0xaf7a_73b4_2706_a28c,
         );
     }
 
@@ -868,6 +895,10 @@ mod tests {
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
             ("round.copy_failed", &["{wave}", "{detail}"][..]),
+            ("pr.submodules.waiting", &["{pr}", "{paths}"][..]),
+            ("pr.submodules.ready", &["{pr}", "{paths}"][..]),
+            ("pr.submodules.stuck", &["{pr}", "{reason}"][..]),
+            ("pr.pointer_commit", &[][..]),
             ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),

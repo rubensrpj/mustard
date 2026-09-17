@@ -102,11 +102,12 @@ use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::event::work_branch::on_integration_base;
-use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at};
+use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
+use crate::commands::review::pr_publish::{spec_pr, submodules_landed, SubmodulePrs};
 use crate::commands::review::review_result;
 use crate::commands::work_unit_open::checkout_holding_branch;
 use crate::shared::branch_state::PrStatus;
-use crate::shared::pr_provider::{provider_for, PrChecks, PrRef};
+use crate::shared::pr_provider::{provider_for, provider_in, PrChecks};
 use crate::shared::work_kind::BaseFlow;
 
 /// O subprojeto que um conjunto de arquivos aponta, ou nada quando eles se
@@ -685,6 +686,10 @@ pub(crate) struct PrMergeReport {
     /// nothing was merged.
     #[serde(rename = "pendingOpen", skip_serializing_if = "Option::is_none")]
     pub pending_open: Option<Vec<OpenPending>>,
+    /// Os pull requests dos submódulos da spec, depois do merge do pull
+    /// request de um deles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submodules: Option<SubmodulePrs>,
 }
 
 /// Merge a resolved PR, with all three external effects injected: `checks` asks
@@ -712,6 +717,31 @@ fn merge_core(
     settle: &dyn Fn(&Path, &str) -> Value,
     session: Option<&str>,
 ) -> PrMergeReport {
+    let MergedPr { spec, verdict, checks_word } = match merge_or_ask(root, facts, flow, confirmed, checks, merge) {
+        Ok(merged) => merged,
+        Err(report) => return *report,
+    };
+    merged_report(root, facts, flow, spec, verdict, checks_word, settle, session)
+}
+
+/// O que o merge de um pull request deixou para o resto da porta.
+struct MergedPr {
+    spec: Option<String>,
+    verdict: Option<String>,
+    checks_word: String,
+}
+
+/// A metade de [`merge_core`] que pergunta e faz o merge: a pergunta ao
+/// operador quando falta veredito aprovado ou as verificações do provedor não
+/// deixam, e a recusa do provedor, voltam como `Err` com a resposta pronta.
+fn merge_or_ask(
+    root: &Path,
+    facts: &PrFacts,
+    flow: &BaseFlow,
+    confirmed: bool,
+    checks: &dyn Fn(&Path, u64) -> Result<PrChecks, String>,
+    merge: &dyn Fn(&Path, u64) -> Result<(), String>,
+) -> Result<MergedPr, Box<PrMergeReport>> {
     let spec = spec_of_branch(&facts.head, flow);
     let verdict = spec.as_deref().and_then(|slug| recorded_verdict(root, slug));
     let checks = checks(root, facts.number);
@@ -722,7 +752,7 @@ fn merge_core(
 
     if let MergeConsent::Ask { reason } = merge_consent(verdict.as_deref(), &checks, confirmed) {
         let unit = spec.as_deref().unwrap_or(&facts.head);
-        return PrMergeReport {
+        return Err(Box::new(PrMergeReport {
             ok: true,
             action: "confirm",
             reason: Some(reason),
@@ -791,11 +821,12 @@ fn merge_core(
             settle: None,
             pending_closed: None,
             pending_open: None,
-        };
+            submodules: None,
+        }));
     }
 
     if let Err(e) = merge(root, facts.number) {
-        return PrMergeReport {
+        return Err(Box::new(PrMergeReport {
             ok: false,
             action: "merge-failed",
             reason: Some("provider-refused"),
@@ -813,8 +844,25 @@ fn merge_core(
             ),
             pending_closed: None,
             pending_open: None,
-        };
+            submodules: None,
+        }));
     }
+    Ok(MergedPr { spec, verdict, checks_word })
+}
+
+/// A metade de [`merge_core`] depois do merge: o fechamento gravado, a
+/// arrumação e a resposta.
+#[allow(clippy::too_many_arguments)]
+fn merged_report(
+    root: &Path,
+    facts: &PrFacts,
+    flow: &BaseFlow,
+    spec: Option<String>,
+    verdict: Option<String>,
+    checks_word: String,
+    settle: &dyn Fn(&Path, &str) -> Value,
+    session: Option<&str>,
+) -> PrMergeReport {
 
     // O aviso dos critérios viaja com o merge que aconteceu. Ele morava numa
     // etapa que olhava o `gh pr merge` digitado à mão, e por isso só alcançava
@@ -846,6 +894,7 @@ fn merge_core(
             )),
             pending_closed,
             pending_open: Some(pending_open),
+            submodules: None,
         };
     };
 
@@ -863,8 +912,50 @@ fn merge_core(
         hint: None,
         pending_closed,
         pending_open: Some(pending_open),
+        submodules: None,
     }
 }
+
+/// O merge do pull request de um submódulo da spec: a mesma pergunta e o
+/// mesmo merge de [`merge_core`], com o veredito lido da spec no principal
+/// `principal`; depois, no lugar da entrega e da arrumação, a conferência dos
+/// pull requests dos submódulos ([`submodules_landed`]), que leva o ponteiro
+/// ao principal, envia e deixa o principal pronto quando nenhum falta.
+fn merge_submodule(
+    principal: &Path,
+    facts: &PrFacts,
+    flow: &BaseFlow,
+    confirmed: bool,
+    checks: &dyn Fn(&Path, u64) -> Result<PrChecks, String>,
+    merge: &dyn Fn(&Path, u64) -> Result<(), String>,
+) -> PrMergeReport {
+    let MergedPr { spec, verdict, checks_word } = match merge_or_ask(principal, facts, flow, confirmed, checks, merge) {
+        Ok(merged) => merged,
+        Err(report) => return *report,
+    };
+    let lang = mustard_core::ProjectConfig::load(principal).language().text_or_default();
+    let found = spec.as_deref().and_then(|slug| {
+        let view = provider_for(principal).view(spec_pr(principal, slug)?.as_ref()).ok()?;
+        submodules_landed(principal, slug, &view)
+    });
+    PrMergeReport {
+        ok: found.as_ref().is_none_or(|found| found.problem.is_none()),
+        action: "merged",
+        reason: None,
+        pr: facts.number,
+        head: facts.head.clone(),
+        spec,
+        verdict,
+        checks: checks_word,
+        warning: None,
+        settle: None,
+        hint: found.as_ref().and_then(|found| found.text(lang)),
+        pending_closed: None,
+        pending_open: None,
+        submodules: found,
+    }
+}
+
 
 /// O que um pull request que entrou deixa, pelo merge desta porta ou pelas
 /// mãos de outra pessoa: o fechamento gravado ([`after_merge`]) e, numa
@@ -930,6 +1021,9 @@ pub(crate) enum MergedElsewhere {
     },
     /// O provedor não respondeu, com o motivo que ele deu; nada foi mudado.
     Unanswered { reason: String },
+    /// O pull request do principal segue aberto, e a spec mexe em
+    /// submódulo: o que a conferência dos pull requests deles achou e fez.
+    Submodules(SubmodulePrs),
 }
 
 /// No início da sessão, com a spec `spec` em "pull request aberto": pergunta
@@ -945,7 +1039,6 @@ pub(crate) enum MergedElsewhere {
 /// qual é o pull request dela, e quando o provedor responde que ele segue
 /// aberto ou foi fechado sem merge.
 pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -> Option<MergedElsewhere> {
-    use mustard_core::domain::spec_events::{Block, BlockQuery};
     use mustard_core::domain::spec_state::{SpecState as _, State};
 
     let repo = project_root(root);
@@ -954,26 +1047,24 @@ pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -
     if state.phase != Some("pr_open") {
         return None;
     }
-    // O número gravado no "pull request aberto" mais novo.
-    let number = log
-        .block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .filter(|e| e.event_type == "state" && e.str_field("phase") == Some("pr_open"))
-        .max_by_key(|e| e.id)
-        .and_then(|e| e.fields.get("pr").and_then(|pr| pr.get("number")).and_then(Value::as_u64));
-    let asked = match (number, state.branch.as_deref()) {
-        (Some(number), _) => PrRef::Number(number),
-        (None, Some(branch)) => PrRef::Head(branch),
-        (None, None) => return None,
-    };
-    let view = match provider_for(&repo).view(asked) {
+    let asked = spec_pr(&repo, spec)?;
+    let view = match provider_for(&repo).view(asked.as_ref()) {
         Ok(view) => view,
         Err(reason) => return Some(MergedElsewhere::Unanswered { reason }),
     };
     match view.status {
         PrStatus::Merged => {}
         PrStatus::Unknown(reason) => return Some(MergedElsewhere::Unanswered { reason: reason.to_string() }),
-        PrStatus::Open | PrStatus::Closed | PrStatus::Absent => return None,
+        // Com o principal aberto, os pull requests dos submódulos da spec são
+        // conferidos: o que entrou leva o ponteiro ao principal, e o principal
+        // fica pronto quando nenhum falta.
+        PrStatus::Open => {
+            let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
+            return submodules_landed(&repo, spec, &view)
+                .filter(|found| found.text(lang).is_some())
+                .map(MergedElsewhere::Submodules);
+        }
+        PrStatus::Closed | PrStatus::Absent => return None,
     }
     let head = if view.head.is_empty() { state.branch.unwrap_or_default() } else { view.head };
     if head.is_empty() {
@@ -1094,6 +1185,24 @@ pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical:
 pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
     let started = std::time::Instant::now();
     let repo = project_root(root);
+    // De dentro de um submódulo do projeto, o pull request é o do submódulo:
+    // o veredito vem da spec no principal, e depois do merge o principal
+    // recebe o ponteiro.
+    if let Some(principal) = superproject_of(&repo).filter(|parent| mustard_core::ProjectConfig::exists(parent)) {
+        let report = match resolve_pr(&repo, pr) {
+            Ok(facts) => {
+                let (flow, _) = bases_and_branch(&principal);
+                let checks = |_: &Path, number: u64| provider_in(&principal, &repo).checks(number);
+                let merge = |_: &Path, number: u64| gh_merge(&repo, number);
+                let merged = merge_submodule(&principal, &facts, &flow, confirm, &checks, &merge);
+                serde_json::to_value(&merged).unwrap_or_default()
+            }
+            Err(e) => serde_json::json!({ "ok": false, "reason": e, "pr": pr }),
+        };
+        let _ = crate::commands::spec_events::conversation::record_call(&principal, "pr-merge", None, started, &report);
+        emit(&report);
+        return;
+    }
     let report = match resolve_pr(&repo, pr) {
         Ok(facts) => {
             let (flow, _) = bases_and_branch(&repo);

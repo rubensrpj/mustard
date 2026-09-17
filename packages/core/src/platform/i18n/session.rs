@@ -90,6 +90,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The spec {spec} has its pull request open, and the provider did not answer \
              whether it was merged ({reason}): nothing was changed."
         }
+        // Os pull requests dos submódulos da spec atual: o texto vem da porta
+        // do pull request.
+        ("session.submodules", Locale::PtBr) => "[Mustard] Na spec {spec}: {text}",
+        ("session.submodules", Locale::EnUs) => "[Mustard] In the spec {spec}: {text}",
         ("session.version.drift", Locale::PtBr) => {
             "[Mustard] Este projeto está com o Mustard {stamped}, e o que roda é o {running}. Sugira \
              `/mustard:upsert`."
@@ -160,8 +164,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            17,
-            0xb3a5_de01_1738_596f,
+            18,
+            0xddf0_793f_e302_2a05,
         );
     }
 

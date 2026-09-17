@@ -152,4 +152,13 @@ fn a_prosa_nao_ensina_o_gancho_que_saiu_nem_manda_montar_o_corpo() {
              que ele não é de quem escreve: `{order}`",
         );
     }
+
+    // --- 3. A ordem dos submódulos e o rascunho são do binário --------------
+    for order in ["--draft", "theirs open first"] {
+        assert!(
+            !pr_md.contains(order),
+            "a porta ensina a abrir os pull requests dos submódulos antes e o \
+             principal como rascunho, e isso é o `pr-open` que faz: `{order}`",
+        );
+    }
 }

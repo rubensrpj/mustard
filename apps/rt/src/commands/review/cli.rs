@@ -90,12 +90,12 @@ pub enum ReviewCmd {
         #[arg(long)]
         spec: Option<String>,
         /// Derive title/body from the commits `base..head` carries (title =
-        /// newest subject, body = the subject list) — the submodule flow's
-        /// shape, where the repository has no spec of its own.
+        /// newest subject, body = the subject list) — for a repository with
+        /// no spec of its own.
         #[arg(long)]
         fill: bool,
-        /// Open as a draft — the parent of a monorepo unit while any submodule
-        /// PR is still open.
+        /// Open as a draft. With a submodule the spec changed, the main pull
+        /// request already opens as a draft on its own.
         #[arg(long)]
         draft: bool,
         /// Any directory inside the repo. Defaults to the current dir.

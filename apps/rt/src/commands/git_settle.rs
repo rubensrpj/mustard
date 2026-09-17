@@ -107,7 +107,7 @@ pub(crate) fn show(path: &Path) -> String {
 /// The immediate SUPERPROJECT of `repo` — `None` outside a submodule. Asked of
 /// git itself, never derived from a filesystem walk, so a `.git` FILE, a linked
 /// worktree or a nested submodule resolve exactly the way git resolves them.
-fn superproject_of(repo: &Path) -> Option<PathBuf> {
+pub(crate) fn superproject_of(repo: &Path) -> Option<PathBuf> {
     let out = git_out(repo, &["rev-parse", "--show-superproject-working-tree"])?;
     let out = out.trim();
     (!out.is_empty()).then(|| PathBuf::from(out))
@@ -242,6 +242,122 @@ pub(crate) fn parse_submodule_paths(status: &str) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Os submódulos com checkout do repositório `root`, pelo caminho relativo a
+/// ele, em ordem. Vazio sem `.gitmodules` e quando o git não responde.
+pub(crate) fn submodules_of(root: &Path) -> Vec<String> {
+    if !root.join(".gitmodules").is_file() {
+        return Vec::new();
+    }
+    git_out(root, &["submodule", "status"]).map(|s| parse_submodule_paths(&s)).unwrap_or_default()
+}
+
+/// O submódulo de `subs` que guarda o arquivo `file`, escrito a partir do
+/// principal, e o caminho do arquivo dentro dele. `None` para o arquivo do
+/// próprio principal.
+pub(crate) fn submodule_holding<'a>(subs: &'a [String], file: &str) -> Option<(&'a str, String)> {
+    subs.iter().find_map(|sub| {
+        let inner = file.strip_prefix(sub.as_str())?.strip_prefix('/')?;
+        (!inner.is_empty()).then(|| (sub.as_str(), inner.to_string()))
+    })
+}
+
+/// A branch local `branch` existe no repositório `repo`.
+pub(crate) fn has_local_branch(repo: &Path, branch: &str) -> bool {
+    git_ok(repo, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")])
+}
+
+/// A base do submódulo `repo`, que é um repositório próprio: a branch
+/// principal que o servidor dele declara e, sem resposta, a branch em que o
+/// checkout dele está, desde que não seja a da unidade `unit`.
+pub(crate) fn submodule_base(repo: &Path, unit: &str) -> Option<String> {
+    mustard_core::default_branch(repo).or_else(|| mustard_core::current_branch(repo).filter(|b| b != unit))
+}
+
+/// A referência de onde uma branch sai da base `base` do repositório `repo`:
+/// a base local e, sem ela, a do `origin`.
+fn base_ref(repo: &Path, base: &str) -> String {
+    if has_local_branch(repo, base) { base.to_string() } else { format!("origin/{base}") }
+}
+
+/// Põe o checkout do submódulo `repo` na branch `unit`, criada na primeira vez
+/// sobre a base dele. A mudança que o checkout tiver vai junto, quando o git
+/// deixa; a recusa volta com o motivo do git.
+pub(crate) fn enter_unit_branch(repo: &Path, unit: &str) -> Result<(), String> {
+    if mustard_core::current_branch(repo).as_deref() == Some(unit) {
+        return Ok(());
+    }
+    if has_local_branch(repo, unit) {
+        return git::run(repo, &["checkout", "-q", unit]).result().map(|_| ());
+    }
+    let Some(base) = submodule_base(repo, unit) else {
+        return Err(format!("submodule-base-unknown: {}", show(repo)));
+    };
+    git::run(repo, &["checkout", "-q", "--no-track", "-b", unit, &base_ref(repo, &base)]).result().map(|_| ())
+}
+
+/// Os submódulos cujo ponteiro a branch `unit` do principal `root` muda desde
+/// a base `base` dele: os repositórios que a spec mexe além do principal. O
+/// ponteiro fica no histórico do principal, e a resposta não depende de a
+/// branch do submódulo ainda existir.
+pub(crate) fn unit_submodules(root: &Path, base: &str, unit: &str) -> Vec<String> {
+    let subs = submodules_of(root);
+    if subs.is_empty() {
+        return subs;
+    }
+    let range = format!("{}...{unit}", base_ref(root, base));
+    let mut args: Vec<&str> = vec!["diff", "--name-only", &range, "--"];
+    args.extend(subs.iter().map(String::as_str));
+    let changed = git_out(root, &args).unwrap_or_default();
+    subs.into_iter().filter(|sub| changed.lines().any(|line| line.trim() == sub)).collect()
+}
+
+/// Leva ao principal `root` o ponteiro de cada submódulo de `subs`, cujo pull
+/// request entrou: o submódulo busca a base dele e fica nela, o principal
+/// comita o ponteiro novo na branch `unit` (só onde ele mudou) e envia a
+/// branch; só então a branch `unit` sai de cada submódulo — a do servidor só
+/// com `delete_remote`. Um envio que falhou é refeito na chamada seguinte,
+/// porque a branch do submódulo ainda está lá. `Err` traz o motivo do git.
+pub(crate) fn bump_pointers(
+    root: &Path,
+    unit: &str,
+    subs: &[String],
+    message: (&str, &str),
+    delete_remote: bool,
+) -> Result<(), String> {
+    let current = mustard_core::current_branch(root).unwrap_or_default();
+    if current != unit {
+        return Err(format!("not-on-unit-branch: {current}"));
+    }
+    let mut changed: Vec<&str> = Vec::new();
+    for sub in subs {
+        let dir = root.join(sub);
+        let base = submodule_base(&dir, unit).ok_or_else(|| format!("submodule-base-unknown: {sub}"))?;
+        git::run(&dir, &["fetch", "-q", "origin", &base]).result().map_err(|e| format!("{sub}: {e}"))?;
+        git::run(&dir, &["checkout", "-q", "--detach", &format!("origin/{base}")])
+            .result()
+            .map_err(|e| format!("{sub}: {e}"))?;
+        let recorded = git_out(root, &["rev-parse", &format!("HEAD:{sub}")]).unwrap_or_default();
+        if git_out(&dir, &["rev-parse", "HEAD"]).unwrap_or_default() != recorded {
+            changed.push(sub);
+        }
+    }
+    if !changed.is_empty() {
+        let (title, body) = message;
+        let mut args: Vec<&str> = vec!["commit", "-q", "--only", "-m", title, "-m", body, "--"];
+        args.extend(changed.iter().copied());
+        git::run(root, &args).result().map_err(|e| if e.is_empty() { "commit-failed".to_string() } else { e })?;
+    }
+    git::run(root, &["push", "-q", "origin", unit]).result().map_err(|e| format!("push: {e}"))?;
+    for sub in subs {
+        let dir = root.join(sub);
+        let _ = git_ok(&dir, &["branch", "-D", unit]);
+        if delete_remote {
+            let _ = git_ok(&dir, &["push", "-q", "origin", "--delete", unit]);
+        }
+    }
+    Ok(())
 }
 
 /// What `repo` still holds of the unit — `None` when it carries no trace of it
@@ -825,9 +941,7 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     // The submodule table, read ONCE and used twice below: the pointer sync
     // touches only the DETACHED ones, and the per-repo report asks each one what
     // it still carries of the unit.
-    let submodules = git_out(&main, &["submodule", "status"])
-        .map(|s| parse_submodule_paths(&s))
-        .unwrap_or_default();
+    let submodules = submodules_of(&main);
 
     // Merged confirmed → bring every local base up to date, then re-seat the
     // submodules the advance just left behind (detached ones only).
@@ -1089,10 +1203,7 @@ pub(crate) fn report_at(start: &Path) -> Value {
     let provider = mustard_core::resolve_provider(&cfg_root, &cfg.git.provider);
 
     let mut repos = vec![repo_inventory(&main, ".", &flow, &provider)];
-    let submodules = git_out(&main, &["submodule", "status"])
-        .map(|s| parse_submodule_paths(&s))
-        .unwrap_or_default();
-    for rel in submodules {
+    for rel in submodules_of(&main) {
         repos.push(repo_inventory(&main.join(&rel), &rel, &flow, &provider));
     }
     json!({ "ok": true, "bases": bases, "repos": repos })

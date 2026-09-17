@@ -133,6 +133,8 @@ pub(crate) struct WaveGraph {
     pub(crate) missing_task_waves: Vec<(String, u64)>,
     /// Os pares de ondas do mesmo nível que declaram o mesmo arquivo.
     pub(crate) collisions: Vec<FileCollision>,
+    /// Os arquivos que as tarefas de cada onda declaram.
+    pub(crate) files: BTreeMap<u64, BTreeSet<String>>,
 }
 
 /// O grafo das ondas do bloco `waves` de uma spec.
@@ -197,6 +199,7 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
         missing_depends,
         missing_task_waves,
         collisions: same_level_collisions(&census),
+        files,
     }
 }
 

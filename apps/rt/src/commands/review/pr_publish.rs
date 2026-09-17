@@ -28,7 +28,7 @@
 //! in the spec folder, committed with it, and stale the moment the next round
 //! landed; a gate existed only to notice it had gone stale.
 //!
-//! A repository with no spec of its own — a submodule — has no such file to
+//! A repository with no spec of its own has no such file to
 //! read, and that is what `--fill` is for: the title and body come from the
 //! commits the branch carries.
 //!
@@ -37,15 +37,28 @@
 //! When the head branch already has a pull request, `pr-open` rewrites its
 //! body instead of asking the provider to create a second one. That is also
 //! how each round refreshes the body: the same call, from the same door.
+//!
+//! ## Os submódulos primeiro
+//!
+//! Com submódulo mexido pela spec — o ponteiro dele muda na branch da spec —,
+//! o `pr-open` envia a branch de mesmo nome de cada submódulo e abre, primeiro,
+//! o pull request dela contra a base daquele repositório; só então abre o do
+//! principal, como rascunho enquanto algum deles não entrou. A resposta traz o
+//! endereço de todos. O principal fica pronto pela conferência dos pull
+//! requests dos submódulos, no `pr-merge` e no início da sessão.
 
 use std::path::Path;
 
 use serde::Serialize;
+use serde_json::Value;
 
 use mustard_core::domain::spec_events::pr_message;
+use mustard_core::platform::i18n::translate;
 
+use crate::commands::git_settle::{bump_pointers, has_local_branch, submodule_base, unit_submodules};
 use crate::commands::review::pr_door::project_root;
-use crate::shared::pr_provider::{provider_for, PrProvider, PrRef, PrToOpen};
+use crate::shared::branch_state::PrStatus;
+use crate::shared::pr_provider::{provider_for, provider_in, PrProvider, PrRef, PrToOpen, PrView};
 use mustard_core::domain::spec_state::SpecState;
 
 use crate::shared::spec_state::DiskSpecState;
@@ -55,6 +68,8 @@ use crate::shared::spec_state::DiskSpecState;
 const ACTION_OPEN: &str = "open";
 const ACTION_EDIT: &str = "edit";
 const ACTION_READY: &str = "ready";
+/// O pull request do submódulo que já entrou: nada foi enviado nem reescrito.
+const ACTION_MERGED: &str = "merged";
 
 // ---------------------------------------------------------------------------
 // The report — the one JSON document each command answers
@@ -214,13 +229,13 @@ pub(crate) fn ready_report(provider: &dyn PrProvider, number: u64) -> PrPublishR
 // ---------------------------------------------------------------------------
 
 /// Print one report as the single JSON document the command answers with.
-fn emit(report: &PrPublishReport) {
+fn emit<T: Serialize>(report: &T) {
     println!("{}", serde_json::to_string_pretty(report).unwrap_or_else(|_| "{}".to_string()));
 }
 
 /// The title and body `--fill` derives from the commits `base..head` carries —
-/// the shape the submodule flow needs, where no `pr-body.md` ritual exists:
-/// title = the newest commit's subject (a submodule unit usually has one), body
+/// the shape a repository with no spec needs:
+/// title = the newest commit's subject (a small unit usually has one), body
 /// = the whole `git log --oneline` of the range. Answers `Err` with git's own
 /// words when the range cannot be read, so the report names the reason.
 fn fill_from_commits(repo: &Path, base: &str, head: &str) -> Result<(String, String), String> {
@@ -278,12 +293,206 @@ pub(crate) fn message_of(repo: &Path, spec: &str) -> Result<(String, String), St
     pr_message(&log).map_err(|refusal| format!("{}: {}", refusal.reason(), refusal.message(lang)))
 }
 
+/// O pull request de um submódulo da spec, como a abertura o deixou.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct SubmodulePr {
+    /// O caminho do submódulo no principal.
+    pub path: String,
+    #[serde(flatten)]
+    pub report: PrPublishReport,
+}
+
+/// A resposta do `pr-open`: a do principal, os pull requests dos submódulos,
+/// abertos antes dele, e o aviso de que ele segue como rascunho.
+#[derive(Debug, Serialize)]
+struct OpenAnswer {
+    #[serde(flatten)]
+    principal: PrPublishReport,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    submodules: Vec<SubmodulePr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
+}
+
+/// Envia a branch `head` do submódulo `sub` do principal `repo` e abre, ou
+/// reescreve, o pull request dela contra a base daquele repositório, com o
+/// título e o corpo da spec. O pull request que já entrou fica como está.
+/// Devolve a resposta e se ele já entrou.
+fn open_submodule(repo: &Path, sub: &str, head: &str, (title, body): (&str, &str)) -> (SubmodulePr, bool) {
+    let dir = repo.join(sub);
+    let provider = provider_in(repo, &dir);
+    let name = provider.provider().to_string();
+    let entry = |report: PrPublishReport| SubmodulePr { path: sub.to_string(), report };
+    let failed = |error: String| (entry(PrPublishReport::failed(ACTION_OPEN, name.clone(), None, error)), false);
+    if let Ok(view) = provider.view(PrRef::Head(head))
+        && view.status == PrStatus::Merged
+    {
+        let report = PrPublishReport {
+            ok: true,
+            action: ACTION_MERGED,
+            provider: name.clone(),
+            number: Some(view.number),
+            url: Some(view.url).filter(|url| !url.trim().is_empty()),
+            error: None,
+            warning: None,
+        };
+        return (entry(report), true);
+    }
+    let Some(base) = submodule_base(&dir, head) else {
+        return failed(format!("submodule-base-unknown: {sub}"));
+    };
+    if let Err(error) = mustard_core::platform::git::run(&dir, &["push", "-q", "origin", head]).result() {
+        return failed(format!("push {sub}: {error}"));
+    }
+    let pr = PrToOpen {
+        title: title.to_string(),
+        body: body.to_string(),
+        head: head.to_string(),
+        base,
+        draft: false,
+    };
+    (entry(open_or_edit(provider.as_ref(), &pr)), false)
+}
+
+/// Os pull requests dos submódulos de uma spec com o pull request do
+/// principal aberto, e o que a conferência fez com eles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct SubmodulePrs {
+    /// O pull request do principal.
+    pub pr: u64,
+    /// Os submódulos cujo pull request entrou.
+    pub landed: Vec<String>,
+    /// Os submódulos cujo ponteiro foi levado ao principal e enviado agora.
+    pub bumped: Vec<String>,
+    /// Os submódulos cujo pull request ainda não entrou: o principal segue
+    /// como rascunho.
+    pub waiting: Vec<String>,
+    /// O pull request do principal ficou pronto agora.
+    pub ready: bool,
+    /// Por que a pergunta, o ponteiro, o envio ou o pronto não aconteceram.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+impl SubmodulePrs {
+    /// A frase do estado: o que travou, o que falta ou o principal pronto.
+    /// `None` quando não há nada a dizer.
+    pub(crate) fn text(&self, lang: mustard_core::platform::i18n::Locale) -> Option<String> {
+        let pr = self.pr.to_string();
+        if let Some(reason) = &self.problem {
+            return Some(translate("pr.submodules.stuck", lang).replace("{pr}", &pr).replace("{reason}", reason));
+        }
+        if !self.waiting.is_empty() {
+            let paths = self.waiting.join(", ");
+            return Some(translate("pr.submodules.waiting", lang).replace("{pr}", &pr).replace("{paths}", &paths));
+        }
+        self.ready.then(|| {
+            let paths = self.landed.join(", ");
+            translate("pr.submodules.ready", lang).replace("{pr}", &pr).replace("{paths}", &paths)
+        })
+    }
+}
+
+/// Com o pull request `principal` da spec `spec` aberto, pergunta ao provedor
+/// de cada submódulo que a spec mexe pelo pull request da branch dela. Cada um
+/// que entrou e ainda tem a branch na máquina tem o ponteiro levado ao
+/// principal, que envia a branch; sem nenhum faltando, o pull request do
+/// principal que ainda é rascunho fica pronto. Enquanto falta algum, ele segue
+/// como rascunho, e a resposta diz qual falta. `None` quando a spec não mexe
+/// em submódulo.
+pub(crate) fn submodules_landed(repo: &Path, spec: &str, principal: &PrView) -> Option<SubmodulePrs> {
+    let log = DiskSpecState::new(repo).log(spec)?;
+    let state = mustard_core::domain::spec_state::State::from_log(&log);
+    let (branch, base) = (state.branch?, state.base?);
+    let subs = unit_submodules(repo, &base, &branch);
+    if subs.is_empty() {
+        return None;
+    }
+    let mut found = SubmodulePrs {
+        pr: principal.number,
+        landed: Vec::new(),
+        bumped: Vec::new(),
+        waiting: Vec::new(),
+        ready: false,
+        problem: None,
+    };
+    for sub in subs {
+        let dir = repo.join(&sub);
+        match provider_in(repo, &dir).view(PrRef::Head(&branch)) {
+            Ok(view) if view.status == PrStatus::Merged => {
+                if has_local_branch(&dir, &branch) {
+                    found.bumped.push(sub.clone());
+                }
+                found.landed.push(sub);
+            }
+            Ok(_) => found.waiting.push(sub),
+            Err(reason) => {
+                found.problem.get_or_insert(format!("{sub}: {reason}"));
+                found.waiting.push(sub);
+            }
+        }
+    }
+    if !found.bumped.is_empty() {
+        let cfg = mustard_core::ProjectConfig::load(repo);
+        let title = translate("pr.pointer_commit", cfg.language().text_or_default());
+        let body: Vec<String> = found.bumped.iter().map(|sub| format!("- {sub}")).collect();
+        let bumped = bump_pointers(repo, &branch, &found.bumped, (title, &body.join("\n")), cfg.git.delete_remote_branch);
+        if let Err(reason) = bumped {
+            found.problem = Some(reason);
+            found.bumped.clear();
+        }
+    }
+    if found.waiting.is_empty() && found.problem.is_none() && principal.draft {
+        match provider_for(repo).ready(principal.number) {
+            Ok(()) => found.ready = true,
+            Err(reason) => found.problem = Some(reason),
+        }
+    }
+    Some(found)
+}
+
+/// Como o pull request do principal de uma spec é apontado.
+pub(crate) enum SpecPr {
+    Number(u64),
+    Head(String),
+}
+
+impl SpecPr {
+    pub(crate) fn as_ref(&self) -> PrRef<'_> {
+        match self {
+            Self::Number(number) => PrRef::Number(*number),
+            Self::Head(branch) => PrRef::Head(branch),
+        }
+    }
+}
+
+/// O pull request do principal da spec `spec`: o número gravado no "pull
+/// request aberto" mais novo e, sem ele, a branch da spec.
+pub(crate) fn spec_pr(repo: &Path, spec: &str) -> Option<SpecPr> {
+    use mustard_core::domain::spec_events::{Block, BlockQuery};
+
+    let log = DiskSpecState::new(repo).log(spec)?;
+    let number = log
+        .block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|e| e.event_type == "state" && e.str_field("phase") == Some("pr_open"))
+        .max_by_key(|e| e.id)
+        .and_then(|e| e.fields.get("pr").and_then(|pr| pr.get("number")).and_then(Value::as_u64));
+    match (number, mustard_core::domain::spec_state::State::from_log(&log).branch) {
+        (Some(number), _) => Some(SpecPr::Number(number)),
+        (None, Some(branch)) => Some(SpecPr::Head(branch)),
+        (None, None) => None,
+    }
+}
+
 /// Dispatch `mustard-rt run pr-open`.
 ///
 /// The body comes from the spec's event file, or from the commits with
-/// `--fill` (a submodule, which has no spec of its own). A head branch that
+/// `--fill` (a repository with no spec of its own). A head branch that
 /// already carries a pull request has its body REWRITTEN — the door never asks
-/// for a second one.
+/// for a second one. Com submódulo mexido pela spec, os pull requests deles
+/// abrem antes, e o do principal abre como rascunho enquanto algum não
+/// entrou; o que um submódulo recusa para a abertura antes do principal.
 pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: bool, draft: bool) {
     let started = std::time::Instant::now();
     let repo = project_root(root);
@@ -298,33 +507,57 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     };
     let slug = spec.map(str::trim).filter(|s| !s.is_empty());
     let warning = slug.and_then(|slug| qa_warning(&repo, slug));
-    let mut report = match sourced {
+    let subs = if slug.is_some() && !fill { unit_submodules(&repo, base, head) } else { Vec::new() };
+    let mut submodules: Vec<SubmodulePr> = Vec::new();
+    let mut waiting: Vec<String> = Vec::new();
+    let mut refused: Option<String> = None;
+    if let Ok((title, body)) = &sourced {
+        for sub in &subs {
+            let (entry, merged) = open_submodule(&repo, sub, head, (title, body));
+            if !entry.report.ok {
+                refused = Some(format!("{sub}: {}", entry.report.error.clone().unwrap_or_default()));
+                submodules.push(entry);
+                break;
+            }
+            if !merged {
+                waiting.push(sub.clone());
+            }
+            submodules.push(entry);
+        }
+    }
+    let name = provider.provider().to_string();
+    let mut report = match (sourced, refused) {
         // Já existe pull request para a branch que se ia abrir: o corpo é
         // reescrito, e nenhum segundo pull request nasce.
-        Ok((title, body)) => {
+        (Ok((title, body)), None) => {
             let pr = PrToOpen {
                 title,
                 body,
                 head: head.to_string(),
                 base: base.to_string(),
-                draft,
+                draft: draft || !waiting.is_empty(),
             };
             open_or_edit(provider.as_ref(), &pr)
         }
-        Err(error) => {
-            PrPublishReport::failed(ACTION_OPEN, provider.provider().to_string(), None, error)
-        }
+        (Ok(_), Some(error)) | (Err(error), _) => PrPublishReport::failed(ACTION_OPEN, name, None, error),
     };
     report.warning = warning;
+    let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
+    let hint = (report.ok && !waiting.is_empty()).then(|| {
+        translate("pr.submodules.waiting", lang)
+            .replace("{pr}", &report.number.map(|n| n.to_string()).unwrap_or_default())
+            .replace("{paths}", &waiting.join(", "))
+    });
     // Com o pull request aberto ou reescrito, a spec passa à fase de pull
     // request aberto, com o número e o endereço: é por ela que o início da
     // sessão percebe o merge feito por outra pessoa.
     if let (true, Some(slug), Some(number)) = (report.ok, slug, report.number) {
         crate::commands::spec_events::write::record_pr_open(&repo, slug, number, report.url.as_deref());
     }
-    let shown = serde_json::to_value(&report).unwrap_or_default();
+    let answer = OpenAnswer { principal: report, submodules, hint };
+    let shown = serde_json::to_value(&answer).unwrap_or_default();
     let _ = crate::commands::spec_events::conversation::record_call(&repo, "pr-open", spec, started, &shown);
-    emit(&report);
+    emit(&shown);
 }
 
 /// Dispatch `mustard-rt run pr-edit`: rewrite the body of pull request

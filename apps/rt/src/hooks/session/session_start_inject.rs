@@ -17,7 +17,10 @@
 //!    roda antes de qualquer aviso (a spec gravada como entregue, a base
 //!    atualizada, a branch local apagada), e o aviso diz o que foi feito e
 //!    pede a pergunta das pendências nascidas na spec. Se o provedor não
-//!    responde, o aviso diz isso e nada muda.
+//!    responde, o aviso diz isso e nada muda. Com o pull request ainda aberto
+//!    e a spec mexendo em submódulo, os pull requests dos submódulos são
+//!    conferidos: o que entrou leva o ponteiro ao principal, e o aviso diz
+//!    qual falta ou que o principal ficou pronto.
 //! 6. **As branches mergeadas** — as outras branches cujo trabalho já entrou
 //!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
 //!    provedor.
@@ -286,6 +289,9 @@ fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> String {
         MergedElsewhere::Unanswered { reason } => translate("session.provider_silent", lang)
             .replace("{spec}", spec)
             .replace("{reason}", reason),
+        MergedElsewhere::Submodules(found) => translate("session.submodules", lang)
+            .replace("{spec}", spec)
+            .replace("{text}", &found.text(lang).unwrap_or_default()),
         MergedElsewhere::Landed { pr, branch, settle, pending_open } => {
             let mut text = translate("session.landed", lang).replace("{pr}", &pr.to_string()).replace("{spec}", spec);
             text.push(' ');
