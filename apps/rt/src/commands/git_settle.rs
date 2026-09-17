@@ -70,11 +70,30 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::platform::git;
+use mustard_core::ClaudePaths;
 
 use serde_json::{json, Value};
 
-use crate::shared::branch_state::{self, BranchEnumerator, PrEvidence, PrQuery};
+use crate::shared::branch_state::{self, BranchEnumerator, BranchRefs, PrEvidence, PrQuery};
+
+/// O arquivo da trava do passo do git, na pasta das specs do checkout.
+const GIT_LOCK_FILE: &str = "round-git.lock";
+
+/// Pega a trava do passo do git do checkout `root`, esperando a de outra
+/// rodada ou de outra sessão soltar. É uma trava própria, e não a do arquivo
+/// de eventos da spec: o gancho do commit pode demorar, e a trava da spec
+/// seguraria todo leitor dela enquanto isso.
+///
+/// É uma trava só para todo passo que escreve no git do projeto — o commit da
+/// rodada e o ponteiro dos submódulos —, porque os dois disputam o mesmo
+/// índice. A mesma trava pedida duas vezes pelo mesmo processo esperaria por
+/// si mesma: quem já a tem passa adiante a que tem.
+pub(crate) fn git_step_lock(root: &Path) -> Result<LockedFile, String> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| e.to_string())?;
+    LockedFile::exclusive(&paths.spec_dir().join(GIT_LOCK_FILE)).map_err(|e| e.to_string())
+}
 
 /// Run `git` in `dir`, returning stdout on success.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
@@ -313,43 +332,120 @@ pub(crate) fn unit_submodules(root: &Path, base: &str, unit: &str) -> Vec<String
     subs.into_iter().filter(|sub| changed.lines().any(|line| line.trim() == sub)).collect()
 }
 
+/// As referências que ainda carregam a branch `unit` no repositório `dir`: a
+/// local e a do `origin`, cada uma quando existe. A base `base` só nomeia a
+/// unidade, e o commit da ponta não é lido aqui — quem mede a posição é quem
+/// pergunta, logo abaixo.
+fn unit_refs_of(dir: &Path, unit: &str, base: &str) -> BranchRefs {
+    let tracked = git_ok(dir, &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{unit}")]);
+    BranchRefs {
+        branch: unit.to_string(),
+        base: base.to_string(),
+        local: has_local_branch(dir, unit),
+        remotes: if tracked { vec!["origin".to_string()] } else { Vec::new() },
+        tip: String::new(),
+    }
+}
+
+/// Busca a base `base` do submódulo `sub` do principal `root` e confere que a
+/// branch `unit` que ele ainda carrega é a que entrou: cada referência dela
+/// está contida na base agora ou coberta pela cabeça congelada do pull request
+/// que entrou — a mesma medida por referência do ritual de saída, e não a
+/// existência da branch, que não prova nada sobre onde ela está.
+///
+/// `Err` com o motivo quando sobra commit que o merge não levou: mover o
+/// ponteiro e apagar a branch deixaria esse commit sem referência nenhuma, e o
+/// principal ficaria pronto sem ele. Um repositório que já não carrega a
+/// branch não tem o que perder e passa.
+pub(crate) fn submodule_tip_landed(root: &Path, sub: &str, unit: &str, base: &str) -> Result<(), String> {
+    let dir = root.join(sub);
+    git::run(&dir, &["fetch", "-q", "origin", base]).result()?;
+    let refs = unit_refs_of(&dir, unit, base);
+    let names = refs.refnames();
+    if names.is_empty() {
+        return Ok(());
+    }
+    let contained = branch_state::refs_merged_into(&dir, &format!("origin/{base}"));
+    // O provedor só é perguntado quando o git não respondeu sozinho: um portal
+    // que reescreve os commits ao mergear deixa a ponta fora da base embora o
+    // trabalho tenha entrado.
+    let evidence = if names.iter().all(|name| contained.contains(name)) {
+        PrEvidence::unqueried()
+    } else {
+        let provider = crate::shared::pr_provider::provider_in(root, &dir);
+        let token = provider.provider().to_string();
+        PrQuery::Ask(&token).evidence_of(&dir, unit)
+    };
+    let verdicts = branch_state::ref_verdicts(&refs, &contained, &evidence, &dir);
+    if branch_state::all_refs_accounted(&verdicts) {
+        return Ok(());
+    }
+    let left: Vec<&str> =
+        verdicts.iter().filter(|v| !v.accounted()).map(|v| v.refname.as_str()).collect();
+    Err(format!("submodule-ahead: {}", left.join(", ")))
+}
+
+/// A branch `unit` do principal `root` já está no servidor como está aqui: o
+/// envio anterior deu certo, e a conferência seguinte não o refaz.
+fn pushed(root: &Path, unit: &str) -> bool {
+    let here = git_out(root, &["rev-parse", unit]);
+    here.is_some() && here == git_out(root, &["rev-parse", &format!("refs/remotes/origin/{unit}")])
+}
+
 /// Leva ao principal `root` o ponteiro de cada submódulo de `subs`, cujo pull
-/// request entrou: o submódulo busca a base dele e fica nela, o principal
-/// comita o ponteiro novo na branch `unit` (só onde ele mudou) e envia a
-/// branch; só então a branch `unit` sai de cada submódulo — a do servidor só
-/// com `delete_remote`. Um envio que falhou é refeito na chamada seguinte,
-/// porque a branch do submódulo ainda está lá. `Err` traz o motivo do git.
+/// request entrou, e devolve os que mudaram de ponteiro agora — a lista que o
+/// commit levou, e não a que alguém supôs antes de medir.
+///
+/// O bloco inteiro roda sob a trava do passo do git ([`git_step_lock`]), a
+/// mesma da rodada: ler o ponteiro, pôr o submódulo na base, comitar, enviar e
+/// apagar a branch é um passo só, e duas sessões que conferem ao mesmo tempo
+/// esperam uma pela outra em vez de disputarem o índice do git.
+///
+/// Antes de qualquer movimento, a ponta local de cada submódulo precisa ser a
+/// que entrou ([`submodule_tip_landed`]). Quando não é, nada é tocado: a
+/// recusa volta com o motivo, a branch fica onde está e o principal segue
+/// rascunho.
+///
+/// Depois disso, o submódulo busca a base dele e fica nela, o principal comita
+/// o ponteiro novo na branch `unit` (só onde ele mudou) e envia a branch; só
+/// então a branch `unit` sai de cada submódulo — a do servidor só com
+/// `delete_remote`. Um envio que falhou é refeito na chamada seguinte, porque
+/// a branch do principal ainda não está no servidor como está aqui. `Err` traz
+/// o motivo do git.
 pub(crate) fn bump_pointers(
     root: &Path,
     unit: &str,
     subs: &[String],
-    message: (&str, &str),
+    title: &str,
     delete_remote: bool,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let current = mustard_core::current_branch(root).unwrap_or_default();
     if current != unit {
         return Err(format!("not-on-unit-branch: {current}"));
     }
-    let mut changed: Vec<&str> = Vec::new();
+    let _held = git_step_lock(root)?;
+    let mut moved: Vec<String> = Vec::new();
     for sub in subs {
         let dir = root.join(sub);
         let base = submodule_base(&dir, unit).ok_or_else(|| format!("submodule-base-unknown: {sub}"))?;
-        git::run(&dir, &["fetch", "-q", "origin", &base]).result().map_err(|e| format!("{sub}: {e}"))?;
+        submodule_tip_landed(root, sub, unit, &base).map_err(|e| format!("{sub}: {e}"))?;
         git::run(&dir, &["checkout", "-q", "--detach", &format!("origin/{base}")])
             .result()
             .map_err(|e| format!("{sub}: {e}"))?;
         let recorded = git_out(root, &["rev-parse", &format!("HEAD:{sub}")]).unwrap_or_default();
         if git_out(&dir, &["rev-parse", "HEAD"]).unwrap_or_default() != recorded {
-            changed.push(sub);
+            moved.push(sub.clone());
         }
     }
-    if !changed.is_empty() {
-        let (title, body) = message;
-        let mut args: Vec<&str> = vec!["commit", "-q", "--only", "-m", title, "-m", body, "--"];
-        args.extend(changed.iter().copied());
+    if !moved.is_empty() {
+        let body = moved.iter().map(|sub| format!("- {sub}")).collect::<Vec<String>>().join("\n");
+        let mut args: Vec<&str> = vec!["commit", "-q", "--only", "-m", title, "-m", &body, "--"];
+        args.extend(moved.iter().map(String::as_str));
         git::run(root, &args).result().map_err(|e| if e.is_empty() { "commit-failed".to_string() } else { e })?;
     }
-    git::run(root, &["push", "-q", "origin", unit]).result().map_err(|e| format!("push: {e}"))?;
+    if !moved.is_empty() || !pushed(root, unit) {
+        git::run(root, &["push", "-q", "origin", unit]).result().map_err(|e| format!("push: {e}"))?;
+    }
     for sub in subs {
         let dir = root.join(sub);
         let _ = git_ok(&dir, &["branch", "-D", unit]);
@@ -357,7 +453,7 @@ pub(crate) fn bump_pointers(
             let _ = git_ok(&dir, &["push", "-q", "origin", "--delete", unit]);
         }
     }
-    Ok(())
+    Ok(moved)
 }
 
 /// What `repo` still holds of the unit — `None` when it carries no trace of it

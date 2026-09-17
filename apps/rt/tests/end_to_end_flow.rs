@@ -18,6 +18,12 @@
 //! request do submódulo aberto antes e o do principal como rascunho até o do
 //! submódulo entrar e o ponteiro ser atualizado — pelo `pr-merge` e pela
 //! conferência do início da sessão.
+//!
+//! O pronto do principal é medido pelo ponteiro que ele tinha na hora, e não
+//! pela ordem das chamadas: os casos em que o ponteiro não acontece — commit
+//! do submódulo que o merge não levou, envio que o servidor recusa — deixam o
+//! principal como rascunho, e duas sessões conferindo ao mesmo tempo movem o
+//! ponteiro uma vez só.
 
 #![cfg(unix)]
 
@@ -63,7 +69,9 @@ fn identify(repo: &Path) {
 /// repositório de onde veio (`sub` ou `main`), abre o pull request 3 no
 /// submódulo e o 7 no principal, lembra quais estão abertos, em rascunho e
 /// mergeados, e faz o merge do submódulo de verdade no servidor dele, por um
-/// commit de merge.
+/// commit de merge. Ao marcar um como pronto, anota o ponteiro do submódulo
+/// que o principal tinha naquele instante ([`pointer_when_ready`]): é assim
+/// que o teste vê se o ponteiro veio antes do pronto.
 const SUBMODULE_GH: &str = r#"#!/bin/sh
 case "$(pwd -P)" in
   */libs/sub) repo=sub; number=3 ;;
@@ -89,7 +97,9 @@ case "$1 $2" in
   work="$GH_STATE/merge-$repo"
   git clone -q "$(git config --get remote.origin.url)" "$work"     && git -C "$work" -c user.email=t@example.com -c user.name=t merge -q --no-ff origin/feature/ponta -m "Merge pull request #$number"     && git -C "$work" push -q origin HEAD:main     && touch "$mark.merged"
   exit $? ;;
-"pr ready") rm -f "$mark.draft"; exit 0 ;;
+"pr ready")
+  git rev-parse "HEAD:libs/sub" > "$GH_STATE/ready-$repo" 2>/dev/null
+  rm -f "$mark.draft"; exit 0 ;;
 "api --method") exit 0 ;;
 esac
 exit 1
@@ -224,14 +234,19 @@ impl Project {
 
     /// Um comando `run`, que precisa responder `ok`.
     fn run(&self, args: &[&str]) -> Value {
+        let report = self.answer(args);
+        assert_eq!(report["ok"], json!(true), "{args:?}: {report}");
+        report
+    }
+
+    /// Um comando `run` que pode recusar: a resposta vem como veio.
+    fn answer(&self, args: &[&str]) -> Value {
         let mut all = vec!["run"];
         all.extend_from_slice(args);
         let out = self.command(&all, "");
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let report: Value = serde_json::from_str(&text)
-            .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)));
-        assert_eq!(report["ok"], json!(true), "{args:?}: {report}");
-        report
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
     }
 
     /// Uma gravação pelo `run write`.
@@ -484,6 +499,43 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     project.run(&argv)
 }
 
+/// O evento de início de sessão, como a sessão o entrega.
+fn session_start(project: &Project) -> Value {
+    json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": SESSION,
+        "cwd": project.root.to_string_lossy()})
+}
+
+/// Outra pessoa mergeia o pull request do submódulo, pelo `gh` de fora do
+/// binário.
+fn someone_merges_the_submodule(project: &Project) {
+    let merged = project
+        .env(&mut Command::new(project.bin.join("gh")))
+        .args(["pr", "merge", "3", "--merge"])
+        .current_dir(project.root.join(SUB))
+        .output();
+    assert!(merged.expect("the fake gh").status.success(), "someone else merges the submodule pull request");
+}
+
+/// A ponta da base do submódulo no servidor dele, que é o ponteiro que o
+/// principal passa a gravar depois do merge.
+fn submodule_base_tip(project: &Project) -> String {
+    git_out(&project.remotes.join("sub.git"), &["rev-parse", "refs/heads/main"])
+}
+
+/// O ponteiro do submódulo gravado no commit do principal.
+fn pointer(project: &Project) -> String {
+    git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")])
+}
+
+/// O ponteiro que o principal tinha quando o pull request dele foi marcado
+/// como pronto, anotado pelo `gh` falso.
+fn pointer_when_ready(project: &Project) -> String {
+    std::fs::read_to_string(project.remotes.join("ready-main"))
+        .expect("the main pull request was marked ready")
+        .trim()
+        .to_string()
+}
+
 /// Quando uma spec mexe no principal e num submódulo, as duas branches têm o
 /// mesmo nome, o pull request do submódulo abre primeiro, contra a base dele,
 /// e o do principal abre como rascunho. Enquanto o do submódulo não entra, o
@@ -523,23 +575,22 @@ fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_o
 
     // Enquanto o do submódulo não entra, o início da sessão diz qual falta, e
     // o principal segue rascunho.
-    let start = json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": SESSION,
-        "cwd": project.root.to_string_lossy()});
-    let said = project.hook("SessionStart", &start);
+    let said = project.hook("SessionStart", &session_start(&project));
     assert!(said.contains(&waiting), "the session start names the missing pull request: {said}");
     assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
 
     // O do submódulo entra pelo `pr-merge`: o ponteiro vai para a base do
     // submódulo, a branch do principal é enviada, e o principal fica pronto.
     let sub = project.root.join(SUB);
-    let before = git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]);
+    let before = pointer(&project);
     let merged = project.run(&["pr-merge", "--pr", "3", "--root", &sub.to_string_lossy()]);
     assert_eq!(merged["action"], json!("merged"), "{merged}");
     assert_eq!(merged["submodules"]["ready"], json!(true), "{merged}");
-    let sub_base = git_out(&sub_server, &["rev-parse", "refs/heads/main"]);
-    let pointer = git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]);
+    let sub_base = submodule_base_tip(&project);
+    let pointer = pointer(&project);
     assert_ne!(pointer, before, "the pointer moved: {merged}");
     assert_eq!(pointer, sub_base, "the pointer is the submodule base after the merge: {merged}");
+    assert_eq!(pointer_when_ready(&project), sub_base, "the pointer was already in the main when it went ready");
     assert_eq!(
         git_out(&project.remotes.join("projeto.git"), &["rev-parse", &format!("refs/heads/{BRANCH}")]),
         git_out(&project.root, &["rev-parse", "HEAD"]),
@@ -560,28 +611,156 @@ fn a_submodule_pull_request_merged_by_someone_else_readies_the_main_one_at_sessi
     let project = Project::with_submodule();
     open_pull_requests_with_a_submodule(&project);
 
-    let sub = project.root.join(SUB);
-    let merged = project.env(&mut Command::new(project.bin.join("gh"))).args(["pr", "merge", "3", "--merge"]).current_dir(&sub).output();
-    assert!(merged.expect("the fake gh").status.success(), "someone else merges the submodule pull request");
+    someone_merges_the_submodule(&project);
     assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
 
-    let start = json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": SESSION,
-        "cwd": project.root.to_string_lossy()});
+    let start = session_start(&project);
     let said = project.hook("SessionStart", &start);
     let ready = translate("pr.submodules.ready", Locale::PtBr).replace("{pr}", "7").replace("{paths}", SUB);
     assert!(said.contains(&ready), "the session start says the main pull request is ready: {said}");
-    let sub_base = git_out(&project.remotes.join("sub.git"), &["rev-parse", "refs/heads/main"]);
-    assert_eq!(git_out(&project.root, &["rev-parse", &format!("HEAD:{SUB}")]), sub_base, "the pointer moved");
+    let sub_base = submodule_base_tip(&project);
+    assert_eq!(pointer(&project), sub_base, "the pointer moved");
     assert_eq!(
         git_out(&project.remotes.join("projeto.git"), &["rev-parse", &format!("refs/heads/{BRANCH}")]),
         git_out(&project.root, &["rev-parse", "HEAD"]),
         "the main branch was pushed with the pointer"
     );
     assert!(project.gh_calls().iter().any(|call| call.starts_with("main pr ready 7")), "the main pull request is ready");
+    assert_eq!(pointer_when_ready(&project), sub_base, "the pointer was already in the main when it went ready");
 
     // A conferência seguinte não refaz nada: o principal já está pronto.
     let commits = git_out(&project.root, &["rev-list", "--count", "HEAD"]);
     let again = project.hook("SessionStart", &start);
     assert!(!again.contains(&ready), "{again}");
     assert_eq!(git_out(&project.root, &["rev-list", "--count", "HEAD"]), commits, "no second pointer commit");
+}
+
+/// O submódulo que entrou e já não tem a branch na máquina ainda leva o
+/// ponteiro ao principal: o pronto vem depois do ponteiro, nunca sem ele. A
+/// branch na máquina não diz nada sobre o ponteiro — quem decide é o fato,
+/// depois de buscar a base.
+#[test]
+fn a_landed_submodule_without_its_branch_here_still_moves_the_pointer_before_the_ready() {
+    let project = Project::with_submodule();
+    open_pull_requests_with_a_submodule(&project);
+    someone_merges_the_submodule(&project);
+
+    // A branch sai da máquina antes da conferência.
+    let sub = project.root.join(SUB);
+    git(&sub, &["checkout", "-q", "--detach", BRANCH]);
+    git(&sub, &["branch", "-qD", BRANCH]);
+
+    project.hook("SessionStart", &session_start(&project));
+    let sub_base = submodule_base_tip(&project);
+    assert_eq!(pointer(&project), sub_base, "the pointer moved although the branch had left");
+    assert_eq!(pointer_when_ready(&project), sub_base, "the pointer was already in the main when it went ready");
+}
+
+/// Um commit do submódulo que o merge não levou trava a conferência: nada é
+/// mexido, a branch fica com ele, o principal segue rascunho e a resposta diz
+/// o motivo.
+#[test]
+fn a_submodule_commit_the_merge_did_not_take_keeps_the_branch_and_the_draft() {
+    let project = Project::with_submodule();
+    open_pull_requests_with_a_submodule(&project);
+
+    // O merge leva o que está no servidor do submódulo; este commit fica só
+    // aqui, e nunca foi enviado.
+    let sub = project.root.join(SUB);
+    std::fs::write(sub.join("lib.txt"), "a biblioteca ainda mais nova\n").expect("the change");
+    git(&sub, &["commit", "-qam", "o conserto que ficou aqui"]);
+    let kept = git_out(&sub, &["rev-parse", "HEAD"]);
+
+    let before = pointer(&project);
+    let merged = project.answer(&["pr-merge", "--pr", "3", "--root", &sub.to_string_lossy()]);
+    assert_eq!(merged["submodules"]["ready"], json!(false), "{merged}");
+    let problem = merged["submodules"]["problem"].as_str().unwrap_or_default().to_string();
+    assert!(problem.contains(SUB) && problem.contains(BRANCH), "the refusal names the branch that is ahead: {merged}");
+    assert_eq!(pointer(&project), before, "the pointer did not move: {merged}");
+    assert_eq!(git_out(&sub, &["rev-parse", BRANCH]), kept, "the local commit still has a branch: {merged}");
+    assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
+}
+
+/// O `pr-open` que roda de novo com o pull request do submódulo já mergeado
+/// não o dá por pronto quando sobra commit aqui: para com o motivo, antes de
+/// mexer no pull request do principal.
+#[test]
+fn a_second_pr_open_refuses_a_merged_submodule_that_still_carries_work() {
+    let project = Project::with_submodule();
+    open_pull_requests_with_a_submodule(&project);
+    someone_merges_the_submodule(&project);
+
+    let sub = project.root.join(SUB);
+    std::fs::write(sub.join("lib.txt"), "a biblioteca ainda mais nova\n").expect("the change");
+    git(&sub, &["commit", "-qam", "o conserto que ficou aqui"]);
+
+    let opened = project.answer(&["pr-open", "--base", "dev", "--head", BRANCH, "--spec", SPEC]);
+    assert_eq!(opened["ok"], json!(false), "{opened}");
+    let error = opened["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.contains(SUB) && error.contains(BRANCH), "the refusal names the branch that is ahead: {opened}");
+    assert_eq!(opened["submodules"][0]["action"], json!("open"), "the submodule is not reported as done: {opened}");
+}
+
+/// O envio do ponteiro que o servidor recusa deixa o principal como rascunho,
+/// com o motivo e a branch do submódulo no lugar; a conferência seguinte, com
+/// o servidor aceitando, refaz o envio e só então marca o principal pronto.
+#[test]
+fn a_submodule_pointer_the_server_refuses_keeps_the_main_pull_request_a_draft() {
+    let project = Project::with_submodule();
+    open_pull_requests_with_a_submodule(&project);
+
+    let refuse = project.remotes.join("projeto.git/hooks/pre-receive");
+    std::fs::write(&refuse, "#!/bin/sh\nexit 1\n").expect("the server hook");
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&refuse, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let sub = project.root.join(SUB);
+    let merged = project.answer(&["pr-merge", "--pr", "3", "--root", &sub.to_string_lossy()]);
+    assert_eq!(merged["submodules"]["ready"], json!(false), "{merged}");
+    assert!(merged["submodules"]["problem"].as_str().is_some_and(|r| r.starts_with("push")), "{merged}");
+    assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
+    assert!(!git_out(&sub, &["branch", "--list", BRANCH]).is_empty(), "the submodule branch is still here");
+
+    // O servidor volta a aceitar: a conferência seguinte refaz o envio.
+    std::fs::remove_file(&refuse).expect("the server hook leaves");
+    project.hook("SessionStart", &session_start(&project));
+    assert_eq!(
+        git_out(&project.remotes.join("projeto.git"), &["rev-parse", &format!("refs/heads/{BRANCH}")]),
+        git_out(&project.root, &["rev-parse", "HEAD"]),
+        "the main branch was pushed with the pointer"
+    );
+    assert_eq!(pointer_when_ready(&project), submodule_base_tip(&project), "the pointer came before the ready");
+}
+
+/// Duas sessões conferindo ao mesmo tempo: a trava do passo do git faz uma
+/// esperar a outra, o ponteiro entra uma vez só e nenhuma delas volta com o
+/// erro cru do git.
+#[test]
+fn two_sessions_checking_the_submodule_at_the_same_time_move_the_pointer_once() {
+    let project = Project::with_submodule();
+    open_pull_requests_with_a_submodule(&project);
+    someone_merges_the_submodule(&project);
+
+    // O commit do ponteiro demora, e as duas sessões se encontram dentro dele.
+    let hook = project.root.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nsleep 1\n").expect("the commit hook");
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let commits = git_out(&project.root, &["rev-list", "--count", "HEAD"]);
+    let start = session_start(&project);
+    let (one, two) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| project.hook("SessionStart", &start));
+        let second = scope.spawn(|| project.hook("SessionStart", &start));
+        (first.join().expect("a session"), second.join().expect("the other session"))
+    });
+
+    let stuck = translate("pr.submodules.stuck", Locale::PtBr).replace("{pr}", "7");
+    let stuck = stuck.split("{reason}").next().unwrap_or_default().to_string();
+    for said in [&one, &two] {
+        assert!(!said.contains(&stuck), "neither session is stuck on the other's git step: {said}");
+    }
+    let after: usize = git_out(&project.root, &["rev-list", "--count", "HEAD"]).parse().expect("a number");
+    assert_eq!(after, commits.parse::<usize>().expect("a number") + 1, "the pointer commit happened once");
+    assert_eq!(pointer(&project), submodule_base_tip(&project), "the pointer is the submodule base");
 }

@@ -13,7 +13,6 @@ use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::recorded_copy;
 use mustard_core::platform::git as git_exec;
-use mustard_core::ClaudePaths;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
@@ -191,22 +190,16 @@ fn run(root: &Path, program: &str, args: &[&str]) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// O arquivo da trava do passo do git, na pasta das specs do checkout.
-const GIT_LOCK_FILE: &str = "round-git.lock";
-
 /// O código que a conferência antes do commit usa no lugar do que o git ainda
 /// vai dar, com a mesma forma.
 pub(super) const UNMADE_SHA: &str = "0000000000000000000000000000000000000000";
 
-/// Pega a trava do passo do git do checkout `root`, esperando a de outra
-/// rodada soltar. É uma trava própria, e não a do arquivo de eventos da spec:
-/// o gancho do commit pode demorar, e a trava da spec seguraria todo leitor
-/// dela enquanto isso. A mesma trava pedida duas vezes pelo mesmo processo
-/// esperaria por si mesma: quem já a tem passa adiante a que tem.
+/// A trava do passo do git do checkout `root`, na recusa da rodada. A trava
+/// mora num lugar só ([`crate::commands::git_settle::git_step_lock`]), porque
+/// o commit da rodada e o ponteiro dos submódulos disputam o mesmo índice.
 pub(super) fn git_lock(root: &Path) -> Result<LockedFile, RoundRefusal> {
-    let io = |detail: String| RoundRefusal::Refused(Refusal::Io { detail });
-    let paths = ClaudePaths::for_project(root).map_err(|e| io(e.to_string()))?;
-    LockedFile::exclusive(&paths.spec_dir().join(GIT_LOCK_FILE)).map_err(|e| io(e.to_string()))
+    crate::commands::git_settle::git_step_lock(root)
+        .map_err(|detail| RoundRefusal::Refused(Refusal::Io { detail }))
 }
 
 /// O commit atual do checkout `root`; vazio quando o git não responde.

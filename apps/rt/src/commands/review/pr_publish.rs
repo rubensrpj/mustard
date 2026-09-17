@@ -55,7 +55,7 @@ use serde_json::Value;
 use mustard_core::domain::spec_events::pr_message;
 use mustard_core::platform::i18n::translate;
 
-use crate::commands::git_settle::{bump_pointers, has_local_branch, submodule_base, unit_submodules};
+use crate::commands::git_settle::{bump_pointers, submodule_base, submodule_tip_landed, unit_submodules};
 use crate::commands::review::pr_door::project_root;
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{provider_for, provider_in, PrProvider, PrRef, PrToOpen, PrView};
@@ -316,17 +316,25 @@ struct OpenAnswer {
 
 /// Envia a branch `head` do submódulo `sub` do principal `repo` e abre, ou
 /// reescreve, o pull request dela contra a base daquele repositório, com o
-/// título e o corpo da spec. O pull request que já entrou fica como está.
-/// Devolve a resposta e se ele já entrou.
+/// título e o corpo da spec. O pull request que já entrou fica como está —
+/// desde que a ponta local seja a que entrou: um commit que o merge não levou
+/// para com o motivo, antes de o principal abrir. Devolve a resposta e se ele
+/// já entrou.
 fn open_submodule(repo: &Path, sub: &str, head: &str, (title, body): (&str, &str)) -> (SubmodulePr, bool) {
     let dir = repo.join(sub);
     let provider = provider_in(repo, &dir);
     let name = provider.provider().to_string();
     let entry = |report: PrPublishReport| SubmodulePr { path: sub.to_string(), report };
     let failed = |error: String| (entry(PrPublishReport::failed(ACTION_OPEN, name.clone(), None, error)), false);
+    let Some(base) = submodule_base(&dir, head) else {
+        return failed(format!("submodule-base-unknown: {sub}"));
+    };
     if let Ok(view) = provider.view(PrRef::Head(head))
         && view.status == PrStatus::Merged
     {
+        if let Err(reason) = submodule_tip_landed(repo, sub, head, &base) {
+            return failed(reason);
+        }
         let report = PrPublishReport {
             ok: true,
             action: ACTION_MERGED,
@@ -338,9 +346,6 @@ fn open_submodule(repo: &Path, sub: &str, head: &str, (title, body): (&str, &str
         };
         return (entry(report), true);
     }
-    let Some(base) = submodule_base(&dir, head) else {
-        return failed(format!("submodule-base-unknown: {sub}"));
-    };
     if let Err(error) = mustard_core::platform::git::run(&dir, &["push", "-q", "origin", head]).result() {
         return failed(format!("push {sub}: {error}"));
     }
@@ -395,11 +400,13 @@ impl SubmodulePrs {
 
 /// Com o pull request `principal` da spec `spec` aberto, pergunta ao provedor
 /// de cada submódulo que a spec mexe pelo pull request da branch dela. Cada um
-/// que entrou e ainda tem a branch na máquina tem o ponteiro levado ao
-/// principal, que envia a branch; sem nenhum faltando, o pull request do
-/// principal que ainda é rascunho fica pronto. Enquanto falta algum, ele segue
-/// como rascunho, e a resposta diz qual falta. `None` quando a spec não mexe
-/// em submódulo.
+/// que entrou vai para a conferência do ponteiro, que decide pelo fato — o
+/// ponteiro gravado no principal já está na base do submódulo, depois de
+/// buscar? — e não pela branch ainda estar na máquina, que não diz nada sobre
+/// o ponteiro. O que se mover é comitado no principal, que envia a branch; sem
+/// nenhum faltando e sem nada travado, o pull request do principal que ainda é
+/// rascunho fica pronto. Enquanto falta algum, ele segue como rascunho, e a
+/// resposta diz qual falta. `None` quando a spec não mexe em submódulo.
 pub(crate) fn submodules_landed(repo: &Path, spec: &str, principal: &PrView) -> Option<SubmodulePrs> {
     let log = DiskSpecState::new(repo).log(spec)?;
     let state = mustard_core::domain::spec_state::State::from_log(&log);
@@ -419,12 +426,7 @@ pub(crate) fn submodules_landed(repo: &Path, spec: &str, principal: &PrView) -> 
     for sub in subs {
         let dir = repo.join(&sub);
         match provider_in(repo, &dir).view(PrRef::Head(&branch)) {
-            Ok(view) if view.status == PrStatus::Merged => {
-                if has_local_branch(&dir, &branch) {
-                    found.bumped.push(sub.clone());
-                }
-                found.landed.push(sub);
-            }
+            Ok(view) if view.status == PrStatus::Merged => found.landed.push(sub),
             Ok(_) => found.waiting.push(sub),
             Err(reason) => {
                 found.problem.get_or_insert(format!("{sub}: {reason}"));
@@ -432,14 +434,12 @@ pub(crate) fn submodules_landed(repo: &Path, spec: &str, principal: &PrView) -> 
             }
         }
     }
-    if !found.bumped.is_empty() {
+    if !found.landed.is_empty() {
         let cfg = mustard_core::ProjectConfig::load(repo);
         let title = translate("pr.pointer_commit", cfg.language().text_or_default());
-        let body: Vec<String> = found.bumped.iter().map(|sub| format!("- {sub}")).collect();
-        let bumped = bump_pointers(repo, &branch, &found.bumped, (title, &body.join("\n")), cfg.git.delete_remote_branch);
-        if let Err(reason) = bumped {
-            found.problem = Some(reason);
-            found.bumped.clear();
+        match bump_pointers(repo, &branch, &found.landed, title, cfg.git.delete_remote_branch) {
+            Ok(moved) => found.bumped = moved,
+            Err(reason) => found.problem = Some(reason),
         }
     }
     if found.waiting.is_empty() && found.problem.is_none() && principal.draft {
