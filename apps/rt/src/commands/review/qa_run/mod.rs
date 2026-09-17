@@ -109,7 +109,8 @@ pub(crate) struct ProofRun {
     pub exit: i64,
     /// Quanto demorou, em milissegundos.
     pub ms: u64,
-    /// O começo do que a prova escreveu, quando ela não passou.
+    /// O começo do que a prova escreveu, quando ela não passou — a saída do
+    /// executor, e não uma frase montada sobre ela.
     pub output: String,
     /// A prova de critério saiu verde sem rodar teste nenhum, e por isso não
     /// passou, com o número que a saída do executor disse — é ele que a
@@ -147,6 +148,11 @@ pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
 /// se o comando é a prova de um critério. Só nela o verde sem rodar teste
 /// nenhum vira recusa, e a recusa carrega o número que a saída do executor
 /// disse — não há recusa sem contagem lida.
+///
+/// O que a execução leva é sempre o que o comando escreveu, e nunca uma frase
+/// montada aqui: quem lê o evento gravado precisa ver a saída do executor. O
+/// número lido vai pelo `ran_no_test`, e é dele que a recusa tira a contagem
+/// que mostra.
 fn graded(out: AcResult, is_proof: bool) -> ProofRun {
     let ran_no_test = out.tests_run.filter(|count| *count == 0 && is_proof && out.status == "pass");
     ProofRun {
@@ -154,10 +160,7 @@ fn graded(out: AcResult, is_proof: bool) -> ProofRun {
         exit: out.exit.unwrap_or(1),
         ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
         ran_no_test,
-        output: match ran_no_test {
-            Some(count) => format!("green without running any test: the output says {count} tests"),
-            None => out.stderr_excerpt,
-        },
+        output: out.stderr_excerpt,
     }
 }
 

@@ -948,6 +948,48 @@ mod tests {
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 
+    /// Os dois executores que dizem zero sem escrever número são lidos pela
+    /// linha de resumo de cada um, e não por uma frase qualquer. O vitest sai
+    /// com código 0 quando o filtro por nome não casa teste nenhum e escreve
+    /// `Tests  no tests`: essa prova é recusada. O go escreve a marca dele por
+    /// pacote, então a prova em que um pacote não rodou teste ao lado de outro
+    /// que rodou passa — a corrida rodou teste. E a execução recusada guarda o
+    /// que o executor escreveu, e não uma frase montada sobre ela.
+    #[test]
+    fn a_proof_that_ran_zero_tests_is_read_by_the_summary_line_of_each_runner() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let go_mixed = "echo ok x/pkg 0.002s [no tests to run] && echo ok x/outro 0.02s";
+        let vitest_zero = "echo Tests no tests";
+        ready_to_close(root, "x", &[go_mixed, vitest_zero]);
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+        let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
+            .replace("{code}", &codes[&criteria[1]])
+            .replace("{command}", vitest_zero)
+            .replace("{count}", "0");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        let runs: Vec<(Option<&str>, Option<&str>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "criterion_run")
+            .map(|e| (e.str_field("result"), e.str_field("output")))
+            .collect();
+        assert_eq!(runs.len(), 2, "os dois critérios rodaram: {runs:?}");
+        assert_eq!(runs[0], (Some("pass"), None), "o go com um pacote sem teste e outro com teste passa");
+        assert_eq!(runs[1].0, Some("fail"));
+        assert_eq!(
+            runs[1].1,
+            Some("Tests no tests"),
+            "a execução recusada guarda o que o executor escreveu: {runs:?}"
+        );
+        assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
+    }
+
     /// A leitura de quantos testes o comando rodou vale só na prova de um
     /// critério. O lint do projeto não passa por ela: um lint verde que
     /// escreve `Tests: 0 total` fecha a spec do mesmo jeito. E a prova de

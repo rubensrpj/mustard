@@ -98,17 +98,43 @@ const TEST_COUNTS: &[(&str, &str, &str)] = &[
     ("passing", "", "passing"),
 ];
 
-/// Como o go — o único executor da tabela que diz zero sem número nenhum —
-/// marca a corrida que não rodou teste: `ok x/pkg 0.002s [no tests to run]`,
-/// com os colchetes que são dele.
+/// Dois executores da tabela dizem zero sem escrever número, e cada um tem a
+/// linha dele. A frase solta continua de fora, e o motivo é medido: `no tests
+/// to skip` na saída verde de um lint e `no tests found here` numa prova que
+/// não é teste diziam zero e recusavam um verde legítimo. Quem não escreve
+/// contagem nem a linha de resumo do próprio executor não respondeu à
+/// pergunta.
 ///
-/// A frase solta não entra, e o motivo é medido: `no tests to skip` na saída
-/// verde de um lint e `no tests found here` numa prova que não é teste diziam
-/// zero e recusavam um verde legítimo. Quem não escreve contagem nem a marca
-/// do próprio executor não respondeu à pergunta. O `[no test files]` do go
-/// fica de fora pelo mesmo cuidado: num `go test ./...` ele sai por pacote, ao
-/// lado dos pacotes que rodaram testes de verdade.
-const NO_TEST_LINES: &[&str] = &["[no tests to run]"];
+/// A linha de resumo do vitest quando o filtro por nome não casou teste
+/// nenhum: `Tests  no tests`. É contagem de executor — o rótulo dele abre a
+/// linha —, e não prosa. Sem ela o vitest escapava por inteiro: ele sai com
+/// código 0 nesse caso, e a linha não traz número para a tabela ler.
+///
+/// A linha já chega aqui aparada e em minúsculas.
+fn vitest_said_no_test(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("tests") else { return false };
+    let rest = rest.strip_prefix(':').unwrap_or(rest);
+    rest.starts_with(char::is_whitespace) && rest.trim_start().starts_with("no tests")
+}
+
+/// A marca do go no pacote cujo filtro por nome não casou teste nenhum:
+/// `ok  x/pkg  0.002s [no tests to run]`, com os colchetes que são dele.
+const GO_NO_TESTS_TO_RUN: &str = "[no tests to run]";
+
+/// O que a linha de resultado de um pacote do go diz sobre ter rodado teste:
+/// `Some(true)` quando aquele pacote rodou, `Some(false)` quando ele mesmo diz
+/// que não rodou nenhum, `None` quando a linha não é resultado de pacote.
+///
+/// A leitura é por pacote porque a saída é por pacote, e o go não escreve
+/// contagem em linha nenhuma: num `go test -run X ./...` a marca sai ao lado
+/// de pacotes que rodaram teste de verdade, e tomá-la por resposta da corrida
+/// inteira recusava uma prova legítima. Só quando nenhum pacote rodou é que a
+/// corrida rodou zero.
+fn go_package_ran_tests(line: &str) -> Option<bool> {
+    let rest = line.strip_prefix("ok")?;
+    rest.starts_with(char::is_whitespace)
+        .then(|| !(rest.contains(GO_NO_TESTS_TO_RUN) || rest.contains("[no test files]")))
+}
 
 /// O número que uma linha de saída, já em minúsculas, diz ter rodado, pelo
 /// executor que casar com ela.
@@ -136,19 +162,26 @@ fn counted_in_line(line: &str) -> Option<u64> {
 
 /// Quantos testes a saída de um comando diz ter rodado, quando um executor
 /// que o projeto usa se reconhece nela: o cargo escreve uma linha por alvo e
-/// as contas se somam, os outros dizem o total numa linha de resumo, e a
-/// marca do go, que não escreve número, conta zero. `None` quando nenhuma
-/// linha responde à pergunta: verde sem contagem não é verde sem teste.
+/// as contas se somam, os outros dizem o total numa linha de resumo, e os dois
+/// que dizem zero sem número — o vitest na linha de resumo dele e o go na
+/// marca do pacote — contam zero. `None` quando nenhuma linha responde à
+/// pergunta: verde sem contagem não é verde sem teste.
 ///
 /// Isto é leitura, e não veredito: quem decide o que fazer com o número é
 /// quem pediu o comando — só a prova de um critério recusa o zero.
 fn tests_run(output: &str) -> Option<u64> {
     let mut counts: Vec<u64> = Vec::new();
     let mut said_none = false;
+    let (mut go_said_none, mut go_ran) = (false, false);
     for line in output.split(['\n', '\r']) {
         let line = line.trim().to_ascii_lowercase();
-        if NO_TEST_LINES.iter().any(|phrase| line.contains(phrase)) {
+        if vitest_said_no_test(&line) {
             said_none = true;
+        }
+        match go_package_ran_tests(&line) {
+            Some(true) => go_ran = true,
+            Some(false) => go_said_none |= line.contains(GO_NO_TESTS_TO_RUN),
+            None => {}
         }
         counts.extend(counted_in_line(&line));
     }
@@ -156,7 +189,7 @@ fn tests_run(output: &str) -> Option<u64> {
     if total > 0 {
         return Some(total);
     }
-    (!counts.is_empty() || said_none).then_some(0)
+    (!counts.is_empty() || said_none || (go_said_none && !go_ran)).then_some(0)
 }
 
 /// `true` for the two cargo subcommands that relink a crate's binary.
@@ -647,7 +680,15 @@ fn run_ac_command_inner(
                 status: "pass".to_string(),
                 exit: Some(0),
                 duration_ms,
-                stderr_excerpt: String::new(),
+                // O verde que diz ter rodado zero teste leva o começo do que
+                // escreveu: é a única evidência do que aconteceu, e quem
+                // recusa por zero teste grava esse trecho em vez de uma frase
+                // montada. O verde comum segue com o excerto vazio, como
+                // sempre.
+                stderr_excerpt: match counted {
+                    Some(0) => excerpt(&combined_full),
+                    _ => String::new(),
+                },
                 tests_run: counted,
             },
             ExpectVerdict::Missed => AcResult {
@@ -842,15 +883,23 @@ mod tests {
     /// Quantos testes a saída diz ter rodado, em cada executor que o projeto
     /// usa: o cargo soma os alvos e basta um alvo com teste para o verde
     /// valer; o jest, o vitest, o pytest, o unittest, o dotnet e o mocha dizem
-    /// o total numa linha de resumo; e a marca do go com o filtro que não
-    /// casou, que é dele e vem entre colchetes, conta zero. A saída que não
-    /// responde à pergunta não vira contagem nenhuma: a frase solta que cita
-    /// "no tests" num lint verde ou numa prova que não é teste não é
-    /// contagem, e quem a lia recusava um verde legítimo.
+    /// o total numa linha de resumo.
+    ///
+    /// Os dois que dizem zero sem escrever número têm cada um a linha dele. O
+    /// vitest, que sai verde quando o filtro por nome não casa nada, diz `Tests
+    /// no tests` na linha de resumo — é contagem, e sem ela o executor inteiro
+    /// escapava. O go diz a marca dele entre colchetes, mas por pacote: num
+    /// `go test -run X ./...` ela sai ao lado de pacotes que rodaram teste de
+    /// verdade, e aí a corrida não rodou zero — só quando nenhum pacote rodou.
+    ///
+    /// A saída que não responde à pergunta não vira contagem nenhuma: a frase
+    /// solta que cita "no tests" num lint verde ou numa prova que não é teste
+    /// não é contagem, e quem a lia recusava um verde legítimo.
     ///
     /// O número lido viaja no resultado, e o executor não julga: o comando
     /// que sai verde sem rodar teste sai daqui como `pass`, com o zero que a
-    /// saída disse, e quem recusa é a prova de um critério.
+    /// saída disse e com o começo do que ele escreveu, e quem recusa é a prova
+    /// de um critério.
     #[test]
     fn every_runner_the_project_uses_says_how_many_tests_it_ran() {
         let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n\n     Running tests/a.rs\n\nrunning 0 tests\n";
@@ -868,18 +917,36 @@ mod tests {
         assert_eq!(tests_run("  3 passing (12ms)\n"), Some(3));
         assert_eq!(tests_run("testing: warning: no tests to run\nok\tx/pkg\t0.002s [no tests to run]\n"), Some(0));
         assert_eq!(tests_run("?   x/pkg\t[no test files]\nok  \tx/outro\t0.02s\n"), None, "go por pacote não conclui");
+        assert_eq!(
+            tests_run("ok  \tx/pkg\t0.002s [no tests to run]\nok  \tx/outro\t0.02s\n"),
+            None,
+            "um pacote sem teste ao lado de um que rodou não é corrida sem teste"
+        );
+        assert_eq!(
+            tests_run("ok  \tx/pkg\t0.002s [no tests to run]\n?   \tx/vazio\t[no test files]\n"),
+            Some(0),
+            "nenhum pacote rodou"
+        );
         assert_eq!(tests_run("cargo test: 6 passed (1 suite)"), None, "sem contagem, sem veredito");
         assert_eq!(tests_run("lint ok: no tests to skip\n"), None, "frase num lint verde não é contagem");
         assert_eq!(tests_run("src/msg.rs: no tests found here\n"), None, "nem numa prova que não é teste");
-        assert_eq!(tests_run(" Tests  no tests\n"), None, "sem número, o executor não disse quantos");
+        assert_eq!(
+            tests_run(" Test Files  1 passed (1)\n      Tests  no tests\n"),
+            Some(0),
+            "a linha de resumo do vitest é contagem, mesmo sem número"
+        );
+        assert_eq!(tests_run("testing: no tests here\n"), None, "prosa que começa parecido não é resumo");
 
         // O número lido chega no resultado, e o verde sem teste sai daqui
-        // verde: o veredito é de quem pediu a prova.
+        // verde: o veredito é de quem pediu a prova. O verde que diz zero leva
+        // o começo do que escreveu; o verde comum não leva nada.
         let dir = tempdir().unwrap();
         let three = run_ac_command("echo running 3 tests", None, dir.path());
         assert_eq!((three.status.as_str(), three.tests_run), ("pass", Some(3)), "{}", three.stderr_excerpt);
+        assert!(three.stderr_excerpt.is_empty(), "o verde comum não leva excerto");
         let zero = run_ac_command("echo running 0 tests", None, dir.path());
         assert_eq!((zero.status.as_str(), zero.tests_run), ("pass", Some(0)), "{}", zero.stderr_excerpt);
+        assert!(zero.stderr_excerpt.contains("running 0 tests"), "o zero leva a saída real: {}", zero.stderr_excerpt);
         let quiet = run_ac_command("echo lint ok: no tests to skip", None, dir.path());
         assert_eq!((quiet.status.as_str(), quiet.tests_run), ("pass", None), "{}", quiet.stderr_excerpt);
     }
