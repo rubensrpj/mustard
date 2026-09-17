@@ -240,7 +240,20 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
 /// the operator to ignore diagnostics.
 #[test]
 fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
-    let doctor = production_half("apps/rt/src/commands/doctor/doctor.rs");
+    // O diagnóstico é a porta e as partes da pasta ao lado dela: a busca lê
+    // todas, para a frase não voltar escondida numa parte.
+    let parts_dir = repo_root().join("apps/rt/src/commands/doctor/doctor");
+    let mut parts: Vec<String> = std::fs::read_dir(&parts_dir)
+        .unwrap_or_else(|e| panic!("{} unreadable: {e}", parts_dir.display()))
+        .filter_map(|entry| entry.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|name| name.ends_with(".rs"))
+        .collect();
+    parts.sort();
+    assert!(!parts.is_empty(), "the doctor's parts were not found in {}", parts_dir.display());
+    let doctor = std::iter::once(production_half("apps/rt/src/commands/doctor/doctor.rs"))
+        .chain(parts.iter().map(|name| production_half(&format!("apps/rt/src/commands/doctor/doctor/{name}"))))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // --- 1. The prescription is gone ----------------------------------------
     assert!(
