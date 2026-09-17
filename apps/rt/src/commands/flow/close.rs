@@ -199,21 +199,17 @@ fn run_close(
         "recorded": recorded,
         "criteria": runs,
     });
-    match &pages {
-        Ok(pages) => {
-            out["md"] = json!(pages.md);
-            out["html"] = json!(pages.html);
-        }
-        Err(refusal) => {
-            crate::commands::spec_events::pages::push_warning(&mut out, refusal.reason(), &refusal.message(lang));
-        }
+    if let Ok(pages) = &pages {
+        out["md"] = json!(pages.md);
+        out["html"] = json!(pages.html);
     }
-    // O fechamento é um marco: manda publicar, menos com item retido, que
-    // espera o expurgo — e o pull request espera a publicação.
+    // O fechamento é um marco: manda publicar, menos com item retido ou com a
+    // página que não pôde ser refeita, que esperam — e o pull request espera
+    // a publicação.
     let then = translate("close.next", lang);
     crate::commands::spec_events::pages::end_milestone(
         &mut out,
-        pages.as_ref().ok(),
+        pages.as_ref(),
         "close",
         then,
         &crate::commands::spec_events::pages::after_purge("close", then, lang),
@@ -492,6 +488,36 @@ mod tests {
         }
         let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         assert!(!html.contains("a1b2c3d4e5f6g7h8i9j0"), "the local page keeps the secret out");
+    }
+
+    /// Quando a página não pode ser refeita, a rodada e o fechamento não
+    /// mandam publicar a que ficou no disco: dizem o motivo nos avisos,
+    /// mandam refazer a página antes de publicar e seguem com o próximo passo.
+    #[test]
+    fn a_page_that_could_not_be_rebuilt_is_never_ordered_to_be_published() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        // Uma pasta no lugar da página impede de gravá-la.
+        let page = root.join(".claude/spec/x/spec.html");
+        std::fs::remove_file(&page).unwrap();
+        std::fs::create_dir(&page).unwrap();
+
+        let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let closed = close(root, "x");
+        for (report, milestone, then) in
+            [(&rounded, "round", translate("round.next", Locale::PtBr)), (&closed, "close", translate("close.next", Locale::PtBr))]
+        {
+            assert_eq!(report["ok"], json!(true), "{report}");
+            assert!(report.get("publish").is_none(), "{milestone}: {report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            assert!(!next.contains("write publish"), "{milestone}: {next}");
+            assert!(next.starts_with(translate("page.not_rebuilt", Locale::PtBr)), "{milestone}: {next}");
+            assert!(next.contains("run page --spec") && next.contains(&format!("`{milestone}`")), "{milestone}: {next}");
+            assert!(next.ends_with(then), "{milestone}: {next}");
+            let warned = report["warnings"].as_array().cloned().unwrap_or_default();
+            assert!(warned.iter().any(|w| w["reason"] == json!("io-failed")), "{milestone} gives the reason: {report}");
+        }
     }
 
     /// Ao gravar a fase fechada, o fechamento arma a cobrança das pendências

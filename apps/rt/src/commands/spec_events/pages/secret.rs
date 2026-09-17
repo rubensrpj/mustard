@@ -9,12 +9,15 @@
 //!   formas comuns: `senha: …`, `a senha é …`, `senha do banco: …`,
 //!   `DB_PASSWORD=…`, `GITHUB_TOKEN=…`, `"password": "…"`, `client_secret=…`;
 //! - o valor que só um segredo tem naquele lugar: a senha dentro de um
-//!   endereço (`postgres://usuário:senha@host`) e o token depois de `Bearer`.
+//!   endereço (`esquema://usuário:senha@host`, com ou sem o usuário) e o token
+//!   depois de `Bearer`.
 //!
-//! Nas duas últimas, o valor só conta quando parece de verdade: tem letra e
-//! número e não é um marcador (`<senha>`, `${TOKEN}`, `****`), um código de
-//! item, uma data, um caminho com linha ou a leitura de uma variável de
-//! ambiente (`process.env.X`).
+//! Nas duas últimas, o valor só conta quando parece de verdade: não é um
+//! marcador (`<senha>`, `${TOKEN}`, `****`), um código de item, uma data, um
+//! caminho com linha ou a leitura de uma variável de ambiente
+//! (`process.env.X`), e tem letra e número. A senha num endereço dispensa a
+//! letra e o número, porque ali não há outra coisa que não seja senha; fica de
+//! fora só a palavra de exemplo no lugar dela (`senha`, `password`, `user`).
 
 use std::sync::OnceLock;
 
@@ -37,22 +40,30 @@ const SHAPES: &[&str] = &[
 ];
 
 /// Os nomes que, antes de `:` ou `=`, anunciam um segredo. O nome pode vir
-/// colado ao fim de outro (`DB_PASSWORD`, `GITHUB_TOKEN`, `client_secret`).
-const NAMES: &str = r"password|passwd|pwd|senha|secret|segredo|token|api[_-]?key|access[_-]?key|client[_-]?secret";
+/// no fim de outra palavra (`DB_PASSWORD`, `GITHUB_TOKEN`, `client_secret`,
+/// `SecretKey`, `AccountKey`, `ENCRYPTION_KEY`).
+const NAMES: &str = r"password|passwd|pwd|senha|secret|segredo|token|key|chave";
+
+/// As palavras que um exemplo põe no lugar da senha de um endereço.
+const EXAMPLE_WORDS: &[&str] = &["senha", "password", "pass", "pwd", "secret", "token", "user", "usuário", "usuario"];
 
 /// As formas em que o valor vem no grupo `v` e só conta se parecer de
-/// verdade.
-fn valued_patterns() -> [String; 3] {
+/// verdade, cada uma dizendo se o valor precisa de letra e número.
+fn valued_patterns() -> [(String, bool); 3] {
     [
         // A atribuição: o nome, com prefixo e com aspa, até duas palavras de
         // ligação (`senha do banco`), o sinal e o valor, com ou sem aspa.
-        format!(
-            r#"(?i)\b\w*?(?:{NAMES})["']?(?:\s+(?:do|da|de|dos|das|of|for)\s+[\w-]+){{0,2}}\s*(?:[:=]|\sé\s|\sis\s)\s*["']?(?P<v>[^\s"'`<>]{{8,}})"#
+        (
+            format!(
+                r#"(?i)\b\w*?(?:{NAMES})["']?(?:\s+(?:do|da|de|dos|das|of|for)\s+[\w-]+){{0,2}}\s*(?:[:=]|\sé\s|\sis\s)\s*["']?(?P<v>[^\s"'`<>]{{8,}})"#
+            ),
+            true,
         ),
-        // A senha num endereço: `esquema://usuário:senha@host`.
-        r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:(?P<v>[^\s:/@]{4,})@".to_string(),
+        // A senha num endereço: `esquema://usuário:senha@host`, com o usuário
+        // podendo faltar (`redis://:senha@host`).
+        (r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]*:(?P<v>[^\s:/@]{4,})@".to_string(), false),
         // O token do cabeçalho de autorização.
-        r"(?i)\bbearer\s+(?P<v>[A-Za-z0-9._~+/=-]{16,})".to_string(),
+        (r"(?i)\bbearer\s+(?P<v>[A-Za-z0-9._~+/=-]{16,})".to_string(), true),
     ]
 }
 
@@ -74,9 +85,11 @@ fn shapes() -> Option<&'static Regex> {
     SHAPES_RE.get_or_init(|| Regex::new(&SHAPES.join("|")).ok()).as_ref()
 }
 
-fn valued() -> &'static [Regex] {
-    static VALUED_RE: OnceLock<Vec<Regex>> = OnceLock::new();
-    VALUED_RE.get_or_init(|| valued_patterns().iter().filter_map(|p| Regex::new(p).ok()).collect())
+fn valued() -> &'static [(Regex, bool)] {
+    static VALUED_RE: OnceLock<Vec<(Regex, bool)>> = OnceLock::new();
+    VALUED_RE.get_or_init(|| {
+        valued_patterns().into_iter().filter_map(|(p, mixed)| Some((Regex::new(&p).ok()?, mixed))).collect()
+    })
 }
 
 /// Os valores que têm letra e número sem serem segredo: o código de um item
@@ -102,26 +115,28 @@ fn not_secret() -> Option<&'static Regex> {
 /// O texto tem algo com cara de segredo.
 pub(super) fn looks_like_secret(text: &str) -> bool {
     shapes().is_some_and(|re| re.is_match(text))
-        || valued().iter().any(|re| {
-            re.captures_iter(text).any(|caps| caps.name("v").is_some_and(|value| real_value(value.as_str())))
+        || valued().iter().any(|(re, mixed)| {
+            re.captures_iter(text)
+                .any(|caps| caps.name("v").is_some_and(|value| real_value(value.as_str(), *mixed)))
         })
 }
 
-/// Um valor que parece de verdade: tem letra e número e não é um marcador de
-/// lugar, um código de item, uma data, um caminho ou a leitura de uma variável
-/// de ambiente.
-fn real_value(value: &str) -> bool {
+/// Um valor que parece de verdade: não é um marcador de lugar, uma palavra de
+/// exemplo, um código de item, uma data, um caminho ou a leitura de uma
+/// variável de ambiente, e, quando `mixed`, tem letra e número.
+fn real_value(value: &str, mixed: bool) -> bool {
     let value = value.trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
     let lower = value.to_ascii_lowercase();
     let placeholder = value.starts_with(['$', '{', '%', '*', '.', '<', '['])
         || value.chars().all(|c| c == value.chars().next().unwrap_or('x'))
         || lower.contains("xxxx")
         || value.contains('…')
-        || ENV_READS.iter().any(|read| lower.starts_with(read));
+        || ENV_READS.iter().any(|read| lower.starts_with(read))
+        || EXAMPLE_WORDS.iter().any(|word| lower == *word);
     let letter = value.chars().any(char::is_alphabetic);
     let digit = value.chars().any(|c| c.is_ascii_digit());
     let ordinary = not_secret().is_some_and(|re| re.is_match(value));
-    letter && digit && !placeholder && !ordinary
+    (!mixed || letter && digit) && !placeholder && !ordinary
 }
 
 #[cfg(test)]
@@ -222,6 +237,85 @@ mod tests {
             r#""password": "…""#,
             "sk-proj-… e npm_…",
             "o texto colocado pelos ganchos: 1234 tokens",
+            "https://claude.ai/code/artifact/abc123:8080",
+        ];
+        for text in ordinary {
+            assert!(!looks_like_secret(text), "false positive: {text}");
+        }
+    }
+
+    /// A chave anunciada pelo nome casa, com o nome sozinho ou no fim de
+    /// outra palavra, em inglês e em português: a variável de ambiente, o
+    /// campo do appsettings, a cadeia de conexão do Azure e a frase. O mesmo
+    /// nome diante de um código, uma data, um caminho, um marcador, uma
+    /// leitura de configuração ou de prosa não casa, nem a palavra que só
+    /// começa pelo nome.
+    #[test]
+    fn a_key_named_key_or_chave_is_found_and_the_rest_is_not() {
+        let found = [
+            "SECRET_KEY=a1b2c3d4e5f6g7h8",
+            r#"{"SecretKey": "Xk29dmQpL7wz"}"#,
+            r#""Jwt": {"Issuer": "loja", "Key": "Xk29dmQpL7wz"}"#,
+            "DefaultEndpointsProtocol=https;AccountName=loja;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;EndpointSuffix=core.windows.net",
+            "ENCRYPTION_KEY=9f8e7d6c5b4a3210",
+            "a chave é Xk29dmQpL7wz",
+            "chave: Xk29dmQpL7wz",
+            "key = \"Xk29dmQpL7wz\"",
+        ];
+        for text in found {
+            assert!(looks_like_secret(text), "not found: {text}");
+        }
+        let ordinary = [
+            r#""keys": ["banco", "senha"]"#,
+            "chave: MSTD-DEC-0138",
+            "key: 2026-09-17",
+            "chave: apps/rt/src/commands/spec_events/pages/secret.rs:41",
+            "SECRET_KEY=${SECRET_KEY}",
+            "SECRET_KEY=…",
+            "ENCRYPTION_KEY=process.env.ENCRYPTION_KEY2",
+            r#"options.SecretKey = configuration["Jwt:SecretKey"];"#,
+            r#"builder.Configuration["Jwt:Key"]"#,
+            "a chave é o código do item",
+            "a chave primária é id_cliente",
+            "the key is required",
+            "keyboard: abnt2-br",
+        ];
+        for text in ordinary {
+            assert!(!looks_like_secret(text), "false positive: {text}");
+        }
+    }
+
+    /// A senha dentro de um endereço casa mesmo sem número e com o usuário
+    /// vazio. Continuam de fora o marcador e a palavra de exemplo no lugar da
+    /// senha, e o endereço sem senha.
+    #[test]
+    fn a_password_inside_an_address_is_found_without_a_digit_or_a_user() {
+        let found = [
+            "postgres://app:senhaforte@db",
+            "redis://:S3nh4F0rte@cache",
+            "mysql://root:minhasenha@localhost:3306/loja",
+            "amqp://:guestguest@rabbit",
+        ];
+        for text in found {
+            assert!(looks_like_secret(text), "not found: {text}");
+        }
+        let ordinary = [
+            "a forma é postgres://usuário:senha@host",
+            "postgres://usuario:senha@host",
+            "por isso postgres://u:senha@host não é pego",
+            "postgres://user:password@localhost",
+            "mysql://root:pass@db",
+            "mongodb://admin:pwd@host",
+            "mongodb://admin:secret@host",
+            "http://app:token@host",
+            "http://app:user@host",
+            "http://app:usuário@host",
+            "redis://:<senha>@cache",
+            "redis://:${REDIS_PASSWORD}@cache",
+            "amqp://user:****@rabbit",
+            "amqp://user:xxxx@rabbit",
+            "postgres://app:…@db",
+            "ssh://git@github.com:22/org/repo",
             "https://claude.ai/code/artifact/abc123:8080",
         ];
         for text in ordinary {

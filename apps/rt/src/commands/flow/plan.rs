@@ -322,7 +322,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     }
     spec_events::pages::end_milestone(
         &mut report,
-        Some(&pages),
+        Ok(&pages),
         "approval",
         translate("plan.next", lang),
         translate("plan.held", lang),

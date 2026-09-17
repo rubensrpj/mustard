@@ -1485,6 +1485,14 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Then rebuild the page with `mustard-rt run page --spec <spec>` and, with no item \
              withheld, publish both pages and record each publication with the `{milestone}` milestone."
         }
+        ("page.not_rebuilt", Locale::PtBr) => {
+            "Não publique as páginas: a página da spec não pôde ser refeita, e o motivo está em \
+             `warnings`."
+        }
+        ("page.not_rebuilt", Locale::EnUs) => {
+            "Do not publish the pages: the spec page could not be rebuilt, and the reason is in \
+             `warnings`."
+        }
         ("plan.copy", Locale::PtBr) => {
             "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
         }
@@ -4041,6 +4049,7 @@ mod tests {
             ("page.publish", &["{milestone}"][..]),
             ("page.hold", &["{codes}"][..]),
             ("page.after_purge", &["{milestone}"][..]),
+            ("page.not_rebuilt", &[][..]),
             ("plan.copy", &[][..]),
             ("plan.wave_loop", &["{waves}"][..]),
             ("plan.depends_on_missing", &["{wave}", "{on}"][..]),

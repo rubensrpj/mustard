@@ -9,7 +9,8 @@
 //!   Orchestrator: …` line and the `## Guards` block between
 //!   `<!-- mustard:guards -->` and `<!-- /mustard:guards -->`;
 //! - the team's `.claude/settings.json`, where an older install wrote the lines
-//!   of its seed;
+//!   of its seed (its deny rules stay: a protection rule never leaves the
+//!   team's file unless someone asks);
 //! - `.claude/CLAUDE.md`, the orchestrator an older install planted.
 //!
 //! [`plan`] only reads, and says what would leave; [`apply`] does it. Nothing
@@ -21,8 +22,9 @@
 //! deleted only when nothing is left but the title Mustard wrote (and the
 //! `## Guards` heading that held the block). A file with the breadcrumb or the
 //! `## Guards` heading of an older scan and no mark at all is not touched: it
-//! is listed, and the person decides. Each guard that leaves becomes a
-//! project-rule lesson, once, before any file changes.
+//! is listed, and the person decides. Each guard of the guards block that
+//! leaves becomes a project-rule lesson, once for the place it holds, before
+//! any file changes; the old map block leaves without becoming one.
 
 use std::path::{Path, PathBuf};
 
@@ -40,10 +42,14 @@ use super::{CLAUDE_LOCAL_MD, CLAUDE_MD};
 /// The import line an older scan wrote at the top of an instruction file.
 const SCAN_MAP_IMPORT_LINE: &str = "@.claude/scan-map.md";
 
-/// Openings of the blocks Mustard wrote, with the closing of each. The guards
-/// block opened with or without the `pending` word.
+/// Opening of the guards block, with or without the `pending` word. It is the
+/// only block that holds rules.
+const GUARDS_OPEN: &str = "<!-- mustard:guards";
+
+/// Openings of the blocks Mustard wrote, with the closing of each. The old map
+/// block held the scan's summary of the folder, not rules.
 const BLOCKS: &[(&str, &str)] = &[
-    ("<!-- mustard:guards", "<!-- /mustard:guards -->"),
+    (GUARDS_OPEN, "<!-- /mustard:guards -->"),
     ("<!-- mustard:scan-map", "<!-- /mustard:scan-map -->"),
 ];
 
@@ -208,24 +214,29 @@ fn team_settings_change(root: &Path) -> Option<FileChange> {
     })
 }
 
-/// The guards not yet in the bank, each once: the versioned instruction file
-/// wins over its local twin, which usually repeats it.
+/// The guards not yet in the bank, each once for the place it holds: a guard
+/// is known by its text and by where it holds, in the bank as in this pass.
+/// The same guard in two subprojects is two lessons; in one subproject, the
+/// versioned instruction file wins over its local twin, which usually repeats
+/// it.
 fn new_lessons(root: &Path, mut guards: Vec<GuardLesson>) -> Vec<GuardLesson> {
     guards.sort_by_key(|g| g.source.ends_with(CLAUDE_LOCAL_MD));
-    let known: Vec<String> = lesson_bank(root)
+    let known: Vec<(String, Value)> = lesson_bank(root)
         .and_then(|path| lessons::read(&path).ok().flatten())
         .map(|bank| {
             bank.visible()
                 .into_iter()
                 .filter(|lesson| lesson.event_type == PROJECT_RULE)
-                .filter_map(|lesson| lesson.str_field("text").map(normalized))
+                .filter_map(|lesson| {
+                    Some((normalized(lesson.str_field("text")?), lesson.fields.get("applies_to")?.clone()))
+                })
                 .collect()
         })
         .unwrap_or_default();
     let mut seen = known;
     let mut out = Vec::new();
     for guard in guards {
-        let key = normalized(&guard.text);
+        let key = (normalized(&guard.text), applies_to(guard.subproject.as_deref()));
         if seen.contains(&key) {
             continue;
         }
@@ -233,6 +244,15 @@ fn new_lessons(root: &Path, mut guards: Vec<GuardLesson>) -> Vec<GuardLesson> {
         out.push(guard);
     }
     out
+}
+
+/// Where a guard's lesson holds: its subproject, or the whole project. The
+/// lesson is written with it and found in the bank by it.
+fn applies_to(subproject: Option<&str>) -> Value {
+    match subproject {
+        Some(sub) => serde_json::json!({ "subproject": sub }),
+        None => serde_json::json!({ "files": [crate::domain::lessons::WHOLE_PROJECT] }),
+    }
 }
 
 fn lesson_bank(root: &Path) -> Option<PathBuf> {
@@ -341,7 +361,9 @@ pub(super) fn strip_marks(text: &str) -> Stripped {
             let Some(end) = (i + 1..lines.len()).find(|j| content(lines[*j]).trim() == *close) else {
                 return Stripped::Unmarked;
             };
-            guards.extend(guards_in(&lines[i + 1..end].iter().map(|l| content(l)).collect::<Vec<_>>()));
+            if *open == GUARDS_OPEN {
+                guards.extend(guards_in(&lines[i + 1..end].iter().map(|l| content(l)).collect::<Vec<_>>()));
+            }
             removes.push(format!("{open} … {close}", open = open.trim_end()));
             marks += 1;
             i = end + 1;
@@ -483,16 +505,12 @@ fn rewrite(root: &Path, rel: &str) -> Result<()> {
 /// The lesson a guard becomes: a project rule that holds where the guard held
 /// (its subproject, or the whole project), born in the file it came from.
 fn lesson_draft(guard: &GuardLesson) -> Map<String, Value> {
-    let applies = match &guard.subproject {
-        Some(sub) => serde_json::json!({ "subproject": sub }),
-        None => serde_json::json!({ "files": [crate::domain::lessons::WHOLE_PROJECT] }),
-    };
     let draft = serde_json::json!({
         "class": PROJECT_RULE,
         "author": "binary",
         "text": guard.text,
         "keys": lesson_keys(guard),
-        "applies_to": applies,
+        "applies_to": applies_to(guard.subproject.as_deref()),
         "found_in": { "source": guard.source },
     });
     draft.as_object().cloned().unwrap_or_default()
@@ -645,21 +663,40 @@ mod tests {
             .collect()
     }
 
+    /// Cópia do `CLAUDE.md` que o scan antigo escreveu na fixture em Go, com as
+    /// guards em prosa, sem `- `. O teste guarda o texto: a própria limpeza
+    /// apaga o arquivo original quando roda neste repositório.
+    const SCAN_FIXTURE_MD: &str = "@.claude/scan-map.md
+
+# Graph_go
+
+> Parent: [../../../../../CLAUDE.md](../../../../../CLAUDE.md) | Orchestrator: [../../../../../.claude/mustard/orchestrator.md](../../../../../.claude/mustard/orchestrator.md)
+
+## Guards
+
+<!-- mustard:guards -->
+<!-- facts: kind=go; frameworks=(none) -->
+[critical] never import in internal/model/user.go
+This directory is a frozen characterization fixture for `apps/scan/tests/graph_resolution.rs`: the non-regression test pins EXACTLY 1 graph edge whose fan-in target is `internal/model/user.go` — any new internal import, file rename, or extra edge breaks that recorded baseline, so update the test's expectations in the same change or don't touch the shape.
+The `module example.test/graphdemo` line in `go.mod` and the import path in `internal/server/server.go` are one contract — module-prefixed resolution is the exact behavior under test, so change them only together and verbatim.
+`internal/model/user.go` deliberately samples one of each Go definition shape (struct + method, interface, type alias) with zero imports — extend shapes inside it if needed, but keep it import-free so it stays the pure fan-in target.
+Never make this fixture buildable or runnable (no `main`, no dependencies, no `go mod tidy`): the scan miner parses it with tree-sitter and never compiles it — minimality is the spec, and any \"fix\" toward a real app adds noise the tests will count.
+<!-- /mustard:guards -->
+";
+
     /// As guards que o scan escreveu em prosa, sem `- `, viram lições antes de
-    /// o arquivo sair: o `CLAUDE.md` da fixture do scan em Go, copiado para uma
-    /// pasta temporária, dá cinco lições, uma por linha, e só então é apagado.
-    /// As outras fixtures do scan, no mesmo formato, dão uma lição por linha.
+    /// o arquivo sair: a cópia do `CLAUDE.md` da fixture do scan em Go, numa
+    /// pasta temporária, dá cinco lições, uma por linha, e só então é apagada.
     #[test]
     fn prose_guards_of_the_scan_fixtures_become_lessons_before_the_file_goes() {
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/scan/tests/fixtures");
-        let body = std_fs::read_to_string(fixtures.join("graph_go/CLAUDE.md")).unwrap();
-        let expected = block_lines(&body);
+        let body = SCAN_FIXTURE_MD;
+        let expected = block_lines(body);
         assert_eq!(expected.len(), 5, "the fixture keeps its five guards: {expected:?}");
         assert_eq!(expected[0], "[critical] never import in internal/model/user.go");
 
         let dir = tempdir().unwrap();
         let root = dir.path();
-        write(root, "apps/graph_go/CLAUDE.md", &body);
+        write(root, "apps/graph_go/CLAUDE.md", body);
         let listed = plan(root);
         let texts: Vec<&str> = listed.lessons.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(texts, expected, "one lesson per guard line");
@@ -677,16 +714,79 @@ mod tests {
             .filter_map(|l| l.str_field("text").map(str::to_string))
             .collect();
         assert_eq!(written, expected);
+    }
 
-        for name in ["flutter_app", "graph_dart", "monorepo_mix/api", "monorepo_mix/web", "php_laravel"] {
-            let body = std_fs::read_to_string(fixtures.join(name).join("CLAUDE.md")).unwrap();
-            let Stripped::Changed { guards, .. } = strip_marks(&body) else {
-                panic!("{name}: the marks were not found");
-            };
-            let lines = block_lines(&body);
-            assert!(!lines.is_empty(), "{name}: the fixture has guards");
-            assert_eq!(guards, lines, "{name}: one guard per line");
+    /// A mesma guard em dois subprojetos vale nos dois: vira uma lição para
+    /// cada um, os dois arquivos saem, e a busca de lições de cada subprojeto
+    /// acha a sua. O par `CLAUDE.md` e `CLAUDE.local.md` do mesmo subprojeto
+    /// continua valendo uma lição só. E, com a lição de um subprojeto já no
+    /// banco, a mesma guard noutro subprojeto ainda vira lição.
+    #[test]
+    fn the_same_guard_in_two_subprojects_is_two_lessons() {
+        let body = "# Svc\n\n<!-- mustard:guards -->\n- Never call the database from a handler.\n<!-- /mustard:guards -->\n";
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "apps/a/CLAUDE.md", body);
+        write(root, "apps/a/CLAUDE.local.md", body);
+        write(root, "apps/b/CLAUDE.md", body);
+
+        let listed = plan(root);
+        let places: Vec<Option<&str>> = listed.lessons.iter().map(|l| l.subproject.as_deref()).collect();
+        assert_eq!(places, [Some("apps/a"), Some("apps/b")], "{:?}", listed.lessons);
+        assert_eq!(listed.lessons[0].source, "apps/a/CLAUDE.md", "the versioned file wins over its local twin");
+
+        let done = apply(root, &listed).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.lessons.len(), 2);
+        assert_eq!(done.deleted.len(), 3, "{done:?}");
+        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
+        for sub in ["apps/a", "apps/b"] {
+            let scope = crate::domain::lessons::Scope { subproject: Some(sub.to_string()), ..Default::default() };
+            let found = crate::domain::lessons::in_scope(&bank, &scope);
+            assert_eq!(found.len(), 1, "{sub} keeps its rule");
+            assert_eq!(found[0].str_field("text"), Some("Never call the database from a handler."));
         }
+
+        let other = tempdir().unwrap();
+        let root = other.path();
+        write(root, "apps/a/CLAUDE.md", body);
+        apply(root, &plan(root)).unwrap();
+        write(root, "apps/b/CLAUDE.md", body);
+        write(root, "apps/a/CLAUDE.local.md", body);
+        let later = plan(root);
+        let places: Vec<Option<&str>> = later.lessons.iter().map(|l| l.subproject.as_deref()).collect();
+        assert_eq!(places, [Some("apps/b")], "the bank holds the text only for apps/a: {:?}", later.lessons);
+    }
+
+    /// O bloco antigo do mapa guardava o resumo da pasta, não regras: ele sai
+    /// do arquivo sem virar lição nenhuma. Num arquivo com os dois blocos, só
+    /// o das Guards vira lição.
+    #[test]
+    fn the_old_map_block_leaves_without_becoming_a_lesson() {
+        let map_only = "# Dashboard\n\n> Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [../.claude/CLAUDE.md](../.claude/CLAUDE.md)\n\n<!-- mustard:scan-map -->\nTipo: typescript · 10 arquivos\nPesquise via `mustard-rt run feature` (digest) — não leia o repo direto.\n<!-- /mustard:scan-map -->\n\n## Architecture\n\nHand-written prose that must NOT move.\n";
+        let Stripped::Changed { text, guards, removes, delete } = strip_marks(map_only) else {
+            panic!("the map block is a mark");
+        };
+        assert!(guards.is_empty(), "the map block holds no rule: {guards:?}");
+        assert!(!delete);
+        assert_eq!(removes.len(), 2, "the breadcrumb and the map block: {removes:?}");
+        assert_eq!(text, "# Dashboard\n\n\n\n## Architecture\n\nHand-written prose that must NOT move.\n");
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "apps/dashboard/CLAUDE.md", map_only);
+        let both = "# Web\n\n<!-- mustard:scan-map -->\nTipo: npm · 1 arquivos\n<!-- /mustard:scan-map -->\n\n## Guards\n\n<!-- mustard:guards -->\n- Keep pages free of inline styles.\n<!-- /mustard:guards -->\n";
+        write(root, "apps/web/CLAUDE.md", both);
+        let listed = plan(root);
+        let texts: Vec<&str> = listed.lessons.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["Keep pages free of inline styles."], "{:?}", listed.lessons);
+
+        let done = apply(root, &listed).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.lessons.len(), 1);
+        assert_eq!(done.edited, ["apps/dashboard/CLAUDE.md"]);
+        assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
+        assert!(!std_fs::read_to_string(root.join("apps/dashboard/CLAUDE.md")).unwrap().contains("Tipo:"));
     }
 
     /// Uma guard que não vira lição segura todos os arquivos: nada é apagado
@@ -736,6 +836,38 @@ mod tests {
         assert_eq!(plan.lessons.len(), 2, "the local twin repeats the same guards: {:?}", plan.lessons);
         assert!(plan.lessons.iter().all(|l| l.source == "apps/rt/CLAUDE.md"), "{:?}", plan.lessons);
         assert_eq!(plan.lessons[0].subproject.as_deref(), Some("apps/rt"));
+    }
+
+    /// As regras de bloqueio ficam no `settings.json` da equipe, mesmo iguais
+    /// às do molde, e as outras linhas do molde saem. O arquivo só é apagado
+    /// quando não sobra nada além do molde e não há regra de bloqueio nele.
+    #[test]
+    fn the_deny_rules_stay_in_the_team_settings() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let team = "{\n  \"respectGitignore\": true,\n  \"cleanupPeriodDays\": 30,\n  \"env\": { \"MUSTARD_BOUNDARY_MODE\": \"warn\" },\n  \"permissions\": {\n    \"allow\": [\"Read\", \"Grep\"],\n    \"deny\": [\"Bash(rm -rf:*)\", \"Read(**/*.pem)\"]\n  }\n}\n";
+        write(root, ".claude/settings.json", team);
+
+        let listed = plan(root);
+        assert_eq!(listed.files.len(), 1, "{listed:?}");
+        let change = &listed.files[0];
+        assert_eq!(change.action, Action::Edit, "a file with deny rules is not deleted");
+        assert_eq!(
+            change.removes,
+            ["respectGitignore", "cleanupPeriodDays", "env.MUSTARD_BOUNDARY_MODE", "permissions.allow: Read", "permissions.allow: Grep"],
+        );
+        let done = apply(root, &listed).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.edited, [".claude/settings.json"]);
+        let left: Value = serde_json::from_str(&std_fs::read_to_string(root.join(".claude/settings.json")).unwrap()).unwrap();
+        assert_eq!(left, serde_json::json!({ "permissions": { "deny": ["Bash(rm -rf:*)", "Read(**/*.pem)"] } }));
+        assert!(plan(root).is_empty(), "the deny rules are not listed again");
+
+        let other = tempdir().unwrap();
+        let root = other.path();
+        write(root, ".claude/settings.json", "{\n  \"respectGitignore\": true,\n  \"permissions\": { \"allow\": [\"Read\"] }\n}\n");
+        let listed = plan(root);
+        assert_eq!(listed.files[0].action, Action::Delete, "only the seed and no deny rule: {listed:?}");
     }
 
     /// Aplicar tira o que o plano listou, grava as Guards como lições, e uma

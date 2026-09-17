@@ -286,6 +286,12 @@ mod tests {
             &project_key,
             &npm,
             "a senha do banco: Pr0dSenha",
+            "SECRET_KEY=Ch4veDoSite",
+            r#""Jwt": {"Key": "Ch4veDoJwt"}"#,
+            "AccountKey=Ch4veDoAzure==;EndpointSuffix=core.windows.net",
+            "a chave é Ch4veDaFrase",
+            "postgres://app:senhadobanco@db",
+            "redis://:senhadocache@cache",
         ];
         let mut codes = Vec::new();
         for secret in secrets {
@@ -296,6 +302,10 @@ mod tests {
             "token: 2026-09-17T02:35:53-03:00",
             "secret: apps/rt/src/shared/rtk_gain.rs:120",
             "token: process.env.GITHUB_TOKEN2",
+            "chave: MSTD-DEC-0138",
+            "SECRET_KEY=process.env.SECRET_KEY2",
+            "a forma é postgres://usuário:senha@host",
+            "redis://:${REDIS_PASSWORD}@cache",
         ];
         for text in ordinary {
             put("message", json!({"author": "user", "text": text}));
@@ -315,12 +325,15 @@ mod tests {
         let html = fs::read_to_string(root.join(".claude/spec/segredo/spec.html")).unwrap();
         let md = fs::read_to_string(root.join(".claude/spec/segredo/spec.md")).unwrap();
         for value in ["S3nh4F0rte2024", "a1b2c3d4e5f6g7h8i9j0", "bPxRfiCYEXAMPLEKEY", "Hunt3rDois", "9f8e7d6c5b4a3210",
-            "Banc0Loja", "8f14e45fceea167a5a36dedd4bea2543", &project_key, &npm, "Pr0dSenha"]
+            "Banc0Loja", "8f14e45fceea167a5a36dedd4bea2543", &project_key, &npm, "Pr0dSenha", "Ch4veDoSite",
+            "Ch4veDoJwt", "Ch4veDoAzure", "Ch4veDaFrase", "senhadobanco", "senhadocache"]
         {
             assert!(!html.contains(value), "{value} reached the page");
             assert!(md.contains(value), "{value} left the local .md");
         }
-        for text in ["MSTD-TASK-0101", "2026-09-17T02:35:53-03:00", "rtk_gain.rs:120", "process.env.GITHUB_TOKEN2"] {
+        for text in ["MSTD-TASK-0101", "2026-09-17T02:35:53-03:00", "rtk_gain.rs:120", "process.env.GITHUB_TOKEN2",
+            "MSTD-DEC-0138", "process.env.SECRET_KEY2", "postgres://usuário:senha@host", "REDIS_PASSWORD"]
+        {
             assert!(html.contains(text), "{text} was withheld without being a secret");
         }
     }

@@ -32,7 +32,8 @@
 //!
 //! Só os marcos mandam publicar — a aprovação, o fim de uma rodada e o
 //! fechamento —, todos pela mesma porta, [`end_milestone`]: com item retido,
-//! o marco diz o código de cada item a expurgar e não manda publicar.
+//! o marco diz o código de cada item a expurgar e não manda publicar; com a
+//! página que não pôde ser refeita, diz o motivo e também não manda.
 
 mod secret;
 
@@ -302,27 +303,34 @@ pub(crate) fn note_checked(report: &mut Value, pages: &SpecPages) {
     }
 }
 
-/// O fim de um passo que é um marco (`approval`, `round` ou `close`), com a
-/// página já refeita: sem item retido, a resposta manda publicar a página da
-/// spec e a do projeto, diz como gravar cada publicação e segue com `then`;
-/// com item retido, diz o código de cada item a expurgar, não manda publicar
-/// e segue com `held`. Sem página refeita (`None`), manda publicar a que já
-/// está no disco, que foi conferida quando foi gravada.
+/// O fim de um passo que é um marco (`approval`, `round` ou `close`), com o
+/// resultado de refazer a página: sem item retido, a resposta manda publicar
+/// a página da spec e a do projeto, diz como gravar cada publicação e segue
+/// com `then`; com item retido, diz o código de cada item a expurgar, não
+/// manda publicar e segue com `held`. Quando a página não pôde ser refeita,
+/// o motivo vai para os avisos e a resposta também não manda publicar: a
+/// página do disco não passou pela conferência deste marco.
 pub(crate) fn end_milestone(
     report: &mut Value,
-    pages: Option<&SpecPages>,
+    pages: Result<&SpecPages, &Refusal>,
     milestone: &str,
     then: &str,
     held: &str,
     lang: Locale,
 ) {
-    if let Some(pages) = pages {
-        note_checked(report, pages);
-        if !pages.withheld.is_empty() {
-            let hold = translate("page.hold", lang).replace("{codes}", &pages.withheld.join(", "));
-            report["next"] = json!(format!("{hold} {held}"));
+    let pages = match pages {
+        Ok(pages) => pages,
+        Err(refusal) => {
+            push_warning(report, refusal.reason(), &refusal.message(lang));
+            report["next"] = json!(format!("{} {held}", translate("page.not_rebuilt", lang)));
             return;
         }
+    };
+    note_checked(report, pages);
+    if !pages.withheld.is_empty() {
+        let hold = translate("page.hold", lang).replace("{codes}", &pages.withheld.join(", "));
+        report["next"] = json!(format!("{hold} {held}"));
+        return;
     }
     report["publish"] = json!(["spec", "project"]);
     let publish = translate("page.publish", lang).replace("{milestone}", milestone);

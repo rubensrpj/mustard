@@ -520,10 +520,13 @@ impl Switches {
 /// taken out, in file order.
 ///
 /// A line is the seed's when its text is exactly the seed's: a top-level key
-/// with the seed's value, an `env` variable with the seed's value, a permission
-/// rule the seed lists (or one an older seed listed and this one retired), and
-/// the signature an older seed wrote. Anything the team changed, even by one
-/// character, is theirs and stays. A container the removal empties goes too.
+/// with the seed's value, an `env` variable with the seed's value, an allow or
+/// ask rule the seed lists, and the signature an older seed wrote. Anything the
+/// team changed, even by one character, is theirs and stays. A container the
+/// removal empties goes too.
+///
+/// Deny rules always stay, even the seed's: a protection rule never leaves the
+/// team's file unless someone asks, so a file with one is never emptied.
 #[must_use]
 pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>, Vec<String>) {
     let seed = parse_json_object(SETTINGS_SEED);
@@ -547,7 +550,7 @@ pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>,
             }
             "permissions" => {
                 if let Some(perms) = out.get_mut("permissions").and_then(Value::as_object_mut) {
-                    for list in ["allow", "deny", "ask"] {
+                    for list in SEED_LINE_LISTS {
                         let seeded = seed_rules(&seed, list);
                         let Some(rules) = perms.get_mut(list).and_then(Value::as_array_mut) else { continue };
                         rules.retain(|rule| {
@@ -559,7 +562,7 @@ pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>,
                             !ours
                         });
                     }
-                    for list in ["allow", "deny", "ask"] {
+                    for list in SEED_LINE_LISTS {
                         if perms.get(list).and_then(Value::as_array).is_some_and(Vec::is_empty) {
                             perms.shift_remove(list);
                         }
@@ -596,19 +599,17 @@ fn seed_value_of_env<'a>(seed_env: &'a Map<String, Value>, name: &str) -> Option
     seed_env.get(name)
 }
 
-/// The rules the seed lists under `permissions.<list>`, plus the deny rules an
-/// older seed wrote.
+/// The permission lists whose seed rules leave a team's file. `deny` is not
+/// one of them: its rules stay.
+const SEED_LINE_LISTS: [&str; 2] = ["allow", "ask"];
+
+/// The rules the seed lists under `permissions.<list>`.
 fn seed_rules(seed: &Map<String, Value>, list: &str) -> Vec<String> {
-    let mut rules: Vec<String> = seed
-        .get("permissions")
+    seed.get("permissions")
         .and_then(|p| p.get(list))
         .and_then(Value::as_array)
         .map(|r| r.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        .unwrap_or_default();
-    if list == "deny" {
-        rules.extend(RETIRED_DENY_RULES.iter().map(|r| (*r).to_string()));
-    }
-    rules
+        .unwrap_or_default()
 }
 
 /// The project-root-relative name of the team's settings file.
@@ -1006,15 +1007,19 @@ mod tests {
     // --- a team's settings file ---------------------------------------------
 
     /// Só as linhas com o texto exato do molde saem de um `settings.json` da
-    /// equipe; a linha que a equipe mudou fica, e o arquivo que só tinha o
-    /// molde fica vazio.
+    /// equipe; a linha que a equipe mudou fica, e as regras de bloqueio ficam
+    /// todas, mesmo as do molde: do arquivo que só tinha o molde sobram elas.
     #[test]
     fn only_the_seed_lines_leave_a_team_settings_file() {
         let seed = parse_json_object(SETTINGS_SEED);
         let (left, removed) = without_seed_lines(&seed);
-        assert!(left.is_empty(), "a file that is only the seed empties: {left:?}");
+        assert_eq!(
+            Value::Object(left),
+            json!({ "permissions": { "deny": seed["permissions"]["deny"].clone() } }),
+            "a file that is only the seed keeps only its deny rules",
+        );
         assert!(removed.iter().any(|r| r == "statusLine"), "{removed:?}");
-        assert!(removed.iter().any(|r| r == "permissions.deny: Bash(rm -rf:*)"), "{removed:?}");
+        assert!(!removed.iter().any(|r| r.starts_with("permissions.deny")), "{removed:?}");
 
         let team = parse_json_object(
             r#"{"env":{"MUSTARD_SPEC_SIZE_MODE":"strict","TEAM":"1","MUSTARD_BOUNDARY_MODE":"warn"},
@@ -1026,15 +1031,14 @@ mod tests {
         let (left, removed) = without_seed_lines(&team);
         assert_eq!(
             removed,
-            [
-                "env.MUSTARD_BOUNDARY_MODE",
-                "permissions.allow: Read",
-                "permissions.deny: Bash(git branch -D main:*)",
-                "attribution",
-            ],
+            ["env.MUSTARD_BOUNDARY_MODE", "permissions.allow: Read", "attribution"],
         );
         assert_eq!(left["env"], json!({"MUSTARD_SPEC_SIZE_MODE": "strict", "TEAM": "1"}), "a changed value is theirs");
-        assert_eq!(left["permissions"], json!({"allow": ["Bash(npm test:*)"]}));
+        assert_eq!(
+            left["permissions"],
+            json!({"allow": ["Bash(npm test:*)"], "deny": ["Bash(git branch -D main:*)"]}),
+            "a deny rule an older seed wrote stays too",
+        );
         assert_eq!(left["cleanupPeriodDays"], json!(7));
         assert!(left.get("hooks").is_some());
         assert!(left.get("attribution").is_none());

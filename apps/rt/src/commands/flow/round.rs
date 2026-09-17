@@ -275,7 +275,7 @@ fn run_round(
     }
 
     // A página sai no fim do passo, uma vez, e a rodada manda publicá-la,
-    // menos com item retido.
+    // menos com item retido ou quando ela não pôde ser refeita.
     let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang);
 
     // Com o pull request aberto, o corpo dele é refeito aqui: ele é montado do
@@ -305,13 +305,10 @@ fn run_round(
     if !warnings.is_empty() {
         out["warnings"] = json!(warnings);
     }
-    if let Err(refusal) = &pages {
-        crate::commands::spec_events::pages::push_warning(&mut out, refusal.reason(), &refusal.message(lang));
-    }
     let dispatch = translate("round.next", lang);
     crate::commands::spec_events::pages::end_milestone(
         &mut out,
-        pages.as_ref().ok(),
+        pages.as_ref(),
         "round",
         dispatch,
         &crate::commands::spec_events::pages::after_purge("round", dispatch, lang),
