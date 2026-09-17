@@ -28,7 +28,10 @@ pub enum SpecCmd {
     /// plano) a partir de um arquivo markdown: escreve-se markdown, nunca
     /// HTML. Sem `--title`, o título é a primeira linha `# Título`. Com
     /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
-    /// `spec.ndjson`. Devolve `{ok, path}` ou `{ok, spec, md, html}`.
+    /// `spec.ndjson`; com `--spec` e `--owners`, grava a lista dos itens sem
+    /// dono, com a proposta de dono de cada um, para conferir antes de gravar.
+    /// Devolve `{ok, path}`, `{ok, spec, md, html}` ou
+    /// `{ok, spec, html, unowned, proposed, given, left, items}`.
     #[command(name = "page")]
     #[command(display_order = 17)]
     Page {
@@ -51,6 +54,15 @@ pub enum SpecCmd {
         /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
         #[arg(long)]
         kind: Option<String>,
+        /// Com `--spec`, grava a lista dos itens combinados sem dono
+        /// (`owners.html`) no lugar da página da spec. O arquivo, quando vem,
+        /// é uma lista de linhas `{code, waves | applies_to, why}` com o dono
+        /// que o orquestrador dá aos itens.
+        #[arg(long, requires = "spec", value_name = "DONOS_JSON")]
+        // O jeito do clap de dizer "opção com valor opcional": ausente,
+        // sozinha ou com o arquivo.
+        #[allow(clippy::option_option)]
+        owners: Option<Option<PathBuf>>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -60,7 +72,7 @@ pub enum SpecCmd {
 /// Dispatch one `spec`-family `run` subcommand.
 pub fn dispatch(cmd: SpecCmd) {
     match cmd {
-        SpecCmd::Page { spec: slug, body, out, title, subtitle, kind, root } => {
+        SpecCmd::Page { spec: slug, body, out, title, subtitle, kind, owners, root } => {
             spec::page::run(&spec::page::PageOpts {
                 root,
                 spec: slug,
@@ -69,6 +81,8 @@ pub fn dispatch(cmd: SpecCmd) {
                 title,
                 subtitle,
                 kind,
+                owners: owners.is_some(),
+                given: owners.flatten(),
             });
         }
     }
@@ -87,4 +101,20 @@ mod tests {
         cmd: SpecCmd,
     }
 
+    /// `--owners` vem sozinho ou com o arquivo de donos, e só junto de
+    /// `--spec`.
+    #[test]
+    fn owners_comes_alone_or_with_the_file_and_only_with_a_spec() {
+        let owners = |args: &[&str]| match Probe::try_parse_from(args).map(|probe| probe.cmd) {
+            Ok(SpecCmd::Page { owners, .. }) => Ok(owners),
+            Err(e) => Err(e.kind()),
+        };
+        assert_eq!(owners(&["t", "page", "--spec", "x", "--owners"]), Ok(Some(None)));
+        assert_eq!(
+            owners(&["t", "page", "--spec", "x", "--owners", "donos.json"]),
+            Ok(Some(Some("donos.json".into())))
+        );
+        assert_eq!(owners(&["t", "page", "--spec", "x"]), Ok(None));
+        assert_eq!(owners(&["t", "page", "--owners"]), Err(clap::error::ErrorKind::MissingRequiredArgument));
+    }
 }

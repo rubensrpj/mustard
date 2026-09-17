@@ -23,7 +23,7 @@ use serde_json::Value;
 use crate::domain::lessons::{in_scope, Scope};
 use crate::domain::project_map::{check_skill, file_history, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
-use crate::domain::wave_prompt::{self, Execution, Material, Skill};
+use crate::domain::wave_prompt::{self, wave_files, Execution, Material, Skill};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -203,21 +203,6 @@ fn execution(context: &Context, wave: u64) -> Execution {
         .filter(|e| e.event_type == "commit" && e.ints("waves").contains(&wave))
         .find_map(|e| e.str_field("sha").map(str::to_string));
     Execution { running, commit, ..context.base.clone() }
-}
-
-/// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
-fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for task in log.block(BlockQuery::Wave(wave)).iter().filter(|e| e.event_type == "task") {
-        let files = task.fields.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
-        for file in files {
-            let path = file.as_str().or_else(|| file.get("path").and_then(Value::as_str)).unwrap_or_default();
-            if !path.is_empty() && !out.iter().any(|seen| seen == path) {
-                out.push(path.to_string());
-            }
-        }
-    }
-    out
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
@@ -440,7 +425,11 @@ mod tests {
             ("limit", json!({"text": "O pedido cabe em 400 linhas.", "value": "400 linhas", "keys": ["pedido"]})),
             ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}], "skill": "somar"})),
-            ("limit", json!({"text": "O pedido cabe em 500 linhas.", "value": "500 linhas", "keys": ["pedido"], "replaces": 1})),
+            (
+                "limit",
+                json!({"text": "O pedido cabe em 500 linhas.", "value": "500 linhas", "keys": ["pedido"],
+                       "replaces": 1, "waves": [1]}),
+            ),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &BTreeSet::new());
         assert!(built[0].text.contains("--term MSTD-LIMIT-0001"), "{}", built[0].text);
@@ -537,5 +526,44 @@ mod tests {
         assert_eq!(built[0].bad_skills.len(), 1);
         assert_eq!(built[0].bad_skills[0].1.reason(), "skill-missing-path");
         assert!(built[0].bad_skills[0].1.message(Locale::PtBr).contains("somar"));
+    }
+
+    /// Com a spec real desta obra: nenhum item combinado fica sem dono, e o
+    /// pedido de cada onda, montado como a rodada o monta, só cita item
+    /// combinado dela ou do projeto. A spec fica fora do git, então o teste
+    /// roda à mão (`--ignored`); `MUSTARD_SPEC_FILE` aponta outra cópia dela.
+    #[test]
+    #[ignore = "lê a spec real, que fica fora do git"]
+    fn with_the_real_spec_every_agreed_item_has_an_owner_and_each_request_cites_only_its_own() {
+        use crate::domain::mustard_id;
+        use crate::domain::wave_prompt::Owner;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let file = std::env::var_os("MUSTARD_SPEC_FILE")
+            .map_or_else(|| root.join(".claude/spec/mustard-enxuto/spec.ndjson"), PathBuf::from);
+        let log = crate::io::spec_events::read(&file).expect("a spec se lê").expect("a spec existe");
+        let spec = file.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().to_string()).unwrap();
+        let codes = log.codes();
+        let unowned: Vec<&String> = wave_prompt::unowned(&log).iter().filter_map(|e| codes.get(&e.id)).collect();
+        assert!(unowned.is_empty(), "{} itens combinados sem dono: {unowned:?}", unowned.len());
+
+        let owners = wave_prompt::owners(&log);
+        let by_code: std::collections::BTreeMap<&str, u64> =
+            codes.iter().map(|(id, code)| (code.as_str(), *id)).collect();
+        let built = prompts(&root, &spec, &log, Locale::PtBr, &BTreeSet::new());
+        assert_eq!(built.len(), log.planned_waves().len());
+        for prompt in &built {
+            for (start, end) in mustard_id::find(&prompt.text) {
+                let code = &prompt.text[start..end];
+                let Some(item) = by_code.get(code).and_then(|id| log.get(*id)) else { continue };
+                if item.block() != Some(Block::Agreed) {
+                    continue;
+                }
+                match owners.get(&item.id) {
+                    Some(Owner::Project) => {}
+                    Some(Owner::Waves(waves)) if waves.contains(&prompt.wave) => {}
+                    other => panic!("o pedido da onda {} cita {code}, que é de {other:?}", prompt.wave),
+                }
+            }
+        }
     }
 }

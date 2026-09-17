@@ -1,7 +1,7 @@
 //! Um motor de página só.
 //!
-//! A página de uma spec, a do projeto e uma página avulsa escrita em markdown
-//! saem do mesmo motor: o mesmo estilo, as fontes do Google Fonts por um link,
+//! A página de uma spec, a do projeto, uma página avulsa escrita em markdown e
+//! a lista dos itens sem dono de uma spec saem do mesmo motor: o mesmo estilo, as fontes do Google Fonts por um link,
 //! e nenhuma fonte gravada dentro da página.
 //!
 //! Fora de `apps/rt/src/report/`, nenhum arquivo de código do Mustard escreve
@@ -92,6 +92,13 @@ fn violations(path: &Path) -> Vec<&'static str> {
 /// Roda `mustard-rt run page` com `args` no projeto `root` e devolve o
 /// relatório.
 fn page(root: &Path, args: &[&str]) -> Value {
+    let (ok, report) = page_run(root, args);
+    assert!(ok, "{report}");
+    report
+}
+
+/// Como [`page`], dizendo se o comando saiu com sucesso em vez de exigir.
+fn page_run(root: &Path, args: &[&str]) -> (bool, Value) {
     let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "page"])
         .args(args)
@@ -101,8 +108,7 @@ fn page(root: &Path, args: &[&str]) -> Value {
         .output()
         .expect("run page");
     let report: Value = serde_json::from_slice(&out.stdout).expect("a JSON report");
-    assert!(out.status.success(), "{report}");
-    report
+    (out.status.success(), report)
 }
 
 /// A folha de estilo de uma página.
@@ -112,8 +118,9 @@ fn style(html: &str) -> &str {
         .map_or("", |(css, _)| css)
 }
 
-/// As três páginas geradas pelo binário: a da spec, a do projeto e a avulsa.
-fn three_pages(root: &Path) -> [String; 3] {
+/// As páginas geradas pelo binário: a da spec, a do projeto, a avulsa e a
+/// lista dos itens sem dono da spec.
+fn the_pages(root: &Path) -> [String; 4] {
     fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
     let spec = root.join(".claude").join("spec").join("demo");
     fs::create_dir_all(&spec).expect("spec dir");
@@ -130,18 +137,25 @@ fn three_pages(root: &Path) -> [String; 3] {
     let report = page(root, &["--spec", "demo"]);
     fs::write(root.join("corpo.md"), "# Avulsa\n\n## Seção\n\nTexto com **negrito**.\n").expect("body");
     page(root, &["--body", "corpo.md", "--out", "avulsa.html"]);
+    let owners = page(root, &["--spec", "demo", "--owners"]);
+    // O arquivo de donos chega ao comando: a linha de um item que não existe
+    // é recusada.
+    fs::write(root.join("donos.json"), r#"[{"code": "MSTD-DEC-0009", "waves": [1], "why": "w"}]"#).expect("owners");
+    let (ok, refused) = page_run(root, &["--spec", "demo", "--owners", "donos.json"]);
+    assert!(!ok && refused["reason"] == "bad-owner-line", "{refused}");
     let read = |relative: &str| fs::read_to_string(root.join(relative)).unwrap_or_else(|_| panic!("{relative}"));
     let project = report["project"].as_str().expect("the project page comes with the spec page");
-    [read(".claude/spec/demo/spec.html"), read(project), read("avulsa.html")]
+    let owners = owners["html"].as_str().expect("the owners list says where it went");
+    [read(".claude/spec/demo/spec.html"), read(project), read("avulsa.html"), read(owners)]
 }
 
 #[test]
 fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
-    // As três páginas saem do mesmo motor: o mesmo estilo e as mesmas fontes.
+    // As quatro páginas saem do mesmo motor: o mesmo estilo e as mesmas fontes.
     let project = tempfile::tempdir().expect("tempdir");
-    let pages = three_pages(project.path());
+    let pages = the_pages(project.path());
     let fonts = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Geist";
-    for (name, html) in ["spec", "project", "loose"].iter().zip(&pages) {
+    for (name, html) in ["spec", "project", "loose", "owners"].iter().zip(&pages) {
         assert!(html.starts_with("<!doctype html>"), "{name}: {html}");
         assert!(!style(html).is_empty(), "{name} has no style");
         assert_eq!(style(html), style(&pages[0]), "{name} has another style");
@@ -152,6 +166,7 @@ fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
     assert!(pages[0].contains("<code>tudo</code>"), "the spec page did not convert markdown");
     assert!(pages[1].contains("<code class=\"c\">demo</code>"), "the project page does not list the spec");
     assert!(pages[2].contains("<strong>negrito</strong>"), "the loose page did not convert markdown");
+    assert!(pages[3].contains("Todo item combinado já tem dono."), "the owners list is not the one asked for");
 
     let root = repo_root();
     let mut files = Vec::new();

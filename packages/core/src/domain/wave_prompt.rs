@@ -18,7 +18,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use serde_json::Value;
+
 use crate::domain::lessons::{applies_to, Scope};
+use crate::domain::mustard_id;
+use crate::domain::project_map::cited_paths;
 use crate::domain::search;
 use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use crate::domain::spec_state::State;
@@ -250,18 +254,17 @@ pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
 }
 
 /// Os itens combinados que vão no pedido da onda `wave`: os de que ela é
-/// dona e os do projeto.
-///
-/// Enquanto os itens antigos não ganham dono, o item sem dono continua indo
-/// para todas as ondas, para nada se perder.
+/// dona e os do projeto. O item sem dono não vai para onda nenhuma: o plano o
+/// recusa até ele ganhar um.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
     agreed_items(log)
         .into_iter()
         .filter(|item| match owners.get(&item.id) {
-            None | Some(Owner::Project) => true,
+            Some(Owner::Project) => true,
             Some(Owner::Waves(waves)) => waves.contains(&wave),
+            None => false,
         })
         .collect()
 }
@@ -279,8 +282,7 @@ pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
 ///
 /// A onda que o item diz em `waves` vale mesmo antes de estar no plano: a
 /// decisão costuma vir antes da onda que a faz, e a tarefa entra numa onda no
-/// replanejamento. Até lá, o plano recusa o item, e o pedido o trata como sem
-/// dono.
+/// replanejamento. Até lá, o plano recusa o item, e nenhum pedido o leva.
 ///
 /// # Errors
 ///
@@ -307,6 +309,263 @@ fn agreed_items(log: &SpecLog) -> Vec<&SpecEvent> {
         .into_iter()
         .filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty()))
         .collect()
+}
+
+/// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
+#[must_use]
+pub fn wave_files(log: &SpecLog, wave: u64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for task in log.block(BlockQuery::Wave(wave)).iter().filter(|e| e.event_type == "task") {
+        let files = task.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        for file in files {
+            let path = file.as_str().or_else(|| file.get("path").and_then(Value::as_str)).unwrap_or_default();
+            if !path.is_empty() && !out.iter().any(|seen| seen == path) {
+                out.push(path.to_string());
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// A lista dos itens sem dono, para conferir antes de gravar
+// ---------------------------------------------------------------------------
+
+/// De onde veio o dono de um item na lista para conferir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnerFrom {
+    /// As tarefas das ondas do plano que apontam o item, pelo número: as que
+    /// nasceram dele e as que citam o código dele no texto.
+    Tasks(Vec<u64>),
+    /// O texto do item cita as ondas.
+    Cited,
+    /// As tarefas das ondas mexem nos arquivos que o item cita no texto ou
+    /// diz em `applies_to`; aqui, esses arquivos.
+    Files(Vec<String>),
+    /// O orquestrador deu o dono, com o motivo.
+    Orchestrator(String),
+    /// Nenhuma regra achou dono.
+    Nothing,
+}
+
+/// Um item sem dono na lista para conferir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerLine {
+    /// O número do item.
+    pub item: u64,
+    /// O dono que ele recebe; `None` enquanto nenhuma regra nem o
+    /// orquestrador o deu.
+    pub owner: Option<Owner>,
+    pub from: OwnerFrom,
+}
+
+/// O dono que o orquestrador dá a um item sem dono, pelo código do item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GivenOwner {
+    pub code: String,
+    pub owner: Owner,
+    /// Por que esse é o dono: vai para a página, ao lado do item.
+    pub why: String,
+}
+
+/// A proposta de dono de cada item sem dono, na ordem dos números. Três
+/// regras, nesta ordem, e vale a primeira que acha onda do plano:
+///
+/// 1. as tarefas que apontam o item — a que nasceu dele (`origin` numa versão
+///    dele) e a que cita o código dele no texto, como as tarefas citavam o
+///    que cobriam antes de existir `covers`;
+/// 2. as ondas que o texto do item cita, pelo número ("onda 14", "ondas 14,
+///    15 e 17") ou pelo código da onda;
+/// 3. as ondas cujas tarefas mexem nos arquivos que o item cita no texto ou
+///    diz em `applies_to`.
+///
+/// O item que nenhuma regra resolve fica sem dono, para o orquestrador
+/// classificar. A proposta nunca dá o projeto: isso é escolha de quem
+/// classifica.
+#[must_use]
+pub fn propose_owners(log: &SpecLog) -> Vec<OwnerLine> {
+    let planned = log.planned_waves();
+    let codes = log.codes();
+    let tasks: Vec<&SpecEvent> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "task" && e.wave().is_some_and(|n| planned.contains(&n)))
+        .collect();
+    let wave_codes: BTreeMap<&str, u64> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "wave")
+        .filter_map(|e| Some((codes.get(&e.id)?.as_str(), e.wave()?)))
+        .collect();
+    let files: BTreeMap<u64, Vec<String>> = planned.iter().map(|n| (*n, wave_files(log, *n))).collect();
+    unowned(log)
+        .into_iter()
+        .map(|item| {
+            let proposed = by_tasks(log, item, &tasks, codes.get(&item.id))
+                .or_else(|| by_cited(item, &wave_codes, &planned))
+                .or_else(|| by_files(item, &files));
+            match proposed {
+                Some((waves, from)) => OwnerLine { item: item.id, owner: Some(Owner::Waves(waves)), from },
+                None => OwnerLine { item: item.id, owner: None, from: OwnerFrom::Nothing },
+            }
+        })
+        .collect()
+}
+
+/// A lista para conferir: a proposta de cada item sem dono, com o dono que o
+/// orquestrador deu no lugar dela quando deu um.
+///
+/// # Errors
+///
+/// O código da primeira linha dada que não serve: não é de um item sem dono,
+/// o dono é uma onda fora do plano (ou nenhuma), ou falta o motivo.
+pub fn owner_list(log: &SpecLog, given: &[GivenOwner]) -> Result<Vec<OwnerLine>, String> {
+    let mut lines = propose_owners(log);
+    let codes = log.codes();
+    let planned = log.planned_waves();
+    for entry in given {
+        let valid = !entry.why.trim().is_empty()
+            && match &entry.owner {
+                Owner::Project => true,
+                Owner::Waves(waves) => !waves.is_empty() && waves.is_subset(&planned),
+            };
+        let line = lines.iter_mut().find(|line| codes.get(&line.item) == Some(&entry.code));
+        match line {
+            Some(line) if valid => {
+                line.owner = Some(entry.owner.clone());
+                line.from = OwnerFrom::Orchestrator(entry.why.trim().to_string());
+            }
+            _ => return Err(entry.code.clone()),
+        }
+    }
+    Ok(lines)
+}
+
+/// A primeira regra: as ondas das tarefas que nasceram do item ou citam o
+/// código dele.
+fn by_tasks(
+    log: &SpecLog,
+    item: &SpecEvent,
+    tasks: &[&SpecEvent],
+    code: Option<&String>,
+) -> Option<(BTreeSet<u64>, OwnerFrom)> {
+    let mut versions: BTreeSet<u64> = BTreeSet::from([item.id]);
+    let mut at = item;
+    while let Some(old) = at.int("replaces").and_then(|id| log.get(id)) {
+        if !versions.insert(old.id) {
+            break;
+        }
+        at = old;
+    }
+    let cites = |task: &SpecEvent| {
+        let text = task.str_field("text").unwrap_or_default();
+        code.is_some_and(|code| mustard_id::find(text).into_iter().any(|(start, end)| &text[start..end] == code))
+    };
+    let hits: Vec<&SpecEvent> = tasks
+        .iter()
+        .copied()
+        .filter(|task| task.int("origin").is_some_and(|origin| versions.contains(&origin)) || cites(task))
+        .collect();
+    let waves: BTreeSet<u64> = hits.iter().filter_map(|task| task.wave()).collect();
+    (!waves.is_empty()).then(|| (waves, OwnerFrom::Tasks(hits.iter().map(|task| task.id).collect())))
+}
+
+/// A segunda regra: as ondas do plano que o texto, o rótulo ou as
+/// palavras-chave do item citam.
+fn by_cited(
+    item: &SpecEvent,
+    wave_codes: &BTreeMap<&str, u64>,
+    planned: &BTreeSet<u64>,
+) -> Option<(BTreeSet<u64>, OwnerFrom)> {
+    let mut texts: Vec<&str> = [item.str_field("text"), item.str_field("label")].into_iter().flatten().collect();
+    if let Some(keys) = item.fields.get("keys").and_then(Value::as_array) {
+        texts.extend(keys.iter().filter_map(Value::as_str));
+    }
+    let waves: BTreeSet<u64> =
+        texts.into_iter().flat_map(|text| cited_waves(text, wave_codes)).filter(|n| planned.contains(n)).collect();
+    (!waves.is_empty()).then_some((waves, OwnerFrom::Cited))
+}
+
+/// As ondas que um texto cita: o número logo depois da palavra "onda" (ou
+/// "wave"), os números da lista logo depois de "ondas" ("ondas 14, 15 e 17")
+/// e o código de uma onda. O número separado da palavra por pontuação
+/// ("ondas. (4") e o código de outro item não contam.
+fn cited_waves(text: &str, wave_codes: &BTreeMap<&str, u64>) -> BTreeSet<u64> {
+    let mut out = BTreeSet::new();
+    let mut plain = String::with_capacity(text.len());
+    let mut from = 0;
+    for (start, end) in mustard_id::find(text) {
+        plain.push_str(&text[from..start]);
+        plain.push(' ');
+        out.extend(wave_codes.get(&text[start..end]));
+        from = end;
+    }
+    plain.push_str(&text[from..]);
+    let singular: Vec<String> =
+        [Locale::PtBr, Locale::EnUs].iter().map(|lang| translate("page.type.wave", *lang).to_lowercase()).collect();
+    let words: Vec<String> = plain.split_whitespace().map(str::to_lowercase).collect();
+    for (i, word) in words.iter().enumerate() {
+        let bare = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+        let one = singular.iter().any(|s| s == bare);
+        let many = singular.iter().any(|s| bare.strip_suffix('s') == Some(s.as_str()));
+        if !one && !many {
+            continue;
+        }
+        for next in &words[i + 1..] {
+            let digits: String = next.chars().take_while(char::is_ascii_digit).collect();
+            let Ok(n) = digits.parse::<u64>() else {
+                if many && matches!(next.as_str(), "e" | "and") {
+                    continue;
+                }
+                break;
+            };
+            out.insert(n);
+            let rest = &next[digits.len()..];
+            if one || !(rest.is_empty() || rest == ",") {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// A terceira regra: as ondas cujas tarefas mexem nos arquivos que o item
+/// cita no texto ou diz em `applies_to`. A pasta citada no texto não casa
+/// com arquivo nenhum: uma pasta como `.claude/` casaria com quase toda onda.
+fn by_files(item: &SpecEvent, files: &BTreeMap<u64, Vec<String>>) -> Option<(BTreeSet<u64>, OwnerFrom)> {
+    let cited = cited_paths(item.str_field("text").unwrap_or_default());
+    let declared: Vec<String> = item
+        .fields
+        .get("applies_to")
+        .and_then(|at| at.get("files"))
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    let mut waves = BTreeSet::new();
+    let mut shared: BTreeSet<String> = BTreeSet::new();
+    for (n, wave) in files {
+        let mut hit = false;
+        for path in &cited {
+            if wave.iter().any(|file| same_file(path, file)) {
+                shared.insert(path.clone());
+                hit = true;
+            }
+        }
+        if applies_to(item, &Scope { files: wave.clone(), ..Scope::default() }) {
+            shared.extend(declared.iter().cloned());
+            hit = true;
+        }
+        if hit {
+            waves.insert(*n);
+        }
+    }
+    (!waves.is_empty()).then(|| (waves, OwnerFrom::Files(shared.into_iter().collect())))
+}
+
+/// `true` quando o arquivo que um texto cita é o arquivo de uma tarefa: o
+/// mesmo caminho ou o fim dele (`spec_events/mod.rs`).
+fn same_file(cited: &str, file: &str) -> bool {
+    file == cited || file.ends_with(&format!("/{cited}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -836,16 +1095,20 @@ mod tests {
         assert_eq!(owners(&plan).get(&1), Some(&Owner::Waves(BTreeSet::from([2]))));
     }
 
-    /// Enquanto os itens antigos não ganham dono, o item sem dono continua
-    /// indo para todas as ondas, e é ele que o plano aponta como sem dono.
+    /// O item sem dono não vai para onda nenhuma, e é ele que o plano aponta
+    /// como sem dono.
     #[test]
-    fn an_item_without_owner_still_goes_to_every_wave_and_is_the_one_listed_as_unowned() {
+    fn an_item_without_owner_goes_to_no_wave_and_is_the_one_listed_as_unowned() {
         let plan = plan();
         let general = "O commit segue o modelo aprovado".to_string();
-        assert!(texts(&plan, 1).contains(&general), "{:?}", texts(&plan, 1));
-        assert!(texts(&plan, 2).contains(&general), "{:?}", texts(&plan, 2));
+        assert!(!texts(&plan, 1).contains(&general), "{:?}", texts(&plan, 1));
+        assert!(!texts(&plan, 2).contains(&general), "{:?}", texts(&plan, 2));
         let unowned: Vec<u64> = unowned(&plan).iter().map(|e| e.id).collect();
         assert_eq!(unowned, [2]);
+        for wave in [1, 2] {
+            let prompt = build(&with_agreed(&plan, wave), Locale::PtBr).unwrap();
+            assert!(!prompt.text.contains("MSTD-RULE-0002"), "onda {wave}: {}", prompt.text);
+        }
     }
 
     /// A onda da tarefa que cobre o item é dona dele: o item entra no pedido
@@ -940,6 +1203,104 @@ mod tests {
         assert!(owner_rule(&before, &rule).is_err(), "vale para todo item combinado");
     }
 
+    /// Um plano de duas ondas com itens sem dono, um para cada caso da
+    /// proposta: a tarefa que nasceu da versão velha, a tarefa que cita o
+    /// código, a onda citada de três jeitos, o que não conta como citação, os
+    /// arquivos citados, o `applies_to` e a ordem entre as regras.
+    fn unowned_plan() -> SpecLog {
+        let rule = |text: &str| ("rule", json!({"text": text, "keys": ["r"], "example": "e"}));
+        let decision = |text: &str| ("decision", json!({"text": text, "keys": ["d"], "why": "w"}));
+        log(&[
+            decision("Versão velha"),
+            ("wave", json!({"n": 1, "text": "Leitura", "criteria": [], "done_when": "lê"})),
+            (
+                "task",
+                json!({"wave": 1, "text": "Escrever o leitor", "files": [{"path": "src/leitor.rs"}], "origin": 1}),
+            ),
+            ("wave", json!({"n": 2, "text": "Página", "criteria": [], "done_when": "sai"})),
+            (
+                "task",
+                json!({"wave": 2, "text": "Gravar a página (MSTD-DEC-0002)",
+                       "files": [{"path": "apps/rt/src/pagina.rs"}]}),
+            ),
+            ("decision", json!({"text": "Versão nova", "keys": ["d"], "why": "w", "replaces": 1})),
+            decision("A página nova sai na onda 1"),
+            rule("O conserto da onda 2."),
+            rule("Entre as ondas 1 e 2, nada muda."),
+            rule("Não contam: as ondas. (1) nem a onda: 2 nem a MSTD-DEC-0001 nem a onda 9; nem a pasta `apps/rt/`."),
+            decision("Como diz a MSTD-WAVE-0002."),
+            rule("O leitor de `rt/src/pagina.rs` muda."),
+            ("rule", json!({"text": "Vale para as fontes.", "keys": ["r"], "example": "e",
+                            "applies_to": {"files": ["src/**"]}})),
+            rule("Da onda 1, e cita `rt/src/pagina.rs`."),
+            ("rule", json!({"text": "Do projeto", "keys": ["r"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Já tem dono", "keys": ["r"], "example": "e", "waves": [2]})),
+        ])
+    }
+
+    fn waves(list: &[u64]) -> Option<Owner> {
+        Some(Owner::Waves(list.iter().copied().collect()))
+    }
+
+    /// A proposta dá a cada item sem dono as ondas da primeira regra que
+    /// acha onda do plano — as tarefas que nasceram dele ou citam o código,
+    /// a onda que o texto cita, os arquivos em comum —, e deixa sem dono o
+    /// que nenhuma resolve. O item do projeto e o que já tem dono ficam fora.
+    #[test]
+    fn the_proposal_gives_each_unowned_item_the_waves_of_the_first_rule_that_finds_one() {
+        let log = unowned_plan();
+        let got: Vec<(u64, Option<Owner>, OwnerFrom)> =
+            propose_owners(&log).into_iter().map(|line| (line.item, line.owner, line.from)).collect();
+        assert_eq!(
+            got,
+            [
+                (6, waves(&[1]), OwnerFrom::Tasks(vec![3])),
+                (7, waves(&[2]), OwnerFrom::Tasks(vec![5])),
+                (8, waves(&[2]), OwnerFrom::Cited),
+                (9, waves(&[1, 2]), OwnerFrom::Cited),
+                (10, None, OwnerFrom::Nothing),
+                (11, waves(&[2]), OwnerFrom::Cited),
+                (12, waves(&[2]), OwnerFrom::Files(vec!["rt/src/pagina.rs".into()])),
+                (13, waves(&[1]), OwnerFrom::Files(vec!["src/**".into()])),
+                (14, waves(&[1]), OwnerFrom::Cited),
+            ]
+        );
+    }
+
+    /// O orquestrador dá o dono do item que a proposta não resolve, ou troca
+    /// o dela, sempre com o motivo; a linha que não serve é recusada pelo
+    /// código: o item que já tem dono, o código que não existe, a onda fora
+    /// do plano, nenhuma onda e o motivo em branco.
+    #[test]
+    fn the_orchestrator_gives_or_replaces_an_owner_and_a_line_that_does_not_fit_is_refused() {
+        let log = unowned_plan();
+        let given = |code: &str, owner: Owner, why: &str| GivenOwner { code: code.into(), owner, why: why.into() };
+        let lines = owner_list(
+            &log,
+            &[
+                given("MSTD-RULE-0003", Owner::Project, " vale para todo pedido "),
+                given("MSTD-RULE-0001", Owner::Waves(BTreeSet::from([1])), "a 1 é que conserta"),
+            ],
+        )
+        .unwrap();
+        let of = |id: u64| lines.iter().find(|line| line.item == id).cloned().unwrap();
+        assert_eq!(of(10).owner, Some(Owner::Project));
+        assert_eq!(of(10).from, OwnerFrom::Orchestrator("vale para todo pedido".into()));
+        assert_eq!(of(8).owner, waves(&[1]));
+        assert_eq!(of(8).from, OwnerFrom::Orchestrator("a 1 é que conserta".into()));
+        assert_eq!(of(9).from, OwnerFrom::Cited, "a proposta do resto fica");
+
+        for (code, owner, why) in [
+            ("MSTD-RULE-0008", Owner::Project, "já tem dono"),
+            ("MSTD-RULE-0099", Owner::Project, "não existe"),
+            ("MSTD-RULE-0003", Owner::Waves(BTreeSet::from([9])), "fora do plano"),
+            ("MSTD-RULE-0003", Owner::Waves(BTreeSet::new()), "nenhuma onda"),
+            ("MSTD-RULE-0003", Owner::Project, "  "),
+        ] {
+            assert_eq!(owner_list(&log, &[given(code, owner, why)]), Err(code.to_string()), "{why}");
+        }
+    }
+
     /// O material de uma onda com os itens combinados escolhidos para ela.
     fn with_agreed(log: &SpecLog, wave: u64) -> Material<'_> {
         let mut m = material(log, wave);
@@ -953,16 +1314,16 @@ mod tests {
     fn every_agreed_item_comes_as_a_line_and_never_as_text() {
         let plan = plan();
         let prompt = build(&with_agreed(&plan, 1), Locale::PtBr).unwrap();
-        for text in ["O commit segue o modelo aprovado", "título curto", "duas linhas"] {
+        for text in ["A barra de status mostra o link", "duas linhas", "A página do relatório", "um motor só"] {
             assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
         }
         let line = prompt
             .text
             .lines()
-            .find(|line| line.starts_with("- MSTD-RULE-0002"))
-            .unwrap_or_else(|| panic!("sem a linha da regra do commit: {}", prompt.text));
+            .find(|line| line.starts_with("- MSTD-RULE-0003"))
+            .unwrap_or_else(|| panic!("sem a linha da regra da barra: {}", prompt.text));
         assert!(line.contains("(regra)"), "{line}");
-        assert!(line.contains("mustard-rt run read agreed --spec teste --term MSTD-RULE-0002"), "{line}");
+        assert!(line.contains("mustard-rt run read agreed --spec teste --term MSTD-RULE-0003"), "{line}");
     }
 
     /// O item marcado como válido para todas as ondas entra na lista de cada
@@ -1091,7 +1452,7 @@ mod tests {
         if fixed {
             events.push(("send", send));
             events.push(("delivered", json!({"wave": 1, "text": "Conserto", "files": ["src/a.rs"]})));
-            events.push(("decision", json!({"text": "Durante o conserto", "keys": ["e"], "why": "w"})));
+            events.push(("decision", json!({"text": "Durante o conserto", "keys": ["e"], "why": "w", "waves": [1]})));
         }
         log(&events)
     }

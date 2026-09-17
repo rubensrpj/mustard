@@ -316,6 +316,68 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
         ("page.kind.spec", _) => "spec",
         ("page.meta.spec", _) => "spec",
+
+        // A lista dos itens sem dono (`page --spec <nome> --owners`), que o
+        // usuário confere antes de os donos serem gravados.
+        ("page.kind.owners", Locale::PtBr) => "donos para conferir",
+        ("page.kind.owners", Locale::EnUs) => "owners to check",
+        ("page.owners.heading", Locale::PtBr) => "Itens sem dono",
+        ("page.owners.heading", Locale::EnUs) => "Items without an owner",
+        ("page.owners.intro", Locale::PtBr) => {
+            "Cada item combinado que ainda não tem dono, com o dono que ele recebe e a regra de onde o \
+             dono veio. Nada foi gravado: confira, diga o que muda, e só então os donos são gravados. O \
+             pedido de cada onda passa a levar só os itens dela e os do projeto."
+        }
+        ("page.owners.intro", Locale::EnUs) => {
+            "Every agreed item that still has no owner, with the owner it gets and the rule the owner came \
+             from. Nothing was recorded: check it, say what changes, and only then are the owners \
+             recorded. Each wave's request then carries only its own items and the project's."
+        }
+        ("page.owners.none", Locale::PtBr) => "Todo item combinado já tem dono.",
+        ("page.owners.none", Locale::EnUs) => "Every agreed item already has an owner.",
+        ("page.owners.tally", Locale::PtBr) => {
+            "{unowned} sem dono · {proposed} pela proposta · {given} pelo orquestrador · {left} ainda sem dono"
+        }
+        ("page.owners.tally", Locale::EnUs) => {
+            "{unowned} without owner · {proposed} by the proposal · {given} by the orchestrator · {left} still \
+             without owner"
+        }
+        ("page.owners.group.tasks", Locale::PtBr) => "Pelas tarefas que apontam o item",
+        ("page.owners.group.tasks", Locale::EnUs) => "By the tasks that point to the item",
+        ("page.owners.group.cited", Locale::PtBr) => "Pela onda citada no texto",
+        ("page.owners.group.cited", Locale::EnUs) => "By the wave the text cites",
+        ("page.owners.group.files", Locale::PtBr) => "Pelos arquivos em comum",
+        ("page.owners.group.files", Locale::EnUs) => "By the shared files",
+        ("page.owners.group.orchestrator", Locale::PtBr) => "Pelo orquestrador",
+        ("page.owners.group.orchestrator", Locale::EnUs) => "By the orchestrator",
+        ("page.owners.group.nothing", Locale::PtBr) => "Ainda sem dono",
+        ("page.owners.group.nothing", Locale::EnUs) => "Still without owner",
+        ("page.owners.owner", Locale::PtBr) => "Dono",
+        ("page.owners.owner", Locale::EnUs) => "Owner",
+        ("page.owners.from", Locale::PtBr) => "De onde veio",
+        ("page.owners.from", Locale::EnUs) => "Where it came from",
+        ("page.owners.project", Locale::PtBr) => "projeto",
+        ("page.owners.project", Locale::EnUs) => "project",
+        ("page.owners.wave", Locale::PtBr) => "onda {n}",
+        ("page.owners.wave", Locale::EnUs) => "wave {n}",
+        ("page.owners.waves", Locale::PtBr) => "ondas {waves}",
+        ("page.owners.waves", Locale::EnUs) => "waves {waves}",
+        ("page.owners.missing", Locale::PtBr) => "sem dono",
+        ("page.owners.missing", Locale::EnUs) => "no owner",
+        ("page.owners.from.tasks", Locale::PtBr) => "tarefas que nasceram do item ou citam o código dele: {tasks}",
+        ("page.owners.from.tasks", Locale::EnUs) => "tasks born from the item or citing its code: {tasks}",
+        ("page.owners.from.cited", Locale::PtBr) => "o texto do item cita a onda",
+        ("page.owners.from.cited", Locale::EnUs) => "the item's text cites the wave",
+        ("page.owners.from.files", Locale::PtBr) => "arquivos que o item cita e as tarefas da onda mexem: {files}",
+        ("page.owners.from.files", Locale::EnUs) => "files the item cites and the wave's tasks touch: {files}",
+        ("page.owners.from.orchestrator", Locale::PtBr) => "o orquestrador: {why}",
+        ("page.owners.from.orchestrator", Locale::EnUs) => "the orchestrator: {why}",
+        ("page.owners.from.nothing", Locale::PtBr) => {
+            "nenhuma regra achou dono; o orquestrador classifica este item"
+        }
+        ("page.owners.from.nothing", Locale::EnUs) => {
+            "no rule found an owner; the orchestrator classifies this item"
+        }
         ("page.meta.phase", Locale::PtBr) => "fase",
         ("page.meta.phase", Locale::EnUs) => "phase",
         ("page.meta.branch", _) => "branch",
@@ -844,6 +906,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("page.write_failed", Locale::PtBr) => "Não consegui gravar {path}: {detail}.",
         ("page.write_failed", Locale::EnUs) => "Could not write {path}: {detail}.",
+        ("page.owners.unreadable", Locale::PtBr) => {
+            "Não consegui ler {path}. Passe em --owners um arquivo JSON com uma lista de linhas \
+             `{\"code\": \"<código>\", \"waves\": [<ondas>], \"why\": \"<motivo>\"}`, ou com \
+             `\"applies_to\": {\"files\": [\"**\"]}` no lugar de `waves` para o item do projeto. Nada foi \
+             gravado."
+        }
+        ("page.owners.unreadable", Locale::EnUs) => {
+            "Could not read {path}. Pass --owners a JSON file holding a list of lines \
+             `{\"code\": \"<item code>\", \"waves\": [<waves>], \"why\": \"<reason>\"}`, or with \
+             `\"applies_to\": {\"files\": [\"**\"]}` instead of `waves` for a project item. Nothing was \
+             written."
+        }
+        ("page.owners.bad_line", Locale::PtBr) => {
+            "A linha de {code} em {path} não serve: o código tem de ser de um item sem dono, o dono tem \
+             de ser ondas do plano em `waves` ou o projeto em `\"applies_to\": {\"files\": [\"**\"]}`, e o \
+             motivo vai em `why`. Nada foi gravado."
+        }
+        ("page.owners.bad_line", Locale::EnUs) => {
+            "The line for {code} in {path} does not fit: the code must be an item without owner, the \
+             owner must be planned waves in `waves` or the project in \
+             `\"applies_to\": {\"files\": [\"**\"]}`, and the reason goes in `why`. Nothing was written."
+        }
         _ => return None,
     })
 }
@@ -861,8 +945,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            357,
-            0x26d7_ee96_954e_8b81,
+            380,
+            0x9986_d168_5220_0ec7,
         );
     }
 

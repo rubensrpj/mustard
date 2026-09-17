@@ -449,6 +449,8 @@ mod tests {
             title: None,
             subtitle: None,
             kind: None,
+            owners: false,
+            given: None,
         });
         assert_eq!(paged["ok"], json!(true), "{paged}");
         for report in [&grilled, &context, &paged] {

@@ -23,6 +23,10 @@
 //! O [`refresh`] refaz também a página do projeto (`.claude/spec/project.html`),
 //! montada só do índice das specs; o `index` a refaz quando refaz o índice.
 //!
+//! A lista dos itens sem dono (`owners.html`, ao lado da página da spec) sai
+//! só quando alguém pede, pelo `page --spec <nome> --owners`, por
+//! [`write_owners`].
+//!
 //! O `.html` é o que se publica, e sai conferido para isso:
 //!
 //! - todo trecho com cara de segredo (chave, token, senha) sai dele como "…",
@@ -43,11 +47,12 @@ pub(crate) mod secret;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
+use mustard_core::domain::wave_prompt::OwnerLine;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::view::document::{
-    conversation_len, cut_oldest_conversation, project_document, spec_page, Document, RtkDay, SpecInputs,
-    WavePrompts,
+    conversation_len, cut_oldest_conversation, owners_page, project_document, spec_page, Document, RtkDay,
+    SpecInputs, WavePrompts,
 };
 use mustard_core::ClaudePaths;
 
@@ -61,6 +66,9 @@ pub(crate) const PAGE_MAX_BYTES: usize = 16_000_000;
 
 /// O nome da página do projeto, ao lado do índice das specs.
 const PROJECT_PAGE: &str = "project.html";
+
+/// O nome da lista dos itens sem dono, ao lado da página da spec.
+const OWNERS_PAGE: &str = "owners.html";
 
 /// Onde os arquivos foram gravados, relativos ao projeto, e o que a
 /// conferência antes de publicar fez.
@@ -228,6 +236,32 @@ fn write_pages(
         withheld: checked.withheld,
         trimmed: checked.trimmed,
     })
+}
+
+/// A lista dos itens sem dono gravada, e o que a conferência antes de
+/// publicar fez nela.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnersPage {
+    /// Onde ela foi gravada, relativo ao projeto: ao lado da página da spec.
+    pub html: String,
+    pub withheld: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Grava a lista dos itens sem dono da spec `spec` (`owners.html`, ao lado da
+/// página da spec), conferida para publicar como as outras páginas. O arquivo
+/// de eventos não muda.
+pub(crate) fn write_owners(
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    lines: &[OwnerLine],
+    lang: Locale,
+) -> Result<OwnersPage, Refusal> {
+    let path = spec_files(root, spec)?.html.with_file_name(OWNERS_PAGE);
+    let checked = publishable(owners_page(spec.trim(), log, lines, lang), lang, PAGE_MAX_BYTES);
+    write(&path, &checked.html)?;
+    Ok(OwnersPage { html: relative(root, &path), warnings: warnings(&checked, lang), withheld: checked.withheld })
 }
 
 fn write(path: &Path, text: &str) -> Result<(), Refusal> {

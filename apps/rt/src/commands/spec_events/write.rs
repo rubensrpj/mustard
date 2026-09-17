@@ -2770,7 +2770,8 @@ mod tests {
     /// A lacuna de um ponto também é expurgada, só no trecho. Com o segredo
     /// só na lacuna, o expurgo pela procura de segredo e o com o trecho
     /// indicado passam; o trecho sai do arquivo também no fechamento, que
-    /// copiou a lacuna do original; e cada ponto segue como estava, o fechado
+    /// copiou a lacuna do original, e no original que já saiu da leitura,
+    /// pelo expurgo do fechamento; e cada ponto segue como estava, o fechado
     /// com a mesma lacuna nos dois lados e o aberto ainda aberto.
     #[test]
     fn a_secret_only_in_the_gap_leaves_the_point_and_its_closing() {
@@ -2805,13 +2806,28 @@ mod tests {
         let asked =
             write(root, "purge", &json!({"targets": [still_code], "reason": "client_data", "excerpt": client}).to_string());
         assert_eq!(asked["ok"], json!(true), "{asked}");
+        // O original que já saiu da leitura é alcançado pelo expurgo do
+        // fechamento dele.
+        let (gone, _) = open(format!("o revisor colou {secret} de novo"));
+        let last = json!({"block": block, "gap": "outra", "from": "outside_review", "status": "closed",
+            "closes": gone, "result": [decided], "origin": said});
+        let last = write(root, "point", &last.to_string());
+        assert_eq!(last["ok"], json!(true), "{last}");
+        let left = write(root, "remove", &json!({"targets": [gone], "reason": "O texto tinha um segredo."}).to_string());
+        assert_eq!(left["ok"], json!(true), "{left}");
+        let reached = write(root, "purge", &json!({"targets": [last["code"]], "reason": "secret"}).to_string());
+        assert_eq!(reached["ok"], json!(true), "{reached}");
 
         let raw = std::fs::read_to_string(&file).unwrap();
-        assert!(!raw.contains("S3nh4F0rte"), "the excerpt left the point and its closing");
+        assert!(!raw.contains("S3nh4F0rte"), "the excerpt left each point and its closing, the removed one too");
         assert!(!raw.contains(client), "the asked excerpt left the gap");
         let gap = "o revisor colou DB_PASSWORD=… no pedido";
         for id in [closed, closing] {
             assert!(line_of(&raw, id).contains(gap), "{}", line_of(&raw, id));
+        }
+        let again = "o revisor colou DB_PASSWORD=… de novo";
+        for id in [gone, last["id"].as_u64().unwrap()] {
+            assert!(line_of(&raw, id).contains(again), "{}", line_of(&raw, id));
         }
         let log = DiskSpecState::new(root).log("teste").unwrap();
         let pairs = survey::points(&log);

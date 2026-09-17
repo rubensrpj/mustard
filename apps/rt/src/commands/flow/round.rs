@@ -460,10 +460,11 @@ fn rewrite_open_pr(root: &Path, spec: &str) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 /// Fecha o que voltou de uma rodada, a partir do texto `raw` com as linhas
-/// dos agentes: confere tudo antes de gravar qualquer coisa, grava os
-/// vereditos e as entregas, a versão nova de cada critério com prova nova,
-/// formata os arquivos da rodada e faz o commit. A rodada e o fechamento
-/// fecham o relatório por aqui.
+/// dos agentes: confere tudo, formata os arquivos da rodada e faz o commit, e
+/// só então grava os vereditos, as entregas, a versão nova de cada critério
+/// com prova nova e o commit. O git, que pode recusar, roda antes da primeira
+/// gravação: a chamada corrigida depois de uma recusa grava tudo uma vez só.
+/// A rodada e o fechamento fecham o relatório por aqui.
 pub(crate) fn take_report(
     start: &Path,
     root: &Path,
@@ -497,8 +498,7 @@ pub(crate) fn take_report(
     // veredito faria a chamada seguinte, com a mensagem corrigida, duplicar os
     // dois.
     let message = commit_message(&report.waves, lang)?;
-
-    let (recorded, proofs) = record_reports(start, spec, &report).map_err(RoundRefusal::Refused)?;
+    let checked = check_reports(start, spec, &report).map_err(RoundRefusal::Refused)?;
 
     let mut warnings: Vec<Value> = Vec::new();
     // A formatação roda uma vez por rodada, só nos arquivos da rodada.
@@ -515,15 +515,29 @@ pub(crate) fn take_report(
             "hint": translate("round.formatter_missing", lang).replace("{name}", &name),
         }));
     }
-    let commit = match message {
-        Some(message) => {
+    // O git roda com a trava da spec presa: duas rodadas ao mesmo tempo no
+    // mesmo checkout não dividem o índice, e um commit nunca leva o arquivo
+    // da outra.
+    let path = store::spec_file(root, spec).map_err(RoundRefusal::Refused)?;
+    let made = match message {
+        Some((title, body)) => {
+            let sha = store::with_locked_log(&path, |_| make_commit(root, &title, &body, &files))
+                .map_err(RoundRefusal::Refused)?
+                .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.to_string() }))??;
+            Some((sha, title))
+        }
+        None => None,
+    };
+    let (recorded, proofs) = record_reports(start, spec, checked).map_err(RoundRefusal::Refused)?;
+    let commit = match made {
+        Some((sha, title)) => {
             let mut waves: Vec<u64> = Vec::new();
             for n in report.waves.iter().flat_map(|w| std::iter::once(w.wave).chain(w.fixes.iter().copied())) {
                 if !waves.contains(&n) {
                     waves.push(n);
                 }
             }
-            Some(make_commit(start, root, spec, &message, &waves, &files)?)
+            Some(record_commit(start, root, spec, &sha, &title, &waves, &files)?)
         }
         None => None,
     };
@@ -663,22 +677,22 @@ fn criterion_id(log: &SpecLog, reference: &Value) -> Result<u64, Refusal> {
 /// o código do critério e o comando.
 type RecordedReport = (Vec<Value>, Vec<(String, String)>);
 
-/// Grava o que voltou: primeiro os vereditos, que julgam entregas já
-/// gravadas; depois o entregou de cada onda, também em cada onda que o
-/// conserto fecha, e a versão nova de cada critério com prova nova. É a mesma
-/// porta de gravação das outras. Cada veredito e cada entregou passa pela
-/// conferência que a gravação faz primeiro antes de o primeiro ser gravado: a
-/// linha sem campo obrigatório nunca deixa gravada a que veio antes dela.
-/// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
-/// comando.
-pub(crate) fn record_reports(
-    start: &Path,
-    spec: &str,
-    report: &Report,
-) -> Result<RecordedReport, Refusal> {
+/// O que [`check_reports`] conferiu e [`record_reports`] grava: cada veredito
+/// e cada entregou já montado, com a onda, e o número de cada critério com
+/// prova nova, com o comando.
+struct CheckedReport {
+    verdicts: Vec<(u64, Map<String, Value>)>,
+    deliveries: Vec<(u64, Map<String, Value>)>,
+    proofs: Vec<(u64, String)>,
+}
+
+/// Monta o que voltou e passa cada veredito e cada entregou pela conferência
+/// que a gravação faz primeiro, sem gravar nada: a linha sem campo
+/// obrigatório nunca deixa gravada a que veio antes dela. O entregou vai
+/// também em cada onda que o conserto fecha.
+fn check_reports(start: &Path, spec: &str, report: &Report) -> Result<CheckedReport, Refusal> {
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
-    let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
-    let log = read()?;
+    let log = store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() })?;
     // Os critérios citados existem, antes de qualquer gravação.
     let mut verdicts = Vec::new();
     for verdict in &report.verdicts {
@@ -713,7 +727,18 @@ pub(crate) fn record_reports(
             proofs.push((criterion_id(&log, reference)?, proof.clone()));
         }
     }
+    Ok(CheckedReport { verdicts, deliveries, proofs })
+}
 
+/// Grava o que [`check_reports`] conferiu, pela mesma porta de gravação das
+/// outras: primeiro os vereditos, que julgam entregas já gravadas; depois o
+/// entregou de cada onda e a versão nova de cada critério com prova nova.
+/// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
+/// comando.
+fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
+    let CheckedReport { verdicts, deliveries, proofs } = checked;
+    let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
+    let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recorded = Vec::new();
     for (wave, draft) in verdicts {
         let written = record(start, spec, "verdict", draft, PhaseWriter::Binary)?;
@@ -961,17 +986,10 @@ fn run(root: &Path, program: &str, args: &[&str]) -> bool {
 // O commit da rodada
 // ---------------------------------------------------------------------------
 
-/// Faz o commit da rodada com a mensagem já conferida e grava o commit no
-/// arquivo de eventos. Nada é gravado quando o git recusa.
-fn make_commit(
-    start: &Path,
-    root: &Path,
-    spec: &str,
-    message: &(String, String),
-    waves: &[u64],
-    files: &[String],
-) -> Result<Value, RoundRefusal> {
-    let (title, body) = message;
+/// Faz o commit da rodada com a mensagem já conferida e devolve o código dele.
+/// Não grava nada: roda antes de qualquer gravação, e a recusa do git para a
+/// rodada com a spec intacta.
+fn make_commit(root: &Path, title: &str, body: &str, files: &[String]) -> Result<String, RoundRefusal> {
     // O arquivo que ainda existe entra pelo `add`. O apagado sai do índice por
     // outra porta: o `add` recusa o caminho que já saiu do índice, e a remoção
     // que só aconteceu no disco sai do mesmo jeito. O caminho que já não está
@@ -995,8 +1013,19 @@ fn make_commit(
     }
     git(root, &args).map_err(|detail| RoundRefusal::Git { detail })?;
     let sha = git(root, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
-    let sha = sha.trim().to_string();
+    Ok(sha.trim().to_string())
+}
 
+/// Grava no arquivo de eventos o commit `sha` feito pela rodada.
+fn record_commit(
+    start: &Path,
+    root: &Path,
+    spec: &str,
+    sha: &str,
+    title: &str,
+    waves: &[u64],
+    files: &[String],
+) -> Result<Value, RoundRefusal> {
     let mut draft = Map::new();
     draft.insert("sha".into(), json!(sha));
     draft.insert("title".into(), json!(title));
@@ -1035,7 +1064,10 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     if out.ok {
         return Ok(out.stdout);
     }
-    Err(out.stderr.trim().to_string())
+    // Alguns motivos, como o de não haver nada a comitar, o git escreve na
+    // saída normal, e a de erro vem vazia.
+    let said = if out.stderr.trim().is_empty() { &out.stdout } else { &out.stderr };
+    Err(said.trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2324,6 +2356,101 @@ mod tests {
         let status = Command::new("git").args(["status", "--porcelain"]).current_dir(root).output().unwrap();
         let pending = String::from_utf8_lossy(&status.stdout).to_string();
         assert!(!pending.contains("src/"), "nada da onda ficou fora do commit: {pending}");
+    }
+
+    /// Cada relatório de `wrong` é recusado pelo git, com o motivo que o git
+    /// deu, e não deixa nada gravado; depois de `fix`, a chamada que entrega
+    /// `fixed` grava a entrega uma vez só.
+    fn refused_by_git_records_nothing(root: &Path, wrong: &[String], fix: impl FnOnce(), fixed: &[&str]) {
+        let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
+        let before = spec_lines();
+        for report in wrong {
+            let refused = round(root, "x", Some(report));
+            assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
+            assert_eq!(spec_lines(), before, "nothing was recorded: {refused}");
+            let bare = translate("round.git_refused", Locale::PtBr).replace("{detail}", "");
+            assert_ne!(refused["hint"], json!(bare), "the refusal carries git's reason: {refused}");
+        }
+        fix();
+        let went = round(root, "x", Some(&delivered(root, 1, "Saiu.", fixed)));
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(delivered_count(root), 1, "the corrected call records the delivery once");
+    }
+
+    /// O caminho que existe fora do repositório, absoluto ou com `../`, é
+    /// recusado pelo git sem gravar nada. A chamada corrigida leva ao commit
+    /// um arquivo novo, que ainda não estava no git.
+    #[test]
+    fn a_path_outside_the_repository_is_refused_by_git_and_records_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("fora.rs"), "fn fora() {}\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        let name = outside.path().file_name().unwrap().to_string_lossy().to_string();
+        let absolute = outside.path().join("fora.rs").to_string_lossy().to_string();
+        let wrong: Vec<String> = [absolute, format!("../{name}/fora.rs")]
+            .iter()
+            .map(|path| delivered(root, 1, "Saiu.", &["src/a.rs", path.as_str()]))
+            .collect();
+        std::fs::write(root.join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        refused_by_git_records_nothing(root, &wrong, || {}, &["src/a.rs", "src/novo.rs"]);
+        let shown = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output();
+        let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
+        assert!(shown.lines().any(|line| line == "src/novo.rs"), "the new file went into the commit: {shown}");
+    }
+
+    /// O caminho que o `.gitignore` ignora é recusado pelo git sem gravar
+    /// nada, e a chamada sem ele grava a entrega uma vez só.
+    #[test]
+    fn an_ignored_path_is_refused_by_git_and_records_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        std::fs::write(root.join(".gitignore"), "src/gerado.rs\n").unwrap();
+        std::fs::write(root.join("src/gerado.rs"), "fn gerado() {}\n").unwrap();
+
+        let wrong = [delivered(root, 1, "Saiu.", &["src/a.rs", "src/gerado.rs"])];
+        refused_by_git_records_nothing(root, &wrong, || {}, &["src/a.rs"]);
+    }
+
+    /// O gancho do commit que recusa não deixa nada gravado, e a chamada
+    /// depois de o gancho sair grava a entrega uma vez só.
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_hook_that_refuses_records_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let hooks = root.join("ganchos");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+
+        let wrong = [delivered(root, 1, "Saiu.", &["src/a.rs"])];
+        refused_by_git_records_nothing(root, &wrong, || std::fs::remove_file(&hook).unwrap(), &["src/a.rs"]);
+    }
+
+    /// Com nada a comitar, o git recusa e dá o motivo na saída normal: a
+    /// recusa traz esse motivo e não deixa nada gravado, e a chamada com o
+    /// arquivo mudado grava a entrega uma vez só.
+    #[test]
+    fn nothing_to_commit_is_refused_with_gits_reason_and_records_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+
+        let unchanged = [line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"],
+            "commit": "a onda 1 saiu"}))];
+        refused_by_git_records_nothing(root, &unchanged, || {}, &["src/a.rs"]);
     }
 
     /// Um pedido da onda `n` gravado sem passar pela rodada.

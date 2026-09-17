@@ -176,9 +176,9 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Pronta quando: A suíte da trava passa.
   - Origem: MSTD-MSG-0001
   - Estado da onda: a fazer
-  - Recebe: Especificação (2), Combinado (6), A onda e as tarefas dela (1), Critérios (1), Regras da execução (1)
+  - Recebe: Especificação (2), A onda e as tarefas dela (1), Critérios (1), Regras da execução (1)
 
-**O pedido da onda 1 · 37 linhas, como o agente as recebe**
+**O pedido da onda 1 · 28 linhas, como o agente as recebe**
 
 ```
 # demo — onda 1
@@ -197,15 +197,6 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
 - MSTD-CTX-0001 (contexto) — `mustard-rt run read specification --spec demo --term MSTD-CTX-0001`
 - MSTD-CONC-0001 (preocupação) — `mustard-rt run read specification --spec demo --term MSTD-CONC-0001`
-
-## Combinado
-
-- MSTD-LIMIT-0001 (limite) — `mustard-rt run read agreed --spec demo --term MSTD-LIMIT-0001`
-- MSTD-CONTR-0001 (contrato) — `mustard-rt run read agreed --spec demo --term MSTD-CONTR-0001`
-- MSTD-ERR-0001 (erro) — `mustard-rt run read agreed --spec demo --term MSTD-ERR-0001`
-- MSTD-EDGE-0001 (caso de borda) — `mustard-rt run read agreed --spec demo --term MSTD-EDGE-0001`
-- MSTD-SCOPE-0001 (fora do escopo) — `mustard-rt run read agreed --spec demo --term MSTD-SCOPE-0001`
-- MSTD-DEC-0001 (decisão) — `mustard-rt run read agreed --spec demo --term MSTD-DEC-0001`
 
 ## A onda e as tarefas dela
 

@@ -383,10 +383,10 @@ mod tests {
         add("context", "context", "08:43", json!({"text": "O Rust roda rápido.", "origin": msg}));
         add("concern", "concern", "08:44", json!({"text": "Testes prendem frases.", "origin": msg}));
         add("decision", "decision", "08:45", json!({"text": "A página sai só nos marcos.", "why": "Cada publicação gasta.", "keys": ["página"], "applies_to": {"files": ["**"]}, "origin": msg}));
-        add("out_of_scope", "out_of_scope", "08:46", json!({"text": "Supabase.", "keys": ["servidor"], "origin": msg}));
+        add("out_of_scope", "out_of_scope", "08:46", json!({"text": "Supabase.", "keys": ["servidor"], "applies_to": {"files": ["**"]}, "origin": msg}));
         add("edge_case", "edge_case", "08:47", json!({"text": "Duas sessões gravam juntas.", "expected": "A segunda espera a trava.", "keys": ["trava"], "waves": [1], "origin": msg}));
         let rule = add("rule", "rule", "08:48", json!({"text": "A trava confere o programa.", "example": "rm -rf pasta é barrado.", "keys": ["trava", "apagar"], "origin": msg}));
-        add("contract", "contract", "08:49", json!({"text": "A barra tem duas linhas.", "example": "dev · teste", "keys": ["barra"], "origin": msg}));
+        add("contract", "contract", "08:49", json!({"text": "A barra tem duas linhas.", "example": "dev · teste", "keys": ["barra"], "waves": [2], "origin": msg}));
         add("error", "error", "08:50", json!({"text": "Título longo.", "message": "O título passa de 60.", "keys": ["título"], "origin": msg}));
         add("point", "point", "08:51", json!({"block": "limits", "gap": "tamanho do pedido", "from": "gap", "status": "open", "facts": [{"text": "Não há teto.", "source": "src/render.rs:2"}], "origin": msg}));
         let old_limit = add("limit_old", "limit", "08:52", json!({"text": "Tamanho do pedido.", "value": "400 linhas", "keys": ["pedido"], "origin": msg}));
@@ -416,7 +416,7 @@ mod tests {
         let secret = add("secret", "message", "21:04", json!({"author": "user", "text": "a senha é hunter2-segredo"}));
         add("pasted", "message", "21:08", json!({"author": "user", "text": "colado por engano"}));
         add("later", "message", "21:12", json!({"author": "user", "text": "depois do intervalo"}));
-        add("limit", "limit", "21:13", json!({"text": "Tamanho do pedido.", "value": "500 linhas", "keys": ["pedido"], "replaces": old_limit, "origin": msg}));
+        add("limit", "limit", "21:13", json!({"text": "Tamanho do pedido.", "value": "500 linhas", "keys": ["pedido"], "replaces": old_limit, "waves": [2], "origin": msg}));
         add("remove", "remove", "21:14", json!({"filter": {"type": "message", "from": "2026-09-11T21:03", "to": "2026-09-11T21:10"}, "reason": "Coladas por engano.", "origin": msg}));
         add("purge", "purge", "21:15", json!({"targets": [secret], "reason": "secret", "excerpt": "hunter2-segredo", "origin": msg}));
         Spec { _dir: dir, path, ids }
@@ -486,9 +486,9 @@ mod tests {
         // O despacho traz a onda, os critérios dela, a especificação, os itens
         // combinados de que ela ou o projeto são donos e o que a onda de que
         // ela depende entregou — e nunca uma linha da conversa. Os itens são o
-        // que a tarefa cobre, a decisão do projeto todo e, enquanto os itens
-        // antigos não ganham dono, os sem dono, que vão para todas as ondas;
-        // o caso de borda, que é da OUTRA onda, fica fora.
+        // que a tarefa cobre, os que dizem a onda e os do projeto todo; o caso
+        // de borda, que é da OUTRA onda, fica fora, e o erro, que não tem
+        // dono, não vai para onda nenhuma.
         assert_eq!(
             got(Step::Dispatch { wave: 2 }),
             spec.ids(&[
@@ -498,7 +498,6 @@ mod tests {
                 "out_of_scope",
                 "rule",
                 "contract",
-                "error",
                 "criterion_2",
                 "delivered_1",
                 "wave_2",
@@ -511,6 +510,9 @@ mod tests {
         );
         assert!(!got(Step::Dispatch { wave: 2 }).contains(&spec.ids["edge_case"]));
         assert!(got(Step::Dispatch { wave: 1 }).contains(&spec.ids["edge_case"]));
+        for wave in [1, 2] {
+            assert!(!got(Step::Dispatch { wave }).contains(&spec.ids["error"]), "onda {wave}");
+        }
         for event in log.step(&Step::Dispatch { wave: 2 }) {
             assert_ne!(event.block(), Some(Block::Conversation), "{}", event.shown());
         }

@@ -360,8 +360,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              with \"{yes}\" and \"{no}\". The yes is the click on \"{yes}\": after it, run \
              the round again with the same report."
         }
-        ("round.git_refused", Locale::PtBr) => "O git recusou o commit da rodada: {detail}",
-        ("round.git_refused", Locale::EnUs) => "Git refused the round's commit: {detail}",
+        ("round.git_refused", Locale::PtBr) => {
+            "O git recusou o commit da rodada: {detail}\nNada foi gravado. Corrija o que o git \
+             apontou, ou peça ao agente a linha corrigida, e rode a rodada de novo."
+        }
+        ("round.git_refused", Locale::EnUs) => {
+            "Git refused the round's commit: {detail}\nNothing was recorded. Fix what git pointed \
+             out, or ask the agent for the corrected line, and run the round again."
+        }
         ("round.next", Locale::PtBr) => {
             "Despache os pedidos desta rodada: cada onda ao agente `mustard-wave` e cada revisão ao \
              agente `mustard-review`."
@@ -730,7 +736,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             103,
-            0x2cee_02be_26f8_d952,
+            0xb650_ab55_fffb_abbe,
         );
     }
 

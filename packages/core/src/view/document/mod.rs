@@ -24,8 +24,8 @@ mod spec;
 
 pub use project::project_document;
 pub use spec::{
-    conversation_len, cut_oldest_conversation, spec_document, spec_page, RtkDay, SpecInputs, WavePrompts,
-    WaveState, WaveStates,
+    conversation_len, cut_oldest_conversation, owner_label, owner_rule_key, owners_page, spec_document, spec_page,
+    RtkDay, SpecInputs, WavePrompts, WaveState, WaveStates,
 };
 
 /// Uma página inteira.
