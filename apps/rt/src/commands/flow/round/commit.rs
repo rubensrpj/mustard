@@ -200,21 +200,32 @@ pub(super) const UNMADE_SHA: &str = "0000000000000000000000000000000000000000";
 /// Pega a trava do passo do git do checkout `root`, esperando a de outra
 /// rodada soltar. É uma trava própria, e não a do arquivo de eventos da spec:
 /// o gancho do commit pode demorar, e a trava da spec seguraria todo leitor
-/// dela enquanto isso.
+/// dela enquanto isso. A mesma trava pedida duas vezes pelo mesmo processo
+/// esperaria por si mesma: quem já a tem passa adiante a que tem.
 pub(super) fn git_lock(root: &Path) -> Result<LockedFile, RoundRefusal> {
     let io = |detail: String| RoundRefusal::Refused(Refusal::Io { detail });
     let paths = ClaudePaths::for_project(root).map_err(|e| io(e.to_string()))?;
     LockedFile::exclusive(&paths.spec_dir().join(GIT_LOCK_FILE)).map_err(|e| io(e.to_string()))
 }
 
+/// O commit atual do checkout `root`; vazio quando o git não responde.
+pub(super) fn head(root: &Path) -> String {
+    git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string()
+}
+
 /// Faz o commit da rodada com a mensagem já conferida e devolve o código dele.
 /// Não grava nada: roda antes de qualquer gravação, e a recusa do git para a
-/// rodada com a spec intacta.
-pub(super) fn make_commit(root: &Path, title: &str, body: &str, files: &[String]) -> Result<String, RoundRefusal> {
-    // O passo do git roda com a trava dele presa: duas rodadas ao mesmo tempo
-    // no mesmo checkout não dividem o índice, e um commit nunca leva o
-    // arquivo da outra.
-    let _held = git_lock(root)?;
+/// rodada com a spec intacta. Roda com a trava do passo do git que quem chama
+/// já prendeu antes da junção (`_held`), e não a pega de novo: duas rodadas ao
+/// mesmo tempo no mesmo checkout não dividem o índice, e um commit nunca leva
+/// o arquivo da outra.
+pub(super) fn make_commit(
+    root: &Path,
+    _held: &LockedFile,
+    title: &str,
+    body: &str,
+    files: &[String],
+) -> Result<String, RoundRefusal> {
     // O arquivo que ainda existe entra pelo `add`. O apagado sai do índice por
     // outra porta: o `add` recusa o caminho que já saiu do índice, e a remoção
     // que só aconteceu no disco sai do mesmo jeito. O caminho que já não está
@@ -303,22 +314,45 @@ pub(super) struct Joined {
     after: Option<Vec<u8>>,
 }
 
+/// A entrega de uma onda que a junção segurou: os trechos em conflito e a
+/// cópia em que eles se resolvem.
+pub(super) struct Held {
+    pub(super) wave: u64,
+    copy: String,
+    conflicts: Vec<String>,
+}
+
+impl Held {
+    /// A recusa desta entrega, que manda levar a cópia ao commit `head`.
+    pub(super) fn refusal(self, head: String) -> RoundRefusal {
+        RoundRefusal::MergeConflict { wave: self.wave, copy: self.copy, conflicts: self.conflicts, head }
+    }
+}
+
 /// Junta ao repositório principal cada arquivo entregue pelas ondas que têm
 /// cópia, por uma fusão de três vias com o commit da cópia como base, sem
-/// gravar nada: devolve o que gravar. O arquivo que a cópia não mudou fica
-/// como está; o que só a cópia mudou vem dela, apagado e novo inclusive; o
-/// que os dois lados mudaram é fundido. O conflito que a fusão não resolve
-/// recusa, com os trechos da primeira onda que conflita e a cópia dela. Duas
-/// ondas do mesmo relatório no mesmo arquivo se somam, na ordem do
-/// relatório. O caminho que sai do repositório não é tocado: o git o recusa
-/// no commit.
-pub(super) fn join_copies(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> Result<Vec<Joined>, RoundRefusal> {
+/// gravar nada: devolve o que gravar e as entregas seguradas. O arquivo que a
+/// cópia não mudou fica como está; o que só a cópia mudou vem dela, apagado e
+/// novo inclusive; o que os dois lados mudaram é fundido. A entrega com um
+/// trecho que a fusão não resolve é segurada inteira, com os trechos e a
+/// cópia dela, e nada dela entra na junção; as outras seguem. Duas ondas do
+/// mesmo relatório no mesmo arquivo se somam, na ordem do relatório. O
+/// caminho que sai do repositório não é tocado: o git o recusa no commit.
+pub(super) fn join_copies(
+    root: &Path,
+    log: &SpecLog,
+    waves: &[WaveReport],
+) -> Result<(Vec<Joined>, Vec<Held>), RoundRefusal> {
     let mut joined: BTreeMap<String, Joined> = BTreeMap::new();
+    let mut held: Vec<Held> = Vec::new();
     for wave in waves {
         let Some(copy) = copy_of(log, wave.wave) else { continue };
         let base = git(&copy, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
         let base = base.trim();
         let mut conflicts: Vec<String> = Vec::new();
+        // O que esta onda muda só entra na junção quando nenhum arquivo dela
+        // conflita.
+        let mut staged: Vec<(String, Option<Vec<u8>>)> = Vec::new();
         for file in wave.files.iter().filter(|file| inside(file)) {
             let theirs = std::fs::read(copy.join(file)).ok();
             let base_id = git(&copy, &["rev-parse", "--verify", "-q", &format!("{base}:{file}")])
@@ -353,19 +387,22 @@ pub(super) fn join_copies(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> R
                     }
                 }
             };
-            let before = std::fs::read(root.join(file)).ok();
+            staged.push((file.clone(), after));
+        }
+        if !conflicts.is_empty() {
+            let copy = copy.to_string_lossy().replace('\\', "/");
+            held.push(Held { wave: wave.wave, copy, conflicts });
+            continue;
+        }
+        for (file, after) in staged {
+            let before = std::fs::read(root.join(&file)).ok();
             joined
                 .entry(file.clone())
                 .and_modify(|done| done.after.clone_from(&after))
-                .or_insert(Joined { file: file.clone(), before, after });
-        }
-        if !conflicts.is_empty() {
-            let head = git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string();
-            let copy = copy.to_string_lossy().replace('\\', "/");
-            return Err(RoundRefusal::MergeConflict { wave: wave.wave, copy, conflicts, head });
+                .or_insert(Joined { file, before, after });
         }
     }
-    Ok(joined.into_values().collect())
+    Ok((joined.into_values().collect(), held))
 }
 
 /// Grava no repositório principal o que a junção decidiu (`after`), ou volta

@@ -298,15 +298,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.merge_conflict", Locale::PtBr) => {
             "A entrega da onda {wave} conflita com o repositório principal nestes trechos: {conflicts}. \
-             Nada foi gravado. Resolva na cópia {copy}: leve-a ao commit atual com \
+             Nada dela foi gravado. Resolva na cópia {copy}: leve-a ao commit atual com \
              `git -C {copy} checkout --merge --detach {head}`, acerte os trechos marcados e rode a \
-             rodada de novo com o mesmo relatório."
+             rodada de novo só com a linha `DELIVERED` da onda {wave}."
         }
         ("round.merge_conflict", Locale::EnUs) => {
             "Wave {wave}'s delivery conflicts with the main repository in these hunks: {conflicts}. \
-             Nothing was recorded. Resolve it in the copy {copy}: bring it to the current commit with \
-             `git -C {copy} checkout --merge --detach {head}`, fix the marked hunks and run the round \
-             again with the same report."
+             Nothing of it was recorded. Resolve it in the copy {copy}: bring it to the current commit \
+             with `git -C {copy} checkout --merge --detach {head}`, fix the marked hunks and run the \
+             round again with only wave {wave}'s `DELIVERED` line."
         }
         ("round.copy_failed", Locale::PtBr) => {
             "A cópia da onda {wave} não pôde ser criada: {detail}. A onda não saiu nesta rodada; \
@@ -741,7 +741,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             103,
-            0xfde2_f394_ca64_dc77,
+            0x9c7e_2e11_24b3_587a,
         );
     }
 

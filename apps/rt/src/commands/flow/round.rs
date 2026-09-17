@@ -25,9 +25,8 @@
 //! **O que trava.** Uma spec que ainda não foi aprovada; um relatório sem
 //! nenhuma das duas linhas, ou com uma linha sem campo obrigatório; um
 //! `entregou` acima do teto de caracteres; um arquivo entregue que não está no
-//! disco nem no git, nem no repositório principal nem na cópia; o trecho que a
-//! junção da cópia não resolve, que para sem gravar nada e diz em que cópia
-//! resolvê-lo; uma mensagem de commit fora do
+//! disco nem no git, nem no repositório principal nem na cópia; uma mensagem
+//! de commit fora do
 //! modelo (título e corpo acima do teto, link do claude.ai, o nome do modelo,
 //! assinatura de coautoria ou e-mail de alguém); o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
@@ -39,7 +38,16 @@
 //! **O que para sem travar.** A onda reprovada depois da segunda rodada de
 //! conserto segura só ela e as ondas que dependem dela: o resto da rodada
 //! segue, e a resposta traz a pergunta ao usuário com os vereditos dela. A
-//! onda que sai do plano deixa de contar, na rodada e no fechamento.
+//! onda que sai do plano deixa de contar, na rodada e no fechamento. A
+//! entrega com um trecho que a junção da cópia não resolve fica de fora, sem
+//! nada dela gravado: o resto do relatório é juntado, comitado e gravado, e a
+//! resposta traz a recusa dela, com os trechos e o comando que a resolve na
+//! cópia; só quando o relatório não traz mais nada a recusa é a resposta.
+//!
+//! **O passo do git.** Da leitura do repositório à junção, ao commit e ao
+//! desfazer quando o git recusa, a rodada segura uma trava só dela, a mesma da criação e da remoção
+//! das cópias: duas rodadas ao mesmo tempo no mesmo checkout fazem esse passo
+//! uma depois da outra.
 //!
 //! **O que avisa.** O formatador que o projeto declara e que não foi achado
 //! sai pelo nome, em vez de a formatação ser pulada em silêncio; a prova nova
