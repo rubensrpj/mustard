@@ -168,6 +168,15 @@ pub fn write_review(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.review_text()
 }
 
+/// O texto do pedido da revisão final do conjunto, que o fechamento faz à
+/// spec de duas ondas ou mais: as ondas e as tarefas delas (`block`), o que
+/// cada onda entregou por último (`own_delivered`), os critérios e como
+/// revisar numa cópia separada. O número da onda do material não conta aqui.
+#[must_use]
+pub fn write_final_review(material: &Material, lang: Locale) -> String {
+    Writer { material, lang }.final_review_text()
+}
+
 /// As partes do pedido, cada uma com quantas linhas ocupa, separadas por
 /// vírgula.
 fn parts(material: &Material, lang: Locale) -> String {
@@ -730,6 +739,25 @@ impl Writer<'_> {
         self.part(&mut out, "prompt.part.own_delivered", &m.own_delivered);
         self.part(&mut out, "prompt.part.criteria", &m.criteria);
         self.defects(&mut out);
+        self.review_execution(&mut out);
+        while out.ends_with("\n\n") {
+            out.pop();
+        }
+        out
+    }
+
+    /// O pedido da revisão final: as instruções fixas dela, as ondas com as
+    /// tarefas, o que cada uma entregou, os critérios e como revisar numa
+    /// cópia separada.
+    fn final_review_text(&self) -> String {
+        let m = self.material;
+        let mut out = String::new();
+        let _ = writeln!(out, "# {}\n", self.t("prompt.final.title").replace("{spec}", &m.spec));
+        out.push_str(self.t("prompt.final.fixed"));
+        out.push_str("\n\n");
+        self.part(&mut out, "prompt.part.waves", &m.block);
+        self.part(&mut out, "prompt.part.each_delivered", &m.own_delivered);
+        self.part(&mut out, "prompt.part.criteria", &m.criteria);
         self.review_execution(&mut out);
         while out.ends_with("\n\n") {
             out.pop();
@@ -1465,19 +1493,60 @@ mod tests {
         }
     }
 
-    /// As instruções fixas dizem que ler o item pelo número é parte do
-    /// trabalho, no lugar da frase que mandava nunca procurar o resto em
-    /// outro arquivo. A proibição que sobra é só a de sair caçando o conteúdo
-    /// em outro arquivo do projeto.
+    /// Ler o item pelo número é parte do trabalho, e quem diz isso é o texto
+    /// do agente da onda, que ele carrega uma vez; a parte fixa do pedido não
+    /// repete a instrução nem traz a proibição antiga de procurar o resto em
+    /// outro arquivo.
     #[test]
-    fn the_fixed_instructions_say_that_reading_the_item_by_its_number_is_part_of_the_work() {
+    fn the_wave_agent_says_that_reading_the_item_by_its_number_is_part_of_the_work() {
         for (lang, reading, forbidden) in [
             (Locale::PtBr, "Ler o item pelo número é parte do trabalho", "nunca vá procurar o resto em outro arquivo"),
             (Locale::EnUs, "Reading the item by its number is part of the work", "never go looking for the rest in another file"),
         ] {
+            let (_, agent) = crate::platform::seeds::agent_texts(lang)[0];
+            assert!(agent.contains(reading), "{agent}");
             let fixed = translate("prompt.fixed", lang);
-            assert!(fixed.contains(reading), "{fixed}");
-            assert!(!fixed.contains(forbidden), "{fixed}");
+            assert!(!fixed.contains(reading) && !fixed.contains(forbidden), "{fixed}");
+        }
+    }
+
+    /// O pedido da revisão final traz as instruções fixas dela, todas as
+    /// ondas com as tarefas, o que cada uma entregou e os critérios, uma linha
+    /// por item, sem texto de item nenhum.
+    #[test]
+    fn the_final_review_request_lists_every_wave_what_each_delivered_and_the_criteria() {
+        let log = log(&[
+            ("criterion", json!({"when": "a spec fecha", "then": "passa", "proof": "true"})),
+            ("wave", json!({"n": 1, "text": "Primeira onda secreta", "criteria": [1], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "text": "Fazer a primeira", "files": [{"path": "src/a.rs"}]})),
+            ("wave", json!({"n": 2, "text": "Segunda onda secreta", "criteria": [1], "done_when": "pronto"})),
+            ("delivered", json!({"wave": 1, "text": "Entrega da primeira", "files": ["src/a.rs"]})),
+            ("delivered", json!({"wave": 2, "text": "Entrega da segunda", "files": ["src/b.rs"]})),
+        ]);
+        let visible = log.visible();
+        let of = |kind: &str| -> Vec<&SpecEvent> { visible.iter().copied().filter(|e| e.event_type == kind).collect() };
+        let mut block = of("wave");
+        block.extend(of("task"));
+        let material = Material {
+            spec: "x".into(),
+            block,
+            own_delivered: of("delivered"),
+            criteria: of("criterion"),
+            codes: log.codes(),
+            ..Material::default()
+        };
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = write_final_review(&material, lang);
+            assert!(text.starts_with(&format!("# {}", translate("prompt.final.title", lang).replace("{spec}", "x"))));
+            assert!(text.contains(translate("prompt.final.fixed", lang)), "{text}");
+            for key in ["prompt.part.waves", "prompt.part.each_delivered", "prompt.part.criteria"] {
+                assert!(text.contains(&format!("## {}", translate(key, lang))), "{key}: {text}");
+            }
+            assert_eq!(section(&text, translate("prompt.part.waves", lang)).lines().filter(|l| l.starts_with("- ")).count(), 3);
+            assert_eq!(section(&text, translate("prompt.part.each_delivered", lang)).lines().filter(|l| l.starts_with("- ")).count(), 2);
+            for secret in ["Primeira onda secreta", "Entrega da segunda", "a spec fecha"] {
+                assert!(!text.contains(secret), "no item text is copied: {text}");
+            }
         }
     }
 
@@ -1646,32 +1715,30 @@ mod tests {
         assert!(rules.contains("`/repo/copia-1`") && rules.contains("`/repo/target/copias/a`"), "{rules}");
     }
 
-    /// As instruções fixas do pedido da onda exigem o teste de cada critério
-    /// nascendo vermelho pelo caminho que o usuário usa, e não só pela função
-    /// auxiliar, e a entrega dizendo como a prova foi feita; as do pedido da
-    /// revisão mandam rodar a prova gravada, ler as provas do vermelho da
-    /// entrega e cortar onde a onda não cortou, sem repetir os cortes dela.
+    /// Os textos dos agentes, que cada agente carrega uma vez, exigem o teste
+    /// de cada critério nascendo vermelho pelo caminho que o usuário usa, e
+    /// não só pela função auxiliar, com a entrega dizendo como a prova foi
+    /// feita; o do revisor manda rodar a prova gravada, ler as provas do
+    /// vermelho da entrega e cortar onde a onda não cortou, sem repetir os
+    /// cortes dela. A parte fixa dos pedidos não repete nada disso.
     #[test]
-    fn the_fixed_instructions_ask_for_the_red_proof_by_the_real_path_and_the_review_skips_the_waves_cuts() {
+    fn the_agent_texts_ask_for_the_red_proof_by_the_real_path_and_the_review_skips_the_waves_cuts() {
         for (lang, wave, review) in [
             (
                 Locale::PtBr,
-                ["nasce vermelho", "o comando ou o evento do gancho", "não só a função auxiliar", "como a prova do vermelho foi feita"],
-                ["Rode a prova gravada de cada critério", "provas do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
+                ["nasce vermelho", "o comando ou o evento do gancho", "não só na função auxiliar", "prova do vermelho (o que foi cortado"],
+                ["rode a prova gravada", "prova do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
             ),
             (
                 Locale::EnUs,
-                ["is born red", "the command or the hook event", "not only the helper function", "how the red proof was made"],
-                ["Run each criterion's recorded proof", "red proofs the delivery reports", "where the wave did not cut", "without repeating its own"],
+                ["is born red", "the command or the hook event", "not only in the helper function", "red proof (what was cut"],
+                ["run its recorded proof", "red proof the delivery reports", "where the wave did not cut", "without repeating its own"],
             ),
         ] {
-            let fixed = translate("prompt.fixed", lang);
-            for said in wave {
-                assert!(fixed.contains(said), "{lang:?} wave: {said}: {fixed}");
-            }
-            let fixed = translate("prompt.review.fixed", lang);
-            for said in review {
-                assert!(fixed.contains(said), "{lang:?} review: {said}: {fixed}");
+            let agents = crate::platform::seeds::agent_texts(lang);
+            for (said, (agent, key)) in wave.iter().map(|s| (s, (agents[0].1, "prompt.fixed"))).chain(review.iter().map(|s| (s, (agents[1].1, "prompt.review.fixed")))) {
+                assert!(agent.contains(said), "{lang:?}: {said}: {agent}");
+                assert!(!translate(key, lang).contains(said), "{lang:?} {key} repeats {said}");
             }
         }
     }

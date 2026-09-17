@@ -50,35 +50,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Nenhum texto vem copiado: cada linha traz o número do item, \
              o tipo dele e o comando que o lê.\n\n\
-             **Ler o item pelo número é parte do trabalho.** Rode o comando da linha na hora de \
-             trabalhar naquele item, um de cada vez, e leia do mesmo jeito qualquer item que o \
-             texto dele citar. Nunca procure o conteúdo em outro arquivo do projeto.\n\n\
-             **O que fazer.** As tarefas desta onda, e só elas. Cada critério listado abaixo ganha \
-             um teste que prova a regra dele e nasce vermelho: corte a ligação no caminho que o \
-             usuário usa — o comando ou o evento do gancho, e não só a função auxiliar —, veja o \
-             teste cair e desfaça o corte.\n\n\
-             **Quando parar.** Se faltar alguma coisa, ou se uma tarefa parecer pedir o que a spec \
-             não diz, pare e relate: não decida sozinho e não invente peça nenhuma.\n\n\
-             **O que devolver.** O que mudou, arquivo por arquivo; o teste que prova cada critério e \
-             como a prova do vermelho foi feita — o que foi cortado e o que o teste disse ao cair; e o \
-             que ficou aberto."
+             **O que devolver.** A linha `<DELIVERED>` desta onda."
         }
         ("prompt.fixed", Locale::EnUs) => {
             "**What this is.** The list of this wave's items, in execution order, assembled by the \
              binary from the spec. No text is copied in: each line carries the item's number, its \
              type and the command that reads it.\n\n\
-             **Reading the item by its number is part of the work.** Run the line's command when \
-             you get to that item, one at a time, and read any item its text cites the same way. \
-             Never look for the content in another project file.\n\n\
-             **What to do.** This wave's tasks, and only those. Every criterion listed below gets a \
-             test that proves its rule and is born red: cut the link on the path the user takes — the \
-             command or the hook event, not only the helper function —, watch the test fail and undo \
-             the cut.\n\n\
-             **When to stop.** If something is missing, or a task seems to ask for what the spec \
-             does not say, stop and report: do not decide alone and do not invent anything.\n\n\
-             **What to return.** What changed, file by file; the test that proves each criterion and \
-             how the red proof was made — what was cut and what the test said when it failed; and \
-             what is left open."
+             **What to return.** This wave's `<DELIVERED>` line."
         }
         ("prompt.review.title", Locale::PtBr) => "{spec} — revisão da onda {n}",
         ("prompt.review.title", Locale::EnUs) => "{spec} — review of wave {n}",
@@ -86,26 +64,43 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "**O que é isto.** O pedido da revisão desta onda, montado pelo binário a partir da \
              spec. Nenhum texto vem copiado: cada linha traz o número do item, o tipo dele e o \
              comando que o lê.\n\n\
-             **O que fazer.** Confira o que a onda entregou contra cada critério listado abaixo, \
-             lendo cada item pelo número. Rode a prova gravada de cada critério e leia as provas do \
-             vermelho que a entrega relata; gaste os seus cortes onde a onda não cortou, sem repetir \
-             os dela. Olhe primeiro os defeitos já vistos nestes arquivos: o erro que já aconteceu \
-             ali é o que tem mais chance de voltar.\n\n\
-             **O que devolver.** O veredito — aprovado ou reprovado —, o que cada critério provou, \
-             e a lição que valha para as próximas ondas."
+             **O que devolver.** A linha `<VERDICT>` desta onda."
         }
         ("prompt.review.fixed", Locale::EnUs) => {
             "**What this is.** This wave's review request, assembled by the binary from the spec. \
              No text is copied in: each line carries the item's number, its type and the command \
              that reads it.\n\n\
-             **What to do.** Check what the wave delivered against every criterion listed below, \
-             reading each item by its number. Run each criterion's recorded proof and read the red \
-             proofs the delivery reports; spend your cuts where the wave did not cut, without \
-             repeating its own. Look first at the defects already seen in these files: the mistake \
-             that happened there is the one most likely to come back.\n\n\
-             **What to return.** The verdict — approved or rejected —, what each criterion proved, \
-             and any lesson worth keeping for the next waves."
+             **What to return.** This wave's `<VERDICT>` line."
         }
+
+        // A revisão final do conjunto, que o fechamento pede à spec de duas
+        // ondas ou mais.
+        ("prompt.final.title", Locale::PtBr) => "{spec} — revisão final do conjunto",
+        ("prompt.final.title", Locale::EnUs) => "{spec} — final review of the whole",
+        ("prompt.final.fixed", Locale::PtBr) => {
+            "**O que é isto.** O pedido da revisão final desta spec, com as ondas juntas, montado \
+             pelo binário a partir dela. Nenhum texto vem copiado: cada linha traz o número do \
+             item, o tipo dele e o comando que o lê.\n\n\
+             **O que olhar.** Só como as ondas se encaixam: código repetido entre ondas, decisão de \
+             uma que contradiz a de outra, prova que uma apagou da outra. Cada onda já teve a sua \
+             revisão, e esta não a refaz.\n\n\
+             **O que devolver.** A linha `<VERDICT>` com `\"final\":true`: aprovada, sem `wave`; \
+             reprovada, com a onda que o conserto refaz em `wave`."
+        }
+        ("prompt.final.fixed", Locale::EnUs) => {
+            "**What this is.** The final review request of this spec, with the waves together, \
+             assembled by the binary from it. No text is copied in: each line carries the item's \
+             number, its type and the command that reads it.\n\n\
+             **What to look at.** Only how the waves fit together: code repeated across waves, a \
+             decision of one that contradicts another's, a proof one erased from another. Each wave \
+             already had its own review, and this one does not redo it.\n\n\
+             **What to return.** The `<VERDICT>` line with `\"final\":true`: approved, with no \
+             `wave`; rejected, with the wave the fix redoes in `wave`."
+        }
+        ("prompt.part.waves", Locale::PtBr) => "As ondas e as tarefas delas",
+        ("prompt.part.waves", Locale::EnUs) => "The waves and their tasks",
+        ("prompt.part.each_delivered", Locale::PtBr) => "O que cada onda entregou",
+        ("prompt.part.each_delivered", Locale::EnUs) => "What each wave delivered",
         ("prompt.part.defects", Locale::PtBr) => "Defeitos já vistos nestes arquivos",
         ("prompt.part.defects", Locale::EnUs) => "Defects already seen in these files",
         ("prompt.part.specification", Locale::PtBr) => "Especificação",
@@ -235,8 +230,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            34,
-            0x6ea9_a7c8_8043_3820,
+            38,
+            0xe6e9_5753_ec93_f556,
         );
     }
 }

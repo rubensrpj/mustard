@@ -62,8 +62,7 @@ pub(super) fn change_question(code: &str, lang: Locale) -> String {
 ///
 /// Só conta a mensagem de autor `user` com a testemunha. O `run write` recusa
 /// toda mensagem com a testemunha, de qualquer autor, e recusa rever ou tirar
-/// uma delas, com ou sem a recusa da fala digitada: só a testemunha grava o
-/// clique.
+/// uma delas: só a testemunha grava o clique.
 pub(super) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
     let langs = [Locale::PtBr, Locale::EnUs];
     let questions: Vec<String> = langs.iter().map(|lang| change_question(code, *lang)).collect();
@@ -86,13 +85,15 @@ pub(super) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
 /// As ondas paradas pelo limite de consertos, cada uma com as reprovações
 /// seguidas que a pararam: depois da primeira reprovação vêm no máximo
 /// [`MAX_FIX_ROUNDS`] rodadas de conserto, e a reprovação seguinte para. A
-/// conta começa na versão mais nova do plano da onda: a onda que o usuário
-/// replanejou volta à fila com a conta zerada.
+/// conta começa na versão mais nova do plano da onda que o usuário pediu
+/// depois da última reprovação: a onda que ele replanejou volta à fila com a
+/// conta zerada, e o que o orquestrador acrescenta ao plano não zera nada.
 pub(super) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
-    let planned = last_planned(log);
+    let verdicts = log.verdicts_by_wave();
+    let reset = last_reset_by_user(log, &verdicts);
     let mut out = BTreeMap::new();
-    for (n, verdicts) in log.verdicts_by_wave() {
-        let since = planned.get(&n).copied().unwrap_or(0);
+    for (n, verdicts) in verdicts {
+        let since = reset.get(&n).copied().unwrap_or(0);
         let mut rejected: Vec<&SpecEvent> = verdicts
             .iter()
             .rev()
@@ -107,23 +108,57 @@ pub(super) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
     out
 }
 
-/// O número do evento mais novo do plano de cada onda: a versão mais nova da
-/// onda ou de uma tarefa dela. A tarefa que muda de onda conta para as duas —
-/// a de onde saiu, pela versão que ela substitui, e a para onde foi.
-fn last_planned(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let by_id: BTreeMap<u64, &SpecEvent> = log.events.iter().map(|e| (e.id, e)).collect();
-    let mut planned: BTreeMap<u64, u64> = BTreeMap::new();
+/// Cada versão do plano, com as ondas que ela mexe: a versão da onda ou de
+/// uma tarefa dela. A tarefa que muda de onda conta para as duas — a de onde
+/// saiu, pela versão que ela substitui, e a para onde foi.
+fn plan_versions(log: &SpecLog) -> Vec<(u64, &SpecEvent)> {
+    let mut out = Vec::new();
     for event in log.block(BlockQuery::Block(Block::Waves)) {
         if !matches!(event.event_type.as_str(), "wave" | "task") {
             continue;
         }
-        let before = event.int("replaces").and_then(|old| by_id.get(&old)).and_then(|old| old.wave());
-        for n in event.wave().into_iter().chain(before) {
-            let newest = planned.entry(n).or_insert(0);
+        let before = event.int("replaces").and_then(|old| log.get(old)).and_then(SpecEvent::wave);
+        let mut waves: Vec<u64> = event.wave().into_iter().chain(before).collect();
+        waves.dedup();
+        out.extend(waves.into_iter().map(|n| (n, event)));
+    }
+    out
+}
+
+/// O número do evento mais novo do plano de cada onda.
+fn last_planned(log: &SpecLog) -> BTreeMap<u64, u64> {
+    let mut planned: BTreeMap<u64, u64> = BTreeMap::new();
+    for (n, event) in plan_versions(log) {
+        let newest = planned.entry(n).or_insert(0);
+        *newest = (*newest).max(event.id);
+    }
+    planned
+}
+
+/// O número da versão mais nova do plano de cada onda que zera a conta de
+/// consertos: a que nasce (`origin`) de uma mensagem ou de uma decisão do
+/// usuário gravada depois da última reprovação da onda anterior à versão.
+fn last_reset_by_user(log: &SpecLog, verdicts: &BTreeMap<u64, Vec<&SpecEvent>>) -> BTreeMap<u64, u64> {
+    let from_user = |origin: u64| {
+        log.get(origin).filter(|o| matches!(o.event_type.as_str(), "message" | "decision") && o.str_field("author") == Some("user"))
+    };
+    let mut reset: BTreeMap<u64, u64> = BTreeMap::new();
+    for (n, event) in plan_versions(log) {
+        let Some(asked) = event.int("origin").and_then(from_user) else { continue };
+        let last_rejection = verdicts
+            .get(&n)
+            .into_iter()
+            .flatten()
+            .filter(|v| v.id < event.id && v.str_field("result") == Some("rejected"))
+            .map(|v| v.id)
+            .max()
+            .unwrap_or(0);
+        if asked.id > last_rejection {
+            let newest = reset.entry(n).or_insert(0);
             *newest = (*newest).max(event.id);
         }
     }
-    planned
+    reset
 }
 
 /// As ondas replanejadas depois do último pedido: a onda, ou uma tarefa dela,
@@ -287,7 +322,9 @@ mod tests {
     /// Cada onda tem no máximo duas rodadas de conserto. Depois da terceira
     /// reprovação seguida a rodada não a manda de novo, e a resposta traz a
     /// pergunta ao usuário com os três vereditos e as duas saídas. A parada
-    /// segue até o plano da onda mudar; replanejada, ela volta à fila.
+    /// segue até o usuário replanejar a onda; a versão nova do plano que não
+    /// nasce dele não a destrava, e a que nasce de uma decisão dele a devolve
+    /// à fila.
     #[test]
     fn a_wave_rejected_after_its_second_fix_round_is_not_sent_again_and_the_user_is_asked() {
         let dir = tempdir().unwrap();
@@ -348,12 +385,81 @@ mod tests {
         assert_eq!(waves_in(&still, "stopped"), vec![1], "{still}");
         assert_eq!(sends(root), 3);
 
-        // O plano revisto devolve a onda à fila.
+        // A versão nova da tarefa que o orquestrador grava, com a origem de
+        // antes das reprovações, não destrava a onda.
         replan(root, 1);
+        let held = round(root, "x", None);
+        assert_eq!(waves_in(&held, "stopped"), vec![1], "{held}");
+        assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "{held}");
+
+        // O plano que o usuário revê devolve a onda à fila.
+        let decided = user_decides(root, "Refazer a tarefa da onda 1.");
+        replan_from(root, 1, Some(decided));
         let back = round(root, "x", None);
         assert_eq!(back["ok"], json!(true), "{back}");
         assert_eq!(waves_in(&back, "dispatch"), vec![1], "{back}");
         assert!(back.get("stopped").is_none(), "{back}");
+    }
+
+    /// A decisão do usuário de rever o plano, nascida de uma fala dele gravada
+    /// agora pelo gancho da entrada. Devolve o número da decisão.
+    fn user_decides(root: &Path, text: &str) -> u64 {
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": text})));
+        id_of(&write(root, "x", "decision", json!({"author": "user", "text": text,
+            "why": "o usuário reviu o plano da onda", "keys": ["plano"], "waves": [1], "origin": said})))
+    }
+
+    /// A conta de consertos só zera com o usuário. A tarefa que o orquestrador
+    /// acrescenta à onda depois de uma reprovação, nascida de uma decisão dele,
+    /// sai de novo para a onda, mas não zera a conta: a terceira reprovação
+    /// para a onda. A fala do usuário gravada antes da última reprovação também
+    /// não zera; a decisão dele gravada depois, sim.
+    #[test]
+    fn only_a_users_decision_resets_the_fix_count_of_a_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let rejected = |n: usize| {
+            let out = round(root, "x", Some(&delivered(root, 1, &format!("Tentativa {n}."), &["src/a.rs"])));
+            assert_eq!(out["ok"], json!(true), "{out}");
+            round(root, "x", Some(&verdict(1, "rejected", &format!("reprovação {n}"))))
+        };
+        assert_eq!(waves_in(&rejected(1), "dispatch"), vec![1]);
+        // Uma fala do usuário antes da segunda reprovação: a tarefa que nasce
+        // dela depois dessa reprovação não zera a conta.
+        let early = id_of(&write(root, "x", "message", json!({"author": "user", "text": "Veja o teste."})));
+        assert_eq!(waves_in(&rejected(2), "dispatch"), vec![1]);
+
+        // O orquestrador acrescenta uma tarefa à onda, por decisão dele.
+        let own = id_of(&write(root, "x", "decision", json!({"text": "Falta uma tarefa na onda 1.",
+            "why": "a revisão apontou", "keys": ["tarefa"], "waves": [1], "origin": early})));
+        for origin in [own, early] {
+            write(root, "x", "task", json!({"wave": 1, "text": format!("Tarefa acrescentada ({origin})."),
+                "files": [{"path": "src/a.rs"}], "origin": origin}));
+        }
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![1], "o plano mudou depois do pedido: {again}");
+
+        let stopped = rejected(3);
+        assert_eq!(waves_in(&stopped, "stopped"), vec![1], "a tarefa do orquestrador não zera a conta: {stopped}");
+        assert_eq!(waves_in(&stopped, "dispatch"), Vec::<u64>::new(), "{stopped}");
+        assert_eq!(stopped["stopped"][0]["verdicts"].as_array().map(Vec::len), Some(3), "{stopped}");
+
+        let decided = user_decides(root, "Refazer a onda 1 com a tarefa nova.");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).unwrap();
+        let mut body = wave.fields.clone();
+        for key in ["v", "id", "code", "at", "search", "type", "author"] {
+            body.remove(key);
+        }
+        body.insert("replaces".into(), json!(wave.id));
+        body.insert("origin".into(), json!(decided));
+        write(root, "x", "wave", Value::Object(body));
+        let back = round(root, "x", None);
+        assert!(back.get("stopped").is_none(), "a decisão do usuário zera a conta: {back}");
+        assert_eq!(waves_in(&back, "dispatch"), vec![1], "{back}");
     }
 
     /// A história da onda `n` parada pelo limite de consertos: cada tentativa

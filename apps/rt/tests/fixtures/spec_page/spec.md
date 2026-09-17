@@ -178,20 +178,14 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Estado da onda: a fazer
   - Recebe: Especificação (2), A onda e as tarefas dela (1), Critérios (1), Regras da execução (1)
 
-**O pedido da onda 1 · 28 linhas, como o agente as recebe**
+**O pedido da onda 1 · 22 linhas, como o agente as recebe**
 
 ```
 # demo — onda 1
 
 **O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo binário a partir da spec. Nenhum texto vem copiado: cada linha traz o número do item, o tipo dele e o comando que o lê.
 
-**Ler o item pelo número é parte do trabalho.** Rode o comando da linha na hora de trabalhar naquele item, um de cada vez, e leia do mesmo jeito qualquer item que o texto dele citar. Nunca procure o conteúdo em outro arquivo do projeto.
-
-**O que fazer.** As tarefas desta onda, e só elas. Cada critério listado abaixo ganha um teste que prova a regra dele e nasce vermelho: corte a ligação no caminho que o usuário usa — o comando ou o evento do gancho, e não só a função auxiliar —, veja o teste cair e desfaça o corte.
-
-**Quando parar.** Se faltar alguma coisa, ou se uma tarefa parecer pedir o que a spec não diz, pare e relate: não decida sozinho e não invente peça nenhuma.
-
-**O que devolver.** O que mudou, arquivo por arquivo; o teste que prova cada critério e como a prova do vermelho foi feita — o que foi cortado e o que o teste disse ao cair; e o que ficou aberto.
+**O que devolver.** A linha `<DELIVERED>` desta onda.
 
 ## Especificação
 

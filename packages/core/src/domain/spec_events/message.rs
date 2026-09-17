@@ -164,9 +164,10 @@ fn first_sentence_of(text: &str) -> String {
 ///
 /// **Ninguém escreve este texto à mão.** O título sai do objetivo da spec; o
 /// corpo sai, em ordem de importância, do resumo que o assistente gravou, de
-/// uma linha por onda entregue e da contagem dos critérios com as falhas pelo
-/// nome. Quando o corpo passa do teto, as listas viram contagem — o detalhe
-/// não se perde, porque ele mora na página da spec.
+/// uma linha por onda entregue, da contagem dos critérios com as falhas pelo
+/// nome e de uma linha do que testar à mão, tirada das tarefas do plano, que
+/// só lembra e não trava nada. Quando o corpo passa do teto, as listas viram
+/// contagem — o detalhe não se perde, porque ele mora na página da spec.
 ///
 /// # Errors
 ///
@@ -221,7 +222,18 @@ pub fn pr_message(log: &SpecLog) -> Result<(String, String), MessageRefusal> {
         format!("Critérios: {criteria}, {} com falha: {}.", failed.len(), failed.join("; "))
     };
 
-    let assemble = |lines: &[String]| {
+    // O que testar à mão: a primeira frase de cada tarefa das ondas do plano.
+    let planned = log.planned_waves();
+    let tasks: Vec<String> = visible
+        .iter()
+        .filter(|e| e.event_type == "task" && e.wave().is_some_and(|n| planned.contains(&n)))
+        .filter_map(|e| e.str_field("text"))
+        .map(|text| first_sentence_of(text).trim().trim_end_matches(['.', '!', '?']).to_string())
+        .filter(|task| !task.is_empty())
+        .collect();
+    let by_hand = (!tasks.is_empty()).then(|| format!("Testar à mão: {}.", tasks.join("; ")));
+
+    let assemble = |lines: &[String], by_hand: Option<&str>| {
         let mut parts: Vec<String> = Vec::new();
         if !summary.is_empty() {
             parts.push(summary.clone());
@@ -230,15 +242,20 @@ pub fn pr_message(log: &SpecLog) -> Result<(String, String), MessageRefusal> {
             parts.push(lines.join("\n"));
         }
         parts.push(criteria_line.clone());
+        parts.extend(by_hand.map(str::to_string));
         parts.join("\n\n")
     };
 
-    let mut body = assemble(&wave_lines);
+    let mut body = assemble(&wave_lines, by_hand.as_deref());
     if body.chars().count() > MESSAGE_BODY_MAX {
         // As listas viram contagem: o detalhe fica na página da spec, onde
         // nada se perde, e o corpo continua legível de uma olhada.
         let collapsed = vec![format!("Ondas entregues: {}.", waves.len())];
-        body = assemble(&collapsed);
+        body = assemble(&collapsed, by_hand.as_deref());
+        if body.chars().count() > MESSAGE_BODY_MAX {
+            let counted = format!("Testar à mão: as {} tarefas, na página da spec.", tasks.len());
+            body = assemble(&collapsed, Some(&counted));
+        }
     }
 
     check_message(&title, &body, MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX)?;
@@ -299,5 +316,40 @@ mod tests {
             body.contains("- onda 2: Funcionou!"),
             "a linha da onda 2 não fechou no ponto de exclamação: {body}",
         );
+    }
+
+    /// O corpo termina com uma linha do que testar à mão, tirada da primeira
+    /// frase de cada tarefa das ondas do plano; a tarefa de uma onda que não
+    /// está no plano fica de fora, e a spec sem tarefa não ganha a linha.
+    #[test]
+    fn o_corpo_diz_o_que_testar_a_mao_a_partir_das_tarefas() {
+        let events = |tasks: &[(u64, &str)]| {
+            let mut lines = Vec::new();
+            let mut fields = vec![
+                json!({"type": "context", "text": "Deixar o Mustard enxuto."}),
+                json!({"type": "wave", "n": 1, "text": "Onda 1.", "criteria": [], "done_when": "pronto"}),
+            ];
+            for (wave, text) in tasks {
+                fields.push(json!({"type": "task", "wave": wave, "text": text}));
+            }
+            for (i, value) in fields.into_iter().enumerate() {
+                let mut map = obj(value);
+                map.insert("v".into(), json!(1));
+                map.insert("id".into(), json!(i + 1));
+                map.insert("at".into(), json!("2026-09-17T10:00:00-03:00"));
+                map.insert("author".into(), json!("assistant"));
+                lines.push(render_line(&map));
+            }
+            parse_log(&lines.join("\n"))
+        };
+        let log = events(&[(1, "Abrir a spec pelo comando. E o resto."), (1, "Fechar com o lint!"), (9, "Fora do plano.")]);
+        let (_, body) = pr_message(&log).expect("a spec tem objetivo");
+        assert!(
+            body.ends_with("Testar à mão: Abrir a spec pelo comando; Fechar com o lint."),
+            "{body}"
+        );
+        assert!(!body.contains("Fora do plano"), "{body}");
+        let (_, bare) = pr_message(&events(&[])).expect("a spec tem objetivo");
+        assert!(!bare.contains("Testar à mão"), "{bare}");
     }
 }

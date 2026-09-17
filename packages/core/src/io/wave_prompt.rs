@@ -87,6 +87,65 @@ pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
     crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(name)
 }
 
+/// A pasta da cópia separada do revisor final da spec `spec`, ao lado das
+/// cópias das ondas.
+#[must_use]
+pub fn final_copy_path(root: &Path, spec: &str) -> PathBuf {
+    crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(format!("mustard-{spec}-final-review"))
+}
+
+/// O pedido da revisão final do conjunto da spec `spec`: as ondas do plano
+/// com as tarefas, a entrega mais nova de cada onda, os critérios e a cópia
+/// do revisor, no commit mais novo da spec e na pasta de compilação que a
+/// última onda enviada usou.
+#[must_use]
+pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> String {
+    let planned = log.planned_waves();
+    let visible = log.block(BlockQuery::Block(Block::Waves));
+    let block: Vec<&SpecEvent> = visible
+        .iter()
+        .copied()
+        .filter(|e| matches!(e.event_type.as_str(), "wave" | "task") && e.wave().is_some_and(|n| planned.contains(&n)))
+        .collect();
+    let newest = log.last_by_wave("delivered");
+    let own_delivered: Vec<&SpecEvent> = visible
+        .iter()
+        .copied()
+        .filter(|e| e.event_type == "delivered")
+        .filter(|e| e.wave().filter(|n| planned.contains(n)).and_then(|n| newest.get(&n)) == Some(&e.id))
+        .collect();
+    let criteria: Vec<&SpecEvent> =
+        log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").collect();
+    let commit = log
+        .block(BlockQuery::Block(Block::Progress))
+        .into_iter()
+        .rev()
+        .find_map(|e| (e.event_type == "commit").then(|| e.str_field("sha").map(str::to_string)).flatten());
+    let last_sent = log.last_by_wave("send").into_iter().max_by_key(|(_, id)| *id).map(|(n, _)| n);
+    let commands = crate::ProjectConfig::load(root).commands();
+    let execution = Execution {
+        build: commands.build,
+        test: commands.test,
+        commit,
+        root: shown(root),
+        review: WaveCopy {
+            path: shown(&final_copy_path(root, spec)),
+            build_dir: last_sent.and_then(|n| recorded_copy(log, n)).and_then(|copy| copy.build_dir),
+        },
+        ..Execution::default()
+    };
+    let material = Material {
+        spec: spec.to_string(),
+        block,
+        criteria,
+        own_delivered,
+        execution,
+        codes: log.codes(),
+        ..Material::default()
+    };
+    wave_prompt::write_final_review(&material, lang)
+}
+
 /// A cópia gravada no envio mais novo da onda `wave`, com a pasta de
 /// compilação dele. `None` quando esse envio não criou cópia.
 #[must_use]

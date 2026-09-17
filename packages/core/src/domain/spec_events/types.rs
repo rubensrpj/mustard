@@ -491,6 +491,10 @@ pub const TYPES: &[TypeSpec] = &[
             TEXT,
             req("criteria", Kind::Objects),
             opt("lessons", Kind::Objects),
+            // A revisão final do conjunto, que o fechamento pede à spec de
+            // duas ondas ou mais: aprovada, fica na última onda do plano;
+            // reprovada, na onda que o conserto refaz.
+            opt("final", Kind::Bool),
         ],
     ),
     // Andamento.

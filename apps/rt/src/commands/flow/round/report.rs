@@ -39,9 +39,10 @@ pub(crate) struct WaveReport {
 }
 
 /// O que a linha `VERDICT` de uma onda trouxe: os campos do veredito, com a
-/// onda à parte.
+/// onda à parte. Só a revisão final aprovada vem sem onda, e fica na última
+/// onda do plano.
 pub(crate) struct VerdictReport {
-    pub wave: u64,
+    pub wave: Option<u64>,
     pub fields: Map<String, Value>,
 }
 
@@ -201,15 +202,19 @@ fn tagged<'a>(raw: &'a str, tag: &str) -> Vec<&'a str> {
     out
 }
 
-/// O objeto JSON de uma linha, com a onda dela.
-fn line_object(body: &str, line: &'static str) -> Result<(u64, Map<String, Value>), RoundRefusal> {
+/// O objeto JSON de uma linha, com a onda dela, quando ela traz uma.
+fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<String, Value>), RoundRefusal> {
     let parsed: Value =
         serde_json::from_str(body).map_err(|e| RoundRefusal::BadReport { detail: format!("{line}: {e}") })?;
     let Value::Object(fields) = parsed else {
         return Err(RoundRefusal::BadReport { detail: format!("{line}: {body}") });
     };
-    let wave = fields.get("wave").and_then(Value::as_u64).ok_or(RoundRefusal::LineField { line, field: "wave" })?;
-    Ok((wave, fields))
+    Ok((fields.get("wave").and_then(Value::as_u64), fields))
+}
+
+/// A linha é a da revisão final aprovada, a única que vem sem onda.
+fn final_approval(fields: &Map<String, Value>) -> bool {
+    fields.get("final") == Some(&Value::Bool(true)) && fields.get("result").and_then(Value::as_str) == Some("approved")
 }
 
 /// O relatório da rodada anterior: as linhas `DELIVERED` e `VERDICT` que o
@@ -223,6 +228,7 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     for body in tagged(raw, DELIVERED_LINE) {
         let (wave, fields) = line_object(body, DELIVERED_LINE)?;
         let field = |field| RoundRefusal::LineField { line: DELIVERED_LINE, field };
+        let wave = wave.ok_or_else(|| field("wave"))?;
         let delivered = text(&fields, "text").ok_or_else(|| field("text"))?;
         let files: Vec<String> = fields
             .get("files")
@@ -255,6 +261,9 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     let mut verdicts = Vec::new();
     for body in tagged(raw, VERDICT_LINE) {
         let (wave, mut fields) = line_object(body, VERDICT_LINE)?;
+        if wave.is_none() && !final_approval(&fields) {
+            return Err(RoundRefusal::LineField { line: VERDICT_LINE, field: "wave" });
+        }
         fields.remove("wave");
         verdicts.push(VerdictReport { wave, fields });
     }
@@ -325,10 +334,17 @@ fn check_reports(
                 }
             }
         }
-        draft.insert("wave".into(), json!(verdict.wave));
+        let wave = match verdict.wave {
+            Some(wave) => wave,
+            None => check.log().planned_waves().last().copied().ok_or_else(|| Refusal::MissingField {
+                event_type: "verdict".to_string(),
+                field: "wave".to_string(),
+            })?,
+        };
+        draft.insert("wave".into(), json!(wave));
         draft.insert("author".into(), json!("review"));
         check.record("verdict", draft.clone())?;
-        verdicts.push((verdict.wave, draft));
+        verdicts.push((wave, draft));
     }
     let mut deliveries = Vec::new();
     for report in &report.waves {

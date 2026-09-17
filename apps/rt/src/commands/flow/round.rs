@@ -253,8 +253,14 @@ mod tests {
     }
 
     /// A versão nova da tarefa da onda `n`: o plano da onda muda depois do
-    /// pedido dela.
+    /// pedido dela, com a mesma origem da versão anterior.
     pub(super) fn replan(root: &Path, n: u64) {
+        replan_from(root, n, None);
+    }
+
+    /// [`replan`] com a origem `origin`, quando ela é dada: a mensagem ou a
+    /// decisão de onde a versão nova nasce.
+    pub(super) fn replan_from(root: &Path, n: u64, origin: Option<u64>) {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let task = log
             .visible()
@@ -268,6 +274,9 @@ mod tests {
         let mut body = Value::Object(fields);
         body["replaces"] = json!(task.id);
         body["text"] = json!(format!("Tarefa da onda {n}, revista."));
+        if let Some(origin) = origin {
+            body["origin"] = json!(origin);
+        }
         id_of(&write(root, "x", "task", body));
     }
 

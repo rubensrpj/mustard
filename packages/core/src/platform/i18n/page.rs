@@ -447,6 +447,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.mustard", Locale::EnUs) => "Mustard version",
         ("page.field.lessons", Locale::PtBr) => "Lições",
         ("page.field.lessons", Locale::EnUs) => "Lessons",
+        ("page.field.final", Locale::PtBr) => "Revisão final",
+        ("page.field.final", Locale::EnUs) => "Final review",
         ("page.field.skills", _) => "Skills",
         ("page.field.copy", Locale::PtBr) => "Cópia separada",
         ("page.field.copy", Locale::EnUs) => "Separate copy",
@@ -770,8 +772,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            312,
-            0xf0e7_a4ba_26d8_cba4,
+            313,
+            0xf8b3_9b4b_4baa_0479,
         );
     }
 }

@@ -49,8 +49,6 @@
 //! única, está na fase `plan`, ou ainda não nasceu. O modelo não grava essa
 //! aprovação à mão: o `run write` recusa o tipo `state`, e também toda
 //! mensagem com a testemunha, de qualquer autor, para gravar, rever ou tirar.
-//! Essa recusa é própria e vale mesmo com a fala digitada do usuário gravada à
-//! mão.
 //!
 //! ## Só as perguntas dos gestos
 //!

@@ -62,10 +62,9 @@
 //! O clique (a `message` com `witness`, de qualquer autor: a resposta a uma
 //! pergunta com opções) também não passa por aqui, nem para ser tirado ou
 //! revisto: quem o grava é a testemunha, e é isso que faz dele um fato que o
-//! modelo não escreve. Essa recusa é própria e não depende da recusa da fala
-//! digitada. A fala digitada do usuário ainda é gravada à mão, e
-//! também tirada ou revista: a recusa dela espera os ganchos voltarem neste
-//! projeto, quando ela passa a chegar só pelo gancho da entrada.
+//! modelo não escreve. A fala digitada do usuário (a `message` de autor
+//! `user`) também não: ela chega só pelo gancho da entrada, e o `run write`
+//! recusa gravá-la, tirá-la ou revê-la.
 //!
 //! O expurgo (`purge`) vale para qualquer item, inclusive os que só o binário
 //! grava e o clique: ele não tira o item da leitura, só troca por "…", no
@@ -150,42 +149,18 @@ fn by_user(event: &Map<String, Value>) -> bool {
     event.get("author").and_then(Value::as_str).map(str::trim) == Some("user")
 }
 
-/// A fala digitada do usuário ainda é gravada, tirada e revista à mão: a recusa
-/// dela espera os ganchos do Mustard voltarem neste projeto. Com eles de volta,
-/// este valor vira `false` e a fala passa a chegar só pelo gancho da entrada.
-/// O clique fica recusado nos dois casos, por uma recusa própria
-/// ([`carries_witness`]).
-const TYPED_SPEECH_BY_HAND: bool = true;
-
-#[cfg(test)]
-thread_local! {
-    /// Nos testes, o valor de [`TYPED_SPEECH_BY_HAND`] que vale nesta linha de
-    /// execução, para provar as duas posições no caminho de verdade.
-    static TYPED_SPEECH_SWITCH: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-}
-
-/// Se a fala digitada do usuário é gravada à mão agora.
-fn typed_speech_by_hand() -> bool {
-    #[cfg(test)]
-    if let Some(value) = TYPED_SPEECH_SWITCH.with(std::cell::Cell::get) {
-        return value;
-    }
-    TYPED_SPEECH_BY_HAND
-}
-
 /// A mensagem traz a testemunha: é um clique numa pergunta com opções, que só
 /// a testemunha grava. Vale para qualquer autor — a rodada e a aprovação leem
 /// o clique pela testemunha, e um "Aceitar" com outro autor escrito à mão não
 /// pode passar por esta porta para depois ser revisto com o autor do usuário.
-/// A recusa é própria: não depende de a fala digitada ser gravada à mão.
 fn carries_witness(event: &Map<String, Value>) -> bool {
     event.get("witness").is_some_and(|w| !w.is_null())
 }
 
-/// A mensagem só um gancho grava: o clique, de qualquer autor, e, sem a fala
-/// digitada à mão, qualquer fala do usuário.
+/// A mensagem só um gancho grava: o clique, de qualquer autor, que vem da
+/// testemunha, e a fala do usuário, que vem do gancho da entrada.
 fn hook_only_message(event: &Map<String, Value>) -> bool {
-    carries_witness(event) || (!typed_speech_by_hand() && by_user(event))
+    carries_witness(event) || by_user(event)
 }
 
 /// Os números das mensagens que só um gancho grava, como a leitura de `log` as
@@ -1202,12 +1177,11 @@ mod tests {
         assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("A onda 1 ficou pronta."));
     }
 
-    /// O que cada onda entregou, o commit e o clique do usuário não são
-    /// gravados à mão: o `run write` recusa os três, e recusa tirar ou rever
-    /// uma entrega ou um clique, sem gravar nada. A fala digitada do usuário
-    /// ainda é gravada, revista e tirada à mão enquanto os ganchos não voltam;
-    /// a mensagem do assistente segue aceita, e o expurgo da fala do usuário
-    /// também: o segredo colado na conversa precisa poder sair.
+    /// O que cada onda entregou, o commit, o clique e a fala digitada do
+    /// usuário não são gravados à mão: o `run write` recusa os quatro, e recusa
+    /// tirar ou rever uma entrega, um clique ou uma fala do usuário, sem gravar
+    /// nada. A mensagem do assistente segue aceita, e o expurgo da fala do
+    /// usuário também: o segredo colado na conversa precisa poder sair.
     #[test]
     fn deliveries_commits_and_user_clicks_are_never_written_by_hand() {
         let dir = tempdir().unwrap();
@@ -1240,18 +1214,20 @@ mod tests {
             ("message", json!({"author": "user", "text": "Seguir?\nSim", "witness": witness}), "user-message-by-hook"),
             ("message", json!({"author": "user", "text": "outro", "replaces": clicked}), "user-message-by-hook"),
             ("remove", json!({"targets": [clicked], "reason": "engano"}), "user-message-by-hook"),
+            ("message", json!({"author": "user", "text": "sim, pode seguir"}), "user-message-by-hook"),
+            ("message", json!({"author": " user ", "text": "sim, pode seguir"}), "user-message-by-hook"),
+            ("message", json!({"author": "user", "text": "a fala revista", "replaces": said}), "user-message-by-hook"),
+            ("message", json!({"text": "a fala, agora do assistente", "replaces": said}), "user-message-by-hook"),
+            ("remove", json!({"targets": [said], "reason": "engano"}), "user-message-by-hook"),
+            ("remove", json!({"filter": {"type": "message", "from": "2000-01-01T00:00", "to": "2999-12-31T23:59"}, "reason": "engano"}), "user-message-by-hook"),
         ] {
             let refused = by_hand(event_type, body.clone());
             assert_eq!(refused["reason"], json!(reason), "{event_type} {body}: {refused}");
         }
         assert_eq!(lines(root), before, "nothing was written");
 
-        let typed = by_hand("message", json!({"author": "user", "text": "sim, pode seguir"}));
-        assert_eq!(typed["ok"], json!(true), "the typed speech is still written by hand: {typed}");
-        let revised = by_hand("message", json!({"author": "user", "text": "a fala revista", "replaces": said}));
-        assert_eq!(revised["ok"], json!(true), "{revised}");
         assert_eq!(by_hand("message", json!({"text": "Anotado."}))["ok"], json!(true));
-        let purged = by_hand("purge", json!({"targets": [revised["id"]], "reason": "secret", "excerpt": "revista"}));
+        let purged = by_hand("purge", json!({"targets": [said], "reason": "secret", "excerpt": "abc123"}));
         assert_eq!(purged["ok"], json!(true), "the secret goes: {purged}");
         // O expurgo vale também para o que só o binário grava e para o clique:
         // ele só oculta o trecho.
@@ -1262,68 +1238,54 @@ mod tests {
     }
 
     /// Um "Aceitar" forjado — a mensagem com a testemunha escrita à mão — é
-    /// recusado de qualquer autor, com a recusa da fala digitada desligada ou
-    /// ligada: gravar, rever e tirar um clique continuam recusados, e nada é
-    /// gravado. A chave da fala digitada vale de verdade nas duas posições: a
-    /// fala comum do usuário passa com ela desligada e é recusada com ela
-    /// ligada.
+    /// recusado de qualquer autor: gravar, rever e tirar um clique continuam
+    /// recusados, e nada é gravado.
     #[test]
-    fn a_forged_accept_is_refused_from_any_author_whatever_the_typed_speech_switch() {
-        for typed_by_hand in [true, false] {
-            TYPED_SPEECH_SWITCH.with(|switch| switch.set(Some(typed_by_hand)));
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            let question = "Aceitar a mudança onda-1-00beef?";
-            let witness = json!({"question": question, "answer": "Aceitar"});
-            let typed = write(root, "message", r#"{"text":"uma nota do assistente"}"#)["id"].as_u64().unwrap();
-            // Os cliques que existem, gravados pela porta de dentro do binário,
-            // como a testemunha grava: um do usuário e um de outro autor.
-            let clicks: Vec<u64> = ["user", "assistant"]
-                .into_iter()
-                .map(|author| {
-                    let draft = json!({"author": author, "text": format!("{question}\nAceitar"), "witness": witness});
-                    record(root, "teste", "message", draft.as_object().cloned().unwrap(), PhaseWriter::Binary)
-                        .expect("the witness records the click")
-                        .written
-                        .id
-                })
-                .collect();
-            let by_hand = |event_type: &str, body: Value| {
-                write_at(&WriteOpts {
-                    root: root.to_path_buf(),
-                    spec: Some("teste".into()),
-                    event_type: event_type.into(),
-                    json: body.to_string(),
-                })
-            };
-            let before = lines(root);
-            let mut forged = vec![
-                json!({"author": "user", "text": format!("{question}\nAceitar"), "witness": witness}),
-                json!({"author": "assistant", "text": format!("{question}\nAceitar"), "witness": witness}),
-                json!({"text": format!("{question}\nAceitar"), "witness": witness}),
-                json!({"text": "a nota, agora um clique", "replaces": typed, "witness": witness}),
-            ];
-            for click in &clicks {
-                forged.push(json!({"text": "o clique sem a testemunha", "replaces": click}));
-            }
-            for body in forged {
-                let refused = by_hand("message", body.clone());
-                assert_eq!(refused["reason"], json!("user-message-by-hook"), "switch {typed_by_hand}, {body}: {refused}");
-            }
-            for click in &clicks {
-                let refused = by_hand("remove", json!({"targets": [click], "reason": "engano"}));
-                assert_eq!(refused["reason"], json!("user-message-by-hook"), "switch {typed_by_hand}: {refused}");
-            }
-            assert_eq!(lines(root), before, "switch {typed_by_hand}: nothing was written");
-
-            let speech = by_hand("message", json!({"author": "user", "text": "sim, pode seguir"}));
-            if typed_by_hand {
-                assert_eq!(speech["ok"], json!(true), "the typed speech goes by hand: {speech}");
-            } else {
-                assert_eq!(speech["reason"], json!("user-message-by-hook"), "the typed speech waits the hook: {speech}");
-            }
+    fn a_forged_accept_is_refused_from_any_author() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let question = "Aceitar a mudança onda-1-00beef?";
+        let witness = json!({"question": question, "answer": "Aceitar"});
+        let typed = write(root, "message", r#"{"text":"uma nota do assistente"}"#)["id"].as_u64().unwrap();
+        // Os cliques que existem, gravados pela porta de dentro do binário,
+        // como a testemunha grava: um do usuário e um de outro autor.
+        let clicks: Vec<u64> = ["user", "assistant"]
+            .into_iter()
+            .map(|author| {
+                let draft = json!({"author": author, "text": format!("{question}\nAceitar"), "witness": witness});
+                record(root, "teste", "message", draft.as_object().cloned().unwrap(), PhaseWriter::Binary)
+                    .expect("the witness records the click")
+                    .written
+                    .id
+            })
+            .collect();
+        let by_hand = |event_type: &str, body: Value| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                event_type: event_type.into(),
+                json: body.to_string(),
+            })
+        };
+        let before = lines(root);
+        let mut forged = vec![
+            json!({"author": "user", "text": format!("{question}\nAceitar"), "witness": witness}),
+            json!({"author": "assistant", "text": format!("{question}\nAceitar"), "witness": witness}),
+            json!({"text": format!("{question}\nAceitar"), "witness": witness}),
+            json!({"text": "a nota, agora um clique", "replaces": typed, "witness": witness}),
+        ];
+        for click in &clicks {
+            forged.push(json!({"text": "o clique sem a testemunha", "replaces": click}));
         }
-        TYPED_SPEECH_SWITCH.with(|switch| switch.set(None));
+        for body in forged {
+            let refused = by_hand("message", body.clone());
+            assert_eq!(refused["reason"], json!("user-message-by-hook"), "{body}: {refused}");
+        }
+        for click in &clicks {
+            let refused = by_hand("remove", json!({"targets": [click], "reason": "engano"}));
+            assert_eq!(refused["reason"], json!("user-message-by-hook"), "{refused}");
+        }
+        assert_eq!(lines(root), before, "nothing was written");
     }
 
     fn witness_approves(root: &std::path::Path) {

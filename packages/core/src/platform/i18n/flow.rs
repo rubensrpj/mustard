@@ -270,6 +270,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The proof of criterion {code} came out green without running any test: the test name \
              matches no test. Record the criterion's new version with the right proof and close again."
         }
+        ("close.lint_failed", Locale::PtBr) => {
+            "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}"
+        }
+        ("close.lint_failed", Locale::EnUs) => {
+            "The project lint (`{command}`) did not pass, and the spec did not close: {output}"
+        }
+        ("close.final_review", Locale::PtBr) => {
+            "A spec tem {count} ondas e a máquina passou: antes do pull request, despache ao agente \
+             `mustard-review` o pedido em `review.prompt`, a revisão final do conjunto, e feche de \
+             novo com a linha do fim dele, como veio: \
+             `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
+        }
+        ("close.final_review", Locale::EnUs) => {
+            "The spec has {count} waves and the machine passed: before the pull request, dispatch the \
+             request in `review.prompt`, the final review of the whole, to the `mustard-review` agent, \
+             and close again with its closing line, as it came: \
+             `mustard-rt run close --spec {spec} --report '<VERDICT>…</VERDICT>'`."
+        }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
 
@@ -729,8 +747,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            102,
-            0xe351_767a_3a10_4c7b,
+            104,
+            0xa7d8_f4a8_e677_9675,
         );
     }
 
@@ -842,6 +860,8 @@ mod tests {
             ("close.request_not_delivered", &["{code}"][..]),
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}"][..]),
+            ("close.lint_failed", &["{command}", "{output}"][..]),
+            ("close.final_review", &["{count}", "{spec}"][..]),
             ("close.next", &["{command}"][..]),
             ("round.bad_report", &["{detail}"][..]),
             ("round.line_missing", &[][..]),
@@ -874,6 +894,10 @@ mod tests {
             ("prompt.fixed", &[][..]),
             ("prompt.review.title", &["{spec}", "{n}"][..]),
             ("prompt.review.fixed", &[][..]),
+            ("prompt.final.title", &["{spec}"][..]),
+            ("prompt.final.fixed", &[][..]),
+            ("prompt.part.waves", &[][..]),
+            ("prompt.part.each_delivered", &[][..]),
             ("prompt.part.defects", &[][..]),
             ("prompt.part.specification", &[][..]),
             ("prompt.part.agreed", &[][..]),

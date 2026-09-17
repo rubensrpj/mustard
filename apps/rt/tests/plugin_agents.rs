@@ -200,7 +200,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let mut texts: Vec<(String, String)> =
             ["wave", "review", "skill"].iter().map(|name| (format!("{lang} {name}"), template(lang, name))).collect();
-        for key in ["prompt.fixed", "prompt.review.fixed"] {
+        for key in FIXED_PARTS {
             texts.push((format!("{lang} {key}"), translate(key, text).to_string()));
         }
         for (what, body) in &texts {
@@ -260,10 +260,47 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_th
         assert!(build.contains("/target/copias/"), "{build}");
         assert!(prompt.contains(&format!("`{copy}`")), "the request names the copy: {prompt}");
         assert!(prompt.contains(&format!("`CARGO_TARGET_DIR={build}`")), "the request names the build folder: {prompt}");
-        assert!(prompt.contains("nasce vermelho") && prompt.contains("o comando ou o evento do gancho"), "{prompt}");
+        assert!(prompt.contains(translate("prompt.fixed", Locale::PtBr)), "{prompt}");
+        assert!(!prompt.contains("nasce vermelho"), "the red proof lives in the agent text: {prompt}");
         dirs.push(build.to_string());
     }
     assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
+}
+
+/// A parte fixa de cada pedido que o binário monta: o da onda, o da revisão
+/// dela e o da revisão final do conjunto.
+const FIXED_PARTS: [&str; 3] = ["prompt.fixed", "prompt.review.fixed", "prompt.final.fixed"];
+
+/// Quantas palavras seguidas fazem uma frase repetida.
+const REPEATED_RUN: usize = 6;
+
+/// As palavras de um trecho, em minúsculas, sem pontuação nem marcação.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
+}
+
+/// Uma instrução mora num lugar só: nenhuma frase dos textos do agente de
+/// onda e do revisor, em cada idioma, se repete na parte fixa de um pedido —
+/// nem seis palavras seguidas de uma frase delas. A parte fixa fica com o que
+/// o pedido é e o que devolver, e cada texto de agente segue no teto.
+#[test]
+fn the_fixed_part_of_a_request_repeats_no_sentence_of_the_agent_texts() {
+    for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let fixed: Vec<(&str, String)> =
+            FIXED_PARTS.iter().map(|key| (*key, format!(" {} ", words(translate(key, text)).join(" ")))).collect();
+        for name in ["wave", "review"] {
+            let agent = template(lang, name);
+            assert!(agent.len() <= AGENT_CAP, "the {lang} `{name}` agent is {} bytes", agent.len());
+            for sentence in agent.split(['.', ':', ';', '?', '!', '\n']) {
+                for run in words(sentence).windows(REPEATED_RUN) {
+                    let needle = format!(" {} ", run.join(" "));
+                    for (key, body) in &fixed {
+                        assert!(!body.contains(&needle), "{lang} {key} repeats `{}` from the `{name}` agent", needle.trim());
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Roda, pelo binário de verdade, a linha inteira que a resposta `report`

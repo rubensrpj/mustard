@@ -224,6 +224,18 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let forged = rt(root, &["write", "message", "--spec", "teste", "--json", &click.to_string()]).output().expect("run");
     assert_eq!(forged.status.code(), Some(1));
     assert_eq!(stdout_json(&forged)["reason"], json!("user-message-by-hook"));
+    // A fala digitada do usuário chega só pelo gancho da entrada: o `write`
+    // recusa gravá-la, revê-la e tirá-la.
+    for (event_type, body) in [
+        ("message", json!({"author": "user", "text": "pode seguir"})),
+        ("message", json!({"author": "user", "text": "outra fala", "replaces": msg})),
+        ("remove", json!({"targets": [msg], "reason": "engano"})),
+    ] {
+        let typed = rt(root, &["write", event_type, "--spec", "teste", "--json", &body.to_string()]).output().expect("run");
+        assert_eq!(typed.status.code(), Some(1), "{body}");
+        assert_eq!(stdout_json(&typed)["reason"], json!("user-message-by-hook"), "{body}");
+    }
+    assert_eq!(read(root, "conversation")["count"], json!(1));
     let fields = json!({"text": "t", "keys": ["k"], "origin": msg}).to_string();
     let missing = rt(root, &["write", "rule", "--spec", "teste", "--json", &fields]).output().expect("run");
     assert_eq!(missing.status.code(), Some(1));
