@@ -829,7 +829,7 @@ pub(crate) mod test_support {
 
     /// The canonical parsed remote every operation test stands on.
     pub(crate) fn remote() -> AzureRemote {
-        AzureRemote::parse("https://dev.azure.com/suzano/florestal/_git/portal")
+        AzureRemote::parse("https://dev.azure.com/contoso/vendas/_git/portal")
             .expect("a canonical https remote parses")
     }
 }
@@ -840,7 +840,7 @@ mod tests {
     use super::*;
     use crate::shared::branch_state::PrStatus;
 
-    /// T4 — the RFC 4648 vectors, plus the one composition the module exists
+    /// The RFC 4648 vectors, plus the one composition the module exists
     /// for: Basic auth of `:PAT`.
     #[test]
     fn base64_matches_the_rfc_vectors() {
@@ -866,7 +866,7 @@ mod tests {
         for url in [
             "https://github.com/org/repo.git",
             "git@gitlab.com:team/repo.git",
-            "https://dev.azure.com/suzano",
+            "https://dev.azure.com/contoso",
             "/local/path/no/remote",
             "",
         ] {
@@ -874,7 +874,7 @@ mod tests {
         }
     }
 
-    /// T3 — edit_body and ready are both one PATCH of the field that changes,
+    /// `edit_body` and `ready` are both one PATCH of the field that changes,
     /// addressed to the PR by number.
     #[test]
     fn edit_body_and_ready_patch_one_field_each() {
@@ -892,7 +892,7 @@ mod tests {
         assert_eq!(calls[1].body, Some(json!({ "isDraft": false })));
     }
 
-    /// T3 — view(None)'s shape: the current branch is asked for via
+    /// `view(None)`'s shape: the current branch is asked for via
     /// `searchCriteria.sourceRefName` with the FULL ref, the first row
     /// answers, and an empty answer is "no PR", distinct from a broken one.
     #[test]
@@ -939,7 +939,7 @@ mod tests {
         );
     }
 
-    /// T1 — the evidence reduction: merged beats open beats closed, an empty
+    /// The evidence reduction: merged beats open beats closed, an empty
     /// answer is a MEASURED absence, and only the completed rows contribute
     /// their frozen heads (`lastMergeSourceCommit.commitId`). Rows whose
     /// status word cannot be read are an unreadable answer, never an absence.
@@ -981,7 +981,7 @@ mod tests {
         );
     }
 
-    /// T1 — the evidence read asks the SAME search `do_view_branch` asks
+    /// The evidence read asks the SAME search `do_view_branch` asks
     /// (`searchCriteria.sourceRefName` + `status=all`), so a just-completed
     /// PR still answers — which is the read that authorises a prune.
     #[test]
@@ -1014,7 +1014,7 @@ mod tests {
         );
     }
 
-    /// T1 — the prefetch fetchers address the PR's own sub-resources and
+    /// The prefetch fetchers address the PR's own sub-resources and
     /// answer their `value` arrays; the raw PR document travels verbatim.
     #[test]
     fn prefetch_fetchers_address_the_pr_subresources() {
@@ -1036,8 +1036,6 @@ mod tests {
         assert_eq!(reviewers, vec![json!({ "vote": 10 })]);
     }
 
-    /// The checks read addresses the PR's own `statuses` sub-resource and
-    /// reduces the `GitStatusState` words: a pending pipeline is in flight, an
     /// A política da branch é perguntada ao Azure pela branch, e só conta a
     /// que está ligada E bloqueia.
     ///
@@ -1081,6 +1079,8 @@ mod tests {
         );
     }
 
+    /// The checks read addresses the PR's own `statuses` sub-resource and
+    /// reduces the `GitStatusState` words: a pending pipeline is in flight, an
     /// `error` is a failure like a `failed`, `notApplicable` cannot block, and
     /// a `notSet` is unreadable rather than guessed green. No status row at
     /// all is a MEASURED absence — an Azure project with no pipeline.

@@ -1,10 +1,10 @@
 //! The `run` subcommands for health checks and audits (`doctor/`).
 //!
-//! FOUR registrations per command. Two live in this file: the variant in
-//! [`DoctorCmd`] AND its arm in [`dispatch`] below; forgetting the arm still
-//! compiles, but the command vanishes from the CLI. The other two live in
-//! the tests: the name in `tests/run_command_surface.rs`, and a caller (or a
-//! justified `RUNTIME_WHITELIST` line) in `tests/template_parity.rs`.
+//! A new command takes its variant in [`DoctorCmd`] and its arm in
+//! [`dispatch`] below (the compiler demands the arm), its line in
+//! `tests/fixtures/run-surface.txt`, which `tests/run_command_surface.rs`
+//! compares with the clap tree, and a caller in the product text, which
+//! `tests/template_parity.rs` demands with no exception list.
 //!
 //! [`crate::commands::RunCmd`] hoists this enum with `#[command(flatten)]`, so
 //! every name stays FLAT: `mustard-rt run <name>`, never `run doctor <name>`.
@@ -30,17 +30,11 @@ pub enum DoctorCmd {
         /// Also scan for dead file/script references (slower).
         #[arg(long)]
         residue: bool,
-        /// Roda uma conferência sozinha. A lista é fechada: o parser recusa
-        /// um nome que não esteja nela, em vez de o comando responder um
-        /// relatório vazio que se lê como "está tudo certo".
-        #[arg(long, value_parser = [
-            "wave-integrity",
-            "branch-protection",
-            "spec-index",
-            "scan-output",
-            "switches",
-            "claude-md",
-        ])]
+        /// Roda uma conferência sozinha. Os nomes saem da lista das
+        /// conferências do diagnóstico: o parser recusa um nome que não esteja
+        /// nela, em vez de o comando responder um relatório vazio que se lê
+        /// como "está tudo certo".
+        #[arg(long, value_parser = doctor::doctor::check_parser())]
         check: Option<String>,
         /// O formato da saída. Lista fechada: `text` (padrão) ou `json`.
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]

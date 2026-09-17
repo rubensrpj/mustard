@@ -158,7 +158,7 @@ pub fn is_heading(line: &str, key: &str) -> bool {
 }
 
 /// The line index one-past-the-end of the `## ` section whose heading sits at
-/// `heading_idx`: the first `## ` H2 boundary strictly after the heading, or
+/// `heading_idx`: the first `## ` heading boundary strictly after the heading, or
 /// `lines.len()` when the section runs to EOF. So the body is
 /// `lines[heading_idx + 1 .. section_end(lines, heading_idx)]` and the block
 /// *including* the heading is `lines[heading_idx .. section_end(..)]`.
@@ -188,8 +188,8 @@ pub fn section_end(lines: &[&str], heading_idx: usize) -> usize {
 /// section verbatim from one document into another (e.g. the parent spec's
 /// `## Acceptance Criteria` into a generated `wave-plan.md`).
 ///
-/// Defensive pick among HOMONYMOUS sections: legacy drafts (binaries before
-/// TF 2026-06-10-ac-heading-unico) duplicated the AC heading — a placeholder
+/// Defensive pick among HOMONYMOUS sections: legacy drafts (from binaries
+/// older than the single AC heading key) duplicated the AC heading — a placeholder
 /// body first ("Ver abaixo."), the real list second — so "first heading wins"
 /// returned the placeholder to every reader (qa-run, analyze-validation,
 /// wave-scaffold's AC carry). Among duplicates, the first block carrying a
@@ -335,7 +335,7 @@ mod tests {
             None,
         );
         assert_eq!(canonical_key("## Why now"), None);
-        // E o que nem é H2 nunca resolve.
+        // E o que nem é título `##` nunca resolve.
         assert_eq!(canonical_key("### Files"), None);
         assert_eq!(canonical_key("Files"), None);
     }

@@ -17,7 +17,7 @@ use std::process::Command;
 use serde_json::Value;
 
 #[test]
-fn ac6_upsert_is_private_unconditionally_and_offers_no_switch() {
+fn upsert_is_private_unconditionally_and_offers_no_switch() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);

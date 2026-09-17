@@ -125,12 +125,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              message with that text. Nothing was written."
         }
         ("spec_events.survey_open", Locale::PtBr) => {
-            "A spec {spec} ainda tem {count} pontos abertos no levantamento: {points}. Feche cada um, \
+            "A spec {spec} ainda tem pontos abertos no levantamento ({count}): {points}. Feche cada um, \
              com a resposta ou com \"não se aplica\" e o motivo, antes de passar para o plano. Nada \
              foi gravado."
         }
         ("spec_events.survey_open", Locale::EnUs) => {
-            "Spec {spec} still has {count} open survey points: {points}. Close each one, with the \
+            "Spec {spec} still has open survey points ({count}): {points}. Close each one, with the \
              answer or with \"not applicable\" and the reason, before moving on to the plan. Nothing \
              was written."
         }
@@ -318,15 +318,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.binary_only_type", Locale::PtBr) => {
             "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
-             ele, e nada foi gravado: o binário grava a execução dos critérios quando roda o QA, o \
-             veredito quando registra a revisão, o envio, o que cada onda entregou e o commit \
-             pela rodada, e a resposta do assistente no fim de cada resposta."
+             ele, e nada foi gravado: o binário grava a execução dos critérios no fechamento, o \
+             veredito, o envio, o que cada onda entregou e o commit pela rodada, e a resposta do \
+             assistente no fim de cada resposta."
         }
         ("spec_events.binary_only_type", Locale::EnUs) => {
             "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
-             and nothing was written: the binary writes the criteria runs when it runs the QA, the \
-             verdict when it records the review, the send, what each wave delivered and the \
-             commit through the round, and the assistant's response at the end of each answer."
+             and nothing was written: the binary writes the criteria runs at the close, the \
+             verdict, the send, what each wave delivered and the commit through the round, and the \
+             assistant's response at the end of each answer."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
             "Na spec {spec}, a resposta a uma pergunta com opções (a mensagem com `witness`, de \
@@ -498,7 +498,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             69,
-            0x4a31_5043_bb56_4824,
+            0x5f4e_b517_6dce_e2d0,
         );
     }
 

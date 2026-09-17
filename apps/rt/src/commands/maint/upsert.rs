@@ -566,7 +566,7 @@ mod tests {
         );
     }
 
-    /// AC-1 — a refresh that ran carries BOTH halves of the answer: the version
+    /// A refresh that ran carries BOTH halves of the answer: the version
     /// the registry now records, and the sentence saying this session is still
     /// on the one it loaded. Naming the version without the restart would read
     /// as a promise the host does not keep.
@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(refused.version, None, "…and cannot name a resulting version");
     }
 
-    /// AC-2 — an absent or refusing `claude` leaves the upsert successful and
+    /// An absent or refusing `claude` leaves the upsert successful and
     /// the report explaining itself. Two shapes of unavailable are covered: the
     /// binary that could not be spawned, and a registry that names no install.
     #[test]

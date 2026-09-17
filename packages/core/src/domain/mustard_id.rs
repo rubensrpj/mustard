@@ -6,8 +6,8 @@
 //! código só tem letras, números e hífen, então ele mesmo serve de endereço do
 //! item na página.
 //!
-//! Só esse formato é código. Um texto qualquer com letra e número ("R2 da
-//! Cloudflare", "S3", "A4") fica como está: não vira link e não é apontado
+//! Só esse formato é código. Um texto qualquer com letra e número
+//! ("R2 da Cloudflare", "S3", "A4") fica como está: não vira link e não é apontado
 //! pela conferência do fim da resposta.
 
 /// O começo de todo código.

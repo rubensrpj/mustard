@@ -7,7 +7,7 @@
 //! dependency order the code itself defines?
 //!
 //! Layering is derived, not named: condense cycles into a DAG, then take each
-//! module's longest dependency chain as its depth (L0 = most depended-upon /
+//! module's longest dependency chain as its depth (`L0` = most depended-upon /
 //! innermost). The only direction-violation topology can prove without a
 //! hardcoded layer vocabulary is a dependency cycle, so that is what we count.
 //!
@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// monorepo. Bounded: ~a few KB of model.
 const TOP_DEGREE_CAP: usize = 64;
 
-/// Longest dependency chain below an SCC = its emergent depth (L0 = innermost).
+/// Longest dependency chain below an SCC = its emergent depth (`L0` = innermost).
 fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> usize {
     if let Some(d) = memo[c] {
         return d;

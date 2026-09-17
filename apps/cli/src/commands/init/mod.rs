@@ -531,7 +531,8 @@ mod tests {
         assert!(!dry.join(".claude").exists(), "dry-run wrote nothing");
     }
 
-    /// Regression guard for the `.claude/.claude/` nesting bug (I1 rule): even
+    /// Regression guard for the `.claude/.claude/` nesting bug (the project root
+    /// is never a `.claude` folder): even
     /// if `templates/` carries a stray `.claude/` sub-directory, the thin init —
     /// whose harness seeds are compiled-in constants, not directory copies —
     /// must never propagate it.

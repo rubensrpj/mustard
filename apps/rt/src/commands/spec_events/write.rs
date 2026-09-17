@@ -133,10 +133,10 @@ use serde_json::{json, Map, Value};
 use super::pages::SpecPages;
 use crate::shared::spec_state::DiskSpecState;
 
-/// Os tipos que só o binário grava: a execução de um critério, quando ele
-/// roda o QA; o veredito, quando ele registra a revisão; o envio do pedido de
-/// uma onda, o que ela entregou e o commit, que só a rodada grava; e a
-/// resposta do assistente, que o despachante grava no fim de cada resposta.
+/// Os tipos que só o binário grava: a execução de um critério, que o
+/// fechamento grava ao rodar a prova; o veredito, o envio do pedido de uma
+/// onda, o que ela entregou e o commit, que só a rodada grava; e a resposta do
+/// assistente, que o despachante grava no fim de cada resposta.
 /// O `run write` não os grava, nem tira ou revê um deles.
 const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send", "delivered", "commit", "response"];
 
@@ -795,7 +795,7 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
     // A branch é a dita, ou a do checkout em `start` quando ela é a da spec.
     let branch = branch.map(str::to_string).or_else(|| branch_of_spec(start, spec));
     if let Some(log) = born {
-        return complete_missing(start, spec, &log, branch, None);
+        return complete_missing(start, spec, &log, branch);
     }
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!("plan"));
@@ -822,26 +822,18 @@ pub(crate) fn record_open(start: &Path, spec: &str, branch: &str, base: &str) ->
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
 }
 
-/// Completa a branch e a base que faltam no estado de uma spec que já nasceu,
-/// revendo o `state` do nascimento com os campos dele e o que faltava: a
-/// revisão entra no lugar do nascimento na dobra, e a fase de agora não muda.
-/// Nada é trocado: só o que falta entra. `Ok(false)` quando não falta nada que
-/// se saiba.
-fn complete_missing(
-    start: &Path,
-    spec: &str,
-    log: &SpecLog,
-    branch: Option<String>,
-    base: Option<String>,
-) -> Result<bool, Refusal> {
+/// Completa a branch que falta no estado de uma spec que já nasceu, revendo o
+/// `state` do nascimento com os campos dele e a branch: a revisão entra no
+/// lugar do nascimento na dobra, e a fase de agora não muda. Nada é trocado:
+/// só o que falta entra. `Ok(false)` quando a branch já está gravada ou não se
+/// sabe.
+fn complete_missing(start: &Path, spec: &str, log: &SpecLog, branch: Option<String>) -> Result<bool, Refusal> {
     /// Os campos que o binário carimba e que uma revisão não traz.
     const STAMPED: &[&str] = &["v", "id", "code", "at", "type", "search", "replaces", "author"];
     let state = State::from_log(log);
-    let branch = branch.filter(|_| state.branch.is_none());
-    let base = base.filter(|_| state.base.is_none());
-    if branch.is_none() && base.is_none() {
+    let Some(branch) = branch.filter(|_| state.branch.is_none()) else {
         return Ok(false);
-    }
+    };
     let Some(birth) = birth_event(log) else {
         return Ok(false);
     };
@@ -853,12 +845,7 @@ fn complete_missing(
         .collect();
     draft.insert("replaces".to_string(), json!(birth.id));
     draft.insert("author".to_string(), json!("binary"));
-    if let Some(branch) = branch {
-        draft.insert("branch".to_string(), json!(branch));
-    }
-    if let Some(base) = base {
-        draft.insert("base".to_string(), json!(base));
-    }
+    draft.insert("branch".to_string(), json!(branch));
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
 }
 
@@ -2537,13 +2524,13 @@ mod tests {
         let refusal = to_plan(root).err().expect("an open point holds the survey");
         assert_eq!(refusal.reason(), "survey-open");
         let shown = refusal.message(Locale::PtBr);
-        assert!(shown.contains("4 pontos abertos"), "{shown}");
+        assert!(shown.contains("pontos abertos no levantamento (4)"), "{shown}");
         for point in &points[1..] {
             let listed = format!("{} ({}): {}", point.code, point.id, point.gap);
             assert!(shown.contains(&listed), "{shown}");
         }
         assert!(!shown.contains(&points[0].code), "the closed point is not listed: {shown}");
-        assert!(refusal.message(Locale::EnUs).contains("4 open survey points"));
+        assert!(refusal.message(Locale::EnUs).contains("open survey points (4)"));
         assert_eq!(lines(root), before, "nothing was written");
         assert_eq!(DiskSpecState::new(root).state("teste").unwrap().phase, Some("survey"));
     }

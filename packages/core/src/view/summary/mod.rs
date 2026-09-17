@@ -221,7 +221,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&doc).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-        // AC-W1.3: version field must be numeric
+        // The version field must be numeric.
         assert_eq!(parsed["version"].as_u64(), Some(1));
         assert_eq!(parsed["spec"].as_str(), Some("2026-05-26-no-sqlite-git-source-of-truth"));
 

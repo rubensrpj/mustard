@@ -161,7 +161,6 @@ mod session;
 mod map;
 mod events;
 mod page;
-mod spec_doc;
 mod install;
 mod spec_text;
 
@@ -180,10 +179,9 @@ type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
 /// - `map` — o mapa do projeto;
 /// - `events` — o arquivo de eventos da spec;
 /// - `page` — as páginas;
-/// - `spec_doc` — o antigo resumo da spec em HTML;
 /// - `install` — o diagnóstico da instalação;
 /// - `spec_text` — o texto da spec em markdown.
-const PARTS: [Part; 12] = [
+const PARTS: [Part; 11] = [
     (flow::PREFIXES, flow::text),
     (survey::PREFIXES, survey::text),
     (prompt::PREFIXES, prompt::text),
@@ -193,7 +191,6 @@ const PARTS: [Part; 12] = [
     (map::PREFIXES, map::text),
     (events::PREFIXES, events::text),
     (page::PREFIXES, page::text),
-    (spec_doc::PREFIXES, spec_doc::text),
     (install::PREFIXES, install::text),
     (spec_text::PREFIXES, spec_text::text),
 ];

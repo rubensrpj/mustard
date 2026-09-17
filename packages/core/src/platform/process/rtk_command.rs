@@ -2,9 +2,8 @@
 //!
 //! The operator's global Golden Rule says **"ALWAYS prefix Bash commands with
 //! `rtk`"**. The `bash_guard` hook enforces that at the Bash-tool boundary, but
-//! the `mustard-rt` binary itself also shells out (e.g. `git` in
-//! `run/diff_context.rs`) and those subprocess calls must follow the same
-//! rule. This helper builds a [`std::process::Command`] whose head program is
+//! the `mustard-rt` binary itself also shells out (e.g. `git`) and those
+//! subprocess calls must follow the same rule. This helper builds a [`std::process::Command`] whose head program is
 //! always `rtk`, with the original program name passed as the first argument
 //! so RTK can apply its filter (or pass through unchanged).
 //!

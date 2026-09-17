@@ -37,10 +37,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("heading.spec.non_goals", Locale::PtBr) => "Não-Objetivos",
         ("heading.spec.non_goals", Locale::EnUs) => "Non-Goals",
         // Single AC heading key. The legacy `heading.spec.ac_list` twin (byte-
-        // identical strings) was collapsed into this one (TF 2026-06-10-ac-
-        // heading-unico): two keys for the same heading let the scaffold emit
-        // the AC section twice, shadowing the real list for every
-        // `section_block` reader.
+        // identical strings) was collapsed into this one: two keys for the
+        // same heading let the scaffold emit the AC section twice, shadowing
+        // the real list for every `section_block` reader.
         ("heading.spec.ac", Locale::PtBr) => "Critérios de Aceitação",
         ("heading.spec.ac", Locale::EnUs) => "Acceptance Criteria",
         ("heading.spec.tasks", Locale::PtBr) => "Tarefas",

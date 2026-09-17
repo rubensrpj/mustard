@@ -1,6 +1,9 @@
-//! `mustard-rt run qa-run` — a port of `scripts/qa-run.js`.
+//! The criteria runner. The `qa-run` command is gone; what stays alive here is
+//! [`run_proof`], which the close and the round call to run each criterion's
+//! proof, and the section reader the page uses. The rest below is the old
+//! command's engine, which nothing outside its own tests reaches any more.
 //!
-//! Executes the Acceptance Criteria defined in a spec file: locates the spec,
+//! The engine executes the Acceptance Criteria defined in a spec file: locates the spec,
 //! extracts the `## Acceptance Criteria` section, runs each AC command, and
 //! emits a `qa.result` harness event plus a `qa` metric.
 //!
@@ -146,7 +149,7 @@ pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
 ///    single line.
 /// 2. **Drafter multi-line** — the canonical shape the spec drafter emits:
 ///    ```text
-///    - **AC-1** — desc.
+///    - **`AC-1`** — desc.
 ///      Command: `cmd`
 ///    ```
 ///    no checkbox, an em-dash (`—`) id→desc separator, and `Command:` on the
@@ -313,8 +316,8 @@ pub(crate) fn parse_ac_header(line: &str) -> Option<(String, &str)> {
     let id = format!("AC-{}", &after_ac[..id_end]);
     let after_id = &after_ac[id_end..];
     // Accept `.`, `:`, the em-dash `—` (U+2014), or a plain `-`/`--` as the
-    // ID/description separator. The period form is canonical for the
-    // deep-refactor pipeline (`**AC-G1.** desc`); the colon form is the
+    // ID/description separator. The period form is canonical for the wave
+    // plans (`**AC-G1.** desc`); the colon form is the
     // historical shape (`AC-G1: desc`); the dash forms are what the spec
     // drafter emits (`- **AC-1** — desc`). The separator may sit BEFORE the
     // closing bold `**` (canonical: `**AC-G1.**`) or after it (`**AC-1** —`).
@@ -851,21 +854,9 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     QaResult { overall: overall.to_string(), criteria }
 }
 
-/// Dispatch `mustard-rt run qa-run`. The command has left the flow: it refuses
-/// at the door with exit 1, writes nothing and says to wait for the close. The
-/// engine below stays, because the new close reuses it.
-pub fn run(_spec: &str, _format: &str) {
-    crate::commands::retired::refuse(
-        Path::new(&project_dir()),
-        "wait-for-close",
-        "retired.wait_close",
-        &[("{command}", "qa-run")],
-    );
-}
-
-/// The door's old body — run every criterion and print the report. Kept, with
-/// what only it reaches, until the command leaves.
-// A porta recusa, e nada mais chama este corpo: ele espera o comando sair.
+/// The old command's body — run every criterion and print the report. Kept,
+/// with what only it reaches, until the engine leaves.
+// O comando saiu, e nada chama este corpo: ele espera o motor sair junto.
 #[allow(dead_code)]
 fn run_qa_cli(spec: &str, format: &str) {
     let cwd = std::env::current_dir()
@@ -952,7 +943,7 @@ mod tests {
         let c = parse_ac_line("- [ ] AC-TF-3: parser fix — Command: `true`").unwrap();
         assert_eq!(c.id, "AC-TF-3");
         assert_eq!(c.command, "true");
-        // Single-segment regression: AC-1 and AC-G1 must still work.
+        // Single-segment regression: `AC-1` and `AC-G1` must still work.
         let d = parse_ac_line("- [ ] AC-1: base — Command: `echo ok`").unwrap();
         assert_eq!(d.id, "AC-1");
         let e = parse_ac_line("- [ ] AC-G1: global — Command: `echo ok`").unwrap();
@@ -1057,7 +1048,7 @@ mod tests {
   Command: `cargo test`
 ";
         let items = parse_ac_items(section);
-        // AC-1 has no command → dropped; AC-2 keeps its own command.
+        // `AC-1` has no command → dropped; `AC-2` keeps its own command.
         assert_eq!(items.len(), 1, "only AC-2 has a command");
         assert_eq!(items[0].id, "AC-2");
         assert_eq!(items[0].command, "cargo test");

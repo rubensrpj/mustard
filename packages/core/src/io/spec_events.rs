@@ -513,7 +513,7 @@ mod tests {
         add("publish", "publish", "09:11", json!({"page": "spec", "milestone": "approval", "ok": true, "url": "https://example.com/p"}));
         add("call", "call", "09:12", json!({"author": "binary", "command": "round", "ms": 41, "result": "ok"}));
         add("hook", "hook", "09:13", json!({"author": "hook", "hook": "command_guard", "action": "block", "tool": "Bash", "reason": "rm -rf apaga trabalho."}));
-        add("response", "response", "09:14", json!({"text": "Tirei a atualização dos projetos da Suzano.", "reply_to": msg}));
+        add("response", "response", "09:14", json!({"text": "Tirei a atualização dos projetos da Contoso.", "reply_to": msg}));
         add("approved", "state", "09:15", json!({"author": "binary", "phase": "approved", "witness": {"question": "Aprovar esta spec?", "answer": "Aprovar"}}));
         let secret = add("secret", "message", "21:04", json!({"author": "user", "text": "a senha é hunter2-segredo"}));
         add("pasted", "message", "21:08", json!({"author": "user", "text": "colado por engano"}));
@@ -618,7 +618,7 @@ mod tests {
         for event in log.step(&Step::Dispatch { wave: 2 }) {
             assert_ne!(event.block(), Some(Block::Conversation), "{}", event.shown());
         }
-        assert_eq!(got(Step::Question { term: "Suzano".into() }), spec.ids(&["response"]));
+        assert_eq!(got(Step::Question { term: "Contoso".into() }), spec.ids(&["response"]));
     }
 
     #[test]
@@ -842,11 +842,10 @@ mod tests {
         assert_eq!(plan("src/real.rs:2", "quem lê é `ler_linha`"), Vec::new());
     }
 
-    /// A mesma fonte pela gravação de um ponto, a porta antiga, e pela
-    /// conferência única que o plano chama: as duas acham os mesmos
-    /// problemas.
+    /// A gravação de um ponto recusa cada fonte pelo problema que a conferência
+    /// única das citações acha nela, e passa a fonte em que ela não acha nada.
     #[test]
-    fn the_old_and_the_shared_citation_check_find_the_same_problems() {
+    fn the_point_write_refuses_what_the_shared_citation_check_finds() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("src")).unwrap();

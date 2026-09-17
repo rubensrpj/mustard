@@ -229,6 +229,26 @@ pub const COMMON_WORDS_EN: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Linhas de código
+// ---------------------------------------------------------------------------
+
+/// O teto de linhas de código de um arquivo de produção que fica.
+pub const CODE_LINE_CAP: usize = 800;
+
+/// As linhas de código de um arquivo Rust: as que não são vazias nem
+/// comentário, antes do módulo de testes dele. É a medida do teto de
+/// [`CODE_LINE_CAP`].
+#[must_use]
+pub fn code_lines(source: &str) -> usize {
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    let end = lines
+        .windows(2)
+        .position(|pair| pair[0] == "#[cfg(test)]" && pair[1] == "mod tests {")
+        .unwrap_or(lines.len());
+    lines[..end].iter().filter(|line| !line.is_empty() && !line.starts_with("//")).count()
+}
+
+// ---------------------------------------------------------------------------
 // Testes
 // ---------------------------------------------------------------------------
 

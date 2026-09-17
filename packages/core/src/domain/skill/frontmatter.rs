@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_canonical_t1_3_schema() {
+    fn parses_the_canonical_skill_schema() {
         let raw = r"---
 name: my-skill
 description: Use when the user wants to do something that needs at least fifty characters.

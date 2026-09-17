@@ -25,10 +25,9 @@
 //!   SAME skill shelf the implementer was dispatched with — so "reviewed
 //!   against the project patterns" means the very molds the work was written
 //!   to, never a second list that can drift. `--verdict` no longer records
-//!   anything: it refuses at the door and says to wait for the round, which
-//!   will record each wave's verdict in the spec file. The merge step reads
-//!   the verdicts of the spec's `spec.ndjson`, one per wave — and until the
-//!   round arrives nothing writes one.
+//!   anything: it refuses at the door and says the round records each wave's
+//!   verdict in the spec file. The merge step reads those verdicts from the
+//!   spec's `spec.ndjson`, one per wave.
 //!
 //! ## The spec is read out of the PR's OWN branch
 //!
@@ -490,9 +489,8 @@ pub(crate) struct PrReviewReport {
 /// The door refuses `--verdict` before it gets here, so nothing is recorded
 /// in this version. Kept as it was: recording goes through
 /// [`review_result::record_review`] — the same path the `review-result` CLI
-/// takes, into the old log. `pr-merge`
-/// reads the per-wave verdicts of the spec's `spec.ndjson`, which the round
-/// will write.
+/// takes, into the old log. `pr-merge` reads the per-wave verdicts of the
+/// spec's `spec.ndjson`, which the round writes.
 #[must_use]
 fn review_brief(
     root: &Path,

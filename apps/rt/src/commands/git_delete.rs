@@ -1,4 +1,5 @@
-//! `mustard-rt run git-delete` — the CANCEL path of an ABANDONED work unit.
+//! The CANCEL path of an ABANDONED work unit, which the discard
+//! (`mustard-rt run discard`) walks.
 //!
 //! [`crate::commands::git_settle`] retires a unit that WAS delivered, and its
 //! central invariant is a hard merge gate: 100% merged or nothing is touched.
@@ -91,17 +92,13 @@ fn close_open_pr(root: &Path, branch: &str) -> (Option<u64>, bool, Option<String
     }
 }
 
-/// The delete pass — the testable core of [`run`]. `unit` is the work branch to
-/// remove; the checkout `start` stands on must be an integration base. Never
-/// panics, and every refusal touches nothing.
-#[must_use]
-pub(crate) fn delete_at(start: &Path, unit: &str) -> Value {
-    delete_with(start, unit, true)
-}
-
-/// [`delete_at`] com a escolha de apagar, ou não, a branch do servidor. A do
-/// servidor é de todo mundo: a porta que descarta uma spec só a apaga quando
-/// quem chamou pediu, e num time que não deixa apagar branch ela fica.
+/// The delete pass. `unit` is the work branch to remove; the checkout `start`
+/// stands on must be an integration base. Never panics, and every refusal
+/// touches nothing.
+///
+/// `remote` escolhe se a branch do servidor também sai. A do servidor é de
+/// todo mundo: a porta que descarta uma spec só a apaga quando quem chamou
+/// pediu, e num time que não deixa apagar branch ela fica.
 pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     let Some(main) = main_checkout_root(start) else {
         return json!({
@@ -149,11 +146,11 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
             .or_else(|| mustard_core::default_branch(&main));
         let hint = match &target {
             Some(base) => format!(
-                "`git delete` retires a unit from the OUTSIDE — switch to `{base}` \
+                "a unit is deleted from the OUTSIDE — switch to `{base}` \
                  (`git checkout {base}`) and run it again; nothing was touched"
             ),
-            None => "`git delete` retires a unit from the OUTSIDE — switch to the branch this \
-                     unit integrates into and run it again; nothing was touched"
+            None => "a unit is deleted from the OUTSIDE — switch to the branch this unit \
+                     integrates into and run it again; nothing was touched"
                 .to_string(),
         };
         return json!({
@@ -227,8 +224,8 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
             "unit": unit,
             "bases": bases,
             "protected": protected.iter().collect::<Vec<_>>(),
-            "hint": "`git delete` retires a WORK UNIT, and this project holds no unit record \
-                     for that name (or it is protected) — nothing was touched",
+            "hint": "only a WORK UNIT is deleted, and this project holds no unit record for \
+                     that name (or it is protected) — nothing was touched",
         });
     }
 
@@ -275,15 +272,10 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     if !local_clear {
         report["hint"] = json!(
             "the local branch is still there — a worktree still has it checked out; \
-             remove that checkout and run `git delete` again"
+             remove that checkout and run it again"
         );
     }
     report
-}
-
-/// Run `git-delete` from `root` and print the JSON report.
-pub fn run(root: &Path, unit: &str) {
-    println!("{}", serde_json::to_string_pretty(&delete_at(root, unit)).unwrap_or_else(|_| "{}".into()));
 }
 
 #[cfg(test)]
@@ -291,6 +283,11 @@ mod tests {
     use super::*;
     use mustard_core::platform::git as git_exec;
     use tempfile::tempdir;
+
+    /// A porta inteira, com a branch do servidor.
+    fn delete_at(start: &Path, unit: &str) -> Value {
+        delete_with(start, unit, true)
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let out = git_exec::run(dir, args);
@@ -325,7 +322,7 @@ mod tests {
         git_ok(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
     }
 
-    /// AC-6 — invoked from a work branch, `git delete` REFUSES, names the base
+    /// Invoked from a work branch, `git delete` REFUSES, names the base
     /// to switch to and touches nothing.
     #[test]
     fn git_delete_refuses_off_an_integration_base_and_touches_nothing() {
@@ -352,7 +349,7 @@ mod tests {
         assert!(!branch_exists(root, "dev_abandoned"), "the unit was retired from it");
     }
 
-    /// AC-3 — a declared integration base whose NAME carries a slash
+    /// A declared integration base whose NAME carries a slash
     /// (`release/2026-Q3`) parses into a first segment that reads as a kind and
     /// a second that reads as a slug, exactly like `feature/aba` does. So the
     /// project's own release line answered "somebody's work unit", and both

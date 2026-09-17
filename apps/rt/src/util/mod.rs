@@ -2,12 +2,11 @@
 //!
 //! ## Why a `util` module inside `mustard-rt`
 //!
-//! Through Waves 1-4 each module carried its own verbatim copy of
-//! `now_iso8601` (8 copies) and `format_gate_message` (6 copies) — the spec
-//! Concern "`now_iso8601` / `format_gate_message` duplication". The ideal home
-//! is a `mustard-core` helper, but b2 (`mustard-core`) is out of bounds for
-//! b3. This module is the in-bounds resolution: one copy inside the binary
-//! crate, shared by every hook module. It is `mustard-rt`-local — it does not
+//! Before this module, each hook module carried its own verbatim copy of
+//! `now_iso8601` (8 copies) and `format_gate_message` (6 copies). The ideal
+//! home is a `mustard-core` helper, but the core crate was out of reach when
+//! the copies were joined. This module is that resolution: one copy inside
+//! the binary crate, shared by every hook module. It is `mustard-rt`-local — it does not
 //! touch `mustard-core`.
 
 pub(crate) mod glob;

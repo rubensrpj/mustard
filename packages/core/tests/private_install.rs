@@ -18,18 +18,18 @@
 //! would pass in an ordinary repository while the mechanism it guards was
 //! silently writing nowhere in the two shapes that matter most.
 //!
-//! ## The four criteria
+//! ## What is proven
 //!
-//! - AC-1 — the rules land in the clone-local exclude file, idempotently.
-//! - AC-2 — the settings land on the untracked local layer, and the shared
+//! - The rules land in the clone-local exclude file, idempotently.
+//! - The settings land on the untracked local layer, and the shared
 //!   settings file is never created.
-//! - AC-3 — a footprint path the host ALREADY tracks is named as residue, and
+//! - A footprint path the host ALREADY tracks is named as residue, and
 //!   nothing is unlinked.
-//! - AC-4 — the regression guard: a shared install writes the same paths and
+//! - The regression guard: a shared install writes the same paths and
 //!   the same bytes it wrote before the mode existed.
 
 #[cfg(unix)]
-// Unix-only: the AC-11 fixture seals a directory with mode 0o555, an API and a
+// Unix-only: the refusal fixture seals a directory with mode 0o555, an API and a
 // semantic Windows does not have (an NTFS read-only directory still accepts new
 // files, so the same seal would refuse nothing there).
 #[cfg(unix)]
@@ -41,11 +41,11 @@ use mustard_core::platform::i18n::Locale;
 use mustard_core::{footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED};
 
 // ---------------------------------------------------------------------------
-// AC-1 — the clone-local exclude file
+// The clone-local exclude file
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac1_private_upsert_writes_clone_local_exclude() {
+fn private_upsert_writes_clone_local_exclude() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -102,11 +102,11 @@ fn ac1_private_upsert_writes_clone_local_exclude() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-2 — the local settings layer
+// The local settings layer
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac2_private_upsert_seeds_local_settings() {
+fn private_upsert_seeds_local_settings() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -139,11 +139,11 @@ fn ac2_private_upsert_seeds_local_settings() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-3 — already-tracked residue
+// Already-tracked residue
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac3_already_tracked_paths_are_reported_not_unlinked() {
+fn already_tracked_paths_are_reported_not_unlinked() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -177,11 +177,11 @@ fn ac3_already_tracked_paths_are_reported_not_unlinked() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-4 — the regression guard
+// The regression guard
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac4_shared_install_is_byte_identical_to_today() {
+fn shared_install_is_byte_identical_to_today() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -252,7 +252,7 @@ fn ac4_shared_install_is_byte_identical_to_today() {
 }
 
 // ---------------------------------------------------------------------------
-// AC-11 — the one failure that must not be narrated away
+// The one failure that must not be narrated away
 // ---------------------------------------------------------------------------
 
 /// A private install that cannot hide REFUSES, and writes nothing.
@@ -278,7 +278,7 @@ fn ac4_shared_install_is_byte_identical_to_today() {
 /// seal — the test runs as an ordinary user, which CI is.)
 #[test]
 #[cfg(unix)]
-fn ac11_private_install_refuses_when_it_cannot_hide() {
+fn private_install_refuses_when_it_cannot_hide() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
     init_repo(root);
@@ -426,7 +426,7 @@ fn git_out(root: &Path, args: &[&str]) -> String {
 }
 
 /// `Some(contents)` when the file exists and is readable, `None` when it is
-/// absent — the distinction AC-4 needs to say "the exclude file was not
+/// absent — the distinction the regression guard needs to say "the exclude file was not
 /// touched" whether or not one existed.
 fn read(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()

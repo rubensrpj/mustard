@@ -1112,7 +1112,7 @@ mod tests {
         }
     }
 
-    /// AC-1 — the enumerator returns BOTH families (local heads and refs that
+    /// The enumerator returns BOTH families (local heads and refs that
     /// exist only on a remote), filtered by base prefix, and a ref with no `_`
     /// after the prefix — an integration base, `HEAD`, a stray name — never
     /// enters. One sweep, both halves: each of the two sweeps this module
@@ -1241,7 +1241,7 @@ refs/tags/v1.0_dev aaa7
         assert!(!names.contains(&"dev_gone"));
     }
 
-    /// AC-4 — `gone` (sem remoto) sozinho NUNCA autoriza deleção. Uma branch
+    /// `gone` (sem remoto) sozinho NUNCA autoriza deleção. Uma branch
     /// apagada sem merge e uma mergeada cujo remoto foi apagado sozinho são
     /// idênticas vistas do lado local; só o merge VERIFICADO as separa.
     #[test]
@@ -1290,7 +1290,7 @@ refs/tags/v1.0_dev aaa7
         units.iter().map(|u| u.branch.clone()).collect()
     }
 
-    /// AC-5 — um CLI de provedor ausente ou não autenticado responde
+    /// Um CLI de provedor ausente ou não autenticado responde
     /// DESCONHECIDO com um motivo, nunca "não tem pull request". As duas
     /// metades: a pergunta se recusa a inventar o que não mediu, e a
     /// classificação se recusa a transformar essa não-resposta no veredicto
@@ -1508,7 +1508,7 @@ refs/tags/v1.0_dev aaa7
         assert_eq!(landed.state, UnitState::AwaitingPrune, "{landed:?}");
     }
 
-    /// AC-6 — a fase de leitura é estruturalmente incapaz de apagar uma branch.
+    /// A fase de leitura é estruturalmente incapaz de apagar uma branch.
     ///
     /// Lido como as provas de prosa: as DUAS metades, para a asserção poder
     /// falhar de verdade. Metade um — o código deste módulo não nomeia nenhum
@@ -1558,7 +1558,7 @@ refs/tags/v1.0_dev aaa7
         }
     }
 
-    /// AC-11 — uma branch de trabalho SEM commit próprio nunca é oferecida para
+    /// Uma branch de trabalho SEM commit próprio nunca é oferecida para
     /// poda.
     ///
     /// O portão abre toda unidade com `checkout -b <unidade> <base>` e mais
@@ -1608,7 +1608,7 @@ refs/tags/v1.0_dev aaa7
         assert_eq!(names, vec!["dev_fresh"], "a unit that delivered commits IS owed its prune");
     }
 
-    /// AC-12 — uma unidade cujo merge está verificado, cuja ref local já sumiu
+    /// Uma unidade cujo merge está verificado, cuja ref local já sumiu
     /// e cuja branch REMOTA continua viva deve uma poda (a do remoto), em vez
     /// de ser arquivada como "só no servidor".
     ///

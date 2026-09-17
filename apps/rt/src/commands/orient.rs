@@ -146,7 +146,8 @@ pub fn compute_orientation(root: &Path) -> Orientation {
             role,
         })
         .collect();
-    // Byte-stable order: by layer (L0→L1→L2), then biggest first, then name.
+    // Byte-stable order: by layer (`L0`, then `L1`, then `L2`), then biggest
+    // first, then name.
     terrain.sort_by(|a, b| {
         a.role
             .cmp(&b.role)
@@ -273,7 +274,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// A compact, fully-controlled grain model: two architectural subprojects
-    /// (one L1 `rt`, one L0 `web`) plus a nested unit and a fixture the skeleton
+    /// (`rt` on layer `L1`, `web` on `L0`) plus a nested unit and a fixture the skeleton
     /// join must drop.
     const FIXTURE: &str = r#"{
       "projects": [

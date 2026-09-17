@@ -91,7 +91,7 @@ pub const PURGED_MARK: &str = "…";
 /// chamam por este caminho e a medida das linhas de cada parte.
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use serde_json::{json, Map, Value};
 
@@ -229,38 +229,11 @@ mod tests {
         assert_eq!(file_citation("README:10"), None);
     }
 
-    /// As linhas de código de um arquivo: as que não são vazias nem
-    /// comentário, antes do módulo de testes dele.
-    fn code_lines(source: &str) -> usize {
-        let lines: Vec<&str> = source.lines().map(str::trim).collect();
-        let end = lines
-            .windows(2)
-            .position(|pair| pair[0] == "#[cfg(test)]" && pair[1] == "mod tests {")
-            .unwrap_or(lines.len());
-        lines[..end].iter().filter(|line| !line.is_empty() && !line.starts_with("//")).count()
-    }
-
-    /// Nenhum arquivo do núcleo dos eventos passa de 800 linhas de código: a
-    /// porta e cada parte da pasta dela, contadas sem as linhas vazias, os
-    /// comentários e o módulo de testes.
+    /// Nenhum arquivo do núcleo dos eventos passa do teto de linhas de
+    /// código: a porta e cada parte da pasta dela, pela medida única.
     #[test]
     fn no_file_of_the_spec_events_goes_over_the_code_line_cap() {
-        const CAP: usize = 800;
-        let domain = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("domain");
-        let mut parts: Vec<PathBuf> = std::fs::read_dir(domain.join("spec_events"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-            .collect();
-        parts.sort();
-        let files: Vec<PathBuf> = std::iter::once(domain.join("spec_events.rs")).chain(parts).collect();
-        let measured: Vec<(String, usize)> = files
-            .iter()
-            .map(|path| (path.display().to_string(), code_lines(&std::fs::read_to_string(path).unwrap())))
-            .collect();
-        let over: Vec<&(String, usize)> = measured.iter().filter(|(_, lines)| *lines > CAP).collect();
-        assert!(over.is_empty(), "passam de {CAP} linhas de código: {over:?}");
+        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("domain").join("spec_events.rs");
+        assert_eq!(crate::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

@@ -1,4 +1,4 @@
-//! AC-7 of `private-install-mode-leaving-no`: `mustard init --private` installs
+//! `mustard init --private` installs
 //! privately and seeds no `.github/` pull-request template into the host
 //! repository.
 //!
@@ -159,10 +159,10 @@ fn exclude_body(project: &Path) -> String {
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
-/// AC-7 — `mustard init --private` installs privately and seeds no `.github/`
+/// `mustard init --private` installs privately and seeds no `.github/`
 /// pull-request template into the host repository.
 #[test]
-fn ac7_init_private_seeds_no_github_template() {
+fn init_private_seeds_no_github_template() {
     let work = tempdir().expect("temp dir");
     let templates = fake_templates(work.path());
     let shims = tool_shims(work.path());

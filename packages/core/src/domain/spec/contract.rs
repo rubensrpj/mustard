@@ -1,4 +1,4 @@
-//! Byte-stable spec layout contract (Wave 1 of `2026-05-25-mustard-deep-refactor`).
+//! Byte-stable spec layout contract.
 //!
 //! ## What this is
 //!
@@ -66,7 +66,7 @@ pub const PLAN_SECTIONS: &[&str] = &["files", "tasks", "boundaries"];
 
 /// Canonical heading text of the trackable checklist section. The auto-mark
 /// hook, `mark-checklist-item`, and the close-gate checklist check all key off
-/// a literal `## Checklist` H2 (EN-only, language-agnostic) — so the section is
+/// a literal `## Checklist` heading (EN-only, language-agnostic) — so the section is
 /// emitted under this exact heading regardless of the spec narrative locale.
 pub const CHECKLIST_HEADING: &str = "Checklist";
 
@@ -450,9 +450,7 @@ pub struct SpecInput {
     /// (`spec_draft`) already work in BCP-47 strings; the
     /// validator routes the value through [`UserLocale::new`] so any
     /// short-form / malformed input is surfaced as
-    /// [`ContractViolation::InvalidLang`]. W7 promotes this to
-    /// `Option<UserLocale>` once the rt callsites are swept onto the new
-    /// types.
+    /// [`ContractViolation::InvalidLang`].
     #[serde(default)]
     pub lang: Option<String>,
     /// Number of waves under this spec; required when scope = Full.

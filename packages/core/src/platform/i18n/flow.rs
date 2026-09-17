@@ -466,8 +466,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
-        ("approve_spec.open_points", Locale::PtBr) => "{count} pontos do levantamento ainda abertos: {points}",
-        ("approve_spec.open_points", Locale::EnUs) => "{count} survey points still open: {points}",
+        ("approve_spec.open_points", Locale::PtBr) => "Pontos do levantamento ainda abertos ({count}): {points}",
+        ("approve_spec.open_points", Locale::EnUs) => "Survey points still open ({count}): {points}",
         ("open.choose_kind", Locale::PtBr) => {
             "Falta o tipo. Pergunte ao usuário o tipo da branch, como feature ou fix. Nada foi criado."
         }
@@ -619,24 +619,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              {pending}, so the merge will not close it by itself. Call open again with the same \
              arguments to record the note."
         }
-        ("retired.wait_close", Locale::PtBr) => {
-            "O `{command}` não grava mais na spec. Os critérios vão rodar, e a spec vai fechar, pelo \
-             `mustard-rt run close`, que ainda não existe nesta versão. Nada foi gravado."
-        }
-        ("retired.wait_close", Locale::EnUs) => {
-            "`{command}` no longer writes to the spec. The criteria will run, and the spec will \
-             close, through `mustard-rt run close`, which does not exist in this version yet. \
-             Nothing was written."
-        }
         ("retired.wait_round", Locale::PtBr) => {
-            "O `{command}` não grava mais o veredito na spec. O veredito de cada onda vai ser \
-             gravado pelo `mustard-rt run round`, que ainda não existe nesta versão. Nada foi \
-             gravado."
+            "O `{command}` não grava mais o veredito na spec: o veredito de cada onda é gravado \
+             pelo `mustard-rt run round`. Nada foi gravado."
         }
         ("retired.wait_round", Locale::EnUs) => {
-            "`{command}` no longer records the verdict in the spec. Each wave's verdict will be \
-             recorded by `mustard-rt run round`, which does not exist in this version yet. Nothing \
-             was written."
+            "`{command}` no longer records the verdict in the spec: each wave's verdict is \
+             recorded by `mustard-rt run round`. Nothing was written."
         }
         ("pr.qa_pending", Locale::PtBr) => {
             "Nem todo critério de `{spec}` tem uma execução aprovada: {passed} de {criteria} \
@@ -649,11 +638,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              nobody checked."
         }
         ("message.too_long", Locale::PtBr) => {
-            "O {part} da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
+            "A parte `{part}` da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
              corte automático mentiria sobre o que a mensagem diz. Nada foi enviado."
         }
         ("message.too_long", Locale::EnUs) => {
-            "The message {part} has {chars} characters and the limit is {max}. Write another one: \
+            "The message part `{part}` has {chars} characters and the limit is {max}. Write another one: \
              truncating would misstate what the message says. Nothing was sent."
         }
         ("message.forbidden", Locale::PtBr) => {
@@ -740,8 +729,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            103,
-            0x9c7e_2e11_24b3_587a,
+            102,
+            0xe351_767a_3a10_4c7b,
         );
     }
 
@@ -786,7 +775,6 @@ mod tests {
     #[test]
     fn i18n_translates_retired_keys() {
         for (key, slots, points_to) in [
-            ("retired.wait_close", &["{command}"][..], "mustard-rt run close"),
             ("retired.wait_round", &["{command}"][..], "mustard-rt run round"),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

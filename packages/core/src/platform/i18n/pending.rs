@@ -163,9 +163,8 @@ mod tests {
     /// the invented-name defect left with its measure, and the two texts of the
     /// old-flow criteria copy left with it.
     #[test]
-    fn i18n_translates_doc_and_pending_keys() {
+    fn i18n_translates_pending_keys() {
         for (key, slots) in [
-            ("doc.section.flow", &[][..]),
             ("pending.count.one", &[][..]),
             ("pending.count.many", &["{count}"][..]),
             ("pending.count.stale", &["{stale}"][..]),

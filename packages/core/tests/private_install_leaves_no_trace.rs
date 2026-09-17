@@ -1,4 +1,4 @@
-//! AC-8 — a private install leaves a host repository with NOTHING to report,
+//! A private install leaves a host repository with NOTHING to report,
 //! and the client's own instruction file byte-identical.
 //!
 //! ## Why this file asks git instead of reading a rule list
@@ -14,7 +14,7 @@
 //! install's own report — the engine says what it wrote — and the footprint the
 //! negative control looks for is read back from
 //! [`mustard_core::footprint_pathspecs`], one projection of the single
-//! declaration wave 1 introduced.
+//! footprint declaration.
 //! A list retyped here could only ever prove the rules cover what the test author
 //! already thought of, which is exactly how the previous version of this class of
 //! test passed while seven runtime paths stayed visible.
@@ -74,11 +74,11 @@ const HOST_GUARDS: &str = "# API\r\n\r\n## Guards\r\n\r\n- the client's own rule
 const BACKUP_DIR: &str = ".claude.backup.20260817-101500";
 
 // ---------------------------------------------------------------------------
-// AC-8
+// The host repository after a private install
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ac8_host_repo_stays_clean_and_untouched() {
+fn host_repo_stays_clean_and_untouched() {
     let work = tempfile::tempdir().expect("temp dir");
 
     // --- THE CRITERION -----------------------------------------------------

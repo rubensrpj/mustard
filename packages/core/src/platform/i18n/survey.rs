@@ -91,15 +91,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Grave cada ponto de `points` que ainda não tem `id` com `mustard-rt run write point \
              --spec {spec}`, na ordem: copie os campos como vieram, com `status` open, e ponha em \
              `facts` o que você conferiu no código ou na conversa, cada fato com a fonte (arquivo e \
-             linha, comando ou número da mensagem); os fatos que já vêm no ponto ficam. Depois rode \
-             o grill de novo: ele devolve o primeiro ponto."
+             linha, comando ou número da mensagem); os fatos que já vêm no ponto ficam. A gravação \
+             do último ponto já devolve o primeiro, para mostrar ao usuário."
         }
         ("survey.record_points", Locale::EnUs) => {
             "Record each point in `points` that has no `id` yet with `mustard-rt run write point \
              --spec {spec}`, in order: copy its fields as they came, with `status` open, and put in \
              `facts` what you checked in the code or in the conversation, each fact with its source \
              (file and line, command or message number); the facts the point already brings stay. \
-             Then run grill again: it returns the first point."
+             Recording the last point already returns the first one, to show the user."
         }
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
@@ -193,7 +193,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0x25bd_ed1a_b1d5_91a6,
+            0xc2f0_494f_2dcf_3650,
         );
     }
 

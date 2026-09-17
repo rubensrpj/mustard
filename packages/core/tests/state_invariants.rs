@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
-//! Invariant tests for the canonical [`SpecState`] model introduced in
-//! `spec-lifecycle-unification` Wave 1.
+//! Invariant tests for the canonical [`SpecState`] model.
 //!
 //! Covers two things the unit tests in `model/view/spec.rs` complement:
 //!
@@ -12,8 +11,8 @@
 //!    [`project_spec_view_with_header`] so the whole header → view path is
 //!    under test.
 //!
-//! W8A-4 (no-sqlite Wave 8) deleted the `mustard_core::reader` layer
-//! (`SpecReader` trait + `InMemorySpecReader` + `SqliteSpecReader`). The
+//! The `mustard_core::reader` layer (`SpecReader` trait +
+//! `InMemorySpecReader` + `SqliteSpecReader`) is gone. The
 //! header-parsing assertions now call the pure projection directly with the
 //! on-disk `spec.md` path, exercising the same code path production readers
 //! consume.
@@ -24,7 +23,7 @@ use mustard_core::{Flags, Outcome, SpecState, Stage, StateError};
 // Constructor invariants
 // ---------------------------------------------------------------------------
 
-/// AC-W1-4: a terminal outcome paired with a non-Close stage is rejected.
+/// A terminal outcome paired with a non-Close stage is rejected.
 #[test]
 fn rejects_completed_with_active_stage() {
     let err = SpecState::new(Stage::Plan, Outcome::Completed, Flags::default());

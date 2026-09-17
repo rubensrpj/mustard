@@ -8,14 +8,6 @@ license = "MIT"
 publish = false
 build = "build.rs"
 
-# The `.rs` files under `tests/fixtures/regression-w6/` are DATA — snapshots the
-# `regression_check` tests read as text, never modules of any target. Without
-# this, `cargo shear` (scripts/ac/deps-no-unused.sh) reports them as unlinked
-# source files and advises deleting them. The exclusion is scoped to the fixture
-# tree so a genuinely orphaned module under `src/` is still reported.
-[package.metadata.cargo-shear]
-ignored-paths = ["tests/fixtures/**/*.rs"]
-
 [[bin]]
 name = "mustard-rt"
 path = "src/main.rs"

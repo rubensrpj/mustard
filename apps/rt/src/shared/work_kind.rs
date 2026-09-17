@@ -194,7 +194,8 @@ pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
     //
     // `git fetch --prune` prunes remote-tracking refs, never local heads, so a
     // plain "does refs/heads/<base> exist?" obeys the retired branch and
-    // reopens exactly what AC-2 forbids. The upstream configuration separates
+    // reopens exactly the retired base this guard forbids. The upstream
+    // configuration separates
     // them and is measured, not guessed: a branch that was pushed carries
     // `branch.<name>.remote`, and one that never left this machine does not.
     // Absent upstream ⇒ never pushed ⇒ a real local base, obey. Upstream set
@@ -837,7 +838,7 @@ mod tests {
         git
     }
 
-    /// AC-3 — the vocabulary is open. A token the project never suggested makes
+    /// The vocabulary is open. A token the project never suggested makes
     /// a branch name exactly like a suggested one; what is still refused is a
     /// token that could not be a git ref segment at all.
     #[test]

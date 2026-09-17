@@ -272,8 +272,8 @@ mod tests {
         dir
     }
 
-    /// Um projeto instalado com duas pendências abertas: P-1 "Humanize" e
-    /// P-2 "HTML padrao da spec".
+    /// Um projeto instalado com duas pendências abertas: `P-1` "Humanize" e
+    /// `P-2` "HTML padrao da spec".
     fn project_with_two_open_items() -> tempfile::TempDir {
         project_with_open_items(&["Humanize", "HTML padrao da spec"])
     }

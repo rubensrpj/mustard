@@ -362,7 +362,7 @@ mod tests {
     /// pt-BR é barrada no fim da resposta; a mensagem seguinte não repete o
     /// defeito. Sem `mustard.json`, nada.
     #[test]
-    fn language_rule_reaches_every_mustard_project() {
+    fn the_language_line_reaches_every_mustard_project() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 
         let english = "The wave is done and the tests pass.\n\

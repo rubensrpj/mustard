@@ -548,6 +548,26 @@ fn the_manifest_keeps_the_two_keys_its_schema_does_not_define() {
     );
 }
 
+/// The manifest's description and keywords sell neither the memory server nor
+/// the panel: both left the product, and whoever installs the plugin reads
+/// there what they get.
+#[test]
+fn the_manifest_describes_neither_the_memory_server_nor_the_panel() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read(MANIFEST_PATH)).expect("plugin.json is not valid JSON");
+    let description = manifest["description"].as_str().expect("the manifest has a description");
+    let keywords = manifest["keywords"].as_array().expect("the manifest has keywords");
+    let said: Vec<String> = std::iter::once(description)
+        .chain(keywords.iter().filter_map(serde_json::Value::as_str))
+        .map(str::to_lowercase)
+        .collect();
+    assert!(said.len() > 1, "the manifest names no keyword: {said:?}");
+    for gone in ["memory", "mcp", "dashboard", "panel", "memória", "painel"] {
+        let hits: Vec<&String> = said.iter().filter(|text| text.contains(gone)).collect();
+        assert!(hits.is_empty(), "the plugin manifest still sells `{gone}`, which left the product: {hits:?}");
+    }
+}
+
 /// Every prose pointer to the batch-file guard names a test that EXISTS.
 ///
 /// This class already bit once, inside this very unit: the guard was renamed,

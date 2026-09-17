@@ -168,7 +168,8 @@ pub fn seed_settings(
 ///
 /// `claude_dir` is already `<root>/.claude`, so the project root is recovered
 /// from it rather than re-resolved. [`ClaudePaths::compose_unchecked`] is the
-/// right constructor for that: the I1 guard exists to catch a caller passing
+/// right constructor for that: the nested `.claude` guard exists to catch a
+/// caller passing
 /// `.claude` AS the root, which is precisely the mistake being undone here —
 /// there is no untrusted input left for it to reject.
 pub(super) fn settings_dest(claude_dir: &Path, mode: InstallMode) -> PathBuf {

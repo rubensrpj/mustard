@@ -21,7 +21,7 @@ pub fn build_skeleton(modules: &[Module], depth_by_path: &std::collections::Hash
         .iter()
         .map(|(dir, &files)| {
             let avg = depth_sum.get(dir).copied().unwrap_or(0) as f32 / files.max(1) as f32;
-            // emergent tier (L0 = most depended-upon / innermost)
+            // emergent tier (`L0` = most depended-upon / innermost)
             SkeletonEntry { dir: dir.clone(), role: format!("L{}", avg.round() as usize), files }
         })
         .collect();

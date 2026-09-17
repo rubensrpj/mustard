@@ -1,8 +1,9 @@
 //! `mustard-rt run doctor` — read-only installation health diagnostic.
 //!
-//! Runs four checks and prints a compact OK/WARN/FAIL report per category.
-//! Exit 1 if any check is FAIL, 0 otherwise. Fail-open on every IO error:
-//! a check that cannot complete is demoted to WARN, never crashes.
+//! Runs every check of one list and prints a compact OK/WARN/FAIL report per
+//! category. Exit 1 if any check of the full run is FAIL, 0 otherwise.
+//! Fail-open on every IO error: a check that cannot complete is demoted to
+//! WARN, never crashes.
 //!
 //! ## Checks
 //!
@@ -50,12 +51,12 @@
 //!
 //! Esta porta guarda o que todas dividem e o que sai para fora — o resultado
 //! de uma conferência, os eventos de gancho que o binário conhece, as opções e
-//! a ordem em que o comando as roda. Cada conferência mora numa
-//! parte da pasta ao lado, por assunto: a ligação dos ganchos (`wiring`), as
-//! sobras (`residue`), o desvio dos moldes (`drift`), o que a máquina tem
-//! instalado (`host`), a proteção das bases (`protection`), o estado das
-//! specs (`specs`), o que o Mustard deixa no projeto (`project`) e a saída do
-//! relatório (`report`).
+//! a lista das conferências, na ordem em que o comando as roda. Cada
+//! conferência mora numa parte da pasta ao lado, por assunto: a ligação dos
+//! ganchos (`wiring`), as sobras (`residue`), o desvio dos moldes (`drift`), o
+//! que a máquina tem instalado (`host`), a proteção das bases (`protection`),
+//! o estado das specs (`specs`), o que o Mustard deixa no projeto (`project`)
+//! e a saída do relatório (`report`).
 
 mod drift;
 mod host;
@@ -168,118 +169,180 @@ pub fn known_hook_events() -> std::collections::BTreeSet<String> {
 pub struct DoctorOpts {
     /// Also scan for dead file/script references (slower).
     pub residue: bool,
-    /// Named check to run in isolation (e.g. `skill-discovery`,
-    /// `claude-paths`, `workspace-leaks`, `i1`).
+    /// A conferência que roda sozinha, por um dos nomes da lista.
     pub check: Option<String>,
     /// Output format: `text` (default) or `json`.
     pub format: String,
 }
 
-/// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
-pub fn run(opts: DoctorOpts) {
-    let cwd = crate::shared::context::env::workspace_root_strict()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let claude_dir = ClaudePaths::for_project(&cwd)
-        .map(|p| p.claude_dir())
-        .unwrap_or_else(|_| cwd.clone());
+/// Onde as conferências olham: a pasta do projeto e o `.claude/` dela.
+struct Place {
+    cwd: PathBuf,
+    claude_dir: PathBuf,
+}
 
-    // When a specific --check is requested, run only that check.
-    if let Some(ref check_name) = opts.check {
-        let result = match check_name.as_str() {
-            "wave-integrity" => check_wave_integrity(&claude_dir),
-                "branch-protection" => {
-                let project = crate::commands::spec_events::project(&cwd);
-                check_branch_protection(&cwd, project.lang)
-            }
-            "spec-index" => {
-                let project = crate::commands::spec_events::project(&cwd);
-                check_spec_index(&project.root, project.lang)
-            }
-            "scan-output" => {
-                let project = crate::commands::spec_events::project(&cwd);
-                check_scan_output(&project.root, project.lang)
-            }
-            "switches" => {
-                let project = crate::commands::spec_events::project(&cwd);
-                check_switches(&project.root, project.lang)
-            }
-            "claude-md" => {
-                let project = crate::commands::spec_events::project(&cwd);
-                check_claude_md(&project.root, project.lang)
-            }
-            other => {
-                eprintln!(
-                    "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, branch-protection, spec-index, scan-output, switches, claude-md"
-                );
-                std::process::exit(1);
-            }
-        };
-        if opts.format == "json" {
-            render_report_json(&[result]);
-        } else {
-            render_report(&[result]);
-        }
-        return;
+impl Place {
+    /// A pasta de onde o comando foi chamado.
+    fn here() -> Self {
+        let cwd = crate::shared::context::env::workspace_root_strict()
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let claude_dir = ClaudePaths::for_project(&cwd)
+            .map(|p| p.claude_dir())
+            .unwrap_or_else(|_| cwd.clone());
+        Self { cwd, claude_dir }
     }
 
-    // Default: run all checks.
-    let mut results: Vec<CheckResult> = vec![
-        check_wiring(&claude_dir),
-        // Before drift: a drift reading is only meaningful once the binary the
-        // reading comes FROM is known to be the installed one. A dormant
-        // bootstrap makes every version answer below it untrustworthy.
-        bootstrap_to_check_result(&crate::commands::doctor::bootstrap_check::run(&cwd)),
-        check_drift(&claude_dir),
-        check_state_health(&claude_dir),
-        check_claude_cli(),
-        lsp_check(&cwd),
-        check_nerd_font(),
-        // Wave-integrity check — always in the full run.
-        check_wave_integrity(&claude_dir),
-        // O que o provedor realmente protege — sempre na rodada inteira: uma
-        // base que só este binário recusa é uma base aberta para todo mundo, e
-        // isso não aparece até um envio direto passar.
-        {
-            let project = crate::commands::spec_events::project(&cwd);
-            check_branch_protection(&cwd, project.lang)
-        },
-        // O índice das specs contra os arquivos de eventos: só acusa.
-        {
-            let project = crate::commands::spec_events::project(&cwd);
+    /// A raiz das specs e o idioma do projeto.
+    fn project(&self) -> crate::commands::spec_events::Project {
+        crate::commands::spec_events::project(&self.cwd)
+    }
+}
+
+/// Em que rodada uma conferência entra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Runs {
+    /// Só na rodada inteira.
+    Round,
+    /// Na rodada inteira e também sozinha, por este nome no `--check`.
+    Named(&'static str),
+    /// Só na rodada inteira que pede as sobras (`--residue`).
+    Residue,
+}
+
+/// Uma conferência do diagnóstico: quando ela entra e o que ela confere.
+#[derive(Clone, Copy)]
+struct Check {
+    runs: Runs,
+    check: fn(&Place) -> CheckResult,
+}
+
+/// Todas as conferências, na ordem da rodada inteira. Acrescentar uma
+/// conferência é somar um item aqui, e nada mais: desta lista saem os nomes
+/// que o `--check` aceita na linha de comando, a escolha dele, a mensagem de
+/// conferência desconhecida e a rodada inteira.
+const CHECKS: &[Check] = &[
+    Check { runs: Runs::Round, check: |place| check_wiring(&place.claude_dir) },
+    // Antes do desvio dos moldes: a leitura dele só vale quando o binário que
+    // a faz é o instalado, e um arranque parado torna suspeita toda versão
+    // lida depois.
+    Check {
+        runs: Runs::Round,
+        check: |place| bootstrap_to_check_result(&crate::commands::doctor::bootstrap_check::run(&place.cwd)),
+    },
+    Check { runs: Runs::Round, check: |place| check_drift(&place.claude_dir) },
+    Check { runs: Runs::Round, check: |place| check_state_health(&place.claude_dir) },
+    Check { runs: Runs::Round, check: |_| check_claude_cli() },
+    Check { runs: Runs::Round, check: |place| lsp_check(&place.cwd) },
+    Check { runs: Runs::Round, check: |_| check_nerd_font() },
+    Check { runs: Runs::Named("wave-integrity"), check: |place| check_wave_integrity(&place.claude_dir) },
+    // O que o provedor realmente protege: uma base que só este binário recusa
+    // é uma base aberta para todo mundo, e isso não aparece até um envio
+    // direto passar.
+    Check {
+        runs: Runs::Named("branch-protection"),
+        check: |place| check_branch_protection(&place.cwd, place.project().lang),
+    },
+    // O índice das specs contra os arquivos de eventos: só acusa.
+    Check {
+        runs: Runs::Named("spec-index"),
+        check: |place| {
+            let project = place.project();
             check_spec_index(&project.root, project.lang)
         },
-        // What the scan writes stays outside git: it is only reported.
-        {
-            let project = crate::commands::spec_events::project(&cwd);
+    },
+    // O que o scan escreve fica fora do git: só acusa.
+    Check {
+        runs: Runs::Named("scan-output"),
+        check: |place| {
+            let project = place.project();
             check_scan_output(&project.root, project.lang)
         },
-        // The switches of `mustard.json` against the local settings.
-        {
-            let project = crate::commands::spec_events::project(&cwd);
+    },
+    // As escolhas do `mustard.json` contra as configurações locais.
+    Check {
+        runs: Runs::Named("switches"),
+        check: |place| {
+            let project = place.project();
             check_switches(&project.root, project.lang)
         },
-        // What an older Mustard left in files that are not its own.
-        {
-            let project = crate::commands::spec_events::project(&cwd);
+    },
+    // O que um Mustard antigo deixou em arquivos que não são dele.
+    Check {
+        runs: Runs::Named("claude-md"),
+        check: |place| {
+            let project = place.project();
             check_claude_md(&project.root, project.lang)
         },
-    ];
+    },
+    Check { runs: Runs::Residue, check: |place| check_residue(&place.claude_dir) },
+    Check {
+        runs: Runs::Residue,
+        check: |_| check_scratch_residue(&crate::commands::maint::scratch_gc::ScratchRoots::from_env()),
+    },
+];
 
-    if opts.residue {
-        results.push(check_residue(&claude_dir));
-        results.push(check_scratch_residue(
-            &crate::commands::maint::scratch_gc::ScratchRoots::from_env(),
-        ));
+/// Os nomes que o `--check` aceita, na ordem da lista.
+fn names_of(list: &[Check]) -> Vec<&'static str> {
+    list.iter()
+        .filter_map(|item| match item.runs {
+            Runs::Named(name) => Some(name),
+            Runs::Round | Runs::Residue => None,
+        })
+        .collect()
+}
+
+/// O leitor do `--check` montado a partir de uma lista: recusa na linha de
+/// comando o nome que ela não tem, em vez de o comando responder um relatório
+/// vazio que se lê como "está tudo certo".
+fn parser_of(list: &[Check]) -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(names_of(list))
+}
+
+/// O leitor do `--check` da linha de comando.
+#[must_use]
+pub fn check_parser() -> clap::builder::PossibleValuesParser {
+    parser_of(CHECKS)
+}
+
+/// A conferência de nome `name`, ou a mensagem que diz quais existem.
+fn pick<'a>(list: &'a [Check], name: &str) -> Result<&'a Check, String> {
+    list.iter().find(|item| matches!(item.runs, Runs::Named(known) if known == name)).ok_or_else(|| {
+        format!("doctor: unknown check '{name}'. Known: {}", names_of(list).join(", "))
+    })
+}
+
+/// As conferências da rodada inteira, na ordem da lista; as das sobras só
+/// quando pedidas.
+fn round(list: &[Check], residue: bool) -> impl Iterator<Item = &Check> {
+    list.iter().filter(move |item| item.runs != Runs::Residue || residue)
+}
+
+/// O que o diagnóstico responde antes de imprimir: o resultado da conferência
+/// pedida ou de toda a rodada, ou a recusa de um nome que a lista não tem.
+fn answer(list: &[Check], opts: &DoctorOpts, place: &Place) -> Result<Vec<CheckResult>, String> {
+    match &opts.check {
+        Some(name) => pick(list, name).map(|item| vec![(item.check)(place)]),
+        None => Ok(round(list, opts.residue).map(|item| (item.check)(place)).collect()),
     }
+}
 
+/// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
+pub fn run(opts: DoctorOpts) {
+    let results = match answer(CHECKS, &opts, &Place::here()) {
+        Ok(results) => results,
+        Err(unknown) => {
+            eprintln!("{unknown}");
+            std::process::exit(1);
+        }
+    };
     if opts.format == "json" {
         render_report_json(&results);
     } else {
         render_report(&results);
     }
-
-    if results.iter().any(|r| r.status == Status::Fail) {
+    // Uma conferência pedida sozinha só informa; a rodada inteira sai com 1
+    // quando alguma falha.
+    if opts.check.is_none() && results.iter().any(|r| r.status == Status::Fail) {
         std::process::exit(1);
     }
 }
@@ -324,7 +387,7 @@ fn bootstrap_to_check_result(
 /// conferências juntas e o que mede o tamanho de cada parte.
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use tempfile::tempdir;
 
@@ -367,39 +430,58 @@ mod tests {
         assert!(has_lsp, "expected a check named 'lsp' in the report");
     }
 
-    /// As linhas de código de um arquivo: as que não são vazias nem
-    /// comentário, antes do módulo de testes dele.
-    fn code_lines(source: &str) -> usize {
-        let lines: Vec<&str> = source.lines().map(str::trim).collect();
-        let end = lines
-            .windows(2)
-            .position(|pair| pair[0] == "#[cfg(test)]" && pair[1] == "mod tests {")
-            .unwrap_or(lines.len());
-        lines[..end].iter().filter(|line| !line.is_empty() && !line.starts_with("//")).count()
+    /// Uma conferência de mentira somada à lista chega aos quatro lugares sem
+    /// mexer em mais nada: aos nomes que o `--check` aceita na linha de
+    /// comando, à escolha dele, à mensagem de conferência desconhecida e à
+    /// rodada inteira. E a linha de comando de verdade lê a mesma lista.
+    #[test]
+    fn a_check_added_to_the_list_reaches_the_four_places_with_nothing_else_touched() {
+        const FAKE: &str = "de-mentira";
+        let mut list = CHECKS.to_vec();
+        list.push(Check { runs: Runs::Named(FAKE), check: |_| CheckResult::ok(FAKE) });
+        let dir = tempdir().unwrap();
+        let place = Place { cwd: dir.path().to_path_buf(), claude_dir: dir.path().join(".claude") };
+        let opts = |check: Option<&str>| DoctorOpts {
+            residue: false,
+            check: check.map(str::to_string),
+            format: "text".into(),
+        };
+
+        let accepts = |list: &[Check]| {
+            clap::Command::new("doctor")
+                .arg(clap::Arg::new("check").long("check").value_parser(parser_of(list)))
+                .try_get_matches_from(["doctor", "--check", FAKE])
+                .is_ok()
+        };
+        assert!(accepts(&list), "the command line refuses the check the list has");
+        assert!(!accepts(CHECKS), "the command line takes a check the list does not have");
+
+        let alone = answer(&list, &opts(Some(FAKE)), &place).unwrap();
+        assert_eq!(alone.iter().map(|r| r.name).collect::<Vec<_>>(), [FAKE], "--check {FAKE} runs something else");
+
+        let unknown = answer(&list, &opts(Some("nenhuma")), &place).err().unwrap();
+        assert!(unknown.contains(FAKE), "the unknown-check message does not name {FAKE}: {unknown}");
+        assert!(unknown.contains("claude-md"), "the unknown-check message lost the checks of the list: {unknown}");
+
+        let all = answer(&list, &opts(None), &place).unwrap();
+        let names: Vec<&str> = all.iter().map(|r| r.name).collect();
+        assert_eq!(names.last(), Some(&FAKE), "the full run leaves {FAKE} out: {names:?}");
+        assert_eq!(all.len(), round(CHECKS, false).count() + 1, "the full run changed more than the new check");
+
+        let run = <crate::commands::doctor::cli::DoctorCmd as clap::Subcommand>::augment_subcommands(
+            clap::Command::new("run"),
+        );
+        let doctor = run.find_subcommand("doctor").expect("the doctor is registered");
+        let check = doctor.get_arguments().find(|arg| arg.get_id() == "check").expect("--check is declared");
+        let taken: Vec<String> = check.get_possible_values().iter().map(|v| v.get_name().to_string()).collect();
+        assert_eq!(taken, names_of(CHECKS), "the real --check does not read the list of checks");
     }
 
-    /// Nenhum arquivo do diagnóstico passa de 800 linhas de código: a porta e
-    /// cada parte da pasta dela, contadas sem as linhas vazias, os comentários
-    /// e o módulo de testes.
+    /// Nenhum arquivo do diagnóstico passa do teto de linhas de código: a porta e
+    /// cada parte da pasta dela, pela medida única do núcleo.
     #[test]
     fn no_file_of_the_doctor_goes_over_the_code_line_cap() {
-        const CAP: usize = 800;
-        let doctor = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("doctor");
-        let mut parts: Vec<PathBuf> = std::fs::read_dir(doctor.join("doctor"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-            .collect();
-        parts.sort();
-        assert!(!parts.is_empty(), "as partes do diagnóstico não foram achadas em {}", doctor.display());
-        let files: Vec<PathBuf> = std::iter::once(doctor.join("doctor.rs")).chain(parts).collect();
-        let measured: Vec<(String, usize)> = files
-            .iter()
-            .map(|path| (path.display().to_string(), code_lines(&std::fs::read_to_string(path).unwrap())))
-            .collect();
-        let over: Vec<&(String, usize)> = measured.iter().filter(|(_, lines)| *lines > CAP).collect();
-        assert!(over.is_empty(), "passam de {CAP} linhas de código: {over:?}");
+        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("doctor").join("doctor.rs");
+        assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

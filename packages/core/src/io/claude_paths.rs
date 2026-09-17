@@ -696,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_unchecked_skips_i1_guard() {
+    fn compose_unchecked_skips_the_nested_claude_guard() {
         let dir = tempdir().unwrap();
         let bad = dir.path().join(".claude");
         // `for_project` rejects this path…

@@ -15,20 +15,19 @@
 //!
 //! [`RunCmd`] owns NO leaf command: it is a thin router of
 //! `#[command(flatten)]` variants, one per family. Each family owns its own
-//! `cli.rs` (`spec/cli.rs`, `wave/cli.rs`, …) holding BOTH its `…Cmd` enum and
+//! `cli.rs` (`spec/cli.rs`, `flow/cli.rs`, …) holding BOTH its `…Cmd` enum and
 //! the `dispatch()` arms that run it. `flatten` hoists the child subcommands to
 //! THIS level, so every published name stays flat and unchanged:
 //! `mustard-rt run pr-open`, never `mustard-rt run review pr-open`.
 //!
-//! THE INVARIANT, now scoped per family: a new `run` subcommand needs FOUR
-//! registrations. Two live in that family's `cli.rs`: the variant in its enum
-//! AND the arm in its `dispatch()`; forgetting the arm compiles but the
-//! command vanishes. Two live in the tests: `tests/run_command_surface.rs`
-//! locks the full name list, so a dropped registration (or an accidental
-//! rename) fails CI instead of silently disappearing from the CLI the hooks
-//! and SKILLs call; and `tests/template_parity.rs` refuses a command that no
-//! prose or argv calls, unless a justified `RUNTIME_WHITELIST` line explains
-//! it.
+//! THE INVARIANT, scoped per family: a new `run` subcommand takes the variant
+//! in its family's enum and the arm in that family's `dispatch()` (the
+//! compiler demands the arm). Two tests hold the rest:
+//! `tests/run_command_surface.rs` compares the clap tree with
+//! `tests/fixtures/run-surface.txt`, so a dropped registration (or an
+//! accidental rename) fails CI instead of silently disappearing from the CLI
+//! the hooks and the prose call; and `tests/template_parity.rs` refuses a
+//! command that no prose or argv calls, with no exception list.
 
 pub mod agent;
 pub mod wave;

@@ -21,8 +21,8 @@
 //!   free functions that are the drop-in replacement for `std::fs`. Every other
 //!   `std::fs` call in the workspace migrates onto this.
 //! - [`events`] — NDJSON event primitives ([`Event`] / [`EventReader`]) plus
-//!   the per-spec workspace walker; the canonical event store for the
-//!   no-sqlite migration. Layered on [`fs`].
+//!   the per-spec workspace walker; the canonical event store. Layered on
+//!   [`fs`].
 //! - [`projection`] — pure folds over `&[HarnessEvent]`: one function per
 //!   `ViewModel`. No IO, no side effects — deterministic and testable in
 //!   isolation. Production callers in `apps/rt` and `apps/dashboard` feed the

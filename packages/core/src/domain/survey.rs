@@ -771,8 +771,9 @@ impl Proposed {
     }
 
     /// O ponto que registra este item pela leitura dos pares ([`points`]),
-    /// com a situação dele, `open` ou `closed`: o que tem a mesma origem e a
-    /// mesma lacuna, um aberto antes de um fechado. A lacuna é reconhecida
+    /// com a situação dele, `open` ou `closed`: o que vem do mesmo lugar
+    /// (`from`: lacuna, lição ou spec anterior) e tem a mesma lacuna, um aberto
+    /// antes de um fechado. A lacuna é reconhecida
     /// pelo rótulo em qualquer idioma ou pelo nome; o resto, pelo texto do
     /// `gap`. O ponto vem pelo original e, se ele saiu, pelo fechamento.
     #[must_use]
@@ -1173,9 +1174,9 @@ mod tests {
         assert_eq!(ids(&log_of(&revised)), [4, 2, 5], "closing the first version closes the revision");
     }
 
-    /// Lado a lado: o levantamento e o índice leem o mesmo objetivo, também
-    /// quando o primeiro foi revisto depois de outro `context` e quando o
-    /// primeiro foi tirado.
+    /// O objetivo do levantamento é o primeiro `context` vigente, e o índice
+    /// mostra a primeira frase dele: na ordem, depois de revisto (mesmo com
+    /// outro `context` no meio) e depois de tirado.
     #[test]
     fn the_survey_and_the_index_read_the_same_goal() {
         let first = ev(2, "context", json!({"text": "Primeiro objetivo. Mais.", "origin": 1}));

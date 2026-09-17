@@ -1014,7 +1014,7 @@ mod tests {
             &create_url,
             json!({
                 "pullRequestId": 42,
-                "url": "https://dev.azure.com/suzano/_apis/git/NOT-THE-WEB-URL",
+                "url": "https://dev.azure.com/contoso/_apis/git/NOT-THE-WEB-URL",
             }),
         )]);
         let pr = PrToOpen {
@@ -1028,7 +1028,7 @@ mod tests {
         let opened = do_open(&remote, &fake, "Basic Zzo=", &pr).expect("create succeeds");
         assert_eq!(opened.number, 42);
         assert_eq!(
-            opened.url, "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/42",
+            opened.url, "https://dev.azure.com/contoso/vendas/_git/portal/pullrequest/42",
             "derived from the remote, never read from the response",
         );
 
@@ -1058,7 +1058,7 @@ mod tests {
     /// operator knows the two ways to fix it.
     #[test]
     fn azure_without_credential_refuses_naming_both_sources() {
-        let url = "https://dev.azure.com/suzano/florestal/_git/portal";
+        let url = "https://dev.azure.com/contoso/vendas/_git/portal";
         assert_eq!(
             pat_from(Some("env-pat".into()), || Some("vault-pat".into()), url),
             Ok("env-pat".to_string()),
@@ -1110,7 +1110,7 @@ mod tests {
                 status: PrStatus::Open,
                 merge_status: Some("conflicts".into()),
                 draft: false,
-                url: "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/9".into(),
+                url: "https://dev.azure.com/contoso/vendas/_git/portal/pullrequest/9".into(),
             }
         );
     }
@@ -1122,40 +1122,40 @@ mod tests {
     #[test]
     fn every_azure_remote_spelling_yields_the_rest_base() {
         let modern = [
-            "https://dev.azure.com/suzano/florestal/_git/portal",
-            "https://suzano@dev.azure.com/suzano/florestal/_git/portal",
-            "git@ssh.dev.azure.com:v3/suzano/florestal/portal",
-            "ssh://git@ssh.dev.azure.com/v3/suzano/florestal/portal",
+            "https://dev.azure.com/contoso/vendas/_git/portal",
+            "https://contoso@dev.azure.com/contoso/vendas/_git/portal",
+            "git@ssh.dev.azure.com:v3/contoso/vendas/portal",
+            "ssh://git@ssh.dev.azure.com/v3/contoso/vendas/portal",
         ];
         for url in modern {
             let remote = AzureRemote::parse(url).unwrap_or_else(|| panic!("{url:?} parses"));
             assert_eq!(
                 remote.api_pulls(),
-                "https://dev.azure.com/suzano/florestal/_apis/git/repositories/portal/pullrequests",
+                "https://dev.azure.com/contoso/vendas/_apis/git/repositories/portal/pullrequests",
                 "for {url:?}",
             );
             assert_eq!(
                 remote.https_remote(),
-                "https://dev.azure.com/suzano/florestal/_git/portal",
+                "https://dev.azure.com/contoso/vendas/_git/portal",
                 "for {url:?}",
             );
             assert_eq!(
                 remote.pr_url(7),
-                "https://dev.azure.com/suzano/florestal/_git/portal/pullrequest/7",
+                "https://dev.azure.com/contoso/vendas/_git/portal/pullrequest/7",
                 "for {url:?}",
             );
         }
 
         let legacy = [
-            "https://suzano.visualstudio.com/florestal/_git/portal",
-            "https://suzano.visualstudio.com/DefaultCollection/florestal/_git/portal",
-            "suzano@vs-ssh.visualstudio.com:v3/suzano/florestal/portal",
+            "https://contoso.visualstudio.com/vendas/_git/portal",
+            "https://contoso.visualstudio.com/DefaultCollection/vendas/_git/portal",
+            "contoso@vs-ssh.visualstudio.com:v3/contoso/vendas/portal",
         ];
         for url in legacy {
             let remote = AzureRemote::parse(url).unwrap_or_else(|| panic!("{url:?} parses"));
             assert_eq!(
                 remote.https_remote(),
-                "https://suzano.visualstudio.com/florestal/_git/portal",
+                "https://contoso.visualstudio.com/vendas/_git/portal",
                 "for {url:?}",
             );
         }

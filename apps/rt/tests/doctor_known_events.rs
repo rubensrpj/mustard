@@ -82,7 +82,7 @@ fn known_events_match_shipped_hooks() {
     );
 }
 
-/// AC-3 — every way a session can start is covered by a matcher.
+/// Every way a session can start is covered by a matcher.
 ///
 /// `SessionStart` fires with one of five sources: `startup`, `resume`, `clear`,
 /// `compact`, `fork`. A source no matcher names gets no hook at all, so the

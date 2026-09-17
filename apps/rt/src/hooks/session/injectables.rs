@@ -102,7 +102,8 @@ fn marker_basename(file: &str) -> String {
 
 /// `.claude/.session/<session_id>/` for a usable session id — the same base
 /// the `active-spec` marker lives in (see `crate::shared::context`). `None`
-/// for an empty/`"unknown"` id or an I1-rejected project root.
+/// for an empty/`"unknown"` id or a project root the nested `.claude` guard
+/// rejects.
 fn session_dir(project_dir: &str, session_id: Option<&str>) -> Option<PathBuf> {
     let sid = session_id?.trim();
     if sid.is_empty() || sid == "unknown" {

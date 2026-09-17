@@ -23,8 +23,10 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use clap::{Command, Subcommand};
+use regex::Regex;
 use mustard_core::domain::spec_state::State;
 use mustard_rt::commands::flow::resume::{next_command, step_command, NEXT_BY_PHASE};
 use mustard_rt::commands::flow::round::DONE_STEP;
@@ -852,6 +854,157 @@ fn the_sweep_finds_each_way_a_removed_name_reaches_the_reader() {
     assert_eq!(texts, ["rode `mustard-rt run git-settle`", "um \"cru\" `emit-event`", "fica", "run", "orient", "run orient"]);
     let found: Vec<&str> = texts.iter().flat_map(|text| removed_names_in(text)).collect();
     assert_eq!(found, ["git-settle", "emit-event", "orient"]);
+}
+
+/// Os comentários de um arquivo `.rs`, cada um com a sua linha, e o código que
+/// sobra sem eles. Um literal de string ou de caractere nunca abre comentário,
+/// e no código ele vira um par de aspas vazio.
+fn comments_and_code(source: &str) -> (Vec<(usize, String)>, String) {
+    let b = source.as_bytes();
+    let breaks: Vec<usize> = source.match_indices('\n').map(|(at, _)| at).collect();
+    let (mut comments, mut code) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < b.len() {
+        let rest = &b[i..];
+        let line = 1 + breaks.partition_point(|at| *at < i);
+        let literal = match rest[0] {
+            b'"' => string_literal(rest),
+            b'b' | b'r' | b'c' if i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') => {
+                string_literal(rest)
+            }
+            _ => None,
+        };
+        if rest.starts_with(b"//") || rest.starts_with(b"/*") {
+            let len = if rest[1] == b'/' {
+                rest.iter().position(|c| *c == b'\n').unwrap_or(rest.len())
+            } else {
+                rest.windows(2).position(|w| w == b"*/").map_or(rest.len(), |end| end + 2)
+            };
+            let text = String::from_utf8_lossy(&rest[..len]).into_owned();
+            comments.extend(text.lines().enumerate().map(|(k, part)| (line + k, part.to_string())));
+            i += len;
+        } else if let Some((_, len)) = literal {
+            code.extend_from_slice(b"\"\"");
+            i += len;
+        } else if rest[0] == b'\'' {
+            code.push(b'\'');
+            i += char_literal_len(rest);
+        } else {
+            code.push(rest[0]);
+            i += 1;
+        }
+    }
+    (comments, String::from_utf8_lossy(&code).into_owned())
+}
+
+/// Os códigos de spec que um comentário cita: o código do Mustard
+/// (`MSTD-RULE-0005`), o rótulo com hífen de critério, ponto ou limite
+/// (`AC-3`, `P-17`, `L-3.3`), a letra com número de regra, onda ou tarefa
+/// (`R5`, `W4`, `T1.7`, `W8A-2`) e a seção com o sinal de parágrafo. O que
+/// está entre crases ou aspas é dado, não citação: o formato de um código ou a
+/// entrada de um teste.
+fn spec_codes_in(comment: &str) -> Vec<String> {
+    static QUOTED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"`[^`]*`|"[^"]*"|“[^”]*”"#).expect("the quote pattern compiles"));
+    // Um código começa o texto ou vem depois de um caractere que não o
+    // continua: `release/2026-Q3` e `U+E0B0` não são códigos.
+    static CODE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(concat!(
+            r"(?:^|[^\w/.+-])(",
+            r"MSTD-[A-Z]+-\d+",
+            r"|(?:AC|CT|[A-Z])-(?:[A-Z]{1,2}\d*-?)?\d+(?:\.\d+)*\b",
+            r"|[A-Z]+\d+[A-Z]+-\d+",
+            r"|[A-Z]\d{1,2}(?:\.\d+)*\b",
+            r"|§\s*\d",
+            r")",
+        ))
+        .expect("the code pattern compiles")
+    });
+    let bare = QUOTED.replace_all(comment, " ");
+    CODE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
+}
+
+/// Os nomes de função que carregam um código de spec, como `ac8_…` ou
+/// `…_t1_3_…`: uma letra (ou `ac`) com um ou dois dígitos, entre sublinhados.
+fn spec_coded_fn_names(code: &str) -> Vec<String> {
+    static NAME: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\bfn\s+([A-Za-z0-9_]+)").expect("the fn pattern compiles"));
+    static CODED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:^|_)(?:ac|[a-z])\d{1,2}(?:_\d+)*(?:_|$)").expect("the name pattern compiles")
+    });
+    NAME.captures_iter(code).map(|c| c[1].to_string()).filter(|n| CODED.is_match(n)).collect()
+}
+
+/// Nenhum comentário nem nome de teste do código cita código de spec: a spec
+/// fica fora do git, e o código que aponta para ela não leva a lugar nenhum.
+/// Cada comentário diz o comportamento em palavras.
+#[test]
+fn no_comment_or_test_name_cites_a_spec_code() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    for dir in ["apps", "packages"] {
+        walk_files(&root.join(dir), &mut files);
+    }
+    let files: Vec<&PathBuf> = files.iter().filter(|f| has_extension(f, &["rs"])).collect();
+    assert!(files.len() > 300, "the sweep read only {} Rust files", files.len());
+    let mut found = Vec::new();
+    let mut read = 0;
+    for file in files {
+        let shown = file.strip_prefix(&root).unwrap_or(file).display().to_string();
+        let (comments, code) = comments_and_code(&read_lossy(file));
+        read += comments.len();
+        for (line, comment) in comments {
+            for cited in spec_codes_in(&comment) {
+                found.push(format!("{shown}:{line}: {cited} in {}", comment.trim()));
+            }
+        }
+        found.extend(spec_coded_fn_names(&code).into_iter().map(|name| format!("{shown}: fn {name}")));
+    }
+    assert!(read > 20_000, "the sweep read only {read} comment lines");
+    assert!(
+        found.is_empty(),
+        "comments or test names still cite a spec code - say the behaviour in words:\n{}",
+        found.join("\n")
+    );
+}
+
+/// A varredura acha cada forma de citar um código de spec e deixa passar o
+/// dado entre crases ou aspas, as siglas comuns e o comentário dentro de um
+/// texto.
+#[test]
+fn the_comment_sweep_finds_each_spec_code_and_lets_data_pass() {
+    for (comment, cited) in [
+        ("// fecha a regra (MSTD-RULE-0038)", "MSTD-RULE-0038"),
+        ("/// AC-7 — installs privately", "AC-7"),
+        ("// Wave-plans use AC-W4-1", "AC-W4-1"),
+        ("// Spec contract AC-A-14", "AC-A-14"),
+        ("// the limit L-3.3 holds", "L-3.3"),
+        ("// D4: materialise the verdict", "D4"),
+        ("// Layer promotion guard (T1.7)", "T1.7"),
+        ("/// W8A-2 supersedes the old reader", "W8A-2"),
+        ("// see the audit § 4", "§ 4"),
+    ] {
+        assert_eq!(spec_codes_in(comment), [cited], "{comment}");
+    }
+    for clean in [
+        "/// like `MSTD-CRIT-0016`",
+        "/// o número escrito `P-12` vira `12`",
+        r#"/// um código como "MSTD-RULE-0008" e uma frase"#,
+        "/// UTF-8, SHA-256, BCP-47 and ISO-8601 are not codes",
+        "/// the U+E0B0 glyph and the release/2026-Q3 line",
+    ] {
+        assert!(spec_codes_in(clean).is_empty(), "{clean}");
+    }
+
+    let source = concat!(
+        "/// T3 — um código\n",
+        "fn ac8_host_is_clean() { let _ = \"// R5 num texto\"; let _ = '\"'; }\n",
+        "/* bloco\n   com W4 */\n",
+        "fn similarity_x1024() {}\n",
+    );
+    let (comments, code) = comments_and_code(source);
+    assert_eq!(comments, [(1, "/// T3 — um código".to_string()), (3, "/* bloco".to_string()), (4, "   com W4 */".to_string())]);
+    assert_eq!(spec_coded_fn_names(&code), ["ac8_host_is_clean"]);
 }
 
 /// Os eventos que o manifesto do Claude Code registra.

@@ -538,7 +538,7 @@ pub trait SpecState {
     fn active(&self, session: Option<&str>) -> Option<String>;
     /// A dobra dos `state` da spec `spec`; `None` só quando ela não tem
     /// arquivo de eventos. A trava não lê daqui sozinha: ela passa por
-    /// [`lock_state_of`], que junta o arquivo e o `meta.json`.
+    /// [`lock_state_of`], que aplica a regra da trava ao arquivo.
     fn state(&self, spec: &str) -> Option<State>;
     /// O arquivo de eventos da spec inteiro, para quem precisa de outro bloco;
     /// `None` quando ele não existe.

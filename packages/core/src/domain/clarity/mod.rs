@@ -57,12 +57,12 @@ const COMMON_ACRONYMS: &[&str] = &[
 ];
 
 /// Travessão ou hífen colado logo depois do termo: abre um aposto que explica o
-/// termo em qualquer ponto da frase ("o slug — o nome curto da spec — mudou").
+/// termo em qualquer ponto da frase ("o CI — a integração contínua — mudou").
 const APPOSITION_MARKS: &[&str] = &[" — ", " - "];
 
 /// Dois-pontos colado logo depois do termo. Só explica quando o termo abre a
 /// frase, como num glossário ("CI: integração contínua"). No meio da frase
-/// ("Troquei o slug: agora é outro") ele anuncia o que vem depois, não o termo.
+/// ("Troquei o CI: agora é outro") ele anuncia o que vem depois, não o termo.
 const LABEL_MARK: &str = ": ";
 
 /// Expressões que anunciam a explicação quando ocupam as palavras logo depois
@@ -76,7 +76,7 @@ const EXPLAINING_PHRASES: &[&str] = &[
 const PHRASE_WINDOW: usize = 2;
 
 /// Pontuação que fecha o termo sem separá-lo do que vem depois (ênfase do
-/// markdown, aspas): "**slug** — o nome curto" ainda é o termo colado ao
+/// markdown, aspas): "**CI** — a integração contínua" ainda é o termo colado ao
 /// travessão.
 const TERM_CLOSERS: &[char] = &['*', '_', '"', '\'', '”', '»'];
 
@@ -477,7 +477,7 @@ fn explained_at(sentence: &str, start: usize, end: usize) -> bool {
     let is_decoration =
         |c: char| c.is_whitespace() || matches!(c, '*' | '_' | '"' | '\'' | '“' | '”' | '«' | '»');
     let after = &sentence[end..];
-    // O `s` do plural ("slugs") ainda é o termo.
+    // O `s` do plural ("CIs") ainda é o termo.
     let after = after
         .strip_prefix('s')
         .filter(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))

@@ -47,12 +47,12 @@ pub(crate) fn record_review(
     });
 
     // Harness event.
-    // `review.result` is non-pipeline → per-spec NDJSON via the W5 router.
+    // `review.result` is non-pipeline → per-spec NDJSON via the event router.
 
-    // D4: materialise the human-readable verdict beside the phase dir.
+    // Materialise the human-readable verdict beside the phase dir.
     write_review_verdict_md(cwd, spec, verdict, critical_count, subproject);
 
-    // B1: persist the reviewer's findings so the retry prompt carries the WHY.
+    // Persist the reviewer's findings so the retry prompt carries the WHY.
     if let Some(path) = findings_file {
         write_review_findings_md(cwd, spec, subproject, path);
     }
@@ -147,8 +147,8 @@ pub(crate) fn scoped_findings_name(subproject: Option<&str>) -> Option<String> {
     Some(format!("{FINDINGS_SCOPED_PREFIX}{slug}.md"))
 }
 
-/// Write the materialised verdict at `.claude/spec/{spec}/review/verdict.md`
-/// (D4). The review phase records its verdict by code so the result is durable
+/// Write the materialised verdict at `.claude/spec/{spec}/review/verdict.md`.
+/// The review phase records its verdict by code so the result is durable
 /// and visible in the dashboard, instead of depending on an agent filling in a
 /// template. Atomic via [`fs::write_atomic`]. Fail-open: a missing project root
 /// or write error is a silent no-op (the `review.result` event is the
@@ -195,7 +195,7 @@ mod tests {
     use tempfile::tempdir;
 
 
-    /// D4: `record_review` materialises `.claude/spec/{spec}/review/verdict.md`
+    /// `record_review` materialises `.claude/spec/{spec}/review/verdict.md`
     /// alongside the `review.result` event.
     #[test]
     fn review_verdict_md_is_materialized() {
@@ -216,7 +216,7 @@ mod tests {
         assert!(md.contains("Subproject: `api`"));
     }
 
-    /// B1: `--findings-file` persists the reviewer's findings beside
+    /// `--findings-file` persists the reviewer's findings beside
     /// `verdict.md`; absent, no findings file is written (backward-compatible).
     ///
     /// A review that NAMES a subproject writes only that subproject's file. The

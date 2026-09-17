@@ -1,10 +1,10 @@
 //! Os comandos `run` do fluxo da spec (`flow/`).
 //!
-//! QUATRO registros por comando. Dois moram neste arquivo: a variante em
-//! [`FlowCmd`] E o braço dela no [`dispatch`] abaixo; esquecer o braço ainda
-//! compila, mas o comando some da linha de comando. Os outros dois moram nos
-//! testes: o nome em `tests/run_command_surface.rs` e um chamador (ou uma
-//! linha justificada no `RUNTIME_WHITELIST`) em `tests/template_parity.rs`.
+//! Um comando novo leva a variante em [`FlowCmd`] e o braço dela no
+//! [`dispatch`] abaixo (o compilador cobra o braço), a linha dele em
+//! `tests/fixtures/run-surface.txt`, que `tests/run_command_surface.rs` compara
+//! com a árvore do clap, e um chamador no texto do produto, que
+//! `tests/template_parity.rs` exige sem lista de exceções.
 //!
 //! O [`crate::commands::RunCmd`] junta este enum com `#[command(flatten)]`,
 //! então todo nome fica RASO: `mustard-rt run open`, nunca `run flow open`.

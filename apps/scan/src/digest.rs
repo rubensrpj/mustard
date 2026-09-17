@@ -315,7 +315,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     // terms + fixed query order keep every outcome deterministic.
     let mut matched: Vec<(u8, TermD)> = Vec::new(); // (tier, term) for ranking
     let mut qhits: Vec<Vec<QHit>> = (0..ql.len()).map(|_| Vec::new()).collect();
-    // The sweep enables the T5 fuzzy RESCUE rung; whether its matches are KEPT is
+    // The sweep enables the fuzzy `trigram` RESCUE rung; whether its matches are KEPT is
     // decided just below, gated on the strict (tiers 1-4) outcome.
     for t in dig.terms.into_iter() {
         let ks = ladder.sig(&t.term);
@@ -330,10 +330,10 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
             matched.push((tier, t));
         }
     }
-    // Trigram RESCUE gating: keep the fuzzy T5 hits ONLY when the STRICT ladder
+    // Trigram RESCUE gating: keep the fuzzy `trigram` hits ONLY when the STRICT ladder
     // (tiers 1-4) leaves the query weak/none — otherwise a strong query would
-    // inherit T5's false cognates (it matches FORM, not sense). Computed from the
-    // non-fuzzy hits already in `qhits`; if strict is solid, drop every T5 hit so
+    // inherit the trigram's false cognates (it matches FORM, not sense). Computed from the
+    // non-fuzzy hits already in `qhits`; if strict is solid, drop every trigram hit so
     // anchors and the report stay strict. The cost of fuzzy lands only on queries
     // that were already failing.
     let n_q = ql.len();
@@ -352,7 +352,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     // declaration catalog stays declaration-only); it only feeds the anchor
     // ranking's situating field below. Deliberately STRICT-ONLY (`allow_fuzzy =
     // false`, tiers 1-3): a module IMPLEMENTING a contract is already contextual
-    // evidence, so the fuzzy T5 rescue — reserved for salvaging an otherwise weak
+    // evidence, so the fuzzy trigram rescue — reserved for salvaging an otherwise weak
     // DECLARATION query — never widens the situating field into false-cognate
     // contracts. Deterministic: BTree-ordered keys, fixed query order.
     let mut situating_qhits: Vec<Vec<&str>> = (0..ql.len()).map(|_| Vec::new()).collect();
@@ -683,7 +683,7 @@ pub fn query(model: &ProjectModel, terms: &[String]) -> QueryResult {
     // derived) — the caller should re-query in the code's own vocabulary (the
     // matched terms/files show it) or explore before trusting the answer.
     let has_solid = report_terms.iter().any(|t| t.tier == "exact" || t.tier == "fold");
-    // The T5 fuzzy RESCUE only survives the gating above on an otherwise
+    // The fuzzy trigram RESCUE only survives the gating above on an otherwise
     // weak/none query — so its presence here means the strict ladder was thin
     // and trigram similarity (shared-root / morphology) carried the request.
     // Flagged as `bridged`: real evidence, form-not-literal, so the planning

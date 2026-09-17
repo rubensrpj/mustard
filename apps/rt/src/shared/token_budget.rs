@@ -1,6 +1,6 @@
 //! Token-budget primitive for prompt pruning.
 //!
-//! Spec A v4 / W6 — supports `resume_bootstrap`'s ≤10k-token discipline.
+//! Supports `resume_bootstrap`'s ≤10k-token discipline.
 //! Estimator uses the conventional 4-chars-per-token heuristic.
 //!
 //! ## API

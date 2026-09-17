@@ -1,10 +1,10 @@
 //! The `run` subcommands for the REVIEW and QA gates (`review/`).
 //!
-//! FOUR registrations per command. Two live in this file: the variant in
-//! [`ReviewCmd`] AND its arm in [`dispatch`] below; forgetting the arm still
-//! compiles, but the command vanishes from the CLI. The other two live in
-//! the tests: the name in `tests/run_command_surface.rs`, and a caller (or a
-//! justified `RUNTIME_WHITELIST` line) in `tests/template_parity.rs`.
+//! A new command takes its variant in [`ReviewCmd`] and its arm in
+//! [`dispatch`] below (the compiler demands the arm), its line in
+//! `tests/fixtures/run-surface.txt`, which `tests/run_command_surface.rs`
+//! compares with the clap tree, and a caller in the product text, which
+//! `tests/template_parity.rs` demands with no exception list.
 //!
 //! [`crate::commands::RunCmd`] hoists this enum with `#[command(flatten)]`, so
 //! every name stays FLAT: `mustard-rt run <name>`, never `run review <name>`.

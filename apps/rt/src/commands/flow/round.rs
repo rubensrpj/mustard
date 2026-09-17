@@ -117,7 +117,7 @@ pub(crate) fn can_run(phase: &str) -> bool {
 /// que o teste pede, a chamada da rodada e as linhas que os agentes devolvem.
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
 
     use mustard_core::io::spec_events as store;
@@ -273,38 +273,11 @@ mod tests {
             "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary"}));
     }
 
-    /// As linhas de código de um arquivo: as que não são vazias nem
-    /// comentário, antes do módulo de testes dele.
-    fn code_lines(source: &str) -> usize {
-        let lines: Vec<&str> = source.lines().map(str::trim).collect();
-        let end = lines
-            .windows(2)
-            .position(|pair| pair[0] == "#[cfg(test)]" && pair[1] == "mod tests {")
-            .unwrap_or(lines.len());
-        lines[..end].iter().filter(|line| !line.is_empty() && !line.starts_with("//")).count()
-    }
-
-    /// Nenhum arquivo da rodada passa de 800 linhas de código: a porta e cada
-    /// parte da pasta dela, contadas sem as linhas vazias, os comentários e o
-    /// módulo de testes.
+    /// Nenhum arquivo da rodada passa do teto de linhas de código: a porta e
+    /// cada parte da pasta dela, pela medida única do núcleo.
     #[test]
     fn no_file_of_the_round_goes_over_the_code_line_cap() {
-        const CAP: usize = 800;
-        let flow = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("flow");
-        let mut parts: Vec<PathBuf> = std::fs::read_dir(flow.join("round"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-            .collect();
-        parts.sort();
-        let files: Vec<PathBuf> = std::iter::once(flow.join("round.rs")).chain(parts).collect();
-        let measured: Vec<(String, usize)> = files
-            .iter()
-            .map(|path| (path.display().to_string(), code_lines(&std::fs::read_to_string(path).unwrap())))
-            .collect();
-        let over: Vec<&(String, usize)> = measured.iter().filter(|(_, lines)| *lines > CAP).collect();
-        assert!(over.is_empty(), "passam de {CAP} linhas de código: {over:?}");
+        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("flow").join("round.rs");
+        assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }
