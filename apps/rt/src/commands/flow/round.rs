@@ -604,6 +604,10 @@ fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
     // fecha, porque o fechamento recusa e diz qual refazer e a rodada nunca a
     // despacharia de novo.
     let to_redo = waves_to_redo(log);
+    // O pedido gravado descreve o plano daquele momento: a onda que ganhou
+    // versão nova depois dele, e ainda não entregou, sai de novo com o pedido
+    // do plano atual.
+    let replanned = waves_replanned(log);
     // O que já saiu da fila: a onda com pedido e também a onda que já
     // entregou. Só o pedido não basta, porque a onda entregue antes de a
     // rodada existir não tem pedido nenhum e apareceria como pronta para
@@ -617,6 +621,7 @@ fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
         .into_iter()
         .filter(|e| e.event_type == "send")
         .filter_map(SpecEvent::wave)
+        .filter(|n| !replanned.contains(n))
         .chain(delivered.iter().copied())
         .filter(|n| !to_redo.contains(n))
         .collect();
@@ -655,17 +660,44 @@ fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
             rejected.remove(&n);
         }
     }
+    let last_send = last_sends(log);
+    rejected
+        .into_iter()
+        .filter(|(n, id)| last_send.get(n).is_none_or(|sent| sent < id))
+        .map(|(n, _)| n)
+        .collect()
+}
+
+/// O número do último pedido de cada onda.
+fn last_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     let mut last_send: BTreeMap<u64, u64> = BTreeMap::new();
     for send in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "send") {
         if let Some(n) = send.wave() {
             last_send.insert(n, send.id);
         }
     }
-    rejected
-        .into_iter()
-        .filter(|(n, id)| last_send.get(n).is_none_or(|sent| sent < id))
-        .map(|(n, _)| n)
-        .collect()
+    last_send
+}
+
+/// As ondas replanejadas depois do último pedido: a onda, ou uma tarefa dela,
+/// ganhou versão nova depois do envio. A tarefa que muda de onda replaneja as
+/// duas — a de onde saiu, pela versão que ela substitui, e a para onde foi.
+fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
+    let last_send = last_sends(log);
+    let by_id: BTreeMap<u64, &SpecEvent> = log.events.iter().map(|e| (e.id, e)).collect();
+    let mut replanned = BTreeSet::new();
+    for event in log.block(BlockQuery::Block(Block::Waves)) {
+        if !matches!(event.event_type.as_str(), "wave" | "task") {
+            continue;
+        }
+        let before = event.int("replaces").and_then(|old| by_id.get(&old)).and_then(|old| old.wave());
+        for n in event.wave().into_iter().chain(before) {
+            if last_send.get(&n).is_some_and(|sent| *sent < event.id) {
+                replanned.insert(n);
+            }
+        }
+    }
+    replanned
 }
 
 /// As ondas prontas para sair, em ordem de nível e de número, cada uma com os
@@ -1016,6 +1048,62 @@ mod tests {
             .filter_map(|review| review["wave"].as_u64())
             .collect();
         assert_eq!(waves, vec![1], "o conserto entregue volta para a revisão: {back}");
+    }
+
+    /// A onda que ganha versão nova depois do pedido volta para a fila, uma
+    /// vez só: o pedido gravado descrevia o plano antigo. A tarefa que muda de
+    /// onda replaneja as duas. A onda que já entregou não volta por
+    /// replanejamento — só a reprovação a devolve.
+    #[test]
+    fn a_wave_replanned_after_its_send_goes_out_again_and_only_once() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        let first = round(root, "x", None, None);
+        assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(2), "{first}");
+
+        let path = store::spec_file(root, "x").unwrap();
+        let current = |kind: &str, n: u64| -> Value {
+            let log = store::read(&path).unwrap().unwrap();
+            let event = log
+                .visible()
+                .into_iter()
+                .find(|e| e.event_type == kind && e.wave() == Some(n))
+                .unwrap_or_else(|| panic!("sem {kind} da onda {n}"));
+            let mut fields = event.fields.clone();
+            for key in ["v", "id", "code", "at", "search", "type", "author"] {
+                fields.remove(key);
+            }
+            let id = event.id;
+            let mut body = Value::Object(fields);
+            body["replaces"] = json!(id);
+            body
+        };
+
+        // A onda 1 ganha outra versão; a tarefa da onda 2 muda para a 1.
+        let mut wave = current("wave", 1);
+        wave["done_when"] = json!("A suíte passa e o teste novo também.");
+        id_of(&write(root, "x", "wave", wave));
+        let mut task = current("task", 2);
+        task["wave"] = json!(1);
+        id_of(&write(root, "x", "task", task));
+
+        let again = round(root, "x", None, None);
+        let waves: Vec<u64> =
+            again["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
+        assert_eq!(waves, vec![1, 2], "as duas foram replanejadas depois do pedido: {again}");
+
+        let quiet = round(root, "x", None, None);
+        assert_eq!(quiet["dispatch"], json!([]), "o pedido novo já descreve o plano atual: {quiet}");
+
+        // Entregue, a onda não volta por uma versão nova.
+        let report = json!({"waves": [{"wave": 1, "delivered": "Saiu.", "files": ["src/a.rs"]}]});
+        round(root, "x", Some(&report.to_string()), None);
+        let mut wave = current("wave", 1);
+        wave["text"] = json!("Onda 1, texto revisto.");
+        id_of(&write(root, "x", "wave", wave));
+        let after = round(root, "x", None, None);
+        assert_eq!(after["dispatch"], json!([]), "a onda 1 já entregou: {after}");
     }
 
     /// O que uma onda entregou acima do teto de caracteres é recusado, e nada
