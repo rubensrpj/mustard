@@ -8,8 +8,10 @@
 //! arquivos: o de eventos, o `.md` e a página.
 //!
 //! **O que trava.** Onda sem commit; onda cuja última revisão foi reprovada;
-//! pedido do usuário que nenhuma onda entregou; e critério cuja prova não
-//! passou. Cada recusa diz qual onda refazer — não basta os testes passarem.
+//! pedido do usuário que nenhuma onda entregou; critério cuja prova não
+//! passou; e critério cuja prova saiu verde sem rodar teste nenhum — no cargo,
+//! `running 0 tests` em todos os alvos, que é o que um nome de teste errado
+//! dá. Cada recusa diz qual onda refazer — não basta os testes passarem.
 //!
 //! O fechamento não chama a função antiga de fechar, que grava arquivos do
 //! formato velho: ela ficou onde estava, e a fase `closed` passa a sair só por
@@ -41,8 +43,8 @@ pub struct CloseOpts {
 enum CloseRefusal {
     /// Uma recusa do arquivo de eventos.
     Refused(Refusal),
-    /// O relatório da última rodada não se entende.
-    BadReport { detail: String },
+    /// O relatório da última rodada foi recusado pela mesma porta da rodada.
+    Report(crate::commands::flow::round::RoundRefusal),
     /// A spec não está em execução.
     NotRunning { phase: String },
     /// Uma onda que não tem commit nenhum.
@@ -53,18 +55,21 @@ enum CloseRefusal {
     RequestNotDelivered { code: String },
     /// Um critério cuja prova não passou.
     CriterionFailed { code: String, output: String },
+    /// Um critério cuja prova saiu verde sem rodar teste nenhum.
+    CriterionRanNoTest { code: String },
 }
 
 impl CloseRefusal {
     fn reason(&self) -> String {
         match self {
             Self::Refused(refusal) => refusal.reason().to_string(),
-            Self::BadReport { .. } => "close-bad-report".into(),
+            Self::Report(refusal) => refusal.reason(),
             Self::NotRunning { .. } => "close-not-running".into(),
             Self::WaveWithoutCommit { .. } => "wave-without-commit".into(),
             Self::WaveRejected { .. } => "wave-rejected".into(),
             Self::RequestNotDelivered { .. } => "request-not-delivered".into(),
             Self::CriterionFailed { .. } => "criterion-failed".into(),
+            Self::CriterionRanNoTest { .. } => "criterion-ran-no-test".into(),
         }
     }
 
@@ -74,7 +79,7 @@ impl CloseRefusal {
         };
         match self {
             Self::Refused(refusal) => refusal.message(lang),
-            Self::BadReport { detail } => fill("close.bad_report", &[("{detail}", detail.clone())]),
+            Self::Report(refusal) => refusal.message(lang),
             Self::NotRunning { phase } => fill("close.not_running", &[("{phase}", phase.clone())]),
             Self::WaveWithoutCommit { wave } => {
                 fill("close.wave_without_commit", &[("{wave}", wave.to_string())])
@@ -86,10 +91,14 @@ impl CloseRefusal {
             Self::CriterionFailed { code, output } => {
                 fill("close.criterion_failed", &[("{code}", code.clone()), ("{output}", output.clone())])
             }
+            Self::CriterionRanNoTest { code } => fill("close.criterion_ran_no_test", &[("{code}", code.clone())]),
         }
     }
 
     fn to_value(&self, lang: Locale) -> Value {
+        if let Self::Report(refusal) = self {
+            return refusal.to_value(lang);
+        }
         json!({ "ok": false, "reason": self.reason(), "hint": self.message(lang) })
     }
 }
@@ -135,14 +144,13 @@ fn run_close(
         return Err(CloseRefusal::NotRunning { phase });
     }
 
-    // O que voltou da última rodada entra antes das conferências: é ele que
-    // fecha a última onda.
+    // O que voltou da última rodada entra antes das conferências, pela mesma
+    // porta da rodada, com o commit: é ele que fecha a última onda.
     let mut recorded: Vec<Value> = Vec::new();
     if let Some(raw) = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-        let reports = crate::commands::flow::round::parse_report(raw)
-            .map_err(|detail| CloseRefusal::BadReport { detail })?;
-        recorded = crate::commands::flow::round::record_reports(&opts.root, &spec, &reports)
-            .map_err(CloseRefusal::Refused)?;
+        let taken = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang)
+            .map_err(CloseRefusal::Report)?;
+        recorded = taken.recorded;
     }
 
     let log = read(&path)?;
@@ -176,7 +184,11 @@ fn run_close(
             .map_err(CloseRefusal::Refused)?;
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
         if out.result != "pass" && failed.is_none() {
-            failed = Some(CloseRefusal::CriterionFailed { code: code.clone(), output: out.output.clone() });
+            failed = Some(if out.ran_no_test {
+                CloseRefusal::CriterionRanNoTest { code: code.clone() }
+            } else {
+                CloseRefusal::CriterionFailed { code: code.clone(), output: out.output.clone() }
+            });
         }
     }
     if let Some(refusal) = failed {
@@ -207,21 +219,13 @@ fn run_close(
         out["md"] = json!(pages.md);
         out["html"] = json!(pages.html);
     }
-    // O fechamento é um marco: manda publicar, menos com item retido ou com a
-    // página que não pôde ser refeita, que esperam — e o pull request espera
-    // a publicação.
+    // O fechamento é um marco: manda publicar, menos com a página que não pôde
+    // ser refeita, que espera — e o pull request espera a publicação.
     let then = match command.as_str() {
         Some(line) => translate("close.next", lang).replace("{command}", line),
         None => translate("resume.next.closed", lang).to_string(),
     };
-    crate::commands::spec_events::pages::end_milestone(
-        &mut out,
-        pages.as_ref(),
-        "close",
-        &then,
-        &crate::commands::spec_events::pages::after_purge("close", &then, lang),
-        lang,
-    );
+    crate::commands::spec_events::pages::end_milestone(&mut out, pages.as_ref(), "close", &then, lang);
     if !command.is_null() {
         out["command"] = command;
     }
@@ -353,12 +357,13 @@ mod tests {
         };
         assert_eq!(round(None)["ok"], json!(true));
         std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
-        let checked: Vec<Value> =
-            crits.iter().map(|id| json!({"criterion": id, "tests_rule": "confere a regra"})).collect();
-        let report = json!({"waves": [{"wave": 1, "delivered": "Saiu.", "files": ["src/a.rs"],
-            "verdict": {"result": "approved", "text": "passou", "criteria": checked}}],
-            "commit": {"title": "feat(onda-1): a soma sai", "body": "A onda 1."}});
-        assert_eq!(round(Some(report.to_string()))["ok"], json!(true));
+        let delivered = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a soma sai"});
+        let back = round(Some(format!("<DELIVERED>{delivered}</DELIVERED>")));
+        assert_eq!(back["ok"], json!(true), "{back}");
+        let checked: Vec<Value> = crits.iter().map(|id| json!({"criterion": id, "tests_rule": true})).collect();
+        let verdict = json!({"wave": 1, "result": "approved", "text": "passou", "criteria": checked});
+        let judged = round(Some(format!("<VERDICT>{verdict}</VERDICT>")));
+        assert_eq!(judged["ok"], json!(true), "{judged}");
     }
 
     fn close(root: &Path, spec: &str) -> Value {
@@ -475,12 +480,11 @@ mod tests {
         translate(key, Locale::PtBr).replace("{command}", command)
     }
 
-    /// Com um item de texto que parece senha, a rodada e o fechamento dizem o
-    /// código do item a expurgar e não mandam publicar; a rodada continua
-    /// dizendo o próximo passo, e o fechamento deixa o pull request para
-    /// depois da publicação. O `.html` local sai sem o texto do item.
+    /// Com um item de texto que parece senha, a rodada e o fechamento mandam
+    /// publicar assim mesmo e dizem o código do item a expurgar; o `.html`
+    /// local sai com o trecho trocado por "…" e o resto do item legível.
     #[test]
-    fn a_withheld_item_holds_the_publish_of_the_round_and_the_close() {
+    fn a_withheld_item_is_named_and_no_longer_holds_the_publish_of_the_round_and_the_close() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -495,46 +499,58 @@ mod tests {
             [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
         {
             assert_eq!(report["ok"], json!(true), "{report}");
-            assert!(report.get("publish").is_none(), "{milestone}: {report}");
+            assert_eq!(report["publish"], json!(["spec", "project"]), "{milestone}: {report}");
             assert_eq!(report["withheld"], json!([code]), "{milestone}: {report}");
             let next = report["next"].as_str().unwrap_or_default();
             assert!(next.contains(&code) && next.contains("write purge"), "{milestone}: {next}");
-            assert!(next.contains(&format!("`{milestone}`")) && next.ends_with(&then), "{milestone}: {next}");
-            assert!(!next.contains("write publish"), "{milestone}: {next}");
+            assert!(next.contains("write publish") && next.ends_with(&then), "{milestone}: {next}");
             let warned = report["warnings"].as_array().cloned().unwrap_or_default();
             assert!(warned.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
         }
         let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         assert!(!html.contains("a1b2c3d4e5f6g7h8i9j0"), "the local page keeps the secret out");
+        assert!(html.contains("GITHUB_TOKEN=…"), "the rest of the item stays readable");
     }
 
-    /// Quando a página não pode ser refeita, a rodada e o fechamento não
-    /// mandam publicar a que ficou no disco: dizem o motivo nos avisos,
-    /// mandam refazer a página antes de publicar e seguem com o próximo passo.
+    /// Quando a página da spec ou a do projeto não pode ser refeita, a rodada e
+    /// o fechamento não mandam publicar a que ficou no disco: dizem nos avisos
+    /// qual página falhou e por quê, mandam refazer a página antes de publicar e
+    /// seguem com o próximo passo. Com a página da spec boa e só a do projeto
+    /// impedida, também não mandam.
     #[test]
     fn a_page_that_could_not_be_rebuilt_is_never_ordered_to_be_published() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        ready_to_close(root, "x", &["git --version"]);
-        // Uma pasta no lugar da página impede de gravá-la.
-        let page = root.join(".claude/spec/x/spec.html");
-        std::fs::remove_file(&page).unwrap();
-        std::fs::create_dir(&page).unwrap();
+        for (blocked, name) in [("x/spec.html", "page.name.spec"), ("project.html", "page.name.project")] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            ready_to_close(root, "x", &["git --version"]);
+            // Uma pasta no lugar da página impede de gravá-la.
+            let page = root.join(".claude/spec").join(blocked);
+            std::fs::remove_file(&page).unwrap();
+            std::fs::create_dir(&page).unwrap();
 
-        let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
-        let closed = close(root, "x");
-        for (report, milestone, then) in
-            [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
-        {
-            assert_eq!(report["ok"], json!(true), "{report}");
-            assert!(report.get("publish").is_none(), "{milestone}: {report}");
-            let next = report["next"].as_str().unwrap_or_default();
-            assert!(!next.contains("write publish"), "{milestone}: {next}");
-            assert!(next.starts_with(translate("page.not_rebuilt", Locale::PtBr)), "{milestone}: {next}");
-            assert!(next.contains("run page --spec") && next.contains(&format!("`{milestone}`")), "{milestone}: {next}");
-            assert!(next.ends_with(&then), "{milestone}: {next}");
-            let warned = report["warnings"].as_array().cloned().unwrap_or_default();
-            assert!(warned.iter().any(|w| w["reason"] == json!("io-failed")), "{milestone} gives the reason: {report}");
+            let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+            let closed = close(root, "x");
+            let said = translate("page.not_rebuilt", Locale::PtBr).replace("{page}", translate(name, Locale::PtBr));
+            let failed = translate("page.rebuild_failed", Locale::PtBr)
+                .replace("{page}", translate(name, Locale::PtBr))
+                .replace("{detail}", "");
+            let failed = failed.trim_end_matches('.');
+            for (report, milestone, then) in
+                [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
+            {
+                assert_eq!(report["ok"], json!(true), "{blocked}: {report}");
+                assert!(report.get("publish").is_none(), "{blocked}, {milestone}: {report}");
+                let next = report["next"].as_str().unwrap_or_default();
+                assert!(!next.contains("write publish"), "{blocked}, {milestone}: {next}");
+                assert!(next.starts_with(&said), "{blocked}, {milestone}: {next}");
+                assert!(next.contains("run page --spec") && next.contains(&format!("`{milestone}`")), "{milestone}: {next}");
+                assert!(next.ends_with(&then), "{blocked}, {milestone}: {next}");
+                let warned = report["warnings"].as_array().cloned().unwrap_or_default();
+                assert!(
+                    warned.iter().any(|w| w["hint"].as_str().unwrap_or_default().starts_with(failed)),
+                    "{blocked}, {milestone} names the page that failed: {report}"
+                );
+            }
         }
     }
 
@@ -607,6 +623,48 @@ mod tests {
         crate::shared::spec_state::seed_request(root, "x", "Quero também a barra de status.");
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("request-not-delivered"), "{refused}");
+    }
+
+    /// Uma prova do cargo com o nome do teste errado e `--exact` sai verde sem
+    /// rodar teste nenhum: o fechamento recusa, diz qual critério e grava a
+    /// execução como reprovada. A prova com o nome certo passa.
+    #[test]
+    fn a_proof_that_ran_zero_tests_blocks_the_close() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"prova\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn soma(a: u32, b: u32) -> u32 { a + b }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_de_dois() { assert_eq!(super::soma(1, 1), 2); }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        ready_to_close(
+            root,
+            "x",
+            &["cargo test --lib -- tests::soma_de_dois --exact", "cargo test --lib -- tests::soma --exact"],
+        );
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+        let expected = translate("close.criterion_ran_no_test", Locale::PtBr).replace("{code}", &codes[&criteria[1]]);
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        let runs: Vec<(Option<u64>, Option<&str>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "criterion_run")
+            .map(|e| (e.int("criterion"), e.str_field("result")))
+            .collect();
+        assert_eq!(runs, vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail"))]);
+        assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 
     /// Um critério cuja prova não passa trava o fechamento, e a execução dele

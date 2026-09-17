@@ -1,5 +1,5 @@
 ---
-name: review
+name: mustard-review
 description: Confere com desconfiança o trabalho de uma onda, a revisão de fora de um levantamento ou o pull request de um colega. Só lê e roda testes.
 tools: Read, Grep, Glob, Bash
 model: inherit
@@ -32,4 +32,6 @@ Achou um erro que pode se repetir? Proponha uma lição curta. O erro veio de um
 ## O que devolver
 
 No idioma do texto do projeto: o veredito, cada achado com arquivo, linha e gravidade, e as propostas. Termine com uma linha só, com JSON válido:
-<VERDICT>{"result":"approved","text":"o veredito numa frase","criteria":[{"criterion":505,"tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
+<VERDICT>{"wave":1,"result":"approved","text":"o veredito numa frase","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
+
+`wave` é a onda do pedido; `result` é `approved` ou `rejected`; `criterion` é o código que o pedido mostra.

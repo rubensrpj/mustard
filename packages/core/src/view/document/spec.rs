@@ -1512,7 +1512,7 @@ mod tests {
             "page.wave.prompt.summary",
             "page.wave.sent",
             "page.conversation.cut",
-            "page.withheld",
+            "page.purge_pending",
             "page.withheld_found",
             "page.too_big",
             "project.kind",

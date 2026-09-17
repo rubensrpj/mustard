@@ -27,8 +27,8 @@ After: "The page is published only at approval, at the end of each round and at 
 Before: "I implemented the writer with an advisory lock and a monotonic id, fixing the race."
 After: "Two sessions can now write the same spec. One waits for the other to finish, and no number repeats."
 
-Before: "As previously mentioned, the initial analysis indicated that Suzano would use C#."
-After: "I was wrong: I said Suzano uses C#. It uses Node.js with NestJS."
+Before: "As previously mentioned, the initial analysis indicated that the payment service would use C#."
+After: "I was wrong: I said the payment service uses C#. It uses Node.js with NestJS."
 
 ## While working
 

@@ -102,9 +102,9 @@ pub enum FlowCmd {
         /// A spec cuja rodada corre. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
-        /// O relatório da rodada anterior, em JSON: uma entrada por onda, com
-        /// o que ela entregou, os arquivos que mexeu, o veredito da revisão
-        /// e, quando é o caso, a mudança de plano que o agente propõe.
+        /// O relatório da rodada anterior: a linha do fim de cada agente,
+        /// como ela veio — `<DELIVERED>{…}</DELIVERED>` do agente de onda e
+        /// `<VERDICT>{…}</VERDICT>` do revisor, uma por linha.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
@@ -121,7 +121,7 @@ pub enum FlowCmd {
         /// A spec que fecha. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
-        /// O relatório da última rodada, em JSON, no mesmo formato da rodada.
+        /// O relatório da última rodada, no mesmo formato da rodada.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.

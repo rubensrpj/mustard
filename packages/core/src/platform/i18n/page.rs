@@ -213,30 +213,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              each with `\"ok\":false` and a `\"reason\"` when it fails. The addresses never go to \
              the conversation: they live in the status line."
         }
-        ("page.hold", Locale::PtBr) => {
-            "Não publique as páginas: {codes} têm texto com cara de segredo e ficaram fora da página. \
-             Expurgue cada item com `mustard-rt run write purge --spec <spec> --json '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
+        ("page.purge_pending", Locale::PtBr) => {
+            "Os itens {codes} ainda guardam no arquivo um trecho com cara de segredo, que saiu da \
+             página como \"…\": expurgue cada um com `mustard-rt run write purge --spec <spec> --json \
+             '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
         }
-        ("page.hold", Locale::EnUs) => {
-            "Do not publish the pages: {codes} have text that looks like a secret and were left off \
-             the page. Purge each item with `mustard-rt run write purge --spec <spec> --json '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
+        ("page.purge_pending", Locale::EnUs) => {
+            "Items {codes} still keep in the file an excerpt that looks like a secret, which left the \
+             page as \"…\": purge each one with `mustard-rt run write purge --spec <spec> --json \
+             '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
         }
-        ("page.after_purge", Locale::PtBr) => {
-            "Depois, refaça a página com `mustard-rt run page --spec <spec>` e, sem item retido, \
-             publique as duas páginas e grave cada publicação com o marco `{milestone}`."
+        ("page.after_rebuild", Locale::PtBr) => {
+            "Refaça a página com `mustard-rt run page --spec <spec>`, publique as duas páginas e \
+             grave cada publicação com o marco `{milestone}`."
         }
-        ("page.after_purge", Locale::EnUs) => {
-            "Then rebuild the page with `mustard-rt run page --spec <spec>` and, with no item \
-             withheld, publish both pages and record each publication with the `{milestone}` milestone."
+        ("page.after_rebuild", Locale::EnUs) => {
+            "Rebuild the page with `mustard-rt run page --spec <spec>`, publish both pages and \
+             record each publication with the `{milestone}` milestone."
         }
         ("page.not_rebuilt", Locale::PtBr) => {
-            "Não publique as páginas: a página da spec não pôde ser refeita, e o motivo está em \
-             `warnings`."
+            "Não publique as páginas: a {page} não pôde ser refeita, e o motivo está em `warnings`."
         }
         ("page.not_rebuilt", Locale::EnUs) => {
-            "Do not publish the pages: the spec page could not be rebuilt, and the reason is in \
-             `warnings`."
+            "Do not publish the pages: the {page} could not be rebuilt, and the reason is in `warnings`."
         }
+        ("page.rebuild_failed", Locale::PtBr) => "Não consegui refazer a {page}: {detail}.",
+        ("page.rebuild_failed", Locale::EnUs) => "Could not rebuild the {page}: {detail}.",
+        ("page.name.spec", Locale::PtBr) => "página da spec",
+        ("page.name.spec", Locale::EnUs) => "spec page",
+        ("page.name.project", Locale::PtBr) => "página do projeto (`.claude/spec/project.html`)",
+        ("page.name.project", Locale::EnUs) => "project page (`.claude/spec/project.html`)",
 
         // A página e o `.md` de uma spec (`view::document`): os títulos dos
         // blocos, os nomes dos tipos, os rótulos dos campos e dos valores.
@@ -292,21 +298,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The {count} oldest conversation entries stayed only in `spec.md`: with them, the page \
              would pass 16 MB, the size claude.ai accepts."
         }
-        ("page.withheld", Locale::PtBr) => {
-            "Retido: este trecho tem texto com cara de segredo (chave, token ou senha) e não vai para a \
-             página. Expurgue o item antes de publicar."
-        }
-        ("page.withheld", Locale::EnUs) => {
-            "Withheld: this part has text that looks like a secret (key, token or password) and does not \
-             go on the page. Purge the item before publishing."
-        }
         ("page.withheld_found", Locale::PtBr) => {
-            "{count} trechos têm texto com cara de segredo e ficaram fora da página: {codes}. Expurgue \
-             cada item com `mustard-rt run write purge` antes de publicar."
+            "{count} trechos com cara de segredo saíram da página como \"…\": {codes}. Expurgue cada \
+             item com `mustard-rt run write purge` para tirar o trecho também do arquivo."
         }
         ("page.withheld_found", Locale::EnUs) => {
-            "{count} parts have text that looks like a secret and were left off the page: {codes}. Purge \
-             each item with `mustard-rt run write purge` before publishing."
+            "{count} excerpts that look like a secret left the page as \"…\": {codes}. Purge each \
+             item with `mustard-rt run write purge` to take the excerpt out of the file too."
         }
         ("page.too_big", Locale::PtBr) => {
             "A página tem {bytes} bytes mesmo sem a conversa, e o claude.ai aceita até {max}: assim \
@@ -410,6 +408,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.group.criterion_run", Locale::EnUs) => "Runs",
         ("page.group.skill", _) => "Skills",
 
+        ("page.field.excerpt", Locale::PtBr) => "trecho",
+        ("page.field.excerpt", Locale::EnUs) => "excerpt",
         ("page.field.reply_to", Locale::PtBr) => "Responde a",
         ("page.field.reply_to", Locale::EnUs) => "Replies to",
         ("page.field.hook", Locale::PtBr) => "Gancho",
@@ -808,8 +808,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            330,
-            0x5322_b040_9b0a_4fd8,
+            333,
+            0x3333_d997_5c8b_8fa8,
         );
     }
 

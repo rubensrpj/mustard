@@ -76,6 +76,30 @@ fn same_file(a: &Path, b: &Path) -> bool {
     comparable(a) == comparable(b)
 }
 
+/// O motivo estável de uma prova que saiu verde sem rodar teste nenhum. Quem
+/// lê o resultado compara com esta constante, nunca com uma frase.
+pub(super) const RAN_NO_TEST: &str = "ran-no-test";
+
+/// A prova é uma execução de testes do cargo e, em todos os alvos, a saída diz
+/// `running 0 tests`: o filtro não casou com teste nenhum, e o verde não prova
+/// nada. Sem nenhuma linha `running`, a pergunta não se responde aqui, e a
+/// prova segue como veio — outros executores de teste não são lidos.
+pub(super) fn ran_no_test(command: &str, output: &str) -> bool {
+    if !command.to_ascii_lowercase().contains("cargo test") {
+        return false;
+    }
+    let counts: Vec<&str> = output
+        .split(['\n', '\r'])
+        .flat_map(|line| line.match_indices("running ").map(move |(at, _)| &line[at + "running ".len()..]))
+        .filter_map(|rest| {
+            let (count, tail) = rest.split_once(' ')?;
+            let unit = tail.split_whitespace().next()?;
+            (matches!(unit, "test" | "tests") && count.bytes().all(|b| b.is_ascii_digit())).then_some(count)
+        })
+        .collect();
+    !counts.is_empty() && counts.iter().all(|count| count.trim_start_matches('0').is_empty())
+}
+
 /// `true` for the two cargo subcommands that relink a crate's binary.
 fn is_cargo_build_or_test(lower_command: &str) -> bool {
     lower_command.contains("cargo build") || lower_command.contains("cargo test")
@@ -544,6 +568,16 @@ fn run_ac_command_inner(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
+    if status.success() && ran_no_test(command, &combined_full) {
+        // Verde sem teste nenhum não é prova: o nome do teste não casou.
+        return AcResult {
+            id: String::new(),
+            status: "fail".to_string(),
+            exit: Some(0),
+            duration_ms,
+            stderr_excerpt: RAN_NO_TEST.to_string(),
+        };
+    }
     if status.success() {
         // Optional `Expect:` evidence gate. Absent ⇒ the legacy exit-0 pass
         // (byte-for-byte). Present ⇒ the regex must match the command's own
@@ -741,6 +775,20 @@ mod tests {
         std::fs::write(&wp, "# Plan A\n## Acceptance Criteria\n- [ ] AC-G1: ok — Command: `true`\n").unwrap();
         let found = find_spec_file(dir.path(), "plan-a").unwrap();
         assert_eq!(found, wp);
+    }
+
+    /// A saída do cargo com `running 0 tests` em todos os alvos é uma prova
+    /// que não rodou teste nenhum; basta um alvo com teste para ela valer, e
+    /// sem linha nenhuma de `running`, ou fora do cargo, nada se conclui.
+    #[test]
+    fn a_cargo_run_with_zero_tests_in_every_target_ran_no_test() {
+        let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n\n     Running tests/a.rs\n\nrunning 0 tests\n";
+        assert!(ran_no_test("cargo test -p x -- nome::errado --exact", none));
+        let one = "running 0 tests\n\nrunning 1 test\ntest tests::soma ... ok\n";
+        assert!(!ran_no_test("cargo test -p x -- soma", one));
+        assert!(!ran_no_test("cargo test -p x", "running 12 tests\n"));
+        assert!(!ran_no_test("cargo test -p x", "cargo test: 6 passed (1 suite)"), "no running line, no verdict");
+        assert!(!ran_no_test("npm test", none), "other runners are not read");
     }
 
     /// When both `spec.md` and `wave-plan.md` exist in the same dir, the

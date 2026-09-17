@@ -120,9 +120,11 @@ pub fn write_at(
 /// Recusa, sem tocar no arquivo: tipo desconhecido, campo obrigatório vazio,
 /// código mandado por quem grava, fato de ponto sem fonte, arquivo citado que
 /// não existe em nenhuma de `cite_roots`, número ou código apontado que não
-/// existe, versão nova de outro tipo e filtro de remoção que não pega nada. O
-/// expurgo reescreve o arquivo com o texto dos alvos tirado; as outras
-/// gravações só acrescentam uma linha. Um nome de código citado num fato que
+/// existe, versão nova de outro tipo, filtro de remoção que não pega nada e
+/// expurgo cujo trecho não aparece no alvo. O expurgo reescreve o arquivo com
+/// o trecho dos alvos trocado por "…"; as outras gravações só acrescentam uma
+/// linha. Aqui o expurgo só usa o trecho que o pedido indica em `excerpt`;
+/// [`write_guarded`] recebe também a procura de segredo. Um nome de código citado num fato que
 /// o mapa do projeto (o da última de `cite_roots`) não confirma só avisa, em
 /// [`Written::citation_warnings`].
 ///
@@ -143,37 +145,45 @@ pub fn write_at_then(
     at: &str,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
-    write_inner(path, event_type, draft, cite_roots, at, |_, _| Ok(()), then)
+    write_inner(path, event_type, draft, cite_roots, at, &|_| Vec::new(), |_, _| Ok(()), then)
 }
 
 /// Grava um evento com a hora de agora, depois de `guard` aceitar o arquivo
 /// como ele ficaria, e entrega a `then` o arquivo como ficou. `guard` recebe o
 /// arquivo antes e depois da gravação, com a trava presa, e a recusa dele
-/// deixa o arquivo como estava. Veja [`write_at_then`].
+/// deixa o arquivo como estava. Num expurgo sem `excerpt`, os trechos de cada
+/// alvo são os que `find` acha nos campos de texto dele. Veja
+/// [`write_at_then`].
 pub fn write_guarded(
     path: &Path,
     event_type: &str,
     draft: Map<String, Value>,
     cite_roots: &[PathBuf],
+    find: &dyn Fn(&str) -> Vec<String>,
     guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
-    write_inner(path, event_type, draft, cite_roots, &now(), guard, then)
+    write_inner(path, event_type, draft, cite_roots, &now(), find, guard, then)
 }
 
 /// A gravação de [`write_at_then`], com a conferência de [`write_guarded`]
 /// antes de escrever.
+#[allow(clippy::too_many_arguments)]
 fn write_inner(
     path: &Path,
     event_type: &str,
     draft: Map<String, Value>,
     cite_roots: &[PathBuf],
     at: &str,
+    find: &dyn Fn(&str) -> Vec<String>,
     guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     then: impl FnOnce(&SpecLog),
 ) -> Result<Written, Refusal> {
     let mut event = model::normalize(draft, event_type);
     model::validate(&event)?;
+    // O trecho que o pedido indica serve ao expurgo e nunca vai para o
+    // arquivo: gravá-lo seria gravar de novo o que se quer tirar.
+    let asked = event.remove("excerpt").and_then(|v| v.as_str().map(str::to_string));
     let citation_warnings = check_citations(cite_roots, &event)?;
 
     let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
@@ -187,6 +197,11 @@ fn write_inner(
     let line = model::render_line(&model::stamp(event, id, code.as_deref(), at));
 
     // O arquivo como ficaria, conferido antes de qualquer escrita.
+    let redactions = if effects.purged.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        model::purge_excerpts(&log, &effects.purged, asked.as_deref(), find)?
+    };
     let (next, appended) = if effects.purged.is_empty() {
         // Uma última linha pela metade fica sozinha na linha dela, e a
         // gravação começa numa linha nova.
@@ -194,7 +209,7 @@ fn write_inner(
         let added = if clean { line } else { format!("\n{line}") };
         (format!("{content}{added}\n"), Some(added))
     } else {
-        let mut body = model::purge_lines(&content, &effects.purged, id);
+        let mut body = model::purge_lines(&content, &redactions);
         if !body.is_empty() && !body.ends_with('\n') {
             body.push('\n');
         }
@@ -403,7 +418,7 @@ mod tests {
         add("later", "message", "21:12", json!({"author": "user", "text": "depois do intervalo"}));
         add("limit", "limit", "21:13", json!({"text": "Tamanho do pedido.", "value": "500 linhas", "keys": ["pedido"], "replaces": old_limit, "origin": msg}));
         add("remove", "remove", "21:14", json!({"filter": {"type": "message", "from": "2026-09-11T21:03", "to": "2026-09-11T21:10"}, "reason": "Coladas por engano.", "origin": msg}));
-        add("purge", "purge", "21:15", json!({"targets": [secret], "reason": "secret", "origin": msg}));
+        add("purge", "purge", "21:15", json!({"targets": [secret], "reason": "secret", "excerpt": "hunter2-segredo", "origin": msg}));
         Spec { _dir: dir, path, ids }
     }
 
@@ -787,6 +802,11 @@ mod tests {
         assert_eq!(plain.unwrap().citation_warnings, Vec::new(), "a point without names gets no warning");
     }
 
+    /// Os itens removidos somem da leitura e continuam no arquivo com o
+    /// motivo; o expurgo troca por "…", no arquivo, só o trecho que o pedido
+    /// indica, e o item continua na leitura com o resto do texto e o código.
+    /// O trecho nunca é gravado no próprio expurgo, e o expurgo cujo trecho
+    /// não aparece no item é recusado sem tocar no arquivo.
     #[test]
     fn removed_items_leave_the_reading_and_stay_in_the_file_with_the_reason() {
         let dir = tempfile::tempdir().unwrap();
@@ -814,28 +834,45 @@ mod tests {
             json!({"filter": {"type": "message", "from": "2026-09-11T21:03", "to": "2026-09-11T21:10"}, "reason": "Coladas por engano.", "origin": 1}),
         );
         assert_eq!(by_time.removed, [first, second]);
-        // The purge.
-        let purge = put(&path, &[], "purge", &at("21:22"), json!({"targets": [secret], "reason": "secret", "origin": 1}));
+        // The purge: an excerpt that is not in the item is refused, and the
+        // file stays byte for byte.
+        let untouched = std::fs::read(&path).unwrap();
+        let missing = write_at(
+            &path,
+            "purge",
+            obj(json!({"targets": [secret], "reason": "secret", "excerpt": "outra-senha", "origin": 1})),
+            &[],
+            &at("21:22"),
+        );
+        assert_eq!(missing.unwrap_err(), Refusal::PurgeExcerptNotFound { code: "MSTD-MSG-0012".into() });
+        let unnamed = write_at(&path, "purge", obj(json!({"targets": [secret], "reason": "secret"})), &[], &at("21:22"));
+        assert_eq!(unnamed.unwrap_err().reason(), "purge-excerpt-not-found", "no finder, no excerpt");
+        assert_eq!(std::fs::read(&path).unwrap(), untouched);
+        let purge = put(&path, &[], "purge", &at("21:22"),
+            json!({"targets": [secret], "reason": "secret", "excerpt": "hunter2-segredo", "origin": 1}));
         assert_eq!(purge.purged, [secret]);
 
         let log = read(&path).unwrap().unwrap();
         let shown: BTreeSet<u64> = log.visible().iter().map(|e| e.id).collect();
-        for gone in [12, 13, first, second, secret] {
+        for gone in [12, 13, first, second] {
             assert!(!shown.contains(&gone), "{gone} still shows");
         }
         assert!(shown.contains(&outside), "the message after the range stays");
+        assert!(shown.contains(&secret), "the purged item stays in the reading");
+        assert_eq!(log.get(secret).unwrap().str_field("text"), Some("a senha é …"));
         assert!(log.block(BlockQuery::Block(Block::Notes)).is_empty());
         assert_eq!(log.hidden()[&12], Hidden::Removed { by: by_number.id });
         assert_eq!(log.hidden()[&first], Hidden::Removed { by: by_time.id });
-        assert_eq!(log.hidden()[&secret], Hidden::Purged { by: purge.id });
+        assert!(!log.hidden().contains_key(&secret));
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("Nota doze") && raw.contains("colada 2"), "removed lines stay in the file");
         assert!(raw.contains("Itens errados.") && raw.contains("Coladas por engano."), "with the reason");
-        assert!(!raw.contains("hunter2"), "the purge takes the text out of the file");
+        assert!(!raw.contains("hunter2"), "the purge takes the excerpt out of the file, and never writes it itself");
         let purged_line = raw.lines().find(|l| l.contains(&format!("\"id\":{secret},"))).unwrap();
-        assert!(purged_line.contains(&format!("\"purged\":{}", purge.id)), "{purged_line}");
         assert!(purged_line.contains("\"code\":\"MSTD-MSG-0012\""), "the purge keeps the code: {purged_line}");
+        assert!(purged_line.contains("a senha é …"), "{purged_line}");
+        assert!(!purged_line.contains("\"purged\""), "{purged_line}");
         assert!(log.skipped.is_empty(), "the rewrite leaves no broken line");
 
         // A filter that catches nothing and an unknown number write nothing.

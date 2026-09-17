@@ -24,18 +24,20 @@
 //!
 //! O `.html` é o que se publica, e sai conferido para isso:
 //!
-//! - todo trecho com cara de segredo (chave, token, senha) fica fora dele, com
-//!   um aviso no lugar, até o item ser expurgado; o `.md`, que fica na máquina,
+//! - todo trecho com cara de segredo (chave, token, senha) sai dele como "…",
+//!   e o resto do item fica; o aviso diz o código de cada item que ainda guarda
+//!   o trecho no arquivo, para ser expurgado; o `.md`, que fica na máquina,
 //!   continua inteiro;
 //! - a página que passaria de [`PAGE_MAX_BYTES`] perde os registros mais
 //!   antigos da conversa, e diz quantos ficaram só no `.md`.
 //!
 //! Só os marcos mandam publicar — a aprovação, o fim de uma rodada e o
-//! fechamento —, todos pela mesma porta, [`end_milestone`]: com item retido,
-//! o marco diz o código de cada item a expurgar e não manda publicar; com a
-//! página que não pôde ser refeita, diz o motivo e também não manda.
+//! fechamento —, todos pela mesma porta, [`end_milestone`]: o item que ainda
+//! guarda um trecho com cara de segredo não segura a publicação, e o marco diz
+//! o código dele para ser expurgado; com a página da spec ou a do projeto que
+//! não pôde ser refeita, diz qual falhou e por quê, e não manda publicar.
 
-mod secret;
+pub(crate) mod secret;
 
 use std::path::{Path, PathBuf};
 
@@ -67,8 +69,11 @@ pub(crate) struct SpecPages {
     pub html: String,
     /// A página do projeto, quando foi refeita junto.
     pub project: Option<String>,
-    /// O código de cada item que ficou fora da página por ter texto com cara
-    /// de segredo.
+    /// Por que a página do projeto não pôde ser refeita junto. Com ela
+    /// faltando, nenhum marco manda publicar.
+    pub project_failed: Option<Refusal>,
+    /// O código de cada item que ainda guarda no arquivo um trecho com cara
+    /// de segredo; na página, o trecho saiu como "…".
     pub withheld: Vec<String>,
     /// Quantos registros da conversa ficaram só no `.md`.
     pub trimmed: usize,
@@ -76,7 +81,7 @@ pub(crate) struct SpecPages {
     pub warnings: Vec<String>,
 }
 
-/// A página pronta para publicar e o que a conferência tirou dela.
+/// A página pronta para publicar e o que a conferência trocou nela.
 struct Publishable {
     html: String,
     withheld: Vec<String>,
@@ -144,7 +149,10 @@ pub(crate) fn refresh(root: &Path, spec: &str, lang: Locale) -> Result<SpecPages
             pages.project = Some(path);
             pages.warnings.extend(warnings);
         }
-        Err(refusal) => pages.warnings.push(refusal.message(lang)),
+        Err(refusal) => {
+            pages.warnings.push(not_rebuilt(Page::Project, &refusal, lang));
+            pages.project_failed = Some(refusal);
+        }
     }
     Ok(pages)
 }
@@ -210,6 +218,7 @@ fn write_pages(
         md: relative(root, &files.md),
         html: relative(root, &files.html),
         project: None,
+        project_failed: None,
         warnings: warnings(&checked, lang),
         withheld: checked.withheld,
         trimmed: checked.trimmed,
@@ -220,11 +229,11 @@ fn write(path: &Path, text: &str) -> Result<(), Refusal> {
     mustard_core::io::fs::write_atomic(path, text.as_bytes()).map_err(|e| Refusal::Io { detail: e.to_string() })
 }
 
-/// A página `doc` pronta para publicar: sem trecho com cara de segredo e, se
-/// passaria de `max` bytes, sem os registros mais antigos da conversa que
-/// forem precisos para caber.
+/// A página `doc` pronta para publicar: com cada trecho com cara de segredo
+/// trocado por "…" e, se passaria de `max` bytes, sem os registros mais
+/// antigos da conversa que forem precisos para caber.
 fn publishable(mut doc: Document, lang: Locale, max: usize) -> Publishable {
-    let (withheld, loose) = doc.withhold(&secret::looks_like_secret, translate("page.withheld", lang));
+    let (withheld, loose) = doc.redact(&secret::secret_excerpts, mustard_core::domain::spec_events::PURGED_MARK);
     let html = Render::Html.render(&doc);
     if html.len() <= max {
         return Publishable { html, withheld, loose, trimmed: 0, too_big: false };
@@ -293,7 +302,8 @@ pub(crate) fn push_warning(report: &mut Value, reason: &str, hint: &str) {
 }
 
 /// O que a conferência da página achou, na resposta do passo: o código de
-/// cada item retido em `withheld` e cada aviso em `warnings`.
+/// cada item que ainda guarda um trecho a expurgar em `withheld` e cada aviso
+/// em `warnings`.
 pub(crate) fn note_checked(report: &mut Value, pages: &SpecPages) {
     if !pages.withheld.is_empty() {
         report["withheld"] = json!(pages.withheld);
@@ -304,44 +314,76 @@ pub(crate) fn note_checked(report: &mut Value, pages: &SpecPages) {
 }
 
 /// O fim de um passo que é um marco (`approval`, `round` ou `close`), com o
-/// resultado de refazer a página: sem item retido, a resposta manda publicar
-/// a página da spec e a do projeto, diz como gravar cada publicação e segue
-/// com `then`; com item retido, diz o código de cada item a expurgar, não
-/// manda publicar e segue com `held`. Quando a página não pôde ser refeita,
-/// o motivo vai para os avisos e a resposta também não manda publicar: a
-/// página do disco não passou pela conferência deste marco.
+/// resultado de refazer a página: a resposta manda publicar a página da spec e
+/// a do projeto, diz como gravar cada publicação, diz o código de cada item
+/// que ainda guarda um trecho a expurgar, e segue com `then`. Quando uma das
+/// duas páginas não pôde ser refeita, o motivo vai para os avisos e a resposta
+/// não manda publicar: manda refazer a página, publicar e então `then`.
 pub(crate) fn end_milestone(
     report: &mut Value,
     pages: Result<&SpecPages, &Refusal>,
     milestone: &str,
     then: &str,
-    held: &str,
     lang: Locale,
 ) {
-    let pages = match pages {
-        Ok(pages) => pages,
+    let (pages, failed) = match pages {
+        Ok(pages) => {
+            note_checked(report, pages);
+            (Some(pages), pages.project_failed.as_ref().map(|_| Page::Project))
+        }
         Err(refusal) => {
-            push_warning(report, refusal.reason(), &refusal.message(lang));
-            report["next"] = json!(format!("{} {held}", translate("page.not_rebuilt", lang)));
-            return;
+            push_warning(report, refusal.reason(), &not_rebuilt(Page::Spec, refusal, lang));
+            (None, Some(Page::Spec))
         }
     };
-    note_checked(report, pages);
-    if !pages.withheld.is_empty() {
-        let hold = translate("page.hold", lang).replace("{codes}", &pages.withheld.join(", "));
-        report["next"] = json!(format!("{hold} {held}"));
+    // A falta de qualquer uma das duas páginas é página não refeita: a do
+    // disco não passou pela conferência deste marco.
+    if let Some(page) = failed {
+        let said = translate("page.not_rebuilt", lang).replace("{page}", page.name(lang));
+        let rebuild = translate("page.after_rebuild", lang).replace("{milestone}", milestone);
+        report["next"] = json!(format!("{said} {rebuild} {then}"));
         return;
     }
+    let Some(pages) = pages else {
+        return;
+    };
     report["publish"] = json!(["spec", "project"]);
-    let publish = translate("page.publish", lang).replace("{milestone}", milestone);
-    report["next"] = json!(format!("{publish} {then}"));
+    let mut next = translate("page.publish", lang).replace("{milestone}", milestone);
+    if !pages.withheld.is_empty() {
+        next.push(' ');
+        next.push_str(&translate("page.purge_pending", lang).replace("{codes}", &pages.withheld.join(", ")));
+    }
+    report["next"] = json!(format!("{next} {then}"));
 }
 
-/// O que a rodada e o fechamento mandam fazer depois de expurgar: refazer a
-/// página e publicar as duas com o marco `milestone`, e então `then`.
-pub(crate) fn after_purge(milestone: &str, then: &str, lang: Locale) -> String {
-    format!("{} {then}", translate("page.after_purge", lang).replace("{milestone}", milestone))
+/// As duas páginas que um marco publica.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Spec,
+    Project,
 }
+
+impl Page {
+    /// O nome da página, como o aviso a diz.
+    fn name(self, lang: Locale) -> &'static str {
+        match self {
+            Self::Spec => translate("page.name.spec", lang),
+            Self::Project => translate("page.name.project", lang),
+        }
+    }
+}
+
+/// O aviso da página `page` que não pôde ser refeita: a falha de gravação diz
+/// qual página falhou; as outras recusas já dizem o motivo por inteiro.
+fn not_rebuilt(page: Page, refusal: &Refusal, lang: Locale) -> String {
+    match refusal {
+        Refusal::Io { detail } => translate("page.rebuild_failed", lang)
+            .replace("{page}", page.name(lang))
+            .replace("{detail}", detail),
+        other => other.message(lang),
+    }
+}
+
 
 /// O caminho relativo ao projeto, com barras normais: a saída não traz o
 /// caminho da máquina.
@@ -572,36 +614,62 @@ mod tests {
         assert!(!html.contains("artifact/antiga"), "{html}");
     }
 
-    /// Um trecho com cara de segredo não vai para a página: o item fica só
-    /// com o código e o aviso de expurgar, a resposta diz qual é, e o `.md`
-    /// local continua inteiro. Expurgado o item, a página volta a sair sem
-    /// aviso.
+    /// Um trecho com cara de segredo não vai para a página: ele sai como "…",
+    /// o resto do item fica, a resposta diz o código de cada item que ainda o
+    /// guarda no arquivo, e o `.md` local continua inteiro. Vale para uma
+    /// mensagem, um ponto e um veredito. Expurgados os itens pela gravação, os
+    /// três continuam na página, com o trecho oculto, e o aviso some.
     #[test]
-    fn a_secret_never_reaches_the_page_until_the_item_is_purged() {
+    fn a_secret_never_reaches_the_page_and_the_purged_items_stay_with_the_excerpt_hidden() {
+        use crate::commands::spec_events::write::{write_at, WriteOpts};
+
         let dir = tempdir().unwrap();
         let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         put(root, "s", "state", serde_json::json!({"phase": "survey"}));
-        let said = put(root, "s", "message", serde_json::json!({"author": "user", "text": "a senha é hunter2-segredo"}));
+        let token = ["ghp_", &"b2".repeat(18)].concat();
+        put(root, "s", "message", serde_json::json!({"author": "user", "text": "a senha é hunter2-segredo"}));
         put(root, "s", "message", serde_json::json!({"author": "user", "text": "texto comum"}));
+        put(root, "s", "point", serde_json::json!({"block": "limits", "gap": "o acesso ao banco", "from": "gap",
+            "status": "open", "origin": 2,
+            "facts": [{"text": "o banco usa DB_PASSWORD=S3nh4F0rte2024", "source": "mensagem 2"}]}));
+        put(root, "s", "verdict", serde_json::json!({"author": "review", "wave": 1, "result": "rejected",
+            "text": format!("O log mostra o token {token}."), "criteria": [{"criterion": 1, "tests_rule": true}]}));
 
         let pages = refresh(root, "s", Locale::PtBr).unwrap();
         let html = read(root, &pages.html);
-        assert!(!html.contains("hunter2"), "the secret reached the page");
-        assert!(html.contains("<dd><p>Retido: este trecho tem texto com cara de segredo"), "{html}");
-        assert!(html.contains("texto comum"));
-        assert_eq!(pages.withheld, ["MSTD-MSG-0001"]);
-        assert!(pages.warnings.iter().any(|w| w.contains("MSTD-MSG-0001") && w.contains("purge")), "{:?}", pages.warnings);
+        for secret in ["hunter2", "S3nh4F0rte2024", token.as_str()] {
+            assert!(!html.contains(secret), "{secret} reached the page");
+        }
+        for kept in ["a senha é …", "texto comum", "o banco usa DB_PASSWORD=…", "O log mostra o token …."] {
+            assert!(html.contains(kept), "{kept} is not on the page:\n{html}");
+        }
+        assert_eq!(pages.withheld, ["MSTD-POINT-0001", "MSTD-VERD-0001", "MSTD-MSG-0001"], "page order: {pages:?}");
+        assert!(pages.warnings.iter().any(|w| w.contains("MSTD-VERD-0001") && w.contains("purge")), "{:?}", pages.warnings);
         assert!(read(root, &pages.md).contains("hunter2"), "the local .md keeps everything");
 
-        put(root, "s", "purge", serde_json::json!({"targets": [said], "reason": "secret", "origin": said}));
+        for code in ["MSTD-MSG-0001", "MSTD-POINT-0001", "MSTD-VERD-0001"] {
+            let purged = write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("s".into()),
+                event_type: "purge".into(),
+                json: serde_json::json!({"targets": [code], "reason": "secret"}).to_string(),
+            });
+            assert_eq!(purged["ok"], serde_json::json!(true), "{code}: {purged}");
+        }
         let pages = refresh(root, "s", Locale::PtBr).unwrap();
         assert!(pages.withheld.is_empty() && pages.warnings.is_empty(), "{pages:?}");
-        assert!(!read(root, &pages.html).contains("Retido"));
+        let html = read(root, &pages.html);
+        for kept in ["a senha é …", "o banco usa DB_PASSWORD=…", "O log mostra o token …."] {
+            assert!(html.contains(kept), "{kept} left the page after the purge");
+        }
+        let md = read(root, &pages.md);
+        assert!(!md.contains("hunter2") && !md.contains(&token), "the purge took the excerpt out of the file");
     }
 
     /// O item revisto com o segredo nas duas versões sai uma vez só na lista
-    /// dos retidos, e o segredo num pedido já enviado diz o código do envio,
-    /// não só que um trecho saiu.
+    /// dos que ainda guardam o trecho, e o segredo num pedido já enviado diz o
+    /// código do envio, não só que um trecho saiu.
     #[test]
     fn each_withheld_item_is_named_once_and_a_sent_request_by_its_code() {
         let dir = tempdir().unwrap();

@@ -11,8 +11,11 @@
 //!
 //! Nada é apagado. `remove` tira itens da leitura e deixa as linhas no arquivo,
 //! com o motivo; a versão nova de um item é um evento do mesmo tipo com
-//! `replaces` apontando a antiga, que some da leitura. O expurgo é a exceção:
-//! a linha do item fica só com o envelope, sem o texto.
+//! `replaces` apontando a antiga, que some da leitura. O expurgo é a exceção,
+//! e não apaga o item: troca por "…", na própria linha, só o trecho que nunca
+//! podia ter sido gravado, e o item continua na leitura com o resto do texto.
+//! Uma linha expurgada pelo formato antigo, que ficou só com o envelope, segue
+//! fora da leitura.
 //!
 //! Cada item tem um código, `MSTD-<sigla>-<NNNN>`, que o binário grava na
 //! linha: o maior número já dado ao tipo, mais 1. A versão nova de um item
@@ -53,8 +56,12 @@ pub const BINARY_FIELDS: &[&str] = &["v", "id", "at", "search", "code"];
 /// `replaces` ou pelos alvos de `remove` e `purge`.
 pub const REFUSED_FIELDS: &[&str] = &["code"];
 
-/// O campo que marca uma linha expurgada; guarda o número do expurgo.
+/// O campo que marca uma linha expurgada pelo formato antigo, que tirava o
+/// texto inteiro; guarda o número do expurgo.
 pub const PURGED_FIELD: &str = "purged";
+
+/// O que fica no lugar do trecho expurgado.
+pub const PURGED_MARK: &str = "…";
 
 /// O envelope, na ordem em que abre cada linha do arquivo. O expurgo guarda o
 /// envelope, então o código do item continua no arquivo depois dele.
@@ -574,7 +581,7 @@ pub const TYPES: &[TypeSpec] = &[
         "PURGE",
         Block::Conversation,
         false,
-        &[req("targets", Kind::Refs), req("reason", Kind::OneOf(PURGE_REASONS))],
+        &[req("targets", Kind::Refs), req("reason", Kind::OneOf(PURGE_REASONS)), opt("excerpt", Kind::Text)],
     ),
 ];
 
@@ -693,10 +700,11 @@ pub enum Refusal {
     NotApplicableNeedsReason,
     /// Um `remove` que tiraria um ponto aberto da leitura.
     OpenPointRemoved { code: String },
-    /// Um `purge` que apagaria o texto de um ponto aberto.
-    OpenPointPurged { code: String },
-    /// Um `remove` ou um `purge` que tiraria o ponto que fecha outro cujo
-    /// original já saiu: ele é o único registro do ponto.
+    /// Um `purge` cujo trecho não aparece no item: nem o que o pedido indica,
+    /// nem algum que a procura de segredo ache.
+    PurgeExcerptNotFound { code: String },
+    /// Um `remove` que tiraria o ponto que fecha outro cujo original já saiu:
+    /// ele é o único registro do ponto.
     ClosingPointLastRecord { code: String },
     /// O pedido montado de uma onda passa do teto de linhas mesmo com o
     /// combinado reduzido a ponteiros: a onda precisa ser dividida antes de o
@@ -753,7 +761,7 @@ impl Refusal {
             Self::ClosingPointOpen => "closing-point-open",
             Self::NotApplicableNeedsReason => "not-applicable-needs-reason",
             Self::OpenPointRemoved { .. } => "open-point-removed",
-            Self::OpenPointPurged { .. } => "open-point-purged",
+            Self::PurgeExcerptNotFound { .. } => "purge-excerpt-not-found",
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
             Self::WavePromptTooLong { .. } => "wave-prompt-too-long",
             Self::DeliveredTooLong { .. } => "delivered-too-long",
@@ -915,7 +923,9 @@ impl Refusal {
             Self::ClosingPointOpen => fill("spec_events.closing_point_open", &[]),
             Self::NotApplicableNeedsReason => fill("spec_events.not_applicable_reason", &[]),
             Self::OpenPointRemoved { code } => fill("spec_events.open_point_removed", &[("{code}", code.clone())]),
-            Self::OpenPointPurged { code } => fill("spec_events.open_point_purged", &[("{code}", code.clone())]),
+            Self::PurgeExcerptNotFound { code } => {
+                fill("spec_events.purge_excerpt_not_found", &[("{code}", code.clone())])
+            }
             Self::ClosingPointLastRecord { code } => {
                 fill("spec_events.closing_point_last_record", &[("{code}", code.clone())])
             }
@@ -1273,10 +1283,10 @@ pub struct Effects {
 /// No ponto do levantamento: o `closes` aponta um ponto aberto, por qualquer
 /// versão dele (a versão nova de um fechamento continua fechando o mesmo
 /// ponto), e cada número de `result` existe. Um ponto aberto não sai com
-/// `remove` nem com `purge`, por nenhuma versão: ele só fecha, com a resposta
-/// ou o motivo, e o texto dele só é apagado depois de fechado. O fechamento
-/// de um ponto cujo original já saiu, ou sai junto, também não sai: é o único
-/// registro do ponto.
+/// `remove`, por nenhuma versão: ele só fecha, com a resposta ou o motivo. O
+/// fechamento de um ponto cujo original já saiu, ou sai junto, também não sai:
+/// é o único registro do ponto. O `purge` não tira item nenhum da leitura, e
+/// por isso vale para qualquer item.
 pub fn check_against(
     log: &SpecLog,
     event: &Map<String, Value>,
@@ -1348,12 +1358,6 @@ pub fn check_against(
         "purge" => {
             targets.sort_unstable();
             targets.dedup();
-            if let Some(code) = open_point_among(log, &targets) {
-                return Err(Refusal::OpenPointPurged { code });
-            }
-            if let Some(code) = last_record_among(log, &targets) {
-                return Err(Refusal::ClosingPointLastRecord { code });
-            }
             effects.purged = targets;
         }
         _ => {}
@@ -1399,9 +1403,8 @@ fn check_closes(log: &SpecLog, event: &Map<String, Value>, target: u64) -> Resul
     Err(Refusal::PointNotOpen { id, open: survey::describe(log, &open) })
 }
 
-/// O código do primeiro ponto aberto entre os alvos de um `remove` ou de um
-/// `purge`, por qualquer versão dele; `None` quando nenhum alvo é ponto
-/// aberto.
+/// O código do primeiro ponto aberto entre os alvos de um `remove`, por
+/// qualquer versão dele; `None` quando nenhum alvo é ponto aberto.
 fn open_point_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
     let open: BTreeSet<u64> = survey::open_points(log).into_iter().map(|p| original_of(log, p)).collect();
     let point = targets
@@ -1411,9 +1414,8 @@ fn open_point_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
     Some(log.codes().get(&point.id).cloned().unwrap_or_else(|| point.id.to_string()))
 }
 
-/// O código do primeiro fechamento, entre os alvos de um `remove` ou de um
-/// `purge`, que é o único registro do ponto que fecha: o original dele já
-/// saiu, ou sai junto. A versão velha de um fechamento revisto pode sair,
+/// O código do primeiro fechamento, entre os alvos de um `remove`, que é o
+/// único registro do ponto que fecha: o original dele já saiu, ou sai junto. A versão velha de um fechamento revisto pode sair,
 /// porque a nova fica; `None` quando nenhum alvo é um desses fechamentos.
 fn last_record_among(log: &SpecLog, targets: &[u64]) -> Option<String> {
     let leaves = |event: &SpecEvent| targets.contains(&event.id);
@@ -1564,37 +1566,138 @@ fn write_value(out: &mut String, value: &Value) {
     }
 }
 
-/// O arquivo depois do expurgo: cada linha de `targets` fica só com o
-/// envelope e com a marca do expurgo; as outras linhas, inclusive as que não
-/// se entendem, ficam byte a byte como estavam.
+/// Os trechos que um expurgo troca em cada alvo: o trecho que o pedido indica
+/// (`asked`) ou, sem ele, os que `find` acha em algum campo de texto do alvo.
+/// Um item apontado pelo código traz todas as versões dele, e basta o trecho
+/// aparecer numa delas; o item em que ele não aparece em versão nenhuma é
+/// recusado com o código dele.
+///
+/// # Errors
+///
+/// [`Refusal::PurgeExcerptNotFound`] com o código do primeiro item sem trecho.
+pub fn purge_excerpts(
+    log: &SpecLog,
+    targets: &[u64],
+    asked: Option<&str>,
+    find: &dyn Fn(&str) -> Vec<String>,
+) -> Result<BTreeMap<u64, Vec<String>>, Refusal> {
+    let codes = log.codes();
+    let item_of = |id: &u64| codes.get(id).cloned().unwrap_or_else(|| id.to_string());
+    let mut out = BTreeMap::new();
+    for id in targets {
+        let texts = log.get(*id).map(|event| texts_of(&event.fields)).unwrap_or_default();
+        let mut found: Vec<String> = Vec::new();
+        let candidates = match asked.map(str::trim).filter(|a| !a.is_empty()) {
+            Some(asked) => vec![asked.to_string()],
+            None => texts.iter().flat_map(|text| find(text)).collect(),
+        };
+        for excerpt in candidates {
+            if !excerpt.is_empty() && texts.iter().any(|t| t.contains(&excerpt)) && !found.contains(&excerpt) {
+                found.push(excerpt);
+            }
+        }
+        if found.is_empty() {
+            continue;
+        }
+        // O trecho mais longo primeiro: um trecho dentro de outro não deixa
+        // sobra.
+        found.sort_by_key(|excerpt| std::cmp::Reverse(excerpt.len()));
+        out.insert(*id, found);
+    }
+    let touched: BTreeSet<String> = out.keys().map(item_of).collect();
+    if let Some(item) = targets.iter().map(item_of).find(|item| !touched.contains(item)) {
+        return Err(Refusal::PurgeExcerptNotFound { code: item });
+    }
+    Ok(out)
+}
+
+/// O campo `key` de um item do tipo `event_type` guarda texto de quem gravou:
+/// o texto, as palavras-chave, o rótulo e os campos do tipo que são texto,
+/// lista ou objeto. A situação, o bloco, a fase e os outros campos de palavra
+/// fixa, os números e as horas não são texto, e o expurgo não mexe neles. A
+/// lacuna de um ponto também fica: ela é a identidade do ponto, e sem ela a
+/// lacuna voltaria a ser pedida.
+fn holds_text(event_type: &str, key: &str) -> bool {
+    if matches!(key, "text" | "keys" | "label") {
+        return true;
+    }
+    if event_type == "point" && key == "gap" {
+        return false;
+    }
+    type_spec(event_type)
+        .and_then(|spec| spec.fields.iter().find(|field| field.name == key))
+        .is_some_and(|field| {
+            matches!(field.kind, Kind::Text | Kind::Texts | Kind::Object | Kind::Objects | Kind::List | Kind::TextOrObject)
+        })
+}
+
+/// Os campos de texto de um item ([`holds_text`]), em qualquer profundidade.
+fn texts_of(fields: &Map<String, Value>) -> Vec<&str> {
+    fn walk<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => out.push(text),
+            Value::Array(items) => items.iter().for_each(|item| walk(item, out)),
+            Value::Object(map) => map.values().for_each(|item| walk(item, out)),
+            _ => {}
+        }
+    }
+    let event_type = fields.get("type").and_then(Value::as_str).unwrap_or_default();
+    let mut out = Vec::new();
+    for (key, value) in fields {
+        if holds_text(event_type, key) {
+            walk(value, &mut out);
+        }
+    }
+    out
+}
+
+/// Troca cada trecho de `excerpts` por [`PURGED_MARK`] em todo campo de texto
+/// de `value`.
+fn redact(value: &mut Value, excerpts: &[String]) {
+    match value {
+        Value::String(text) => {
+            for excerpt in excerpts {
+                if text.contains(excerpt.as_str()) {
+                    *text = text.replace(excerpt.as_str(), PURGED_MARK);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|item| redact(item, excerpts)),
+        Value::Object(map) => map.values_mut().for_each(|item| redact(item, excerpts)),
+        _ => {}
+    }
+}
+
+/// O arquivo depois do expurgo: em cada linha de `redactions`, os trechos dela
+/// viram [`PURGED_MARK`] em todos os campos de texto, e o `search` é
+/// recalculado do texto que ficou; as outras linhas, inclusive as que não se
+/// entendem, ficam byte a byte como estavam.
 #[must_use]
-pub fn purge_lines(content: &str, targets: &[u64], by: u64) -> String {
+pub fn purge_lines(content: &str, redactions: &BTreeMap<u64, Vec<String>>) -> String {
     content
         .split('\n')
         .map(|raw| {
             let line = raw.trim_end_matches('\r');
-            match parse_object(line) {
-                Some(map) if map.get("id").and_then(Value::as_u64).is_some_and(|id| targets.contains(&id)) => {
-                    render_line(&purged_envelope(&map, by))
+            let Some(mut map) = parse_object(line) else {
+                return raw.to_string();
+            };
+            let Some(excerpts) = map.get("id").and_then(Value::as_u64).and_then(|id| redactions.get(&id)) else {
+                return raw.to_string();
+            };
+            let event_type = map.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
+            for (key, value) in &mut map {
+                if holds_text(&event_type, key) {
+                    redact(value, excerpts);
                 }
-                _ => raw.to_string(),
             }
+            map.remove("search");
+            if let Some(search) = search_of(&map) {
+                map.insert("search".into(), Value::String(search));
+            }
+            render_line(&map)
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// O que sobra de uma linha expurgada: o envelope, a origem, o `replaces` e a
-/// marca com o número do expurgo. Todo texto sai.
-fn purged_envelope(map: &Map<String, Value>, by: u64) -> Map<String, Value> {
-    let mut kept = Map::new();
-    for key in LEAD_FIELDS.iter().chain(["origin", "replaces"].iter()) {
-        if let Some(value) = map.get(*key) {
-            kept.insert((*key).to_string(), value.clone());
-        }
-    }
-    kept.insert(PURGED_FIELD.into(), Value::from(by));
-    kept
 }
 
 /// O arquivo com o `search` de cada linha recalculado pelo redutor de hoje,
@@ -1881,7 +1984,8 @@ pub enum Hidden {
     Removed { by: u64 },
     /// Uma versão nova, de número `by`, o substitui.
     Replaced { by: u64 },
-    /// O expurgo de número `by` tirou o texto dele do arquivo.
+    /// O expurgo de número `by`, no formato antigo, tirou o texto dele do
+    /// arquivo.
     Purged { by: u64 },
 }
 
@@ -2032,25 +2136,19 @@ impl SpecLog {
     pub fn hidden(&self) -> BTreeMap<u64, Hidden> {
         let mut hidden = BTreeMap::new();
         for event in &self.events {
+            // Só a linha que o formato antigo esvaziou sai da leitura: o
+            // expurgo de hoje deixa o item com o resto do texto.
             if let Some(by) = event.int(PURGED_FIELD) {
                 hidden.insert(event.id, Hidden::Purged { by });
             }
-            match event.event_type.as_str() {
-                "purge" => {
-                    for id in event.ints("targets") {
-                        hidden.insert(id, Hidden::Purged { by: event.id });
-                    }
+            if event.event_type == "remove" {
+                let mut targets = event.ints("targets");
+                if let Some(filter) = event.fields.get("filter").and_then(TimeFilter::from_value) {
+                    targets.extend(self.filter_matches(&filter, event.id));
                 }
-                "remove" => {
-                    let mut targets = event.ints("targets");
-                    if let Some(filter) = event.fields.get("filter").and_then(TimeFilter::from_value) {
-                        targets.extend(self.filter_matches(&filter, event.id));
-                    }
-                    for id in targets {
-                        hidden.entry(id).or_insert(Hidden::Removed { by: event.id });
-                    }
+                for id in targets {
+                    hidden.entry(id).or_insert(Hidden::Removed { by: event.id });
                 }
-                _ => {}
             }
             if let Some(old) = event.int("replaces") {
                 hidden.entry(old).or_insert(Hidden::Replaced { by: event.id });

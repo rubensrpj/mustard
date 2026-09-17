@@ -171,7 +171,7 @@ pub fn init_with_templates(
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.local.json — reduced seed, rtk's hook per mustard.json#rtk, Claude Code's signature off");
         println!("    mustard/mapa-inicio-sessao.md — the session map, delivered at session start per mustard.json#inject");
-        println!("    agents/mustard/*.md — the wave, review and skill agents, in the project's text language");
+        println!("    agents/mustard/*.md — the mustard-wave, mustard-review and mustard-skill agents, in the project's text language");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would list what an older Mustard left in CLAUDE.md files and .claude/settings.json (nothing leaves without a yes)");
         println!(

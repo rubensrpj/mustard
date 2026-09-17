@@ -170,7 +170,12 @@ pub(crate) fn edit_report(provider: &dyn PrProvider, number: u64, body: &str) ->
 #[must_use]
 pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublishReport {
     match provider.view(PrRef::Head(&pr.head)) {
-        Ok(view) => edit_report(provider, view.number, &pr.body),
+        // O endereço vem da consulta: é o que a fase de pull request aberto
+        // grava junto com o número.
+        Ok(view) => PrPublishReport {
+            url: Some(view.url).filter(|url| !url.trim().is_empty()),
+            ..edit_report(provider, view.number, &pr.body)
+        },
         Err(_) => open_report(provider, pr),
     }
 }
@@ -291,7 +296,8 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
             None => Err("spec-missing: pass --spec or --fill".to_string()),
         }
     };
-    let warning = spec.map(str::trim).filter(|s| !s.is_empty()).and_then(|slug| qa_warning(&repo, slug));
+    let slug = spec.map(str::trim).filter(|s| !s.is_empty());
+    let warning = slug.and_then(|slug| qa_warning(&repo, slug));
     let mut report = match sourced {
         // Já existe pull request para a branch que se ia abrir: o corpo é
         // reescrito, e nenhum segundo pull request nasce.
@@ -310,6 +316,12 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
         }
     };
     report.warning = warning;
+    // Com o pull request aberto ou reescrito, a spec passa à fase de pull
+    // request aberto, com o número e o endereço: é por ela que o início da
+    // sessão percebe o merge feito por outra pessoa.
+    if let (true, Some(slug), Some(number)) = (report.ok, slug, report.number) {
+        crate::commands::spec_events::write::record_pr_open(&repo, slug, number, report.url.as_deref());
+    }
     let shown = serde_json::to_value(&report).unwrap_or_default();
     let _ = crate::commands::spec_events::conversation::record_call(&repo, "pr-open", spec, started, &shown);
     emit(&report);

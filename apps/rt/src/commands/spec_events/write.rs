@@ -65,13 +65,20 @@
 //! modelo não escreve. Essa recusa é própria e não depende da recusa da fala
 //! digitada. A fala digitada do usuário ainda é gravada à mão, e
 //! também tirada ou revista: a recusa dela espera os ganchos voltarem neste
-//! projeto, quando ela passa a chegar só pelo gancho da entrada. O expurgo de
-//! uma mensagem do usuário continua valendo: um segredo colado na conversa sai.
+//! projeto, quando ela passa a chegar só pelo gancho da entrada.
+//!
+//! O expurgo (`purge`) vale para qualquer item, inclusive os que só o binário
+//! grava e o clique: ele não tira o item da leitura, só troca por "…", no
+//! próprio arquivo, o trecho que nunca podia ter sido gravado. O trecho é o
+//! que o pedido indica em `excerpt` — que nunca vai para o arquivo — ou, sem
+//! ele, o que a procura de segredo acha nos campos de texto do item; o item
+//! em que o trecho não aparece é recusado.
 //!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
 //! fluxo e da testemunha da aprovação. As portas que gravam `state` são
-//! quatro, todas aqui — o [`record`] da testemunha, o [`record_birth`], o
-//! [`record_open`] do `open` e o [`record_phase`] — e passam pela regra única
+//! cinco, todas aqui — o [`record`] da testemunha, o [`record_birth`], o
+//! [`record_open`] do `open`, o [`record_phase`] e o [`record_pr_open`] do
+//! `pr-open` — e passam pela regra única
 //! da mudança de fase
 //! (`mustard_core::domain::spec_state::phase_write_allowed`), conferida com a
 //! trava presa, no arquivo como ele ficaria. As outras gravações deste comando
@@ -96,7 +103,7 @@
 //! pergunta da revisão e as opções, a de um revisor de fora no último bloco;
 //! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
-//! `remove` e o `purge` dele são recusados. A passagem do levantamento para o plano, e a
+//! `remove` dele é recusado. A passagem do levantamento para o plano, e a
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
 //! de toda porta que grava o estado.
 
@@ -173,8 +180,8 @@ fn hook_only_message(event: &Map<String, Value>) -> bool {
 }
 
 /// Os números das mensagens que só um gancho grava, como a leitura de `log` as
-/// mostra, contando também as expurgadas: o expurgo tira o texto de um
-/// segredo, e não a fala do usuário da conversa.
+/// mostra, contando também as que o formato antigo do expurgo esvaziou: o
+/// expurgo tira o texto de um segredo, e não a fala do usuário da conversa.
 fn hook_only_messages(log: &SpecLog) -> Vec<u64> {
     let hidden = log.hidden();
     log.events
@@ -458,6 +465,7 @@ fn record_in(
         event_type,
         draft,
         &roots,
+        &super::pages::secret::secret_excerpts,
         |before, after| {
             phase_rule(&name, before, after, carried.as_deref(), replaces, by)?;
             goal_rule(&name, before, after)?;
@@ -641,30 +649,54 @@ fn phase_rule(
 /// ambiente, um gancho a sabe pelo evento que recebeu. O contador guarda
 /// essa sessão, e só ela é cobrada; sem sessão, qualquer sessão principal é.
 pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Option<&str>) -> bool {
+    let Some(recorded) = advance_phase(start, spec, phase, Map::new()) else {
+        return false;
+    };
+    // A cobrança dispara com o fechamento e com o merge; a entrada na
+    // execução não cobra nada.
+    if matches!(phase, "closed" | "delivered") {
+        let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id, session);
+    }
+    true
+}
+
+/// A porta do pull request aberto: grava no estado da spec `spec`, vista de
+/// `start`, a fase `pr_open` com o número e o endereço do pull request, pela
+/// mesma gravação do `run write`. Quem chama é o `pr-open`, depois que o
+/// provedor abriu o pull request ou reescreveu o corpo do que já existia.
+///
+/// Só grava a partir de uma spec fechada: o pull request é o passo depois do
+/// fechamento, e uma spec em execução que pulasse para esta fase nunca mais
+/// fecharia. Repetir a abertura não grava outra fase. Não arma a cobrança das
+/// pendências: ela é do fechamento e da entrega. `true` quando gravou.
+pub(crate) fn record_pr_open(start: &Path, spec: &str, number: u64, url: Option<&str>) -> bool {
+    let closed = DiskSpecState::new(start).state(spec).is_some_and(|state| state.phase == Some("closed"));
+    if !closed {
+        return false;
+    }
+    let mut pr = Map::new();
+    pr.insert("number".to_string(), json!(number));
+    if let Some(url) = url.map(str::trim).filter(|url| !url.is_empty()) {
+        pr.insert("url".to_string(), json!(url));
+    }
+    let mut fields = Map::new();
+    fields.insert("pr".to_string(), Value::Object(pr));
+    advance_phase(start, spec, "pr_open", fields).is_some()
+}
+
+/// A gravação comum das portas de fase: o `state` com a fase `phase` e os
+/// campos `fields`, quando a spec tem arquivo de eventos e a fase de agora vem
+/// antes de `phase` na ordem das fases. `None` quando nada foi gravado.
+fn advance_phase(start: &Path, spec: &str, phase: &str, mut fields: Map<String, Value>) -> Option<Recorded> {
     let order = |name: &str| PHASES.iter().position(|known| *known == name);
-    let Some(target) = order(phase) else {
-        return false;
-    };
-    let Some(state) = DiskSpecState::new(start).state(spec) else {
-        return false;
-    };
+    let target = order(phase)?;
+    let state = DiskSpecState::new(start).state(spec)?;
     if state.phase.and_then(order).is_some_and(|now| now >= target) {
-        return false;
+        return None;
     }
-    let mut draft = Map::new();
-    draft.insert("phase".to_string(), json!(phase));
-    draft.insert("author".to_string(), json!("binary"));
-    match record(start, spec, "state", draft, PhaseWriter::Binary) {
-        Ok(recorded) => {
-            // A cobrança dispara com o fechamento e com o merge; a entrada na
-            // execução não cobra nada.
-            if matches!(phase, "closed" | "delivered") {
-                let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id, session);
-            }
-            true
-        }
-        Err(_) => false,
-    }
+    fields.insert("phase".to_string(), json!(phase));
+    fields.insert("author".to_string(), json!("binary"));
+    record(start, spec, "state", fields, PhaseWriter::Binary).ok()
 }
 
 /// O nascimento de uma spec com arquivo de eventos e sem nenhum `state`, pela
@@ -1153,8 +1185,14 @@ mod tests {
         let revised = by_hand("message", json!({"author": "user", "text": "a fala revista", "replaces": said}));
         assert_eq!(revised["ok"], json!(true), "{revised}");
         assert_eq!(by_hand("message", json!({"text": "Anotado."}))["ok"], json!(true));
-        let purged = by_hand("purge", json!({"targets": [revised["id"]], "reason": "secret"}));
+        let purged = by_hand("purge", json!({"targets": [revised["id"]], "reason": "secret", "excerpt": "revista"}));
         assert_eq!(purged["ok"], json!(true), "the secret goes: {purged}");
+        // O expurgo vale também para o que só o binário grava e para o clique:
+        // ele só oculta o trecho.
+        for (target, excerpt) in [(delivered, "onda 1"), (clicked, "Seguir?")] {
+            let hidden = by_hand("purge", json!({"targets": [target], "reason": "client_data", "excerpt": excerpt}));
+            assert_eq!(hidden["ok"], json!(true), "{hidden}");
+        }
     }
 
     /// Um "Aceitar" forjado — a mensagem com a testemunha escrita à mão — é
@@ -2642,124 +2680,136 @@ mod tests {
         assert_eq!(settle(root, &points[0], said)["point"]["id"], json!(points[1].id));
     }
 
-    /// Um ponto aberto não sai com `purge`, nem pelo número nem pelo código:
-    /// a recusa, nos dois idiomas, manda fechá-lo antes, e o arquivo continua
-    /// igual.
+    /// Um ponto aberto é expurgado só no trecho, pelo número ou pelo código:
+    /// o fato dele troca o segredo por "…", o ponto segue aberto e segue sendo
+    /// o próximo a apresentar, e a situação e o bloco não mudam. O pedido cujo
+    /// trecho não aparece no ponto é recusado, nos dois idiomas, e o arquivo
+    /// não muda.
     #[test]
-    fn an_open_point_cannot_be_purged() {
+    fn an_open_point_is_purged_only_in_the_excerpt_and_stays_open() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (_, points) = listed(root, &["fix"], false);
+        let (said, points) = listed(root, &["fix"], false);
+        let secret = ["DB_PASSWORD=", "S3nh4F0rte", "2024"].concat();
+        let revised = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap", "status": "open",
+            "replaces": points[0].id, "origin": said,
+            "facts": [{"text": format!("o banco usa {secret}"), "source": format!("mensagem {said}")}]});
+        assert_eq!(write(root, "point", &revised.to_string())["ok"], json!(true));
         let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
         let before = std::fs::read(&file).unwrap();
         let code = &points[0].code;
+        let missing = write(root, "purge", &json!({"targets": [code], "reason": "secret", "excerpt": "outra"}).to_string());
+        assert_eq!(missing["reason"], json!("purge-excerpt-not-found"), "{missing}");
         let expected = format!(
-            "O ponto {code} está aberto e não sai com `purge`: feche-o antes com um ponto que o aponte em \
-             `closes` (\"não se aplica\", com o motivo), e só depois apague o texto original. Nada foi gravado."
+            "O item {code} não traz o trecho a expurgar: nem o que o pedido indica em `excerpt`, nem texto com \
+             cara de segredo. Diga o trecho exato em `excerpt`. Nada foi gravado."
         );
-        for target in [json!(points[0].id), json!(code)] {
-            let purge = write(root, "purge", &json!({"targets": [target], "reason": "secret"}).to_string());
-            assert_eq!(purge["reason"], json!("open-point-purged"), "{purge}");
-            assert_eq!(purge["hint"], json!(expected), "{purge}");
-        }
+        assert_eq!(missing["hint"], json!(expected), "{missing}");
+        let english = Refusal::PurgeExcerptNotFound { code: code.clone() }.message(Locale::EnUs);
+        assert!(english.starts_with(&format!("Item {code} does not carry the excerpt to purge")), "{english}");
         assert_eq!(std::fs::read(&file).unwrap(), before, "the file stays the same");
-        let english = Refusal::OpenPointPurged { code: code.clone() }.message(Locale::EnUs);
-        assert_eq!(
-            english,
-            format!(
-                "Point {code} is open and does not leave with `purge`: first close it with a point that names it \
-                 in `closes` (\"not applicable\", with the reason), and only then purge the original text. \
-                 Nothing was written."
-            )
-        );
+
+        let purged = write(root, "purge", &json!({"targets": [code], "reason": "secret"}).to_string());
+        assert_eq!(purged["ok"], json!(true), "{purged}");
+        assert_eq!(purged["point"]["code"], json!(code), "the point is still the next one: {purged}");
+        let raw = std::fs::read_to_string(&file).unwrap();
+        assert!(!raw.contains("S3nh4F0rte"), "the excerpt left the file");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let point = survey::points(&log).into_iter().find(|p| p.first() == points[0].id).expect("the point stays");
+        assert!(point.is_open());
+        let shown = point.shown();
+        assert_eq!(shown.fields["facts"][0]["text"], json!("o banco usa DB_PASSWORD=…"));
+        assert_eq!(shown.str_field("status"), Some("open"));
+        assert_eq!(shown.str_field("block"), Some(points[0].block.as_str()));
+    }
+
+    /// O veredito, que só o binário grava, também é expurgado só no trecho:
+    /// ele continua na leitura, com o resto do texto, e a mesma procura de
+    /// segredo que serve à página acha o trecho.
+    #[test]
+    fn a_verdict_is_purged_only_in_the_excerpt() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let secret = ["ghp_", &"a1".repeat(18)].concat();
+        let draft = json!({"wave": 1, "result": "rejected", "author": "review",
+            "criteria": [{"criterion": 1, "tests_rule": true}],
+            "text": format!("O teste imprime o token {secret} no log.")});
+        let verdict = record(root, "teste", "verdict", draft.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+        let code = verdict.written.code.clone().unwrap();
+        let purged = write(root, "purge", &json!({"targets": [code], "reason": "secret"}).to_string());
+        assert_eq!(purged["ok"], json!(true), "{purged}");
+        assert_eq!(purged["purged"], json!([verdict.written.id]), "{purged}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let shown = log.visible().into_iter().find(|e| e.event_type == "verdict").expect("the verdict stays");
+        assert_eq!(shown.str_field("text"), Some("O teste imprime o token … no log."));
+        assert_eq!(shown.str_field("result"), Some("rejected"));
+        let raw = std::fs::read_to_string(root.join(".claude/spec/teste/spec.ndjson")).unwrap();
+        assert!(!raw.contains(&secret), "the excerpt left the file, and the purge did not write it");
     }
 
     /// Enquanto o original existe, tirar o fechamento só reabre o ponto: com
-    /// `remove` e com `purge`, ele volta a ser o próximo ponto aberto.
+    /// `remove`, ele volta a ser o próximo ponto aberto.
     #[test]
     fn taking_the_closing_out_while_the_original_stands_reopens_the_point() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, points) = listed(root, &["fix"], false);
-        for (kind, reason) in [("remove", "Fechei o ponto errado."), ("purge", "secret")] {
-            let closing = settle(root, &points[0], said)["id"].as_u64().unwrap();
-            let out = write(root, kind, &json!({"targets": [closing], "reason": reason}).to_string());
-            assert_eq!(out["ok"], json!(true), "{kind}: {out}");
-            assert_eq!(out["point"]["id"], json!(points[0].id), "{kind}: the point is open again: {out}");
-        }
+        let closing = settle(root, &points[0], said)["id"].as_u64().unwrap();
+        let out = write(root, "remove", &json!({"targets": [closing], "reason": "Fechei o ponto errado."}).to_string());
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["point"]["id"], json!(points[0].id), "the point is open again: {out}");
     }
 
-    /// Com o original fora, por `purge` ou por `remove`, o ponto que o fechou
-    /// é o único registro dele: o `remove` e o `purge` dele são recusados,
-    /// pelo número e pelo código, com o texto nos dois idiomas, e o arquivo
-    /// não muda. Tirar o original e o fechamento na mesma gravação também é
-    /// recusado.
+    /// Com o original fora, o ponto que o fechou é o único registro dele: o
+    /// `remove` dele é recusado, pelo número e pelo código, com o texto nos
+    /// dois idiomas, e o arquivo não muda; tirar o original e o fechamento na
+    /// mesma gravação também é recusado. O expurgo do fechamento, que só
+    /// oculta o trecho, passa, e o ponto segue fechado.
     #[test]
     fn the_closing_of_a_point_whose_original_left_does_not_leave() {
-        for (gone, why) in [("purge", "secret"), ("remove", "O texto tinha um segredo.")] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            let (said, points) = listed(root, &["fix"], false);
-            let closed = settle(root, &points[0], said);
-            let closing = closed["id"].as_u64().unwrap();
-            let code = closed["code"].as_str().unwrap().to_string();
-            let left = write(root, gone, &json!({"targets": [points[0].id], "reason": why}).to_string());
-            assert_eq!(left["ok"], json!(true), "{gone}: {left}");
-            let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
-            let before = std::fs::read(&file).unwrap();
-            let expected = format!(
-                "O ponto {code} fecha um ponto cujo texto original já saiu, e é o único registro dele: não sai com \
-                 `remove` nem com `purge`. Para tirar um dado sensível dele, grave uma versão nova com `replaces` e \
-                 apague a antiga. Nada foi gravado."
-            );
-            for (kind, reason) in [("remove", "Não vale mais."), ("purge", "secret")] {
-                for target in [json!(closing), json!(code)] {
-                    let out = write(root, kind, &json!({"targets": [target], "reason": reason}).to_string());
-                    assert_eq!(out["reason"], json!("closing-point-last-record"), "{gone}, {kind}: {out}");
-                    assert_eq!(out["hint"], json!(expected), "{gone}, {kind}: {out}");
-                }
-            }
-            assert_eq!(std::fs::read(&file).unwrap(), before, "{gone}: the file stays the same");
-
-            let together = settle(root, &points[1], said)["id"].as_u64().unwrap();
-            let both = write(root, "purge", &json!({"targets": [points[1].id, together], "reason": "secret"}).to_string());
-            assert_eq!(both["reason"], json!("closing-point-last-record"), "{gone}: {both}");
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let not_applicable = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap",
+            "status": "not_applicable", "closes": points[0].id, "origin": said,
+            "reason": "O fato citava a senha S3nh4F0rte do banco."});
+        let closed = write(root, "point", &not_applicable.to_string());
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        let closing = closed["id"].as_u64().unwrap();
+        let code = closed["code"].as_str().unwrap().to_string();
+        let left = write(root, "remove", &json!({"targets": [points[0].id], "reason": "O texto tinha um segredo."}).to_string());
+        assert_eq!(left["ok"], json!(true), "{left}");
+        let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let before = std::fs::read(&file).unwrap();
+        let expected = format!(
+            "O ponto {code} fecha um ponto cujo texto original já saiu, e é o único registro dele: não sai com \
+             `remove`. Para tirar um dado sensível dele, use `purge`, que só oculta o trecho. Nada foi gravado."
+        );
+        for target in [json!(closing), json!(code)] {
+            let out = write(root, "remove", &json!({"targets": [target], "reason": "Não vale mais."}).to_string());
+            assert_eq!(out["reason"], json!("closing-point-last-record"), "{out}");
+            assert_eq!(out["hint"], json!(expected), "{out}");
         }
+        assert_eq!(std::fs::read(&file).unwrap(), before, "the file stays the same");
+
+        let together = settle(root, &points[1], said)["id"].as_u64().unwrap();
+        let both = write(root, "remove", &json!({"targets": [points[1].id, together], "reason": "Os dois."}).to_string());
+        assert_eq!(both["reason"], json!("closing-point-last-record"), "{both}");
         let english = Refusal::ClosingPointLastRecord { code: "MSTD-POINT-0007".to_string() }.message(Locale::EnUs);
         assert_eq!(
             english,
             "Point MSTD-POINT-0007 closes a point whose original text is already gone, and it is the only record of \
-             it: it does not leave with `remove` or `purge`. To take sensitive data out of it, record a new version \
-             with `replaces` and purge the old one. Nothing was written."
+             it: it does not leave with `remove`. To take sensitive data out of it, use `purge`, which only hides \
+             the excerpt. Nothing was written."
         );
-    }
 
-    /// Para tirar um segredo do fechamento que é o único registro do ponto,
-    /// grava-se a versão nova dele e apaga-se a velha: as duas gravações
-    /// passam, a versão nova carrega a lacuna do ponto, e o ponto segue
-    /// fechado.
-    #[test]
-    fn a_new_version_of_the_last_closing_lets_the_old_one_be_purged() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
-        let closing = settle(root, &points[0], said)["id"].as_u64().unwrap();
-        let purged = write(root, "purge", &json!({"targets": [points[0].id], "reason": "secret"}).to_string());
+        let purged = write(root, "purge", &json!({"targets": [code], "reason": "secret", "excerpt": "S3nh4F0rte"}).to_string());
         assert_eq!(purged["ok"], json!(true), "{purged}");
-        let revision = json!({"block": points[0].block, "gap": "Outro texto", "from": "gap", "status": "not_applicable",
-            "closes": points[0].id, "reason": "Resposta sem o segredo.", "replaces": closing, "origin": said});
-        let revised = write(root, "point", &revision.to_string());
-        assert_eq!(revised["ok"], json!(true), "{revised}");
-        let old = write(root, "purge", &json!({"targets": [closing], "reason": "secret"}).to_string());
-        assert_eq!(old["purged"], json!([closing]), "{old}");
-        assert!(old.get("points").is_none(), "the gap stays covered: {old}");
-        assert_eq!(old["point"]["id"], json!(points[1].id), "{old}");
-        let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
-        let log = mustard_core::domain::spec_events::parse_log(&std::fs::read_to_string(file).unwrap());
+        let log = DiskSpecState::new(root).log("teste").unwrap();
         let point = survey::points(&log).into_iter().find(|p| p.first() == points[0].id).expect("the point stays");
-        assert!(!point.is_open());
-        assert_eq!(point.shown().id, revised["id"].as_u64().unwrap());
-        assert_eq!(point.gap(), Some(points[0].gap.as_str()));
+        assert!(!point.is_open(), "the point stays closed");
+        assert_eq!(log.get(closing).unwrap().str_field("reason"), Some("O fato citava a senha … do banco."));
     }
 
     /// A versão nova de um fechamento que vem sem `closes` e aberta recebe o
@@ -2832,6 +2882,37 @@ mod tests {
             armed_charges(root).into_iter().map(|charge| (charge.spec, charge.session)).collect();
         assert!(armed.contains(&("com-sessao".to_string(), Some("s-1".to_string()))), "{armed:?}");
         assert!(armed.contains(&("sem-sessao".to_string(), None)), "{armed:?}");
+    }
+
+    /// A porta do pull request aberto grava a fase com o número e o endereço
+    /// só numa spec fechada, não arma cobrança nenhuma e não grava de novo; uma
+    /// spec em execução fica como está, para ainda poder fechar.
+    #[test]
+    fn the_open_pull_request_is_recorded_only_on_a_closed_spec_and_charges_nothing() {
+        use crate::commands::event::pending::armed_charges;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        for (spec, phase) in [("em-execucao", "running"), ("fechada", "closed")] {
+            let folder = root.join(".claude").join("spec").join(spec);
+            std::fs::create_dir_all(&folder).unwrap();
+            let state = json!({"v": 1, "id": 1, "type": "state", "phase": phase, "author": "binary",
+                "at": "2026-09-17T10:00:00Z"});
+            std::fs::write(folder.join("spec.ndjson"), format!("{state}\n")).unwrap();
+        }
+        let phase_of = |spec: &str| DiskSpecState::new(root).state(spec).and_then(|s| s.phase);
+
+        assert!(!record_pr_open(root, "em-execucao", 7, Some("https://exemplo/pull/7")));
+        assert_eq!(phase_of("em-execucao"), Some("running"), "a running spec can still close");
+
+        assert!(record_pr_open(root, "fechada", 7, Some("https://exemplo/pull/7")));
+        assert_eq!(phase_of("fechada"), Some("pr_open"));
+        let log = DiskSpecState::new(root).log("fechada").unwrap();
+        let recorded = log.get(log.max_id()).unwrap();
+        assert_eq!(recorded.fields["pr"], json!({"number": 7, "url": "https://exemplo/pull/7"}));
+        assert_eq!(recorded.str_field("author"), Some("binary"));
+        assert!(armed_charges(root).is_empty(), "opening the pull request charges nothing");
+        assert!(!record_pr_open(root, "fechada", 7, None), "a second opening records nothing");
     }
 
     /// Dois fechamentos ao mesmo tempo armam os dois: o arquivo dos

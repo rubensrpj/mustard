@@ -128,18 +128,17 @@ impl Document {
         out
     }
 
-    /// Tira da página todo trecho em que `hit` acha algo, e põe `notice` no
-    /// lugar: o item inteiro sai, com o texto e os campos, e fica só o código
-    /// dele com o aviso; fora de um item, sai o trecho. Devolve o código de
-    /// cada item retido, uma vez só e na ordem da página, e quantos trechos
-    /// fora de item saíram. O trecho recolhido que é de um item conta pelo
-    /// código do item.
-    pub fn withhold(&mut self, hit: &dyn Fn(&str) -> bool, notice: &str) -> (Vec<String>, usize) {
+    /// Troca por `mark`, em todo texto da página, cada trecho que `find`
+    /// acha; o resto do texto fica. Devolve o código de cada item em que um
+    /// trecho foi trocado, uma vez só e na ordem da página, e quantos textos
+    /// fora de item foram mexidos. O trecho recolhido que é de um item conta
+    /// pelo código do item.
+    pub fn redact(&mut self, find: &dyn Fn(&str) -> Vec<String>, mark: &str) -> (Vec<String>, usize) {
         let mut codes = Vec::new();
         let mut loose = 0;
+        let redactor = Redactor { find, mark };
         let mut plain = |text: &mut String| {
-            if hit(text) {
-                *text = notice.to_string();
+            if redactor.apply(text) {
                 loose += 1;
             }
         };
@@ -159,7 +158,7 @@ impl Document {
         if let Some(footer) = self.footer.as_mut() {
             plain(footer);
         }
-        withhold_nodes(&mut self.body, hit, notice, &mut codes, &mut loose);
+        redact_nodes(&mut self.body, &redactor, &mut codes, &mut loose);
         // A versão substituída de um item mostra o mesmo código da vigente:
         // o código sai uma vez só.
         let mut seen = BTreeSet::new();
@@ -168,10 +167,32 @@ impl Document {
     }
 }
 
-fn withhold_nodes(nodes: &mut [Node], hit: &dyn Fn(&str) -> bool, notice: &str, codes: &mut Vec<String>, loose: &mut usize) {
+/// A troca de trechos de uma página: quem acha e o que fica no lugar.
+struct Redactor<'a> {
+    find: &'a dyn Fn(&str) -> Vec<String>,
+    mark: &'a str,
+}
+
+impl Redactor<'_> {
+    /// Troca os trechos de `text`; `true` quando trocou algum.
+    fn apply(&self, text: &mut String) -> bool {
+        let mut found = (self.find)(text);
+        if found.is_empty() {
+            return false;
+        }
+        found.sort_by_key(|excerpt| std::cmp::Reverse(excerpt.len()));
+        for excerpt in found {
+            if !excerpt.is_empty() {
+                *text = text.replace(&excerpt, self.mark);
+            }
+        }
+        true
+    }
+}
+
+fn redact_nodes(nodes: &mut [Node], redactor: &Redactor<'_>, codes: &mut Vec<String>, loose: &mut usize) {
     let plain = |text: &mut String, loose: &mut usize| {
-        if hit(text) {
-            *text = notice.to_string();
+        if redactor.apply(text) {
             *loose += 1;
         }
     };
@@ -182,14 +203,14 @@ fn withhold_nodes(nodes: &mut [Node], hit: &dyn Fn(&str) -> bool, notice: &str, 
                 if let Some(summary) = section.collapsed.as_mut() {
                     plain(summary, loose);
                 }
-                withhold_nodes(&mut section.body, hit, notice, codes, loose);
+                redact_nodes(&mut section.body, redactor, codes, loose);
             }
             Node::Heading { text, .. } | Node::Paragraph(text) | Node::Code(text) => {
                 plain(text, loose);
             }
             Node::List { items, .. } => {
                 for item in items {
-                    withhold_nodes(item, hit, notice, codes, loose);
+                    redact_nodes(item, redactor, codes, loose);
                 }
             }
             Node::Table(table) => {
@@ -197,28 +218,30 @@ fn withhold_nodes(nodes: &mut [Node], hit: &dyn Fn(&str) -> bool, notice: &str, 
                     plain(cell, loose);
                 }
             }
-            Node::Quote(inner) => withhold_nodes(inner, hit, notice, codes, loose),
+            Node::Quote(inner) => redact_nodes(inner, redactor, codes, loose),
             Node::Details { summary, body, owner: None } => {
                 plain(summary, loose);
-                withhold_nodes(body, hit, notice, codes, loose);
+                redact_nodes(body, redactor, codes, loose);
             }
             Node::Details { summary, body, owner: Some(owner) } => {
                 let mut inside = 0;
                 plain(summary, &mut inside);
-                withhold_nodes(body, hit, notice, codes, &mut inside);
+                redact_nodes(body, redactor, codes, &mut inside);
                 if inside > 0 {
                     codes.push(owner.clone());
                 }
             }
             Node::Rule => {}
             Node::Item(item) => {
-                let found = hit(&item.text)
-                    || item.note.as_deref().is_some_and(hit)
-                    || item.fields.iter().any(|f| hit(&f.label) || hit(&f.value));
+                let mut found = redactor.apply(&mut item.text);
+                if let Some(note) = item.note.as_mut() {
+                    found |= redactor.apply(note);
+                }
+                for field in &mut item.fields {
+                    found |= redactor.apply(&mut field.label);
+                    found |= redactor.apply(&mut field.value);
+                }
                 if found {
-                    item.text = notice.to_string();
-                    item.note = None;
-                    item.fields.clear();
                     codes.push(item.code.clone());
                 }
             }

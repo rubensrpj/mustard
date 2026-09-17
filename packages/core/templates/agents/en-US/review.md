@@ -1,5 +1,5 @@
 ---
-name: review
+name: mustard-review
 description: Skeptically checks the work of one wave, the outside review of a survey, or a colleague's pull request. Only reads and runs tests.
 tools: Read, Grep, Glob, Bash
 model: inherit
@@ -32,4 +32,6 @@ Found a mistake that can happen again? Propose a short lesson. Did the mistake c
 ## What to return
 
 In the project's text language: the verdict, each finding with file, line and severity, and the proposals. End with one line, with valid JSON:
-<VERDICT>{"result":"approved","text":"the verdict in one sentence","criteria":[{"criterion":505,"tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
+<VERDICT>{"wave":1,"result":"approved","text":"the verdict in one sentence","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"lessons":[{"lesson":7,"repeated":false}]}</VERDICT>
+
+`wave` is the request's wave; `result` is `approved` or `rejected`; `criterion` is the code the request shows.

@@ -127,14 +127,38 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_on_the_page_and_the_md(
     let spec = root.join(".claude").join("spec").join("teste");
     let rounds: u64 = 5;
     approved_with_waves(root, 2 * rounds);
+    // Cada onda entrega o próprio arquivo, e cada rodada faz o commit dele.
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
+    for n in 1..=2 * rounds {
+        std::fs::write(root.join(format!("a{n}.rs")), "fn um() {}\n").expect("seed file");
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "semente"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    git(&["config", "commit.gpgsign", "false"]);
     for round in 0..rounds {
         let texts: Vec<String> = (0..2).map(|w| format!("rodada {round} escrita {w}")).collect();
         let writers: Vec<_> = texts
             .iter()
             .zip(0u64..)
             .map(|(text, w)| {
-                let report = json!({"waves": [{"wave": 2 * round + w + 1, "delivered": text, "files": ["a.rs"]}]});
-                rt(root, &["round", "--spec", "teste", "--report", &report.to_string()])
+                let wave = 2 * round + w + 1;
+                let file = format!("a{wave}.rs");
+                std::fs::write(root.join(&file), format!("fn um() {{}}\n// {text}\n")).expect("the wave's change");
+                let line = json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")});
+                let report = format!("<DELIVERED>{line}</DELIVERED>");
+                rt(root, &["round", "--spec", "teste", "--report", &report])
                     .stdout(Stdio::piped())
                     .spawn()
                     .expect("spawn round")

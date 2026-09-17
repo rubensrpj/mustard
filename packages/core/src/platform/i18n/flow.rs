@@ -29,14 +29,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Depois, faça a pergunta de aprovação, com \"Aprovar\" e \"Ajustar\"."
         }
         ("plan.next", Locale::EnUs) => "Then ask the approval question, with \"Approve\" and \"Adjust\".",
-        ("plan.held", Locale::PtBr) => {
-            "Depois, rode `mustard-rt run plan` de novo: com a página sem item retido, ele manda \
-             publicar e fazer a pergunta de aprovação."
-        }
-        ("plan.held", Locale::EnUs) => {
-            "Then run `mustard-rt run plan` again: with no item withheld from the page, it orders \
-             the publish and the approval question."
-        }
         ("plan.copy", Locale::PtBr) => {
             "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
         }
@@ -204,12 +196,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.next.discarded", Locale::EnUs) => "The spec was discarded: there is no next step.",
 
         // O fechamento de uma spec (`commands/flow/close.rs`).
-        ("close.bad_report", Locale::PtBr) => {
-            "O relatório da última rodada não se entende: {detail}. Nada foi gravado."
-        }
-        ("close.bad_report", Locale::EnUs) => {
-            "The last round's report cannot be read: {detail}. Nothing was recorded."
-        }
         ("close.not_running", Locale::PtBr) => {
             "A spec está na fase {phase} e não está em execução: só fecha o que estava correndo."
         }
@@ -240,6 +226,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A prova do critério {code} não passou: {output}"
         }
         ("close.criterion_failed", Locale::EnUs) => "The proof of criterion {code} did not pass: {output}",
+        ("close.criterion_ran_no_test", Locale::PtBr) => {
+            "A prova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não casa com \
+             nenhum teste. Grave a versão nova do critério com a prova certa e feche de novo."
+        }
+        ("close.criterion_ran_no_test", Locale::EnUs) => {
+            "The proof of criterion {code} came out green without running any test: the test name \
+             matches no test. Record the criterion's new version with the right proof and close again."
+        }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
 
@@ -250,6 +244,46 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.bad_report", Locale::EnUs) => {
             "The round report cannot be read: {detail}. Nothing was recorded."
         }
+        ("round.line_missing", Locale::PtBr) => {
+            "O relatório não traz nenhuma linha `<DELIVERED>` nem `<VERDICT>`: passe a resposta de cada \
+             agente como ela veio, com a linha do fim. Nada foi gravado."
+        }
+        ("round.line_missing", Locale::EnUs) => {
+            "The report carries no `<DELIVERED>` or `<VERDICT>` line: pass each agent's answer as it \
+             came, with its closing line. Nothing was recorded."
+        }
+        ("round.line_field", Locale::PtBr) => {
+            "Uma linha `<{line}>` do relatório não traz o campo `{field}`: peça ao agente a linha \
+             inteira, como o texto dele ensina. Nada foi gravado."
+        }
+        ("round.line_field", Locale::EnUs) => {
+            "A `<{line}>` line of the report lacks the `{field}` field: ask the agent for the whole \
+             line, as its text teaches. Nothing was recorded."
+        }
+        ("round.file_reserved", Locale::PtBr) => {
+            "A onda {wave} entregou {file}, que está reservado para a onda {other}, ainda em andamento: \
+             duas ondas não mexem no mesmo arquivo ao mesmo tempo. Mostre ao usuário. Nada foi gravado."
+        }
+        ("round.file_reserved", Locale::EnUs) => {
+            "Wave {wave} delivered {file}, which is reserved for wave {other}, still in flight: two \
+             waves never touch the same file at once. Show the user. Nothing was recorded."
+        }
+        ("round.proof_ran_no_test", Locale::PtBr) => {
+            "A prova nova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não \
+             casa. Peça a prova certa antes de fechar."
+        }
+        ("round.proof_ran_no_test", Locale::EnUs) => {
+            "The new proof of criterion {code} came out green without running any test: the test name \
+             does not match. Ask for the right proof before closing."
+        }
+        ("round.commit.scope.one", Locale::PtBr) => "onda-{waves}",
+        ("round.commit.scope.one", Locale::EnUs) => "wave-{waves}",
+        ("round.commit.scope.many", Locale::PtBr) => "ondas-{waves}",
+        ("round.commit.scope.many", Locale::EnUs) => "waves-{waves}",
+        ("round.commit.line", Locale::PtBr) => "- onda {wave}: {summary}",
+        ("round.commit.line", Locale::EnUs) => "- wave {wave}: {summary}",
+        ("round.commit.fixes", Locale::PtBr) => "(conserta: onda {waves})",
+        ("round.commit.fixes", Locale::EnUs) => "(fixes: wave {waves})",
         ("round.not_approved", Locale::PtBr) => {
             "A spec está na fase {phase} e ainda não foi aprovada: nenhuma onda sai antes do sim do usuário."
         }
@@ -295,24 +329,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.git_refused", Locale::PtBr) => "O git recusou o commit da rodada: {detail}",
         ("round.git_refused", Locale::EnUs) => "Git refused the round's commit: {detail}",
         ("round.next", Locale::PtBr) => {
-            "Despache os pedidos desta rodada: cada onda ao agente `wave` e cada revisão ao agente \
-             `review`."
+            "Despache os pedidos desta rodada: cada onda ao agente `mustard-wave` e cada revisão ao \
+             agente `mustard-review`."
         }
         ("round.next", Locale::EnUs) => {
-            "Dispatch this round's requests: each wave to the `wave` agent and each review to \
-             the `review` agent."
+            "Dispatch this round's requests: each wave to the `mustard-wave` agent and each review \
+             to the `mustard-review` agent."
         }
         ("round.report", Locale::PtBr) => {
-            "Quando voltarem, rode a rodada de novo com o relatório: `--report \
-             '{\"waves\":[{\"wave\":1,\"delivered\":\"…\",\"files\":[\"…\"],\"verdict\":{…}}]}'`, com o \
-             `verdict` tirado da linha `VERDICT` da revisão e, quando a onda disser que o plano não \
-             funciona, o `replan` da linha `DELIVERED`."
+            "Quando voltarem, rode a rodada de novo com a linha do fim de cada agente, como ela veio, \
+             uma por linha, todas no mesmo `--report '…'`: a do agente de onda é \
+             `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, e a do revisor, \
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. A rodada lê só \
+             essas linhas e monta o commit do `commit` de cada entrega."
         }
         ("round.report", Locale::EnUs) => {
-            "When they come back, run the round again with the report: `--report \
-             '{\"waves\":[{\"wave\":1,\"delivered\":\"…\",\"files\":[\"…\"],\"verdict\":{…}}]}'`, with the \
-             `verdict` taken from the review's `VERDICT` line and, when the wave says its plan does \
-             not work, the `replan` from the `DELIVERED` line."
+            "When they come back, run the round again with each agent's closing line, as it came, one \
+             per line, all in the same `--report '…'`: the wave agent's is \
+             `<DELIVERED>{\"wave\":1,\"text\":\"…\",\"files\":[\"…\"],\"commit\":\"…\"}</DELIVERED>`, and the reviewer's, \
+             `<VERDICT>{\"wave\":1,\"result\":\"approved\",\"text\":\"…\",\"criteria\":[…]}</VERDICT>`. The round reads \
+             only those lines and builds the commit from each delivery's `commit`."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -657,8 +693,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            93,
-            0x1477_2b37_50bd_2e1e,
+            100,
+            0xbb46_39ea_c747_3eb1,
         );
     }
 
@@ -731,11 +767,11 @@ mod tests {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
             ("plan.next", &[][..]),
-            ("plan.held", &[][..]),
             ("page.publish", &["{milestone}"][..]),
-            ("page.hold", &["{codes}"][..]),
-            ("page.after_purge", &["{milestone}"][..]),
-            ("page.not_rebuilt", &[][..]),
+            ("page.purge_pending", &["{codes}"][..]),
+            ("page.after_rebuild", &["{milestone}"][..]),
+            ("page.not_rebuilt", &["{page}"][..]),
+            ("page.rebuild_failed", &["{page}", "{detail}"][..]),
             ("plan.copy", &[][..]),
             ("plan.wave_loop", &["{waves}"][..]),
             ("plan.depends_on_missing", &["{wave}", "{on}"][..]),
@@ -768,14 +804,22 @@ mod tests {
             ("resume.next.pr_open", &[][..]),
             ("resume.next.delivered", &[][..]),
             ("resume.next.discarded", &[][..]),
-            ("close.bad_report", &["{detail}"][..]),
             ("close.not_running", &["{phase}"][..]),
             ("close.wave_without_commit", &["{wave}"][..]),
             ("close.wave_rejected", &["{wave}"][..]),
             ("close.request_not_delivered", &["{code}"][..]),
             ("close.criterion_failed", &["{code}", "{output}"][..]),
+            ("close.criterion_ran_no_test", &["{code}"][..]),
             ("close.next", &["{command}"][..]),
             ("round.bad_report", &["{detail}"][..]),
+            ("round.line_missing", &[][..]),
+            ("round.line_field", &["{line}", "{field}"][..]),
+            ("round.file_reserved", &["{file}", "{wave}", "{other}"][..]),
+            ("round.proof_ran_no_test", &["{code}"][..]),
+            ("round.commit.scope.one", &["{waves}"][..]),
+            ("round.commit.scope.many", &["{waves}"][..]),
+            ("round.commit.line", &["{wave}", "{summary}"][..]),
+            ("round.commit.fixes", &["{waves}"][..]),
             ("round.not_approved", &["{phase}"][..]),
             ("round.delivered_too_long", &["{wave}", "{chars}", "{max}"][..]),
             ("round.commit_too_long", &["{part}", "{chars}", "{max}"][..]),

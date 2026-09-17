@@ -1,5 +1,5 @@
 ---
-name: wave
+name: mustard-wave
 description: Implements one wave of a Mustard spec from the request the binary assembled.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: inherit
@@ -25,13 +25,12 @@ The proposed change only goes ahead when the user clicks "Accept".
 
 ## What to return
 
-In the project's text language, in at most 8,000 characters:
-1. the files changed, with one sentence about each;
-2. the result of each criterion's test;
-3. what you decided that was not in the request;
-4. what is left to do, and why.
+End with one line, with valid JSON. The round reads only that line:
+<DELIVERED>{"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}</DELIVERED>
 
-End with one line, like this:
-<DELIVERED>{"files":["path/to/file.rs"]}</DELIVERED>
-
-When the plan does not work, the same line carries the change: `"replan":"<the change, in one sentence>"`.
+- `wave`: the request's wave number.
+- `text`: the delivery, in the project's text language, in at most 8,000 characters: the files changed, with one sentence about each; the result of each criterion's test; what you decided that was not in the request; what is left to do, and why.
+- `commit`: what the wave did, in one short sentence, with no spec code.
+- A criterion's test changed its name: `"proofs":[{"criterion":"<criterion code>","proof":"<the new command>"}]`.
+- In a fix: `"fixes":[<the waves the fix closes>]`.
+- The plan does not work: `"replan":"<the change, in one sentence>"`.

@@ -1,7 +1,9 @@
 //! Texto com cara de segredo: chave, token ou senha.
 //!
-//! Antes de uma página poder ser publicada, cada trecho dela passa por aqui, e
-//! o que casa fica fora da página até o item ser expurgado. Três famílias:
+//! A procura devolve os trechos que achou, e a mesma procura serve à página e
+//! ao expurgo: antes de uma página ser publicada, cada texto dela passa por
+//! aqui, e o trecho achado sai da página como "…"; o expurgo troca o mesmo
+//! trecho por "…" no arquivo da spec. Três famílias:
 //!
 //! - as chaves e os tokens com forma conhecida e o cabeçalho de chave privada,
 //!   que casam sozinhos;
@@ -112,20 +114,50 @@ fn not_secret() -> Option<&'static Regex> {
         .as_ref()
 }
 
+/// Os trechos de `text` com cara de segredo, na ordem em que aparecem e sem
+/// repetir: a chave ou o token inteiro de forma conhecida, e o valor da senha,
+/// do token ou da chave nas outras formas — o nome e o sinal ficam de fora do
+/// trecho.
+pub(crate) fn secret_excerpts(text: &str) -> Vec<String> {
+    let mut found: Vec<(usize, String)> = Vec::new();
+    if let Some(re) = shapes() {
+        found.extend(re.find_iter(text).map(|m| (m.start(), m.as_str().to_string())));
+    }
+    for (re, mixed) in valued() {
+        for caps in re.captures_iter(text) {
+            let Some(value) = caps.name("v") else { continue };
+            let trimmed = trim_value(value.as_str());
+            if real_value(trimmed, *mixed) {
+                found.push((value.start(), trimmed.to_string()));
+            }
+        }
+    }
+    found.sort();
+    let mut out: Vec<String> = Vec::new();
+    for (_, excerpt) in found {
+        if !excerpt.is_empty() && !out.contains(&excerpt) {
+            out.push(excerpt);
+        }
+    }
+    out
+}
+
 /// O texto tem algo com cara de segredo.
-pub(super) fn looks_like_secret(text: &str) -> bool {
-    shapes().is_some_and(|re| re.is_match(text))
-        || valued().iter().any(|(re, mixed)| {
-            re.captures_iter(text)
-                .any(|caps| caps.name("v").is_some_and(|value| real_value(value.as_str(), *mixed)))
-        })
+#[cfg(test)]
+fn looks_like_secret(text: &str) -> bool {
+    !secret_excerpts(text).is_empty()
+}
+
+/// O valor sem a pontuação que fecha a frase em volta dele.
+fn trim_value(value: &str) -> &str {
+    value.trim_end_matches(['.', ',', ';', ':', ')', ']', '}'])
 }
 
 /// Um valor que parece de verdade: não é um marcador de lugar, uma palavra de
 /// exemplo, um código de item, uma data, um caminho ou a leitura de uma
 /// variável de ambiente, e, quando `mixed`, tem letra e número.
 fn real_value(value: &str, mixed: bool) -> bool {
-    let value = value.trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
+    let value = trim_value(value);
     let lower = value.to_ascii_lowercase();
     let placeholder = value.starts_with(['$', '{', '%', '*', '.', '<', '['])
         || value.chars().all(|c| c == value.chars().next().unwrap_or('x'))
@@ -142,6 +174,21 @@ fn real_value(value: &str, mixed: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A procura devolve só o trecho do segredo: a chave inteira de forma
+    /// conhecida e, nas outras formas, só o valor, sem o nome, o sinal e a
+    /// pontuação do fim; o mesmo trecho aparece uma vez só.
+    #[test]
+    fn the_search_returns_only_the_secret_excerpts() {
+        let key = format!("ghp_{}", "a1".repeat(18));
+        assert_eq!(secret_excerpts(&format!("o token {key} vazou; de novo {key}")), vec![key]);
+        assert_eq!(secret_excerpts("A senha do banco: S3nh4F0rte."), vec!["S3nh4F0rte".to_string()]);
+        assert_eq!(
+            secret_excerpts("DB_PASSWORD=S3nh4F0rte2024 e postgres://app:senhaforte@db"),
+            vec!["S3nh4F0rte2024".to_string(), "senhaforte".to_string()]
+        );
+        assert!(secret_excerpts("a senha: <senha>").is_empty());
+    }
 
     /// Cada família conhecida casa; o mesmo assunto escrito em prosa, um nome
     /// de campo, um marcador e um exemplo curto não casam.

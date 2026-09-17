@@ -1802,12 +1802,12 @@ mod tests {
 
     /// The module's prose may not assert a merge method nobody measured.
     ///
-    /// Both halves, so the assertion can fail: the doc no longer claims THIS
-    /// repository squash-merges (measured false — the merges carry two parents
-    /// each and `--merged` recognises every branch), while the provider fallback
-    /// it justified is still in the code. Removing an unmeasured sentence must
-    /// not quietly remove the mechanism: a portal that squashes is real, and the
-    /// fallback is what covers it.
+    /// The doc no longer claims THIS repository squash-merges (measured false —
+    /// the merges carry two parents each and `--merged` recognises every
+    /// branch). The provider fallback that covers a portal which squashes is
+    /// proven by behaviour, not by reading this file: the session-start
+    /// integration test squashes a pull request on a real remote, and the
+    /// branch leaves only when the provider's list says it merged.
     #[test]
     fn settle_doc_states_no_unmeasured_merge_method() {
         let src = include_str!("git_settle.rs");
@@ -1845,16 +1845,6 @@ mod tests {
             );
         }
 
-        // The mechanism survives the sentence: the merge gate still asks the
-        // provider when containment says no. It asks through the ONE adapter,
-        // which is why the argv itself is no longer spelled here — both halves,
-        // so the assertion can fail if the mechanism is dropped rather than
-        // moved.
-        assert!(
-            src.contains("PrQuery::Ask(provider).evidence_of(main, branch)"),
-            "the merge gate must still consult the provider — a portal that rewrites the commits \
-             when it merges is real",
-        );
         // Needle assembled at runtime so writing the test does not plant the
         // spelling in the file under assertion.
         let spawn_cli = ["Command::new(\"", "gh\")"].concat();

@@ -11,25 +11,30 @@
 //! 3. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
 //!    a mesma linha que o `resume` devolve.
 //! 4. **As pendências** — uma linha só, com a contagem.
-//! 5. **O merge feito por outra pessoa** — com a spec atual em "pull request
+//! 5. **O pull request da spec atual** — com a spec atual em "pull request
 //!    aberto", o provedor é perguntado só pelo pull request dela; se ele
-//!    entrou, o mesmo caminho do merge do Mustard roda antes de qualquer aviso
-//!    (a spec gravada como entregue, a base atualizada, a branch local
-//!    apagada), e o aviso diz o que foi feito e pede a pergunta das pendências
-//!    nascidas na spec. Se o provedor não responde, o aviso diz isso e nada
-//!    muda. As outras branches cujo trabalho já entrou na base e que seguem
-//!    vivas saem só do git local, sem pergunta nenhuma ao provedor.
-//! 6. **O disco** — as cópias descartáveis antigas acima de 5 GB.
-//! 7. **A versão velha do Mustard** — a gravada no projeto, a do plugin
+//!    entrou pelas mãos de outra pessoa, o mesmo caminho do merge do Mustard
+//!    roda antes de qualquer aviso (a spec gravada como entregue, a base
+//!    atualizada, a branch local apagada), e o aviso diz o que foi feito e
+//!    pede a pergunta das pendências nascidas na spec. Se o provedor não
+//!    responde, o aviso diz isso e nada muda.
+//! 6. **As branches mergeadas** — as outras branches cujo trabalho já entrou
+//!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
+//!    provedor.
+//! 7. **O disco** — as cópias descartáveis antigas acima de 5 GB.
+//! 8. **A versão velha do Mustard** — a gravada no projeto, a do plugin
 //!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
 //!
 //! ## Até 3 kB
 //!
-//! Tudo junto cabe em [`MAX_BYTES`]. Os avisos de tamanho fixo são curtos por
-//! construção; os dois de tamanho variável — o terreno e os textos declarados
-//! — cedem o lugar quando o todo passa do teto, com uma linha no stderr
-//! dizendo qual saiu. O relato do merge feito por outra pessoa nunca cede:
-//! ele conta uma branch apagada e uma spec entregue.
+//! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
+//! cedem o lugar um a um, na vez de cada um, com uma linha no stderr dizendo
+//! qual saiu: o terreno primeiro, depois a versão, o disco, as branches
+//! mergeadas e a contagem das pendências, e só então os textos declarados.
+//! Entre os textos declarados está o mapa do início da sessão, que substitui
+//! as regras antigas: ele é o último a sair. A retomada e o relato do pull
+//! request da spec atual nunca cedem: um diz onde a spec está, o outro conta
+//! uma branch apagada e uma spec entregue.
 //!
 //! ## As leituras da máquina são argumento
 //!
@@ -78,23 +83,26 @@ struct Probe<'a> {
 }
 
 /// Um aviso do início da sessão: o nome, o texto — que só existe quando a
-/// condição vale — e se ele cede o lugar quando o todo passa do teto.
+/// condição vale — e a vez dele de ceder o lugar quando o todo passa do teto:
+/// o menor número sai primeiro, e `None` nunca sai.
 struct Notice {
     name: &'static str,
     text: fn(&Probe<'_>) -> Option<String>,
-    yields: bool,
+    cedes: Option<u8>,
 }
 
 /// Os avisos, na ordem em que a janela os lê. Acrescentar um aviso é somar um
-/// item.
+/// item. Os textos declarados, onde mora o mapa do início da sessão, são os
+/// últimos a ceder.
 const NOTICES: &[Notice] = &[
-    Notice { name: "terrain", text: terrain_notice, yields: true },
-    Notice { name: "declared", text: declared_notice, yields: true },
-    Notice { name: "resume", text: resume_notice, yields: false },
-    Notice { name: "pending", text: pending_notice_of, yields: false },
-    Notice { name: "merged", text: merged_notice, yields: false },
-    Notice { name: "disk", text: disk_notice, yields: false },
-    Notice { name: "version", text: version_notice, yields: false },
+    Notice { name: "terrain", text: terrain_notice, cedes: Some(0) },
+    Notice { name: "declared", text: declared_notice, cedes: Some(5) },
+    Notice { name: "resume", text: resume_notice, cedes: None },
+    Notice { name: "pending", text: pending_notice_of, cedes: Some(4) },
+    Notice { name: "landed", text: landed_notice, cedes: None },
+    Notice { name: "merged", text: merged_notice, cedes: Some(3) },
+    Notice { name: "disk", text: disk_notice, cedes: Some(2) },
+    Notice { name: "version", text: version_notice, cedes: Some(1) },
 ];
 
 impl Check for SessionStartInject {
@@ -144,13 +152,19 @@ fn session_start_core(
 }
 
 /// Os textos que cabem no teto, na ordem da lista: enquanto o todo passa de
-/// [`MAX_BYTES`], o primeiro aviso que cede sai, com uma linha no stderr.
+/// [`MAX_BYTES`], sai o aviso cuja vez de ceder vem primeiro, com uma linha no
+/// stderr.
 fn within_cap(mut shown: Vec<(&Notice, String)>) -> Vec<String> {
     let size = |shown: &[(&Notice, String)]| {
         shown.iter().map(|(_, text)| text.len()).sum::<usize>() + 2 * shown.len().saturating_sub(1)
     };
     while size(&shown) > MAX_BYTES {
-        let Some(at) = shown.iter().position(|(notice, _)| notice.yields) else {
+        let next = shown
+            .iter()
+            .enumerate()
+            .filter_map(|(at, (notice, _))| notice.cedes.map(|turn| (turn, at)))
+            .min();
+        let Some((_, at)) = next else {
             break;
         };
         let (notice, text) = shown.remove(at);
@@ -223,10 +237,16 @@ fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Option<(String, 
     merged_elsewhere(root, &spec, session).map(|found| (spec, found))
 }
 
-/// O merge feito por outra pessoa: o que foi feito com o pull request da spec
-/// atual, ou o silêncio do provedor sobre ele, e as branches cujo trabalho já
-/// entrou na base e que seguem vivas, pela conferência única do git local
-/// ([`merged_by_another`]), que nunca pergunta ao provedor.
+/// O pull request da spec atual: o que foi feito com ele, pelo caminho do
+/// merge, ou o silêncio do provedor sobre ele. `None` quando não há nada a
+/// dizer.
+fn landed_notice(probe: &Probe<'_>) -> Option<String> {
+    probe.landing.map(|(spec, found)| landing_text(spec, found, probe.lang))
+}
+
+/// As branches cujo trabalho já entrou na base e que seguem vivas, pela
+/// conferência única do git local ([`merged_by_another`]), que nunca pergunta
+/// ao provedor.
 ///
 /// `None` num projeto sem `mustard.json` e quando não há nada a dizer.
 fn merged_notice(probe: &Probe<'_>) -> Option<String> {
@@ -234,7 +254,6 @@ fn merged_notice(probe: &Probe<'_>) -> Option<String> {
         return None;
     }
     let lang = probe.lang;
-    let mut lines: Vec<String> = probe.landing.iter().map(|(spec, found)| landing_text(spec, found, lang)).collect();
     let config = crate::shared::context::config::project_config_cached(probe.root);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, probe.root);
     // A branch que o caminho do merge acabou de arrumar já foi dita acima; a
@@ -246,17 +265,17 @@ fn merged_notice(probe: &Probe<'_>) -> Option<String> {
     };
     let merged: Vec<_> =
         merged_by_another(probe.root, &flow).into_iter().filter(|state| Some(state.branch.as_str()) != landed).collect();
-    if !merged.is_empty() {
-        let named: Vec<&str> = merged.iter().take(MERGED_NAMES).map(|state| state.branch.as_str()).collect();
-        let rest = merged.len() - named.len();
-        let branches = if rest > 0 { format!("{} (+{rest})", named.join(", ")) } else { named.join(", ") };
-        lines.push(
-            translate("session.merged", lang)
-                .replace("{count}", &merged.len().to_string())
-                .replace("{branches}", &branches),
-        );
+    if merged.is_empty() {
+        return None;
     }
-    (!lines.is_empty()).then(|| lines.join("\n"))
+    let named: Vec<&str> = merged.iter().take(MERGED_NAMES).map(|state| state.branch.as_str()).collect();
+    let rest = merged.len() - named.len();
+    let branches = if rest > 0 { format!("{} (+{rest})", named.join(", ")) } else { named.join(", ") };
+    Some(
+        translate("session.merged", lang)
+            .replace("{count}", &merged.len().to_string())
+            .replace("{branches}", &branches),
+    )
 }
 
 /// O texto do pull request da spec `spec`: o que o caminho do merge fez — a
@@ -455,14 +474,19 @@ mod tests {
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
-    /// Os avisos são uma lista, na ordem em que a janela os lê, e só o
-    /// terreno e os textos declarados cedem o lugar.
+    /// Os avisos são uma lista, na ordem em que a janela os lê, cada um com a
+    /// vez de ceder o lugar: o terreno primeiro, os textos declarados por
+    /// último, e a retomada e o relato do pull request nunca.
     #[test]
     fn the_notices_are_a_typed_list_in_reading_order() {
         let names: Vec<&str> = NOTICES.iter().map(|n| n.name).collect();
-        assert_eq!(names, ["terrain", "declared", "resume", "pending", "merged", "disk", "version"]);
-        let yielding: Vec<&str> = NOTICES.iter().filter(|n| n.yields).map(|n| n.name).collect();
-        assert_eq!(yielding, ["terrain", "declared"]);
+        assert_eq!(names, ["terrain", "declared", "resume", "pending", "landed", "merged", "disk", "version"]);
+        let mut ceding: Vec<(u8, &str)> = NOTICES.iter().filter_map(|n| n.cedes.map(|turn| (turn, n.name))).collect();
+        ceding.sort_unstable();
+        let order: Vec<&str> = ceding.into_iter().map(|(_, name)| name).collect();
+        assert_eq!(order, ["terrain", "version", "disk", "merged", "pending", "declared"]);
+        let kept: Vec<&str> = NOTICES.iter().filter(|n| n.cedes.is_none()).map(|n| n.name).collect();
+        assert_eq!(kept, ["resume", "landed"]);
     }
 
     /// Fora do início da sessão, nada; sem aviso nenhum, `Allow`.
@@ -475,27 +499,18 @@ mod tests {
         assert_eq!(verdict.unwrap(), Verdict::Allow);
     }
 
-    /// Todos os avisos de tamanho fixo juntos, com textos do tamanho real,
-    /// cabem nos 3 kB ao lado de um texto declarado do tamanho do mapa
-    /// aprovado; um texto declarado grande demais sai, e os outros ficam. O
-    /// relato do merge feito por outra pessoa, com três pendências, também
-    /// cabe ao lado do mapa, da retomada e da contagem.
+    /// O relato do pull request feito por outra pessoa, com três pendências,
+    /// cabe ao lado do mapa, da retomada e da contagem; um texto declarado
+    /// grande demais para caber com a retomada sai por último, depois de todos
+    /// os avisos que cedem, e a retomada e o relato ficam.
     #[test]
-    fn everything_fits_in_three_kilobytes_and_the_declared_text_yields_first() {
-        let fixed: Vec<(&Notice, String)> = vec![
-            (&NOTICES[2], "Retomada: spec uma-spec-de-nome-longo, fase running; último passo: round; próximo: onda 12.".into()),
-            (&NOTICES[3], translate("pending.count.many", Locale::PtBr).replace("{count}", "12")),
-            (&NOTICES[4], translate("session.merged", Locale::PtBr).replace("{count}", "6")
-                .replace("{branches}", "feature/uma, feature/duas, feature/tres, feature/quatro (+2)")),
-            (&NOTICES[5], translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14")),
-            (&NOTICES[6], translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99")),
-        ];
-        let map = "m".repeat(2_066);
-        let mut all = vec![(&NOTICES[1], map)];
-        all.extend(fixed.iter().cloned());
-        let kept = within_cap(all);
-        assert_eq!(kept.len(), 6, "the approved map and every fixed notice fit together");
-        assert!(kept.join("\n\n").len() <= MAX_BYTES, "{}", kept.join("\n\n").len());
+    fn the_landing_report_fits_and_an_oversized_declared_text_goes_last() {
+        let resume = (&NOTICES[2], "Retomada: spec uma-spec-de-nome-longo, fase running; último passo: round; próximo: onda 12.".to_string());
+        let pending = (&NOTICES[3], translate("pending.count.many", Locale::PtBr).replace("{count}", "12"));
+        let merged = (&NOTICES[5], translate("session.merged", Locale::PtBr).replace("{count}", "6")
+            .replace("{branches}", "feature/uma, feature/duas, feature/tres, feature/quatro (+2)"));
+        let disk = (&NOTICES[6], translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14"));
+        let version = (&NOTICES[7], translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
 
         let items: Vec<crate::commands::event::pending::OpenPending> = ["Humanize", "HTML padrão da spec", "Revisor de fora"]
             .iter()
@@ -511,22 +526,135 @@ mod tests {
         };
         let landed = landing_text("uma-spec-de-nome-longo", &landed, Locale::PtBr);
         assert!(landed.contains("Revisor de fora") && landed.contains("saiu desta máquina"), "{landed}");
+        let map = mustard_core::session_map(Locale::PtBr).trim().to_string();
         let with_landing = vec![
-            (&NOTICES[1], "m".repeat(2_066)),
-            fixed[0].clone(),
-            fixed[1].clone(),
-            (&NOTICES[4], landed),
-            fixed[4].clone(),
+            (&NOTICES[1], map.clone()),
+            resume.clone(),
+            pending.clone(),
+            (&NOTICES[4], landed.clone()),
         ];
         let kept = within_cap(with_landing);
-        assert_eq!(kept.len(), 5, "the landing report fits beside the approved map");
+        assert!(kept.contains(&map) && kept.contains(&landed), "the landing report fits beside the real map: {kept:?}");
 
-        let mut too_big = vec![(&NOTICES[0], "t".repeat(400)), (&NOTICES[1], "d".repeat(2_900))];
-        too_big.extend(fixed.iter().cloned());
+        let too_big = vec![
+            (&NOTICES[0], "t".repeat(400)),
+            (&NOTICES[1], "d".repeat(2_950)),
+            resume.clone(),
+            pending,
+            merged,
+            disk,
+            version,
+        ];
         let kept = within_cap(too_big);
-        assert!(!kept.iter().any(|t| t.starts_with('t')), "the terrain yields first");
-        assert!(!kept.iter().any(|t| t.starts_with('d')), "then the declared text");
-        assert_eq!(kept, fixed.into_iter().map(|(_, t)| t).collect::<Vec<_>>(), "the fixed notices stay");
+        assert_eq!(kept, vec![resume.1], "every ceding notice went, the declared text last, and the resume stays");
+    }
+
+    /// O mapa do início da sessão, nos dois idiomas, chega inteiro numa sessão
+    /// com spec aberta, pendências, versão velha, branches mergeadas e sobras
+    /// no disco: o todo passaria do teto, e são os avisos que saem antes dele.
+    /// A retomada fica, e o todo cabe nos 3 kB.
+    #[test]
+    fn the_real_session_map_is_never_the_first_to_go() {
+        use mustard_core::platform::i18n::Locale;
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = tempdir().unwrap();
+            let project = dir.path().join("projeto");
+            let root = project.as_path();
+            std::fs::create_dir_all(root).unwrap();
+            git(root, &["init", "-q", "."]);
+            git(root, &["config", "user.email", "t@t"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["config", "commit.gpgsign", "false"]);
+            git(root, &["checkout", "-q", "-b", "dev"]);
+            std::fs::write(root.join(".git/info/exclude"), ".claude/\nmustard.json\n").unwrap();
+            let config = json!({
+                "version": "0.0.1-velha",
+                "language": {"text": lang.as_str()},
+                "git": {"flow": {"*": "dev"}},
+                "inject": mustard_core::platform::project_seed::default_inject_entries(),
+            });
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            mustard_core::platform::project_seed::seed_harness_texts(&root.join(".claude"), lang).unwrap();
+            std::fs::write(root.join("README.md"), "loja\n").unwrap();
+            git(root, &["add", "README.md"]);
+            git(root, &["commit", "-q", "-m", "seed"]);
+            let landed_branches = [
+                "feature/trava-de-pendencias-no-fim-da-resposta",
+                "feature/pagina-do-projeto-com-menu-lateral",
+                "fix/merge-feito-por-outra-pessoa-no-inicio",
+                "feature/uma-entrega-ja-mergeada-pelo-colega",
+                "fix/prova-que-roda-zero-testes-no-fechamento",
+            ];
+            for landed in landed_branches {
+                git(root, &["checkout", "-q", "-b", landed]);
+                git(root, &["commit", "-q", "--allow-empty", "-m", "work"]);
+                git(root, &["checkout", "-q", "dev"]);
+                git(root, &["merge", "-q", "--no-ff", "-m", "merge", landed]);
+            }
+            for title in ["Humanize", "HTML padrão da spec", "Revisor de fora"] {
+                let out = crate::commands::event::pending::pending_at(&crate::commands::event::pending::PendingOpts {
+                    root: root.to_path_buf(),
+                    add: true,
+                    title: Some(title.to_string()),
+                    detail: Some("combinado na conversa".to_string()),
+                    ..crate::commands::event::pending::PendingOpts::default()
+                });
+                assert_eq!(out["ok"], json!(true), "seed: {out}");
+            }
+            let spec = "relatorios-dos-agentes-aceitos-como-vem";
+            let branch = format!("feature/{spec}");
+            git(root, &["checkout", "-q", "-b", &branch]);
+            assert_eq!(crate::commands::spec_events::write::record_open(root, spec, &branch, "dev"), Ok(true));
+
+            // As sobras no disco, acima do limite.
+            let temp_root = dir.path().join("tmp");
+            let old = temp_root.join("tmp.old");
+            std::fs::create_dir_all(old.join("apps").join("rt")).unwrap();
+            std::fs::write(old.join("Cargo.toml"), "[workspace]\n").unwrap();
+            std::fs::write(old.join("apps").join("rt").join("big.bin"), vec![0u8; 4096]).unwrap();
+            crate::commands::maint::scratch_gc::backdate_tree(&old, 24);
+            let scratch = ScratchProbe {
+                roots: ScratchRoots {
+                    temp_root,
+                    shared_target: None,
+                    cap_bytes: u64::MAX,
+                    current_session: "s-mapa".to_string(),
+                    current_dir: None,
+                    home: None,
+                    clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
+                    owner_uid: crate::commands::maint::scratch_gc::current_uid(),
+                    now: std::time::SystemTime::now(),
+                },
+                warn_bytes: 1024,
+            };
+
+            let map = mustard_core::session_map(lang).trim().to_string();
+            let input = session_input("s-mapa", "clear");
+            let context = context_of(root, &input, NO_REGISTRY, Some(&scratch));
+            assert!(context.contains(&map), "{lang:?}: the whole map arrives: {context}");
+            assert!(context.len() <= MAX_BYTES, "{lang:?}: {} bytes", context.len());
+            let resume = crate::commands::flow::resume::current_line(root, Some("s-mapa")).expect("an open spec");
+            assert!(context.contains(&resume), "{lang:?}: the resume stays: {context}");
+
+            // Sem o teto, o todo passaria dos 3 kB: o teste mede a situação em
+            // que alguém tem de sair.
+            let probe = Probe {
+                root,
+                session: Some("s-mapa"),
+                lang,
+                refreshed: true,
+                installed: NO_REGISTRY,
+                scratch: Some(&scratch),
+                landing: None,
+            };
+            let all: Vec<String> = NOTICES.iter().filter_map(|notice| (notice.text)(&probe)).collect();
+            assert!(all.iter().any(|text| text.contains("0.0.1-velha")), "{lang:?}: the old version speaks: {all:?}");
+            assert!(all.iter().any(|text| text.contains("uma-entrega-ja-mergeada")), "{lang:?}: {all:?}");
+            assert!(all.iter().any(|text| text.contains("mustard-rt run clean")), "{lang:?}: {all:?}");
+            assert!(all.join("\n\n").len() > MAX_BYTES, "{lang:?}: the whole would not fit: {}", all.join("\n\n").len());
+            let gone = all.iter().filter(|text| !context.contains(text.as_str())).count();
+            assert!(gone >= 1, "{lang:?}: some notice gave way: {context}");
+        }
     }
 
     /// O texto declarado sai uma vez por sessão e volta depois de `/clear` e

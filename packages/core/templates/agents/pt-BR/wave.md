@@ -1,5 +1,5 @@
 ---
-name: wave
+name: mustard-wave
 description: Implementa uma onda de uma spec do Mustard a partir do pedido montado pelo binário.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: inherit
@@ -25,13 +25,12 @@ A mudança proposta só segue com o clique do usuário em "Aceitar".
 
 ## O que devolver
 
-No idioma do texto do projeto, em até 8.000 caracteres:
-1. os arquivos mudados, com uma frase sobre cada um;
-2. o resultado do teste de cada critério;
-3. o que você decidiu e não estava no pedido;
-4. o que ficou por fazer, e por quê.
+Termine com uma linha só, com JSON válido. A rodada lê só ela:
+<DELIVERED>{"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}</DELIVERED>
 
-Termine com uma linha só, assim:
-<DELIVERED>{"files":["caminho/do/arquivo.rs"]}</DELIVERED>
-
-Com o plano que não funciona, a mesma linha leva a mudança: `"replan":"<a mudança, numa frase>"`.
+- `wave`: o número da onda do pedido.
+- `text`: a entrega, no idioma do texto do projeto, em até 8.000 caracteres: os arquivos mudados, com uma frase sobre cada um; o resultado do teste de cada critério; o que você decidiu e não estava no pedido; o que ficou por fazer, e por quê.
+- `commit`: o que a onda fez, numa frase curta, sem código de spec.
+- O teste de um critério mudou de nome: `"proofs":[{"criterion":"<código do critério>","proof":"<o comando novo>"}]`.
+- Num conserto: `"fixes":[<as ondas que o conserto fecha>]`.
+- O plano não funciona: `"replan":"<a mudança, numa frase>"`.

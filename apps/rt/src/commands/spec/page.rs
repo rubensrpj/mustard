@@ -17,8 +17,8 @@
 //! Saída: `{ok, path}` na página avulsa, com `path` exatamente como `--out`
 //! foi passado (barras normais), e `{ok, spec, md, html, project}` na da spec,
 //! com os caminhos relativos ao projeto. A conferência antes de publicar
-//! acrescenta `withheld` (os itens que ficaram fora da página por terem texto
-//! com cara de segredo), `trimmed` (quantos registros da conversa ficaram só
+//! acrescenta `withheld` (os itens que ainda guardam no arquivo um trecho com
+//! cara de segredo, que saiu da página como "…"), `trimmed` (quantos registros da conversa ficaram só
 //! no `.md`) e `warnings`, quando há o que dizer. Recusa sai com exit 1, `ok: false`, a razão
 //! em `reason` e a mensagem no idioma do projeto em `hint`, e não grava nada.
 
@@ -257,8 +257,8 @@ mod tests {
     }
 
     /// Pelo `page --spec`, numa spec de teste: cada forma comum de escrever
-    /// um segredo fica fora da página, com o código da mensagem em
-    /// `withheld`, e o `.md` local continua inteiro; o que tem letra e número
+    /// um segredo sai da página como "…", com o resto da mensagem legível e o
+    /// código dela em `withheld`, e o `.md` local continua inteiro; o que tem letra e número
     /// sem ser segredo — código de item, data, caminho com linha, leitura de
     /// variável de ambiente — continua na página.
     #[test]
@@ -336,6 +336,7 @@ mod tests {
         {
             assert!(html.contains(text), "{text} was withheld without being a secret");
         }
+        assert!(html.contains("o valor é DB_PASSWORD=… e pronto"), "only the excerpt leaves the page");
     }
 
     /// Cada recusa tem a mensagem nos dois idiomas.

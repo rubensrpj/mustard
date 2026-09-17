@@ -192,25 +192,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Point {code} is open and does not leave with `remove`: close it with a point that names \
              it in `closes`, with the answer or the reason. Nothing was written."
         }
-        ("spec_events.open_point_purged", Locale::PtBr) => {
-            "O ponto {code} está aberto e não sai com `purge`: feche-o antes com um ponto que o \
-             aponte em `closes` (\"não se aplica\", com o motivo), e só depois apague o texto \
-             original. Nada foi gravado."
+        ("spec_events.purge_excerpt_not_found", Locale::PtBr) => {
+            "O item {code} não traz o trecho a expurgar: nem o que o pedido indica em `excerpt`, nem \
+             texto com cara de segredo. Diga o trecho exato em `excerpt`. Nada foi gravado."
         }
-        ("spec_events.open_point_purged", Locale::EnUs) => {
-            "Point {code} is open and does not leave with `purge`: first close it with a point that \
-             names it in `closes` (\"not applicable\", with the reason), and only then purge the \
-             original text. Nothing was written."
+        ("spec_events.purge_excerpt_not_found", Locale::EnUs) => {
+            "Item {code} does not carry the excerpt to purge: neither the one the request names in \
+             `excerpt` nor text that looks like a secret. Name the exact excerpt in `excerpt`. \
+             Nothing was written."
         }
         ("spec_events.closing_point_last_record", Locale::PtBr) => {
             "O ponto {code} fecha um ponto cujo texto original já saiu, e é o único registro dele: \
-             não sai com `remove` nem com `purge`. Para tirar um dado sensível dele, grave uma versão \
-             nova com `replaces` e apague a antiga. Nada foi gravado."
+             não sai com `remove`. Para tirar um dado sensível dele, use `purge`, que só oculta o \
+             trecho. Nada foi gravado."
         }
         ("spec_events.closing_point_last_record", Locale::EnUs) => {
             "Point {code} closes a point whose original text is already gone, and it is the only \
-             record of it: it does not leave with `remove` or `purge`. To take sensitive data out of \
-             it, record a new version with `replaces` and purge the old one. Nothing was written."
+             record of it: it does not leave with `remove`. To take sensitive data out of it, use \
+             `purge`, which only hides the excerpt. Nothing was written."
         }
         ("spec_events.wave_prompt_too_long", Locale::PtBr) => {
             "O pedido da onda {wave} tem {lines} linhas, e o teto é {max}, já com o combinado \
@@ -499,7 +498,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             69,
-            0xf274_fcdb_46f5_4e6f,
+            0x4a31_5043_bb56_4824,
         );
     }
 
@@ -529,7 +528,7 @@ mod tests {
             ("spec_events.closing_point_open", &[][..]),
             ("spec_events.not_applicable_reason", &[][..]),
             ("spec_events.open_point_removed", &["{code}"][..]),
-            ("spec_events.open_point_purged", &["{code}"][..]),
+            ("spec_events.purge_excerpt_not_found", &["{code}"][..]),
             ("spec_events.closing_point_last_record", &["{code}"][..]),
             ("spec_events.wave_prompt_too_long", &["{wave}", "{lines}", "{max}", "{parts}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),

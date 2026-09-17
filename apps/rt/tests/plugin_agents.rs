@@ -5,9 +5,9 @@
 
 //! Os textos de agente do Mustard, pelo binário de verdade.
 //!
-//! O projeto recebe exatamente três agentes — `wave`, `review` e `skill` —, no
-//! idioma do `language.text` e com até 3.072 bytes cada; os dois idiomas
-//! existem como molde do produto; nenhum texto manda copiar o projeto nem
+//! O projeto recebe exatamente três agentes — `mustard-wave`,
+//! `mustard-review` e `mustard-skill` —, no idioma do `language.text` e com
+//! até 3.072 bytes cada; os dois idiomas existem como molde do produto; nenhum texto manda copiar o projeto nem
 //! compilar numa cópia; e cada comando do fluxo responde o próximo passo, que
 //! o modelo não escolhe sozinho.
 
@@ -139,12 +139,50 @@ fn the_project_receives_exactly_three_agents_in_its_text_language() {
             assert_eq!(installed, template(lang, name), "the {lang} project got another text for `{name}`");
             assert_ne!(installed, template(other, name), "the {lang} and {other} `{name}` texts are the same");
             assert!(
-                installed.starts_with(&format!("---\nname: {name}\n")),
-                "the `{name}` file does not declare the agent `{name}`",
+                installed.starts_with(&format!("---\nname: mustard-{name}\n")),
+                "the `{name}` file does not declare the agent `mustard-{name}`",
             );
         }
     }
     assert!(!repo_root().join("plugin/agents").exists(), "the plugin ships agent texts of its own");
+}
+
+/// O nome de cada agente do Mustard leva o prefixo do Mustard, e um projeto
+/// que já tem um agente chamado `review` fica com os dois: o dele, intocado,
+/// e o `mustard-review`. Uma instalação antiga, com os nomes sem prefixo, é
+/// migrada pela instalação seguinte, e a rodada manda cada pedido ao agente
+/// pelo nome com prefixo.
+#[test]
+fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_same_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#);
+    let own = "---\nname: review\ndescription: O revisor do próprio projeto.\n---\n\nRevise.\n";
+    std::fs::write(root.join(".claude/agents/review.md"), own).unwrap();
+    // A instalação antiga: os três agentes do Mustard sem o prefixo.
+    for name in ["wave", "review", "skill"] {
+        let path = root.join(format!(".claude/agents/mustard/{name}.md"));
+        let old = std::fs::read_to_string(&path).unwrap().replacen(&format!("name: mustard-{name}"), &format!("name: {name}"), 1);
+        std::fs::write(&path, old).unwrap();
+    }
+
+    let report = rt(&root, &home, &["run", "upsert"], None);
+    assert!(report.get("error").is_none(), "{report}");
+
+    assert_eq!(std::fs::read_to_string(root.join(".claude/agents/review.md")).unwrap(), own, "the project's agent changed");
+    let mut names: Vec<String> = files_under(&root.join(".claude/agents"))
+        .iter()
+        .filter_map(|file| {
+            let body = std::fs::read_to_string(root.join(".claude/agents").join(file)).ok()?;
+            body.lines().find_map(|line| line.strip_prefix("name: ")).map(str::to_string)
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, ["mustard-review", "mustard-skill", "mustard-wave", "review"], "two agents share a name");
+
+    for lang in [Locale::PtBr, Locale::EnUs] {
+        let next = translate("round.next", lang);
+        assert!(next.contains("`mustard-wave`") && next.contains("`mustard-review`"), "{next}");
+    }
 }
 
 /// Nenhum texto de agente manda copiar o projeto nem compilar numa cópia —

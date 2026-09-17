@@ -95,7 +95,7 @@ mod tests {
             assert!(session_map(text).starts_with("# "), "the {text} session map opens with its title");
             for (name, body) in agent_texts(text) {
                 assert!(
-                    body.starts_with(&format!("---\nname: {name}\n")),
+                    body.starts_with(&format!("---\nname: mustard-{name}\n")),
                     "the {text} `{name}` agent does not open with its own name",
                 );
             }

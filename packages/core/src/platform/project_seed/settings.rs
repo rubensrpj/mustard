@@ -1089,6 +1089,11 @@ mod tests {
                 "the style the installer names is not the one the plugin ships",
             );
             assert!(!body.contains("force-for-plugin"), "a forced style would override the language choice");
+            // O estilo vai para todo projeto: os exemplos dele não citam
+            // cliente nem projeto de ninguém.
+            for client in ["Suzano", "suzano"] {
+                assert!(!body.contains(client), "the {text} style names a real client as an example");
+            }
         }
     }
 }

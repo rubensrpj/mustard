@@ -27,8 +27,8 @@ Depois: "A página só é publicada na aprovação, no fim de cada rodada e no f
 Antes: "Implementei o writer com lock advisory e id monotônico, resolvendo a race."
 Depois: "Agora duas sessões podem gravar a mesma spec. Uma espera a outra terminar, e nenhum número se repete."
 
-Antes: "Conforme mencionado anteriormente, a análise inicial indicava que a Suzano utilizaria C#."
-Depois: "Errei: disse que a Suzano usa C#. Ela usa Node.js com NestJS."
+Antes: "Conforme mencionado anteriormente, a análise inicial indicava que o serviço de pagamentos utilizaria C#."
+Depois: "Errei: disse que o serviço de pagamentos usa C#. Ele usa Node.js com NestJS."
 
 ## Durante o trabalho
 

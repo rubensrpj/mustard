@@ -220,7 +220,8 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     // O passo termina refazendo a página e o `.md`: a gravação de cada evento
     // já não os refaz. Falhar aqui só avisa, porque o que o passo tinha para
     // gravar já está gravado. O levantamento não é marco e nunca manda
-    // publicar; o item retido por ter cara de segredo sai dito, com o código.
+    // publicar; o item que ainda guarda um trecho com cara de segredo sai
+    // dito, com o código.
     let mut warnings: Vec<String> = Vec::new();
     let mut withheld: Vec<String> = Vec::new();
     match spec_events::pages::refresh(&project.root, &spec, lang) {
@@ -452,8 +453,9 @@ mod tests {
     }
 
     /// Com um item de texto que parece senha, o levantamento devolve o código
-    /// do item a expurgar, nos avisos e em `withheld`, e não manda publicar;
-    /// o `.html` local sai sem o texto do item.
+    /// do item a expurgar, nos avisos e em `withheld`, e não manda publicar,
+    /// porque não é marco; o `.html` local sai com o trecho trocado por "…" e
+    /// o resto do item legível.
     #[test]
     fn the_grill_names_the_withheld_item_and_never_orders_the_publish() {
         let dir = tempdir().unwrap();
@@ -471,6 +473,7 @@ mod tests {
         assert!(report.get("publish").is_none() && !report.to_string().contains("write publish"), "{report}");
         let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         assert!(!html.contains("9f8e7d6c5b4a3210"), "the local page keeps the secret out");
+        assert!(html.contains("client_secret=…"), "the rest of the item stays readable");
     }
 
     /// O `grill` termina refazendo a página e o `.md` da spec: a gravação de
@@ -869,10 +872,9 @@ mod tests {
         assert!(done.get("next").is_none() && done["unrouted"].is_array(), "{done}");
     }
 
-    /// O segredo de um ponto sai assim: o ponto fecha, "não se aplica" com o
-    /// motivo, e só depois o texto original é apagado. A lacuna continua
-    /// coberta: o `grill` e a página contam o ponto como fechado, e a
-    /// passagem para o plano não a pede de novo.
+    /// O expurgo de um ponto fechado só oculta o trecho do original, que
+    /// continua lá: a lacuna segue coberta, o `grill` e a página contam o ponto
+    /// como fechado, e a passagem para o plano não a pede de novo.
     #[test]
     fn a_point_closed_and_then_purged_still_covers_its_gap() {
         let dir = tempdir().unwrap();
@@ -886,7 +888,10 @@ mod tests {
                 "closes": id, "reason": "O fato tinha um segredo.", "origin": said});
             assert_eq!(write(root, Some("x"), "point", closing)["ok"], json!(true));
         }
-        let purged = write(root, Some("x"), "purge", json!({"targets": [ids[0]], "reason": "secret", "origin": said}));
+        let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
+        let excerpt = log.get(ids[0]).unwrap().fields["facts"][0]["text"].clone();
+        let purged = write(root, Some("x"), "purge",
+            json!({"targets": [ids[0]], "reason": "client_data", "excerpt": excerpt, "origin": said}));
         assert_eq!(purged["purged"], json!([ids[0]]), "{purged}");
 
         let after = grill(root, "x", Some("fix"), false);
@@ -907,10 +912,11 @@ mod tests {
     /// Lado a lado, a leitura única dos pontos: cada ponto é o par do
     /// original com o fechamento, e a página, o `grill`, o passo do `write` e
     /// a passagem para o plano o leem igual. Fechado com outro texto na
-    /// lacuna, fechado e depois apagado, fechado e depois removido, e as duas
-    /// coisas juntas: a lacuna segue coberta e o ponto conta como fechado. O
-    /// fechamento grava a lacuna do original, e o `grill` mostra o número do
-    /// original enquanto ele existe e, depois que ele sai, o do fechamento.
+    /// lacuna, fechado e depois expurgado no trecho, fechado e depois
+    /// removido, e as duas coisas juntas: a lacuna segue coberta e o ponto
+    /// conta como fechado. O fechamento grava a lacuna do original, e o
+    /// `grill` mostra o número do original enquanto ele existe — o expurgo não
+    /// o tira — e, depois que ele sai, o do fechamento.
     #[test]
     fn a_closed_point_counts_the_same_on_the_page_grill_write_and_passage() {
         let cases = [(true, None), (false, Some("purge")), (false, Some("remove")), (true, Some("purge")), (true, Some("remove"))];
@@ -946,8 +952,13 @@ mod tests {
             let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
             assert_eq!(log.get(closing).and_then(|e| e.str_field("gap")), Some(gap), "{case}: the closing carries the gap");
             if let Some(kind) = leaves {
-                let reason = if kind == "purge" { "secret" } else { "O fato tinha um segredo." };
-                last = write(root, Some("x"), kind, json!({"targets": [ids[0]], "reason": reason}));
+                let body = if kind == "purge" {
+                    let fact = log.get(ids[0]).unwrap().fields["facts"][0]["text"].clone();
+                    json!({"targets": [ids[0]], "reason": "client_data", "excerpt": fact})
+                } else {
+                    json!({"targets": [ids[0]], "reason": "O fato tinha um segredo."})
+                };
+                last = write(root, Some("x"), kind, body);
                 assert_eq!(last["ok"], json!(true), "{case}: {last}");
             }
 
@@ -959,7 +970,7 @@ mod tests {
             let after = grill(root, "x", Some("fix"), false);
             assert_eq!(after["to_record"], json!(0), "{case}: {after}");
             assert_eq!(items(&after)[0]["status"], json!("closed"), "{case}: {after}");
-            let shown = if leaves.is_some() { closing } else { ids[0] };
+            let shown = if leaves == Some("remove") { closing } else { ids[0] };
             assert_eq!(items(&after)[0]["id"], json!(shown), "{case}: {after}");
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{case}: {after}");
@@ -978,12 +989,11 @@ mod tests {
     }
 
     /// A versão nova de um fechamento pode vir sem `closes`: com o original
-    /// já fora, por `purge` ou por `remove`, ela é aceita e recebe o ponto que
-    /// a antiga fechava. O ponto segue fechado na página, no `grill` e na
-    /// passagem para o plano.
+    /// já fora, ela é aceita e recebe o ponto que a antiga fechava. O ponto
+    /// segue fechado na página, no `grill` e na passagem para o plano.
     #[test]
     fn a_new_version_of_a_closing_without_closes_keeps_the_point_closed() {
-        for leaves in ["purge", "remove"] {
+        for leaves in ["remove"] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
@@ -1009,8 +1019,7 @@ mod tests {
 
             let first = &items(&listed)[0];
             let closing = id_of(&close(first, ids[0]));
-            let reason = if leaves == "purge" { "secret" } else { "O fato tinha um segredo." };
-            let left = write(root, Some("x"), leaves, json!({"targets": [ids[0]], "reason": reason}));
+            let left = write(root, Some("x"), leaves, json!({"targets": [ids[0]], "reason": "O fato tinha um segredo."}));
             assert_eq!(left["ok"], json!(true), "{leaves}: {left}");
             let revision = json!({"block": first["block"], "gap": first["gap"], "from": "gap", "status": "closed",
                 "reason": "Resposta revista.", "replaces": closing, "origin": said});

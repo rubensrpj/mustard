@@ -1,5 +1,5 @@
 ---
-name: skill
+name: mustard-skill
 description: Writes a new skill for a task that repeats in the project, from the examples the binary chose.
 tools: Read, Grep, Glob, Write
 model: inherit
