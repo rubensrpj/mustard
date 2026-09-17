@@ -11,3 +11,7 @@ plugin/bin/mustard-boot text eol=lf
 # (teto de tamanho, e o texto tem de abrir com o próprio nome): o fim de linha
 # do Windows mudaria os dois. Ficam sempre em LF.
 packages/core/templates/** text eol=lf
+
+# Os retratos comparados byte a byte com o que o binário gera: o fim de linha
+# do Windows mudaria o arquivo lido, nunca o gerado.
+apps/rt/tests/fixtures/** text eol=lf
