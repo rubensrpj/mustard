@@ -307,7 +307,12 @@ mod tests {
         // No macOS a pasta temporária é um atalho (`/var` aponta para
         // `/private/var`), e o classificador compara caminhos já resolvidos:
         // sem resolver aqui, o arquivo pareceria fora do repositório.
+        // No Windows o caminho resolvido volta com o prefixo `\\?\`, que o
+        // classificador não usa; tirá-lo deixa a comparação igual nos dois.
         let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
+        let tmp_root = std::path::PathBuf::from(
+            tmp_root.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
+        );
         let main = tmp_root.join("principal");
         std::fs::create_dir_all(&main).expect("main");
         git(&main, &["init", "-q"]);

@@ -787,7 +787,12 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         // No macOS a pasta temporária é um atalho (`/var` aponta para
         // `/private/var`), e o portão compara caminhos já resolvidos.
+        // No Windows o caminho resolvido volta com o prefixo `\\?\`, que o
+        // classificador não usa; tirá-lo deixa a comparação igual nos dois.
         let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
+        let tmp_root = std::path::PathBuf::from(
+            tmp_root.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
+        );
         let main = tmp_root.join("repo");
         std::fs::create_dir_all(&main).expect("main");
         std::fs::write(main.join("mustard.json"), DEV_MAIN).expect("config");
