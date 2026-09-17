@@ -1,53 +1,50 @@
-//! `injectables` — the declared-injection engine behind the session hooks.
+//! `injectables` — os textos declarados que o início da sessão coloca.
 //!
-//! ## What it does
+//! `mustard.json#inject` declara `[{on, file, once}]`: arquivos de instrução
+//! (em geral `.claude/mustard/*.md`, que a pessoa pode editar) que entram na
+//! janela como `additionalContext`. Só as entradas `on: sessionStart` são
+//! lidas, e só pelo início da sessão ([`super::session_start_inject`]): a
+//! mensagem do usuário não entrega injetável nenhum.
 //!
-//! `mustard.json#inject` declares `[{on, file, once}]`: instruction files
-//! (canonically `.claude/mustard/*.md`, seeded by `mustard init`, freely
-//! editable by the user) that ride a hook trigger as `additionalContext`.
-//! O início da sessão ([`super::session_start_inject`]) junta as entradas
-//! `on: sessionStart` e, depois de uma compactação, rearma tudo por
-//! [`clear_markers`]. A mensagem do usuário não entrega mais injetável
-//! nenhum: a cada mensagem vai só a linha curta.
+//! ## Uma vez por sessão
 //!
-//! ## Once-per-session markers
+//! A entrada com `once: true` sai uma vez por sessão. A marca da entrega é o
+//! arquivo `.claude/.session/<session_id>/injected-<nome>`. Uma sessão sem id
+//! que sirva (vazio ou `"unknown"`) não guarda marca, e o `once` vira "toda
+//! vez": entregar duas vezes é a falha segura; nunca entregar, não. Depois de
+//! `/clear` e da compactação, a janela perdeu o texto, e ele volta mesmo com a
+//! marca.
 //!
-//! An entry with `once: true` is delivered a single time per session. The
-//! delivery record is a marker file
-//! `.claude/.session/<session_id>/injected-<basename>` — the same per-session
-//! layout as the `active-spec` marker (`crate::shared::context`). A session
-//! without a usable id (empty / `"unknown"`) cannot record markers, so `once`
-//! degrades to "every time" — delivering twice is the safe failure, silently
-//! never delivering is not.
+//! ## Nunca barra
 //!
-//! ## Fail-open
-//!
-//! Missing/unreadable config → no injectables. Missing/empty declared file →
-//! that entry is skipped silently. Unwritable marker → the injection still
-//! happens. Nothing here ever blocks a hook.
+//! Configuração que não se lê → nenhum texto. Arquivo declarado que falta ou
+//! está vazio → a entrada é pulada, com uma linha no stderr. Marca que não se
+//! grava → o texto sai assim mesmo.
 
 use mustard_core::io::fs;
 use mustard_core::{ClaudePaths, ProjectConfig};
 use std::path::{Path, PathBuf};
 
-/// Filename prefix of the per-session delivery markers.
+/// O começo do nome das marcas de entrega.
 const MARKER_PREFIX: &str = "injected-";
 
-/// Collect the injectable payload for `trigger_on` (an already-lowercase
-/// trigger name, e.g. `"userpromptsubmit"` / `"sessionstart"`).
+/// O gatilho das entradas lidas aqui, como a configuração o normaliza.
+const SESSION_START: &str = "sessionstart";
+
+/// Os textos declarados para o início da sessão, separados por uma linha em
+/// branco, ou `None` quando nada se aplica.
 ///
-/// For each declared entry matching the trigger: honour its `once` marker
-/// (unless `ignore_markers` — the post-compaction re-delivery), read the file
-/// project-root-relative, and record a delivery marker for what was read.
-/// Returns the blocks joined by a blank line, or `None` when nothing applies.
-pub fn collect(project_dir: &str, session_id: Option<&str>, trigger_on: &str, ignore_markers: bool) -> Option<String> {
+/// Para cada entrada `on: sessionStart`: respeita a marca do `once` (menos
+/// com `ignore_markers`, a janela renovada), lê o arquivo a partir da raiz do
+/// projeto e grava a marca do que foi lido.
+pub fn collect(project_dir: &str, session_id: Option<&str>, ignore_markers: bool) -> Option<String> {
     let root = Path::new(project_dir);
     let config = ProjectConfig::load(root);
     let mut blocks: Vec<String> = Vec::new();
     let mut delivered: Vec<String> = Vec::new();
 
     for entry in config.injectables() {
-        if entry.on != trigger_on {
+        if entry.on != SESSION_START {
             continue;
         }
         let marker_name = marker_basename(&entry.file);
@@ -97,25 +94,6 @@ pub fn collect(project_dir: &str, session_id: Option<&str>, trigger_on: &str, ig
 }
 
 
-/// Delete every `injected-*` marker of the session. Called on a
-/// post-compaction `SessionStart` so the `once` entries re-deliver into the
-/// freshly compacted window (`userPromptSubmit` ones on the next prompt,
-/// `sessionStart` ones immediately via `ignore_markers`).
-pub fn clear_markers(project_dir: &str, session_id: Option<&str>) {
-    let Some(dir) = session_dir(project_dir, session_id) else {
-        return;
-    };
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return;
-    };
-    for entry in entries {
-        if entry.is_dir || !entry.file_name.starts_with(MARKER_PREFIX) {
-            continue;
-        }
-        let _ = fs::remove_file(&entry.path);
-    }
-}
-
 /// `injected-<basename>` for a declared file path (either separator accepted).
 fn marker_basename(file: &str) -> String {
     let base = file.rsplit(['/', '\\']).next().unwrap_or(file);
@@ -162,7 +140,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Write a project with a `mustard.json#inject` declaration + the file.
+    /// Um projeto com a declaração `mustard.json#inject` e o arquivo.
     fn seed_project(dir: &Path, on: &str, file: &str, once: bool, body: &str) {
         let json = format!(
             r#"{{"inject":[{{"on":"{on}","file":"{file}","once":{once}}}]}}"#
@@ -173,100 +151,64 @@ mod tests {
         std::fs::write(target, body).unwrap();
     }
 
+    /// O arquivo declarado sai uma vez por sessão, com a marca gravada; outra
+    /// sessão o recebe de novo.
     #[test]
     fn collect_reads_declared_file_and_writes_marker() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        seed_project(dir.path(), "userPromptSubmit", ".claude/mustard/orchestrator.md", true, "RULES\n");
+        seed_project(dir.path(), "sessionStart", ".claude/mustard/mapa.md", true, "MAPA\n");
 
-        let got = collect(project, Some("s1"), "userpromptsubmit", false);
-        assert_eq!(got.as_deref(), Some("RULES"));
-        assert!(
-            dir.path()
-                .join(".claude/.session/s1/injected-orchestrator.md")
-                .is_file(),
-            "delivery marker recorded"
-        );
-
-        // Second collect in the same session: once → nothing.
-        let again = collect(project, Some("s1"), "userpromptsubmit", false);
-        assert_eq!(again, None, "once entry must not re-deliver in the session");
-
-        // A DIFFERENT session delivers again (its own marker namespace).
-        let other = collect(project, Some("s2"), "userpromptsubmit", false);
-        assert_eq!(other.as_deref(), Some("RULES"));
+        assert_eq!(collect(project, Some("s1"), false).as_deref(), Some("MAPA"));
+        assert!(dir.path().join(".claude/.session/s1/injected-mapa.md").is_file(), "delivery marker recorded");
+        assert_eq!(collect(project, Some("s1"), false), None, "once entry must not re-deliver in the session");
+        assert_eq!(collect(project, Some("s2"), false).as_deref(), Some("MAPA"));
     }
 
+    /// A entrada de outro gatilho não é lida aqui: a mensagem do usuário não
+    /// entrega injetável nenhum. O arquivo que falta não sai e não deixa
+    /// marca.
     #[test]
     fn collect_skips_missing_file_and_foreign_trigger() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        // Declared but the file does not exist → None, no marker, no panic.
+        seed_project(dir.path(), "userPromptSubmit", ".claude/mustard/orchestrator.md", true, "RULES");
+        assert_eq!(collect(project, Some("s1"), false), None, "a prompt entry never rides the session start");
+
         std::fs::write(
             dir.path().join("mustard.json"),
             r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/nope.md","once":true}]}"#,
         )
         .unwrap();
-        assert_eq!(collect(project, Some("s1"), "sessionstart", false), None);
-        assert!(
-            !dir.path().join(".claude/.session/s1/injected-nope.md").exists(),
-            "no marker for an undelivered entry"
-        );
-        // A trigger with no declared entry → None.
-        assert_eq!(collect(project, Some("s1"), "userpromptsubmit", false), None);
+        assert_eq!(collect(project, Some("s1"), false), None);
+        assert!(!dir.path().join(".claude/.session/s1/injected-nope.md").exists(), "no marker for an undelivered entry");
     }
 
+    /// Sem id de sessão que sirva, a marca não se grava, e a entrada sai toda
+    /// vez.
     #[test]
     fn once_without_session_id_degrades_to_every_time() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
-        seed_project(dir.path(), "userPromptSubmit", "rules.md", true, "X");
-        // No usable session id: markers cannot be recorded, so the entry
-        // delivers every time (fail-open: deliver, never silently drop).
-        assert!(collect(project, None, "userpromptsubmit", false).is_some());
-        assert!(collect(project, Some("unknown"), "userpromptsubmit", false).is_some());
-        assert!(collect(project, None, "userpromptsubmit", false).is_some());
+        seed_project(dir.path(), "sessionStart", "rules.md", true, "X");
+        assert!(collect(project, None, false).is_some());
+        assert!(collect(project, Some("unknown"), false).is_some());
+        assert!(collect(project, None, false).is_some());
     }
 
-    #[test]
-    fn clear_markers_removes_only_injected_prefix() {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        let session = dir.path().join(".claude/.session/s1");
-        std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("injected-a.md"), "x").unwrap();
-        std::fs::write(session.join("injected-b.md"), "x").unwrap();
-        std::fs::write(session.join("active-spec"), "my-spec").unwrap();
-
-        clear_markers(project, Some("s1"));
-
-        assert!(!session.join("injected-a.md").exists(), "marker a cleared");
-        assert!(!session.join("injected-b.md").exists(), "marker b cleared");
-        assert!(session.join("active-spec").exists(), "sibling markers untouched");
-    }
-
+    /// A janela renovada recebe o texto de novo, mesmo com a marca.
     #[test]
     fn ignore_markers_redelivers_despite_marker() {
         let dir = tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         seed_project(dir.path(), "sessionStart", "style.md", true, "STYLE");
-        // First delivery records the marker…
-        assert!(collect(project, Some("s1"), "sessionstart", false).is_some());
-        // …the guarded path now skips…
-        assert_eq!(collect(project, Some("s1"), "sessionstart", false), None);
-        // …but the post-compaction path (ignore_markers) re-delivers.
-        assert_eq!(
-            collect(project, Some("s1"), "sessionstart", true).as_deref(),
-            Some("STYLE")
-        );
+        assert!(collect(project, Some("s1"), false).is_some());
+        assert_eq!(collect(project, Some("s1"), false), None);
+        assert_eq!(collect(project, Some("s1"), true).as_deref(), Some("STYLE"));
     }
 
-    /// A declared injectable that cannot be read leaves a NAMED trace.
-    ///
-    /// Fail-open is right (a hook never blocks a session on this) but silence
-    /// was not: the operator saw a working harness while a router half reached
-    /// nobody. The absent entry is skipped and the readable sibling still
-    /// arrives, so the trace is the only difference.
+    /// O arquivo declarado que falta é pulado, e o que se lê chega assim
+    /// mesmo.
     #[test]
     fn an_unreadable_injectable_is_skipped_and_the_rest_still_arrives() {
         let dir = tempdir().unwrap();
@@ -274,22 +216,19 @@ mod tests {
         std::fs::write(
             dir.path().join("mustard.json"),
             r#"{"inject":[
-                {"on":"userPromptSubmit","file":".claude/mustard/gone.md","once":true},
-                {"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}
+                {"on":"sessionStart","file":".claude/mustard/gone.md","once":true},
+                {"on":"sessionStart","file":".claude/mustard/mapa.md","once":true}
             ]}"#,
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join(".claude/mustard")).unwrap();
-        std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "ROUTER").unwrap();
+        std::fs::write(dir.path().join(".claude/mustard/mapa.md"), "MAPA").unwrap();
 
         assert_eq!(
-            collect(project, Some("s1"), "userpromptsubmit", false).as_deref(),
-            Some("ROUTER"),
+            collect(project, Some("s1"), false).as_deref(),
+            Some("MAPA"),
             "the missing entry must not take the readable one down with it",
         );
-        // The absent file records no delivery marker, so a later reseed is
-        // still delivered in the same session.
-        let session = dir.path().join(".claude/.session/s1");
-        assert!(!session.join("injected-gone.md").exists());
+        assert!(!dir.path().join(".claude/.session/s1/injected-gone.md").exists());
     }
 }

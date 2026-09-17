@@ -52,6 +52,16 @@ pub fn project_line(url: Option<&str>) -> String {
     render_line(&line)
 }
 
+/// O endereço da página do projeto, lido da linha do projeto do índice
+/// `content`, pelo mesmo leitor da gravação. `None` sem linha do projeto ou
+/// sem endereço nela.
+#[must_use]
+pub fn project_url(content: &str) -> Option<String> {
+    let line = read_lines(content).project?;
+    let parsed = serde_json::from_str::<Value>(line).ok()?;
+    parsed.get("url").and_then(Value::as_str).map(str::trim).filter(|url| !url.is_empty()).map(str::to_string)
+}
+
 /// A linha da spec `name`, montada do arquivo de eventos dela. `None` quando
 /// o arquivo não tem evento que se entenda: a spec fica fora do índice.
 #[must_use]
@@ -362,6 +372,18 @@ mod tests {
             ev(6, "08:45", "state", json!({"author": "binary", "phase": "running"})),
         ]
         .concat()
+    }
+
+    /// O endereço da página do projeto sai da linha do projeto, em qualquer
+    /// lugar do arquivo; sem a linha ou sem endereço, nada.
+    #[test]
+    fn the_project_page_address_comes_from_the_project_line() {
+        let spec = r#"{"type":"spec","name":"a","url":"https://x/spec"}"#;
+        assert_eq!(project_url(&format!("{}\n{spec}\n", project_line(Some("https://x/p")))).as_deref(), Some("https://x/p"));
+        assert_eq!(project_url(&format!("{spec}\n{}\n", project_line(Some(" https://x/q ")))).as_deref(), Some("https://x/q"));
+        assert_eq!(project_url(&format!("{}\n{spec}\n", project_line(None))), None);
+        assert_eq!(project_url(spec), None);
+        assert_eq!(project_url(""), None);
     }
 
     #[test]

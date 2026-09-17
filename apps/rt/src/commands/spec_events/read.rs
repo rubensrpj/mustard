@@ -131,7 +131,7 @@ pub fn run(opts: &ReadOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{write_at, WriteOpts};
+    use crate::commands::spec_events::write::{seed_at, WriteOpts};
     use tempfile::tempdir;
 
     fn opts(root: &std::path::Path, block: &str, term: Option<&str>) -> ReadOpts {
@@ -155,7 +155,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
             std::fs::File::create(&path).expect("the event file");
         }
-        let out = write_at(&WriteOpts {
+        let out = seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some("teste".into()),
             event_type: event_type.into(),

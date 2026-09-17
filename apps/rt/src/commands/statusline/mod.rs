@@ -1,8 +1,16 @@
 //! `mustard-rt run statusline` — render the Claude Code status bar.
 //!
-//! Reads the harness payload JSON from stdin and prints one line on stdout.
+//! Reads the harness payload JSON from stdin and prints the bar on stdout.
 //! On any failure (bad JSON, missing fields, panicking I/O) we print
 //! `Claude` and exit cleanly — the harness must never see a non-zero exit.
+//!
+//! O que a barra mostra: na primeira linha, o nome do projeto como link da
+//! página dele, a branch, a spec como link da página dela, a fase e o
+//! andamento das ondas ("onda 2/4"), o uso da conversa, o tempo, as linhas
+//! mudadas, o custo e o aviso vermelho de quando o Mustard está desligado; na
+//! segunda, a economia do rtk e o modelo. Nenhuma versão aparece: a do
+//! Mustard vai para o `doctor` e para o aviso do início da sessão, e a do
+//! Claude Code o próprio Claude Code já mostra.
 //!
 //! Submodules:
 //! - [`segment`] — pure data ([`segment::Segment`]) and per-kind builders.
@@ -24,10 +32,8 @@ pub mod segment;
 pub(crate) mod theme;
 
 use segment::{
-    context_segment, cost_segment, diff_segment, duration_segment, git_segment,
-    inert_segment, model_segment, module_segment, mustard_segment, prune_segment, savings_segment,
-    unit_segment,
-    version_segment, Segment,
+    context_segment, cost_segment, diff_segment, duration_segment, git_segment, inert_segment, model_segment,
+    module_segment, savings_segment, unit_segment, Segment,
 };
 use serde_json::Value;
 use std::io::Read;
@@ -49,76 +55,32 @@ fn build_segments(data: &Value) -> Vec<Segment> {
             PathBuf::from,
         );
 
+    // A primeira linha: onde o trabalho está e o que a sessão gastou.
     let mut segs = vec![module_segment(&cwd)];
-    if let Some(s) = git_segment(&cwd) {
-        segs.push(s);
-    }
-    if let Some(s) = context_segment(data) {
-        segs.push(s);
-    }
-    if let Some(s) = duration_segment(data) {
-        segs.push(s);
-    }
-    if let Some(s) = savings_segment() {
-        segs.push(s);
-    }
-    if let Some(s) = diff_segment(data) {
-        segs.push(s);
-    }
-    if let Some(s) = cost_segment(data) {
-        segs.push(s);
-    }
+    segs.extend(git_segment(&cwd));
+    segs.extend(unit_segment(&cwd));
+    segs.extend(context_segment(data));
+    segs.extend(duration_segment(data));
+    segs.extend(diff_segment(data));
+    segs.extend(cost_segment(data));
+    // Vermelho: o plugin está desligado, e nenhuma trava roda. Sem ele, esse
+    // estado parece com um saudável em todo o resto da barra.
+    segs.extend(inert_segment(&cwd));
+    // A segunda linha: a economia do rtk e o modelo.
+    segs.extend(savings_segment());
     segs.push(model_segment(data));
-    if let Some(s) = version_segment(data) {
-        segs.push(s);
-    }
-    // Mustard's own tail mark: harness version, or the yellow drift hint
-    // (`m{stamped}→{current}`) when the project needs `/mustard:upsert`.
-    if let Some(s) = mustard_segment(&cwd) {
-        segs.push(s);
-    }
-    // Last, in the order the theme palettes already declare (styles are packed
-    // by `SegmentKind`, and a new kind is appended): how many delivered work
-    // units still have a live branch. Silent when nothing is owed — the bar
-    // only grows when there is something to say.
-    if let Some(s) = prune_segment(&cwd) {
-        segs.push(s);
-    }
-    // Where the operator stopped: the unit this session is inside and its
-    // stage. The bar named the harness version and nothing else, so a unit
-    // parked in PLAN was invisible until a command was typed.
-    if let Some(s) = unit_segment(&cwd) {
-        segs.push(s);
-    }
-    // Loudest last, and red: the plugin is installed but switched OFF, so no
-    // hook runs at all. That state renders like a healthy one everywhere else.
-    if let Some(s) = inert_segment(&cwd) {
-        segs.push(s);
-    }
     segs
 }
 
-/// Which row a segment belongs to.
+/// A linha de cada segmento: a economia do rtk e o modelo vão para a
+/// segunda; todo o resto, para a primeira.
 ///
-/// The bar carries two unrelated kinds of fact and they were competing for one
-/// row: WHERE the work is (folder, branch, which harness, what is owed) and
-/// WHAT the session has spent (context, time, savings, diff, cost, model,
-/// versions). Measured on a real payload, one row came to 171 visible
-/// characters — past the 80–120 a terminal usually gives, so the tail was
-/// simply cut off, and the tail is where the harness marks live.
-///
-/// Splitting by ROLE rather than by width is what makes the result readable:
-/// each row answers one question, so the eye learns where to look and the
-/// layout does not reshuffle when a number appears or disappears. The branch
-/// name — the widest element by far, and variable, since a work-unit branch is
-/// `{kind}/{slug}` (or the older `{base}_{slug}`) — gets the first row nearly
-/// to itself.
-///
-/// Claude Code renders one row per printed line (documented), so this is two
-/// `println!`s, not a rendering trick.
+/// O Claude Code mostra uma linha por linha impressa (documentado), então são
+/// dois `println!`, e não um truque de desenho. Uma linha sem segmento nenhum
+/// não é impressa.
 const fn is_place_row(kind: segment::SegmentKind) -> bool {
     use segment::SegmentKind as K;
-    matches!(kind, K::Module | K::Git | K::Mustard | K::Prune)
+    !matches!(kind, K::Savings | K::Model)
 }
 
 /// Render the statusline from a parsed payload: one row per non-empty group,
@@ -201,12 +163,94 @@ mod tests {
         assert_eq!(lines.len(), 2, "place row + spend row — got {lines:?}");
         assert!(lines.iter().all(|l| !l.is_empty()), "no blank row is printed: {lines:?}");
 
-        // The split is by ROLE, so each fact lands on exactly one row and the
-        // widest element (the branch) is not sharing with the numbers.
-        let (place, spend) = (&lines[0], &lines[1]);
-        assert!(spend.contains("$0.42"), "cost belongs to the spend row: {spend}");
-        assert!(spend.contains("70%"), "context belongs to the spend row: {spend}");
-        assert!(!place.contains("$0.42"), "…and never to the place row: {place}");
+        let (first, second) = (&lines[0], &lines[1]);
+        assert!(first.contains("$0.42") && first.contains("70%"), "cost and context go on the first row: {first}");
+        assert!(second.contains("Opus 4.7") && !second.contains("$0.42"), "the model goes on the second: {second}");
+        assert!(!first.contains("2.1.146") && !second.contains("2.1.146"), "no version: {lines:?}");
+    }
+
+    /// O texto que o terminal mostra: a sequência do link sai, o rótulo fica.
+    fn visible(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find('\u{1b}') {
+            out.push_str(&rest[..start]);
+            let tail = &rest[start..];
+            let end = if tail.starts_with("\u{1b}]8;") {
+                tail.find("\u{1b}\\").map(|i| i + 2)
+            } else {
+                tail.find('m').map(|i| i + 1)
+            };
+            let Some(end) = end else { return out };
+            rest = &tail[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Retrato da barra com uma spec em execução na onda 2 de 4: aparecem o
+    /// link da página do projeto, a branch, o nome da spec como link, a fase e
+    /// "onda 2/4"; nenhuma versão aparece — nem a do Mustard, nem a do Claude
+    /// Code.
+    #[test]
+    fn a_session_with_a_spec_running_wave_two_of_four_shows_the_links_the_phase_and_the_progress() {
+        use crate::shared::spec_state::seed_event;
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |args: &[&str]| assert!(mustard_core::platform::git::run(&root, args).ok, "git {args:?}");
+        git(&["init", "-q", "."]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/feature/checkout"]);
+        git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
+            "commit", "-q", "--allow-empty", "-m", "semente"]);
+        std::fs::write(root.join("mustard.json"), r#"{"version":"0.0.1-velha","language":{"text":"pt-BR"}}"#).unwrap();
+        let project_url = "https://claude.ai/code/artifacts/projeto-loja";
+        let spec_url = "https://claude.ai/code/artifacts/spec-checkout";
+        let said = seed_event(&root, "checkout", "message", json!({"author": "user", "text": "o plano"}));
+        seed_event(&root, "checkout", "state", json!({"phase": "plan", "branch": "feature/checkout", "base": "dev"}));
+        for n in 1..=4 {
+            seed_event(&root, "checkout", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [said],
+                "done_when": "x", "origin": said}));
+        }
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("checkout"));
+        seed_event(&root, "checkout", "state", json!({"phase": "running", "author": "binary"}));
+        seed_event(&root, "checkout", "delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
+        seed_event(&root, "checkout", "publish",
+            json!({"page": "spec", "milestone": "round", "ok": true, "url": spec_url}));
+        std::fs::write(
+            root.join(".claude").join("spec").join("index.ndjson"),
+            format!("{}\n", mustard_core::domain::spec_index::project_line(Some(project_url))),
+        )
+        .unwrap();
+
+        let data = serde_json::json!({
+            "workspace": { "current_dir": root.to_string_lossy() },
+            "model": { "display_name": "Claude Opus 5" },
+            "version": "2.1.267",
+        });
+        let segs = build_segments(&data);
+        let text = |kind: segment::SegmentKind| {
+            segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"))
+        };
+        let link = |url: &str, label: &str| format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\");
+        assert_eq!(text(segment::SegmentKind::Module), link(project_url, "loja"), "the project page link");
+        assert!(text(segment::SegmentKind::Git).starts_with("\u{2387} feature/checkout"), "the branch");
+        assert_eq!(
+            text(segment::SegmentKind::Unit),
+            format!("\u{25b8} {} running onda 2/4", link(spec_url, "checkout")),
+            "the spec name as a link, the phase and the wave progress"
+        );
+
+        let lines: Vec<String> = render(&data).iter().map(|line| visible(line)).collect();
+        let shown = lines.join("\n");
+        for expected in ["loja", "feature/checkout", "checkout running onda 2/4", "Opus 5"] {
+            assert!(shown.contains(expected), "{expected} is on the bar: {shown}");
+        }
+        for version in ["2.1.267", "v2.1", "0.0.1-velha", &format!("m{}", mustard_core::harness_version())] {
+            assert!(!shown.contains(version), "no version on the bar ({version}): {shown}");
+        }
+        assert!(!shown.contains('\u{2702}'), "no branch count to prune: {shown}");
     }
 
     /// Every segment kind lands on exactly one row — a kind added later without

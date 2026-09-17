@@ -591,7 +591,7 @@ mod tests {
     use crate::commands::event::work_branch::{
         cut_pending_work_branch, sanitize_git_ref, slug_of_work_branch, CutOutcome,
     };
-    use crate::commands::spec_events::write::{write_at, WriteOpts};
+    use crate::commands::spec_events::write::{seed_at, WriteOpts};
     use crate::hooks::write::write_gate::WriteGate;
     use crate::shared::context::checkout::spec_of_checkout_branch;
 use crate::shared::context::pending_branch::set_pending_branch;
@@ -1299,7 +1299,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
         let root = dir.path();
         open(root, Some("feature"), Some("x"), Some("dev"));
         let write = |event_type: &str, json: Value| {
-            write_at(&WriteOpts {
+            seed_at(&WriteOpts {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 event_type: event_type.into(),

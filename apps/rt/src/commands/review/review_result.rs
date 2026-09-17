@@ -29,11 +29,8 @@ use std::path::Path;
 /// file is written (backward-compatible). The `review.result` event and its
 /// payload are unaffected either way.
 ///
-/// `pub(crate)` so the SubagentStop verdict-capture hook
-/// (`hooks::task::subagent_inject::capture_review_verdict`) records a parsed
-/// `<VERDICT>` block through the SAME path the manual CLI uses — one recorder,
-/// identical event + metric shape whether the verdict came from the machine or
-/// the operator.
+/// `pub(crate)` so the pull request door records its review through the SAME
+/// path the manual CLI uses — one recorder, identical event + metric shape.
 pub(crate) fn record_review(
     cwd: &Path,
     spec: &str,

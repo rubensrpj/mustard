@@ -1,166 +1,48 @@
-//! `session_cleanup_observer` — the `SessionEnd` state-cleanup module.
+//! `session_cleanup_observer` — a faxina do fim da sessão.
 //!
-//! ## Scope (session family)
+//! No `SessionEnd`, dois passos, na ordem de [`STEPS`]:
 //!
-//! Ports `session-cleanup.js` **alone** — a single concern with no sibling
-//! hook to merge, kept as its own module so the registry wiring is one-to-one.
-//! It triggers on `SessionEnd` and:
+//! 1. limpar o cache da barra de status, no diretório temporário;
+//! 2. compactar o estado da sessão: as fotos de `.claude/.compact-state/` com
+//!    mais de 24 horas saem, e a pasta sai quando fica vazia.
 //!
-//! 1. Removes the statusline git cache from the temp dir.
-//! 2. Removes terminal pipeline-state files (`completed`, `cancelled`, …) and
-//!    states whose spec is already done.
-//! 3. Removes `.compact-state` files older than 24h.
-//! 4. Prunes event NDJSON files (`.claude/spec/*/.events/*.ndjson`,
-//!    `.claude/.session/*/.events/*.ndjson`) older than the retention window.
-//! 5. Drains the local `rtk gain --json` ledger into the savings events.
-//! 6. Finalizes the per-session amendment window.
+//! Os dois mexem só em caminhos conhecidos e nenhum chama processo de fora: o
+//! `SessionEnd` tem o prazo mais curto que o harness dá, e um passo que
+//! pudesse travar deixaria a faxina pela metade.
 //!
-//! ## Why the order is load-bearing
-//!
-//! `SessionEnd` is the shortest hook budget the harness hands out (15 s in
-//! `plugin/hooks/hooks.json`); when it is exceeded the harness cancels the hook
-//! mid-flight and whatever had not run yet simply does not run. So the plan is
-//! split in two halves and declared once: [`PROMPT_STEPS`], which touches only
-//! paths known up front and spawns nothing, then [`DEFERRED_STEPS`], which walk
-//! a subtree of unknown size or spawn a process of their own. [`cleanup_plan`]
-//! chains them in that order and `observe` executes exactly that sequence, so
-//! the cheap, bounded work is finished before anything that can block has
-//! started.
-//!
-//! ## Contract shape
-//!
-//! Pure side effect — no verdict. `SessionCleanupObserver` is an [`Observer`] only.
-//!
-use mustard_core::io::fs;
-use mustard_core::domain::spec;
-use mustard_core::ClaudePaths;
+//! É só efeito colateral, sem veredito: `SessionCleanupObserver` é um
+//! [`Observer`]. Nada aqui falha para quem chama.
+
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
+use mustard_core::io::fs;
+use mustard_core::ClaudePaths;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-
-/// Build + route a `HarnessEvent` from `(event_name, payload)` produced by an
-/// `economy::writer::*_event` builder. Fail-open per the router's contract.///
-/// `.compact-state` files older than this are pruned — 24 hours.
+/// As fotos de `.compact-state` com mais que isto saem: 24 horas.
 const ONE_DAY_MS: u128 = 24 * 60 * 60 * 1000;
 
-/// Telemetry retention window — `run_usage`/`usage_totals` rows older than this
-/// many days are pruned on `SessionEnd`. Fail-open: pruning never aborts cleanup.
-const TELEMETRY_RETENTION_DAYS: i64 = 90;
+/// O nome do cache da barra de status no diretório temporário.
+const STATUSLINE_CACHE: &str = "claude-statusline-git.json";
 
-/// Terminal pipeline-state statuses — these files are removed on cleanup.
-const TERMINAL_STATUSES: &[&str] = &["implemented", "completed", "validated", "cancelled"];
-
-/// The `SessionEnd` state-cleanup module.
+/// A faxina do fim da sessão.
 pub struct SessionCleanupObserver;
 
+/// Um passo da faxina: recebe a pasta `.claude` do projeto.
+type Step = fn(&Path);
 
-/// Current time as milliseconds since the Unix epoch.///
-/// Read the `status` field of a pipeline-state JSON file.
-fn state_status(path: &Path) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    let obj: serde_json::Value = serde_json::from_str(&text).ok()?;
-    obj.get("status")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
+/// Os passos da faxina, na ordem em que rodam.
+const STEPS: &[Step] = &[clean_statusline_cache, clean_compact_state];
+
+/// Tira o cache da barra de status do diretório temporário.
+fn clean_statusline_cache(_claude: &Path) {
+    let _ = fs::remove_file(std::env::temp_dir().join(STATUSLINE_CACHE));
 }
 
-/// The `specName` field of a pipeline-state JSON file.
-fn state_spec_name(path: &Path) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    let obj: serde_json::Value = serde_json::from_str(&text).ok()?;
-    obj.get("specName")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
-/// `true` if a spec is done — the flat layout reads the spec dir
-/// directly under `.claude/spec/{name}/`, with no `active/` / `completed/`
-/// buckets. Done means either the directory is gone or the spec's lifecycle
-/// metadata reads `Completed`. **`meta.json` is the single source of truth**;
-/// the legacy `### Status:` / `### Outcome:` header in `spec.md` /
-/// `wave-plan.md` is the fallback for un-migrated specs.
-fn is_spec_done(claude_dir: &Path, spec_name: &str) -> bool {
-    // ClaudePaths-exempt: `claude_dir` is seam-produced upstream; re-deriving
-    // via `for_project`/`for_spec` here would be circular and would add name
-    // validation that changes the fail-open trigger.
-    let spec_root = claude_dir.join("spec").join(spec_name);
-    if !spec_root.exists() {
-        // Spec deleted → treat as done.
-        return true;
-    }
-    // O cabeçalho do `.md` é o que sobrou de leitura de fase aqui.
-    let wave_plan = spec_root.join("wave-plan.md");
-    if fs::exists(&wave_plan) {
-        return fs::read_to_string(&wave_plan).is_ok_and(|t| header_marks_done(&t));
-    }
-    let spec_file = spec_root.join("spec.md");
-    if !fs::exists(&spec_file) {
-        // Spec dir empty / spec.md absent → treat as done.
-        return true;
-    }
-    fs::read_to_string(&spec_file).is_ok_and(|t| header_marks_done(&t))
-}
-
-/// `true` when a spec's lifecycle header resolves to the terminal `Completed`
-/// outcome. Legacy fallback only — see [`is_spec_done`]. Delegates to the
-/// canonical [`mustard_core::domain::spec`] parser, so the new `### Stage:`/
-/// `### Outcome:` header and every legacy `### Status:` shape
-/// (`completed`/`done`/`closed`) are recognised. Fail-open: an unparseable
-/// header is treated as not-done (the spec stays, its state file is not reaped).
-fn header_marks_done(content: &str) -> bool {
-    spec::parse_state(content)
-        .is_some_and(|s| s.outcome == mustard_core::Outcome::Completed)
-}
-
-/// Remove terminal / orphaned pipeline-state files. Port of
-/// `cleanPipelineStates` (`closed-followup` is intentionally non-terminal).
-fn clean_pipeline_states(claude_dir: &Path) {
-    let states_dir = claude_dir
-        .parent()
-        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
-        .and_then(|root| ClaudePaths::for_project(root).ok())
-        .map(|p| p.pipeline_states_dir());
-    let Some(states_dir) = states_dir else {
-        return;
-    };
-    if let Ok(entries) = fs::read_dir(&states_dir) {
-        for entry in entries {
-            if !std::path::Path::new(&entry.file_name)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
-                continue;
-            }
-            let path = &entry.path;
-            if let Some(status) = state_status(path)
-                && TERMINAL_STATUSES.contains(&status.as_str()) {
-                    let _ = fs::remove_file(path);
-                    continue;
-                }
-            if let Some(spec) = state_spec_name(path)
-                && is_spec_done(claude_dir, &spec) {
-                    let _ = fs::remove_file(path);
-                }
-        }
-        // Remove the directory when empty.
-        let is_empty = fs::read_dir(&states_dir)
-            .is_ok_and(|d| d.is_empty());
-        if is_empty {
-            // std::fs::remove_dir has no facade equivalent — one-off use is fine.
-            let _ = std::fs::remove_dir(&states_dir);
-        }
-    }
-    // Legacy single-file state.
-    let legacy = claude_dir.join(".pipeline-state.json");
-    if let Some(status) = state_status(&legacy)
-        && TERMINAL_STATUSES.contains(&status.as_str()) {
-            let _ = fs::remove_file(&legacy);
-        }
-}
-
-/// Remove `.compact-state` files older than 24h; remove the dir when empty.
-fn clean_compact_state(claude_dir: &Path) {
-    let dir = claude_dir.join(".compact-state");
+/// Tira as fotos de `.compact-state` com mais de 24 horas, e a pasta quando
+/// ela fica vazia.
+fn clean_compact_state(claude: &Path) {
+    let dir = claude.join(".compact-state");
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
@@ -171,9 +53,7 @@ fn clean_compact_state(claude_dir: &Path) {
             remaining += 1;
             continue;
         };
-        let mtime_ms = modified
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
+        let mtime_ms = modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
         if now.saturating_sub(mtime_ms) > ONE_DAY_MS {
             let _ = fs::remove_file(&entry.path);
         } else {
@@ -181,195 +61,27 @@ fn clean_compact_state(claude_dir: &Path) {
         }
     }
     if remaining == 0 {
-        // std::fs::remove_dir has no facade equivalent — one-off use is fine.
+        // O `remove_dir` não tem equivalente na fachada; um uso só.
         let _ = std::fs::remove_dir(&dir);
     }
 }
 
-/// Remove the statusline git cache from the temp dir.
-fn clean_statusline_cache() {
-    let cache = std::env::temp_dir().join("claude-statusline-git.json");
-    let _ = fs::remove_file(&cache);
-}
-
-
-/// Prune telemetry NDJSON files older than [`TELEMETRY_RETENTION_DAYS`].
-///
-/// With SQLite dropped, the dedicated `telemetry.db` is gone — telemetry now
-/// lives inline in the per-spec / per-session NDJSON event logs. Retention is
-/// expressed at the file granularity: any `<root>/.claude/spec/*/.events/*.ndjson`
-/// or `<root>/.claude/.session/*/.events/*.ndjson` whose `mtime` is older than
-/// the cutoff is removed.
-///
-/// Internally delegates to [`prune_telemetry_with_cutoff`], which is the
-/// testable form (the test passes an artificial cutoff so it does not need to
-/// stamp mtimes far in the past).
-///
-/// Best-effort: any IO error degrades to a no-op — telemetry retention must
-/// never abort session cleanup.
-pub(crate) fn prune_telemetry(cwd: &str) {
-    let now_ms = (mustard_core::time::now_unix_millis() as u128).min(i64::MAX as u128) as i64;
-    let cutoff_ms = now_ms.saturating_sub(TELEMETRY_RETENTION_DAYS.saturating_mul(86_400_000));
-    prune_telemetry_with_cutoff(cwd, cutoff_ms);
-}
-
-/// Inner form of [`prune_telemetry`]: delete every NDJSON file under the spec
-/// and session `.events/` subtrees whose `mtime` precedes `cutoff_ms`
-/// (Unix-epoch milliseconds).
-///
-/// `pub(crate)` for the integration test `session_cleanup_prune_ndjson`, which
-/// drives the function with a synthetic future cutoff so two real files
-/// (created milliseconds apart) split into "expired" and "kept".
-pub(crate) fn prune_telemetry_with_cutoff(cwd: &str, cutoff_ms: i64) {
-    let Ok(paths) = ClaudePaths::for_project(Path::new(cwd)) else {
-        return;
-    };
-    let spec_root = paths.spec_dir();
-    let session_root = paths.claude_dir().join(".session");
-    for root in [spec_root, session_root] {
-        prune_ndjson_under(&root, cutoff_ms);
-    }
-}
-
-/// Walk every immediate child of `root`, dive into `<child>/.events/`, and
-/// remove every `*.ndjson` whose `mtime` is strictly older than `cutoff_ms`.
-/// Fail-open at every layer.
-fn prune_ndjson_under(root: &Path, cutoff_ms: i64) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let events_dir = entry.path().join(".events");
-        let Ok(files) = std::fs::read_dir(&events_dir) else {
-            continue;
-        };
-        for file in files.flatten() {
-            let p = file.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("ndjson") {
-                continue;
-            }
-            let Ok(meta) = file.metadata() else {
-                continue;
-            };
-            let Ok(mtime) = meta.modified() else {
-                continue;
-            };
-            let mtime_ms = mtime
-                .duration_since(UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
-                .unwrap_or(i64::MAX);
-            if mtime_ms < cutoff_ms {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The cleanup plan
-// ---------------------------------------------------------------------------
-
-/// What every cleanup step is handed: the project root, its `.claude` dir and
-/// the session id (absent for harness payloads that carry none).
-struct CleanupTarget {
-    cwd: String,
-    claude: PathBuf,
-    session_id: Option<String>,
-}
-
-/// The half of the plan that touches only paths known up front: bounded work,
-/// no subtree walk, no directory of unknown size, and no spawned process.
-const PROMPT_STEPS: &[fn(&CleanupTarget)] = &[step_statusline_cache];
-
-/// The half of the plan that walks a subtree of unknown size or spawns an
-/// external process that is NOT what the hook came here to do (`rtk`, which
-/// carries no deadline of its own). Every step here is cosmetic if it is
-/// skipped, which is why it is the tail.
-const DEFERRED_STEPS: &[fn(&CleanupTarget)] = &[
-    step_pipeline_states,
-    step_compact_state,
-    step_prune_telemetry,
-    step_ingest_rtk_savings,
-    step_amend_finalize,
-];
-
-/// Drop the statusline git cache from the temp dir.
-fn step_statusline_cache(_target: &CleanupTarget) {
-    clean_statusline_cache();
-}
-
-/// Reap terminal / orphaned pipeline-state files.
-fn step_pipeline_states(target: &CleanupTarget) {
-    clean_pipeline_states(&target.claude);
-}
-
-/// Reap `.compact-state` files past the 24h window.
-fn step_compact_state(target: &CleanupTarget) {
-    clean_compact_state(&target.claude);
-}
-
-/// Telemetry retention: drop NDJSON event files past the window so the spec and
-/// session trees do not grow without bound. Fail-open.
-fn step_prune_telemetry(target: &CleanupTarget) {
-    prune_telemetry(&target.cwd);
-}
-
-/// Drain the local
-/// `rtk gain --json` ledger into `savings_records` once per session. Mirrors
-/// the per-invocation persistence already done by `mustard-rt run rtk-gain`,
-/// but for sessions that never explicitly run that subcommand — without this
-/// hook, RTK rewrites never land in the savings table. Strict side-effect,
-/// fail-open, and it spawns `rtk`, which is why it trails the plan.
-fn step_ingest_rtk_savings(_target: &CleanupTarget) {
-}
-
-/// Finalize the per-session amendment window
-/// before the session ends. The standalone CLI
-/// (`mustard-rt run amend-finalize --session-id <id>`) is still available; this
-/// re-wires the automatic SessionEnd hook that was dropped when the event
-/// store left SQLite. Fail-open: no session id, or any internal error inside
-/// `amend_finalize::run`, must never abort the rest of cleanup.
-fn step_amend_finalize(target: &CleanupTarget) {
-    let Some(sid) = target.session_id.as_deref() else {
-        return;
-    };
-    if sid.is_empty() {
-        return;
-    }
-}
-
-/// The sequence `observe` executes: [`PROMPT_STEPS`] and only then
-/// [`DEFERRED_STEPS`].
-///
-/// It is a named function rather than an expression written inline in
-/// `observe` because the order is the whole point of this module, and it is
-/// stated in exactly one place.
-fn cleanup_plan() -> impl Iterator<Item = &'static fn(&CleanupTarget)> {
-    PROMPT_STEPS.iter().chain(DEFERRED_STEPS)
+/// A pasta `.claude` do projeto em `cwd`, quando o caminho é de projeto.
+fn claude_dir(cwd: &str) -> Option<PathBuf> {
+    ClaudePaths::for_project(Path::new(cwd)).ok().map(|paths| paths.claude_dir())
 }
 
 impl Observer for SessionCleanupObserver {
-    /// On `SessionEnd`, clean stale state. Any other trigger is a no-op. Pure
-    /// side effect — never panics, never affects a verdict. Executes
-    /// [`cleanup_plan`] — [`PROMPT_STEPS`] and only then [`DEFERRED_STEPS`] —
-    /// so a hook cancelled part-way through has already done the step that
-    /// mattered.
+    /// No `SessionEnd`, roda os [`STEPS`]; em qualquer outro evento, nada.
     fn observe(&self, input: &HookInput, ctx: &Ctx) {
         if ctx.trigger != Some(Trigger::SessionEnd) {
             return;
         }
-        let cwd = ctx.project_dir_or_cwd(input);
-        let Ok(paths) = ClaudePaths::for_project(Path::new(&cwd)) else {
+        let Some(claude) = claude_dir(&ctx.project_dir_or_cwd(input)) else {
             return;
         };
-        let target = CleanupTarget {
-            claude: paths.claude_dir(),
-            cwd,
-            session_id: input.session_id.clone(),
-        };
-        for step in cleanup_plan() {
-            step(&target);
+        for step in STEPS {
+            step(&claude);
         }
     }
 }
@@ -378,188 +90,65 @@ impl Observer for SessionCleanupObserver {
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
-    use serde_json::json;
     use tempfile::tempdir;
 
-    fn ctx(dir: &str) -> Ctx {
-        Ctx::for_test(dir.to_string(), Some(Trigger::SessionEnd))
+    fn ctx(dir: &Path, trigger: Trigger) -> Ctx {
+        Ctx::for_test(dir.to_string_lossy().into_owned(), Some(trigger))
     }
 
     fn session_end_input() -> HookInput {
-        HookInput {
-            hook_event_name: Some("SessionEnd".to_string()),
-            ..HookInput::default()
+        HookInput { hook_event_name: Some("SessionEnd".to_string()), ..HookInput::default() }
+    }
+
+    /// Uma foto de `.compact-state` com a data de `age` atrás.
+    fn snapshot(dir: &Path, name: &str, age: Duration) -> PathBuf {
+        let compact = dir.join(".claude").join(".compact-state");
+        std::fs::create_dir_all(&compact).unwrap();
+        let path = compact.join(name);
+        std::fs::write(&path, "foto").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - age).unwrap();
+        path
+    }
+
+    /// A faxina tem dois passos, e só eles: o cache da barra de status e o
+    /// estado da sessão.
+    #[test]
+    fn the_cleanup_has_exactly_two_steps() {
+        let expected: [Step; 2] = [clean_statusline_cache, clean_compact_state];
+        assert_eq!(STEPS.len(), expected.len());
+        for (step, want) in STEPS.iter().zip(expected) {
+            assert!(std::ptr::fn_addr_eq(*step, want), "the steps are the two of the cleanup, in order");
         }
     }
 
-    /// Write a pipeline-state file.
-    fn write_state(dir: &Path, name: &str, state: &Value) {
-        let paths = ClaudePaths::for_project(dir).unwrap();
-        let states = paths.pipeline_states_dir();
-        std::fs::create_dir_all(&states).unwrap();
-        std::fs::write(paths.pipeline_state_file(name), state.to_string()).unwrap();
-    }
-
-    use serde_json::Value;
-
+    /// No fim da sessão, a foto velha sai e a nova fica; a pasta só sai
+    /// vazia.
     #[test]
-    fn non_session_end_trigger_is_noop() {
+    fn old_compact_state_snapshots_leave_and_new_ones_stay() {
         let dir = tempdir().unwrap();
-        write_state(dir.path(), "done", &json!({ "status": "completed" }));
-        let other = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
-        SessionCleanupObserver.observe(&session_end_input(), &other);
-        // PreToolUse → cleanup did not run, the terminal state survives.
-        assert!(ClaudePaths::for_project(dir.path()).unwrap().pipeline_state_file("done").exists());
+        let old = snapshot(dir.path(), "old.json", Duration::from_secs(2 * 24 * 60 * 60));
+        let new = snapshot(dir.path(), "new.json", Duration::from_secs(60));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path(), Trigger::SessionEnd));
+        assert!(!old.exists(), "the old snapshot left");
+        assert!(new.exists(), "the new one stays, and so does the folder");
+
+        std::fs::remove_file(&new).unwrap();
+        snapshot(dir.path(), "velha.json", Duration::from_secs(3 * 24 * 60 * 60));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path(), Trigger::SessionEnd));
+        assert!(!dir.path().join(".claude").join(".compact-state").exists(), "the empty folder leaves");
     }
 
+    /// Fora do fim da sessão, nada muda; num projeto sem `.claude`, nada
+    /// falha.
     #[test]
-    fn terminal_states_are_removed() {
+    fn outside_session_end_nothing_changes_and_nothing_fails() {
         let dir = tempdir().unwrap();
-        write_state(dir.path(), "finished", &json!({ "status": "completed" }));
-        write_state(dir.path(), "active-one", &json!({ "status": "implementing" }));
-        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-        let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        assert!(!paths.pipeline_state_file("finished").exists());
-        // Non-terminal state survives.
-        assert!(paths.pipeline_state_file("active-one").exists());
-    }
+        let old = snapshot(dir.path(), "old.json", Duration::from_secs(2 * 24 * 60 * 60));
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path(), Trigger::PreToolUse));
+        assert!(old.exists(), "another event cleans nothing");
 
-    #[test]
-    fn orphaned_state_of_completed_spec_is_removed() {
-        let dir = tempdir().unwrap();
-        write_state(
-            dir.path(),
-            "orphan",
-            &json!({ "status": "implementing", "specName": "old-spec" }),
-        );
-        // Flat layout (wave-2): the spec dir is at .claude/spec/{name}/ with a
-        // `### Status: completed` header. `is_spec_done` reads the header to
-        // decide the state file is orphaned and removes it.
-        let paths = ClaudePaths::for_project(dir.path()).unwrap();
-        let sp = paths.for_spec("old-spec").unwrap();
-        std::fs::create_dir_all(sp.dir()).unwrap();
-        std::fs::write(
-            sp.spec_md_path(),
-            "# old-spec\n### Status: completed\n",
-        )
-        .unwrap();
-        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-        assert!(!paths.pipeline_state_file("orphan").exists());
-    }
-
-    #[test]
-    fn old_compact_state_files_are_pruned() {
-        let dir = tempdir().unwrap();
-        let compact = ClaudePaths::for_project(dir.path()).unwrap().claude_dir().join(".compact-state");
-        std::fs::create_dir_all(&compact).unwrap();
-        let old = compact.join("old.txt");
-        std::fs::write(&old, "snapshot").unwrap();
-        // Backdate the file well past the 24h window.
-        let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
-        let _ = filetime_set(&old, two_days_ago);
-        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-        assert!(!old.exists());
-    }
-
-    #[test]
-    fn observe_is_infallible_on_empty_project() {
-        let dir = tempdir().unwrap();
-        // No .claude dir at all — observe must not panic.
-        SessionCleanupObserver.observe(&session_end_input(), &ctx(dir.path().to_str().unwrap()));
-    }
-
-    /// Best-effort mtime backdating for the compact-state test. Uses
-    /// `set_modified` via `std::fs::File` — `filetime` is not a dependency, so
-    /// this re-opens the file and rewrites it with an older `SystemTime` is not
-    /// possible directly; instead the test relies on the OS letting us set the
-    /// mtime through a `File::set_modified`-style call. When unavailable the
-    /// test still exercises the no-panic path.
-    fn filetime_set(path: &Path, when: SystemTime) -> std::io::Result<()> {
-        let file = std::fs::OpenOptions::new().write(true).open(path)?;
-        file.set_modified(when)
-    }
-
-    // ---------------------------------------------------------------------
-    // Tests for the NDJSON retention pruner that replaced SQLite telemetry.
-    // ---------------------------------------------------------------------
-
-    fn mtime_ms(path: &Path) -> i64 {
-        std::fs::metadata(path)
-            .expect("metadata")
-            .modified()
-            .expect("modified")
-            .duration_since(UNIX_EPOCH)
-            .expect("epoch")
-            .as_millis() as i64
-    }
-
-    #[test]
-    fn prune_telemetry_removes_old_ndjson_and_keeps_new() {
-        let dir = tempdir().unwrap();
-        let project = dir.path();
-        let events_dir = project
-            .join(".claude")
-            .join("spec")
-            .join("test-spec")
-            .join(".events");
-        std::fs::create_dir_all(&events_dir).unwrap();
-
-        let old_path = events_dir.join("old.ndjson");
-        let new_path = events_dir.join("new.ndjson");
-
-        // Write both, then backdate "old" by 60 seconds using the test helper
-        // `filetime_set` (already in this module).
-        std::fs::write(&old_path, b"{\"event\":\"old\"}\n").unwrap();
-        std::fs::write(&new_path, b"{\"event\":\"new\"}\n").unwrap();
-        filetime_set(
-            &old_path,
-            SystemTime::now() - std::time::Duration::from_secs(60),
-        )
-        .expect("backdate old mtime");
-
-        let old_mtime = mtime_ms(&old_path);
-        let new_mtime = mtime_ms(&new_path);
-        assert!(
-            new_mtime > old_mtime,
-            "backdating must produce older mtime: old={old_mtime} new={new_mtime}"
-        );
-
-        // Cutoff between the two mtimes — old must be pruned, new must survive.
-        let cutoff = i64::midpoint(old_mtime, new_mtime);
-        prune_telemetry_with_cutoff(project.to_str().unwrap(), cutoff);
-
-        assert!(!old_path.exists(), "old.ndjson should have been pruned");
-        assert!(new_path.exists(), "new.ndjson should have survived");
-    }
-
-    #[test]
-    fn prune_telemetry_fail_open_on_missing_spec_root() {
-        let dir = tempdir().unwrap();
-        // No `.claude/spec/` tree at all — must not panic.
-        prune_telemetry_with_cutoff(dir.path().to_str().unwrap(), i64::MAX);
-    }
-
-    #[test]
-    fn prune_telemetry_walks_session_subtree_too() {
-        let dir = tempdir().unwrap();
-        let project = dir.path();
-        let session_events = project
-            .join(".claude")
-            .join(".session")
-            .join("sess-x")
-            .join(".events");
-        std::fs::create_dir_all(&session_events).unwrap();
-        let old = session_events.join("old.ndjson");
-        std::fs::write(&old, b"{\"event\":\"old\"}\n").unwrap();
-
-        let old_mtime = mtime_ms(&old);
-        // Cutoff in the future so the file qualifies as "old".
-        let cutoff = old_mtime + 1_000_000;
-        prune_telemetry_with_cutoff(project.to_str().unwrap(), cutoff);
-
-        assert!(
-            !old.exists(),
-            "session-tree NDJSON should have been pruned alongside the spec tree"
-        );
+        let empty = tempdir().unwrap();
+        SessionCleanupObserver.observe(&session_end_input(), &ctx(empty.path(), Trigger::SessionEnd));
     }
 }

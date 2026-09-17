@@ -1,89 +1,228 @@
-//! `approval_witness` — a testemunha da aprovação.
+//! `approval_witness` — a testemunha dos gestos de aprovação.
 //!
 //! No `PostToolUse` de uma pergunta com opções (`AskUserQuestion`), a resposta
 //! do usuário chega pelo harness em `tool_response`, que o modelo não
-//! escreve. Quando a spec atual está na fase de plano e o usuário escolheu
-//! uma das opções oferecidas que aprova, a testemunha grava no `spec.ndjson`
-//! um `state` com a fase `approved`, o autor `user` e a testemunha
-//! `{question, answer}`: a pergunta e a opção escolhida. Não há comando nem
-//! segundo passo. Em seguida, ela diz ao assistente para sugerir `/clear`: a
-//! execução começa numa janela limpa, e a retomada lê o estado da spec.
+//! escreve. É por aqui que o Mustard sabe que o usuário disse "sim": pelo
+//! clique numa das opções que a pergunta ofereceu, e nunca pela leitura que o
+//! modelo faz de uma frase.
+//!
+//! ## Os gestos são uma lista
+//!
+//! Cada gesto é um item de [`GESTURES`]: a pergunta do catálogo, a opção que
+//! dá o "sim" e o que fazer com a resposta. Acrescentar um gesto é somar um
+//! item. Hoje são dois:
+//!
+//! - **"Aprovar esta spec?"**, com "Aprovar" e "Ajustar". Com a spec em plano,
+//!   o "Aprovar" grava no `spec.ndjson` um `state` com a fase `approved`, o
+//!   autor `user` e a testemunha `{question, answer}`, e a testemunha diz ao
+//!   assistente para sugerir `/clear`.
+//! - **"Aceitar a mudança <código>?"**, com "Aceitar" e "Recusar". A rodada
+//!   para quando uma onda diz que o plano dela não funciona, e só segue
+//!   depois do clique em "Aceitar" gravado aqui. O código na pergunta diz qual
+//!   mudança o clique decide.
 //!
 //! ## A resposta de cada pergunta
 //!
-//! Toda pergunta com opções respondida, a de aprovação ou qualquer outra, vai
-//! para o bloco da conversa da spec atual como mensagem do usuário: a
-//! pergunta, a resposta e a nota, quando ele escreveu uma. A resposta chega
-//! pelo harness e não passa pela entrada da mensagem, então é aqui que ela é
-//! gravada. Texto livre também vale: gravar o que o usuário disse não
-//! destrava nada. Uma pergunta cancelada não grava nada.
+//! Toda pergunta com opções respondida, de gesto ou qualquer outra, vai para
+//! o bloco da conversa da spec atual como mensagem do usuário: a pergunta, a
+//! resposta e a nota, quando ele escreveu uma. Numa pergunta de gesto, o
+//! clique numa das opções oferecidas grava a mensagem com a testemunha — a
+//! pergunta e a opção —, e é essa mensagem que a rodada lê como o "sim" da
+//! mudança. Texto livre também é gravado, sem testemunha: gravar o que o
+//! usuário disse não destrava nada. Uma pergunta cancelada não grava nada.
 //!
-//! ## O que conta como aprovação
+//! ## O que conta como "sim"
 //!
-//! Três fatos, todos juntos; na dúvida, nada é gravado.
+//! Dois fatos, os dois juntos; na dúvida, nada é aceito.
 //!
-//! 1. **A spec espera aprovação.** A spec atual, pela escada única, está na
-//!    fase `plan`, ou ainda não nasceu. É isso que diz qual spec é e que há
-//!    uma aprovação pendente. O modelo não grava essa aprovação à mão: o
-//!    `run write` recusa o tipo `state`.
-//! 2. **Uma escolha de verdade.** A resposta é exatamente um dos rótulos que a
-//!    própria pergunta de aprovação ofereceu, e nunca os de outra pergunta da
-//!    mesma chamada. Texto livre, digitado na linha "Outro" ou nas notas,
-//!    chega no mesmo lugar da resposta e nunca aprova, diga o que disser: uma
-//!    mensagem que só falava da aprovação já forjou uma. Quando as opções
-//!    oferecidas não se leem, nada foi oferecido e nada aprova.
-//! 3. **A opção é a de aprovar.** O rótulo é, por inteiro, o do catálogo:
-//!    "Aprovar" ou "Approve". "Não aprovar", "Don't approve" e "Aprovar
-//!    depois" não aprovam.
+//! 1. **Uma escolha de verdade.** A resposta é exatamente um dos rótulos que a
+//!    própria pergunta ofereceu, e nunca os de outra pergunta da mesma
+//!    chamada. Texto livre, digitado na linha "Outro" ou nas notas, chega no
+//!    mesmo lugar da resposta e nunca conta, diga o que disser: uma mensagem
+//!    que só falava da aprovação já forjou uma. Quando as opções oferecidas
+//!    não se leem, nada foi oferecido e nada conta.
+//! 2. **A opção é a do "sim".** O rótulo é, por inteiro, o do catálogo:
+//!    "Aprovar" ou "Approve", "Aceitar" ou "Accept". "Não aprovar", "Don't
+//!    approve" e "Aprovar depois" não contam.
 //!
-//! ## Só a pergunta de aprovação
+//! A aprovação da spec pede ainda um terceiro: a spec atual, pela escada
+//! única, está na fase `plan`, ou ainda não nasceu. O modelo não grava essa
+//! aprovação à mão: o `run write` recusa o tipo `state`, e também a mensagem
+//! de autor `user`.
 //!
-//! A testemunha age numa pergunta só: a de aprovação, feita com o texto do
-//! catálogo, "Aprovar esta spec?" ou "Approve this spec?". Qualquer outra
-//! pergunta passa calada, sem gravar e sem aviso, mesmo com a spec em plano:
-//! uma opção como "Aprovação manual", numa pergunta sobre outra coisa, não é
-//! a aprovação da spec.
+//! ## Só as perguntas dos gestos
+//!
+//! A testemunha decide só nas perguntas do catálogo. Qualquer outra pergunta
+//! passa calada, sem aviso, mesmo com a spec em plano: uma opção como
+//! "Aprovação manual", numa pergunta sobre outra coisa, não é gesto nenhum.
 //!
 //! ## Os pontos abertos barram
 //!
-//! A testemunha não confere nada por conta própria: a aprovação passa pela
-//! mesma gravação do `run write`, e a regra do núcleo recusa aprovar uma spec
-//! com ponto do levantamento aberto. Na recusa, nada é gravado, e o motivo do
-//! núcleo, com o código e a lacuna de cada ponto, vai ao assistente. A regra
-//! lê a spec no checkout principal, também quando a pergunta é respondida num
-//! worktree.
+//! A aprovação passa pela mesma gravação do `run write`, e a regra do núcleo
+//! recusa aprovar uma spec com ponto do levantamento aberto. Na recusa, nada é
+//! gravado, e o motivo do núcleo, com o código e a lacuna de cada ponto, vai
+//! ao assistente. A regra lê a spec no checkout principal, também quando a
+//! pergunta é respondida num worktree.
 //!
 //! Uma spec ainda sem nascimento — sem nenhum `state`, com ou sem arquivo de
-//! eventos — recebe no "Aprovar" a aprovação direto, na mesma gravação única:
-//! não há um estado em plano gravado antes para ser desfeito depois, e a
-//! recusa não deixa nada para trás. Gravada a aprovação, a branch que falta
-//! entra no estado, quando a branch do checkout é a desta spec.
+//! eventos — recebe no "Aprovar" a aprovação direto, na mesma gravação única.
+//! Gravada a aprovação, a branch que falta entra no estado, quando a branch do
+//! checkout é a desta spec.
 //!
 //! ## Nunca barra, nunca cala
 //!
 //! A testemunha é uma trava que nunca barra: devolve `Inject`, que chega ao
 //! assistente, ou `Allow`. O texto de um gancho no stderr não chega ao
-//! modelo, então tudo o que ela tem a dizer vai pelo `Inject`: a sugestão de
-//! `/clear` depois de gravar; por que nada foi gravado quando a spec esperava
-//! aprovação e a resposta não aprovou, ou quando a gravação foi recusada; e,
-//! quando uma aprovação foi escolhida sem spec em plano, ou com a spec já
-//! aprovada, que nada foi gravado. Uma pergunta cancelada não diz nada.
+//! modelo, então tudo o que ela tem a dizer vai pelo `Inject`: o que foi
+//! gravado, e por que nada foi quando a resposta não contou. Uma pergunta
+//! cancelada não diz nada.
 
 use std::path::Path;
 
-use mustard_core::domain::model::contract::{AskAnswers, Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::contract::{AskAnswer, Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use crate::commands::spec_events::conversation::record_message;
+use crate::commands::spec_events::conversation::{record_message, record_witnessed_message};
 use crate::hooks::write::write_gate::say;
 use crate::shared::spec_state::DiskSpecState;
 
-/// A testemunha da aprovação, no `PostToolUse` da pergunta com opções.
+/// A testemunha dos gestos de aprovação, no `PostToolUse` da pergunta com
+/// opções.
 pub struct ApprovalWitness;
+
+/// A vaga da pergunta de um gesto, que diz sobre o que o clique decide.
+const SLOT: &str = "{code}";
+
+/// Um gesto de aprovação: a pergunta do catálogo, a opção que dá o "sim" e o
+/// que fazer com a resposta.
+struct Gesture {
+    /// A chave da pergunta no catálogo. Ela pode ter a vaga [`SLOT`].
+    question: &'static str,
+    /// A chave da opção que dá o "sim".
+    yes: &'static str,
+    /// O que o gesto faz com a resposta; devolve o que dizer ao assistente.
+    decide: fn(&Answered<'_>) -> Option<String>,
+}
+
+/// Os gestos de aprovação. Acrescentar um gesto é somar um item.
+const GESTURES: &[Gesture] = &[
+    // "Aprovar/Ajustar": a aprovação da spec.
+    Gesture { question: "approval.question", yes: "approval.option", decide: decide_approval },
+    // "Aceitar/Recusar": a mudança que parte de um agente.
+    Gesture { question: "change.question", yes: "change.accept", decide: decide_change },
+];
+
+/// O que o usuário fez na pergunta de um gesto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Choice {
+    /// Clicou na opção do "sim"; guarda o rótulo.
+    Yes(String),
+    /// Clicou noutra das opções oferecidas.
+    Other,
+    /// Respondeu com texto livre: nada do que veio é uma opção oferecida.
+    Free,
+    /// Cancelou a pergunta.
+    Nothing,
+}
+
+/// Uma pergunta de gesto respondida, com tudo o que o gesto precisa para
+/// decidir.
+struct Answered<'a> {
+    root: &'a str,
+    session: Option<&'a str>,
+    lang: Locale,
+    /// A pergunta, como o harness a devolveu.
+    question: &'a str,
+    /// O que a vaga da pergunta trouxe; vazio na pergunta sem vaga.
+    slot: String,
+    /// Os rótulos escolhidos, como vieram.
+    labels: &'a [String],
+    /// Os rótulos que a pergunta ofereceu.
+    offered: Vec<String>,
+    choice: Choice,
+    /// A resposta foi gravada na conversa da spec atual.
+    recorded: bool,
+}
+
+/// O que a vaga de `template` traz em `question`, quando a pergunta é a do
+/// modelo: vazio num modelo sem vaga. A vaga é uma palavra só, sem espaço.
+fn slot_of(template: &str, question: &str) -> Option<String> {
+    let question = question.trim();
+    let Some((head, tail)) = template.split_once(SLOT) else {
+        return (template.trim() == question).then(String::new);
+    };
+    let middle = question.strip_prefix(head.trim_start())?.strip_suffix(tail.trim_end())?.trim();
+    (!middle.is_empty() && !middle.chars().any(char::is_whitespace)).then(|| middle.to_string())
+}
+
+/// O gesto cuja pergunta, num dos idiomas, é `question`, e o que a vaga dela
+/// trouxe.
+fn gesture_of(question: &str) -> Option<(&'static Gesture, String)> {
+    GESTURES.iter().find_map(|gesture| {
+        [Locale::PtBr, Locale::EnUs]
+            .into_iter()
+            .find_map(|lang| slot_of(translate(gesture.question, lang), question))
+            .map(|slot| (gesture, slot))
+    })
+}
+
+/// A opção é a do "sim" do gesto: o rótulo do catálogo, por inteiro, num dos
+/// idiomas.
+fn is_yes(gesture: &Gesture, label: &str) -> bool {
+    [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| translate(gesture.yes, lang).trim() == label.trim())
+}
+
+/// Os rótulos que a pergunta `question` ofereceu, lidos do `tool_input`, que
+/// o harness devolve como o modelo escreveu: só as opções dessa pergunta,
+/// nunca as de outra pergunta da mesma chamada. Cada opção é o `label` dela,
+/// ou ela mesma quando é só texto. Vazio quando nada se lê: nada foi
+/// oferecido, e nada conta.
+fn offered_for(input: &HookInput, question: &str) -> Vec<String> {
+    input
+        .tool_input
+        .get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|q| q.get("question").and_then(Value::as_str).is_some_and(|text| text.trim() == question.trim()))
+        .flat_map(|q| q.get("options").and_then(Value::as_array).into_iter().flatten())
+        .filter_map(|option| match option {
+            Value::String(s) => Some(s.as_str()),
+            other => other.get("label").and_then(Value::as_str),
+        })
+        .filter(|label| !label.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A resposta é exatamente um dos rótulos oferecidos, sem os espaços das
+/// pontas. Por inteiro: um pedaço deixaria passar o texto livre que cita a
+/// opção dentro de uma frase.
+fn is_offered(answer: &str, offered: &[String]) -> bool {
+    offered.iter().any(|o| o.trim() == answer.trim())
+}
+
+/// O que o usuário fez na pergunta de `gesture`.
+fn choice_of(gesture: &Gesture, labels: &[String], offered: &[String]) -> Choice {
+    if labels.is_empty() {
+        return Choice::Nothing;
+    }
+    if let Some(yes) = labels.iter().find(|l| is_offered(l, offered) && is_yes(gesture, l)) {
+        return Choice::Yes(yes.trim().to_string());
+    }
+    if labels.iter().any(|l| is_offered(l, offered)) {
+        return Choice::Other;
+    }
+    Choice::Free
+}
+
+// ---------------------------------------------------------------------------
+// O gesto da aprovação da spec
+// ---------------------------------------------------------------------------
 
 /// Onde a spec está diante da aprovação.
 #[derive(Debug, PartialEq, Eq)]
@@ -119,49 +258,21 @@ fn standing(root: &str, session: Option<&str>) -> Standing {
     }
 }
 
-/// A pergunta é a de aprovação, com o texto do catálogo em um dos idiomas.
-fn is_approval_question(question: &str) -> bool {
-    [Locale::PtBr, Locale::EnUs]
-        .into_iter()
-        .any(|lang| translate("approval.question", lang).trim() == question.trim())
-}
-
-/// Os rótulos que a pergunta `question` ofereceu, lidos do `tool_input`, que
-/// o harness devolve como o modelo escreveu: só as opções dessa pergunta,
-/// nunca as de outra pergunta da mesma chamada. Cada opção é o `label` dela,
-/// ou ela mesma quando é só texto. Vazio quando nada se lê: nada foi
-/// oferecido, e nada aprova.
-fn offered_for(input: &HookInput, question: &str) -> Vec<String> {
-    input
-        .tool_input
-        .get("questions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|q| q.get("question").and_then(Value::as_str).is_some_and(|text| text.trim() == question.trim()))
-        .flat_map(|q| q.get("options").and_then(Value::as_array).into_iter().flatten())
-        .filter_map(|option| match option {
-            Value::String(s) => Some(s.as_str()),
-            other => other.get("label").and_then(Value::as_str),
-        })
-        .filter(|label| !label.trim().is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// A resposta é exatamente um dos rótulos oferecidos, sem os espaços das
-/// pontas. Por inteiro: um pedaço deixaria passar o texto livre que cita a
-/// opção dentro de uma frase.
-fn is_offered(answer: &str, offered: &[String]) -> bool {
-    offered.iter().any(|o| o.trim() == answer.trim())
-}
-
-/// A opção é a de aprovar: o rótulo do catálogo, "Aprovar" ou "Approve", por
-/// inteiro.
-fn is_approve_option(label: &str) -> bool {
-    [Locale::PtBr, Locale::EnUs]
-        .into_iter()
-        .any(|lang| translate("approval.option", lang).trim() == label.trim())
+/// A aprovação da spec: com a spec em plano, o "Aprovar" grava a aprovação;
+/// fora do plano, a testemunha diz por que nada foi gravado.
+fn decide_approval(answer: &Answered<'_>) -> Option<String> {
+    let lang = answer.lang;
+    match (standing(answer.root, answer.session), &answer.choice) {
+        (Standing::Awaiting(spec), Choice::Yes(label)) => {
+            Some(approve(answer.root, &spec, answer.question, label, lang))
+        }
+        (Standing::Awaiting(spec), _) => decline_notice(&spec, answer, lang),
+        (Standing::Approved(spec), Choice::Yes(_)) => {
+            Some(say("approval.witness.already", lang, &[("{spec}", &spec)]))
+        }
+        (Standing::NoPlan, Choice::Yes(_)) => Some(say("approval.witness.no_plan", lang, &[])),
+        (Standing::Approved(_) | Standing::NoPlan, _) => None,
+    }
 }
 
 /// Aprova a spec `spec`, que esperava aprovação: uma gravação só, a da
@@ -199,21 +310,46 @@ fn record_approval(root: &str, spec: &str, question: &str, answer: &str) -> Resu
 /// Uma resposta que não é nenhuma das opções é texto livre, e o remédio é
 /// escolher a opção; uma opção escolhida que não é a de aprovar é outra
 /// coisa, e pode ser uma recusa de verdade.
-fn decline_notice(spec: &str, labels: &[String], offered: &[String], lang: Locale) -> Option<String> {
-    if labels.is_empty() {
-        return None;
-    }
-    let selected = quote(labels);
-    if !labels.iter().any(|l| is_offered(l, offered)) {
-        let menu = if offered.is_empty() { "—".to_string() } else { quote(offered) };
-        return Some(say(
+fn decline_notice(spec: &str, answer: &Answered<'_>, lang: Locale) -> Option<String> {
+    let selected = quote(answer.labels);
+    match answer.choice {
+        Choice::Nothing | Choice::Yes(_) => None,
+        Choice::Free => Some(say(
             "approval.witness.free_text",
             lang,
-            &[("{spec}", spec), ("{selected}", &selected), ("{offered}", &menu)],
-        ));
+            &[("{spec}", spec), ("{selected}", &selected), ("{offered}", &menu(&answer.offered))],
+        )),
+        Choice::Other => {
+            Some(say("approval.witness.not_affirmative", lang, &[("{spec}", spec), ("{selected}", &selected)]))
+        }
     }
-    Some(say("approval.witness.not_affirmative", lang, &[("{spec}", spec), ("{selected}", &selected)]))
 }
+
+// ---------------------------------------------------------------------------
+// O gesto da mudança que parte de um agente
+// ---------------------------------------------------------------------------
+
+/// A mudança que parte de um agente: o clique já foi gravado com a resposta,
+/// e a rodada o lê. Aqui a testemunha só diz ao assistente o que aconteceu.
+fn decide_change(answer: &Answered<'_>) -> Option<String> {
+    let code = answer.slot.as_str();
+    let lang = answer.lang;
+    match answer.choice {
+        Choice::Nothing => None,
+        Choice::Free => Some(say(
+            "change.witness.free_text",
+            lang,
+            &[("{code}", code), ("{selected}", &quote(answer.labels)), ("{offered}", &menu(&answer.offered))],
+        )),
+        _ if !answer.recorded => Some(say("change.witness.no_spec", lang, &[("{code}", code)])),
+        Choice::Yes(_) => Some(say("change.witness.accepted", lang, &[("{code}", code)])),
+        Choice::Other => Some(say("change.witness.declined", lang, &[("{code}", code)])),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A resposta gravada
+// ---------------------------------------------------------------------------
 
 /// Os rótulos entre aspas, separados por vírgula, cada um cortado: uma
 /// resposta digitada pode ser uma mensagem inteira.
@@ -225,6 +361,11 @@ fn quote(values: &[String]) -> String {
         .join(", ")
 }
 
+/// As opções oferecidas entre aspas, ou um traço quando nada se leu.
+fn menu(offered: &[String]) -> String {
+    if offered.is_empty() { "—".to_string() } else { quote(offered) }
+}
+
 fn truncate(s: &str) -> String {
     const MAX: usize = 80;
     if s.chars().count() <= MAX {
@@ -234,22 +375,34 @@ fn truncate(s: &str) -> String {
     format!("{head}…")
 }
 
-/// Grava cada pergunta respondida como mensagem do usuário, na spec atual: a
+/// Grava a pergunta respondida como mensagem do usuário, na spec atual: a
 /// pergunta, a resposta (várias escolhas separadas por vírgula) e a nota,
-/// cada uma numa linha. Pergunta sem resposta não grava nada.
-fn record_answers(root: &Path, session: Option<&str>, answers: &AskAnswers) {
-    for item in &answers.items {
-        let question = item.question.trim();
-        let answer = item.labels.iter().map(|label| label.trim()).collect::<Vec<_>>().join(", ");
-        if question.is_empty() || answer.is_empty() {
-            continue;
-        }
-        let mut text = format!("{question}\n{answer}");
-        if let Some(notes) = item.notes.as_deref().map(str::trim).filter(|notes| !notes.is_empty()) {
-            text.push('\n');
-            text.push_str(notes);
-        }
-        let _ = record_message(root, session, &text);
+/// cada uma numa linha. Com `witness`, a mensagem leva a testemunha: a
+/// pergunta e a opção clicada. Pergunta sem resposta não grava nada; `true`
+/// quando gravou.
+fn record_answer(root: &Path, session: Option<&str>, item: &AskAnswer, witness: Option<&str>) -> bool {
+    let question = item.question.trim();
+    let answer = item.labels.iter().map(|label| label.trim()).collect::<Vec<_>>().join(", ");
+    if question.is_empty() || answer.is_empty() {
+        return false;
+    }
+    let mut text = format!("{question}\n{answer}");
+    if let Some(notes) = item.notes.as_deref().map(str::trim).filter(|notes| !notes.is_empty()) {
+        text.push('\n');
+        text.push_str(notes);
+    }
+    match witness {
+        Some(clicked) => record_witnessed_message(root, session, &text, question, clicked).is_some(),
+        None => record_message(root, session, &text).is_some(),
+    }
+}
+
+/// A opção clicada que vai na testemunha: uma escolha só, e ela é uma das
+/// oferecidas. Texto livre e escolha múltipla não levam testemunha.
+fn clicked(labels: &[String], offered: &[String]) -> Option<String> {
+    match labels {
+        [one] if is_offered(one, offered) => Some(one.trim().to_string()),
+        _ => None,
     }
 }
 
@@ -259,25 +412,32 @@ impl Check for ApprovalWitness {
             return Ok(Verdict::Allow);
         }
         let root = ctx.project_dir_or_cwd(input);
-        let answers = input.ask_answers();
-        record_answers(Path::new(&root), input.session_id.as_deref(), &answers);
-        // Só a pergunta de aprovação decide; qualquer outra passa calada.
-        let Some(answer) = answers.items.into_iter().find(|item| is_approval_question(&item.question)) else {
-            return Ok(Verdict::Allow);
-        };
+        let session = input.session_id.as_deref();
         let lang = ctx.config.language().text_or_default();
-        let offered = offered_for(input, &answer.question);
-        let chosen = answer.labels.iter().find(|l| is_offered(l, &offered) && is_approve_option(l));
-        let context = match (standing(&root, input.session_id.as_deref()), chosen) {
-            (Standing::Awaiting(spec), Some(label)) => Some(approve(&root, &spec, &answer.question, label, lang)),
-            (Standing::Awaiting(spec), None) => decline_notice(&spec, &answer.labels, &offered, lang),
-            (Standing::Approved(spec), Some(_)) => {
-                Some(say("approval.witness.already", lang, &[("{spec}", &spec)]))
-            }
-            (Standing::NoPlan, Some(_)) => Some(say("approval.witness.no_plan", lang, &[])),
-            (Standing::Approved(_) | Standing::NoPlan, None) => None,
-        };
-        Ok(context.map_or(Verdict::Allow, |context| Verdict::Inject { context }))
+        let mut said: Vec<String> = Vec::new();
+        for item in input.ask_answers().items {
+            let Some((gesture, slot)) = gesture_of(&item.question) else {
+                // Uma pergunta que não é de gesto só vai para a conversa.
+                record_answer(Path::new(&root), session, &item, None);
+                continue;
+            };
+            let offered = offered_for(input, &item.question);
+            let witness = clicked(&item.labels, &offered);
+            let recorded = record_answer(Path::new(&root), session, &item, witness.as_deref());
+            let answered = Answered {
+                root: &root,
+                session,
+                lang,
+                question: &item.question,
+                slot,
+                labels: &item.labels,
+                choice: choice_of(gesture, &item.labels, &offered),
+                offered,
+                recorded,
+            };
+            said.extend((gesture.decide)(&answered));
+        }
+        Ok(if said.is_empty() { Verdict::Allow } else { Verdict::Inject { context: said.join("\n\n") } })
     }
 }
 
@@ -379,15 +539,114 @@ mod tests {
         ApprovalWitness.evaluate(input, &ctx(root)).expect("never errors")
     }
 
+    /// O gesto de uma pergunta do catálogo.
+    fn gesture(question: &str) -> &'static Gesture {
+        gesture_of(question).map(|(gesture, _)| gesture).expect("a gesture question")
+    }
+
     /// Só o rótulo do catálogo, por inteiro, é a opção de aprovar.
     #[test]
     fn only_the_catalog_label_is_the_approve_option() {
+        let approval = gesture(QUESTION);
         for yes in ["Aprovar", "Approve", " Aprovar "] {
-            assert!(is_approve_option(yes), "{yes}");
+            assert!(is_yes(approval, yes), "{yes}");
         }
-        for no in ["Não aprovar", "Don't approve", "Aprovar depois", "APROVAR", "Desaprovar", "Ajustar"] {
-            assert!(!is_approve_option(no), "{no}");
+        for no in ["Não aprovar", "Don't approve", "Aprovar depois", "APROVAR", "Desaprovar", "Ajustar", "Aceitar"] {
+            assert!(!is_yes(approval, no), "{no}");
         }
+    }
+
+    /// Os gestos são uma lista: a aprovação da spec, com "Aprovar", e a
+    /// mudança que parte de um agente, com "Aceitar". A pergunta da mudança
+    /// traz o código dela, uma palavra só; a pergunta sem código, ou com uma
+    /// frase no lugar dele, não é gesto nenhum.
+    #[test]
+    fn the_gestures_are_a_list_with_the_spec_approval_and_the_agent_change() {
+        let questions: Vec<&str> = GESTURES.iter().map(|g| g.question).collect();
+        assert_eq!(questions, ["approval.question", "change.question"]);
+
+        let (approval, slot) = gesture_of("Approve this spec?").expect("the approval, in English");
+        assert_eq!((approval.question, slot.as_str()), ("approval.question", ""));
+
+        let (change, code) = gesture_of("Aceitar a mudança onda-3-a1b2c3?").expect("the change");
+        assert_eq!((change.question, code.as_str()), ("change.question", "onda-3-a1b2c3"));
+        assert_eq!(gesture_of(" Accept the change onda-3-a1b2c3? ").map(|(_, c)| c).as_deref(), Some("onda-3-a1b2c3"));
+        assert!(is_yes(change, "Aceitar") && is_yes(change, "Accept"));
+        assert!(!is_yes(change, "Recusar") && !is_yes(change, "Aprovar"));
+
+        for not_a_gesture in [
+            "Aceitar a mudança ?",
+            "Aceitar a mudança da onda 3?",
+            "Aceitar esta mudança?",
+            "Como liberar o cadastro?",
+        ] {
+            assert!(gesture_of(not_a_gesture).is_none(), "{not_a_gesture}");
+        }
+    }
+
+    /// A pergunta da mudança que parte de um agente.
+    fn change_question(code: &str) -> String {
+        translate("change.question", Locale::PtBr).replace(SLOT, code)
+    }
+
+    /// As mensagens de usuário da spec `epic`, com a testemunha de cada uma.
+    fn witnessed(root: &Path) -> Vec<(String, Option<Value>)> {
+        DiskSpecState::new(root)
+            .log("epic")
+            .map(|log| {
+                log.visible()
+                    .into_iter()
+                    .filter(|e| e.event_type == "message" && e.str_field("author") == Some("user"))
+                    .map(|e| (e.str_field("text").unwrap_or_default().to_string(), e.fields.get("witness").cloned()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// O clique numa opção da pergunta da mudança é gravado com a
+    /// testemunha, e a testemunha diz ao assistente o que o usuário escolheu.
+    /// Texto livre é gravado sem testemunha e não aceita nada; sem spec
+    /// atual, nada é gravado, e ela diz isso.
+    #[test]
+    fn a_change_click_is_recorded_with_its_witness_and_free_text_is_not() {
+        if ambient_override() {
+            return;
+        }
+        let dir = spec_with(&[json!({ "phase": "running", "branch": "feature/epic" })]);
+        let root = dir.path();
+        let question = change_question("onda-2-abc123");
+        let options = ["Aceitar", "Recusar"];
+
+        let said = witness(root, &ask_on(&question, &options, json!("Aceitar")));
+        let expected = say("change.witness.accepted", lang(root), &[("{code}", "onda-2-abc123")]);
+        assert_eq!(said, Verdict::Inject { context: expected });
+
+        let said = witness(root, &ask_on(&question, &options, json!("Recusar")));
+        let expected = say("change.witness.declined", lang(root), &[("{code}", "onda-2-abc123")]);
+        assert_eq!(said, Verdict::Inject { context: expected });
+
+        match witness(root, &ask_on(&question, &options, json!("Aceitar, pode seguir"))) {
+            Verdict::Inject { context } => {
+                assert!(context.contains("\"Aceitar\", \"Recusar\""), "shows the menu: {context}");
+            }
+            other => panic!("free text is explained, got {other:?}"),
+        }
+
+        let clicked = |answer: &str| Some(json!({ "question": question, "answer": answer }));
+        assert_eq!(
+            witnessed(root),
+            [
+                (format!("{question}\nAceitar"), clicked("Aceitar")),
+                (format!("{question}\nRecusar"), clicked("Recusar")),
+                (format!("{question}\nAceitar, pode seguir"), None),
+            ]
+        );
+
+        let none = tempdir().unwrap();
+        let said = witness(none.path(), &ask_on(&question, &options, json!("Aceitar")));
+        let expected = say("change.witness.no_spec", lang(none.path()), &[("{code}", "onda-2-abc123")]);
+        assert_eq!(said, Verdict::Inject { context: expected });
+        assert!(!none.path().join(".claude").exists(), "no spec, nothing recorded");
     }
 
     /// "Não aprovar" não aprova, e numa chamada com duas perguntas o

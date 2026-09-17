@@ -2,15 +2,12 @@
 //! own line, using a synthetic payload. Independent of any project state, so
 //! it stays deterministic for screenshots.
 
-use super::segment::{
-    cost_segment, diff_segment, duration_segment, model_segment, savings_segment,
-    version_segment, Segment, SegmentKind,
-};
+use super::segment::{cost_segment, diff_segment, duration_segment, model_segment, savings_segment, Segment, SegmentKind};
 use super::theme::{render_line, ThemeId};
 
 /// Synthetic payload — chosen to exercise every segment that has a
-/// reasonable static answer (cost, duration, lines, version, model). The git
-/// + context segments are forged by hand because they read live state.
+/// reasonable static answer (cost, duration, lines, model). The git, spec
+/// and context segments are forged by hand because they read live state.
 fn synthetic_segments() -> Vec<Segment> {
     let payload = serde_json::json!({
         "model": { "display_name": "Claude Opus 4.7" },
@@ -27,6 +24,8 @@ fn synthetic_segments() -> Vec<Segment> {
 
     // Forge a git segment so preview doesn't depend on whether cwd is a repo.
     segs.push(Segment::new(SegmentKind::Git, "\u{2387} dev_rubens +1"));
+    // Forge the spec segment too — the live builder reads the spec state.
+    segs.push(Segment::new(SegmentKind::Unit, "\u{25b8} checkout running onda 2/4"));
 
     // Forge a context segment — 70% remaining, 60k tokens.
     segs.push(Segment::new(
@@ -55,14 +54,6 @@ fn synthetic_segments() -> Vec<Segment> {
         segs.push(s);
     }
     segs.push(model_segment(&payload));
-    if let Some(s) = version_segment(&payload) {
-        segs.push(s);
-    }
-    // Forge the Mustard tail mark (the live builder reads project state).
-    segs.push(Segment::new(SegmentKind::Mustard, "m0.1.0"));
-    // Forge the pending-prune mark too — the live builder sweeps git refs, and
-    // the preview must stay independent of whatever branches exist here.
-    segs.push(Segment::new(SegmentKind::Prune, "\u{2702} 2"));
     segs
 }
 

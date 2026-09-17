@@ -7,14 +7,18 @@
 //! página entra na resposta: o link mora na barra de status.
 //!
 //! É também o que o `/mustard:continue` chama — o botão de reserva, porque a
-//! retomada já acontece sozinha no início da sessão.
+//! retomada já acontece sozinha no início da sessão: a linha de retomada
+//! ([`resume_line`]) — a spec, a fase, o último passo e o próximo item — sai
+//! igual nos dois lugares.
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Refusal, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{SpecState, State};
+use mustard_core::domain::survey;
 use mustard_core::io::spec_events as store;
-use mustard_core::platform::i18n::translate;
+use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
 use crate::commands::spec_events::{self, read::checkout};
@@ -63,6 +67,7 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         "ok": true,
         "spec": spec,
         "phase": phase,
+        "line": resume_line(&spec, &log, lang),
         "next": translate(next_key(phase), lang),
         "command": next_command(phase, &spec),
     });
@@ -73,6 +78,79 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         out["base"] = json!(base);
     }
     out
+}
+
+/// A linha de retomada da spec `spec`: a spec, a fase, o último passo do
+/// fluxo e o próximo item. É o que o início da sessão coloca depois de
+/// `/clear`, e o que o `resume` devolve em `line`.
+pub(crate) fn resume_line(spec: &str, log: &SpecLog, lang: Locale) -> String {
+    let phase = State::from_log(log).phase.unwrap_or("survey");
+    let none = translate("resume.none", lang);
+    translate("resume.line", lang)
+        .replace("{spec}", spec)
+        .replace("{phase}", phase)
+        .replace("{last}", &last_step(log).unwrap_or_else(|| none.to_string()))
+        .replace("{next}", &next_item(spec, phase, log, lang).unwrap_or_else(|| none.to_string()))
+}
+
+/// A linha de retomada da spec atual da sessão `session`, vista de `root`.
+/// `None` sem spec atual, sem arquivo de eventos e na spec que já terminou,
+/// que não tem para onde voltar.
+pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String> {
+    let project = spec_events::project(root);
+    let spec = DiskSpecState::new(&checkout(root)).active(session)?;
+    let log = store::read(&store::spec_file(&project.root, &spec).ok()?).ok()??;
+    let phase = State::from_log(&log).phase;
+    if matches!(phase, Some("delivered" | "discarded")) {
+        return None;
+    }
+    Some(resume_line(&spec, &log, project.lang))
+}
+
+/// O último passo do fluxo: o comando da chamada mais nova que deu certo.
+fn last_step(log: &SpecLog) -> Option<String> {
+    log.block(BlockQuery::Block(Block::Conversation))
+        .into_iter()
+        .filter(|e| e.event_type == "call" && e.str_field("result") == Some("ok"))
+        .filter_map(|e| e.str_field("command"))
+        .map(str::trim)
+        .rfind(|command| !command.is_empty())
+        .map(str::to_string)
+}
+
+/// O próximo item, por fase: no levantamento, o próximo ponto em aberto; na
+/// execução, a onda em andamento ou a próxima; nas outras fases, o comando do
+/// passo seguinte.
+fn next_item(spec: &str, phase: &str, log: &SpecLog, lang: Locale) -> Option<String> {
+    let wave = |n: u64| translate("resume.wave", lang).replace("{n}", &n.to_string());
+    match phase {
+        "survey" => {
+            let codes = log.codes();
+            survey::open_points(log)
+                .first()
+                .map(|point| codes.get(&point.id).cloned().unwrap_or_else(|| point.id.to_string()))
+                .or_else(|| next_command(phase, spec).as_str().map(str::to_string))
+        }
+        "approved" | "running" => {
+            let delivered = log.delivered_waves();
+            let planned: BTreeSet<u64> = log
+                .block(BlockQuery::Block(Block::Waves))
+                .into_iter()
+                .filter(|e| e.event_type == "wave")
+                .filter_map(|e| e.wave())
+                .collect();
+            let sent: BTreeSet<u64> = log
+                .block(BlockQuery::Block(Block::Waves))
+                .into_iter()
+                .filter(|e| e.event_type == "send")
+                .filter_map(|e| e.wave())
+                .collect();
+            let pending = planned.iter().copied().filter(|n| !delivered.contains(n));
+            let running = pending.clone().find(|n| sent.contains(n));
+            running.or_else(|| pending.clone().next()).map(wave).or_else(|| next_command(phase, spec).as_str().map(str::to_string))
+        }
+        _ => next_command(phase, spec).as_str().map(str::to_string),
+    }
 }
 
 /// O que dizer a quem retoma, por fase.
@@ -131,7 +209,9 @@ mod tests {
     }
 
     /// A retomada lê só o estado e devolve, por fase, o próximo passo em
-    /// palavras e o comando que o faz — e nunca o endereço da página.
+    /// palavras e o comando que o faz — e nunca o endereço da página. A linha
+    /// de retomada que ela devolve é a mesma que o início da sessão traz
+    /// depois de `/clear`.
     #[test]
     fn resuming_reads_the_state_and_answers_the_next_step_of_that_phase() {
         let dir = tempdir().unwrap();
@@ -152,6 +232,49 @@ mod tests {
         let out = resume(root, "x");
         assert_eq!(out["phase"], json!("approved"), "{out}");
         assert_eq!(out["command"], json!("mustard-rt run round --spec x"), "{out}");
+        resume_line_after_clear();
+    }
+
+    /// A linha de retomada, no início da sessão depois de `/clear` e no
+    /// `resume`, numa branch com spec em execução.
+    fn resume_line_after_clear() {
+        // Depois de `/clear`, numa branch com spec em execução, o início da
+        // sessão traz a linha de retomada — a spec, a fase, o último passo e o
+        // próximo item — e o `resume` devolve a mesma linha.
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::shared::spec_state::stand_on_spec_branch(root, "x");
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        let said = seed("message", json!({"author": "user", "text": "o plano"}));
+        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+        for n in 1..=4 {
+            seed("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x", "origin": said}));
+        }
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        seed("state", json!({"phase": "running", "author": "binary"}));
+        seed("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
+        for n in [1, 2] {
+            seed("send", json!({"wave": n, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+                "items": [crit], "mustard": "0", "author": "binary"}));
+        }
+        seed("call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
+        seed("call", json!({"command": "close", "ms": 3, "result": "refused", "author": "binary"}));
+
+        let line = translate("resume.line", Locale::PtBr)
+            .replace("{spec}", "x")
+            .replace("{phase}", "running")
+            .replace("{last}", "round")
+            .replace("{next}", &translate("resume.wave", Locale::PtBr).replace("{n}", "2"));
+        let out = resume_for(&ResumeOpts { root: root.to_path_buf(), spec: None }, Some("s-clear"));
+        assert_eq!(out["line"], json!(line), "{out}");
+
+        let started = crate::hooks::session::session_start_inject::started_after_clear(root, "s-clear");
+        assert!(started.lines().any(|l| l == line), "the session start carries the resume line: {started}");
     }
 
     /// Sem spec nenhuma, a retomada recusa dizendo que não há spec atual.

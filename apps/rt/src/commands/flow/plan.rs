@@ -672,14 +672,14 @@ fn join(items: impl Iterator<Item = String>) -> String {
 mod tests {
     use super::*;
     use crate::commands::flow::grill::{grill_for, GrillOpts};
-    use crate::commands::spec_events::write::{record_open, write_at, WriteOpts};
+    use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
     use std::process::Command;
     use tempfile::tempdir;
 
     const GOAL: &str = "Travar o merge enquanto houver pendência aberta.";
 
     fn write(root: &Path, spec: Option<&str>, event_type: &str, body: Value) -> Value {
-        write_at(&WriteOpts {
+        seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: spec.map(str::to_string),
             event_type: event_type.into(),

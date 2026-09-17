@@ -484,7 +484,7 @@ pub(crate) struct PrReviewReport {
 /// The door refuses `--verdict` before it gets here, so nothing is recorded
 /// in this version. Kept as it was: recording goes through
 /// [`review_result::record_review`] — the same path the `review-result` CLI
-/// and the `SubagentStop` verdict capture take, into the old log. `pr-merge`
+/// takes, into the old log. `pr-merge`
 /// reads the per-wave verdicts of the spec's `spec.ndjson`, which the round
 /// will write.
 #[must_use]

@@ -52,11 +52,18 @@
 //! Quem grava por dentro do binário, como a testemunha da aprovação, usa
 //! [`record`], a mesma gravação deste comando.
 //!
-//! Este comando também não grava a execução de um critério (`criterion_run`)
-//! nem o veredito (`verdict`), nem tira ou revê um deles: quem os grava é o
-//! binário, e as portas que os gravarão, o `round` e o `close` do fluxo novo,
-//! ainda não chegaram nesta versão. O autor `binary` é só das gravações de
-//! dentro do binário.
+//! Este comando também não grava a execução de um critério (`criterion_run`),
+//! o veredito (`verdict`), o envio do pedido (`send`), o que uma onda entregou
+//! (`delivered`), o commit (`commit`) nem a resposta do assistente
+//! (`response`), nem tira ou revê um deles: quem os grava é o binário — a
+//! rodada, o fechamento e o despachante. O autor `binary` é só das gravações
+//! de dentro do binário.
+//!
+//! A mensagem do usuário (`message` de autor `user`) também não passa por
+//! aqui, nem para ser tirada ou revista: ela chega pelo gancho da entrada e,
+//! a resposta a uma pergunta com opções, pela testemunha. É o que faz do
+//! clique do usuário um fato que o modelo não escreve. O expurgo de uma
+//! mensagem do usuário continua valendo: um segredo colado na conversa sai.
 //!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
 //! fluxo e da testemunha da aprovação. As portas que gravam `state` são
@@ -93,7 +100,7 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::LESSON;
-use mustard_core::domain::spec_events::{type_spec, Refusal, SpecLog, PHASES};
+use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
     birth_event, goal_rule, phase_write_allowed, survey_rule, waves_grown_by, PhaseWriter, SpecState, State,
@@ -109,16 +116,32 @@ use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, quando ele
 /// roda o QA; o veredito, quando ele registra a revisão; o envio do pedido de
-/// uma onda, que só a rodada grava, com o pedido exato como foi injetado; e a
+/// uma onda, o que ela entregou e o commit, que só a rodada grava; e a
 /// resposta do assistente, que o despachante grava no fim de cada resposta.
-/// O `run write` não os grava, nem tira ou revê um deles. O `entregou`, o
-/// commit e a mensagem do usuário seguem aceitos à mão enquanto os ganchos
-/// estiverem desligados.
-const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send", "response"];
+/// O `run write` não os grava, nem tira ou revê um deles.
+const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send", "delivered", "commit", "response"];
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
     log.visible().into_iter().filter(|event| event.event_type == event_type).map(|event| event.id).collect()
+}
+
+/// A mensagem é do usuário.
+fn by_user(event: &Map<String, Value>) -> bool {
+    event.get("author").and_then(Value::as_str).map(str::trim) == Some("user")
+}
+
+/// Os números das mensagens do usuário que a leitura de `log` mostra, contando
+/// também as expurgadas: o expurgo tira o texto de um segredo, e não a fala
+/// do usuário da conversa.
+fn user_messages(log: &SpecLog) -> Vec<u64> {
+    let hidden = log.hidden();
+    log.events
+        .iter()
+        .filter(|event| event.event_type == "message" && by_user(&event.fields))
+        .filter(|event| hidden.get(&event.id).is_none_or(|why| matches!(why, Hidden::Purged { .. })))
+        .map(|event| event.id)
+        .collect()
 }
 
 /// Options for `mustard-rt run write`.
@@ -170,6 +193,9 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     }
     if BINARY_ONLY.contains(&event_type) {
         return refuse(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec: spec.trim().to_string() });
+    }
+    if event_type == "message" && by_user(&draft) {
+        return refuse(Refusal::UserMessageByHook { spec: spec.trim().to_string() });
     }
     if event_type == "deferred"
         && let Err(refusal) = point_to_open_pending(&opts.root, &mut draft)
@@ -236,6 +262,35 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             report
         }
         Err(refusal) => refuse(refusal),
+    }
+}
+
+/// Para os testes: grava como a produção grava. A mensagem do usuário chega
+/// pelos ganchos, e o que uma onda entregou e o commit, pela rodada; os três
+/// passam por [`record`], como lá. O resto passa pelo `run write`. O relatório
+/// tem a forma do `run write`, e a spec que não foi aberta é recusada do
+/// mesmo jeito.
+#[cfg(test)]
+pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
+    let event_type = opts.event_type.trim();
+    let draft = serde_json::from_str::<Value>(&opts.json).ok().and_then(|v| v.as_object().cloned());
+    let (Some(spec), Some(draft)) = (opts.spec.as_deref(), draft) else {
+        return write_at(opts);
+    };
+    let project = super::project(&opts.root);
+    let by_hooks = matches!(event_type, "delivered" | "commit") || (event_type == "message" && by_user(&draft));
+    if !by_hooks || spec_was_opened(&project.root, spec).is_err() {
+        return write_at(opts);
+    }
+    match record(&opts.root, spec, event_type, draft, PhaseWriter::Binary) {
+        Ok(Recorded { written, .. }) => {
+            let mut report = json!({ "ok": true, "spec": spec.trim(), "id": written.id, "type": event_type });
+            if let Some(code) = &written.code {
+                report["code"] = json!(code);
+            }
+            report
+        }
+        Err(refusal) => super::refused(&refusal, project.lang),
     }
 }
 
@@ -507,6 +562,10 @@ fn phase_rule(
         if visible_of(before, "work_type") != visible_of(after, "work_type") {
             return Err(Refusal::WorkTypeByGrill);
         }
+        // A fala do usuário é dos ganchos: o modelo não a tira nem a revê.
+        if user_messages(before) != user_messages(after) {
+            return Err(Refusal::UserMessageByHook { spec: spec.to_string() });
+        }
         return if was == now { Ok(()) } else { Err(Refusal::StateByFlowOnly { spec: spec.to_string() }) };
     };
     if phase_write_allowed(&was, &now, carried, by) {
@@ -708,7 +767,7 @@ mod tests {
         if let Some(spec) = spec {
             open_spec(root, spec);
         }
-        write_at(&WriteOpts {
+        seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: spec.map(str::to_string),
             event_type: event_type.into(),
@@ -724,12 +783,12 @@ mod tests {
     fn a_write_reports_its_number_and_what_a_removal_took_out() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let first = write(root, "message", r#"{"author":"user","text":"um"}"#);
+        let first = write(root, "message", r#"{"text":"um"}"#);
         assert_eq!(
             first,
             json!({"ok": true, "spec": "teste", "id": 1, "type": "message", "code": "MSTD-MSG-0001"})
         );
-        write(root, "message", r#"{"author":"user","text":"dois"}"#);
+        write(root, "message", r#"{"text":"dois"}"#);
         let removal = write(root, "remove", r#"{"targets":[1,2],"reason":"engano"}"#);
         assert_eq!(removal["removed"], json!([1, 2]), "{removal}");
         assert!(root.join(".claude").join("spec").join("teste").join("spec.ndjson").is_file());
@@ -829,7 +888,7 @@ mod tests {
         assert_eq!(removal["reason"], json!("binary-only-type"), "taking the red run out is refused too: {removal}");
 
         // A resposta do assistente também é do binário: escrita à mão, ela é
-        // recusada, e a mensagem do usuário segue aceita.
+        // recusada. A mensagem do usuário, que chega pelo gancho, fica.
         let asked = message(root, "user", "e agora?");
         let reply = format!(r#"{{"author":"assistant","text":"Pronto.","reply_to":{asked}}}"#);
         let before = lines(root);
@@ -1005,6 +1064,46 @@ mod tests {
         assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("A onda 1 ficou pronta."));
     }
 
+    /// O que cada onda entregou, o commit e a mensagem do usuário não são
+    /// gravados à mão: o `run write` recusa os três, e recusa tirar ou rever
+    /// uma entrega ou uma fala do usuário, sem gravar nada. A mensagem do
+    /// assistente segue aceita, e o expurgo da fala do usuário também: o
+    /// segredo colado na conversa precisa poder sair.
+    #[test]
+    fn deliveries_commits_and_user_messages_are_never_written_by_hand() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "a senha é abc123");
+        let delivered = write(root, "delivered", r#"{"wave":1,"text":"A onda 1 saiu.","files":["src/a.rs"]}"#);
+        let delivered = delivered["id"].as_u64().unwrap();
+        let by_hand = |event_type: &str, body: Value| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                event_type: event_type.into(),
+                json: body.to_string(),
+            })
+        };
+        let before = lines(root);
+        for (event_type, body, reason) in [
+            ("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["src/a.rs"]}), "binary-only-type"),
+            ("commit", json!({"sha": "abc", "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": "r"}), "binary-only-type"),
+            ("remove", json!({"targets": [delivered], "reason": "engano"}), "binary-only-type"),
+            ("message", json!({"author": "user", "text": "sim, pode seguir"}), "user-message-by-hook"),
+            ("message", json!({"author": "user", "text": "outra fala", "replaces": said}), "user-message-by-hook"),
+            ("message", json!({"text": "a fala revista", "replaces": said}), "user-message-by-hook"),
+            ("remove", json!({"targets": [said], "reason": "engano"}), "user-message-by-hook"),
+        ] {
+            let refused = by_hand(event_type, body.clone());
+            assert_eq!(refused["reason"], json!(reason), "{event_type} {body}: {refused}");
+        }
+        assert_eq!(lines(root), before, "nothing was written");
+
+        assert_eq!(by_hand("message", json!({"text": "Anotado."}))["ok"], json!(true));
+        let purged = by_hand("purge", json!({"targets": [said], "reason": "secret"}));
+        assert_eq!(purged["ok"], json!(true), "the secret goes: {purged}");
+    }
+
     fn witness_approves(root: &std::path::Path) {
         let draft = json!({
             "phase": "approved",
@@ -1066,7 +1165,7 @@ mod tests {
         let approval = lines(root) as u64;
         let removed = write(root, "remove", &json!({ "targets": [approval], "reason": "engano" }).to_string());
         assert_eq!(removed["reason"], json!("state-by-flow-only"), "{removed}");
-        let note = write(root, "message", r#"{"author":"user","text":"sai"}"#);
+        let note = write(root, "message", r#"{"text":"sai"}"#);
         let id = note["id"].as_u64().unwrap();
         let ok = write(root, "remove", &json!({ "targets": [id], "reason": "engano" }).to_string());
         assert_eq!(ok["ok"], json!(true), "{ok}");
@@ -1240,7 +1339,7 @@ mod tests {
             root: root.to_path_buf(),
             spec: Some("nunca-aberta".into()),
             event_type: "message".into(),
-            json: r#"{"author":"user","text":"oi"}"#.into(),
+            json: r#"{"text":"oi"}"#.into(),
         });
         assert_eq!(out["reason"], json!("spec-not-open"), "{out}");
         assert!(out["hint"].as_str().unwrap().contains("run open"), "{out}");

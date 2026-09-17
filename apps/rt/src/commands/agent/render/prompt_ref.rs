@@ -1,12 +1,6 @@
-//! A marca do despacho e a chave estável que nomeia um arquivo de pedido.
-//!
-//! O gancho de injeção procura a marca no texto da tarefa para trocar o talão
-//! pelo pedido inteiro; a página da spec e a lista de pendências usam a mesma
-//! chave para carimbar o documento com o nome do arquivo de despacho.
-
-/// Marker prefix of the stub's first line. `subagent_inject` greps the Task
-/// prompt for this exact prefix to locate the file to expand.
-pub const PROMPT_REF_MARKER: &str = "MUSTARD-PROMPT-REF:";
+//! A chave estável: um FNV de 64 bits sobre partes de texto. A lista de
+//! pendências a usa para carimbar o que grava, e a rodada, para dar a cada
+//! mudança proposta por uma onda um código que não serve para outra.
 
 /// FNV-1a de 64 bits sobre as partes, com separador entre elas. Determinístico
 /// — sem relógio e sem sorteio —, então as mesmas entradas dão sempre o mesmo

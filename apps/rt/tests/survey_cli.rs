@@ -71,6 +71,18 @@ fn write(root: &Path, event_type: &str, fields: &Value) -> Value {
     written
 }
 
+/// A fala do usuário, gravada como o gancho da entrada a grava: o `run write`
+/// não grava mensagem do usuário.
+fn user_says(root: &Path, text: &str) -> u64 {
+    let mut draft = Map::new();
+    draft.insert("author".to_string(), json!("user"));
+    draft.insert("text".to_string(), json!(text));
+    record(root, SPEC, "message", draft, PhaseWriter::Binary).expect("the hook records the message");
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+    log.events.last().expect("the message just written").id
+}
+
 fn id(report: &Value) -> u64 {
     report["id"].as_u64().unwrap_or_else(|| panic!("no id: {report}"))
 }
@@ -99,7 +111,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     assert_eq!(report(&opened)["step"], "ask_goal");
 
-    let said = id(&write(root, "message", &json!({"author": "user", "text": GOAL})));
+    let said = user_says(root, GOAL);
     write(root, "context", &json!({"text": GOAL, "origin": said}));
 
     let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
@@ -119,10 +131,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     let mut current = last["point"].clone();
     assert_eq!(current["gap"], items[0]["gap"], "{last}");
 
-    let loose = [
-        id(&write(root, "message", &json!({"author": "user", "text": "E o painel?"}))),
-        id(&write(root, "message", &json!({"author": "user", "text": "E o aviso por e-mail?"}))),
-    ];
+    let loose = [user_says(root, "E o painel?"), user_says(root, "E o aviso por e-mail?")];
 
     let mut reviewed = Vec::new();
     for (i, item) in items.iter().enumerate() {

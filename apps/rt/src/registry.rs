@@ -99,7 +99,8 @@ impl Registry {
                 check: Some(Box::new(WriteGate)),
                 observer: None,
             },
-            // O pedido do subagente, no despacho de um agente.
+            // O pedido do subagente, no despacho de um agente: troca o bilhete
+            // da onda pelo pedido montado, ou barra com o motivo.
             Module {
                 id: "subagent_inject",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(AGENT_TOOLS))],

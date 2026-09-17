@@ -345,7 +345,7 @@ fn record_work_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{record_birth, record_open, write_at, WriteOpts};
+    use crate::commands::spec_events::write::{record_birth, record_open, seed_at, WriteOpts};
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -354,7 +354,7 @@ mod tests {
     const EN: &str = r#"{"language":{"text":"en-US"}}"#;
 
     fn write(root: &Path, spec: Option<&str>, event_type: &str, json: Value) -> Value {
-        write_at(&WriteOpts {
+        seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: spec.map(str::to_string),
             event_type: event_type.into(),
@@ -920,7 +920,7 @@ mod tests {
                 assert_eq!(last["ok"], json!(true), "{case}: {last}");
             }
 
-            let asked = write(root, Some("x"), "message", json!({"author": "user", "text": "E agora?"}));
+            let asked = write(root, Some("x"), "message", json!({"text": "E agora?"}));
             for report in [&last, &asked] {
                 assert!(report.get("points").is_none(), "{case}: the gap is not asked again: {report}");
                 assert_eq!(report["point"]["id"], json!(ids[1]), "{case}: {report}");

@@ -12,8 +12,10 @@
 //! do teto de caracteres; uma mensagem de commit fora do modelo (título e
 //! corpo acima do teto, link do claude.ai, o nome do modelo, assinatura de
 //! coautoria ou e-mail de alguém); e o relatório em que um agente diz que o
-//! plano da onda não funciona, que para a rodada e só segue com o "sim"
-//! gravado.
+//! plano da onda não funciona, que para a rodada e só segue com o "sim" do
+//! usuário. O "sim" é o clique em "Aceitar" na pergunta da mudança, gravado
+//! pela testemunha como na aprovação da spec, e nunca a leitura que o modelo
+//! faz de uma frase: a rodada não aceita código nenhum de quem a chama.
 //!
 //! **O que avisa.** O formatador que o projeto declara e que não foi achado
 //! sai pelo nome, em vez de a formatação ser pulada em silêncio.
@@ -50,9 +52,6 @@ pub struct RoundOpts {
     pub spec: Option<String>,
     /// O relatório da rodada anterior, em JSON.
     pub report: Option<String>,
-    /// O código que a rodada devolveu ao parar num replanejamento, repetido
-    /// depois do "sim" do usuário.
-    pub yes: Option<String>,
 }
 
 /// Quantas ondas saem juntas quando o projeto não diz outra coisa: duas, que é
@@ -74,7 +73,7 @@ enum RoundRefusal {
     /// A mensagem do commit traz o que ela nunca leva.
     CommitForbidden { found: String },
     /// Um agente disse que o plano da onda não funciona: a rodada para e
-    /// mostra a mudança proposta.
+    /// mostra a mudança proposta, com a pergunta que decide.
     Replan { wave: u64, change: String, code: String },
     /// O git recusou o commit.
     Git { detail: String },
@@ -119,14 +118,27 @@ impl RoundRefusal {
             }
             Self::Replan { wave, change, code } => fill(
                 "round.replan",
-                &[("{wave}", wave.to_string()), ("{change}", change.clone()), ("{code}", code.clone())],
+                &[
+                    ("{wave}", wave.to_string()),
+                    ("{change}", change.clone()),
+                    ("{question}", change_question(code, lang)),
+                    ("{yes}", translate("change.accept", lang).to_string()),
+                    ("{no}", translate("change.decline", lang).to_string()),
+                ],
             ),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
         }
     }
 
     fn to_value(&self, lang: Locale) -> Value {
-        json!({ "ok": false, "reason": self.reason(), "hint": self.message(lang) })
+        let mut out = json!({ "ok": false, "reason": self.reason(), "hint": self.message(lang) });
+        // A pergunta da mudança vai pronta, com as opções, como a revisão de
+        // um bloco do levantamento: é ela, e só ela, que a testemunha lê.
+        if let Self::Replan { code, .. } = self {
+            out["question"] = json!(change_question(code, lang));
+            out["options"] = json!([translate("change.accept", lang), translate("change.decline", lang)]);
+        }
+        out
     }
 }
 
@@ -176,7 +188,7 @@ fn run_round(
 
     // Só uma spec aprovada roda. Antes disso a rodada não tem o que despachar.
     let phase = State::from_log(&log).phase.unwrap_or_default().to_string();
-    if !matches!(phase.as_str(), "approved" | "running") {
+    if !can_run(&phase) {
         return Err(RoundRefusal::NotApproved { phase });
     }
 
@@ -188,11 +200,12 @@ fn run_round(
     if let Some(raw) = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
         let reports = parse_report(raw).map_err(|detail| RoundRefusal::BadReport { detail })?;
         // O agente que diz que o plano da onda não funciona para a rodada: a
-        // mudança proposta é mostrada, e só o "sim" gravado a deixa seguir.
+        // mudança proposta é mostrada, e só o clique do usuário em "Aceitar",
+        // gravado pela testemunha, a deixa seguir.
         for report in &reports {
             if let Some(change) = &report.replan {
                 let code = replan_code(report.wave, change);
-                if opts.yes.as_deref().map(str::trim) != Some(code.as_str()) {
+                if !change_accepted(&log, report.wave, &code) {
                     return Err(RoundRefusal::Replan { wave: report.wave, change: change.clone(), code });
                 }
             }
@@ -299,6 +312,13 @@ fn run_round(
     Ok(out)
 }
 
+/// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em
+/// execução. É a mesma pergunta para a rodada e para o gancho que monta o
+/// pedido no despacho.
+pub(crate) fn can_run(phase: &str) -> bool {
+    matches!(phase, "approved" | "running")
+}
+
 /// Refaz o corpo do pull request desta spec, quando há um aberto. Devolve o
 /// número do pull request reescrito, `None` quando não há nenhum ou quando o
 /// provedor não respondeu — a rodada nunca para por causa disso.
@@ -375,11 +395,42 @@ pub(crate) fn record_reports(
     Ok(recorded)
 }
 
-/// O código que a rodada devolve ao parar num replanejamento e recebe de volta
-/// depois do "sim": a onda e o tamanho da mudança proposta, para que um "sim"
-/// nunca sirva para outra mudança.
+/// O código da mudança proposta, que vai na pergunta que a decide: a onda e
+/// uma chave do texto da mudança, para que um "sim" nunca sirva para outra.
 fn replan_code(wave: u64, change: &str) -> String {
-    format!("replan-{wave}-{}", change.chars().count())
+    let key = crate::commands::agent::render::prompt_ref::fnv1a64(&[change.trim()]) & 0x00ff_ffff;
+    format!("onda-{wave}-{key:06x}")
+}
+
+/// A pergunta que decide a mudança de código `code`, no idioma `lang`.
+fn change_question(code: &str, lang: Locale) -> String {
+    translate("change.question", lang).replace("{code}", code)
+}
+
+/// A mudança de código `code`, proposta pela onda `wave`, foi aceita: o
+/// clique mais novo do usuário na pergunta dela, gravado pela testemunha
+/// depois do último pedido da onda, é o "Aceitar". Um clique em "Recusar"
+/// depois dele desfaz o "sim"; um clique de antes do pedido não vale para ele.
+///
+/// Só conta a mensagem de autor `user` com a testemunha, que o `run write`
+/// não grava: a fala do usuário chega pelos ganchos.
+fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
+    let langs = [Locale::PtBr, Locale::EnUs];
+    let questions: Vec<String> = langs.iter().map(|lang| change_question(code, *lang)).collect();
+    let sent = last_sends(log).get(&wave).copied().unwrap_or(0);
+    let last_click = log
+        .block(BlockQuery::Block(Block::Conversation))
+        .into_iter()
+        .filter(|e| e.event_type == "message" && e.id > sent && e.str_field("author") == Some("user"))
+        .filter_map(|e| e.fields.get("witness"))
+        .filter(|w| {
+            w.get("question")
+                .and_then(Value::as_str)
+                .is_some_and(|q| questions.iter().any(|asked| asked == q.trim()))
+        })
+        .filter_map(|w| w.get("answer").and_then(Value::as_str))
+        .next_back();
+    last_click.is_some_and(|answer| langs.iter().any(|lang| translate("change.accept", *lang) == answer.trim()))
 }
 
 /// A mensagem de commit do relatório, já conferida. `None` quando o relatório
@@ -803,11 +854,11 @@ fn sent_items(log: &SpecLog, wave: u64) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{record_open, write_at, WriteOpts};
+    use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
     use tempfile::tempdir;
 
     fn write(root: &Path, spec: &str, event_type: &str, body: Value) -> Value {
-        write_at(&WriteOpts {
+        seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some(spec.to_string()),
             event_type: event_type.into(),
@@ -868,14 +919,9 @@ mod tests {
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
     }
 
-    fn round(root: &Path, spec: &str, report: Option<&str>, yes: Option<&str>) -> Value {
+    fn round(root: &Path, spec: &str, report: Option<&str>) -> Value {
         round_for(
-            &RoundOpts {
-                root: root.to_path_buf(),
-                spec: Some(spec.to_string()),
-                report: report.map(str::to_string),
-                yes: yes.map(str::to_string),
-            },
+            &RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: report.map(str::to_string) },
             None,
         )
     }
@@ -887,7 +933,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
-        let refused = round(root, "x", None, None);
+        let refused = round(root, "x", None);
         assert_eq!(refused["reason"], json!("round-not-approved"), "{refused}");
     }
 
@@ -899,7 +945,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
 
-        let out = round(root, "x", None, None);
+        let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("running"), "{out}");
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
@@ -925,7 +971,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
 
-        let out = round(root, "x", None, None);
+        let out = round(root, "x", None);
         let waves: Vec<u64> =
             out["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(waves, vec![1, 3], "a onda 2 divide arquivo com a 1: {out}");
@@ -935,7 +981,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
-        let out = round(root, "x", None, None);
+        let out = round(root, "x", None);
         assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
     }
 
@@ -954,7 +1000,7 @@ mod tests {
             json!({"wave": 1, "text": "A onda 1 saiu antes da rodada.", "files": ["src/a.rs"]}),
         );
 
-        let out = round(root, "x", None, None);
+        let out = round(root, "x", None);
         let waves: Vec<u64> =
             out["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(waves, vec![2], "a onda 1 já tem entrega: {out}");
@@ -975,7 +1021,7 @@ mod tests {
             json!({"wave": 1, "text": "A onda 1 saiu antes da rodada.", "files": ["src/a.rs"]}),
         );
 
-        let out = round(root, "x", None, None);
+        let out = round(root, "x", None);
         assert_eq!(out["reviews"], json!([]), "a onda 1 entregou antes e nunca foi pedida: {out}");
     }
 
@@ -986,10 +1032,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None, None);
+        round(root, "x", None);
 
         let report = json!({"waves": [{"wave": 1, "delivered": "A soma saiu.", "files": ["src/a.rs"]}]});
-        let out = round(root, "x", Some(&report.to_string()), None);
+        let out = round(root, "x", Some(&report.to_string()));
         assert_eq!(out["ok"], json!(true), "{out}");
         let reviews = out["reviews"].as_array().cloned().unwrap_or_default();
         assert_eq!(reviews.len(), 1, "a onda entregue sem veredito pede revisão: {out}");
@@ -998,7 +1044,7 @@ mod tests {
         let verdict = json!({"waves": [{"wave": 1, "delivered": "De novo.", "files": ["src/a.rs"],
             "verdict": {"result": "approved", "text": "passou",
                         "criteria": [{"criterion": 1, "tests_rule": "confere a regra"}]}}]});
-        let out = round(root, "x", Some(&verdict.to_string()), None);
+        let out = round(root, "x", Some(&verdict.to_string()));
         assert_eq!(out["reviews"], json!([]), "o veredito é mais novo que a entrega dele: {out}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
@@ -1015,23 +1061,23 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        let first = round(root, "x", None, None);
+        let first = round(root, "x", None);
         assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
 
         let report = json!({"waves": [{"wave": 1, "delivered": "A soma saiu.", "files": ["src/a.rs"],
             "verdict": {"result": "rejected", "text": "faltou o teste",
                         "criteria": [{"criterion": 1, "tests_rule": "confere a regra"}]}}]});
-        let again = round(root, "x", Some(&report.to_string()), None);
+        let again = round(root, "x", Some(&report.to_string()));
         assert_eq!(again["dispatch"].as_array().map(Vec::len), Some(1), "a onda reprovada volta a sair: {again}");
 
-        let quiet = round(root, "x", None, None);
+        let quiet = round(root, "x", None);
         assert_eq!(quiet["dispatch"], json!([]), "o conserto já saiu, e a onda espera a revisão dele: {quiet}");
         assert_eq!(quiet["reviews"], json!([]), "o conserto ainda não voltou: nada a revisar: {quiet}");
 
         // O conserto entregue é mais novo que a reprovação, e por isso pede
         // revisão: é a revisão nova que tira o veredito velho da frente.
         let fixed = json!({"waves": [{"wave": 1, "delivered": "O teste entrou.", "files": ["src/a.rs"]}]});
-        let back = round(root, "x", Some(&fixed.to_string()), None);
+        let back = round(root, "x", Some(&fixed.to_string()));
         let waves: Vec<u64> = back["reviews"]
             .as_array()
             .cloned()
@@ -1051,7 +1097,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        let first = round(root, "x", None, None);
+        let first = round(root, "x", None);
         assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(2), "{first}");
 
         let path = store::spec_file(root, "x").unwrap();
@@ -1080,21 +1126,21 @@ mod tests {
         task["wave"] = json!(1);
         id_of(&write(root, "x", "task", task));
 
-        let again = round(root, "x", None, None);
+        let again = round(root, "x", None);
         let waves: Vec<u64> =
             again["dispatch"].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(waves, vec![1, 2], "as duas foram replanejadas depois do pedido: {again}");
 
-        let quiet = round(root, "x", None, None);
+        let quiet = round(root, "x", None);
         assert_eq!(quiet["dispatch"], json!([]), "o pedido novo já descreve o plano atual: {quiet}");
 
         // Entregue, a onda não volta por uma versão nova.
         let report = json!({"waves": [{"wave": 1, "delivered": "Saiu.", "files": ["src/a.rs"]}]});
-        round(root, "x", Some(&report.to_string()), None);
+        round(root, "x", Some(&report.to_string()));
         let mut wave = current("wave", 1);
         wave["text"] = json!("Onda 1, texto revisto.");
         id_of(&write(root, "x", "wave", wave));
-        let after = round(root, "x", None, None);
+        let after = round(root, "x", None);
         assert_eq!(after["dispatch"], json!([]), "a onda 1 já entregou: {after}");
     }
 
@@ -1105,41 +1151,102 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None, None);
+        round(root, "x", None);
 
         let long = "a".repeat(DELIVERED_MAX_CHARS + 1);
         let report = json!({"waves": [{"wave": 1, "delivered": long, "files": ["src/a.rs"]}]});
-        let refused = round(root, "x", Some(&report.to_string()), None);
+        let refused = round(root, "x", Some(&report.to_string()));
         assert_eq!(refused["reason"], json!("delivered-too-long"), "{refused}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 0);
     }
 
-    /// O agente que diz que o plano da onda não funciona para a rodada: a
-    /// recusa mostra a mudança proposta e o código, e só com o código de volta
-    /// a rodada segue.
+    /// A resposta do usuário à pergunta `question`, dada pela testemunha dos
+    /// gestos, como o harness a entrega depois do clique.
+    fn click(root: &Path, session: &str, question: &str, answer: &str) {
+        use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some("PostToolUse".to_string()),
+            tool_name: Some("AskUserQuestion".to_string()),
+            session_id: Some(session.to_string()),
+            tool_input: json!({ "questions": [{ "question": question,
+                "options": [{ "label": "Aceitar" }, { "label": "Recusar" }] }] }),
+            raw: json!({ "tool_response": { "answers": { question: answer } } }),
+            ..HookInput::default()
+        };
+        let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PostToolUse));
+        crate::hooks::observe::approval_witness::ApprovalWitness.evaluate(&input, &ctx).expect("never errors");
+    }
+
+    fn delivered_count(root: &Path) -> usize {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        log.visible().iter().filter(|e| e.event_type == "delivered").count()
+    }
+
+    /// O agente que diz que o plano da onda não funciona para a rodada até o
+    /// "sim" do usuário, e o "sim" é o clique em "Aceitar" na pergunta da
+    /// mudança, gravado pela testemunha. A recusa mostra a mudança e a
+    /// pergunta; uma mensagem escrita à mão pelo modelo, com a mesma pergunta
+    /// e a mesma resposta, não destrava nada; o clique em "Recusar" também
+    /// não; o clique em "Aceitar" destrava, e a rodada grava o que a onda
+    /// entregou.
     #[test]
-    fn a_wave_that_says_its_plan_does_not_work_stops_the_round_until_the_yes() {
+    fn a_wave_that_says_its_plan_does_not_work_stops_the_round_until_the_users_click() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None, None);
+        round(root, "x", None);
+        let session = "s-replan";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
 
+        let change = "A onda 1 precisa da 2 antes.";
         let report = json!({"waves": [{"wave": 1, "delivered": "Parei.", "files": ["src/a.rs"],
-            "replan": "A onda 1 precisa da 2 antes."}]});
-        let stopped = round(root, "x", Some(&report.to_string()), None);
+            "replan": change}]})
+        .to_string();
+        let stopped = round(root, "x", Some(&report));
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let question = stopped["question"].as_str().unwrap_or_default().to_string();
+        assert_eq!(question, change_question(&replan_code(1, change), Locale::PtBr), "{stopped}");
+        assert_eq!(stopped["options"], json!(["Aceitar", "Recusar"]), "{stopped}");
         let hint = stopped["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("A onda 1 precisa da 2 antes."), "{hint}");
-        let path = store::spec_file(root, "x").unwrap();
-        let log = store::read(&path).unwrap().unwrap();
-        assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 0);
+        assert!(hint.contains(change) && hint.contains(&question), "{hint}");
+        assert_eq!(delivered_count(root), 0);
 
-        let code = replan_code(1, "A onda 1 precisa da 2 antes.");
-        assert!(hint.contains(&code), "{hint}");
-        let went = round(root, "x", Some(&report.to_string()), Some(&code));
+        // O modelo não escreve o "sim": nem como mensagem do usuário, que o
+        // `run write` recusa, nem como mensagem sua com a testemunha.
+        let by_hand = |body: Value| {
+            crate::commands::spec_events::write::write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".to_string()),
+                event_type: "message".into(),
+                json: body.to_string(),
+            })
+        };
+        let witness = json!({ "question": question, "answer": "Aceitar" });
+        let forged = by_hand(json!({ "author": "user", "text": format!("{question}\nAceitar"), "witness": witness }));
+        assert_eq!(forged["reason"], json!("user-message-by-hook"), "{forged}");
+        let own = by_hand(json!({ "text": format!("{question}\nAceitar"), "witness": witness }));
+        assert_eq!(own["ok"], json!(true), "{own}");
+        let still = round(root, "x", Some(&report));
+        assert_eq!(still["reason"], json!("wave-plan-does-not-work"), "a forged yes accepts nothing: {still}");
+
+        click(root, session, &question, "Recusar");
+        let refused = round(root, "x", Some(&report));
+        assert_eq!(refused["reason"], json!("wave-plan-does-not-work"), "a declined change stays stopped: {refused}");
+
+        // O "sim" de uma mudança nunca serve para outra.
+        click(root, session, &change_question(&replan_code(1, "Outra mudança."), Locale::PtBr), "Aceitar");
+        let other = round(root, "x", Some(&report));
+        assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "{other}");
+
+        click(root, session, &question, "Aceitar");
+        let went = round(root, "x", Some(&report));
         assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(delivered_count(root), 1, "the round records what the wave delivered");
     }
 
     /// A mensagem do commit tem título e corpo dentro do teto e nunca traz o
@@ -1170,20 +1277,20 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None, None);
+        round(root, "x", None);
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
         let delivered = |body: &str| {
             json!({"waves": [{"wave": 1, "delivered": "A soma saiu.", "files": ["src/a.rs"]}],
                    "commit": {"title": "feat: a soma", "body": body}})
         };
-        let refused = round(root, "x", Some(&delivered("pedido de fulano@empresa.com.br").to_string()), None);
+        let refused = round(root, "x", Some(&delivered("pedido de fulano@empresa.com.br").to_string()));
         assert_eq!(refused["reason"], json!("commit-forbidden-text"), "{refused}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 0, "nada foi gravado");
 
-        let went = round(root, "x", Some(&delivered("O corpo limpo.").to_string()), None);
+        let went = round(root, "x", Some(&delivered("O corpo limpo.").to_string()));
         assert_eq!(went["ok"], json!(true), "{went}");
         let log = store::read(&path).unwrap().unwrap();
         assert_eq!(log.visible().iter().filter(|e| e.event_type == "delivered").count(), 1, "sem duplicar");
@@ -1195,7 +1302,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None, None);
+        round(root, "x", None);
         std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
         git_at(root, &["config", "user.email", "t@t"]);
         git_at(root, &["config", "user.name", "t"]);
@@ -1203,7 +1310,7 @@ mod tests {
 
         let report = json!({"waves": [{"wave": 1, "delivered": "A soma saiu.", "files": ["src/a.rs"]}],
             "commit": {"title": "feat(onda-1): a soma sai", "body": "A onda 1 escreveu a soma."}});
-        let out = round(root, "x", Some(&report.to_string()), None);
+        let out = round(root, "x", Some(&report.to_string()));
         assert_eq!(out["ok"], json!(true), "{out}");
         let sha = out["commit"]["sha"].as_str().unwrap_or_default().to_string();
         assert_eq!(sha.len(), 40, "{out}");

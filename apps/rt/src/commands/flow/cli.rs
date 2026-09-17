@@ -107,10 +107,6 @@ pub enum FlowCmd {
         /// e, quando é o caso, a mudança de plano que o agente propõe.
         #[arg(long)]
         report: Option<String>,
-        /// O código que a rodada devolveu ao parar numa mudança de plano,
-        /// repetido depois do sim do usuário.
-        #[arg(long)]
-        yes: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -206,8 +202,8 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::plan::PlanOpts { root, spec };
             flow::answer("plan", &opts.root, opts.spec.as_deref(), started, &flow::plan::plan_at(&opts));
         }
-        FlowCmd::Round { spec, report, yes, root } => {
-            let opts = flow::round::RoundOpts { root, spec, report, yes };
+        FlowCmd::Round { spec, report, root } => {
+            let opts = flow::round::RoundOpts { root, spec, report };
             flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts));
         }
         FlowCmd::Close { spec, report, root } => {

@@ -653,6 +653,68 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "[Mustard] The spec {spec} was already approved; nothing to record."
         }
 
+        // O pedido da onda no despacho de um agente: por que o despacho foi
+        // barrado.
+        ("subagent.ticket_unreadable", Locale::PtBr) => {
+            "[Mustard] O despacho foi barrado: a linha {ticket} traz \"{found}\", e ela leva a spec \
+             e o número da onda, como `{ticket} minha-spec 2`."
+        }
+        ("subagent.ticket_unreadable", Locale::EnUs) => {
+            "[Mustard] The dispatch was blocked: the {ticket} line carries \"{found}\", and it takes \
+             the spec and the wave number, as in `{ticket} my-spec 2`."
+        }
+        ("subagent.not_approved", Locale::PtBr) => {
+            "[Mustard] O despacho foi barrado: a spec {spec} está na fase {phase}, e só uma spec \
+             aprovada tem pedido de onda."
+        }
+        ("subagent.not_approved", Locale::EnUs) => {
+            "[Mustard] The dispatch was blocked: the spec {spec} is in the {phase} phase, and only an \
+             approved spec has a wave request."
+        }
+        ("subagent.no_wave", Locale::PtBr) => {
+            "[Mustard] O despacho foi barrado: o plano da spec {spec} não tem a onda {wave}."
+        }
+        ("subagent.no_wave", Locale::EnUs) => {
+            "[Mustard] The dispatch was blocked: the plan of the spec {spec} has no wave {wave}."
+        }
+
+        // O gesto da mudança que parte de um agente: a pergunta, as duas
+        // opções e o que a testemunha diz depois do clique.
+        ("change.question", Locale::PtBr) => "Aceitar a mudança {code}?",
+        ("change.question", Locale::EnUs) => "Accept the change {code}?",
+        ("change.accept", Locale::PtBr) => "Aceitar",
+        ("change.accept", Locale::EnUs) => "Accept",
+        ("change.decline", Locale::PtBr) => "Recusar",
+        ("change.decline", Locale::EnUs) => "Decline",
+        ("change.witness.accepted", Locale::PtBr) => {
+            "[Mustard] O usuário aceitou a mudança {code}. Repita a rodada com o mesmo relatório."
+        }
+        ("change.witness.accepted", Locale::EnUs) => {
+            "[Mustard] The user accepted the change {code}. Run the round again with the same report."
+        }
+        ("change.witness.declined", Locale::PtBr) => {
+            "[Mustard] O usuário recusou a mudança {code}: a rodada não segue com ela. Combine com \
+             o usuário o que fazer com a onda."
+        }
+        ("change.witness.declined", Locale::EnUs) => {
+            "[Mustard] The user declined the change {code}: the round does not go on with it. \
+             Agree with the user on what to do with the wave."
+        }
+        ("change.witness.free_text", Locale::PtBr) => {
+            "[Mustard] Nada foi aceito para a mudança {code}: a resposta {selected} não é uma das \
+             opções oferecidas ({offered}). Texto livre nunca aceita; faça a pergunta de novo."
+        }
+        ("change.witness.free_text", Locale::EnUs) => {
+            "[Mustard] Nothing was accepted for the change {code}: the answer {selected} is not \
+             one of the offered options ({offered}). Free text never accepts; ask again."
+        }
+        ("change.witness.no_spec", Locale::PtBr) => {
+            "[Mustard] Nada foi gravado para a mudança {code}: não há spec atual nesta sessão."
+        }
+        ("change.witness.no_spec", Locale::EnUs) => {
+            "[Mustard] Nothing was recorded for the change {code}: this session has no current spec."
+        }
+
         // Work-unit SURFACING — the three places the harness says out loud that
         // a work unit is somewhere other than the checkout, or that the exit
         // ritual is still owed. All three are user-facing (a listing legend, a
@@ -671,8 +733,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Where: {remote}/{branch}=spec only on the remote, no local branch carries the \
              directory (fetch the branch before acting)"
         }
-        ("statusline.prune.label", Locale::PtBr) => "a podar",
-        ("statusline.prune.label", Locale::EnUs) => "to prune",
+        ("statusline.wave", Locale::PtBr) => "onda {current}/{total}",
+        ("statusline.wave", Locale::EnUs) => "wave {current}/{total}",
         ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
         ("statusline.harness.inert", Locale::EnUs) => "harness inert",
         // Dormant is NOT inert: inert means someone switched the plugin off,
@@ -680,8 +742,44 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // runs), opposite remedy — so they must never share a label.
         ("statusline.harness.dormant", Locale::PtBr) => "harness dormente",
         ("statusline.harness.dormant", Locale::EnUs) => "harness dormant",
-        // Aviso de sobras do início da sessão: `{total}` e `{count}` são
-        // preenchidos pelo chamador (`session_start_inject::scratch_notice`).
+        // Os avisos do início da sessão (`session_start_inject`).
+        ("session.merged", Locale::PtBr) => {
+            "[Mustard] O trabalho de {count} branch(es) já entrou na base por merge, e ela(s) segue(m) \
+             viva(s): {branches}."
+        }
+        ("session.merged", Locale::EnUs) => {
+            "[Mustard] The work of {count} branch(es) already went into the base through a merge, and \
+             the branch(es) are still alive: {branches}."
+        }
+        ("session.version.drift", Locale::PtBr) => {
+            "[Mustard] Este projeto está com o Mustard {stamped}, e o que roda é o {running}. Sugira \
+             `/mustard:upsert`."
+        }
+        ("session.version.drift", Locale::EnUs) => {
+            "[Mustard] This project carries Mustard {stamped}, and the one running is {running}. \
+             Suggest `/mustard:upsert`."
+        }
+        ("session.version.unstamped", Locale::PtBr) => "sem versão",
+        ("session.version.unstamped", Locale::EnUs) => "unstamped",
+        ("session.version.stale", Locale::PtBr) => {
+            "[Mustard] Esta sessão carregou o Mustard {running}, e o instalado é o {installed}: só \
+             reabrir o Claude Code carrega o novo."
+        }
+        ("session.version.stale", Locale::EnUs) => {
+            "[Mustard] This session loaded Mustard {running}, and {installed} is installed: only \
+             reopening Claude Code loads the new one."
+        }
+        ("session.version.behind", Locale::PtBr) => {
+            "[Mustard] O plugin do Claude Code está no Mustard {plugin}, e o binário que roda é o \
+             {running}. Sugira `/mustard:upsert` e reabrir o Claude Code."
+        }
+        ("session.version.behind", Locale::EnUs) => {
+            "[Mustard] The Claude Code plugin is on Mustard {plugin}, and the running binary is \
+             {running}. Suggest `/mustard:upsert` and reopening Claude Code."
+        }
+
+        // Aviso de disco do início da sessão: `{total}` e `{count}` são
+        // preenchidos pelo chamador (`session_start_inject::disk_notice`).
         ("scratch.residue.notice", Locale::PtBr) => {
             "[Mustard] As cópias descartáveis antigas no diretório temporário somam {total} \
              em {count} pasta(s). Diga ao usuário que o disco está sendo gasto com sobras e \
@@ -1434,6 +1532,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
 
         // A retomada de uma spec (`commands/flow/resume.rs`).
+        ("resume.line", Locale::PtBr) => {
+            "Retomada: spec {spec}, fase {phase}; último passo: {last}; próximo: {next}."
+        }
+        ("resume.line", Locale::EnUs) => {
+            "Resume: spec {spec}, phase {phase}; last step: {last}; next: {next}."
+        }
+        ("resume.none", Locale::PtBr) => "nenhum",
+        ("resume.none", Locale::EnUs) => "none",
+        ("resume.wave", Locale::PtBr) => "onda {n}",
+        ("resume.wave", Locale::EnUs) => "wave {n}",
         ("resume.next.survey", Locale::PtBr) => {
             "A spec está no levantamento: rode o levantamento e grave a resposta de cada ponto."
         }
@@ -1544,11 +1652,15 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("round.replan", Locale::PtBr) => {
             "A onda {wave} diz que o plano dela não funciona. Mudança proposta: {change}. \
-             Mostre isto ao usuário e, com o sim dele, repita a rodada com o código {code}."
+             Mostre a mudança ao usuário e faça a pergunta com opções \"{question}\", com \
+             \"{yes}\" e \"{no}\". O sim é o clique em \"{yes}\": depois dele, repita a \
+             rodada com o mesmo relatório."
         }
         ("round.replan", Locale::EnUs) => {
             "Wave {wave} says its plan does not work. Proposed change: {change}. \
-             Show this to the user and, once they say yes, run the round again with code {code}."
+             Show the change to the user and ask the question with options \"{question}\", \
+             with \"{yes}\" and \"{no}\". The yes is the click on \"{yes}\": after it, run \
+             the round again with the same report."
         }
         ("round.git_refused", Locale::PtBr) => "O git recusou o commit da rodada: {detail}",
         ("round.git_refused", Locale::EnUs) => "Git refused the round's commit: {detail}",
@@ -2148,14 +2260,24 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("spec_events.binary_only_type", Locale::PtBr) => {
             "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
              ele, e nada foi gravado: o binário grava a execução dos critérios quando roda o QA, o \
-             veredito quando registra a revisão, o envio quando a rodada despacha uma onda e a \
-             resposta do assistente no fim de cada resposta."
+             veredito quando registra a revisão, o envio, o que cada onda entregou e o commit \
+             pela rodada, e a resposta do assistente no fim de cada resposta."
         }
         ("spec_events.binary_only_type", Locale::EnUs) => {
             "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
              and nothing was written: the binary writes the criteria runs when it runs the QA, the \
-             verdict when it records the review, the send when the round dispatches a wave, and the \
-             assistant's response at the end of each answer."
+             verdict when it records the review, the send, what each wave delivered and the \
+             commit through the round, and the assistant's response at the end of each answer."
+        }
+        ("spec_events.user_message_by_hook", Locale::PtBr) => {
+            "A mensagem do usuário na spec {spec} não é gravada, tirada ou revista pelo \
+             `run write`, e nada foi gravado: ela chega pelo gancho da entrada, e a resposta a uma \
+             pergunta com opções, pela testemunha."
+        }
+        ("spec_events.user_message_by_hook", Locale::EnUs) => {
+            "The user's message in the spec {spec} is not written, removed or revised by \
+             `run write`, and nothing was written: it arrives through the entry hook, and the \
+             answer to a question with options, through the witness."
         }
         ("spec_events.binary_author", Locale::PtBr) => {
             "O autor `binary` fica para as gravações de dentro do binário, e nada foi gravado: o \
@@ -3259,11 +3381,11 @@ mod tests {
     }
 
     /// Work-unit surfacing copy is catalogue-driven in BOTH locales: the
-    /// listing legend and the status-bar label carry no language literal at
-    /// their surface.
+    /// listing legend and the status-bar wave progress carry no language
+    /// literal at their surface.
     #[test]
     fn i18n_translates_work_unit_surfacing_keys() {
-        for key in ["specs.location.remote_only", "statusline.prune.label"] {
+        for key in ["specs.location.remote_only", "statusline.wave"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_ne!(translate(key, lang), "<missing-key>", "{key} missing for {lang}");
             }
@@ -3274,9 +3396,11 @@ mod tests {
             );
         }
         // O aviso de poda do início da sessão saiu com o comando que ele
-        // mandava rodar: nenhum idioma guarda o texto.
+        // mandava rodar, e a contagem de branches a apagar saiu da barra:
+        // nenhum idioma guarda os dois textos.
         for lang in [Locale::PtBr, Locale::EnUs] {
             assert_eq!(translate("prune.pending.notice", lang), "<missing-key>", "the prune advisory left");
+            assert_eq!(translate("statusline.prune.label", lang), "<missing-key>", "the prune count left the bar");
         }
     }
 
@@ -3355,6 +3479,17 @@ mod tests {
             ("approval.witness.no_plan", &[][..]),
             ("approval.witness.already", &["{spec}"][..]),
             ("approval.witness.unmet", &["{spec}", "{unmet}"][..]),
+            ("change.witness.accepted", &["{code}"][..]),
+            ("change.witness.declined", &["{code}"][..]),
+            ("change.witness.free_text", &["{code}", "{selected}", "{offered}"][..]),
+            ("change.witness.no_spec", &["{code}"][..]),
+            ("subagent.ticket_unreadable", &["{ticket}", "{found}"][..]),
+            ("subagent.not_approved", &["{spec}", "{phase}"][..]),
+            ("subagent.no_wave", &["{spec}", "{wave}"][..]),
+            ("session.merged", &["{count}", "{branches}"][..]),
+            ("session.version.drift", &["{stamped}", "{running}"][..]),
+            ("session.version.stale", &["{running}", "{installed}"][..]),
+            ("session.version.behind", &["{running}", "{plugin}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -3365,11 +3500,20 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        // The approval question, the only one the witness acts on.
+        // A pergunta de aprovação da spec, um dos dois gestos em que a
+        // testemunha age.
         assert_eq!(translate("approval.question", Locale::PtBr), "Aprovar esta spec?");
         assert_eq!(translate("approval.question", Locale::EnUs), "Approve this spec?");
         assert_eq!(translate("approval.option", Locale::PtBr), "Aprovar");
         assert_eq!(translate("approval.option", Locale::EnUs), "Approve");
+        // O gesto da mudança que parte de um agente: a pergunta leva o código
+        // da mudança, e as duas opções são as do catálogo.
+        assert_eq!(translate("change.question", Locale::PtBr), "Aceitar a mudança {code}?");
+        assert_eq!(translate("change.question", Locale::EnUs), "Accept the change {code}?");
+        assert_eq!(translate("change.accept", Locale::PtBr), "Aceitar");
+        assert_eq!(translate("change.decline", Locale::PtBr), "Recusar");
+        assert_eq!(translate("change.accept", Locale::EnUs), "Accept");
+        assert_eq!(translate("change.decline", Locale::EnUs), "Decline");
         for gone in ["workbranch.dirty.note", "workbranch.reconcile.warn"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 assert_eq!(translate(gone, lang), "<missing-key>", "{gone} left with the branch hook");
@@ -3451,6 +3595,7 @@ mod tests {
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
+            ("spec_events.user_message_by_hook", &["{spec}"][..]),
             ("spec_events.old_format_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),
@@ -3677,6 +3822,9 @@ mod tests {
             ("discard.reason", &[][..]),
             ("discard.confirm_mismatch", &[][..]),
             ("discard.incomplete", &[][..]),
+            ("resume.line", &["{spec}", "{phase}", "{last}", "{next}"][..]),
+            ("resume.none", &[][..]),
+            ("resume.wave", &["{n}"][..]),
             ("resume.next.survey", &[][..]),
             ("resume.next.plan", &[][..]),
             ("resume.next.running", &[][..]),
@@ -3697,7 +3845,7 @@ mod tests {
             ("round.commit_too_long", &["{part}", "{chars}", "{max}"][..]),
             ("round.commit_forbidden", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
-            ("round.replan", &["{wave}", "{change}", "{code}"][..]),
+            ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
             ("page.findings.heading", &[][..]),

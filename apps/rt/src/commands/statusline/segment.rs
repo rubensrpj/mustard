@@ -8,14 +8,15 @@
 
 use super::theme::Color;
 use crate::shared::rtk_gain::get_rtk_gain;
-use crate::shared::branch_state::{awaiting_prune, PrQuery};
-use mustard_core::io::fs;
+use crate::shared::spec_state::DiskSpecState;
+use mustard_core::domain::spec_events::{Block, BlockQuery};
+use mustard_core::domain::spec_state::SpecState;
 use mustard_core::ClaudePaths;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 use mustard_core::platform::git as git_exec;
-use std::time::{Duration, SystemTime};
 
 /// All segment kinds the statusline knows how to render. New kinds must be
 /// appended (themes index a `[Style; SEGMENT_KIND_COUNT]` by `kind as usize`).
@@ -30,17 +31,14 @@ pub enum SegmentKind {
     Diff = 5,
     Cost = 6,
     Model = 7,
-    Version = 8,
-    Mustard = 9,
-    Prune = 10,
-    /// The work unit this session is inside, and its stage.
-    Unit = 11,
+    /// A spec desta sessão, a fase dela e o andamento das ondas.
+    Unit = 8,
     /// The plugin is installed but switched off, so no hook runs.
-    Inert = 12,
+    Inert = 9,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 13;
+pub const SEGMENT_KIND_COUNT: usize = 10;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -73,13 +71,28 @@ impl Segment {
 // in `mod.rs`.
 // ---------------------------------------------------------------------------
 
-/// `cwd` basename. Falls back to `"?"` if cwd has no file name.
+/// O nome do projeto (a pasta de `cwd`, ou `"?"`), como link para a página
+/// do projeto quando o índice das specs traz o endereço dela.
 #[must_use]
 pub fn module_segment(cwd: &Path) -> Segment {
     let module = cwd
         .file_name()
         .map_or_else(|| "?".to_string(), |n| n.to_string_lossy().to_string());
-    Segment::new(SegmentKind::Module, module)
+    let text = match project_page_url(cwd) {
+        Some(url) => hyperlink(&url, &module),
+        None => module,
+    };
+    Segment::new(SegmentKind::Module, text)
+}
+
+/// O endereço da página do projeto, na linha do projeto do índice das specs
+/// do checkout principal. Um caractere de controle no endereço quebraria a
+/// sequência do link, e aí não há endereço.
+fn project_page_url(cwd: &Path) -> Option<String> {
+    let root = mustard_core::io::spec_events::spec_root(cwd);
+    let index = ClaudePaths::for_project(&root).ok()?.spec_index_path();
+    let content = std::fs::read_to_string(index).ok()?;
+    mustard_core::domain::spec_index::project_url(&content).filter(|url| !url.chars().any(char::is_control))
 }
 
 /// `⎇ branch +N~N?N` or `⎇ branch ✓`. Returns `None` when `cwd` is not a git
@@ -264,63 +277,17 @@ pub fn model_segment(data: &Value) -> Segment {
     Segment::new(SegmentKind::Model, short.to_string())
 }
 
-/// `vX.Y.Z`. Returns `None` when version is missing.
-#[must_use]
-pub fn version_segment(data: &Value) -> Option<Segment> {
-    let v = data.get("version").and_then(Value::as_str)?;
-    Some(Segment::new(SegmentKind::Version, format!("v{v}")))
-}
-
-/// Mustard harness segment. Aligned project → `m{version}` (the running
-/// harness). Drifted stamp → `m{stamped}→{current}` in yellow, read as "the
-/// stamp becomes the harness version"; `/mustard:upsert` realigns.
-/// `None` when the project carries no `mustard.json` (Mustard not installed —
-/// the line stays quiet).
+/// `▸ {spec} {fase} onda 2/4` — a spec desta sessão, a fase dela e o
+/// andamento das ondas.
 ///
-/// **The glyph used to be `↑`, and it lied in one direction.** `upsert` stamps
-/// whatever harness is RUNNING, so when the stamp is NEWER than the harness the
-/// realignment moves it backwards — and an up-arrow reading `0.1.54↑0.1.52`
-/// promised an upgrade to an older number, which is unreadable (field,
-/// 2026-08-28). `→` states the rewrite without claiming a direction it does not
-/// control. The far worse half of that same report — a harness that was not
-/// running at all — is [`inert_segment`]'s dormant flag, not this one: drift
-/// means two versions disagree, never that nothing is working.
-#[must_use]
-pub fn mustard_segment(cwd: &Path) -> Option<Segment> {
-    if !mustard_core::ProjectConfig::exists(cwd) {
-        return None;
-    }
-    let stamped = mustard_core::ProjectConfig::load(cwd).version;
-    let current = mustard_core::harness_version();
-    Some(match stamped {
-        Some(s) if s == current => Segment::new(SegmentKind::Mustard, format!("m{current}")),
-        other => {
-            let from = other.unwrap_or_else(|| "?".to_string());
-            let mut seg = Segment::new(SegmentKind::Mustard, format!("m{from}\u{2192}{current}"));
-            seg.override_fg = Some(Color::Ansi(3));
-            seg
-        }
-    })
-}
-
-/// `▸ {slug} {STAGE}` — the work unit this session is inside, and where it is.
+/// Quem reabre o terminal vê onde parou sem digitar nada. A spec vem da escada
+/// única ([`current_spec`]); com a página dela publicada, o nome vira um link
+/// clicável (OSC 8, aceito pela barra do Claude Code). O andamento aparece com
+/// a spec aprovada ou em execução e com ondas no plano: a onda da vez é a
+/// seguinte às já entregues. `None` fora de um projeto com o Mustard e sem
+/// spec atual.
 ///
-/// The operator who reopens a terminal should not have to type a command to
-/// learn where they stopped. Before this segment the bar named the harness
-/// version and nothing else, so a unit parked in PLAN was invisible until
-/// `/mustard:spec` was run.
-///
-/// Reads the per-session active-spec marker ([`current_spec`]) and that spec's
-/// `meta.json`, both of which the pipeline already maintains — a status bar
-/// redrawn every turn must not enumerate the spec tree. `None` when the project
-/// is not a Mustard install or no unit is active.
-///
-/// Com a página da unidade publicada ([`published_url`]), o segmento inteiro
-/// vira um link clicável (OSC 8, aceito pela barra do Claude Code) para ela.
-/// Quando o checkout está no branch da própria unidade, o segmento de git já
-/// mostra o nome, então aqui fica só a etapa (`▸ PLAN`).
-///
-/// [`published_url`]: crate::commands::spec::spec_doc::published_url
+/// [`current_spec`]: crate::shared::context::checkout::current_spec
 #[must_use]
 pub fn unit_segment(cwd: &Path) -> Option<Segment> {
     if !mustard_core::ProjectConfig::exists(cwd) {
@@ -328,30 +295,49 @@ pub fn unit_segment(cwd: &Path) -> Option<Segment> {
     }
     let root = cwd.to_string_lossy();
     let slug = crate::shared::context::checkout::current_spec(&root).filter(|s| !s.is_empty())?;
-    // A etapa é conveniência, não o ponto: um arquivo de eventos ilegível
-    // ainda deixa a unidade NOMEADA, que é o trabalho inteiro aqui.
-    let stage = crate::shared::spec_state::lock_state(cwd, &slug)
-        .and_then(|state| state.phase)
-        .map(str::to_string);
-    // A mesma leitura de branch que `current_spec` usa: se ela devolve esta
-    // unidade, o nome já está na linha de cima e repeti-lo é ruído. Sem etapa
-    // o nome fica, porque uma seta sozinha não diz nada.
-    let on_own_branch =
-        crate::shared::context::checkout::spec_of_checkout_branch(&root).as_deref() == Some(slug.as_str());
-    let label = match stage {
-        Some(phase) if on_own_branch => format!("\u{25b8} {phase}"),
-        Some(phase) => format!("\u{25b8} {slug} {phase}"),
-        None => format!("\u{25b8} {slug}"),
-    };
-    // Um caractere de controle no endereço (arquivo editado à mão) quebraria a
-    // sequência e sujaria a barra; nesse caso o texto sai sem link.
-    let text = match crate::commands::spec::spec_doc::published_url(cwd, &slug)
+    // Um endereço com caractere de controle (arquivo editado à mão) quebraria
+    // a sequência e sujaria a barra; nesse caso o nome sai sem link.
+    let name = match crate::commands::spec::spec_doc::published_url(cwd, &slug)
         .filter(|url| !url.chars().any(char::is_control))
     {
-        Some(url) => hyperlink(&url, &label),
-        None => label,
+        Some(url) => hyperlink(&url, &slug),
+        None => slug.clone(),
     };
+    let mut text = format!("\u{25b8} {name}");
+    // A fase é conveniência, não o ponto: um arquivo de eventos ilegível ainda
+    // deixa a spec nomeada.
+    let phase = crate::shared::spec_state::lock_state(cwd, &slug).and_then(|state| state.phase);
+    if let Some(phase) = phase {
+        let _ = write!(text, " {phase}");
+        if matches!(phase, "approved" | "running")
+            && let Some((current, total)) = wave_progress(cwd, &slug)
+        {
+            let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
+            let progress = mustard_core::translate("statusline.wave", lang)
+                .replace("{current}", &current.to_string())
+                .replace("{total}", &total.to_string());
+            let _ = write!(text, " {progress}");
+        }
+    }
     Some(Segment::new(SegmentKind::Unit, text))
+}
+
+/// O andamento das ondas da spec `slug`: a onda da vez — a seguinte às já
+/// entregues, sem passar do total — e quantas ondas o plano tem. `None` sem
+/// arquivo de eventos ou sem onda no plano.
+fn wave_progress(cwd: &Path, slug: &str) -> Option<(usize, usize)> {
+    let log = DiskSpecState::new(cwd).log(slug)?;
+    let planned: BTreeSet<u64> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "wave")
+        .filter_map(|e| e.wave())
+        .collect();
+    if planned.is_empty() {
+        return None;
+    }
+    let delivered = log.delivered_waves().intersection(&planned).count();
+    Some(((delivered + 1).min(planned.len()), planned.len()))
 }
 
 /// `label` como hiperlink OSC 8 para `url`: `ESC ]8;;URL ESC \ label ESC ]8;; ESC \`.
@@ -427,95 +413,6 @@ pub fn inert_segment(cwd: &Path) -> Option<Segment> {
 }
 
 // ---------------------------------------------------------------------------
-// Pending-prune segment
-// ---------------------------------------------------------------------------
-
-/// Where the measured count is memoised, under the project's harness dir.
-const PRUNE_CACHE_FILE: &str = ".prune-count";
-
-/// How long a measured count stays fresh.
-///
-/// The bar is redrawn on every turn and the measurement costs a handful of git
-/// invocations (one ref sweep plus one ancestry read per base), so the answer
-/// is memoised for a short window: long enough that a burst of turns measures
-/// once, short enough that a unit the user just pruned leaves the bar within a
-/// turn or two. Mirrors the on-disk, mtime-driven window the Stop observer's
-/// anti-spam marker already uses — an in-process memo would be worthless here,
-/// since each render is its own process.
-const PRUNE_CACHE_SECS: u64 = 30;
-
-/// `✂ N a podar` — how many delivered work units still have a live branch.
-///
-/// `None` when the project is not a Mustard install (the bar stays quiet, like
-/// [`mustard_segment`]) or when nothing is owed. The count comes from the ONE
-/// classifier ([`awaiting_prune`]) with the query that asks no provider
-/// ([`PrQuery::Skip`]): a status bar must not open a network connection per
-/// branch, so it counts only merges LOCAL ancestry proves. It can therefore
-/// under-report and never over-report — `mustard-rt run git-settle --report` is
-/// the face that also asks the provider.
-#[must_use]
-pub fn prune_segment(cwd: &Path) -> Option<Segment> {
-    if !mustard_core::ProjectConfig::exists(cwd) {
-        return None;
-    }
-    let count = pending_prune_count(cwd);
-    if count == 0 {
-        return None;
-    }
-    let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
-    let label = mustard_core::translate("statusline.prune.label", lang);
-    let mut seg = Segment::new(SegmentKind::Prune, format!("\u{2702} {count} {label}"));
-    // Yellow: something is owed, nothing is wrong.
-    seg.override_fg = Some(Color::Ansi(3));
-    Some(seg)
-}
-
-/// The count, served from the short-lived cache when it is still fresh and
-/// re-measured otherwise. Fail-open at every step: an unreadable cache
-/// re-measures, an unwritable one simply measures again next render.
-fn pending_prune_count(cwd: &Path) -> usize {
-    let cache = ClaudePaths::for_project(cwd)
-        .ok()
-        .map(|paths| paths.harness_dir().join(PRUNE_CACHE_FILE));
-    if let Some(path) = cache.as_deref()
-        && let Some(fresh) = cached_count(path) {
-            return fresh;
-        }
-    let measured = measure_pending_prune(cwd);
-    if let Some(path) = cache.as_deref() {
-        store_count(path, measured);
-    }
-    measured
-}
-
-/// The cached count when the file was written inside [`PRUNE_CACHE_SECS`];
-/// `None` when it is absent, stale, unreadable, or written in the future
-/// (clock skew re-measures rather than trusting an impossible mtime).
-fn cached_count(path: &Path) -> Option<usize> {
-    let written = fs::modified(path).ok()?;
-    let age = SystemTime::now().duration_since(written).ok()?;
-    if age > Duration::from_secs(PRUNE_CACHE_SECS) {
-        return None;
-    }
-    fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-/// Persist the count for the next renders (best-effort).
-fn store_count(path: &Path, count: usize) {
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write_atomic(path, count.to_string().as_bytes());
-}
-
-/// Measure the count from git — the uncached path.
-fn measure_pending_prune(cwd: &Path) -> usize {
-    let config = mustard_core::ProjectConfig::load(cwd);
-    let flow = crate::shared::work_kind::BaseFlow::of(&config.git);
-    awaiting_prune(cwd, PrQuery::Skip, &flow).len()
-}
-
-// ---------------------------------------------------------------------------
 // git helper — local to this module
 // ---------------------------------------------------------------------------
 
@@ -585,28 +482,18 @@ mod tests {
         out
     }
 
-    /// With a published address recorded, the unit's segment becomes a link
-    /// to the page, and the name is not repeated when the branch already shows
-    /// it.
+    /// Com o endereço publicado, o nome da spec vira link para a página dela,
+    /// e a fase vem depois, fora do link. O nome aparece também quando o
+    /// checkout está na branch da spec.
     ///
-    /// Each state uses a root of its own, with its own branch.
+    /// Cada estado usa uma raiz própria, com a própria branch.
     #[test]
-    fn statusline_links_the_published_page_and_drops_the_repeated_slug() {
+    fn statusline_links_the_spec_name_to_its_published_page() {
         let url = "https://claude.ai/code/artifacts/pagina-ligada";
-        let seed = |root: &Path, slug: &str| {
-            std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
-            crate::shared::spec_state::seed_event(
-                root,
-                slug,
-                "state",
-                serde_json::json!({ "phase": "plan" }),
-            );
-        };
-
-        // No branch da própria unidade: o branch mostra o nome, a barra só a etapa.
-        let own = tempfile::tempdir().unwrap();
-        let root = own.path();
-        seed(root, "pagina-ligada");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
+        crate::shared::spec_state::seed_event(root, "pagina-ligada", "state", serde_json::json!({ "phase": "plan" }));
         let git = |args: &[&str]| {
             assert!(git_exec::run(root, args).ok, "git {args:?}");
         };
@@ -614,7 +501,7 @@ mod tests {
         git(&["symbolic-ref", "HEAD", "refs/heads/feature/pagina-ligada"]);
 
         let plain = unit_segment(root).expect("the unit on its own branch reaches the bar");
-        assert_eq!(plain.text, "\u{25b8} plan", "no address yet: no link, and no repeated name");
+        assert_eq!(plain.text, "\u{25b8} pagina-ligada plan", "no address yet: no link");
 
         crate::shared::spec_state::seed_event(
             root,
@@ -623,25 +510,40 @@ mod tests {
             serde_json::json!({ "page": "spec", "milestone": "round", "ok": true, "url": url }),
         );
         let linked = unit_segment(root).expect("a published unit reaches the bar");
-        assert!(
-            linked.text.starts_with(&format!("\u{1b}]8;;{url}\u{1b}\\")),
-            "the segment opens an OSC 8 link to the page: {:?}",
-            linked.text
-        );
-        assert!(linked.text.ends_with("\u{1b}]8;;\u{1b}\\"), "…and closes it: {:?}", linked.text);
-        assert_eq!(visible(&linked.text), "\u{25b8} plan", "the link hides nothing and adds nothing");
+        assert_eq!(linked.text, format!("\u{25b8} {} plan", hyperlink(url, "pagina-ligada")), "only the name is the link");
+        assert_eq!(visible(&linked.text), "\u{25b8} pagina-ligada plan", "the link hides nothing and adds nothing");
 
-        // Off a unit's branch, nothing points to it as current: only the
-        // environment variable would, and a test does not change it. A file
-        // left over in the old state folder does not count.
+        // Fora da branch de uma spec, nada a aponta como atual: só a variável
+        // de ambiente apontaria, e um teste não a muda. Um arquivo que sobrou
+        // na pasta velha de estado não conta.
         let away = tempfile::tempdir().unwrap();
-        seed(away.path(), "outra-unidade");
+        std::fs::write(away.path().join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
+        crate::shared::spec_state::seed_event(away.path(), "outra-unidade", "state", serde_json::json!({ "phase": "plan" }));
         let states = away.path().join(".claude/.pipeline-states");
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(states.join("outra-unidade.json"), "{}").unwrap();
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {
             assert!(unit_segment(away.path()).is_none(), "a leftover state file names no unit");
         }
+    }
+
+    /// O nome do projeto vira link para a página do projeto quando o índice
+    /// das specs traz o endereço dela; sem ele, fica só o nome.
+    #[test]
+    fn the_project_name_links_to_the_project_page_when_the_index_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        std::fs::create_dir_all(root.join(".claude").join("spec")).unwrap();
+        assert_eq!(module_segment(&root).text, "loja");
+        let url = "https://claude.ai/code/artifacts/projeto";
+        std::fs::write(
+            root.join(".claude").join("spec").join("index.ndjson"),
+            format!("{}\n", mustard_core::domain::spec_index::project_line(Some(url))),
+        )
+        .unwrap();
+        let linked = module_segment(&root);
+        assert_eq!(linked.text, hyperlink(url, "loja"));
+        assert_eq!(visible(&linked.text), "loja");
     }
 
     /// The inert flag reads the plugin switch, and never claims health it could
@@ -767,113 +669,6 @@ mod tests {
         // Fallback when both are absent
         let s = model_segment(&json!({}));
         assert_eq!(s.text, "Claude");
-    }
-
-    /// A project that never installed Mustard is not nagged — the bar stays
-    /// exactly as long as it was, and no git sweep is even attempted.
-    #[test]
-    fn prune_segment_silent_without_a_mustard_project() {
-        let td = tempfile::tempdir().expect("tempdir");
-        assert!(prune_segment(td.path()).is_none());
-    }
-
-    /// The short window: a just-written count is served, a backdated one is
-    /// refused so the next render measures again. Without the refusal the bar
-    /// would keep advertising units the user already pruned.
-    #[test]
-    fn prune_count_cache_serves_fresh_and_refuses_stale() {
-        let td = tempfile::tempdir().expect("tempdir");
-        let path = td.path().join(".prune-count");
-        store_count(&path, 3);
-        assert_eq!(cached_count(&path), Some(3), "a just-written count is fresh");
-
-        let stale = SystemTime::now() - Duration::from_secs(PRUNE_CACHE_SECS + 5);
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .expect("open")
-            .set_modified(stale)
-            .expect("backdate");
-        assert_eq!(cached_count(&path), None, "past the window the cache stops answering");
-        assert_eq!(cached_count(&td.path().join("never-written")), None, "a miss is a miss");
-    }
-
-    /// With units owed, the bar SAYS SO: the count, in the language
-    /// the project configured, derived from the project's OWN bases.
-    ///
-    /// The agnosticism half is two-sided against the production region only
-    /// (this test's own fixture necessarily spells a base): the code reads the
-    /// project's own bases, and carries no base spelling of its own. The first
-    /// assertion alone would pass in a file that also hardcoded one.
-    #[test]
-    fn statusline_names_units_awaiting_prune() {
-        let td = tempfile::tempdir().expect("tempdir");
-        let root = td.path();
-        let run = |args: &[&str]| {
-            let _ = git_exec::run(root, args);
-        };
-        run(&["init", "."]);
-        run(&["config", "user.email", "t@t"]);
-        run(&["config", "user.name", "t"]);
-        run(&["config", "commit.gpgsign", "false"]);
-        run(&["checkout", "-b", "dev"]);
-        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
-            .expect("config");
-        run(&["add", "-A"]);
-        run(&["commit", "-m", "seed"]);
-
-        // Nothing delivered yet — the bar stays exactly as long as it was.
-        assert!(prune_segment(root).is_none(), "nothing owed, nothing said");
-        // That render MEASURED zero and cached it. Inside the window the next
-        // render is served from the cache by design, so the count below has to
-        // be a fresh measurement to mean anything — drop the memo, exactly as
-        // the window expiring would.
-        if let Ok(paths) = ClaudePaths::for_project(root) {
-            let _ = std::fs::remove_file(paths.harness_dir().join(PRUNE_CACHE_FILE));
-        }
-
-        // A delivered unit: merged into its base, branch alive on both sides.
-        run(&["checkout", "-b", "dev_delivered"]);
-        std::fs::write(root.join("work.txt"), "w").expect("file");
-        run(&["add", "-A"]);
-        run(&["commit", "-m", "work"]);
-        run(&["checkout", "dev"]);
-        run(&["merge", "--no-ff", "dev_delivered", "-m", "merge dev_delivered"]);
-        run(&["update-ref", "refs/remotes/origin/dev_delivered", "refs/heads/dev_delivered"]);
-
-        let seg =
-            prune_segment(root).expect("a delivered unit whose branch survives must be announced");
-        let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
-        let label = mustard_core::translate("statusline.prune.label", lang);
-        assert_eq!(seg.kind, SegmentKind::Prune);
-        assert!(seg.text.contains('1'), "the bar states the count: {}", seg.text);
-        assert!(
-            seg.text.contains(label),
-            "…worded from the catalogue in the configured language: {}",
-            seg.text
-        );
-
-        // Agnosticism, over the production region only.
-        let src = include_str!("segment.rs");
-        let production = src.split("#[cfg(test)]").next().unwrap_or_default();
-        assert!(!production.is_empty(), "the production region must still be readable here");
-        assert!(
-            production.contains("BaseFlow::of"),
-            "the bases must come from the project's own config — `BaseFlow` derives \
-             every one of them from `git.flow` and spells none",
-        );
-        for spelling in
-            [["\"de", "v\""].concat(), ["\"mai", "n\""].concat(), ["\"mast", "er\""].concat()]
-        {
-            assert!(!production.contains(&spelling), "a base name is spelled in the code: {spelling}");
-        }
-    }
-
-    #[test]
-    fn version_segment_prepends_v() {
-        let s = version_segment(&json!({ "version": "2.1.146" })).unwrap();
-        assert_eq!(s.text, "v2.1.146");
-        assert!(version_segment(&json!({})).is_none());
     }
 
 }

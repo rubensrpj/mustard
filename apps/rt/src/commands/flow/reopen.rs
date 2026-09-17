@@ -149,7 +149,7 @@ fn say(key: &str, lang: Locale, spec: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::spec_events::write::{write_at, WriteOpts};
+    use crate::commands::spec_events::write::{seed_at, WriteOpts};
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -292,7 +292,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         spec_in(root, "epico", "running");
-        let said = write_at(&WriteOpts {
+        let said = seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some("epico".into()),
             event_type: "message".into(),
@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(refused["reason"], json!("not-in-survey"), "{refused}");
 
         assert_eq!(reopen(root, "epico", "Faltou levantar.")["ok"], json!(true));
-        let goal = write_at(&WriteOpts {
+        let goal = seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some("epico".into()),
             event_type: "context".into(),

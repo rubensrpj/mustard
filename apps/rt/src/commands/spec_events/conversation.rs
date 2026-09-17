@@ -77,6 +77,27 @@ pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> 
     record(root, session, "message", draft(json!({ "author": "user", "text": text })))
 }
 
+/// A resposta do usuário a uma pergunta de gesto, com a testemunha: a
+/// pergunta e a opção que ele clicou. É o registro que o fluxo lê como o
+/// "sim" do usuário, e só a testemunha o grava.
+pub(crate) fn record_witnessed_message(
+    root: &Path,
+    session: Option<&str>,
+    text: &str,
+    question: &str,
+    answer: &str,
+) -> Option<u64> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let fields = json!({
+        "author": "user",
+        "text": text,
+        "witness": { "question": question, "answer": answer },
+    });
+    record(root, session, "message", draft(fields))
+}
+
 /// A resposta do assistente ao fim do turno, ligada à última mensagem do
 /// usuário. Sem mensagem gravada antes, não há a que responder, e nada é
 /// gravado.

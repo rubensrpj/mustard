@@ -269,12 +269,12 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
 mod tests {
     use super::*;
     use crate::commands::flow::round::{round_for, RoundOpts};
-    use crate::commands::spec_events::write::{record_open, write_at, WriteOpts};
+    use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
     use std::process::Command;
     use tempfile::tempdir;
 
     fn write(root: &Path, spec: &str, event_type: &str, body: Value) -> Value {
-        write_at(&WriteOpts {
+        seed_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some(spec.to_string()),
             event_type: event_type.into(),
@@ -327,7 +327,7 @@ mod tests {
 
         let round = |report: Option<String>| {
             round_for(
-                &RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report, yes: None },
+                &RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report },
                 None,
             )
         };
@@ -395,7 +395,6 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 report: None,
-                yes: None,
             },
             None,
         );

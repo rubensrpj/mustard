@@ -3,7 +3,9 @@
 //! Duas gravações ao mesmo tempo, em dois processos, recebem números seguidos
 //! e nenhuma linha sai estragada: a trava é a do sistema, a mesma no Linux, no
 //! macOS e no Windows. Uma spec gravada pelo `write` é lida bloco a bloco pelo
-//! `read`, e `read wave-2` devolve só a onda 2.
+//! `read`, e `read wave-2` devolve só a onda 2. O que só os ganchos e a rodada
+//! gravam — a fala do usuário, o que uma onda entregou — entra aqui pela
+//! gravação do núcleo, e o `write` recusa os dois.
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -50,11 +52,29 @@ fn seed_state(root: &Path, fields: &Value) {
 }
 
 /// Um evento que só o binário grava, pela gravação do núcleo: o `run write`
-/// recusa a execução dos critérios e o veredito.
-fn seed_binary(root: &Path, event_type: &str, fields: &Value) {
+/// recusa a execução dos critérios, o veredito, o que uma onda entregou e a
+/// fala do usuário. Devolve o número dele.
+fn seed_binary(root: &Path, event_type: &str, fields: &Value) -> u64 {
     let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
     let draft = fields.as_object().cloned().expect("an object");
-    mustard_core::io::spec_events::write(&path, event_type, draft, &[]).expect(event_type);
+    mustard_core::io::spec_events::write(&path, event_type, draft, &[]).expect(event_type).id
+}
+
+/// A spec aprovada com `waves` ondas soltas, cada uma com a sua tarefa e o
+/// seu arquivo.
+fn approved_with_waves(root: &Path, waves: u64) {
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = seed_binary(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+    for n in 1..=waves {
+        seed_binary(root, "wave", &json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit],
+            "done_when": "x", "origin": said}));
+        seed_binary(root, "task", &json!({"wave": n, "text": format!("Tarefa {n}."),
+            "files": [{"path": format!("a{n}.rs")}], "origin": said}));
+    }
+    seed_state(root, &json!({"author": "user", "phase": "approved",
+        "witness": {"question": "Aprovar esta spec?", "answer": "Aprovar"}}));
 }
 
 fn read(root: &Path, block: &str) -> Value {
@@ -72,7 +92,7 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
     for round in 0..rounds {
         let writers: Vec<_> = (0..2)
             .map(|w| {
-                let fields = json!({"author": "user", "text": format!("rodada {round}, gravação {w}")});
+                let fields = json!({"text": format!("rodada {round}, gravação {w}")});
                 rt(root, &["write", "message", "--spec", "teste", "--json", &fields.to_string()])
                     .stdout(Stdio::piped())
                     .spawn()
@@ -99,24 +119,25 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
 
 /// A página e o `.md` do fim de uma onda são refeitos dentro da trava do
 /// arquivo de eventos: depois de dois fins de onda gravados ao mesmo tempo,
-/// os dois têm os dois itens.
+/// por duas rodadas em dois processos, os dois têm os dois itens.
 #[test]
 fn two_processes_closing_a_wave_at_once_leave_both_items_on_the_page_and_the_md() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let spec = root.join(".claude").join("spec").join("teste");
-    open_spec(root);
-    for round in 0..10 {
+    let rounds: u64 = 5;
+    approved_with_waves(root, 2 * rounds);
+    for round in 0..rounds {
         let texts: Vec<String> = (0..2).map(|w| format!("rodada {round} escrita {w}")).collect();
         let writers: Vec<_> = texts
             .iter()
-            .enumerate()
-            .map(|(w, text)| {
-                let fields = json!({"wave": 2 * round + w + 1, "text": text, "files": ["a.rs"]});
-                rt(root, &["write", "delivered", "--spec", "teste", "--json", &fields.to_string()])
+            .zip(0u64..)
+            .map(|(text, w)| {
+                let report = json!({"waves": [{"wave": 2 * round + w + 1, "delivered": text, "files": ["a.rs"]}]});
+                rt(root, &["round", "--spec", "teste", "--report", &report.to_string()])
                     .stdout(Stdio::piped())
                     .spawn()
-                    .expect("spawn write")
+                    .expect("spawn round")
             })
             .collect();
         for writer in writers {
@@ -138,7 +159,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
-    let msg = write(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
     write(root, "context", &json!({"text": "Revise tudo", "origin": msg}));
     let c1 = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": msg}));
     let c2 = write(root, "criterion", &json!({"when": "c", "then": "d", "proof": "q", "origin": msg}));
@@ -146,7 +167,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     write(root, "task", &json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "origin": msg}));
     write(root, "wave", &json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "depends_on": [1], "origin": msg}));
     write(root, "task", &json!({"wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "origin": msg}));
-    write(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
+    seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
     seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
 
     let wave2 = read(root, "wave-2");
@@ -171,6 +192,14 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
         rt(root, &["write", "verdict", "--spec", "teste", "--json", &verdict.to_string()]).output().expect("run");
     assert_eq!(binary_only.status.code(), Some(1));
     assert_eq!(stdout_json(&binary_only)["reason"], json!("binary-only-type"));
+    let delivered = json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"]}).to_string();
+    let by_hand = rt(root, &["write", "delivered", "--spec", "teste", "--json", &delivered]).output().expect("run");
+    assert_eq!(by_hand.status.code(), Some(1));
+    assert_eq!(stdout_json(&by_hand)["reason"], json!("binary-only-type"));
+    let speech = json!({"author": "user", "text": "Aceitar"}).to_string();
+    let forged = rt(root, &["write", "message", "--spec", "teste", "--json", &speech]).output().expect("run");
+    assert_eq!(forged.status.code(), Some(1));
+    assert_eq!(stdout_json(&forged)["reason"], json!("user-message-by-hook"));
     let fields = json!({"text": "t", "keys": ["k"], "origin": msg}).to_string();
     let missing = rt(root, &["write", "rule", "--spec", "teste", "--json", &fields]).output().expect("run");
     assert_eq!(missing.status.code(), Some(1));
@@ -193,7 +222,7 @@ fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
-    let msg = write(root, "message", &json!({"author": "user", "text": "Deixar o índice certo. Depois o resto."}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Deixar o índice certo. Depois o resto."}));
     write(root, "context", &json!({"text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
     write(root, "rule", &json!({"text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));
     let written = std::fs::read(index_file(root)).expect("the write left the index");
@@ -217,7 +246,7 @@ fn an_index_that_cannot_be_written_is_refused_with_exit_one() {
     let root = dir.path();
     open_spec(root);
     std::fs::create_dir_all(index_file(root)).expect("an index that is a folder");
-    let fields = json!({"author": "user", "text": "fica gravado"}).to_string();
+    let fields = json!({"text": "fica gravado"}).to_string();
     let written = rt(root, &["write", "message", "--spec", "teste", "--json", &fields]).output().expect("run write");
     assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stdout));
     let warnings = stdout_json(&written)["warnings"].to_string();

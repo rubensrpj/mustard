@@ -337,8 +337,9 @@ const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 /// Os 33 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
-    // Conversa.
-    ty("message", "MSG", Block::Conversation, false, &[TEXT]),
+    // Conversa. A mensagem que responde a um gesto de aprovação leva a
+    // testemunha: a pergunta e a opção que o usuário clicou.
+    ty("message", "MSG", Block::Conversation, false, &[TEXT, opt("witness", Kind::Object)]),
     ty("response", "RESP", Block::Conversation, false, &[TEXT, req("reply_to", Kind::Int)]),
     ty(
         "injection",
@@ -588,6 +589,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("verdict", "criteria", &["criterion", "tests_rule"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("state", "witness", &["question", "answer"]),
+    ("message", "witness", &["question", "answer"]),
     ("remove", "filter", &["type", "from", "to"]),
 ];
 
@@ -653,6 +655,9 @@ pub enum Refusal {
     /// O `run write` com o autor `binary`, que fica só para as gravações de
     /// dentro do binário.
     BinaryAuthor,
+    /// O `run write` com uma mensagem do usuário, ou uma gravação dele que
+    /// tiraria ou reveria uma: a fala do usuário chega pelos ganchos.
+    UserMessageByHook { spec: String },
     /// Uma gravação, ou uma página, numa pasta de spec do formato antigo: o
     /// `spec.md` dela é o documento, e o binário não grava nela.
     OldFormatSpec { spec: String },
@@ -734,6 +739,7 @@ impl Refusal {
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::BinaryOnlyType { .. } => "binary-only-type",
             Self::BinaryAuthor => "binary-author",
+            Self::UserMessageByHook { .. } => "user-message-by-hook",
             Self::OldFormatSpec { .. } => "old-format-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
@@ -872,6 +878,9 @@ impl Refusal {
                 &[("{type}", event_type.clone()), ("{spec}", spec.clone())],
             ),
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
+            Self::UserMessageByHook { spec } => {
+                fill("spec_events.user_message_by_hook", &[("{spec}", spec.clone())])
+            }
             Self::DeferredUnknownPending { pending } => {
                 fill("spec_events.deferred_unknown_pending", &[("{pending}", pending.clone())])
             }
