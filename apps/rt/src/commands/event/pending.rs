@@ -1199,30 +1199,16 @@ mod tests {
         assert_eq!(again["reason"], json!("already-settled"), "{again}");
     }
 
-    /// O `material.md` injetado manda gravar com `run pending` todo
-    /// trabalho combinado além da unidade aberta, e continua cabendo no teto do
-    /// injetável.
+    /// O mapa do início da sessão manda gravar o assunto diferente como
+    /// pendência, pela porta `run pending --add`, nos dois idiomas.
     #[test]
-    fn material_injectable_names_the_pending_door() {
-        // O mesmo teto e a mesma medida de `apps/cli/tests/template_budget.rs`
-        // (`INJECTABLE_CHAR_CAP`, `payload_size`): o maior entre caracteres e
-        // bytes, porque o harness não documenta qual dos dois conta.
-        const INJECTABLE_CHAR_CAP: usize = 8_000;
-        let material = mustard_core::MATERIAL_MD;
-        assert!(
-            material.contains("mustard-rt run pending --add"),
-            "the material part never tells the reader to record agreed work as a pending item",
-        );
-        assert!(
-            material.contains("--close") && material.contains("--drop") && material.contains("--reason"),
-            "the material part never says an item leaves the list only with a reason",
-        );
-        assert!(
-            material.contains("BEFORE the gate call"),
-            "the material part never says WHEN to record — before the unit opens",
-        );
-        let size = material.chars().count().max(material.len());
-        assert!(size <= INJECTABLE_CHAR_CAP, "material.md is {size}, over the {INJECTABLE_CHAR_CAP} cap");
+    fn the_session_map_names_the_pending_door() {
+        for text in [Locale::PtBr, Locale::EnUs] {
+            assert!(
+                mustard_core::session_map(text).contains("mustard-rt run pending --add"),
+                "the {text} session map never tells the reader to record a different subject as a pending item",
+            );
+        }
     }
 
     /// Arquivo corrompido falha fechado: nada é gravado por cima.

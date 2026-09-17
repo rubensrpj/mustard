@@ -21,13 +21,17 @@
 //!      statusLine / plansDirectory …), rtk's hook following
 //!      `mustard.json#rtk`, and Claude Code's own signature off; plugin
 //!      enablement is NOT planted (user-scope choice);
-//!    - `mustard/*.md` — the injectable instruction files, always rewritten:
-//!      `orchestrator.md`, `dispatch.md` and `material.md`, one sibling hook
-//!      each on `userPromptSubmit`;
+//!    - `mustard/mapa-inicio-sessao.md` and `agents/mustard/*.md` — the
+//!      session map and the three agents, always rewritten, in the language
+//!      of `language.text`;
 //!    - `.gitignore` — covers the ephemeral harness state;
-//! 5. write the single project-root `mustard.json` ([`project_config`]):
-//!    git-flow + detected commands + the `runtime`/`version` stamp + the
-//!    default `inject` declarations (seeded only when the user has none);
+//!
+//!    Before those, the single project-root `mustard.json` is written
+//!    ([`project_config`]): git-flow + text language + detected commands + the
+//!    `runtime`/`version` stamp + the default `inject` declaration (seeded
+//!    only when the user has none). It comes first because its language
+//!    decides which texts are seeded;
+//! 5. seed the `.github/` scaffolding, skipped by the private install;
 //! 6. list what an older Mustard left in files that are not its own — the
 //!    marks in the `CLAUDE.md` files, the seed's lines in the team's
 //!    `.claude/settings.json`, a planted `.claude/CLAUDE.md` — and say how to
@@ -166,7 +170,8 @@ pub fn init_with_templates(
         }
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.local.json — reduced seed, rtk's hook per mustard.json#rtk, Claude Code's signature off");
-        println!("    mustard/*.md   — injectable instruction files (orchestrator, dispatch, material); hooks inject them per mustard.json#inject");
+        println!("    mustard/mapa-inicio-sessao.md — the session map, delivered at session start per mustard.json#inject");
+        println!("    agents/mustard/*.md — the wave, review and skill agents, in the project's text language");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would list what an older Mustard left in CLAUDE.md files and .claude/settings.json (nothing leaves without a yes)");
         println!(
@@ -210,25 +215,32 @@ pub fn init_with_templates(
     // `mustard.json`, which is Mustard's own file.
     seeding::report_migration(&mustard_core::migrate_inject_declarations(&project_path, &claude_path));
 
-    // The settings: the reduced seed, rtk's hook as `mustard.json#rtk` says and
-    // Claude Code's signature off — the core engine owns the content, the merge
-    // rules and the destination (the untracked local layer).
+    // The single project-root mustard.json first: git-flow + text language +
+    // detected commands + runtime/version stamp, in one write. Its answers —
+    // the text language above all — decide what is seeded next.
+    project_config::write_project_config(&project_path, &runtime, !options.yes)?;
+    let config = ProjectConfig::load(&project_path);
+    let text = config.language().text_or_default();
+
+    // The settings: the reduced seed, rtk's hook as `mustard.json#rtk` says,
+    // the response style of the text language and Claude Code's signature off
+    // — the core engine owns the content, the merge rules and the destination
+    // (the untracked local layer).
     let settings_name = if mode.is_private() {
         ".claude/settings.local.json"
     } else {
         ".claude/settings.json"
     };
-    let rtk = ProjectConfig::load(&project_path).rtk();
-    let outcome = mustard_core::seed_settings(&claude_path, overwrite, mode, rtk)
+    let outcome = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
         .with_context(|| format!("seeding {settings_name}"))?;
     seeding::report_seed(settings_name, outcome);
-    // The injectable instruction files — the harness's own rules, so the answer
-    // to "merge or overwrite?" does not reach them: the seeder takes no such
-    // argument and always lays the shipped text down again.
-    for (name, outcome) in mustard_core::seed_injectable_files(&claude_path)
-        .context("seeding .claude/mustard/ injectables")?
+    // Mustard's own texts — so the answer to "merge or overwrite?" does not
+    // reach them: the seeder takes no such argument and always lays the
+    // shipped text down again, in the text language.
+    for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text)
+        .context("seeding Mustard's texts under .claude/")?
     {
-        seeding::report_seed(&format!(".claude/mustard/{name}"), outcome);
+        seeding::report_seed(&format!(".claude/{rel}"), outcome);
     }
     // The ephemeral-state .gitignore.
     let outcome = mustard_core::seed_gitignore(&claude_path, overwrite)
@@ -247,10 +259,6 @@ pub fn init_with_templates(
             println!("  wrote {gh} GitHub template(s) at .github/");
         }
     }
-
-    // The single project-root mustard.json: git-flow + detected commands +
-    // runtime/version stamp. One file, one write. A re-run re-stamps `version`.
-    project_config::write_project_config(&project_path, &runtime, !options.yes)?;
 
     // What an older Mustard left in files that are not its own: listed, never
     // taken out from here.
@@ -297,7 +305,7 @@ fn print_next_steps() {
     println!("     not in this terminal (already installed? nothing to do):");
     println!("     /plugin marketplace add rubensrpj/mustard");
     println!("     /plugin install mustard@mustard-local");
-    println!("  2. Reload Claude Code, then run /scan to analyze your codebase.\n");
+    println!("  2. Reload Claude Code, then describe the work you want done.\n");
 }
 
 #[cfg(test)]
@@ -310,7 +318,7 @@ mod tests {
 
     /// Build a minimal fake `templates/` tree and return its path. Tests point
     /// `init_with_templates` at this so they never touch the real payload. The
-    /// four harness seeds (settings, injectables, `.gitignore`) come from the
+    /// harness seeds (settings, Mustard's texts, `.gitignore`) come from the
     /// COMPILED-IN core constants now — this fixture only carries what the
     /// templates dir still owns for init (`.github/`, manifests) plus a
     /// `commands/` decoy: the thin init must NOT copy it into `.claude/`.
@@ -336,7 +344,7 @@ mod tests {
         .unwrap();
 
         let claude = project.join(".claude");
-        // The seed files are laid down — injectables replace the planted orchestrator.
+        // The seed files are laid down — the session map replaces the planted orchestrator.
         // The LOCAL layer, always: the install has no shared mode any more, so
         // the versioned twin must never appear.
         assert!(
@@ -348,9 +356,12 @@ mod tests {
             "the versioned settings file is never created",
         );
         assert!(
-            claude.join("mustard").join("orchestrator.md").exists(),
-            ".claude/mustard/orchestrator.md seeded"
+            claude.join("mustard").join("mapa-inicio-sessao.md").exists(),
+            ".claude/mustard/mapa-inicio-sessao.md seeded"
         );
+        for name in ["wave.md", "review.md", "skill.md"] {
+            assert!(claude.join("agents/mustard").join(name).exists(), "agent {name} seeded");
+        }
         assert!(
             !claude.join("CLAUDE.md").exists(),
             "init must NOT plant .claude/CLAUDE.md — the orchestrator is injected now"
@@ -360,7 +371,7 @@ mod tests {
         // The content payload is the plugin's now — init must NOT copy it.
         assert!(
             !claude.join("commands").exists(),
-            "commands/skills/agents/refs ship in the mustard plugin, never .claude/"
+            "commands ship in the mustard plugin, never .claude/"
         );
         // The harness declares no MCP server, so init writes no `.mcp.json`.
         assert!(
@@ -418,33 +429,20 @@ mod tests {
         for key in ["language", "specLang", "tone"] {
             assert!(cfg.get(key).is_none(), "a non-interactive install writes no {key}: {cfg:?}");
         }
-        // The default inject declarations are seeded: the router's three parts,
-        // each on its OWN sibling hook. The cap is per hook RESPONSE, not per
-        // event, so siblings share no budget — a part that outgrows the ceiling
-        // is SPLIT and given another hook, never compressed until a rule drops
-        // out. The response style is a plugin output-style now, not a
-        // per-project injectable.
+        // The default inject declaration is seeded: the session map, delivered
+        // at session start, the one event that delivers declared text.
         let inject = cfg.get("inject").and_then(|v| v.as_array()).expect("inject seeded");
-        assert_eq!(inject.len(), 3, "the router's three parts: {inject:?}");
-        for (i, file) in [
-            ".claude/mustard/orchestrator.md",
-            ".claude/mustard/dispatch.md",
-            ".claude/mustard/material.md",
-        ]
-        .iter()
-        .enumerate()
-        {
-            assert_eq!(inject[i].get("file").and_then(|v| v.as_str()), Some(*file));
-            // Every part rides `userPromptSubmit`: that event self-heals (the
-            // `once` markers are per session_id, so a fork/resume re-delivers on
-            // the next prompt), which `sessionStart` cannot do.
-            assert_eq!(
-                inject[i].get("on").and_then(|v| v.as_str()),
-                Some("userPromptSubmit"),
-                "{file} must ride the self-healing event",
-            );
-            assert_eq!(inject[i].get("once").and_then(|v| v.as_bool()), Some(true));
-        }
+        assert_eq!(inject.len(), 1, "only the session map: {inject:?}");
+        assert_eq!(
+            inject[0].get("file").and_then(|v| v.as_str()),
+            Some(".claude/mustard/mapa-inicio-sessao.md")
+        );
+        assert_eq!(inject[0].get("on").and_then(|v| v.as_str()), Some("sessionStart"));
+        // Without a declared language the local settings get the pt-BR style.
+        assert_eq!(
+            settings.get("outputStyle").and_then(|v| v.as_str()),
+            Some("mustard:mustard-pt-BR"),
+        );
         assert!(
             !claude.join("mustard.json").exists(),
             "no .claude/mustard.json — config lives only at the project root"
@@ -562,14 +560,14 @@ mod tests {
     }
 
     #[test]
-    fn init_merge_rewrites_the_injectable_and_backfills() {
+    fn init_merge_rewrites_the_session_map_and_backfills() {
         let work = tempdir().unwrap();
         let templates = fake_templates(work.path());
         let project = work.path().join("project");
         let claude = project.join(".claude");
-        // A diverged injectable already present in .claude/mustard/.
+        // A diverged session map already present in .claude/mustard/.
         fs::create_dir_all(claude.join("mustard")).unwrap();
-        fs::write(claude.join("mustard/orchestrator.md"), "USER EDIT").unwrap();
+        fs::write(claude.join("mustard/mapa-inicio-sessao.md"), "USER EDIT").unwrap();
 
         // Non-interactive existing-dir path resolves to a merge.
         init_with_templates(
@@ -579,12 +577,12 @@ mod tests {
         )
         .unwrap();
 
-        // The injectable is the harness's own rules, so merge mode does not
+        // The session map is the harness's own text, so merge mode does not
         // reach it: the seed is laid down again whatever was there…
         assert_eq!(
-            fs::read_to_string(claude.join("mustard/orchestrator.md")).unwrap(),
-            mustard_core::ORCHESTRATOR_MD,
-            "merge must still rewrite the injectable — it is not project configuration"
+            fs::read_to_string(claude.join("mustard/mapa-inicio-sessao.md")).unwrap(),
+            mustard_core::session_map(mustard_core::platform::i18n::Locale::PtBr),
+            "merge must still rewrite the session map — it is not project configuration"
         );
         // …while a seed the user does not have is backfilled…
         assert!(

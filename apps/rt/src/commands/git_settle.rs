@@ -348,12 +348,13 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
 /// authorise a prune on its own.
 ///
 /// This is the 100% gate — no evidence means NOT merged (conservative, never
-/// fail-open).
+/// fail-open). `query` diz se o provedor é perguntado quando o git não prova
+/// sozinho; sem ele, só vale o que o git prova.
 fn is_merged(
     main: &Path,
     branch: &str,
     base: &str,
-    provider: &str,
+    query: PrQuery<'_>,
     flow: &crate::shared::work_kind::BaseFlow,
 ) -> bool {
     // The sweep enumerates every unit of the project; the `find` below is what
@@ -375,7 +376,7 @@ fn is_merged(
     let evidence = if unit.refnames().iter().all(|r| contained.contains(r)) {
         PrEvidence::unqueried()
     } else {
-        PrQuery::Ask(provider).evidence_of(main, branch)
+        query.evidence_of(main, branch)
     };
     let verdicts = branch_state::ref_verdicts(unit, &contained, &evidence, main);
     branch_state::all_refs_accounted(&verdicts)
@@ -609,6 +610,22 @@ fn sole_branch_containing(
 }
 
 pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
+    settle(start, unit, true)
+}
+
+/// [`settle_at`] da unidade `unit`, com o provedor perguntado só por ela: as
+/// outras unidades de `alsoMergeable` ficam com o que o git prova.
+///
+/// É a arrumação do merge feito por outra pessoa, que roda no início da
+/// sessão: lá, uma pergunta ao provedor por branch de colega passa do prazo, e
+/// o texto inteiro do início da sessão se perde junto.
+pub(crate) fn settle_unit_at(start: &Path, unit: &str) -> Value {
+    settle(start, Some(unit), false)
+}
+
+/// O ritual de saída; `ask_about_others` diz se o provedor é perguntado pelas
+/// outras unidades que o git não prova mergeadas.
+fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     let Some(main) = main_checkout_root(start) else {
         // Echo the path that failed: the field incident behind this message was
         // a `--root` that did not exist, and a bare "not-a-git-repo" let the
@@ -779,7 +796,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
 
 
     // THE gate: 100% merged or nothing happens.
-    if !is_merged(&main, &unit_branch, &base, &provider, &flow) {
+    if !is_merged(&main, &unit_branch, &base, PrQuery::Ask(&provider), &flow) {
         return json!({
             "ok": false,
             "reason": "not-merged",
@@ -967,6 +984,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // reported.
     let enumerated = BranchEnumerator::sweep(&main, &flow);
     let ahead = branch_state::refs_ahead_of_base(&main, enumerated.units(), &flow);
+    let others = if ask_about_others { PrQuery::Ask(&provider) } else { PrQuery::Skip };
     let also_mergeable: Vec<String> = enumerated
         .units()
         .iter()
@@ -976,7 +994,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         // cannot see that difference. Listing it here would tell the user their
         // live work is ready to be pruned.
         .filter(|u| ahead.contains(&u.branch))
-        .filter(|u| is_merged(&main, &u.branch, &u.base, &provider, &flow))
+        .filter(|u| is_merged(&main, &u.branch, &u.base, others, &flow))
         .map(|u| u.branch.clone())
         .collect();
 

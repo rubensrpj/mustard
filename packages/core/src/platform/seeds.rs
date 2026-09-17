@@ -3,8 +3,8 @@
 //! ## Why these live in the core
 //!
 //! The files Mustard lays down in a project (`.claude/settings.json`, the
-//! injectable instruction files under `.claude/mustard/`, and the
-//! `.claude/.gitignore`) used to ship only as loose files under
+//! session map under `.claude/mustard/`, the three agents under
+//! `.claude/agents/mustard/` and the `.claude/.gitignore`) used to ship only as loose files under
 //! `apps/cli/templates/`, reachable solely by the `mustard` CLI through a
 //! `templates/` directory lookup. That made the CLI the only possible
 //! installer: `mustard-rt` (the plugin's binary) had no way to seed a project.
@@ -20,57 +20,58 @@
 //! The seeding logic that consumes these constants lives in
 //! [`crate::platform::project_seed`].
 
+use crate::platform::i18n::Locale;
+
 /// The reduced `.claude/settings.json` seed: env / permissions / statusLine /
 /// plansDirectory. Plugin enablement is deliberately absent (a user-scope
 /// choice — see `project_seed::retire_planted_plugin_enablement`).
 pub const SETTINGS_SEED: &str = include_str!("../../templates/settings.json");
 
-/// The orchestrator-rules injectable (`.claude/mustard/orchestrator.md`) —
-/// spliced into the agent's window per `mustard.json#inject`, canonically on
-/// `userPromptSubmit` once per session. Carries the router's FIRST part:
-/// intent routing, delegation, phases, locating code, efficiency.
-pub const ORCHESTRATOR_MD: &str = include_str!("../../templates/mustard/orchestrator.md");
+/// O nome do mapa do início da sessão, em `.claude/mustard/`. É o único texto
+/// que o início da sessão coloca, e o nome não muda com o idioma: a
+/// declaração do `mustard.json` segue valendo quando o `language.text` muda.
+pub const SESSION_MAP_NAME: &str = "mapa-inicio-sessao.md";
 
-/// The dispatch-rules injectable (`.claude/mustard/dispatch.md`) — the
-/// router's DISPATCH part: the question a unit opens with, the base gate, and
-/// the naming. Declared on `userPromptSubmit`, the same event as
-/// [`ORCHESTRATOR_MD`] and on a sibling hook of its own.
-///
-/// The split is structural, not editorial. A hook's `additionalContext` is
-/// capped at 10,000 characters and the overflow is saved to a file the window
-/// only receives as a preview plus a path — so an over-budget router stops
-/// being IN FORCE, which is the one thing a router may not stop being. The cap
-/// is per hook RESPONSE, not per event: sibling hooks on one event are separate
-/// invocations and every one of their `additionalContext` blocks is kept
-/// (measured 2026-08-25 — two siblings emitting 6,000 characters each both
-/// arrived intact). So each injectable gets its own hook registration and its
-/// own ceiling, and there is no composite budget between them. Within ONE
-/// invocation everything shares one ceiling: `hooks::session::*_inject`
-/// composes its injectables into a single `additionalContext`, and the
-/// dispatcher fold joins every `Inject` of the invocation into that same
-/// response — which is why the split is a hook per file rather than two
-/// `Inject`s in one. Rationale in full:
-/// `plugin/refs/mustard/router-rationale.md`.
-pub const DISPATCH_MD: &str = include_str!("../../templates/mustard/dispatch.md");
+const SESSION_MAP_PT_BR: &str = include_str!("../../templates/mustard/pt-BR/mapa-inicio-sessao.md");
+const SESSION_MAP_EN_US: &str = include_str!("../../templates/mustard/en-US/mapa-inicio-sessao.md");
 
-/// The injectable of what a unit carries beyond itself
-/// (`.claude/mustard/material.md`) — the pending ledger, where a unit's writing
-/// lands, and how every page shown to the user is written.
-///
-/// Split out of [`DISPATCH_MD`] rather than compressed into it. That document
-/// had ten characters of margin under the size alarm on a CRLF checkout, and
-/// the two prescriptions the code itself carries disagree about the remedy: the
-/// budget test's failure message says SPLIT, the cap's own doc says trim. Cutting
-/// a rule's justification is the one thing neither may buy — a rule shipped
-/// without the dated measurement behind it is a rule the next reader argues
-/// away. Splitting costs neither the rule nor its reason, and this is a
-/// self-contained job, distinct from where a unit starts and what it is
-/// called.
-///
-/// Like every other part it rides its own sibling hook on `userPromptSubmit`, so
-/// it is measured alone against the 10,000-character response ceiling — see
-/// [`DISPATCH_MD`] for why sibling hooks share no budget.
-pub const MATERIAL_MD: &str = include_str!("../../templates/mustard/material.md");
+/// O mapa do início da sessão no idioma `text`: o que o Mustard faz, quando
+/// uma spec abre e onde cada coisa mora. Os dois idiomas são molde do
+/// produto; o projeto recebe só o do `language.text`.
+#[must_use]
+pub fn session_map(text: Locale) -> &'static str {
+    match text {
+        Locale::PtBr => SESSION_MAP_PT_BR,
+        Locale::EnUs => SESSION_MAP_EN_US,
+    }
+}
+
+/// Os nomes dos três agentes do Mustard: o que faz uma onda, o que revisa e o
+/// que escreve uma skill. O nome do arquivo é o nome com `.md`.
+pub const AGENT_NAMES: [&str; 3] = ["wave", "review", "skill"];
+
+const AGENTS_PT_BR: [&str; 3] = [
+    include_str!("../../templates/agents/pt-BR/wave.md"),
+    include_str!("../../templates/agents/pt-BR/review.md"),
+    include_str!("../../templates/agents/pt-BR/skill.md"),
+];
+const AGENTS_EN_US: [&str; 3] = [
+    include_str!("../../templates/agents/en-US/wave.md"),
+    include_str!("../../templates/agents/en-US/review.md"),
+    include_str!("../../templates/agents/en-US/skill.md"),
+];
+
+/// O texto de cada agente no idioma `text`, na ordem de [`AGENT_NAMES`]:
+/// `(nome, corpo)`. Os dois idiomas são molde do produto; o projeto recebe
+/// só os três do `language.text`.
+#[must_use]
+pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 3] {
+    let bodies = match text {
+        Locale::PtBr => AGENTS_PT_BR,
+        Locale::EnUs => AGENTS_EN_US,
+    };
+    [(AGENT_NAMES[0], bodies[0]), (AGENT_NAMES[1], bodies[1]), (AGENT_NAMES[2], bodies[2])]
+}
 
 /// The `.claude/.gitignore` seed covering the ephemeral harness state
 /// (caches, pipeline states, per-spec event logs, worktrees).
@@ -79,37 +80,10 @@ pub const CLAUDE_GITIGNORE: &str = include_str!("../../templates/.gitignore");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::project_seed::INJECTABLE_SEEDS;
 
-    /// The marker heading a part named `<stem>.md` owes: `# <Stem> Rules`.
-    ///
-    /// DERIVED, not listed. A per-constant assertion is an enumeration, and an
-    /// enumeration of the injectables is exactly what goes stale the day a
-    /// fourth is seeded — the same defect this file's siblings ratchet against
-    /// in prose.
-    fn marker_heading(name: &str) -> String {
-        let stem = name.strip_suffix(".md").unwrap_or(name);
-        let mut chars = stem.chars();
-        let head = chars.next().map(|c| c.to_ascii_uppercase()).unwrap_or('?');
-        format!("# {head}{} Rules", chars.as_str())
-    }
-
-    /// The `## …` heading a part OPENS with — its headline section, read out of
-    /// the part's own body.
-    ///
-    /// DERIVED, like [`marker_heading`], and for the same reason. This was a
-    /// hard-typed list of three headings sitting directly above a loop that
-    /// already iterates the seed: a fourth injectable would have been seeded,
-    /// delivered and injected while its headline section was checked by
-    /// nothing, and the list would have looked complete the whole time. Asking
-    /// each part for its own heading makes the fourth carry itself in.
-    fn headline_section(body: &str) -> Option<&str> {
-        body.lines().map(str::trim_end).find(|line| line.starts_with("## "))
-    }
-
-    /// The embedded seeds must be non-empty and carry their identifying
-    /// shapes — a broken `include_str!` path fails the build, but an emptied
-    /// or mis-moved template file would otherwise seed silence.
+    /// Os moldes embutidos não estão vazios e cada um abre como deve: um
+    /// caminho de `include_str!` quebrado falha a compilação, mas um molde
+    /// esvaziado ou trocado de lugar semearia silêncio.
     #[test]
     fn seeds_carry_their_identifying_content() {
         let settings: serde_json::Value =
@@ -117,45 +91,16 @@ mod tests {
         assert!(settings.get("permissions").is_some(), "settings seed has permissions");
         assert!(settings.get("statusLine").is_some(), "settings seed has statusLine");
 
-        assert!(
-            !INJECTABLE_SEEDS.is_empty(),
-            "the seed carries no injectable — every check below would measure nothing"
-        );
-        for (name, body) in INJECTABLE_SEEDS {
-            let heading = marker_heading(name);
-            assert!(
-                body.starts_with(&heading),
-                "the `{name}` seed no longer opens with `{heading}` — an emptied or \
-                 mis-moved template seeds silence, and the hook that delivers it \
-                 cannot tell"
-            );
+        for text in [Locale::PtBr, Locale::EnUs] {
+            assert!(session_map(text).starts_with("# "), "the {text} session map opens with its title");
+            for (name, body) in agent_texts(text) {
+                assert!(
+                    body.starts_with(&format!("---\nname: {name}\n")),
+                    "the {text} `{name}` agent does not open with its own name",
+                );
+            }
         }
-
-        // The parts are ONE router split across one sibling hook each, so each
-        // part's headline section is that part's ALONE. A heading standing in
-        // two of them is the state where an edit corrects one copy while the
-        // window reads the other.
-        for (name, body) in INJECTABLE_SEEDS {
-            let section = headline_section(body).unwrap_or_else(|| {
-                panic!(
-                    "the `{name}` seed carries no `## ` section, so it has no headline \
-                     for this check to hold — a part with no section of its own is a \
-                     hook delivering a title"
-                )
-            });
-            let carriers: Vec<&str> = INJECTABLE_SEEDS
-                .iter()
-                .filter(|(_, other)| other.lines().any(|line| line.trim_end() == section))
-                .map(|(n, _)| *n)
-                .collect();
-            assert_eq!(
-                carriers,
-                vec![*name],
-                "`{section}` is the headline section of `{name}` and it stands in \
-                 {carriers:?}. Two carriers means an edit corrects one copy while the \
-                 window reads the other",
-            );
-        }
+        assert_ne!(session_map(Locale::PtBr), session_map(Locale::EnUs), "each language has its own map");
 
         assert!(CLAUDE_GITIGNORE.contains(".events/"), "gitignore covers the event logs");
     }

@@ -3,15 +3,16 @@
 //! ## What it owns
 //!
 //! One capability, shared by every installer face: lay the Mustard footprint
-//! down in a project — the harness settings, the injectable instruction files
-//! under `.claude/mustard/`, `.claude/.gitignore`, and the single project-root
-//! `mustard.json` — idempotently, and **merge-first for what the OPERATOR
-//! owns**: an existing settings file, `.claude/.gitignore` or `mustard.json`
-//! survives and only what is missing is created (for `.claude/.gitignore`,
-//! which is a rule list rather than a document, "what is missing" is read line
-//! by line). The injectable instruction files are NOT in that category: they
-//! are the harness's own rules, always rewritten, and the reason is written
-//! where they are seeded ([`files`]).
+//! down in a project — the harness settings, Mustard's own texts (the session
+//! map under `.claude/mustard/` and the three agents under
+//! `.claude/agents/mustard/`), `.claude/.gitignore`, and the single
+//! project-root `mustard.json` — idempotently, and **merge-first for what the
+//! OPERATOR owns**: an existing settings file, `.claude/.gitignore` or
+//! `mustard.json` survives and only what is missing is created (for
+//! `.claude/.gitignore`, which is a rule list rather than a document, "what is
+//! missing" is read line by line). Mustard's own texts are NOT in that
+//! category: they are always rewritten, in the language of `language.text`,
+//! and the reason is written where they are seeded ([`files`]).
 //!
 //! Consumers:
 //!
@@ -20,7 +21,7 @@
 //!   interactive git-flow prompts, `.github/`) in the CLI.
 //! - `mustard-rt run upsert` (the plugin's bootstrap door): calls
 //!   [`upsert_project`], the always-merge composition, prints the
-//!   [`UpsertReport`], and applies the [`cleanup`] only after a yes.
+//!   [`UpsertReport`], which says what the [`cleanup`] took out.
 //!
 //! The engine never records anything in git: no stage, no commit. What it
 //! writes stays where it landed, and a commit is always the person's.
@@ -35,10 +36,10 @@
 //!   mode that decides whether the host repository's git sees it;
 //! - [`settings`] — the harness settings, their point migrations and the two
 //!   switches kept there (the rtk hook and Claude Code's own signature);
-//! - [`files`] — the instruction files, `.claude/.gitignore`, `mustard.json`
+//! - [`files`] — Mustard's own texts, `.claude/.gitignore`, `mustard.json`
 //!   and the migrations of its `inject` list;
 //! - [`cleanup`] — what an older Mustard wrote into files that are not its
-//!   own, listed first and taken out only after a yes.
+//!   own, taken out by the upsert with no question.
 //!
 //! ## Contracts honoured
 //!
@@ -67,16 +68,16 @@ pub mod settings;
 
 pub use cleanup::{CleanupDone, CleanupPlan};
 pub use files::{
-    default_inject_entries, injectable_declared_paths, injectable_names, injectable_seeds,
-    migrate_inject_declarations, same_declared_path, seed_gitignore, seed_injectable_files,
+    default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations,
+    same_declared_path, seed_gitignore, seed_harness_texts, session_map_declared_path,
 };
-#[cfg(test)]
-pub(crate) use files::INJECTABLE_SEEDS;
 pub use footprint::{
     carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,
     is_written_footprint, FootprintEntry, InstallMode, PRIVATE_MARKS,
 };
-pub use settings::{retire_planted_plugin_enablement, seed_settings, Switches, RTK_HOOK_COMMAND};
+pub use settings::{
+    output_style_for, retire_planted_plugin_enablement, seed_settings, Switches, RTK_HOOK_COMMAND,
+};
 
 /// `.claude/settings.json` — the shared-mode settings seed, and the team's file.
 const SETTINGS_JSON: &str = ".claude/settings.json";
@@ -166,11 +167,17 @@ pub struct UpsertReport {
     /// unreadable or unwritable exclude file). Reported, never an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_unavailable: Option<String>,
-    /// What an older Mustard left in files that are not its own, as a list for
-    /// the person to confirm. Nothing in it was touched by this run. Absent
-    /// when there is nothing to list.
+    /// What an older Mustard left in files that are not its own: the files this
+    /// run took it out of, with what left each one, the Guards that became
+    /// lessons, and the files without a mark, which are only listed and never
+    /// touched. Absent when there is nothing to list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup: Option<CleanupPlan>,
+    /// What taking that list out did: the files edited and deleted, the
+    /// numbers of the new lessons, and what failed. Absent when the list
+    /// changed nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleaned: Option<CleanupDone>,
 }
 
 /// `skip_serializing_if` predicate for the additive booleans above — a `false`
@@ -204,13 +211,13 @@ impl UpsertReport {
 /// `.claude/.gitignore` and the project-root `mustard.json` survive when they
 /// exist, and only what is missing is created or backfilled.
 ///
-/// The injectable instruction files under `.claude/mustard/` — every entry
-/// [`files::INJECTABLE_SEEDS`] carries — are the exception, and take no merge
-/// decision from anybody: they are the harness's own rules rather than project
-/// configuration, so every run writes the compiled-in body again. A copy that
+/// Mustard's own texts — every path [`harness_texts`] names — are the
+/// exception, and take no merge decision from anybody: they are the harness's
+/// own text rather than project configuration, so every run writes the
+/// compiled-in body again, in the language of `language.text`. A copy that
 /// diverged is REPLACED, and the replacement is reported as
 /// [`SeedOutcome::Updated`], never [`SeedOutcome::Preserved`] — see
-/// [`seed_injectable_files`].
+/// [`seed_harness_texts`].
 ///
 /// Steps, in order:
 ///
@@ -218,16 +225,20 @@ impl UpsertReport {
 ///    touch `mustard.json`;
 /// 2. the settings file — seed when absent, backfill missing top-level keys
 ///    when present, with the point migrations of [`seed_settings`], rtk's hook
-///    following `mustard.json#rtk` and Claude Code's signature kept off;
-/// 3. `.claude/mustard/` — the compiled-in body of every injectable is written
-///    every time;
+///    following `mustard.json#rtk`, Claude Code's signature kept off and the
+///    response style of `language.text` chosen;
+/// 3. Mustard's own texts — the compiled-in body of each is written every
+///    time;
 /// 4. `.claude/.gitignore` — created when absent, and when present the pattern
 ///    lines it lacks are appended (see [`seed_gitignore`]);
 /// 5. `mustard.json` (via [`ProjectConfig`], the single owner) — created with
 ///    defaults when absent; when present only `version` is re-stamped (and
 ///    only when `version` is `Some`), an empty `inject` is backfilled, and an
 ///    absent `runtime` is filled — everything else is preserved verbatim;
-/// 6. the cleanup list ([`cleanup::plan`]) — read, never applied here.
+/// 6. the cleanup ([`cleanup::plan`], then [`cleanup::apply`]) — what an older
+///    Mustard left between its marks is taken out in this same call, with no
+///    question: the Guards become lessons first, and a file without a mark is
+///    only listed.
 ///
 /// Nothing is staged or committed, whatever git tracks: the stamp in a
 /// versioned `mustard.json` stays a change for the person to commit.
@@ -289,12 +300,16 @@ pub fn upsert_project(
     // 1. The `inject` migrations (fail-open).
     report.migrated = migrate_inject_declarations(root, &claude_dir);
 
-    // 2..4. The `.claude/` seeds, merge-mode — except the injectables, which
-    //       take no mode: they are the harness's rules and are always rewritten.
-    let rtk = ProjectConfig::load(root).rtk();
-    report.record(settings::settings_footprint(mode), seed_settings(&claude_dir, false, mode, rtk)?);
-    for (name, outcome) in seed_injectable_files(&claude_dir)? {
-        report.record(&format!(".claude/mustard/{name}"), outcome);
+    // 2..4. The `.claude/` seeds, merge-mode — except Mustard's own texts,
+    //       which take no mode: they are always rewritten.
+    let config = ProjectConfig::load(root);
+    let text = config.language().text_or_default();
+    report.record(
+        settings::settings_footprint(mode),
+        seed_settings(&claude_dir, false, mode, config.rtk(), text)?,
+    );
+    for (rel, outcome) in seed_harness_texts(&claude_dir, text)? {
+        report.record(&format!(".claude/{rel}"), outcome);
     }
     report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);
 
@@ -302,12 +317,16 @@ pub fn upsert_project(
     let outcome = files::upsert_mustard_json(root, version)?;
     report.record(MUSTARD_JSON, outcome);
 
-    // 6. What an older Mustard left in files that are not its own: listed only.
-    //    A shared install writes the seed into `.claude/settings.json` itself,
-    //    so there that file is the install's and not the team's.
+    // 6. What an older Mustard left in files that are not its own is its own
+    //    leftover, and leaves now. A shared install writes the seed into
+    //    `.claude/settings.json` itself, so there that file is the install's
+    //    and not the team's.
     let mut plan = cleanup::plan(root);
     if !mode.is_private() {
         plan.files.retain(|change| change.path != SETTINGS_JSON);
+    }
+    if plan.has_changes() {
+        report.cleaned = Some(cleanup::apply(root, &plan)?);
     }
     report.cleanup = (!plan.is_empty()).then_some(plan);
 
@@ -317,7 +336,8 @@ pub fn upsert_project(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::seeds::ORCHESTRATOR_MD;
+    use crate::platform::i18n::Locale;
+    use crate::platform::seeds::session_map;
     use serde_json::{json, Value};
     use std::fs as std_fs;
     use tempfile::tempdir;
@@ -337,9 +357,10 @@ mod tests {
             report.created,
             vec![
                 ".claude/settings.json",
-                ".claude/mustard/orchestrator.md",
-                ".claude/mustard/dispatch.md",
-                ".claude/mustard/material.md",
+                ".claude/mustard/mapa-inicio-sessao.md",
+                ".claude/agents/mustard/wave.md",
+                ".claude/agents/mustard/review.md",
+                ".claude/agents/mustard/skill.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -356,10 +377,10 @@ mod tests {
         )
         .unwrap();
         assert!(settings.get("statusLine").is_some(), "real seed content laid down");
-        assert!(
-            std_fs::read_to_string(root.join(".claude/mustard/orchestrator.md"))
-                .unwrap()
-                .starts_with("# Orchestrator Rules")
+        assert_eq!(
+            std_fs::read_to_string(root.join(".claude/mustard/mapa-inicio-sessao.md")).unwrap(),
+            session_map(Locale::PtBr),
+            "a project that declares no language gets the pt-BR text",
         );
         assert!(
             std_fs::read_to_string(root.join(".claude/.gitignore"))
@@ -399,9 +420,10 @@ mod tests {
             second.preserved,
             vec![
                 ".claude/settings.json",
-                ".claude/mustard/orchestrator.md",
-                ".claude/mustard/dispatch.md",
-                ".claude/mustard/material.md",
+                ".claude/mustard/mapa-inicio-sessao.md",
+                ".claude/agents/mustard/wave.md",
+                ".claude/agents/mustard/review.md",
+                ".claude/agents/mustard/skill.md",
                 ".claude/.gitignore",
                 "mustard.json",
             ],
@@ -414,10 +436,10 @@ mod tests {
     fn merge_preserves_user_files_and_backfills_missing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // A diverged injectable + a settings.json with a user key + a curated
-        // mustard.json (own inject list, own version).
+        // A diverged session map + a settings.json with a user key + a curated
+        // mustard.json (own inject list, own version, English text).
         std_fs::create_dir_all(root.join(".claude/mustard")).unwrap();
-        std_fs::write(root.join(".claude/mustard/orchestrator.md"), "USER EDIT").unwrap();
+        std_fs::write(root.join(".claude/mustard/mapa-inicio-sessao.md"), "USER EDIT").unwrap();
         std_fs::write(
             root.join(".claude/settings.json"),
             "{\n  \"userKey\": true\n}\n",
@@ -425,21 +447,22 @@ mod tests {
         .unwrap();
         std_fs::write(
             root.join("mustard.json"),
-            r#"{"version":"1.0.0","buildCommand":"make","inject":[{"on":"sessionStart","file":"docs/my-rules.md","once":false}]}"#,
+            r#"{"version":"1.0.0","buildCommand":"make","language":{"text":"en-US"},"inject":[{"on":"sessionStart","file":"docs/my-rules.md","once":false}]}"#,
         )
         .unwrap();
 
         let report = upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
 
         assert!(report.installed_before);
-        // The injectable is NOT a user file: it goes back to the seed, and the
-        // report says `Updated` so the overwrite is never silent.
+        // The session map is NOT a user file: it goes back to the seed, in the
+        // declared language, and the report says `Updated` so the overwrite is
+        // never silent.
         assert_eq!(
-            std_fs::read_to_string(root.join(".claude/mustard/orchestrator.md")).unwrap(),
-            ORCHESTRATOR_MD,
+            std_fs::read_to_string(root.join(".claude/mustard/mapa-inicio-sessao.md")).unwrap(),
+            session_map(Locale::EnUs),
         );
         assert!(report.created.contains(&".claude/.gitignore".to_string()));
-        assert!(report.updated.contains(&".claude/mustard/orchestrator.md".to_string()));
+        assert!(report.updated.contains(&".claude/mustard/mapa-inicio-sessao.md".to_string()));
         // settings.json: user key kept, missing seed keys backfilled.
         let settings: Value = serde_json::from_str(
             &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
@@ -511,7 +534,7 @@ mod tests {
         }
     }
 
-    // --- the cleanup, only after a yes ---------------------------------------
+    // --- the cleanup, in the same call -----------------------------------------
 
     /// Um instalador nunca grava no git: num repositório que versiona o
     /// `mustard.json`, a árvore limpa fica com o selo novo por commitar, e o
@@ -544,76 +567,101 @@ mod tests {
         assert!(!json.contains("stamp"), "the report says nothing about recording: {json}");
     }
 
-    /// O `upsert` num projeto com as marcas do Mustard nos `CLAUDE.md` e um
-    /// `CLAUDE.md` sem marca: a rodada só mostra a lista e não mexe em nada;
-    /// com o sim, sai só o que está entre as marcas (o resto fica byte a byte,
-    /// com os fins de linha), o arquivo que era só do Mustard é apagado, o
-    /// arquivo sem marca continua igual e só aparece na lista, e as Guards
-    /// tiradas viram lições de regra do projeto uma vez só.
+    /// O `upsert` num projeto com as marcas do Mustard nos `CLAUDE.md`, um
+    /// `CLAUDE.md` sem marca e as linhas do molde no `settings.json` da
+    /// equipe: na mesma chamada, sem pergunta, sai só o que está entre as
+    /// marcas, o import e a linha de navegação (o resto fica byte a byte, com
+    /// os fins de linha), o arquivo que era só do Mustard é apagado, as linhas
+    /// do molde saem do `settings.json`, o arquivo sem marca continua igual e
+    /// só aparece na lista, e o relatório diz o que saiu. As Guards tiradas
+    /// viram lições de regra do projeto uma vez só, e antes de qualquer
+    /// arquivo mudar: sem como gravar a lição, nenhum arquivo muda.
     #[test]
     fn migration_preserves_foreign_claude_md_and_is_byte_preserving() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let write = |rel: &str, body: &str| {
+        let write = |root: &Path, rel: &str, body: &str| {
             let path = root.join(rel);
             std_fs::create_dir_all(path.parent().unwrap()).unwrap();
             std_fs::write(path, body).unwrap();
         };
-        let read = |rel: &str| std_fs::read(root.join(rel)).unwrap();
+        let read = |root: &Path, rel: &str| std_fs::read(root.join(rel)).unwrap();
         // The team's own file, with the marks of an older scan in the middle.
         let team = "@.claude/scan-map.md\r\n# Api\r\n\r\nOur own rules stay.\r\n\r\n## Guards\r\n\r\n<!-- mustard:guards -->\r\n<!-- facts: kind=cargo -->\r\n- Reuse the shared client.\r\n<!-- /mustard:guards -->\r\n\r\nTeam tail.\r\n";
-        write("apps/api/CLAUDE.md", team);
         // A file that is only what the scan wrote.
-        write(
-            "apps/web/CLAUDE.md",
-            "@.claude/scan-map.md\n\n# Web\n\n> Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)\n\n## Guards\n\n<!-- mustard:guards -->\n- Never block the render.\n<!-- /mustard:guards -->\n",
-        );
-        // The scan's traces without a block mark.
-        let unmarked = "@.claude/scan-map.md\n# Cli\n\n## Guards\n\n- the team wrote this one\n";
-        write("apps/cli/CLAUDE.md", unmarked);
+        let only_ours = "@.claude/scan-map.md\n\n# Web\n\n> Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)\n\n## Guards\n\n<!-- mustard:guards -->\n- Never block the render.\n<!-- /mustard:guards -->\n";
+        // The scan's traces without any mark (neither the import nor a block).
+        let unmarked = "# Cli\n\n> Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)\n\n## Guards\n\n- the team wrote this one\n";
         // A root file with nothing of Mustard's.
-        write("CLAUDE.md", "# Team\n\nNothing of Mustard here.\n");
-        let before: Vec<Vec<u8>> =
-            ["apps/api/CLAUDE.md", "apps/web/CLAUDE.md", "apps/cli/CLAUDE.md", "CLAUDE.md"].map(read).to_vec();
+        let root_md = "# Team\n\nNothing of Mustard here.\n";
+        // The team's settings, with one line of an older install's seed.
+        let team_settings = "{\n  \"respectGitignore\": true,\n  \"teamKey\": 1\n}\n";
+        let lay_out = |root: &Path| {
+            write(root, "apps/api/CLAUDE.md", team);
+            write(root, "apps/web/CLAUDE.md", only_ours);
+            write(root, "apps/cli/CLAUDE.md", unmarked);
+            write(root, "CLAUDE.md", root_md);
+            write(root, SETTINGS_JSON, team_settings);
+        };
+        lay_out(root);
 
-        // --- the run shows the list and touches nothing ----------------------
+        // --- one call takes it out and says what left ---------------------------
         let report = upsert_project(root, None, InstallMode::Private).unwrap();
-        let plan = report.cleanup.expect("the marked files are listed");
+        let plan = report.cleanup.clone().expect("what left is listed");
         let listed: Vec<(&str, &cleanup::Action)> = plan.files.iter().map(|f| (f.path.as_str(), &f.action)).collect();
         assert_eq!(
             listed,
-            [("apps/api/CLAUDE.md", &cleanup::Action::Edit), ("apps/web/CLAUDE.md", &cleanup::Action::Delete)],
+            [
+                ("apps/api/CLAUDE.md", &cleanup::Action::Edit),
+                ("apps/web/CLAUDE.md", &cleanup::Action::Delete),
+                (SETTINGS_JSON, &cleanup::Action::Edit),
+            ],
         );
         assert_eq!(plan.unmarked, ["apps/cli/CLAUDE.md"], "the file without a mark is only listed");
         let lessons: Vec<&str> = plan.lessons.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(lessons, ["Reuse the shared client.", "Never block the render."]);
-        let after_run: Vec<Vec<u8>> =
-            ["apps/api/CLAUDE.md", "apps/web/CLAUDE.md", "apps/cli/CLAUDE.md", "CLAUDE.md"].map(read).to_vec();
-        assert_eq!(after_run, before, "nothing leaves before the yes");
-        assert_eq!(plan.token(), cleanup::plan(root).token(), "the same list keeps its code");
-
-        // --- the yes ------------------------------------------------------------
-        let done = cleanup::apply(root, &plan).unwrap();
+        let done = report.cleaned.clone().expect("the report says what the cleanup did");
         assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.edited, ["apps/api/CLAUDE.md", SETTINGS_JSON]);
+        assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
+        assert_eq!(done.lessons.len(), 2, "{done:?}");
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["cleaned"]["deleted"], json!(["apps/web/CLAUDE.md"]), "{json}");
+        assert!(json.get("confirm").is_none() && !json.to_string().contains("token"), "no code to confirm: {json}");
+
         assert_eq!(
-            String::from_utf8(read("apps/api/CLAUDE.md")).unwrap(),
+            String::from_utf8(read(root, "apps/api/CLAUDE.md")).unwrap(),
             "# Api\r\n\r\nOur own rules stay.\r\n\r\n## Guards\r\n\r\n\r\nTeam tail.\r\n",
             "only what sits between the marks and the import leave; every other byte stays",
         );
         assert!(!root.join("apps/web/CLAUDE.md").exists(), "the file that was only Mustard's goes");
-        assert_eq!(read("apps/cli/CLAUDE.md"), unmarked.as_bytes(), "the unmarked file is never touched");
-        assert_eq!(read("CLAUDE.md"), before[3], "a file with nothing of Mustard's is never touched");
-        assert_eq!(done.lessons.len(), 2, "{done:?}");
+        assert_eq!(read(root, "apps/cli/CLAUDE.md"), unmarked.as_bytes(), "the unmarked file is never touched");
+        assert_eq!(read(root, "CLAUDE.md"), root_md.as_bytes(), "a file with nothing of Mustard's is never touched");
+        let settings: Value = serde_json::from_slice(&read(root, SETTINGS_JSON)).unwrap();
+        assert_eq!(settings, json!({ "teamKey": 1 }), "only the seed's line leaves the team's settings");
 
         // --- once -----------------------------------------------------------------
-        write("apps/web/CLAUDE.local.md", "# Web\n<!-- mustard:guards -->\n- Never block the render.\n<!-- /mustard:guards -->\n");
-        let again = upsert_project(root, None, InstallMode::Private).unwrap().cleanup.expect("the local twin is listed");
-        assert!(again.lessons.is_empty(), "a guard already in the bank is not written twice: {:?}", again.lessons);
-        let redo = cleanup::apply(root, &again).unwrap();
-        assert!(redo.lessons.is_empty(), "{redo:?}");
-        assert_ne!(again.token(), plan.token(), "a yes to one list never applies another");
+        write(root, "apps/web/CLAUDE.local.md", "# Web\n<!-- mustard:guards -->\n- Never block the render.\n<!-- /mustard:guards -->\n");
+        let again = upsert_project(root, None, InstallMode::Private).unwrap();
+        let again_plan = again.cleanup.expect("the local twin is listed");
+        assert!(again_plan.lessons.is_empty(), "a guard already in the bank is not written twice: {again_plan:?}");
+        assert_eq!(again.cleaned.expect("the twin left").deleted, ["apps/web/CLAUDE.local.md"]);
+        assert!(!root.join("apps/web/CLAUDE.local.md").exists());
         let bank = crate::io::lessons::read(&root.join(".claude/spec/lessons.ndjson")).unwrap().unwrap();
         let rules: Vec<_> = bank.visible().into_iter().filter(|l| l.event_type == "project_rule").collect();
         assert_eq!(rules.len(), 2, "each guard became one project-rule lesson");
+
+        // --- the lessons come first ---------------------------------------------
+        let blocked = tempdir().unwrap();
+        lay_out(blocked.path());
+        // The lesson bank cannot be written: a folder sits where it goes.
+        std_fs::create_dir_all(blocked.path().join(".claude/spec/lessons.ndjson")).unwrap();
+        let report = upsert_project(blocked.path(), None, InstallMode::Private).unwrap();
+        let done = report.cleaned.expect("the report says what the cleanup did");
+        assert!(!done.failed.is_empty(), "the failure is said: {done:?}");
+        assert!(done.edited.is_empty() && done.deleted.is_empty(), "{done:?}");
+        assert_eq!(read(blocked.path(), "apps/api/CLAUDE.md"), team.as_bytes());
+        assert_eq!(read(blocked.path(), "apps/web/CLAUDE.md"), only_ours.as_bytes());
+        assert_eq!(read(blocked.path(), SETTINGS_JSON), team_settings.as_bytes());
     }
 }

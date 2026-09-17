@@ -108,75 +108,15 @@ Every phase emits events; gates block progress. The **close-gate** refuses to cl
 
 ## Commands
 
-Installed as a plugin, every command lives under the `/mustard:` namespace.
-
-### The single door is not a command
-
-**Start by describing the work in natural language** — there is no entry command. The router is injected on every prompt: it classifies the request (feature / change / bugfix / investigation + scope), narrates how it read it, and dispatches the right flow. It asks only on genuine ambiguity.
-
-### The four doors
-
-There are **four**, and only four — what you type. Everything else is an internal flow the router dispatches.
+Installed as a plugin, every command lives in the `/mustard:` namespace. There is no entry command: a request that changes a file, said in the conversation, opens the spec, and every step of the flow answers what comes next.
 
 | Command | Role |
 |---|---|
-| `/mustard:spec` | Resumes a unit that already has a spec — approves the planned one, continues the one in flight. |
-| `/mustard:git` | The local work: sync, commit, push, the exit ritual and cancelling. Moves bits, decides nothing. |
-| `/mustard:pr` | The pull request door: open, list, review, merge. Where work can be refused. |
-| `/mustard:upsert` | Installs/updates Mustard in the project. `--off` / `--on` turn the harness off and back on; `--doctor` diagnoses the installation. |
+| `/mustard:continue` | Picks the spec back up where it stopped. It is the reserve button: resuming already happens at the start of a session. |
+| `/mustard:pr` | Opens the pull request, reviews a colleague's, or merges one, only when asked. |
+| `/mustard:upsert` | Installs or updates Mustard in the project and diagnoses the installation. To turn Mustard off in a project, set `"enabled": false` in `mustard.json`. |
 
-#### `/mustard:spec` — the unit's door
-
-One thing only: take a unit that already has a spec and move it forward. It never **creates** a unit — the router does that, from your request in plain language.
-
-| You type | What happens |
-|---|---|
-| `/mustard:spec` | lists the active specs in a table and waits for a letter |
-| `/mustard:spec a` | acts on row `a`: in PLAN shows the spec and asks "Aprovar esta spec?", in EXEC continues it |
-| `/mustard:spec my-slug` | jumps straight to that spec, no table |
-
-#### `/mustard:git` — the local work
-
-**Iron law: everything goes up (`add -A`), never a silent partial scope.** Reversible operations only — the one exception is `delete`, which is why it is never inferred from a failure, only typed.
-
-**This door moves bits and decides nothing.** No action here can refuse work — that is the line against `/mustard:pr`, which owns the pull request on the provider *and* the gates that can say "this does not go in".
-
-| Action | What it does |
-|---|---|
-| `sync` | rebases the current branch onto the base its kind implies; aborts on conflict, never forces |
-| `commit` | creates the commit, no push |
-| `push` | runs `sync`, commits and pushes **only the current branch** |
-| `finish` | the exit ritual, run from the work branch **after its PR merged**: back to the base, pull, remove the worktree, delete the local and remote branch |
-| `delete <branch>` | cancels an **abandoned** unit: closes its PR, removes the worktree, deletes the local and remote branch — all at once |
-
-The difference between the last two is the unit's state: `finish` retires a **delivered** unit; `delete` cancels an **abandoned** one. And you rarely type `finish` — `/mustard:pr merge` already runs that prune; it exists for a PR that merged **elsewhere**, by someone else on the provider.
-
-**Publishing the PR is not here** — it is `/mustard:pr open`. That split is what took the word `pr` out of `git`: while both doors created pull requests, they read as duplicates of each other. PRs are still the only integration path: a work branch never reaches its base through a direct push, and there is no `merge` action here.
-
-#### `/mustard:pr` — the pull request door
-
-**Iron law: a merge is never silent.** Merging a unit whose review did not come back `approved` is allowed — you decide, case by case — but it is always **asked** about first, never done quietly and never refused outright.
-
-| Action | What it does |
-|---|---|
-| `open [<target>]` | opens or updates the PR — idempotent, always the same PR. One per repository, submodules before the parent (while a submodule PR is open the parent opens as a draft, and the provider refuses to merge a draft). The one action here that crosses **no** gate: publishing is not integrating |
-| `list` | the open PRs of the base you are standing on: number, title, whether it is a draft, and the branch its unit lives on. Runs only from a base — "which PRs are open" is a question about the base, not about one unit |
-| `review [<pr>]` | reviews it **against the unit's own spec** and that subproject's molds, and records the verdict. That record is what the merge reads |
-| `merge [<pr>] [--confirm]` | crosses the verification gate, merges and prunes: back to the base, pull, remove the worktree, delete the branches |
-
-The gate `merge` crosses, in order: **build + tests** → **QA** (only a recorded `pass` opens the close) → **review spans** → **docs audit** → **close gates**. On a full pass the spec finalizes itself — you never decide to call the close by hand.
-
-**Review, QA and close are not commands.** None of them is what you set out to do: they are what has to happen on the way to a merge.
-
-### Internal flows (the router picks)
-
-| Flow | Role |
-|---|---|
-| census | Mines the repository into `grain.model.json` (deterministic, no AI) and enriches per-subproject maps (Guards + pattern molds). Triggered by the base gate. |
-| `feature` | Full feature pipeline: understand, research via digest, plan, implement. |
-| `bugfix` | Autonomous diagnosis + fix. Fast path (1-2 files) or full path (lean spec). |
-| `tactical-fix` | Creates a sub-spec linked to a parent, preserving SDD purity. |
-| `task` | Spec-less work delegation (analyze, audit, refactor, docs…). |
+The full reference — the flow, the hooks and every `mustard-rt run` command — is in [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
 
 ---
 

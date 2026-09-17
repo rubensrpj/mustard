@@ -25,7 +25,7 @@ fn synthetic_segments() -> Vec<Segment> {
     // Forge a git segment so preview doesn't depend on whether cwd is a repo.
     segs.push(Segment::new(SegmentKind::Git, "\u{2387} dev_rubens +1"));
     // Forge the spec segment too — the live builder reads the spec state.
-    segs.push(Segment::new(SegmentKind::Unit, "\u{25b8} checkout running onda 2/4"));
+    segs.push(Segment::new(SegmentKind::Unit, "\u{25b8} checkout running 1 de 4 ondas"));
 
     // Forge a context segment — 70% remaining, 60k tokens.
     segs.push(Segment::new(

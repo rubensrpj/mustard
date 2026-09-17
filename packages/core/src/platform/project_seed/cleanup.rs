@@ -1,5 +1,6 @@
-//! The cleanup: what Mustard once wrote into files that are not its own, taken
-//! out only after the person says yes.
+//! The cleanup: what Mustard once wrote into files that are not its own. It is
+//! an older Mustard's own leftover, so the upsert takes it out with no
+//! question and says what left.
 //!
 //! Three kinds of file carry it:
 //!
@@ -11,17 +12,17 @@
 //!   of its seed;
 //! - `.claude/CLAUDE.md`, the orchestrator an older install planted.
 //!
-//! [`plan`] only reads, and says what would leave; [`apply`] does it, and is
-//! called only after the person confirmed that very list. Nothing is staged or
-//! committed: the commit is the person's.
+//! [`plan`] only reads, and says what would leave; [`apply`] does it. Nothing
+//! is staged or committed: the commit is the person's.
 //!
-//! Only what sits between the marks, the import line and the breadcrumb line
-//! leaves an instruction file; every other byte stays, line endings included.
-//! A file is deleted only when nothing is left but the title Mustard wrote
-//! (and the `## Guards` heading that held the block). A file with the
-//! breadcrumbs of an older scan and no block mark is not touched: it is listed,
-//! and the person decides. Each guard that leaves becomes a project-rule lesson,
-//! once.
+//! Mustard's marks are the block marks and the import line. Only what sits
+//! between the block marks, the import line and the breadcrumb line leaves an
+//! instruction file; every other byte stays, line endings included. A file is
+//! deleted only when nothing is left but the title Mustard wrote (and the
+//! `## Guards` heading that held the block). A file with the breadcrumb or the
+//! `## Guards` heading of an older scan and no mark at all is not touched: it
+//! is listed, and the person decides. Each guard that leaves becomes a
+//! project-rule lesson, once, before any file changes.
 
 use std::path::{Path, PathBuf};
 
@@ -99,12 +100,12 @@ pub struct GuardLesson {
     pub subproject: Option<String>,
 }
 
-/// What the cleanup would do, before anyone said yes.
+/// What the cleanup would do, read before anything changes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupPlan {
     pub files: Vec<FileChange>,
-    /// Instruction files with the traces of an older scan and no block mark:
+    /// Instruction files with the traces of an older scan and no mark:
     /// listed for the person to decide, never touched.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unmarked: Vec<String>,
@@ -121,23 +122,10 @@ impl CleanupPlan {
         self.files.is_empty() && self.unmarked.is_empty() && self.lessons.is_empty()
     }
 
-    /// Whether there is anything a yes would change.
+    /// Whether taking the list out would change anything.
     #[must_use]
     pub fn has_changes(&self) -> bool {
         !self.files.is_empty() || !self.lessons.is_empty()
-    }
-
-    /// The code of this very list: a yes given to one list never applies
-    /// another. Changes with any file, any line and any lesson.
-    #[must_use]
-    pub fn token(&self) -> String {
-        let seed = serde_json::to_string(self).unwrap_or_default();
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in seed.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        format!("{:08x}", hash & 0xffff_ffff)
     }
 }
 
@@ -306,8 +294,8 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
 pub(super) enum Stripped {
     /// Nothing of Mustard's in it.
     Untouched,
-    /// Traces of an older scan and no block mark, or a block that never
-    /// closes: the person decides.
+    /// Traces of an older scan and no mark (neither the import nor a block),
+    /// or a block that never closes: the person decides.
     Unmarked,
     Changed {
         /// The file without Mustard's lines, every other byte as it was.
@@ -331,13 +319,14 @@ pub(super) fn strip_marks(text: &str) -> Stripped {
     let mut removes = Vec::new();
     let mut guards = Vec::new();
     let mut breadcrumbs = false;
-    let mut blocks = 0;
+    // The import line is a mark, as much as a block is.
+    let mut marks = 0;
     let mut i = 0;
     while i < lines.len() {
         let line = content(lines[i]);
         let trimmed = line.trim();
         if trimmed == SCAN_MAP_IMPORT_LINE {
-            breadcrumbs = true;
+            marks += 1;
             removes.push(SCAN_MAP_IMPORT_LINE.to_string());
             i += 1;
             continue;
@@ -354,7 +343,7 @@ pub(super) fn strip_marks(text: &str) -> Stripped {
             };
             guards.extend(guards_in(&lines[i + 1..end].iter().map(|l| content(l)).collect::<Vec<_>>()));
             removes.push(format!("{open} … {close}", open = open.trim_end()));
-            blocks += 1;
+            marks += 1;
             i = end + 1;
             continue;
         }
@@ -362,7 +351,7 @@ pub(super) fn strip_marks(text: &str) -> Stripped {
         i += 1;
     }
 
-    if blocks == 0 {
+    if marks == 0 {
         return if breadcrumbs || has_guards_heading(text) { Stripped::Unmarked } else { Stripped::Untouched };
     }
     let delete = only_skeleton(&keep);
@@ -397,20 +386,33 @@ fn only_skeleton(text: &str) -> bool {
     true
 }
 
-/// The guards inside a block: each `- ` item, with the lines that continue it,
-/// and without the comments the block carried for the scan.
+/// The guards inside a block, without the comments the block carried for the
+/// scan. Guards come as `- ` items or as plain lines of prose, and every line
+/// starts a guard of its own, except one that is indented right under a guard
+/// (no blank line between): that one continues it.
 fn guards_in(lines: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    // Whether the last guard can still take an indented line.
+    let mut open = false;
     for line in lines {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("<!--") {
+        if trimmed.is_empty() {
+            open = false;
             continue;
         }
-        if let Some(item) = trimmed.strip_prefix("- ") {
-            out.push(item.trim().to_string());
-        } else if let Some(last) = out.last_mut() {
-            last.push(' ');
-            last.push_str(trimmed);
+        if trimmed.starts_with("<!--") {
+            continue;
+        }
+        let indented = line.starts_with(char::is_whitespace);
+        match (trimmed.strip_prefix("- "), out.last_mut()) {
+            (None, Some(last)) if open && indented => {
+                last.push(' ');
+                last.push_str(trimmed);
+            }
+            (item, _) => {
+                out.push(item.unwrap_or(trimmed).trim().to_string());
+                open = true;
+            }
         }
     }
     out
@@ -420,8 +422,12 @@ fn guards_in(lines: &[String]) -> Vec<String> {
 // Applying the plan
 // ---------------------------------------------------------------------------
 
-/// Do what [`plan`] listed. Call only after the person confirmed that list
-/// (see [`CleanupPlan::token`]). Every file is handled on its own: a failure is
+/// Do what [`plan`] listed.
+///
+/// The guards become lessons first. When one of them cannot be written, no
+/// file is touched, so no guard leaves a file without having become a lesson;
+/// the next run finds the ones already written in the bank and retries only
+/// the rest. After that every file is handled on its own: a failure is
 /// reported and the rest goes on.
 ///
 /// # Errors
@@ -429,6 +435,21 @@ fn guards_in(lines: &[String]) -> Vec<String> {
 /// None today; the signature keeps room for a failure that stops everything.
 pub fn apply(root: &Path, plan: &CleanupPlan) -> Result<CleanupDone> {
     let mut done = CleanupDone::default();
+    if !plan.lessons.is_empty() {
+        let Some(bank) = lesson_bank(root) else {
+            done.failed.push("lessons: the lesson bank of this project could not be found".to_string());
+            return Ok(done);
+        };
+        for guard in &plan.lessons {
+            match lessons::write(&bank, lesson_draft(guard), None) {
+                Ok(written) => done.lessons.push(written.id),
+                Err(refusal) => done.failed.push(format!("{}: {refusal:?}", guard.source)),
+            }
+        }
+        if !done.failed.is_empty() {
+            return Ok(done);
+        }
+    }
     for change in &plan.files {
         let path = root.join(&change.path);
         let result = match change.action {
@@ -437,14 +458,6 @@ pub fn apply(root: &Path, plan: &CleanupPlan) -> Result<CleanupDone> {
         };
         if let Err(err) = result {
             done.failed.push(format!("{}: {err}", change.path));
-        }
-    }
-    if let Some(bank) = lesson_bank(root) {
-        for guard in &plan.lessons {
-            match lessons::write(&bank, lesson_draft(guard), None) {
-                Ok(written) => done.lessons.push(written.id),
-                Err(refusal) => done.failed.push(format!("{}: {refusal:?}", guard.source)),
-            }
         }
     }
     Ok(done)
@@ -550,14 +563,150 @@ mod tests {
         assert_eq!(text, "# Api\r\n\r\nOur own rule.\r\n\r\ntail\r\n");
     }
 
-    /// Um arquivo com os rastros de um scan antigo e sem a marca do bloco só é
-    /// listado; um bloco que não fecha também; e um arquivo sem nada do
-    /// Mustard fica de fora.
+    /// Um arquivo com os rastros de um scan antigo (a linha de navegação ou o
+    /// título das Guards) e sem marca nenhuma só é listado; um bloco que não
+    /// fecha também; e um arquivo sem nada do Mustard fica de fora.
     #[test]
     fn unmarked_files_are_only_listed() {
-        assert_eq!(strip_marks("@.claude/scan-map.md\n# Cli\n\n## Guards\n\n- ours\n"), Stripped::Unmarked);
+        let crumb_only = "# Cli\n\n> Parent: [../CLAUDE.md](../CLAUDE.md) | Orchestrator: [x](x)\n\n## Guards\n\n- ours\n";
+        assert_eq!(strip_marks(crumb_only), Stripped::Unmarked);
+        assert_eq!(strip_marks("# Cli\n\n## Guards\n\n- ours\n"), Stripped::Unmarked);
         assert_eq!(strip_marks("# X\n<!-- mustard:guards -->\n- never closed\n"), Stripped::Unmarked);
         assert_eq!(strip_marks("# Team notes\n\nNothing else.\n"), Stripped::Untouched);
+    }
+
+    /// A linha do import é marca do Mustard: um arquivo só com o import, o
+    /// título e a linha de navegação sai inteiro; num arquivo com texto da
+    /// equipe, saem só o import e a linha de navegação, com os fins de linha
+    /// do resto como estavam, e o título das Guards sem bloco fica.
+    #[test]
+    fn the_import_line_is_a_mark() {
+        let only_ours = "@.claude/scan-map.md\n\n# Web\n\n> Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)\n";
+        let Stripped::Changed { delete, removes, guards, .. } = strip_marks(only_ours) else {
+            panic!("the import is a mark");
+        };
+        assert!(delete, "only the title is left");
+        assert!(guards.is_empty());
+        assert_eq!(removes.len(), 2, "the import and the breadcrumb: {removes:?}");
+        assert_eq!(removes[0], SCAN_MAP_IMPORT_LINE);
+
+        let mixed = "@.claude/scan-map.md\r\n# Mine\r\n> Orchestrator: [x](x)\r\nrest\r\n";
+        let Stripped::Changed { text, delete, .. } = strip_marks(mixed) else {
+            panic!("the import is a mark");
+        };
+        assert!(!delete);
+        assert_eq!(text, "# Mine\r\nrest\r\n");
+
+        let team_guards = "@.claude/scan-map.md\n# Cli\n\n## Guards\n\n- ours\n";
+        let Stripped::Changed { text, delete, guards, .. } = strip_marks(team_guards) else {
+            panic!("the import is a mark");
+        };
+        assert!(!delete, "the team's guard is not the skeleton");
+        assert!(guards.is_empty(), "a guard outside a block is never read as Mustard's");
+        assert_eq!(text, "# Cli\n\n## Guards\n\n- ours\n");
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "apps/web/CLAUDE.md", only_ours);
+        let listed = plan(root);
+        assert_eq!(listed.files.len(), 1, "{listed:?}");
+        assert_eq!((listed.files[0].path.as_str(), &listed.files[0].action), ("apps/web/CLAUDE.md", &Action::Delete));
+        assert!(listed.unmarked.is_empty(), "a file with the import is not left for the person: {listed:?}");
+        let done = apply(root, &listed).unwrap();
+        assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
+    }
+
+    /// Dentro do bloco, cada linha começa uma guard, com ou sem o `- `; só a
+    /// linha recuada logo abaixo de uma guard continua essa guard, e uma
+    /// linha em branco fecha a anterior.
+    #[test]
+    fn only_an_indented_line_right_under_a_guard_continues_it() {
+        let lines: Vec<String> =
+            ["<!-- facts: x -->", "first in prose", "- an item", "  that goes on", "second in prose", "", "  after a blank line", "- last"]
+                .map(str::to_string)
+                .to_vec();
+        assert_eq!(
+            guards_in(&lines),
+            ["first in prose", "an item that goes on", "second in prose", "after a blank line", "last"],
+        );
+        assert_eq!(guards_in(&["  indented, with nothing before".to_string()]), ["indented, with nothing before"]);
+    }
+
+    /// As linhas de guard dentro do bloco de um arquivo, como o scan as
+    /// escreveu: tudo o que não é comentário nem linha em branco.
+    fn block_lines(body: &str) -> Vec<String> {
+        body.lines()
+            .skip_while(|l| !l.trim().starts_with("<!-- mustard:guards"))
+            .skip(1)
+            .take_while(|l| l.trim() != "<!-- /mustard:guards -->")
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("<!--"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// As guards que o scan escreveu em prosa, sem `- `, viram lições antes de
+    /// o arquivo sair: o `CLAUDE.md` da fixture do scan em Go, copiado para uma
+    /// pasta temporária, dá cinco lições, uma por linha, e só então é apagado.
+    /// As outras fixtures do scan, no mesmo formato, dão uma lição por linha.
+    #[test]
+    fn prose_guards_of_the_scan_fixtures_become_lessons_before_the_file_goes() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/scan/tests/fixtures");
+        let body = std_fs::read_to_string(fixtures.join("graph_go/CLAUDE.md")).unwrap();
+        let expected = block_lines(&body);
+        assert_eq!(expected.len(), 5, "the fixture keeps its five guards: {expected:?}");
+        assert_eq!(expected[0], "[critical] never import in internal/model/user.go");
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "apps/graph_go/CLAUDE.md", &body);
+        let listed = plan(root);
+        let texts: Vec<&str> = listed.lessons.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, expected, "one lesson per guard line");
+        assert_eq!(listed.files[0].action, Action::Delete);
+
+        let done = apply(root, &listed).unwrap();
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(done.lessons.len(), 5);
+        assert!(!root.join("apps/graph_go/CLAUDE.md").exists());
+        let bank = lessons::read(&lesson_bank(root).unwrap()).unwrap().unwrap();
+        let written: Vec<String> = bank
+            .visible()
+            .into_iter()
+            .filter(|l| l.event_type == PROJECT_RULE)
+            .filter_map(|l| l.str_field("text").map(str::to_string))
+            .collect();
+        assert_eq!(written, expected);
+
+        for name in ["flutter_app", "graph_dart", "monorepo_mix/api", "monorepo_mix/web", "php_laravel"] {
+            let body = std_fs::read_to_string(fixtures.join(name).join("CLAUDE.md")).unwrap();
+            let Stripped::Changed { guards, .. } = strip_marks(&body) else {
+                panic!("{name}: the marks were not found");
+            };
+            let lines = block_lines(&body);
+            assert!(!lines.is_empty(), "{name}: the fixture has guards");
+            assert_eq!(guards, lines, "{name}: one guard per line");
+        }
+    }
+
+    /// Uma guard que não vira lição segura todos os arquivos: nada é apagado
+    /// nem reescrito, e a falha é dita.
+    #[test]
+    fn a_guard_that_cannot_become_a_lesson_keeps_every_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "apps/rt/CLAUDE.md", SUBPROJECT_MD);
+        write(root, "apps/api/CLAUDE.md", "# Api\n\nOurs.\n<!-- mustard:guards -->\n- A guard.\n<!-- /mustard:guards -->\n");
+        let listed = plan(root);
+        assert_eq!(listed.lessons.len(), 3, "{listed:?}");
+        // O banco de lições não pode ser escrito: no lugar dele há uma pasta.
+        std_fs::create_dir_all(lesson_bank(root).unwrap()).unwrap();
+
+        let done = apply(root, &listed).unwrap();
+        assert!(!done.failed.is_empty(), "the failure is said: {done:?}");
+        assert!(done.deleted.is_empty() && done.edited.is_empty(), "{done:?}");
+        assert_eq!(std_fs::read_to_string(root.join("apps/rt/CLAUDE.md")).unwrap(), SUBPROJECT_MD);
+        assert!(std_fs::read_to_string(root.join("apps/api/CLAUDE.md")).unwrap().contains("- A guard."));
     }
 
     /// O plano acha o orquestrador plantado, os arquivos marcados em qualquer
@@ -570,7 +719,7 @@ mod tests {
         write(root, ".claude/CLAUDE.md", "# Orchestrator Rules\n");
         write(root, "apps/rt/CLAUDE.md", SUBPROJECT_MD);
         write(root, "apps/rt/CLAUDE.local.md", SUBPROJECT_MD);
-        write(root, "apps/cli/CLAUDE.md", "@.claude/scan-map.md\n# Cli\n");
+        write(root, "apps/cli/CLAUDE.md", "# Cli\n\n## Guards\n\n- ours\n");
         write(root, "target/x/CLAUDE.md", SUBPROJECT_MD);
         write(root, ".claude/worktrees/w/CLAUDE.md", SUBPROJECT_MD);
         write(root, ".claude/settings.json", "{\n  \"respectGitignore\": true,\n  \"team\": 1\n}\n");
@@ -587,7 +736,6 @@ mod tests {
         assert_eq!(plan.lessons.len(), 2, "the local twin repeats the same guards: {:?}", plan.lessons);
         assert!(plan.lessons.iter().all(|l| l.source == "apps/rt/CLAUDE.md"), "{:?}", plan.lessons);
         assert_eq!(plan.lessons[0].subproject.as_deref(), Some("apps/rt"));
-        assert_ne!(plan.token(), CleanupPlan::default().token());
     }
 
     /// Aplicar tira o que o plano listou, grava as Guards como lições, e uma

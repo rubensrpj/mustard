@@ -108,75 +108,15 @@ Cada fase emite eventos; os *gates* bloqueiam o avanço. Os **portões do fecham
 
 ## Comandos
 
-Instalado como plugin, todo comando vive no namespace `/mustard:`.
-
-### A porta única não é um comando
-
-**Comece descrevendo o trabalho em linguagem natural** — não há comando de entrada. O roteador é injetado em todo prompt: ele classifica o pedido (feature / mudança / correção / investigação + escopo), narra como o leu e despacha o fluxo certo. Só pergunta em ambiguidade genuína.
-
-### As quatro portas
-
-São **quatro**, e só quatro — o que você digita. Todo o resto é fluxo interno que o roteador despacha.
+Instalado como plugin, todo comando vive no namespace `/mustard:`. Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre a spec, e cada passo do fluxo responde qual é o próximo.
 
 | Comando | Papel |
 |---|---|
-| `/mustard:spec` | Retoma uma unidade que já tem spec — aprova a planejada, continua a que está em andamento. |
-| `/mustard:git` | O trabalho local: sync, commit, push, o ritual de saída e o cancelamento. Move bits, não decide nada. |
-| `/mustard:pr` | A porta do pull request: abrir, listar, revisar, mergear. É onde o trabalho pode ser recusado. |
-| `/mustard:upsert` | Instala/atualiza o Mustard no projeto. `--off` / `--on` desligam e religam o harness; `--doctor` diagnostica a instalação. |
+| `/mustard:continue` | Retoma a spec de onde parou. É o botão de reserva: a retomada já acontece no início da sessão. |
+| `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
+| `/mustard:upsert` | Instala ou atualiza o Mustard no projeto e diagnostica a instalação. Para desligar o Mustard num projeto, ponha `"enabled": false` no `mustard.json`. |
 
-#### `/mustard:spec` — a porta da unidade
-
-Uma coisa só: pegar uma unidade que já tem spec e tocar ela adiante. Ele nunca **cria** uma unidade — quem faz isso é o roteador, a partir do seu pedido em linguagem natural.
-
-| Você digita | O que acontece |
-|---|---|
-| `/mustard:spec` | lista as specs ativas numa tabela e espera a letra |
-| `/mustard:spec a` | age na linha `a`: em PLAN mostra a spec e pergunta "Aprovar esta spec?", em EXEC continua de onde parou |
-| `/mustard:spec meu-slug` | vai direto naquela spec, sem tabela |
-
-#### `/mustard:git` — o trabalho local
-
-**Lei de ferro: sobe tudo (`add -A`), nunca um escopo parcial silencioso.** Só operações reversíveis — a única exceção é o `delete`, e é por isso que ele nunca é inferido de uma falha, só digitado.
-
-**Esta porta move bits e não decide nada.** Nenhuma ação aqui pode recusar trabalho — é essa a linha contra `/mustard:pr`, que é dono do pull request no provedor *e* dos portões que podem dizer "isto não entra".
-
-| Ação | O que faz |
-|---|---|
-| `sync` | rebase da branch atual na base que o *kind* dela implica; aborta em conflito, jamais força |
-| `commit` | cria o commit, sem push |
-| `push` | faz `sync`, commita e sobe **apenas a branch atual** |
-| `finish` | ritual de saída, rodado da branch de trabalho **depois que o PR mergeou**: volta à base, puxa, remove worktree e apaga a branch local e a remota |
-| `delete <branch>` | cancela uma unidade **abandonada**: fecha o PR, remove a worktree, apaga branch local e remota — tudo de uma vez |
-
-A diferença entre os dois últimos é o estado da unidade: `finish` aposenta uma unidade **entregue**; `delete` cancela uma **abandonada**. E você raramente digita `finish` — o `/mustard:pr merge` já faz essa poda; ele existe para quando o PR mergeou **por fora**, por outra pessoa no provedor.
-
-**Publicar o PR não está aqui** — é `/mustard:pr open`. Foi a separação que tirou a palavra `pr` de dentro do `git`: enquanto as duas portas criavam pull request, elas se liam como duplicata uma da outra. PR continua sendo o único caminho de integração: uma branch de trabalho nunca chega à base por push direto, e não existe ação `merge` aqui.
-
-#### `/mustard:pr` — a porta do pull request
-
-**Lei de ferro: merge nunca é silencioso.** Mergear uma unidade cuja revisão não voltou `approved` é permitido — quem decide é você, caso a caso — mas é sempre **perguntado** antes, nunca feito calado e nunca recusado de plano.
-
-| Ação | O que faz |
-|---|---|
-| `open [<alvo>]` | abre ou atualiza o PR — idempotente, sempre o mesmo PR. Um por repositório, submódulos antes do pai (enquanto um PR de submódulo estiver aberto, o pai abre como *draft*, e o provedor recusa mergear *draft*). É a única ação daqui que **não** cruza portão nenhum: publicar não é integrar |
-| `list` | os PRs abertos da base onde você está: número, título, se é *draft* e em que branch a unidade vive. Só roda de uma base — "quais PRs estão abertos" é pergunta sobre a base, não sobre uma unidade |
-| `review [<pr>]` | revisa **contra a spec da própria unidade** e os moldes daquele subprojeto, e grava o veredito. É esse registro que o merge lê |
-| `merge [<pr>] [--confirm]` | cruza o portão de verificação, mergeia e poda: volta à base, puxa, remove worktree e apaga as branches |
-
-O portão que o `merge` cruza, nesta ordem: **build + testes** → **QA** (só um `pass` registrado abre o fechamento) → **review-spans** → **auditoria de docs** → **gates de fechamento**. Passando tudo, a spec é finalizada sozinha — você nunca decide chamar o fechamento à mão.
-
-**Revisão, QA e fechamento não são comandos.** Nenhum deles é o que você saiu para fazer: são o que precisa acontecer no caminho de um merge.
-
-### Fluxos internos (o roteador escolhe)
-
-| Fluxo | Papel |
-|---|---|
-| varredura | Minera o repositório em `grain.model.json` (determinístico, sem IA) e enriquece os mapas por subprojeto (Guards + moldes de padrão). Disparada pelo porteiro de base. |
-| `feature` | Pipeline completo de feature: entende, pesquisa via digest, planeja, implementa. |
-| `bugfix` | Diagnóstico + correção autônomos. *Fast path* (1-2 arquivos) ou *full path* (spec enxuta). |
-| `tactical-fix` | Cria uma sub-spec ligada a um pai, preservando a pureza do SDD. |
-| `task` | Delegação de trabalho sem spec (analyze, audit, refactor, docs…). |
+A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` — está em [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
 
 ---
 

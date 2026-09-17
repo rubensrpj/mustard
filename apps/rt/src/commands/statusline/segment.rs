@@ -277,15 +277,17 @@ pub fn model_segment(data: &Value) -> Segment {
     Segment::new(SegmentKind::Model, short.to_string())
 }
 
-/// `▸ {spec} {fase} onda 2/4` — a spec desta sessão, a fase dela e o
+/// `▸ {spec} {fase} 1 de 4 ondas` — a spec desta sessão, a fase dela e o
 /// andamento das ondas.
 ///
 /// Quem reabre o terminal vê onde parou sem digitar nada. A spec vem da escada
 /// única ([`current_spec`]); com a página dela publicada, o nome vira um link
 /// clicável (OSC 8, aceito pela barra do Claude Code). O andamento aparece com
-/// a spec aprovada ou em execução e com ondas no plano: a onda da vez é a
-/// seguinte às já entregues. `None` fora de um projeto com o Mustard e sem
-/// spec atual.
+/// a spec aprovada ou em execução e com ondas no plano, como contagem: quantas
+/// ondas foram entregues e quantas o plano tem. O número de uma onda não
+/// aparece, porque os números não seguem a ordem; o da onda que vem fica na
+/// linha de retomada. `None` fora de um projeto com o Mustard e sem spec
+/// atual.
 ///
 /// [`current_spec`]: crate::shared::context::checkout::current_spec
 #[must_use]
@@ -310,11 +312,11 @@ pub fn unit_segment(cwd: &Path) -> Option<Segment> {
     if let Some(phase) = phase {
         let _ = write!(text, " {phase}");
         if matches!(phase, "approved" | "running")
-            && let Some((current, total)) = wave_progress(cwd, &slug)
+            && let Some((delivered, total)) = wave_progress(cwd, &slug)
         {
             let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
             let progress = mustard_core::translate("statusline.wave", lang)
-                .replace("{current}", &current.to_string())
+                .replace("{delivered}", &delivered.to_string())
                 .replace("{total}", &total.to_string());
             let _ = write!(text, " {progress}");
         }
@@ -322,9 +324,9 @@ pub fn unit_segment(cwd: &Path) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Unit, text))
 }
 
-/// O andamento das ondas da spec `slug`: a onda da vez — a seguinte às já
-/// entregues, sem passar do total — e quantas ondas o plano tem. `None` sem
-/// arquivo de eventos ou sem onda no plano.
+/// O andamento das ondas da spec `slug`: quantas ondas do plano foram
+/// entregues e quantas o plano tem. `None` sem arquivo de eventos ou sem onda
+/// no plano.
 fn wave_progress(cwd: &Path, slug: &str) -> Option<(usize, usize)> {
     let log = DiskSpecState::new(cwd).log(slug)?;
     let planned: BTreeSet<u64> = log
@@ -337,7 +339,7 @@ fn wave_progress(cwd: &Path, slug: &str) -> Option<(usize, usize)> {
         return None;
     }
     let delivered = log.delivered_waves().intersection(&planned).count();
-    Some(((delivered + 1).min(planned.len()), planned.len()))
+    Some((delivered, planned.len()))
 }
 
 /// `label` como hiperlink OSC 8 para `url`: `ESC ]8;;URL ESC \ label ESC ]8;; ESC \`.

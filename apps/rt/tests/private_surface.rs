@@ -69,8 +69,8 @@ fn ac6_upsert_is_private_unconditionally_and_offers_no_switch() {
         "the install must really have run — the project config is its own evidence",
     );
     assert!(
-        root.join(".claude/mustard/orchestrator.md").is_file(),
-        "…and so is the injectable it seeds",
+        root.join(".claude/mustard/mapa-inicio-sessao.md").is_file(),
+        "…and so is the session map it seeds",
     );
 
     // --- negative control B: no argv reaches the other outcome ---------------

@@ -65,6 +65,11 @@
 //!   born in the spec that stay open — so the delivery asks only about them,
 //!   never about the whole list.
 //!
+//!   O merge feito por outra pessoa passa pelo mesmo caminho ([`land`]): o
+//!   início da sessão, com a spec atual em "pull request aberto", pergunta ao
+//!   provedor só pelo pull request dela ([`merged_elsewhere`]) e, se ele
+//!   entrou, grava a entrega e faz a arrumação sem ter feito o merge.
+//!
 //! ## The unreviewed merge WARNS and ASKS — it never refuses
 //!
 //! A merge requested without an `approved` verdict answers `action:"confirm"`
@@ -98,10 +103,11 @@ use crate::commands::agent::render::reference::files_section_paths;
 use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{became_of, close_pending, open_pending_born_in, OpenPending};
 use crate::commands::event::work_branch::on_integration_base;
-use crate::commands::git_settle::{git_out, main_checkout_root, settle_at};
+use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at};
 use crate::commands::review::review_result;
 use crate::commands::work_unit_open::checkout_holding_branch;
-use crate::shared::pr_provider::{provider_for, PrChecks};
+use crate::shared::branch_state::PrStatus;
+use crate::shared::pr_provider::{provider_for, PrChecks, PrRef};
 use crate::shared::work_kind::BaseFlow;
 
 /// O subprojeto que um conjunto de arquivos aponta, ou nada quando eles se
@@ -812,9 +818,6 @@ fn merge_core(
         };
     }
 
-    // Mergeado — o fechamento se registra ANTES de qualquer outro passo, nos dois
-    // caminhos abaixo: a promoção também é um pull request mergeado.
-    let (pending_closed, pending_open) = after_merge(root, facts, spec.as_deref(), session);
     // O aviso dos critérios viaja com o merge que aconteceu. Ele morava numa
     // etapa que olhava o `gh pr merge` digitado à mão, e por isso só alcançava
     // quem digitava a linha de comando do provedor; esta porta, que é a que
@@ -822,16 +825,10 @@ fn merge_core(
     let qa_warning = spec
         .as_deref()
         .and_then(|slug| crate::commands::review::pr_publish::qa_warning(root, slug));
+    let Landed { pending_closed, pending_open, settle: settled } =
+        land(root, facts, spec.as_deref(), flow, settle, session);
 
-    // **A promotion has no unit, so it has nothing to settle.** `dev` → `main`
-    // is the ordinary end of a cycle and its HEAD is a declared BASE; handing
-    // that name to the prune asks it to delete the project's own integration
-    // branch, here and on the server. `spec_of_branch` already answered `None`
-    // for it several lines up — that answer was read for the review verdict and
-    // then dropped, and the head went to the prune regardless. The prune refuses
-    // this too now, but the refusal is the second line of defence: this door
-    // knows it is promoting and must not ask.
-    if flow.is_declared_base(&facts.head) {
+    let Some(settled) = settled else {
         return PrMergeReport {
             ok: true,
             action: "merged",
@@ -852,13 +849,8 @@ fn merge_core(
             pending_closed,
             pending_open: Some(pending_open),
         };
-    }
+    };
 
-    // Merged. The rest — back to the base, pull it, remove the worktree, delete
-    // the local and remote branch — IS `git-settle`, called rather than
-    // rewritten: it already verifies the merge landed, already advances every
-    // base and already handles the in-place unit that has no worktree to leave.
-    let settled = settle(root, &facts.head);
     PrMergeReport {
         ok: settled.get("ok") == Some(&Value::Bool(true)),
         action: "merged",
@@ -874,6 +866,131 @@ fn merge_core(
         pending_closed,
         pending_open: Some(pending_open),
     }
+}
+
+/// O que um pull request que entrou deixa, pelo merge desta porta ou pelas
+/// mãos de outra pessoa: o fechamento gravado ([`after_merge`]) e, numa
+/// unidade, a arrumação.
+struct Landed {
+    /// A pendência que virou a spec, fechada por este merge.
+    pending_closed: Option<String>,
+    /// As pendências nascidas na spec que seguem abertas: a entrega pergunta
+    /// só delas.
+    pending_open: Vec<OpenPending>,
+    /// O relatório da arrumação; `None` numa promoção de base para base, que
+    /// não tem unidade para arrumar.
+    settle: Option<Value>,
+}
+
+/// O caminho único de um pull request que entrou: o merge desta porta e o
+/// merge feito por outra pessoa, que o início da sessão encontra, passam os
+/// dois por aqui.
+///
+/// O fechamento se grava ANTES da arrumação, nos dois casos: a promoção também
+/// é um pull request mergeado.
+///
+/// **A promotion has no unit, so it has nothing to settle.** `dev` → `main`
+/// is the ordinary end of a cycle and its HEAD is a declared BASE; handing
+/// that name to the prune asks it to delete the project's own integration
+/// branch, here and on the server. The prune refuses this too, but the refusal
+/// is the second line of defence: this path knows it is promoting and must not
+/// ask.
+///
+/// The rest — back to the base, pull it, remove the worktree, delete the local
+/// branch, and the remote one only with `git.deleteRemoteBranch` — IS
+/// `git-settle`, called rather than rewritten: it already verifies the merge
+/// landed, already advances every base and already handles the in-place unit
+/// that has no worktree to leave.
+fn land(
+    root: &Path,
+    facts: &PrFacts,
+    spec: Option<&str>,
+    flow: &BaseFlow,
+    settle: &dyn Fn(&Path, &str) -> Value,
+    session: Option<&str>,
+) -> Landed {
+    let (pending_closed, pending_open) = after_merge(root, facts, spec, session);
+    let settle = (!flow.is_declared_base(&facts.head)).then(|| settle(root, &facts.head));
+    Landed { pending_closed, pending_open, settle }
+}
+
+/// O pull request da spec atual, perguntado no início da sessão.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MergedElsewhere {
+    /// Entrou pelas mãos de outra pessoa, e o mesmo caminho do merge desta
+    /// porta rodou: a spec gravada como entregue, a arrumação da branch e a
+    /// pergunta das pendências nascidas na spec.
+    Landed {
+        /// O número do pull request.
+        pr: u64,
+        /// A branch da unidade.
+        branch: String,
+        /// O relatório da arrumação, ou nada numa promoção.
+        settle: Option<Value>,
+        /// As pendências nascidas na spec que seguem abertas.
+        pending_open: Vec<OpenPending>,
+    },
+    /// O provedor não respondeu, com o motivo que ele deu; nada foi mudado.
+    Unanswered { reason: String },
+}
+
+/// No início da sessão, com a spec `spec` em "pull request aberto": pergunta
+/// ao provedor só pelo pull request dela — o número gravado quando ele abriu
+/// ou, sem o número, a branch da spec — e, se ele entrou, roda o mesmo caminho
+/// do merge desta porta ([`land`]). A arrumação pergunta ao provedor só por
+/// essa unidade; as outras ficam com o que o git prova.
+///
+/// Uma pergunta por branch, num repositório com as branches dos colegas,
+/// passou do prazo do início da sessão; por isso é um pull request só.
+///
+/// `None` quando a spec não está em "pull request aberto", quando não se sabe
+/// qual é o pull request dela, e quando o provedor responde que ele segue
+/// aberto ou foi fechado sem merge.
+pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -> Option<MergedElsewhere> {
+    use mustard_core::domain::spec_events::{Block, BlockQuery};
+    use mustard_core::domain::spec_state::{SpecState as _, State};
+
+    let repo = project_root(root);
+    let log = crate::shared::spec_state::DiskSpecState::new(&repo).log(spec)?;
+    let state = State::from_log(&log);
+    if state.phase != Some("pr_open") {
+        return None;
+    }
+    // O número gravado no "pull request aberto" mais novo.
+    let number = log
+        .block(BlockQuery::Block(Block::State))
+        .into_iter()
+        .filter(|e| e.event_type == "state" && e.str_field("phase") == Some("pr_open"))
+        .max_by_key(|e| e.id)
+        .and_then(|e| e.fields.get("pr").and_then(|pr| pr.get("number")).and_then(Value::as_u64));
+    let asked = match (number, state.branch.as_deref()) {
+        (Some(number), _) => PrRef::Number(number),
+        (None, Some(branch)) => PrRef::Head(branch),
+        (None, None) => return None,
+    };
+    let view = match provider_for(&repo).view(asked) {
+        Ok(view) => view,
+        Err(reason) => return Some(MergedElsewhere::Unanswered { reason }),
+    };
+    match view.status {
+        PrStatus::Merged => {}
+        PrStatus::Unknown(reason) => return Some(MergedElsewhere::Unanswered { reason: reason.to_string() }),
+        PrStatus::Open | PrStatus::Closed | PrStatus::Absent => return None,
+    }
+    let head = if view.head.is_empty() { state.branch.unwrap_or_default() } else { view.head };
+    if head.is_empty() {
+        return None;
+    }
+    let facts = PrFacts { number: view.number, head };
+    let (flow, _) = bases_and_branch(&repo);
+    let settle = |r: &Path, branch: &str| settle_unit_at(r, branch);
+    let landed = land(&repo, &facts, Some(spec), &flow, &settle, session);
+    Some(MergedElsewhere::Landed {
+        pr: facts.number,
+        branch: facts.head,
+        settle: landed.settle,
+        pending_open: landed.pending_open,
+    })
 }
 
 /// What a merge leaves recorded besides the merge: the `pr.merged` event, the

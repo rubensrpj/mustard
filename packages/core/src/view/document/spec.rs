@@ -368,6 +368,7 @@ impl<'a> Page<'a> {
                 if event.event_type == "send" {
                     // O texto enviado vem logo abaixo, recolhido.
                     let text = std::mem::take(&mut item.text);
+                    let item_code = item.code.clone();
                     out.push(Node::Item(item));
                     if !text.is_empty() {
                         let role = event.str_field("role").map_or_else(String::new, |r| self.value_label(r));
@@ -377,6 +378,7 @@ impl<'a> Page<'a> {
                                 .replace("{role}", &role)
                                 .replace("{lines}", &count_lines(&text).to_string()),
                             body: vec![Node::Code(text)],
+                            owner: Some(item_code),
                         });
                     }
                     continue;
@@ -391,6 +393,7 @@ impl<'a> Page<'a> {
                 out.push(Node::Details {
                     summary: format!("{heading} · {lines}"),
                     body: vec![Node::Code(prompt.clone())],
+                    owner: None,
                 });
             }
         }
@@ -1290,6 +1293,7 @@ mod tests {
             Node::Details {
                 summary: "Pedido enviado (agente de onda) · 12 linhas, como o agente o recebeu".into(),
                 body: vec![Node::Code(sent.trim().into())],
+                owner: Some("MSTD-SEND-0001".into()),
             }
         );
         assert!(
@@ -1302,7 +1306,8 @@ mod tests {
         assert_eq!(field(two, "Commit"), None);
         assert_eq!(field(two, "Recebe"), Some("Combinado (1)"));
         let prompt = waves.body.last().unwrap();
-        let Node::Details { summary, body } = prompt else { panic!("{prompt:?}") };
+        let Node::Details { summary, body, owner } = prompt else { panic!("{prompt:?}") };
+        assert_eq!(owner, &None, "the assembled request belongs to no single item");
         assert_eq!(summary, "O pedido da onda 2 · 5 linhas, como o agente as recebe");
         assert_eq!(body, &[Node::Code(prompts[&2].clone())]);
     }

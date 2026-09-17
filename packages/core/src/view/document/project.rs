@@ -102,6 +102,7 @@ pub fn project_document(project: &str, lines: &[ProjectRow], index_path: &str, t
                 ordered: false,
                 items: line.titles.iter().map(|title| vec![Node::Paragraph(title.clone())]).collect(),
             }],
+            owner: None,
         })
         .collect();
     if !titled.is_empty() {

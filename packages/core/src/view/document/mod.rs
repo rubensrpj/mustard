@@ -65,7 +65,9 @@ pub enum Node {
     /// Um bloco de texto monoespaçado, mostrado como está.
     Code(String),
     /// Um trecho recolhido: o resumo aparece, e os blocos abrem ao clicar.
-    Details { summary: String, body: Vec<Node> },
+    /// `owner` é o código do item de quem o trecho é, quando é de um: o texto
+    /// enviado de um pedido é do envio que o gravou.
+    Details { summary: String, body: Vec<Node>, owner: Option<String> },
     /// Um destaque, com os blocos dentro.
     Quote(Vec<Node>),
     /// Um traço de separação.
@@ -129,7 +131,9 @@ impl Document {
     /// Tira da página todo trecho em que `hit` acha algo, e põe `notice` no
     /// lugar: o item inteiro sai, com o texto e os campos, e fica só o código
     /// dele com o aviso; fora de um item, sai o trecho. Devolve o código de
-    /// cada item retido e quantos trechos fora de item saíram.
+    /// cada item retido, uma vez só e na ordem da página, e quantos trechos
+    /// fora de item saíram. O trecho recolhido que é de um item conta pelo
+    /// código do item.
     pub fn withhold(&mut self, hit: &dyn Fn(&str) -> bool, notice: &str) -> (Vec<String>, usize) {
         let mut codes = Vec::new();
         let mut loose = 0;
@@ -156,6 +160,10 @@ impl Document {
             plain(footer);
         }
         withhold_nodes(&mut self.body, hit, notice, &mut codes, &mut loose);
+        // A versão substituída de um item mostra o mesmo código da vigente:
+        // o código sai uma vez só.
+        let mut seen = BTreeSet::new();
+        codes.retain(|code| seen.insert(code.clone()));
         (codes, loose)
     }
 }
@@ -190,9 +198,17 @@ fn withhold_nodes(nodes: &mut [Node], hit: &dyn Fn(&str) -> bool, notice: &str, 
                 }
             }
             Node::Quote(inner) => withhold_nodes(inner, hit, notice, codes, loose),
-            Node::Details { summary, body } => {
+            Node::Details { summary, body, owner: None } => {
                 plain(summary, loose);
                 withhold_nodes(body, hit, notice, codes, loose);
+            }
+            Node::Details { summary, body, owner: Some(owner) } => {
+                let mut inside = 0;
+                plain(summary, &mut inside);
+                withhold_nodes(body, hit, notice, codes, &mut inside);
+                if inside > 0 {
+                    codes.push(owner.clone());
+                }
             }
             Node::Rule => {}
             Node::Item(item) => {

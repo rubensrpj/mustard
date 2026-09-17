@@ -4,13 +4,15 @@
 //! Descartar fecha o pull request e apaga a branch local, e isso não tem
 //! volta. Por isso a porta é a mesma da remoção de pendências: a primeira
 //! chamada só mostra o que vai sair — o pull request, a branch local, a do
-//! servidor quando a opção vier, a pasta da spec e a linha dela no índice — e
-//! devolve um código; a segunda, com esse código e depois do sim do usuário,
-//! faz. O código vem do que seria tirado, então um sim nunca serve para outro
-//! descarte.
+//! servidor quando a opção vier e a pasta da spec — e devolve um código; a
+//! segunda, com esse código e depois do sim do usuário, faz. O código vem do
+//! que seria tirado, então um sim nunca serve para outro descarte.
 //!
 //! A pasta da spec é arquivada por padrão, ao lado das outras, e só é apagada
 //! quando quem chama pede: nada fica pela metade, e nada some sem se pedir.
+//! A spec arquivada continua no índice, com a fase descartada, e por isso na
+//! página do projeto, que o descarte refaz: dá para achar depois o que foi
+//! decidido e por que parou. A apagada sai do índice junto com a pasta.
 
 use std::path::{Path, PathBuf};
 
@@ -24,8 +26,8 @@ use crate::commands::spec_events::{self, read::checkout, write::record};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// A pasta em que as specs descartadas ficam guardadas, dentro da pasta das
-/// specs.
-const ARCHIVE_DIR: &str = ".descartadas";
+/// specs: a mesma de onde o índice as lê.
+use mustard_core::io::spec_index::DISCARDED_DIR as ARCHIVE_DIR;
 
 /// As opções de `mustard-rt run discard`.
 pub struct DiscardOpts {
@@ -107,7 +109,8 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     }
 
     // A fase fica gravada antes de o arquivo sair do lugar: é o último evento
-    // da spec, e é ele que diz por que ela some do índice.
+    // da spec, e a mesma gravação deixa a linha dela no índice com a fase
+    // descartada.
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!("discarded"));
     draft.insert("author".to_string(), json!("binary"));
@@ -119,28 +122,40 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     let git = (!branch.is_empty())
         .then(|| crate::commands::git_delete::delete_with(&opts.root, &branch, opts.remote));
 
-    // A pasta e a linha do índice saem juntas: nada fica pela metade.
-    let moved = if opts.delete {
-        std::fs::remove_dir_all(&folder).is_ok()
+    // A pasta arquivada fica com a linha do índice; a apagada a leva junto:
+    // nada fica pela metade.
+    let (moved, index_done) = if opts.delete {
+        let removed = std::fs::remove_dir_all(&folder).is_ok();
+        (removed, mustard_core::io::spec_index::drop_line(&project.root, &spec).is_ok())
     } else {
-        archive(&spec, &folder)
+        (archive(&spec, &folder), phase_written)
     };
-    let index_dropped = mustard_core::io::spec_index::drop_line(&project.root, &spec).is_ok();
     if let Some(sid) = session {
         crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
     }
+    // A página do projeto sai do índice, e a linha acabou de mudar.
+    let page = crate::commands::spec_events::pages::refresh_project(&project.root, lang);
 
     let mut out = json!({
-        "ok": moved && index_dropped,
+        "ok": moved && index_done,
         "spec": spec,
         "discarded": leaving,
         "phase": phase_written.then(|| json!("discarded")),
-        "indexDropped": index_dropped,
+        "index": if opts.delete { "dropped" } else { "kept" },
     });
+    match page {
+        Ok((path, warnings)) => {
+            out["page"] = json!(path);
+            if !warnings.is_empty() {
+                out["warnings"] = json!(warnings);
+            }
+        }
+        Err(refusal) => out["warnings"] = json!([refusal.message(lang)]),
+    }
     if let Some(git) = git {
         out["git"] = git;
     }
-    if !(moved && index_dropped) {
+    if !(moved && index_done) {
         out["reason"] = json!("discard-incomplete");
         out["hint"] = json!(translate("discard.incomplete", lang));
     }
@@ -250,8 +265,9 @@ mod tests {
     }
 
     /// A primeira chamada só mostra o que vai sair e devolve um código; nada
-    /// sai do disco. A segunda, com o código, arquiva a spec e tira a linha
-    /// dela do índice.
+    /// sai do disco. A segunda, com o código, arquiva a spec, deixa a linha
+    /// dela no índice com a fase descartada e refaz a página do projeto, que
+    /// continua a listá-la.
     #[test]
     fn discarding_takes_two_calls_and_the_first_one_touches_nothing() {
         let dir = tempdir().unwrap();
@@ -279,7 +295,18 @@ mod tests {
             "a spec ficou guardada"
         );
         let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap_or_default();
-        assert!(!index.contains("\"x\""), "a linha da spec saiu do índice: {index}");
+        let line = index.lines().find(|l| l.contains("\"name\":\"x\"")).unwrap_or_else(|| panic!("{index}"));
+        assert!(line.contains("\"phase\":\"discarded\""), "a linha fica, com a fase descartada: {line}");
+        assert_eq!(done["index"], json!("kept"), "{done}");
+        assert_eq!(done["page"], json!(".claude/spec/project.html"), "{done}");
+        let page = std::fs::read_to_string(root.join(".claude/spec/project.html")).unwrap();
+        assert!(page.contains("<td><code>x</code></td><td>descartada</td>"), "{page}");
+
+        // O índice refeito do zero não a perde.
+        std::fs::remove_file(root.join(".claude/spec/index.ndjson")).unwrap();
+        assert!(mustard_core::io::spec_index::rebuild(root).is_ok());
+        let rebuilt = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
+        assert!(rebuilt.lines().any(|l| l == line), "{rebuilt}");
     }
 
     /// Com o pedido de apagar, a pasta some em vez de ser guardada, e o código
@@ -298,6 +325,11 @@ mod tests {
         assert_eq!(done["ok"], json!(true), "{done}");
         assert!(!root.join(".claude").join("spec").join("x").exists(), "a pasta foi apagada");
         assert!(!root.join(".claude/spec").join(ARCHIVE_DIR).join("x").exists(), "nada foi guardado");
+        assert_eq!(done["index"], json!("dropped"), "{done}");
+        let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap_or_default();
+        assert!(!index.contains("\"name\":\"x\""), "a apagada sai do índice: {index}");
+        let page = std::fs::read_to_string(root.join(".claude/spec/project.html")).unwrap();
+        assert!(!page.contains("<code>x</code>"), "{page}");
     }
 
     /// A branch do servidor sai só com a opção: sem ela o descarte tira a

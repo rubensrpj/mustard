@@ -219,10 +219,16 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     let reminders: usize = list.iter().map(|item| item.reminders.len()).sum();
     // O passo termina refazendo a página e o `.md`: a gravação de cada evento
     // já não os refaz. Falhar aqui só avisa, porque o que o passo tinha para
-    // gravar já está gravado.
+    // gravar já está gravado. O levantamento não é marco e nunca manda
+    // publicar; o item retido por ter cara de segredo sai dito, com o código.
     let mut warnings: Vec<String> = Vec::new();
-    if let Err(refusal) = spec_events::pages::refresh(&project.root, &spec, lang) {
-        warnings.push(refusal.message(lang));
+    let mut withheld: Vec<String> = Vec::new();
+    match spec_events::pages::refresh(&project.root, &spec, lang) {
+        Ok(pages) => {
+            warnings.extend(pages.warnings);
+            withheld = pages.withheld;
+        }
+        Err(refusal) => warnings.push(refusal.message(lang)),
     }
     let mut report = json!({
         "ok": true,
@@ -250,6 +256,9 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     }
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
+    }
+    if !withheld.is_empty() {
+        report["withheld"] = json!(withheld);
     }
     let open = survey::open_points(&log);
     if to_record > 0 {
@@ -440,6 +449,28 @@ mod tests {
             "o que o motivo não toca fica de fora: {touched:?}"
         );
         assert!(after["touched_hint"].as_str().unwrap_or_default().contains("fica, muda ou sai"), "{after}");
+    }
+
+    /// Com um item de texto que parece senha, o levantamento devolve o código
+    /// do item a expurgar, nos avisos e em `withheld`, e não manda publicar;
+    /// o `.html` local sai sem o texto do item.
+    #[test]
+    fn the_grill_names_the_withheld_item_and_never_orders_the_publish() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let note = write(root, Some("x"), "note",
+            json!({"text": "client_secret=9f8e7d6c5b4a3210", "keys": ["cliente"], "origin": said}));
+        let code = note["code"].as_str().unwrap_or_default().to_string();
+
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["withheld"], json!([code]), "{report}");
+        let warnings = report["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().any(|w| w.as_str().unwrap_or_default().contains(&code)), "{report}");
+        assert!(report.get("publish").is_none() && !report.to_string().contains("write publish"), "{report}");
+        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
+        assert!(!html.contains("9f8e7d6c5b4a3210"), "the local page keeps the secret out");
     }
 
     /// O `grill` termina refazendo a página e o `.md` da spec: a gravação de

@@ -8,7 +8,6 @@
 
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{Block, BlockQuery};
 use mustard_core::domain::spec_state::SpecState as _;
 
 use crate::shared::spec_state::DiskSpecState;
@@ -16,20 +15,14 @@ use crate::shared::spec_state::DiskSpecState;
 /// O endereço da última publicação da página da spec `slug`, ou nada quando a
 /// unidade nunca foi publicada.
 ///
-/// Lê o bloco de estado do arquivo de eventos e fica com o último evento de
-/// publicação que traz endereço: republicar troca o endereço mostrado sem que
-/// nada precise ser apagado.
+/// É a mesma leitura da linha da spec no índice: a última publicação da
+/// página da spec que deu certo. Republicar troca o endereço mostrado sem que
+/// nada precise ser apagado, e a publicação da página do projeto, gravada na
+/// mesma spec, não conta.
 #[must_use]
 pub fn published_url(root: &Path, slug: &str) -> Option<String> {
     let log = DiskSpecState::new(root).log(slug)?;
-    log.block(BlockQuery::Block(Block::State))
-        .iter()
-        .filter(|event| event.event_type == "publish")
-        .filter_map(|event| event.str_field("url"))
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .next_back()
-        .map(str::to_string)
+    mustard_core::domain::spec_index::spec_page_url(&log).map(str::to_string)
 }
 
 #[cfg(test)]
@@ -40,7 +33,8 @@ mod tests {
     use tempfile::tempdir;
 
     /// Sem publicação nenhuma não há endereço; publicada duas vezes, vale o
-    /// endereço da última.
+    /// endereço da última. A publicação da página do projeto, gravada na
+    /// mesma spec, não troca o link da página da spec.
     #[test]
     fn vale_o_endereco_da_ultima_publicacao() {
         let dir = tempdir().unwrap();
@@ -50,6 +44,8 @@ mod tests {
 
         seed_event(root, "x", "publish", json!({"page": "spec", "milestone": "round", "ok": true, "url": "https://claude.ai/a"}));
         seed_event(root, "x", "publish", json!({"page": "spec", "milestone": "round", "ok": true, "url": "https://claude.ai/b"}));
+        assert_eq!(published_url(root, "x").as_deref(), Some("https://claude.ai/b"));
+        seed_event(root, "x", "publish", json!({"page": "project", "milestone": "round", "ok": true, "url": "https://claude.ai/p"}));
         assert_eq!(published_url(root, "x").as_deref(), Some("https://claude.ai/b"));
     }
 }

@@ -157,8 +157,7 @@ pub(super) fn report_migration(migrated: &[String]) {
 }
 
 /// Print what an older Mustard left in files that are not its own, and how to
-/// take it out. Nothing is taken out here: the list goes through the plugin's
-/// door, where the person says yes to exactly that list.
+/// take it out. Nothing is taken out here: the plugin's door takes it out.
 pub(super) fn report_cleanup(plan: &CleanupPlan) {
     if plan.is_empty() {
         return;
@@ -177,8 +176,8 @@ pub(super) fn report_cleanup(plan: &CleanupPlan) {
         println!("  note: {path} carries traces of an older scan without its marks — left for you to decide");
     }
     if plan.has_changes() {
-        println!("  to take them out, run /mustard:upsert inside Claude Code and confirm the list;");
-        println!("  the Guards that leave become project-rule lessons, and the commit is yours.");
+        println!("  /mustard:upsert inside Claude Code takes them out, with no question;");
+        println!("  the Guards that leave become project-rule lessons first, and the commit is yours.");
     }
 }
 

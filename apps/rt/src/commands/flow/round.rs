@@ -274,8 +274,9 @@ fn run_round(
         dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "prompt": prompt.text }));
     }
 
-    // A página sai no fim do passo, uma vez, e a rodada manda publicá-la.
-    let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang).ok();
+    // A página sai no fim do passo, uma vez, e a rodada manda publicá-la,
+    // menos com item retido.
+    let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang);
 
     // Com o pull request aberto, o corpo dele é refeito aqui: ele é montado do
     // mesmo arquivo de eventos que acabou de mudar, e um corpo que descreve a
@@ -290,8 +291,6 @@ fn run_round(
         "formatted": formatted,
         "dispatch": dispatched,
         "reviews": reviews_due(&log, &built),
-        "publish": ["spec", "project"],
-        "next": translate("round.next", lang),
     });
     if entering {
         out["phase"] = json!("running");
@@ -299,13 +298,25 @@ fn run_round(
     if let Some(commit) = commit {
         out["commit"] = commit;
     }
-    if let Some(pages) = pages {
+    if let Ok(pages) = &pages {
         out["md"] = json!(pages.md);
         out["html"] = json!(pages.html);
     }
     if !warnings.is_empty() {
         out["warnings"] = json!(warnings);
     }
+    if let Err(refusal) = &pages {
+        crate::commands::spec_events::pages::push_warning(&mut out, refusal.reason(), &refusal.message(lang));
+    }
+    let dispatch = translate("round.next", lang);
+    crate::commands::spec_events::pages::end_milestone(
+        &mut out,
+        pages.as_ref().ok(),
+        "round",
+        dispatch,
+        &crate::commands::spec_events::pages::after_purge("round", dispatch, lang),
+        lang,
+    );
     if let Some(number) = rewritten {
         out["pr"] = json!({ "number": number, "body": "rewritten" });
     }
@@ -412,8 +423,10 @@ fn change_question(code: &str, lang: Locale) -> String {
 /// depois do último pedido da onda, é o "Aceitar". Um clique em "Recusar"
 /// depois dele desfaz o "sim"; um clique de antes do pedido não vale para ele.
 ///
-/// Só conta a mensagem de autor `user` com a testemunha, que o `run write`
-/// não grava: a fala do usuário chega pelos ganchos.
+/// Só conta a mensagem de autor `user` com a testemunha. O `run write` recusa
+/// toda mensagem com a testemunha, de qualquer autor, e recusa rever ou tirar
+/// uma delas, com ou sem a recusa da fala digitada: só a testemunha grava o
+/// clique.
 fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
     let langs = [Locale::PtBr, Locale::EnUs];
     let questions: Vec<String> = langs.iter().map(|lang| change_question(code, *lang)).collect();
@@ -1216,8 +1229,8 @@ mod tests {
         assert!(hint.contains(change) && hint.contains(&question), "{hint}");
         assert_eq!(delivered_count(root), 0);
 
-        // O modelo não escreve o "sim": nem como mensagem do usuário, que o
-        // `run write` recusa, nem como mensagem sua com a testemunha.
+        // O modelo não escreve o "sim": o `run write` recusa a mensagem com a
+        // testemunha, seja do usuário, seja do próprio modelo.
         let by_hand = |body: Value| {
             crate::commands::spec_events::write::write_at(&WriteOpts {
                 root: root.to_path_buf(),
@@ -1230,7 +1243,7 @@ mod tests {
         let forged = by_hand(json!({ "author": "user", "text": format!("{question}\nAceitar"), "witness": witness }));
         assert_eq!(forged["reason"], json!("user-message-by-hook"), "{forged}");
         let own = by_hand(json!({ "text": format!("{question}\nAceitar"), "witness": witness }));
-        assert_eq!(own["ok"], json!(true), "{own}");
+        assert_eq!(own["reason"], json!("user-message-by-hook"), "{own}");
         let still = round(root, "x", Some(&report));
         assert_eq!(still["reason"], json!("wave-plan-does-not-work"), "a forged yes accepts nothing: {still}");
 

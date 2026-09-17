@@ -191,12 +191,16 @@ mod tests {
     /// escritos no disco, parado na branch de uma spec aberta.
     fn project_with_injectables_on(spec: &str) -> tempfile::TempDir {
         let dir = project_with(
-            r#"{"language":{"text":"pt-BR"},"inject":[{"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true}]}"#,
+            r#"{"language":{"text":"pt-BR"},"inject":[{"on":"userPromptSubmit","file":".claude/mustard/mapa-inicio-sessao.md","once":true}]}"#,
         );
         let root = dir.path();
         let mustard_dir = root.join(".claude").join("mustard");
         std::fs::create_dir_all(&mustard_dir).unwrap();
-        std::fs::write(mustard_dir.join("orchestrator.md"), mustard_core::ORCHESTRATOR_MD).unwrap();
+        std::fs::write(
+            mustard_dir.join("mapa-inicio-sessao.md"),
+            mustard_core::session_map(mustard_core::platform::i18n::Locale::PtBr),
+        )
+        .unwrap();
         stand_on_spec_branch(root, spec);
         record_open(root, spec, &format!("feature/{spec}"), "dev").expect("open");
         dir
@@ -269,7 +273,7 @@ mod tests {
             assert_eq!(context_of(verdict), PT_LINE, "{prompt}");
         }
         assert!(
-            !dir.path().join(".claude/.session/s1/injected-orchestrator.md").exists(),
+            !dir.path().join(".claude/.session/s1/injected-mapa-inicio-sessao.md").exists(),
             "no injectable is delivered, so no marker is burned",
         );
     }

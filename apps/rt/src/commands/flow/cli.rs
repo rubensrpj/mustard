@@ -142,8 +142,9 @@ pub enum FlowCmd {
     },
     /// Descarta uma spec, em dois passos. A primeira chamada mostra o que vai
     /// sair — o pull request, a branch local, a do servidor quando a opção
-    /// vier, a pasta da spec e a linha dela no índice — e devolve um código; a
-    /// segunda, com esse código e depois do sim do usuário, faz.
+    /// vier e a pasta da spec — e devolve um código; a segunda, com esse
+    /// código e depois do sim do usuário, faz. A spec guardada continua no
+    /// índice e na página do projeto, marcada como descartada.
     #[command(display_order = 12)]
     Discard {
         /// A spec descartada. Sem ela, a spec atual.
@@ -152,8 +153,8 @@ pub enum FlowCmd {
         /// Apagar também a branch do servidor. Sem ela, só a local sai.
         #[arg(long)]
         remote: bool,
-        /// Apagar a pasta da spec em vez de guardá-la ao lado das outras
-        /// descartadas.
+        /// Apagar a pasta da spec, e a linha dela no índice, em vez de
+        /// guardá-la ao lado das outras descartadas.
         #[arg(long)]
         delete: bool,
         /// O código que a primeira chamada devolveu, passado depois do sim do

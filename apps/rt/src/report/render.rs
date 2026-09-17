@@ -154,7 +154,7 @@ impl Html<'_> {
             Node::Code(text) => {
                 let _ = write!(out, "<pre>{}</pre>", escape(text));
             }
-            Node::Details { summary, body } => {
+            Node::Details { summary, body, .. } => {
                 let _ = write!(out, "<details><summary>{}</summary>", self.inline(summary));
                 self.nodes(body, out);
                 out.push_str("</details>");
@@ -300,7 +300,7 @@ fn md_node(node: &Node) -> String {
             .join("\n"),
         Node::Table(table) => md_table(table),
         Node::Code(text) => fenced(text),
-        Node::Details { summary, body } => {
+        Node::Details { summary, body, .. } => {
             let body = md_blocks(body);
             if body.is_empty() { format!("**{summary}**") } else { format!("**{summary}**\n\n{body}") }
         }

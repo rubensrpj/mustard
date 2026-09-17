@@ -521,9 +521,9 @@ impl PrEvidence {
 ///
 /// - [`Skip`](PrQuery::Skip) — every branch answers
 ///   [`PrStatus::Unknown`]`(`[`PR_NOT_QUERIED`]`)`. The start of a session
-///   with no spec awaiting a merge cannot afford a round trip per branch, so
-///   it measures LOCAL ancestry only. The
-///   classification then reaches a pruning verdict only where ancestry already
+///   cannot afford a round trip per branch, so it measures LOCAL ancestry
+///   only, and asks the provider about the current spec's pull request alone.
+///   The classification then reaches a pruning verdict only where ancestry already
 ///   proved the merge; everything else stays [`UnitState::Unmeasured`]. Such a
 ///   count can only UNDER-report — a merge the provider squashed leaves no
 ///   ancestry — and never invent a prunable branch. A missed nudge is a
@@ -933,18 +933,21 @@ fn verdict(
     }
 }
 
-/// A conferência do merge feito por outra pessoa: as unidades cujo merge está
-/// VERIFICADO e cuja branch ainda existe.
+/// A conferência do merge feito por outra pessoa, pelo git local: as unidades
+/// cujo merge o git prova e cuja branch ainda existe.
 ///
 /// É a resposta única, e o aviso do início da sessão a lê: uma segunda
 /// contagem em outro lugar é como as duas varreduras que este módulo
 /// substituiu divergiram. Mesma enumeração, mesma medida de ancestralidade,
-/// mesma tabela de vereditos; `pr_query` diz se o provedor é perguntado.
-pub(crate) fn merged_by_another(
-    root: &Path,
-    pr_query: PrQuery<'_>,
-    flow: &BaseFlow,
-) -> Vec<BranchState> {
+/// mesma tabela de vereditos.
+///
+/// Nunca pergunta ao provedor. Uma pergunta por branch, num repositório com as
+/// branches dos colegas, passou do prazo do início da sessão e levou junto o
+/// texto inteiro dele; o provedor só é perguntado pelo pull request da spec
+/// atual, na porta do pull request. Pelo git local a conta pode sair menor —
+/// um merge que o portal refez em outro commit não deixa rastro —, e nunca
+/// inventa uma branch.
+pub(crate) fn merged_by_another(root: &Path, flow: &BaseFlow) -> Vec<BranchState> {
     let mut units = BranchEnumerator::sweep(root, flow);
     // Before any per-base measurement: a unit filed under the empty base is
     // skipped by every one of them, so resolving here is what makes a
@@ -952,7 +955,7 @@ pub(crate) fn merged_by_another(
     units.resolve_unrecorded_bases(root, flow);
     let (merged, measured) = try_merged_refs(root, flow);
     let ahead = refs_ahead_of_base(root, units.units(), flow);
-    classify(root, pr_query, units.units(), &merged, &ahead, measured)
+    classify(root, PrQuery::Skip, units.units(), &merged, &ahead, measured)
         .into_iter()
         .filter(|state| state.state.is_awaiting_prune())
         .collect()
@@ -1218,7 +1221,7 @@ refs/tags/v1.0_dev aaa7
         // Entregue, não mergeada e sem remoto nenhum.
         deliver(&root, "dev_gone");
 
-        let pending = merged_by_another(&root, PrQuery::Skip, &bases());
+        let pending = merged_by_another(&root, &bases());
         let names: Vec<&str> = pending.iter().map(|s| s.branch.as_str()).collect();
         assert_eq!(names, vec!["dev_landed"], "only the verified merge is owed a prune");
         assert_eq!(pending[0].state, UnitState::AwaitingPrune);
@@ -1583,7 +1586,7 @@ refs/tags/v1.0_dev aaa7
         assert!(!ahead.contains("dev_fresh"), "a branch just cut carries no commit of its own");
 
         assert!(
-            merged_by_another(&root, PrQuery::Skip, &bases()).is_empty(),
+            merged_by_another(&root, &bases()).is_empty(),
             "the unit being edited must never be announced as delivered",
         );
         let states = classify(&root, PrQuery::Skip, swept.units(), &merged, &ahead, true);
@@ -1600,7 +1603,7 @@ refs/tags/v1.0_dev aaa7
         run(&root, &["commit", "-q", "-m", "work"]);
         run(&root, &["checkout", "-q", "dev"]);
         run(&root, &["merge", "-q", "--no-ff", "dev_fresh", "-m", "merge dev_fresh"]);
-        let pending = merged_by_another(&root, PrQuery::Skip, &bases());
+        let pending = merged_by_another(&root, &bases());
         let names: Vec<&str> = pending.iter().map(|s| s.branch.as_str()).collect();
         assert_eq!(names, vec!["dev_fresh"], "a unit that delivered commits IS owed its prune");
     }
@@ -1628,7 +1631,7 @@ refs/tags/v1.0_dev aaa7
         assert!(!landed.local, "no local ref carries it any more");
         assert_eq!(landed.remotes, vec!["origin"], "…but the remote is still alive");
 
-        let pending = merged_by_another(&root, PrQuery::Skip, &bases());
+        let pending = merged_by_another(&root, &bases());
         let names: Vec<&str> = pending.iter().map(|s| s.branch.as_str()).collect();
         assert_eq!(names, vec!["dev_landed"], "the remote of a merged unit is owed its prune");
         assert_eq!(pending[0].state, UnitState::AwaitingPrune);

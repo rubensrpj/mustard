@@ -21,10 +21,9 @@
 //! a sessão desligada no fechamento e o worktree, em que o degrau da branch
 //! pode não responder, não apagam a cobrança.
 //!
-//! Nesta versão nenhum comando chama essa porta: os comandos antigos que
-//! fechavam e entregavam recusam, e o `close` e o `pr-merge` do fluxo novo
-//! ainda não chegaram. Enquanto isso, nada fecha nem entrega pelo Mustard, e
-//! não há o que cobrar; um merge feito fora dele não passa por aqui.
+//! Chamam essa porta o `close`, o `pr-merge` e o início da sessão, quando
+//! encontra o merge feito por outra pessoa: a spec atual em "pull request
+//! aberto" e o provedor dizendo que ele entrou.
 //!
 //! ## Quando cobra — todos os fatos precisam valer
 //!

@@ -321,7 +321,7 @@ pub const DELIVERED_MAX_CHARS: usize = 8_000;
 /// As fases de uma spec, na ordem em que acontecem.
 pub const PHASES: &[&str] =
     &["survey", "plan", "approved", "running", "closed", "pr_open", "delivered", "discarded"];
-const PAGES: &[&str] = &["spec"];
+const PAGES: &[&str] = &["spec", "project"];
 const MILESTONES: &[&str] = &["approval", "round", "close"];
 /// Os tipos de trabalho, na ordem em que o levantamento junta as lacunas.
 pub const WORK_KINDS: &[&str] = &["feature", "fix", "refactor"];

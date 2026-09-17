@@ -66,25 +66,6 @@ fn production_half(rel: &str) -> String {
     }
 }
 
-/// Where that line SITS — the only way to assert an order between two rows.
-/// `line_with` answers whether a row exists, which is what let a re-ordering
-/// of the unit's question pass every ratchet it had.
-fn line_index(body: &str, needle: &str) -> Option<usize> {
-    body.lines().position(|l| l.contains(needle))
-}
-
-/// The options a `  label:` row of the unit's question OFFERS, in order, with
-/// the label stripped — columns are separated by three or more spaces, so a
-/// single-space phrase like `…ou o seu` stays ONE entry instead of three.
-fn offered_options<'a>(row: &'a str, label: &str) -> Vec<&'a str> {
-    let (_, rest) = row.split_once(label).unwrap_or(("", row));
-    rest.split("   ").map(str::trim).filter(|s| !s.is_empty()).collect()
-}
-
-
-
-
-
 /// Os nomes que a prosa entregue diz que o campo do próximo passo pode
 /// entregar são exatamente os que a tabela do próximo passo entrega.
 ///
@@ -137,214 +118,18 @@ fn a_porta_promete_os_mesmos_comandos_que_o_proximo_passo_entrega() {
     );
 }
 
-/// The orchestrator's Verdict rule names a MEASUREMENT an agent claims
-/// as the second thing never relayed on a briefing alone.
-///
-/// The rule used to cover one claim only: a runtime symptom the user reported.
-/// So an orchestrator following it to the letter relayed "13 of 13 passed"
-/// because an agent said so — which happened, and was false. The second half
-/// says a measurement is not evidence until the orchestrator takes it itself.
-///
-/// The counterweight is asserted too, and deliberately: a rule that only added
-/// "verify more" would license re-deriving the whole briefing and spending a
-/// subagent to double-check one's own work. Both halves must survive together
-/// or the sentence teaches the opposite failure.
+/// `hotfix` fica entre as quatro primeiras sugestões de tipo que o `open`
+/// devolve: quem monta a pergunta com quatro opções não a deixa de fora, e uma
+/// emergência sempre tem nome na pergunta.
 #[test]
-fn orchestrator_prose_teaches_the_measurement_half_of_the_verdict_rule() {
-    // --- 1. The shipped seed states both claims, measurement second -------
-    // The compiled-in seed is what `upsert` lays down in every project, so
-    // this reads the text that actually ships — not a stray copy on disk.
-    let seed = mustard_core::ORCHESTRATOR_MD;
-    let verdict =
-        line_with(seed, "Verdict rule").expect("the orchestrator seed states no Verdict rule");
-
-    let symptom_at = verdict
-        .find("runtime symptom")
-        .expect("the Verdict rule dropped its first half — the user-reported symptom");
-    let measurement_at = verdict.find("MEASUREMENT").unwrap_or_else(|| {
-        panic!("the Verdict rule never names a measurement an agent claims: {verdict}")
-    });
-    assert!(
-        measurement_at > symptom_at,
-        "the measurement claim must be the SECOND thing the rule refuses to relay, \
-         after the reported symptom (symptom at {symptom_at}, measurement at {measurement_at})",
-    );
-
-    // Naming it is not teaching it: the line must say what turns the claim
-    // into evidence, which is taking the measurement again.
-    assert!(
-        verdict.contains("take it yourself"),
-        "the rule names a claimed measurement without saying who has to take it: {verdict}",
-    );
-    assert!(
-        verdict.contains("re-run the command"),
-        "the rule must name the act that settles it — re-running the command: {verdict}",
-    );
-
-    // The counterweight, so the rule cannot be read as "verify everything".
-    assert!(
-        verdict.contains("double-checking your own work"),
-        "the rule adds verification without its limit — the rest of a briefing IS \
-         the answer, and no subagent re-checks your own work: {verdict}",
-    );
-
-    // --- 2. The seed is really the file a session reads -------------------
-    // Without this half the sentence is a template nobody is served.
-    let project_seed = read("packages/core/src/platform/project_seed/files.rs");
-    assert!(
-        project_seed.contains("(\"orchestrator.md\", ORCHESTRATOR_MD)"),
-        "nothing seeds orchestrator.md any more, so the rule reaches no window",
-    );
-    let config = read("packages/core/src/domain/config.rs");
-    assert!(
-        config.contains(".claude/mustard/orchestrator.md"),
-        "the default inject no longer declares the orchestrator injectable",
-    );
-}
-
-
-
-
-
-/// The question asks WHERE the unit starts before WHAT it is called.
-///
-/// The ratchet above demands both rows EXIST and says nothing about their
-/// order, so shipping `tipo` above `sai de` broke no test — and a type read
-/// first makes the base look like its consequence, which is the implication
-/// this product removed the day the base began being chosen against a real
-/// catalogue.
-///
-/// Prose-only, deliberately: the row order is a RENDERING decision and no
-/// emitter can be asked whether the block was drawn in it. The mechanism half
-/// — that the base is MEASURED rather than derived from the type — is already
-/// ratcheted by `router_prose_teaches_the_kind_named_branch_and_its_one_question`,
-/// and duplicating it here would assert the wrong thing twice.
-#[test]
-fn router_asks_the_base_before_the_type() {
-    let seed = mustard_core::DISPATCH_MD;
-
-    let base = line_index(seed, "  sai de:").expect("the seed shows no `sai de` row — the base is never asked");
-    let kind = line_index(seed, "  tipo:").expect("the seed shows no `tipo` row — the type is never asked");
-    assert!(
-        base < kind,
-        "the seed shows `tipo` above `sai de`, so the base reads as a consequence \
-         of the type — the implication a real catalogue removed",
-    );
-
-    // Both rows still open on a pre-marked answer: an Enter accepts, and the
-    // re-order must not cost the operator a decision it never used to cost.
-    for (row, marked) in [("  sai de:", "[dev]"), ("  tipo:", "[fix]")] {
-        let line = line_with(seed, row).unwrap_or_else(|| panic!("no `{row}` row"));
-        assert!(
-            line.contains(marked),
-            "`{row}` lists its options without PRE-MARKING one, so the re-ordered \
-             question costs two decisions instead of two Enters: {line}",
-        );
-    }
-
-    // Say WHY, or the order is a coincidence the next editor tidies away.
-    let why = line_with(seed, "`sai de` FIRST")
-        .expect("the router never says the base is asked first — nothing stops a re-order");
-    assert!(
-        why.contains("before what it is CALLED"),
-        "the order is stated without its reason: the operator settles where the unit \
-         STARTS before what it is called: {why}",
-    );
-}
-
-/// The rows are independent fields, the surface has a ceiling, and `hotfix`
-/// survives it.
-///
-/// Two silences in the router produced one defect. "Ask both together" never
-/// said the fields are INDEPENDENT, so the question came back as pre-paired
-/// options (`fix saindo de dev` / `hotfix saindo de main`) — the cartesian
-/// product of two choices, which has no row at all for a `hotfix` cut from the
-/// ordinary base. And the prose never named the surface's ceiling of four
-/// options, so the renderer dropped a suggestion to fit — and the one it
-/// dropped was `hotfix`, the row's whole reason for existing.
-#[test]
-fn router_forbids_pairing_and_pins_hotfix() {
-    let seed = mustard_core::DISPATCH_MD;
-
-    let rule = line_with(seed, "INDEPENDENT fields")
-        .expect("the router never says the rows are independent fields");
-    assert!(
-        rule.contains("cartesian product"),
-        "independence is asserted without naming what pairing actually hands back — \
-         the product of two choices, in which one combination has no row: {rule}",
-    );
-    assert!(
-        rule.contains("4 options"),
-        "the prose never names the ceiling of the question surface, so the reader \
-         discovers it by getting it wrong in front of the operator: {rule}",
-    );
-    assert!(
-        rule.contains("PINNED"),
-        "nothing forbids dropping `hotfix` to fit the ceiling — the exact suggestion \
-         that fell out last time: {rule}",
-    );
-
-    // The block obeys its own rule: four options plus the free field, `hotfix`
-    // among them, and no row spelling a pair.
-    let kind_row = line_with(seed, "  tipo:").expect("the router seed shows no `tipo` row");
-    let offered = offered_options(kind_row, "tipo:");
-    let (free, options) = offered
-        .split_last()
-        .expect("the `tipo` row offers nothing at all");
-    assert!(
-        free.starts_with('…'),
-        "the `tipo` row does not end in the free field, so a type the list omits \
-         cannot be typed: {kind_row}",
-    );
-    assert!(
-        options.len() <= 4,
-        "the `tipo` row offers {} options over a surface that takes 4 — the renderer \
-         will drop one, and the prose does not get to choose which: {kind_row}",
-        options.len(),
-    );
-    assert!(
-        options.contains(&"hotfix"),
-        "`hotfix` is not among the offered types, so an emergency cannot be named \
-         from the question: {kind_row}",
-    );
-    let base_row = line_with(seed, "  sai de:").expect("the router seed shows no `sai de` row");
-    let base_offered = offered_options(base_row, "sai de:");
-    let (base_free, base_options) = base_offered
-        .split_last()
-        .expect("the `sai de` row offers nothing at all");
-    assert!(
-        base_free.starts_with('…'),
-        "the `sai de` row has no free field, so a catalogue longer than the ceiling \
-         hides the branches that did not fit: {base_row}",
-    );
-    assert!(
-        base_options.len() <= 4,
-        "the `sai de` row offers {} options over a surface that takes 4: {base_row}",
-        base_options.len(),
-    );
-    for row in [kind_row, base_row] {
-        assert!(
-            !row.contains("saindo de"),
-            "a row of the question spells a PAIR, which is the defect itself — the \
-             operator who wants `hotfix` off the ordinary base finds no line: {row}",
-        );
-    }
-
-    // The code half: the chooser's suggestions are where a renderer takes its
-    // four from, so `hotfix` has to survive that truncation there too.
+fn hotfix_stays_among_the_first_four_suggested_kinds() {
     let kinds = read("apps/rt/src/shared/work_kind.rs");
     assert!(
         kinds.contains("[\"feature\", \"fix\", \"hotfix\", \"chore\""),
         "`hotfix` fell past the fourth SUGGESTED token, so anything taking the first \
-         four to fit the surface drops it — exactly the pin the prose promises",
+         four to fit the question surface drops it",
     );
 }
-
-
-
-
-
-
 
 /// Nothing refuses an operation because a branch is absent from the
 /// PRE-SELECTED list.
@@ -1277,71 +1062,23 @@ fn both_boot_twins_carry_the_same_download_deadline() {
     );
 }
 
-/// **A door does what it names — and the rule ships to every project, not just
-/// to the one where it was learned.**
+/// **A porta faz o que o nome dela diz, e para ali.**
 ///
-/// Measured in the field, 2026-08-31, on a repository that is not this one: a
-/// bare `/mustard:pr open` produced a full test-suite run, a 328-commit drift
-/// analysis, a dry-run merge in a throwaway worktree and a proposal to merge an
-/// integration base into the operator's own unit — and no pull request. The
-/// operator had asked for a pull request and nothing else.
-///
-/// Where the rule lives is the whole point of this ratchet. The door's own
-/// prose (`plugin/commands/pr.md`) is read only once the door OPENS, and that
-/// session never got that far — it went wide before it went anywhere. The
-/// ORCHESTRATOR is the file injected at the start of every session of every
-/// project, so that is the copy that has to carry it; the door carries the
-/// operational half. Both, or the rule only reaches the sessions that were
-/// already going to be fine.
-///
-/// This holds all three claims: the general rule, its two operational halves,
-/// and the measurement that justifies them — a reader can check the date rather
-/// than take the rule on faith.
+/// Medido em campo, 2026-08-31, num repositório que não é este: um
+/// `/mustard:pr open` sozinho rodou a suíte inteira, uma análise de 328
+/// commits de diferença, um merge de ensaio numa cópia e uma proposta de
+/// trazer a base para dentro da unidade — e nenhum pull request. A porta do
+/// pull request diz que publica e para: não julga, não trava, relata a suíte
+/// vermelha sem investigar e relata o envio recusado sem contornar.
 #[test]
-fn every_project_learns_that_a_door_does_what_it_names() {
-    let orchestrator = mustard_core::ORCHESTRATOR_MD;
-
-    // The general rule, in the file every session reads. It is stated ABOUT
-    // doors, not about `pr open`, because the next over-reach will be at some
-    // other door.
-    assert!(
-        orchestrator.contains("A door does what it NAMES and stops there"),
-        "the injected router never says a door is bounded by its own name",
-    );
-
-    // Half one: a measurement taken for a report is not a gate. A red suite is
-    // `merge`'s business; `open` states the number and publishes.
-    assert!(
-        orchestrator.contains("REPORTED, never investigated"),
-        "the router lets a measurement taken for the body become a gate",
-    );
-
-    // Half two: the environment refusing is news, not a problem to route
-    // around. Carrying an integration base into the operator's unit to make
-    // someone else's failure go green is the specific move that was measured.
-    assert!(
-        orchestrator.contains("Never propose carrying an integration base into the operator's unit"),
-        "the router leaves the 328-commit merge proposal available as an answer",
-    );
-
-    // The measurement itself, with its date — the claim above is checkable.
-    assert!(
-        orchestrator.contains("2026-08-31"),
-        "the router asserts the door-scope rule without the field case behind it",
-    );
-
-    // The door repeats the operational half where the work actually happens, so
-    // a session that DID reach the door is told there too.
+fn the_pr_door_publishes_and_stops() {
     let pr_door = read("plugin/commands/pr.md");
     for claim in [
-        "It does not judge, and it does not gate",
-        "A red suite is REPORTED, never investigated here",
-        "A push refused by the repository's own tooling is REPORTED, not routed around",
+        "it does not judge and does not gate",
+        "A red suite is reported, never investigated here",
+        "A push refused by the repository's own tooling is reported, not routed around",
     ] {
-        assert!(
-            pr_door.contains(claim),
-            "the `pr` door dropped `{claim}` — the operational half of the rule",
-        );
+        assert!(pr_door.contains(claim), "the `pr` door dropped `{claim}`");
     }
 }
 
@@ -1352,22 +1089,15 @@ fn every_project_learns_that_a_door_does_what_it_names() {
 /// Where the always-rewrite contract is stated, and the sentences that state
 /// it: `(file, claims)`, with `claims[0]` the always-rewrite sentence itself.
 ///
-/// Five surfaces describe what `/mustard:upsert` does to the instruction files
-/// the harness seeds — three doc comments, one door, one command reference, in
-/// two languages — and until now NOTHING read any of them. The regression they
-/// ratchet against is not hypothetical: a round of this work replaced the
-/// always-rewrite sentence with a merge-mode one and cost two turns of
-/// correction, with a green build both times, because every criterion pinned
-/// the BEHAVIOUR and none pinned the prose that describes it.
+/// Five surfaces describe what `/mustard:upsert` does to Mustard's own texts —
+/// three doc comments, one door, one command reference, in two languages. The
+/// regression they ratchet against is not hypothetical: a round of this work
+/// replaced the always-rewrite sentence with a merge-mode one and cost two
+/// turns of correction, with a green build both times, because every
+/// criterion pinned the BEHAVIOUR and none pinned the prose that describes it.
 ///
-/// `project_seed/files.rs` is here because that is where the ENGINE states the
-/// contract, and two of the four original offenders lived in it. A ratchet that
-/// reads the doors and not the engine leaves the sentence closest to the code
-/// unguarded.
-///
-/// The file NAMES are not listed here. They come from the seed, so a new
-/// injectable makes every one of these surfaces owe it a mention rather than
-/// being discovered missing one surface at a time.
+/// The names each surface owes come from the seed ([`owed_names`]), never from
+/// this table.
 const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
     (
         "MUSTARD-COMMANDS.md",
@@ -1541,23 +1271,32 @@ fn flattened(body: &str) -> String {
     body.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
-/// The basenames the seed carries, asked of the seed.
-fn injectables() -> Vec<&'static str> {
-    let names = mustard_core::injectable_names();
-    assert!(!names.is_empty(), "the seed carries no injectable — every check below would measure nothing");
-    names
+/// What every surface owes a mention: the session map, by its file name, and
+/// the agents, by their folder — both asked of the seed.
+fn owed_names() -> Vec<String> {
+    let paths = mustard_core::harness_text_paths();
+    let map = paths
+        .iter()
+        .find_map(|p| p.strip_prefix("mustard/"))
+        .expect("the seed carries the session map")
+        .to_string();
+    let agents = paths
+        .iter()
+        .find_map(|p| p.rsplit_once('/').filter(|(dir, _)| dir.starts_with("agents/")).map(|(dir, _)| dir.to_string()))
+        .expect("the seed carries the agents");
+    vec![map, agents]
 }
 
 /// Every surface that describes the install states the contract, names every
 /// file it holds for, and never files them under what the operator owns.
 ///
 /// Both halves, as everywhere in this file. The PROSE half is every surface in
-/// [`REWRITE_CONTRACT_SURFACES`]; the CODE half drives `seed_injectable_files`
+/// [`REWRITE_CONTRACT_SURFACES`]; the CODE half drives `seed_harness_texts`
 /// over a diverged copy and requires the outcome the prose promises — so the
 /// pair can only be broken together, deliberately.
 #[test]
 fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
-    let names = injectables();
+    let names = owed_names();
 
     for (rel, claims) in REWRITE_CONTRACT_SURFACES {
         let body = read(rel);
@@ -1571,7 +1310,7 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
         }
         for name in &names {
             assert!(
-                body.contains(name),
+                body.contains(name.as_str()),
                 "{rel} describes what an install does to the harness's own instruction \
                  files and never names `{name}`, which the seed carries. A reader is told \
                  the contract for some of them and left to guess for the rest",
@@ -1581,7 +1320,7 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
         // the line that also states the exception. This is the exact shape the
         // regression took: the names kept, the verb swapped.
         for (n, line) in body.lines().enumerate() {
-            if !names.iter().any(|name| line.contains(name)) {
+            if !names.iter().any(|name| line.contains(name.as_str())) {
                 continue;
             }
             if !line.to_ascii_lowercase().contains("merge") {
@@ -1624,7 +1363,7 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
             let headline = sentence.contains(claims[0]);
 
             // Half one: the sentence NAMES a file the seed carries.
-            if names.iter().any(|name| sentence.contains(name)) {
+            if names.iter().any(|name| sentence.contains(name.as_str())) {
                 let marker = OWNERSHIP_MARKERS
                     .iter()
                     .chain(PRESERVATION_VERBS)
@@ -1667,532 +1406,35 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
 
     // The code half. A copy that diverged is REPLACED and reported as Updated;
     // a copy already identical is Preserved because there was nothing to write.
+    let text = mustard_core::platform::i18n::Locale::PtBr;
     let dir = tempfile::tempdir().unwrap();
     let claude = dir.path().join(".claude");
-    let created = mustard_core::seed_injectable_files(&claude).unwrap();
-    assert_eq!(created.len(), names.len(), "the seeder wrote a different set than the seed carries");
-    for (name, outcome) in &created {
-        assert_eq!(*outcome, mustard_core::SeedOutcome::Created, "{name} on a fresh project");
+    let created = mustard_core::seed_harness_texts(&claude, text).unwrap();
+    assert_eq!(created.len(), mustard_core::harness_text_paths().len(), "the seeder wrote a different set");
+    for (rel, outcome) in &created {
+        assert_eq!(*outcome, mustard_core::SeedOutcome::Created, "{rel} on a fresh project");
     }
 
-    for name in &names {
-        std::fs::write(claude.join("mustard").join(name), "AN OPERATOR EDIT").unwrap();
+    for rel in mustard_core::harness_text_paths() {
+        std::fs::write(claude.join(rel), "AN OPERATOR EDIT").unwrap();
     }
-    let rewritten = mustard_core::seed_injectable_files(&claude).unwrap();
-    for (name, outcome) in &rewritten {
+    let rewritten = mustard_core::seed_harness_texts(&claude, text).unwrap();
+    for (rel, outcome) in &rewritten {
         assert_eq!(
             *outcome,
             mustard_core::SeedOutcome::Updated,
-            "{name} survived an install as the operator's edit — the prose above promises \
-             it is replaced, so a corrected rule now fails to reach installed projects",
+            "{rel} survived an install as the operator's edit — the prose above promises \
+             it is replaced, so a corrected text now fails to reach installed projects",
         );
     }
 
-    let settled = mustard_core::seed_injectable_files(&claude).unwrap();
-    for (name, outcome) in &settled {
+    let settled = mustard_core::seed_harness_texts(&claude, text).unwrap();
+    for (rel, outcome) in &settled {
         assert_eq!(
             *outcome,
             mustard_core::SeedOutcome::Preserved,
-            "{name} is reported as written when the shipped text was already on disk — \
+            "{rel} is reported as written when the shipped text was already on disk — \
              the operation must converge after one run",
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// No document names SOME of the injectables
-// ---------------------------------------------------------------------------
-
-/// Where a document that enumerates the injectables can live.
-///
-/// `.claude/` is deliberately absent: it is Mustard's own, personal to whoever
-/// programs, and this repository versions none of it.
-const PROSE_SCAN_ROOTS: &[&str] = &["apps", "packages", "plugin"];
-
-/// Blocks that name SOME injectables and not all, kept deliberately.
-///
-/// `(file, anchor, why)`. The bar is not "it is minor": it is that the block is
-/// a DATED MEASUREMENT of specific files, taken when the set was smaller.
-/// Adding a name a measurement never covered would falsify it, and a measured
-/// number is the one thing this project may not edit to keep a test green.
-/// The sibling assertion drops a row that stops being needed.
-/// A repo-relative path spelled with forward slashes on every platform.
-///
-/// Every exemption table in this file is written with `/`. `Path::display` uses
-/// the platform separator, so comparing the two directly is a bug that can only
-/// appear where the separator differs — which is exactly the platform the author
-/// is not running.
-fn normalise_separators(path: &Path) -> String {
-    path.display().to_string().replace('\\', "/")
-}
-
-const SUBSET_EXEMPT_BLOCKS: &[(&str, &str, &str)] = &[
-    (
-        "apps/cli/tests/template_budget.rs",
-        "held nothing but rules",
-        "the measurement that set INJECTABLE_CHAR_CAP, taken on the rewrite that \
-         introduced it and before the third channel was split off. It names the two \
-         files that were measured",
-    ),
-    (
-        "packages/core/src/platform/project_seed/files.rs",
-        "on the theory that siblings share one ceiling",
-        "the 2026-08-25 experiment, reported as it ran: two sibling hooks on one \
-         event, 6,000 characters each, both intact. Re-typing the number as the \
-         set grows would claim an experiment that was never performed",
-    ),
-    (
-        "plugin/refs/mustard/router-rationale.md",
-        "both arrived intact, in separate blocks",
-        "the same 2026-08-25 experiment, in the ref that carries it in full. The \
-         count belongs to the hooks that were REGISTERED that day, not to the \
-         set of injectables the seed carries now",
-    ),
-    (
-        "plugin/refs/mustard/router-rationale.md",
-        "with zero operational tokens lost",
-        "the 2026-08-20 character counts, file by file, from before the split — a \
-         record of what two specific documents measured then",
-    ),
-];
-
-/// Recursively collect `.rs` and `.md` files under `dir`, sorted.
-fn collect_documents(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<_> = entries.flatten().collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = entry.file_name();
-            if matches!(name.to_str(), Some("target" | "node_modules" | "dist" | "build" | ".git")) {
-                continue;
-            }
-            collect_documents(&path, out);
-        } else if matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("rs" | "md")
-        ) {
-            out.push(path);
-        }
-    }
-}
-
-/// Every document the scan reads: the roots above, plus the repo-root markdown.
-fn scanned_documents() -> Vec<PathBuf> {
-    let root = repo_root();
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        let mut entries: Vec<_> = entries.flatten().collect();
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
-                out.push(path);
-            }
-        }
-    }
-    for rel in PROSE_SCAN_ROOTS {
-        collect_documents(&root.join(rel), &mut out);
-    }
-    out
-}
-
-/// The PROSE blocks of a document: runs of `//`-comment lines in Rust, runs of
-/// non-blank lines in markdown.
-///
-/// Code is not read. A fixture may legitimately model a project that declares
-/// two of three — that is the state the doctor exists to FIND — while a comment
-/// or a paragraph makes a claim about the harness, and a claim about some of
-/// the injectables is a claim that goes stale the day another is seeded.
-/// In markdown, the HEADING a block sits under travels with it.
-///
-/// A heading is a claim, and it is usually the shortest one on the page: `##
-/// Why two files rather than one` stands alone between blank lines, names no
-/// file and carries no subject word, so read on its own it says nothing this
-/// scan can weigh — and that is exactly how a section title survived counting
-/// the injectables wrong. Read with the paragraph it opens, it is a sentence of
-/// that paragraph, which is how a reader takes it.
-fn prose_blocks(path: &Path, body: &str) -> Vec<(usize, String)> {
-    let rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
-    let mut out: Vec<(usize, String)> = Vec::new();
-    let mut start = 0usize;
-    let mut acc: Vec<&str> = Vec::new();
-    let mut heading: Option<&str> = None;
-    for (n, line) in body.lines().enumerate() {
-        let keep = if rust { line.trim_start().starts_with("//") } else { !line.trim().is_empty() };
-        if keep {
-            if acc.is_empty() {
-                start = n + 1;
-            }
-            acc.push(line);
-        } else if !acc.is_empty() {
-            let block = acc.join("\n");
-            let is_heading = !rust && acc.len() == 1 && acc[0].trim_start().starts_with('#');
-            let carried = match heading {
-                Some(h) if !rust && !is_heading => format!("{h}\n{block}"),
-                _ => block,
-            };
-            if is_heading {
-                heading = Some(acc[0]);
-            }
-            out.push((start, carried));
-            acc.clear();
-        }
-    }
-    if !acc.is_empty() {
-        let block = acc.join("\n");
-        let carried = match heading {
-            Some(h) if !rust => format!("{h}\n{block}"),
-            _ => block,
-        };
-        out.push((start, carried));
-    }
-    out
-}
-
-/// Brace alternation expanded: `templates/mustard/{orchestrator,dispatch,material}.md`
-/// becomes the paths it stands for.
-///
-/// A shorthand is an enumeration. One of these named a proper subset in a
-/// shipped ref and in a budget test and read as naming NONE, because the scan
-/// matched basenames and a braced group spells no basename at all. A group with
-/// no comma (`{slug}`, `{kind}/{slug}`) is a placeholder and is left alone, and
-/// so is one carrying spaces — that is a JSON or Rust literal, not a path.
-fn expand_braces(block: &str) -> String {
-    let mut out = String::with_capacity(block.len());
-    let mut rest = block;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('}') else {
-            out.push_str(&rest[open..]);
-            return out;
-        };
-        let inner = &after[..close];
-        let tail = &after[close + 1..];
-        if !inner.contains(',') || inner.contains(' ') {
-            out.push('{');
-            out.push_str(inner);
-            out.push('}');
-            rest = tail;
-            continue;
-        }
-        let end = tail
-            .find(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-'))
-            .unwrap_or(tail.len());
-        for alt in inner.split(',') {
-            out.push_str(alt.trim());
-            out.push_str(&tail[..end]);
-            out.push(' ');
-        }
-        rest = &tail[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// The injectables a block names, minus the document's own basename — a file
-/// that calls itself "this file" has named the whole set.
-fn named_in(block: &str, own: &str, names: &[&'static str]) -> Vec<&'static str> {
-    let expanded = expand_braces(block);
-    names
-        .iter()
-        .filter(|name| **name != own && expanded.contains(*name))
-        .copied()
-        .collect()
-}
-
-/// Count words a cardinality claim can be spelled with, in both languages this
-/// repository writes in. `both`/`ambas` are `two` said without the digit.
-const COUNT_WORDS: &[(&str, usize)] = &[
-    ("ambas", 2),
-    ("ambos", 2),
-    ("both", 2),
-    ("cinco", 5),
-    ("dois", 2),
-    ("duas", 2),
-    ("five", 5),
-    ("four", 4),
-    ("quatro", 4),
-    ("three", 3),
-    ("tres", 3),
-    ("três", 3),
-    ("two", 2),
-];
-
-/// Nouns whose count IS the number of injectables, wherever they are counted.
-const INJECTABLE_NOUNS: &[&str] = &[
-    "injectable",
-    "injectables",
-    "injetáveis",
-    "injetável",
-    "sibling hook",
-    "sibling hooks",
-];
-
-/// Nouns that count the injectables only inside a block that is ABOUT them.
-///
-/// A count of `halves` is no evidence on its own: this repository uses that
-/// idiom for the two sides of one assertion roughly eighty times, and a ratchet
-/// that reddened on all of them would be deleted within a week. So these are
-/// read only next to a subject word — see [`SUBJECT_WINDOW`].
-const ROUTER_NOUNS: &[&str] = &[
-    "arquivo",
-    "arquivos",
-    "document",
-    "documents",
-    "file",
-    "files",
-    "half",
-    "halves",
-    "metade",
-    "metades",
-    "part",
-    "parte",
-    "partes",
-    "parts",
-];
-
-/// Words that make a COUNT be a count of the router's injectables. Matched as
-/// whole tokens, so `router-rationale` and `seed_injectable_files` both carry
-/// one and `.claude/mustard/` — whose tokens are the two most common words in
-/// this repository — carries none.
-const ROUTER_SUBJECT: &[&str] = &[
-    "injectable",
-    "injectables",
-    "injetáveis",
-    "injetável",
-    "roteador",
-    "router",
-    "sibling",
-];
-
-/// How far a [`ROUTER_SUBJECT`] word may sit from a generic count and still be
-/// what that count is counting.
-///
-/// Measured, not chosen: this crate says "both halves" about the two sides of
-/// one assertion roughly eighty times, and several of those paragraphs mention
-/// the router somewhere else in the same doc comment. At eight tokens every one
-/// of them falls out and the four live claims stay in — the nearest subject to
-/// the count that ships is four tokens away.
-///
-/// **Widening it was tried and rejected on the measurement.** A reviewer put
-/// `## Why two files rather than one` over a sentence spelling the subject NINE
-/// tokens from the count and watched the suite stay green — the exact title
-/// this ratchet was built for, escaping by one token. Raising the window until
-/// it reached is what turns a hole into noise: at 12 it reddens a pair of true
-/// sentences — one in `apps/rt/src/shared/paths.rs`, counting `dispatch.md`
-/// against `dispatch.md.bak`, whose nearest subject word sits exactly 12 tokens
-/// away, and one in this file's own doc comments — at 24 it reddens five, and
-/// with no window at all thirteen. So the window stays where the measurement
-/// put it and the HEADING is what changed — see [`stale_counts`].
-const SUBJECT_WINDOW: usize = 8;
-
-/// The stale cardinality claims a block makes: a count word qualifying a noun
-/// that counts the injectables, where the count is not the number the seed
-/// carries.
-///
-/// The subset scan reads NAMES, and skips any block naming fewer than two. That
-/// is how the sharpest finding of this whole unit survived a green build: the
-/// opening paragraph of the seeded rules asked why there were TWO of them while
-/// naming exactly one, so nothing ever looked at it. A number is an enumeration
-/// too.
-///
-/// `injectable` and `sibling hook` count the set wherever they appear. The
-/// generic nouns — files, halves, parts — count it only with a subject word
-/// inside [`SUBJECT_WINDOW`] tokens, or anywhere in the SECTION when a markdown
-/// heading is one of the two.
-///
-/// A heading is not a sentence that happens to sit above a paragraph: it is the
-/// subject line of everything under it, which is why it can name the subject
-/// once and never repeat it — and why `## Why two files rather than one` reads
-/// as a claim about the router even when the word *router* is only spelled four
-/// sentences down. Token distance is the wrong ruler for that relation, so a
-/// count in a heading is weighed against the whole section, and a count in the
-/// body can take its subject from the heading. Everything else keeps the
-/// measured window; see [`SUBJECT_WINDOW`] for what widening it costs.
-fn stale_counts(block: &str, total: usize) -> Vec<String> {
-    let lowered = expand_braces(block).to_lowercase();
-    let words: Vec<&str> = lowered
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
-    // `prose_blocks` prepends the heading a markdown block sits under, so it is
-    // the first line when there is one. Its word span is the heading.
-    let heading_len = lowered
-        .lines()
-        .next()
-        .filter(|line| line.trim_start().starts_with('#'))
-        .map(|line| {
-            line.split(|c: char| !c.is_alphanumeric())
-                .filter(|w| !w.is_empty())
-                .count()
-        })
-        .unwrap_or(0);
-    let has_subject = |slice: &[&str]| slice.iter().any(|w| ROUTER_SUBJECT.contains(w));
-    let subject_near = |i: usize| {
-        if i < heading_len {
-            // The count is IN the title. What the title is about is the section.
-            return has_subject(&words);
-        }
-        let lo = i.saturating_sub(SUBJECT_WINDOW);
-        let hi = (i + SUBJECT_WINDOW + 1).min(words.len());
-        has_subject(&words[lo..hi]) || has_subject(&words[..heading_len])
-    };
-
-    let mut out = Vec::new();
-    for (i, word) in words.iter().enumerate() {
-        let Some((_, count)) = COUNT_WORDS.iter().find(|(w, _)| w == word) else {
-            continue;
-        };
-        if *count == total {
-            continue;
-        }
-        for span in 1..=2usize {
-            if i + span >= words.len() {
-                break;
-            }
-            let noun = words[i + 1..=i + span].join(" ");
-            let counts_injectables = INJECTABLE_NOUNS.contains(&noun.as_str())
-                || (ROUTER_NOUNS.contains(&noun.as_str()) && subject_near(i));
-            if counts_injectables {
-                out.push(format!("{word} {noun}"));
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// No prose block names — or COUNTS — some of the injectables the seed carries.
-///
-/// The class, not a list of files. Three places named two of three at once —
-/// two doc blocks in the seeding engine and the ratchet that proves each
-/// injectable rides its own hook — and each was found by a person reading, one
-/// at a time, months apart. Deriving the set from the seed means the fourth
-/// injectable reddens every place left behind on the day it is added, instead
-/// of being discovered the same way.
-///
-/// The NUMBER half was added after the name half shipped and missed the
-/// sharpest instance of all. A block naming fewer than two files was skipped,
-/// so the first paragraph a router reader ever meets — which named one file and
-/// counted them as two — passed a green build inside the very unit that closed
-/// twenty-seven divergences of exactly that kind. The scan now reads the count
-/// as well as the names, expands a braced shorthand into the paths it stands
-/// for, and reads a markdown heading as part of the section it opens.
-#[test]
-fn no_prose_block_names_a_proper_subset_of_the_injectables() {
-    let names = injectables();
-    let root = repo_root();
-
-    let mut offenders = Vec::new();
-    for path in scanned_documents() {
-        let Ok(body) = std::fs::read_to_string(&path) else { continue };
-        let own = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-        // Forward slashes ALWAYS: `SUBSET_EXEMPT_BLOCKS` is written with them, and
-        // `Display` for a Windows path yields `\\`, so the `ends_with` below matched
-        // nothing there and every exemption silently stopped excusing its block.
-        // Measured on CI 2026-09-02: green on ubuntu and macos, red on windows with
-        // five offenders that are all exempted rows — this ratchet was itself the
-        // "green where it is written, red where nobody is looking" it exists to catch.
-        let rel = normalise_separators(path.strip_prefix(&root).unwrap_or(&path));
-        let required = names.iter().filter(|n| **n != own).count();
-        for (line, block) in prose_blocks(&path, &body) {
-            if SUBSET_EXEMPT_BLOCKS
-                .iter()
-                .any(|(file, anchor, _)| rel.ends_with(file) && block.contains(anchor))
-            {
-                continue;
-            }
-            // Half one: the NAMES. A block naming some and not all.
-            let named = named_in(&block, own, &names);
-            if named.len() >= 2 && named.len() != required {
-                let missing: Vec<&str> = names
-                    .iter()
-                    .filter(|n| **n != own && !named.contains(n))
-                    .copied()
-                    .collect();
-                offenders.push(format!(
-                    "{rel}:{line} names {named:?} and not {missing:?}. Every injectable the \
-                     seed carries takes the same rule, so a document that lists some of them \
-                     tells a reader the set is smaller than it is — say it about the SET, or \
-                     name them all"
-                ));
-            }
-            // Half two: the NUMBER. A block that counts them, whether it names
-            // two of them, one, or none at all.
-            for claim in stale_counts(&block, names.len()) {
-                offenders.push(format!(
-                    "{rel}:{line} claims `{claim}` and the seed carries {}. A count is an \
-                     enumeration: it goes stale the day another injectable is seeded, and \
-                     the reader it misleads is the one who never opens the seed. Say it \
-                     about the SET, or carry the real number",
-                    names.len(),
-                ));
-            }
-        }
-    }
-    assert!(
-        offenders.is_empty(),
-        "prose that enumerates a proper subset of the injectables:\n{}",
-        offenders.join("\n"),
-    );
-}
-
-/// Every subset exemption is still there, still partial, and still sorted.
-#[test]
-fn subset_exemptions_stay_sorted_present_and_necessary() {
-    let names = injectables();
-    let root = repo_root();
-
-    for pair in SUBSET_EXEMPT_BLOCKS.windows(2) {
-        assert!(
-            (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1),
-            "SUBSET_EXEMPT_BLOCKS must stay sorted: {} before {}",
-            pair[0].0,
-            pair[1].0,
-        );
-    }
-    for (file, anchor, why) in SUBSET_EXEMPT_BLOCKS {
-        assert!(!why.trim().is_empty(), "SUBSET_EXEMPT_BLOCKS entry {file} carries no justification");
-        let path = root.join(file);
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("exempted document {file} is unreadable: {e}"));
-        let own = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-        let required = names.iter().filter(|n| **n != own).count();
-        // Still an offender of EITHER kind — a dated measurement usually names
-        // the files it measured AND counts them, and a row that stops earning
-        // its place on both counts is a row that hides nothing any more.
-        let still_partial = prose_blocks(&path, &body).into_iter().any(|(_, block)| {
-            if !block.contains(*anchor) {
-                return false;
-            }
-            let named = named_in(&block, own, &names);
-            (named.len() >= 2 && named.len() != required)
-                || !stale_counts(&block, names.len()).is_empty()
-        });
-        assert!(
-            still_partial,
-            "SUBSET_EXEMPT_BLOCKS names {file} at `{anchor}`, and no block there names or \
-             counts a proper subset any more — drop the row, there is nothing left to excuse",
-        );
-    }
-}
-
-/// A path comparison that depends on the platform separator is green where it is
-/// written and red where nobody is looking. This pins the normaliser rather than
-/// the call site, so a new exemption table gets the same guarantee for free.
-#[test]
-fn exemption_paths_are_matched_without_a_platform_separator() {
-    let windows = Path::new(r"apps\cli\tests\template_budget.rs");
-    let unix = Path::new("apps/cli/tests/template_budget.rs");
-    assert_eq!(normalise_separators(windows), normalise_separators(unix));
-    let spelled = SUBSET_EXEMPT_BLOCKS[0].0;
-    assert!(
-        normalise_separators(windows).ends_with(spelled),
-        "the exemption table is written with `/` and the lookup must reach it from either platform",
-    );
-}
-

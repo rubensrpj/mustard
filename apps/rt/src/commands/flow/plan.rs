@@ -6,7 +6,8 @@
 //! onda a partir dos eventos — com as lições e as skills —, confere o plano
 //! contra o código real, refaz a página e o índice, grava a fase `plan` pela
 //! mesma porta de gravação de fase das outras, e responde o próximo passo:
-//! publique a página e faça a pergunta de aprovação.
+//! publique as duas páginas e faça a pergunta de aprovação — ou, com item
+//! retido por ter cara de segredo, expurgue antes, sem publicar.
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; erro de montagem do plano (ciclo entre ondas, e
@@ -266,14 +267,17 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     if !blocking.is_empty() {
         // A página sai mesmo com o plano travado: é nela que o achado que
         // segura a pergunta aparece para quem vai corrigi-lo.
-        if let Err(refusal) = crate::commands::spec_events::pages::refresh(&project.root, &spec, lang) {
-            return refuse(&refusal);
-        }
-        return json!({
+        let pages = match spec_events::pages::refresh(&project.root, &spec, lang) {
+            Ok(pages) => pages,
+            Err(refusal) => return refuse(&refusal),
+        };
+        let mut report = json!({
             "ok": false, "spec": spec, "reason": "plan-not-ready",
             "hint": translate("plan.not_ready", lang).replace("{count}", &blocking.len().to_string()),
             "waves": waves, "blocking": blocking, "warnings": warnings,
         });
+        spec_events::pages::note_checked(&mut report, &pages);
+        return report;
     }
 
     // A fase passa pela mesma porta de gravação de fase das outras, e ela já
@@ -300,25 +304,36 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
 
     // O passo termina refazendo a página e o `.md`: a gravação de cada evento
     // já não os refaz, e é por esta página que a spec é aprovada.
-    if let Err(refusal) = crate::commands::spec_events::pages::refresh(&project.root, &spec, lang) {
-        return refuse(&refusal);
-    }
+    let pages = match spec_events::pages::refresh(&project.root, &spec, lang) {
+        Ok(pages) => pages,
+        Err(refusal) => return refuse(&refusal),
+    };
 
     // A publicação acontece só nos marcos, e a aprovação é um deles: a
     // resposta manda publicar as duas páginas, e nenhum endereço entra na
-    // conversa — o link mora na barra de status.
+    // conversa — o link mora na barra de status. Com item retido, a pergunta
+    // de aprovação espera o expurgo e a publicação.
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
         "waves": waves, "warnings": warnings,
-        "publish": ["spec", "project"],
-        "next": translate("plan.next", lang),
     });
     if let Some(id) = recorded {
         report["id"] = json!(id);
     }
-    if let Some(command) = fallback_copy(&project.root, &spec, &log, ssh) {
+    spec_events::pages::end_milestone(
+        &mut report,
+        Some(&pages),
+        "approval",
+        translate("plan.next", lang),
+        translate("plan.held", lang),
+        lang,
+    );
+    if report.get("publish").is_some()
+        && let Some(command) = fallback_copy(&project.root, &spec, &log, ssh)
+    {
         report["copy"] = json!(command);
-        report["next"] = json!(format!("{} {}", translate("plan.next", lang), translate("plan.copy", lang)));
+        let next = report["next"].as_str().unwrap_or_default().to_string();
+        report["next"] = json!(format!("{next} {}", translate("plan.copy", lang)));
     }
     report
 }
@@ -645,7 +660,9 @@ fn fallback_copy(root: &Path, spec: &str, log: &SpecLog, ssh: Option<&str>) -> O
     let failed = log
         .block(BlockQuery::Block(Block::State))
         .into_iter()
-        .rfind(|e| e.event_type == "publish")
+        .rfind(|e| {
+            e.event_type == "publish" && e.str_field("page") == Some(mustard_core::domain::spec_index::SPEC_PAGE)
+        })
         .is_some_and(|e| e.fields.get("ok").and_then(Value::as_bool) == Some(false));
     if !failed {
         return None;
@@ -774,7 +791,11 @@ mod tests {
         assert_eq!(report["from"], json!("survey"));
         assert_eq!(report["waves"][0]["wave"], json!(1));
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 0);
-        assert_eq!(report["next"], json!(translate("plan.next", Locale::PtBr)));
+        let next = report["next"].as_str().unwrap_or_default();
+        assert!(next.contains(translate("plan.next", Locale::PtBr)), "{next}");
+        for page in ["spec", "project"] {
+            assert!(next.contains(&format!(r#"'{{"page":"{page}","milestone":"approval","#)), "{page}: {next}");
+        }
         assert!(report["copy"].is_null(), "sem publicação falha, nada de copiar: {report}");
         // A aprovação é um marco: a resposta manda publicar as duas páginas, e
         // nenhum endereço entra na conversa.
@@ -1197,6 +1218,41 @@ mod tests {
             .filter(|event| event.event_type == "note")
             .filter_map(|event| event.str_field("text").map(str::to_string))
             .collect()
+    }
+
+    /// Com um item de texto que parece senha, o plano não manda publicar nem
+    /// fazer a pergunta de aprovação: diz o código do item a expurgar, e o
+    /// `.html` local sai sem o texto dele. Expurgado o item, o plano manda
+    /// publicar de novo.
+    #[test]
+    fn a_withheld_item_holds_the_publish_until_it_is_purged() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        let note = write(root, Some("x"), "note",
+            json!({"text": "A senha do banco: S3nh4F0rte", "keys": ["banco"], "origin": said}));
+        let code = note["code"].as_str().unwrap_or_default().to_string();
+
+        let held = plan(root, "x");
+        assert_eq!(held["ok"], json!(true), "{held}");
+        assert!(held.get("publish").is_none(), "no publish with a withheld item: {held}");
+        assert_eq!(held["withheld"], json!([code]), "{held}");
+        let next = held["next"].as_str().unwrap_or_default();
+        assert!(next.contains(&code) && next.contains("write purge"), "{next}");
+        assert!(next.contains(translate("plan.held", Locale::PtBr)), "{next}");
+        assert!(!next.contains("write publish") && !next.contains(translate("plan.next", Locale::PtBr)), "{next}");
+        let warned = held["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warned.iter().any(|w| w["reason"] == json!("page-check")
+            && w["hint"].as_str().unwrap_or_default().contains(&code)), "{held}");
+        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
+        assert!(!html.contains("S3nh4F0rte"), "the local page keeps the secret out");
+
+        let purged = write(root, Some("x"), "purge", json!({"targets": [code], "reason": "secret"}));
+        assert_eq!(purged["ok"], json!(true), "{purged}");
+        let free = plan(root, "x");
+        assert_eq!(free["publish"], json!(["spec", "project"]), "{free}");
+        assert!(free.get("withheld").is_none(), "{free}");
     }
 
     /// Quando a última publicação falhou, a conferência passa e a resposta

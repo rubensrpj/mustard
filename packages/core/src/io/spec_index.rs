@@ -11,6 +11,10 @@
 //! índice. Nenhum código segura a trava do índice enquanto espera a de uma
 //! spec, então duas gravações ao mesmo tempo nunca se travam uma à outra.
 //!
+//! A spec descartada e arquivada (`.claude/spec/.descartadas/<nome>/`)
+//! continua no índice, com a fase descartada: o [`rebuild`] a lê de lá, e só
+//! a spec viva de mesmo nome passa na frente dela.
+//!
 //! As regras de cada linha moram em `domain::spec_index`; aqui ficam o disco
 //! e a trava.
 
@@ -25,6 +29,10 @@ use crate::platform::error::Error;
 
 /// O nome do arquivo de eventos de cada spec.
 const EVENTS_FILE: &str = "spec.ndjson";
+
+/// A pasta, dentro da pasta das specs, em que as specs descartadas ficam
+/// guardadas.
+pub const DISCARDED_DIR: &str = ".descartadas";
 
 /// O índice de um arquivo de eventos e o nome da spec dele, quando o caminho
 /// tem a forma de uma spec do projeto: `<raiz>/.claude/spec/<nome>/spec.ndjson`.
@@ -59,8 +67,26 @@ pub fn refresh_line(index_path: &Path, name: &str, log: &SpecLog) -> Result<(), 
     Ok(())
 }
 
-/// Tira do índice do projeto `root` a linha da spec `name`. A spec descartada
-/// some do índice no mesmo passo em que some do disco; a linha do projeto e as
+/// Grava `url` na linha do projeto do índice `index_path`: é o endereço da
+/// página do projeto que acabou de ser publicada. Pega a trava do índice, e o
+/// arquivo só é reescrito quando muda. Quem chama já segura a trava da spec
+/// em que a publicação foi gravada.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando a trava, a leitura ou a escrita falham.
+pub fn set_project_url(index_path: &Path, url: &str) -> Result<(), Refusal> {
+    let mut file = LockedFile::exclusive(index_path).map_err(io_refusal)?;
+    let current = file.read_to_string().map_err(io_refusal)?;
+    let next = index::with_project_url(&current, url);
+    if next != current {
+        file.replace(next.as_bytes()).map_err(io_refusal)?;
+    }
+    Ok(())
+}
+
+/// Tira do índice do projeto `root` a linha da spec `name`. É o que acontece
+/// com a spec apagada: a arquivada fica com a linha. A linha do projeto e as
 /// das outras specs ficam como estão. Pega a trava do índice, e o arquivo só é
 /// reescrito quando muda.
 ///
@@ -100,11 +126,13 @@ pub struct Rebuilt {
 
 /// Refaz o índice inteiro do projeto `root` a partir dos arquivos de eventos.
 ///
-/// Para cada spec, em ordem de nome: pega a trava do arquivo de eventos,
-/// recalcula o `search` das linhas (e reescreve o arquivo só se algo mudou),
-/// refaz a linha dela no índice e solta a trava. Por último, só com a trava
-/// do índice, tira as linhas de specs que não existem mais e as que não se
-/// entendem, e garante a linha do projeto, que fica como estava.
+/// Para cada spec, viva ou arquivada, em ordem de nome: pega a trava do
+/// arquivo de eventos, recalcula o `search` das linhas (e reescreve o arquivo
+/// só se algo mudou), refaz a linha dela no índice e solta a trava. Por
+/// último, só com a trava do índice, tira as linhas de specs que não existem
+/// mais e as que não se entendem, e garante a linha do projeto: com o
+/// endereço da última publicação da página do projeto gravada nas specs, ou,
+/// sem nenhuma, como estava.
 ///
 /// Sem spec, grava só a linha do projeto. Recusa só quando a trava ou a
 /// escrita falham, com [`Refusal::Io`].
@@ -119,6 +147,7 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
         lessons_search_updated: 0,
         skipped: listing.skipped,
     };
+    let mut project: Option<(String, String)> = None;
     for (name, events) in &listing.specs {
         let mut file = match LockedFile::existing(events) {
             Ok(file) => file,
@@ -133,7 +162,13 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
         if changed > 0 {
             file.replace(fixed.as_bytes()).map_err(io_refusal)?;
         }
-        refresh_line(&index_path, name, &model::parse_log(&fixed))?;
+        let log = model::parse_log(&fixed);
+        refresh_line(&index_path, name, &log)?;
+        if let Some((at, url)) = index::project_publish(&log)
+            && project.as_ref().is_none_or(|(latest, _)| later(at, latest))
+        {
+            project = Some((at.to_string(), url.to_string()));
+        }
         drop(file);
         out.specs += 1;
         out.search_updated += changed;
@@ -142,7 +177,10 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
 
     let mut file = LockedFile::exclusive(&index_path).map_err(io_refusal)?;
     let current = file.read_to_string().map_err(io_refusal)?;
-    let next = index::prune(&current, |name| paths.for_spec(name).is_ok_and(|s| s.spec_ndjson_path().is_file()));
+    let mut next = index::prune(&current, |name| events_file(&paths, name).is_some());
+    if let Some((_, url)) = &project {
+        next = index::with_project_url(&next, url);
+    }
     if next != current {
         file.replace(next.as_bytes()).map_err(io_refusal)?;
     }
@@ -150,6 +188,23 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
     out.skipped.sort();
     out.skipped.dedup();
     Ok(out)
+}
+
+/// `a` é uma hora depois de `b`. As duas vêm das gravações, com o fuso; a que
+/// não se lê como hora é comparada como texto.
+fn later(a: &str, b: &str) -> bool {
+    match (chrono::DateTime::parse_from_rfc3339(a), chrono::DateTime::parse_from_rfc3339(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => a > b,
+    }
+}
+
+/// O arquivo de eventos da spec `name`: o da pasta viva ou, sem ele, o da
+/// arquivada.
+fn events_file(paths: &ClaudePaths, name: &str) -> Option<PathBuf> {
+    let live = paths.for_spec(name).ok()?.spec_ndjson_path();
+    let archived = paths.spec_dir().join(DISCARDED_DIR).join(name).join(EVENTS_FILE);
+    [live, archived].into_iter().find(|path| path.is_file())
 }
 
 /// Onde o índice difere do que os arquivos de eventos dariam.
@@ -201,13 +256,20 @@ pub fn divergence(root: &Path) -> Result<Divergence, Refusal> {
 
 /// As linhas de spec do índice do projeto `root`, pelo mesmo leitor das
 /// gravações. Sem índice, ou com um índice que não se lê, nenhuma: quem busca
-/// nas specs anteriores segue sem elas. A linha que não se entende é pulada.
+/// nas specs anteriores segue sem elas. A linha que não se entende é pulada, e
+/// a da spec descartada também: a pasta dela saiu do lugar, e a busca não
+/// teria o que abrir.
 #[must_use]
 pub fn read(root: &Path) -> Vec<index::IndexLine> {
     let Ok(paths) = ClaudePaths::for_project(root) else {
         return Vec::new();
     };
-    read_shared(&paths.spec_index_path()).map(|content| index::spec_lines(&content)).unwrap_or_default()
+    read_shared(&paths.spec_index_path())
+        .map(|content| index::spec_lines(&content))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|line| line.phase.as_deref() != Some("discarded"))
+        .collect()
 }
 
 /// As linhas de spec do índice do projeto `root` como a página do projeto as
@@ -227,9 +289,9 @@ pub fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// O arquivo de eventos de cada spec do projeto `root`, lido com a trava
+/// O arquivo de eventos de cada spec viva do projeto `root`, lido com a trava
 /// compartilhada, em ordem de nome. A pasta sem arquivo de eventos (o formato
-/// antigo) e o arquivo que não se lê ficam de fora.
+/// antigo), a spec descartada e o arquivo que não se lê ficam de fora.
 #[must_use]
 pub fn read_specs(root: &Path) -> Vec<(String, SpecLog)> {
     let Ok(paths) = ClaudePaths::for_project(root) else {
@@ -241,34 +303,57 @@ pub fn read_specs(root: &Path) -> Vec<(String, SpecLog)> {
     listing
         .specs
         .into_iter()
+        .filter(|(_, events)| !is_archived(&paths, events))
         .filter_map(|(name, events)| read_shared(&events).ok().map(|content| (name, model::parse_log(&content))))
         .collect()
 }
 
 /// As pastas de `.claude/spec/`, em ordem de nome.
 struct Listing {
-    /// O nome e o arquivo de eventos de cada spec que tem um.
+    /// O nome e o arquivo de eventos de cada spec que tem um: as vivas e as
+    /// arquivadas, uma vez por nome, com a viva na frente.
     specs: Vec<(String, PathBuf)>,
     /// As pastas sem arquivo de eventos ou com nome que não serve.
     skipped: Vec<String>,
 }
 
-fn list_specs(paths: &ClaudePaths) -> Result<Listing, Refusal> {
-    let mut entries = match crate::io::fs::read_dir(paths.spec_dir()) {
+fn is_archived(paths: &ClaudePaths, events: &Path) -> bool {
+    events.starts_with(paths.spec_dir().join(DISCARDED_DIR))
+}
+
+fn spec_folders(dir: &Path) -> Result<Vec<String>, Refusal> {
+    let mut entries = match crate::io::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(Error::NotFound(_)) => Vec::new(),
         Err(e) => return Err(io_refusal(e)),
     };
     entries.retain(|e| e.is_dir);
-    entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-    let mut listing = Listing { specs: Vec::new(), skipped: Vec::new() };
-    for entry in entries {
-        match paths.for_spec(&entry.file_name).map(|s| s.spec_ndjson_path()) {
-            Ok(events) if events.is_file() => listing.specs.push((entry.file_name, events)),
-            _ => listing.skipped.push(entry.file_name),
+    Ok(entries.into_iter().map(|e| e.file_name).collect())
+}
+
+fn list_specs(paths: &ClaudePaths) -> Result<Listing, Refusal> {
+    let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut skipped = Vec::new();
+    for name in spec_folders(&paths.spec_dir())? {
+        if name == DISCARDED_DIR {
+            continue;
+        }
+        match paths.for_spec(&name).map(|s| s.spec_ndjson_path()) {
+            Ok(events) if events.is_file() => {
+                found.insert(name, events);
+            }
+            _ => skipped.push(name),
         }
     }
-    Ok(listing)
+    let archive = paths.spec_dir().join(DISCARDED_DIR);
+    for name in spec_folders(&archive)? {
+        let events = archive.join(&name).join(EVENTS_FILE);
+        if paths.for_spec(&name).is_ok() && events.is_file() {
+            found.entry(name).or_insert(events);
+        }
+    }
+    skipped.sort();
+    Ok(Listing { specs: found.into_iter().collect(), skipped })
 }
 
 fn io_refusal(error: Error) -> Refusal {
@@ -418,6 +503,66 @@ mod tests {
         let raw = std::fs::read_to_string(index_file(root)).unwrap();
         assert_eq!(raw.lines().count(), 2, "{raw}");
         assert!(!raw.contains("velha") && !raw.contains("busca"), "{raw}");
+    }
+
+    /// A publicação da página do projeto grava o endereço na linha do
+    /// projeto, na mesma gravação; uma gravação depois, na mesma spec ou em
+    /// outra, não o desfaz, e a publicação seguinte, de outra spec, o troca.
+    /// Apagado o índice, o `rebuild` devolve o endereço da última.
+    #[test]
+    fn the_project_page_address_lands_on_the_project_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        let publish = |url: &str| json!({"page": "project", "milestone": "approval", "ok": true, "url": url});
+        let raw = || std::fs::read_to_string(index_file(root)).unwrap();
+
+        put(root, "trava", "publish", "10:00", publish("https://claude.ai/p1"));
+        assert!(raw().starts_with(&format!("{}\n", index::project_line(Some("https://claude.ai/p1")))), "{}", raw());
+        assert!(line_of(root, "trava").get("url").is_none(), "the project page is not the spec page");
+        put(root, "busca", "message", "10:05", json!({"author": "user", "text": "outra gravação"}));
+        put(root, "trava", "message", "10:06", json!({"author": "user", "text": "mais uma"}));
+        assert_eq!(index::project_url(&raw()).as_deref(), Some("https://claude.ai/p1"));
+
+        put(root, "busca", "publish", "10:10", publish("https://claude.ai/p2"));
+        put(root, "trava", "publish", "10:11",
+            json!({"page": "project", "milestone": "round", "ok": false, "reason": "caiu"}));
+        put(root, "trava", "message", "10:12", json!({"author": "user", "text": "depois da falha"}));
+        let written = raw();
+        assert_eq!(index::project_url(&written).as_deref(), Some("https://claude.ai/p2"));
+
+        std::fs::remove_file(index_file(root)).unwrap();
+        rebuild(root).unwrap();
+        assert_eq!(raw(), written, "the rebuilt index keeps the last project page address");
+    }
+
+    /// A spec descartada e arquivada continua no índice, com a fase
+    /// descartada, depois de o índice ser refeito; a viva de mesmo nome passa
+    /// na frente dela. A busca das specs anteriores não a lê.
+    #[test]
+    fn an_archived_spec_keeps_its_line_through_a_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        put(root, "busca", "state", "10:00", json!({"author": "binary", "phase": "discarded", "reason": "parou"}));
+        let specs = root.join(".claude").join("spec");
+        std::fs::create_dir_all(specs.join(DISCARDED_DIR)).unwrap();
+        std::fs::rename(specs.join("busca"), specs.join(DISCARDED_DIR).join("busca")).unwrap();
+        let before = std::fs::read(index_file(root)).unwrap();
+
+        let rebuilt = rebuild(root).unwrap();
+        assert_eq!((rebuilt.specs, rebuilt.skipped.len()), (2, 0), "{rebuilt:?}");
+        assert_eq!(std::fs::read(index_file(root)).unwrap(), before, "the discarded line stays");
+        assert_eq!(line_of(root, "busca")["phase"], json!("discarded"));
+        assert!(divergence(root).unwrap().diverged.is_empty());
+        let names: Vec<String> = read(root).into_iter().map(|line| line.name).collect();
+        assert_eq!(names, ["trava"], "the survey does not search a discarded spec");
+        let names: Vec<String> = read_specs(root).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["trava"]);
+
+        put(root, "busca", "message", "11:00", json!({"author": "user", "text": "começa de novo"}));
+        rebuild(root).unwrap();
+        assert!(line_of(root, "busca").get("phase").is_none(), "the live spec of the same name wins");
     }
 
     /// O `index` recalcula também o `search` desatualizado do banco de

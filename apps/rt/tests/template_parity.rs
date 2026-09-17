@@ -37,65 +37,7 @@ use mustard_rt::commands::RunCmd;
 /// honest fixes are to document it or to remove it. A row here says the flag is
 /// reachable some OTHER way — it mirrors a documented sibling, it is the escape
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
-const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
-
-    (
-        "clean",
-        "apply",
-        "o interruptor que apaga de verdade: sem ele o comando só lista, e é \
-         essa a leitura que a prosa do agente ensina. A ajuda do próprio \
-         comando diz que o padrão é listar",
-    ),
-    (
-        "close",
-        "report",
-        "the report of the last round, handed back by the same flow prose that \
-         will call the close; a close without it only closes what is already \
-         recorded, which is what the bare command does",
-    ),
-    (
-        "discard",
-        "remote",
-        "keeps the server branch, which belongs to everyone: without it only the \
-         local branch goes, and a team that does not allow deleting a branch \
-         never needs to know the flag exists",
-    ),
-    (
-        "grill",
-        "condensed",
-        "the one-sentence request of the flow's survey step \
-         (commands/flow/grill.rs); the \
-         flow prose calling grill is rewritten together with the rest of the flow",
-    ),
-    (
-        "grill",
-        "kinds",
-        "the work type of the flow's survey step (commands/flow/grill.rs), \
-         asked back by its own refusal; a work type that the project declares \
-         is not a value the prose can spell",
-    ),
-    (
-        "pr-open",
-        "fill",
-        "o caminho do submódulo, que não tem spec própria: título e corpo saem \
-         dos commits. A prosa da porta ensina o caminho com spec, que é o de \
-         todo dia; este é o do repositório sem spec",
-    ),
-    (
-        "round",
-        "report",
-        "the report of the previous round, handed back by the same flow prose \
-         that will call the round; a round without it only dispatches, which is \
-         what the bare command does",
-    ),
-    (
-        "statusline",
-        "preview",
-        "quem chama a barra de status é o Claude Code, não o assistente; o \
-         `--preview` é a forma de um operador ver a linha uma vez, e a ajuda \
-         do comando a descreve",
-    ),
-];
+const FLAG_WHITELIST: &[(&str, &str, &str)] = &[];
 
 /// Caller spellings that precede a `run <name>` instruction in product files.
 /// `$RtExe` is `install.ps1`'s handle for the freshly built `mustard-rt.exe`.
@@ -658,67 +600,23 @@ fn flag_whitelist_stays_sorted_live_and_not_redundant() {
     }
 }
 
-/// O revisor e o agente de onda aprendem, pela própria instrução, a
-/// compilar a cópia descartável na compilação compartilhada e a apagá-la pela
-/// porta `clean --path`, nunca pela exclusão recursiva que a trava nega.
+/// O mapa do início da sessão manda toda página mostrada ao usuário passar
+/// pelo `page`, escrita em markdown, e ser publicada no claude.ai, nos dois
+/// idiomas.
 ///
-/// O caminho escrito na prosa é conferido contra o do código
-/// ([`shared_target_dir`](mustard_rt::commands::maint::scratch_gc::shared_target_dir)):
-/// se um mudar sem o outro, as cópias passam a compilar num lugar que a porta
-/// não mede nem esvazia. O roteiro do agente de onda é conferido nos DOIS
-/// blocos — o de despacho e o de nova tentativa —, porque o agente que refaz
-/// uma onda também compila.
+/// Lido do texto que o binário embute e grava no projeto, e conferido pelo
+/// mesmo extrator da catraca: a chamada tem de ser uma invocação de verdade,
+/// não o nome solto na prosa. Confere o fato, nunca a frase.
 #[test]
-fn review_agent_teaches_shared_target_and_scratch_gc() {
-    const SHARED_TARGET: &str = "CARGO_TARGET_DIR=\"$HOME/.cache/mustard/scratch-target\"";
-    const CLEANUP: &str = "mustard-rt run clean --path \"$D\"";
-
-    let code = mustard_rt::commands::maint::scratch_gc::shared_target_dir()
-        .expect("the home directory resolves in the test environment");
-    assert!(
-        code.ends_with(".cache/mustard/scratch-target"),
-        "the prose names $HOME/.cache/mustard/scratch-target; the code builds {}",
-        code.display()
-    );
-
-    let root = repo_root();
-    let review = read_lossy(&root.join("plugin/agents/mustard-review.md"));
-    assert!(review.contains(SHARED_TARGET), "the reviewer must build scratch copies in the shared target");
-    assert!(review.contains(CLEANUP), "the reviewer must remove its scratch copy through clean --path");
-
-    let _ = root;
-}
-
-/// A regra injetada do material manda toda página mostrada ao usuário
-/// passar pelo `page`, escrita em markdown, e ser publicada no claude.ai, e o
-/// endereço da página da spec ser gravado como evento, pela porta `write`.
-///
-/// Lida do template que o binário embute e conferida pelo mesmo extrator da
-/// catraca: a chamada tem de ser uma invocação de verdade, não o nome solto na
-/// prosa. Confere o fato, nunca a frase — prosa se reescreve.
-#[test]
-fn material_rule_sends_every_page_through_the_page_command() {
-    let material = read_lossy(&repo_root().join("packages/core/templates/mustard/material.md"));
-    let invocations = extract_run_invocations(&material);
-    assert!(
-        invocations
-            .iter()
-            .any(|inv| inv.name == "page" && inv.flags.iter().any(|f| f == "body")),
-        "the material rule never tells the reader to run `mustard-rt run page --body <page.md>`"
-    );
-    assert!(
-        !invocations.iter().any(|inv| inv.name == "doc-page"),
-        "the material rule still names the old `doc-page`"
-    );
-    assert!(
-        material.contains("claude.ai"),
-        "the material rule never says the page is published on claude.ai"
-    );
-    assert!(
-        invocations
-            .iter()
-            .any(|inv| inv.name == "write" && inv.flags.iter().any(|f| f == "json")),
-        "a regra do material não manda gravar o endereço publicado como evento, \
-         pela porta `write publish --json`"
-    );
+fn the_session_map_sends_every_page_through_the_page_command() {
+    for text in [mustard_core::platform::i18n::Locale::PtBr, mustard_core::platform::i18n::Locale::EnUs] {
+        let map = mustard_core::session_map(text);
+        let invocations = extract_run_invocations(map);
+        assert!(
+            invocations.iter().any(|inv| inv.name == "page"),
+            "the {text} session map never tells the reader to run `mustard-rt run page`"
+        );
+        assert!(map.contains("claude.ai"), "the {text} session map never says the page is published on claude.ai");
+        assert!(map.contains("markdown"), "the {text} session map never says a page is written in markdown");
+    }
 }

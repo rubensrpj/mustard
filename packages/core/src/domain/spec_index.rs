@@ -42,6 +42,13 @@ pub const TITLE_CHARS: usize = 120;
 /// Os tipos cujos itens dão título na linha da spec.
 const TITLED_TYPES: &[&str] = &["rule", "decision"];
 
+/// A página de uma spec, no campo `page` da publicação.
+pub const SPEC_PAGE: &str = "spec";
+
+/// A página do projeto, no campo `page` da publicação. Ela é gravada na spec
+/// em que o passo corre, e o endereço vai para a linha do projeto.
+pub const PROJECT_PAGE: &str = "project";
+
 /// A linha do projeto, com o endereço da página dele quando há.
 #[must_use]
 pub fn project_line(url: Option<&str>) -> String {
@@ -64,6 +71,34 @@ pub fn project_url(content: &str) -> Option<String> {
     parsed.get("url").and_then(Value::as_str).map(str::trim).filter(|url| !url.is_empty()).map(str::to_string)
 }
 
+/// O índice `content` com a linha do projeto trocada pela que leva `url`; as
+/// linhas das specs e as que não se entendem ficam como estão.
+#[must_use]
+pub fn with_project_url(content: &str, url: &str) -> String {
+    let lines = read_lines(content);
+    let project = project_line(Some(url));
+    let specs: Vec<&str> = lines.specs.values().copied().collect();
+    let other: Vec<&str> = lines.other.iter().map(|(_, l)| *l).collect();
+    assemble(Some(&project), &specs, &other)
+}
+
+/// O endereço de `event` quando ele é uma publicação da página `page` que deu
+/// certo.
+#[must_use]
+pub fn published_to<'a>(event: &'a SpecEvent, page: &str) -> Option<&'a str> {
+    let published = event.event_type == "publish"
+        && event.str_field("page") == Some(page)
+        && event.fields.get("ok").and_then(Value::as_bool) == Some(true);
+    event.str_field("url").map(str::trim).filter(|url| published && !url.is_empty())
+}
+
+/// A última publicação da página do projeto que deu certo nesta spec: a hora
+/// e o endereço.
+#[must_use]
+pub fn project_publish(log: &SpecLog) -> Option<(&str, &str)> {
+    log.visible().into_iter().filter_map(|e| published_to(e, PROJECT_PAGE).map(|url| (e.at(), url))).last()
+}
+
 /// A linha da spec `name`, montada do arquivo de eventos dela. `None` quando
 /// o arquivo não tem evento que se entenda: a spec fica fora do índice.
 #[must_use]
@@ -78,7 +113,7 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
     let phase = state.phase;
     let branch = state.branch;
     let goal = goal_of(log);
-    let url = page_url(log);
+    let url = spec_page_url(log);
     let mut titled: Vec<&SpecEvent> =
         visible.iter().copied().filter(|e| TITLED_TYPES.contains(&e.event_type.as_str())).collect();
     titled.sort_by_key(|e| e.id);
@@ -115,13 +150,11 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
 
 /// O endereço da última publicação da página da spec que deu certo. Uma
 /// publicação que falhou não apaga o endereço de antes, e a página refeita e
-/// publicada num endereço novo passa a valer no lugar dele.
-fn page_url(log: &SpecLog) -> Option<&str> {
-    log.visible()
-        .into_iter()
-        .filter(|e| e.event_type == "publish" && e.fields.get("ok").and_then(Value::as_bool) == Some(true))
-        .filter_map(|e| e.str_field("url").map(str::trim))
-        .rfind(|url| !url.is_empty())
+/// publicada num endereço novo passa a valer no lugar dele. A publicação da
+/// página do projeto, gravada na mesma spec, não conta.
+#[must_use]
+pub fn spec_page_url(log: &SpecLog) -> Option<&str> {
+    log.visible().into_iter().filter_map(|e| published_to(e, SPEC_PAGE)).last()
 }
 
 /// O objetivo da spec numa frase: a primeira frase do primeiro `context`, na
@@ -565,6 +598,43 @@ mod tests {
         assert_eq!(read[0].branch.as_deref(), Some("feature/teste"));
         assert_eq!(read[0].created.as_deref(), Some(at("08:40").as_str()));
         assert_eq!(read[0].updated.as_deref(), Some(at("09:20").as_str()));
+    }
+
+    /// A publicação da página do projeto, gravada numa spec, não vira o link
+    /// da página dessa spec: a última dela vai para a linha do projeto, e as
+    /// linhas das specs e as que não se entendem ficam como estavam.
+    #[test]
+    fn the_project_page_publish_goes_only_to_the_project_line() {
+        let project = |id: u64, hm: &str, url: &str| {
+            ev(id, hm, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "url": url}))
+        };
+        let only_project = [spec(), project(7, "09:00", "https://claude.ai/p0")].concat();
+        let log = parse_log(&only_project);
+        assert_eq!(spec_page_url(&log), None, "the project page is not the spec page");
+        assert!(parsed(&spec_line("teste", &log).unwrap()).get("url").is_none());
+
+        let spec_page = ev(8, "09:01", "publish",
+            json!({"page": "spec", "milestone": "approval", "ok": true, "url": "https://claude.ai/spec"}));
+        let failed = ev(10, "09:03", "publish",
+            json!({"page": "project", "milestone": "round", "ok": false, "reason": "caiu"}));
+        let content = [only_project, spec_page, project(9, "09:02", "https://claude.ai/p1"), failed].concat();
+        let log = parse_log(&content);
+        assert_eq!(spec_page_url(&log), Some("https://claude.ai/spec"));
+        let line = spec_line("teste", &log).unwrap();
+        assert_eq!(parsed(&line)["url"], json!("https://claude.ai/spec"));
+        let when = at("09:02");
+        assert_eq!(project_publish(&log), Some((when.as_str(), "https://claude.ai/p1")), "the last one that worked");
+
+        let index = format!("{}
+{line}
+lixo
+", project_line(None));
+        let moved = with_project_url(&index, "https://claude.ai/p1");
+        assert_eq!(moved, format!("{}
+{line}
+lixo
+", project_line(Some("https://claude.ai/p1"))));
+        assert_eq!(project_url(&moved).as_deref(), Some("https://claude.ai/p1"));
     }
 
     /// O objetivo de uma spec cujo primeiro contexto tem `text`.

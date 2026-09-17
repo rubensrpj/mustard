@@ -3,7 +3,7 @@
   "name": "mustard",
   "displayName": "Mustard",
   "version": "0.1.71",
-  "description": "Spec-driven development harness for Claude Code: an intent router, multi-layer feature/bugfix/task pipelines, deterministic language-agnostic code retrieval (scan + digest), QA acceptance gates, and a memory-backed MCP server.",
+  "description": "Spec-driven development harness for Claude Code: one flow from survey to pull request, each step answered by a deterministic binary, with a language-agnostic project map.",
   "author": {
     "name": "Rubens Pinheiro",
     "email": "rubens@atiz.com.br"

@@ -5,8 +5,8 @@
 //! custa segundos na spec real, e gravar um evento tem de custar o tempo de
 //! escrever uma linha. Quem os refaz, todos por [`refresh`]:
 //!
-//! - os passos do fluxo, no fim de cada um — hoje o `open`, o `grill` e o
-//!   `plan`; o `round` e o `close` chamam a mesma porta quando existirem;
+//! - os passos do fluxo, no fim de cada um: o `open`, o `grill`, o `plan`, o
+//!   `round` e o `close`;
 //! - o fim de cada onda, que é o `entregou` dela, por [`rebuild`], dentro da
 //!   própria gravação;
 //! - o `page --spec`, quando alguém pede.
@@ -29,6 +29,10 @@
 //!   continua inteiro;
 //! - a página que passaria de [`PAGE_MAX_BYTES`] perde os registros mais
 //!   antigos da conversa, e diz quantos ficaram só no `.md`.
+//!
+//! Só os marcos mandam publicar — a aprovação, o fim de uma rodada e o
+//! fechamento —, todos pela mesma porta, [`end_milestone`]: com item retido,
+//! o marco diz o código de cada item a expurgar e não manda publicar.
 
 mod secret;
 
@@ -42,6 +46,8 @@ use mustard_core::view::document::{
     WavePrompts,
 };
 use mustard_core::ClaudePaths;
+
+use serde_json::{json, Value};
 
 use crate::report::Render;
 
@@ -275,6 +281,60 @@ fn warnings(checked: &Publishable, lang: Locale) -> Vec<String> {
     out
 }
 
+/// Um aviso a mais na lista `warnings` da resposta de um passo, que nasce
+/// quando falta.
+pub(crate) fn push_warning(report: &mut Value, reason: &str, hint: &str) {
+    let warning = json!({ "reason": reason, "hint": hint });
+    match report.get_mut("warnings").and_then(Value::as_array_mut) {
+        Some(list) => list.push(warning),
+        None => report["warnings"] = json!([warning]),
+    }
+}
+
+/// O que a conferência da página achou, na resposta do passo: o código de
+/// cada item retido em `withheld` e cada aviso em `warnings`.
+pub(crate) fn note_checked(report: &mut Value, pages: &SpecPages) {
+    if !pages.withheld.is_empty() {
+        report["withheld"] = json!(pages.withheld);
+    }
+    for warning in &pages.warnings {
+        push_warning(report, "page-check", warning);
+    }
+}
+
+/// O fim de um passo que é um marco (`approval`, `round` ou `close`), com a
+/// página já refeita: sem item retido, a resposta manda publicar a página da
+/// spec e a do projeto, diz como gravar cada publicação e segue com `then`;
+/// com item retido, diz o código de cada item a expurgar, não manda publicar
+/// e segue com `held`. Sem página refeita (`None`), manda publicar a que já
+/// está no disco, que foi conferida quando foi gravada.
+pub(crate) fn end_milestone(
+    report: &mut Value,
+    pages: Option<&SpecPages>,
+    milestone: &str,
+    then: &str,
+    held: &str,
+    lang: Locale,
+) {
+    if let Some(pages) = pages {
+        note_checked(report, pages);
+        if !pages.withheld.is_empty() {
+            let hold = translate("page.hold", lang).replace("{codes}", &pages.withheld.join(", "));
+            report["next"] = json!(format!("{hold} {held}"));
+            return;
+        }
+    }
+    report["publish"] = json!(["spec", "project"]);
+    let publish = translate("page.publish", lang).replace("{milestone}", milestone);
+    report["next"] = json!(format!("{publish} {then}"));
+}
+
+/// O que a rodada e o fechamento mandam fazer depois de expurgar: refazer a
+/// página e publicar as duas com o marco `milestone`, e então `then`.
+pub(crate) fn after_purge(milestone: &str, then: &str, lang: Locale) -> String {
+    format!("{} {then}", translate("page.after_purge", lang).replace("{milestone}", milestone))
+}
+
 /// O caminho relativo ao projeto, com barras normais: a saída não traz o
 /// caminho da máquina.
 pub(crate) fn relative(root: &Path, path: &Path) -> String {
@@ -377,13 +437,18 @@ mod tests {
         assert!(!read(root, &pages.html).contains("ficaram só no"));
     }
 
-    /// Com três specs, uma delas descartada, a página do projeto lista as
-    /// três com o estado e o link da página de cada uma, e mostra no rodapé o
-    /// caminho do índice de onde saiu.
+    /// Com três specs, uma delas descartada pelo comando de descartar, a
+    /// página do projeto lista as três com o estado e o link da página de
+    /// cada uma, e mostra no rodapé o caminho do índice de onde saiu. Ela
+    /// continua listando a descartada quando outra spec a refaz e quando o
+    /// índice é refeito do zero.
     #[test]
     fn the_project_page_lists_every_spec_with_its_state_link_and_the_index_path() {
+        use crate::commands::flow::discard::{discard_for, DiscardOpts};
+
         let dir = tempdir().unwrap();
         let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         let published = |spec: &str| {
             put(root, spec, "publish", serde_json::json!({"page": "spec", "milestone": "approval", "ok": true,
                 "url": format!("https://claude.ai/code/artifact/{spec}")}));
@@ -394,11 +459,23 @@ mod tests {
         published("trava");
         put(root, "velha", "state", serde_json::json!({"phase": "survey"}));
         published("velha");
-        put(root, "velha", "state", serde_json::json!({"phase": "discarded", "reason": "não serve mais"}));
+
+        let discard = |confirm: Option<String>| {
+            discard_for(
+                &DiscardOpts { root: root.to_path_buf(), spec: Some("velha".into()), remote: false, delete: false, confirm },
+                None,
+            )
+        };
+        let code = discard(None)["token"].as_str().map(str::to_string);
+        let done = discard(code);
+        assert_eq!(done["ok"], serde_json::json!(true), "{done}");
+        assert!(!root.join(".claude/spec/velha").exists(), "the discarded spec was archived");
+        let discarded = read(root, ".claude/spec/project.html");
 
         let pages = refresh(root, "trava", Locale::PtBr).unwrap();
         assert_eq!(pages.project.as_deref(), Some(".claude/spec/project.html"));
         let html = read(root, ".claude/spec/project.html");
+        assert_eq!(html, discarded, "the discard left the project page as the next step makes it");
         for (spec, state) in [("busca", "em execução"), ("trava", "plano"), ("velha", "descartada")] {
             let row = format!(
                 "<tr><td><a href=\"https://claude.ai/code/artifact/{spec}\">{spec}</a></td><td>{state}</td>"
@@ -412,6 +489,50 @@ mod tests {
         assert!(html.contains("Por fase: 1 plano, 1 em execução, 1 descartada."), "{html}");
         assert!(html.contains("<li>specs <b>3</b></li>"), "{html}");
         crate::report::assert_only_the_fonts_are_external_but(&html, "https://claude.ai/code/artifact/");
+
+        std::fs::remove_file(root.join(".claude/spec/index.ndjson")).unwrap();
+        crate::commands::spec_events::index::index_at(&crate::commands::spec_events::index::IndexOpts {
+            root: root.to_path_buf(),
+        });
+        assert_eq!(read(root, ".claude/spec/project.html"), html, "the rebuilt index keeps the discarded spec");
+    }
+
+    /// A publicação da página do projeto, gravada pelo `run write` na spec em
+    /// que o passo corre, leva o endereço para a linha do projeto do índice,
+    /// de onde a barra de status o lê; o link da página da spec não muda.
+    #[test]
+    fn the_project_page_address_is_recorded_on_the_project_line() {
+        use crate::commands::spec_events::write::{write_at, WriteOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        put(root, "busca", "state", serde_json::json!({"phase": "plan"}));
+        let publish = |page: &str, url: &str| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("busca".into()),
+                event_type: "publish".into(),
+                json: serde_json::json!({"page": page, "milestone": "approval", "ok": true, "url": url}).to_string(),
+            })
+        };
+        let spec = publish("spec", "https://claude.ai/code/artifact/busca");
+        assert_eq!(spec["ok"], serde_json::json!(true), "{spec}");
+        let project = publish("project", "https://claude.ai/code/artifact/projeto");
+        assert_eq!(project["ok"], serde_json::json!(true), "{project}");
+
+        let index = read(root, ".claude/spec/index.ndjson");
+        assert_eq!(
+            mustard_core::domain::spec_index::project_url(&index).as_deref(),
+            Some("https://claude.ai/code/artifact/projeto"),
+            "{index}"
+        );
+        let rows = mustard_core::io::spec_index::read_rows(root);
+        assert_eq!(rows[0].url.as_deref(), Some("https://claude.ai/code/artifact/busca"), "{rows:?}");
+        refresh(root, "busca", Locale::PtBr).unwrap();
+        let html = read(root, ".claude/spec/project.html");
+        assert!(html.contains("href=\"https://claude.ai/code/artifact/busca\""), "{html}");
+        assert!(!html.contains("artifact/projeto"), "the project page does not link itself as a spec: {html}");
     }
 
     /// Quando a página publicada foi apagada, a publicação falha, a página é
@@ -468,6 +589,30 @@ mod tests {
         let pages = refresh(root, "s", Locale::PtBr).unwrap();
         assert!(pages.withheld.is_empty() && pages.warnings.is_empty(), "{pages:?}");
         assert!(!read(root, &pages.html).contains("Retido"));
+    }
+
+    /// O item revisto com o segredo nas duas versões sai uma vez só na lista
+    /// dos retidos, e o segredo num pedido já enviado diz o código do envio,
+    /// não só que um trecho saiu.
+    #[test]
+    fn each_withheld_item_is_named_once_and_a_sent_request_by_its_code() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        put(root, "s", "state", serde_json::json!({"phase": "running"}));
+        let said = put(root, "s", "message", serde_json::json!({"author": "user", "text": "combine"}));
+        let old = put(root, "s", "decision", serde_json::json!({"text": "A senha do banco: S3nh4F0rte", "why": "w",
+            "keys": ["banco"], "origin": said}));
+        put(root, "s", "decision", serde_json::json!({"text": "A senha do banco: 0utr4S3nh4", "why": "w",
+            "keys": ["banco"], "origin": said, "replaces": old}));
+        put(root, "s", "send", serde_json::json!({"wave": 1, "role": "wave", "lines": 2, "chars": 40, "items": [said],
+            "mustard": "0.0.0", "text": "# Pedido\nDB_PASSWORD=S3nh4F0rte2024", "author": "binary"}));
+
+        let pages = refresh(root, "s", Locale::PtBr).unwrap();
+        assert_eq!(pages.withheld, ["MSTD-DEC-0001", "MSTD-SEND-0001"], "{pages:?}");
+        let html = read(root, &pages.html);
+        assert!(!html.contains("S3nh4F0rte") && !html.contains("0utr4S3nh4"), "a secret reached the page");
+        let warning = pages.warnings.iter().find(|w| w.contains("purge")).cloned().unwrap_or_default();
+        assert!(warning.contains("MSTD-DEC-0001, MSTD-SEND-0001") && !warning.contains('+'), "{warning}");
     }
 
     /// Uma spec com arquivo de eventos nunca é do formato antigo por um

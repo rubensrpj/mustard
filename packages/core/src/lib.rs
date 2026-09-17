@@ -43,9 +43,9 @@ pub mod platform;
 // `mustard-rt run upsert`. See `platform/seeds.rs` + `platform/project_seed/`.
 pub use platform::project_seed::{
     carries_private_marks, default_inject_entries, detect_install_mode, footprint,
-    footprint_pathspecs, footprint_rules, injectable_declared_paths, injectable_names,
-    injectable_seeds, is_written_footprint, migrate_inject_declarations,
-    retire_planted_plugin_enablement, seed_gitignore, seed_injectable_files, seed_settings,
+    footprint_pathspecs, footprint_rules, harness_text_paths, harness_texts, is_written_footprint,
+    migrate_inject_declarations, output_style_for, retire_planted_plugin_enablement,
+    seed_gitignore, seed_harness_texts, seed_settings, session_map_declared_path,
     upsert_project, CleanupDone, CleanupPlan, FootprintEntry, InstallMode, SeedOutcome, Switches,
     UpsertReport, CLAUDE_LOCAL_MD, CLAUDE_MD, PRIVATE_MARKS, RTK_HOOK_COMMAND,
 };
@@ -71,7 +71,7 @@ pub use platform::harness::{
     newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,
 };
 pub use platform::seeds::{
-    CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD, ORCHESTRATOR_MD, SETTINGS_SEED,
+    agent_texts, session_map, AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME, SETTINGS_SEED,
 };
 
 pub use domain::model::view::{

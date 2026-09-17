@@ -190,7 +190,7 @@ fn run_close(
     if let Some(sid) = session {
         crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
     }
-    let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang).ok();
+    let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang);
 
     let mut out = json!({
         "ok": true,
@@ -198,13 +198,27 @@ fn run_close(
         "phase": "closed",
         "recorded": recorded,
         "criteria": runs,
-        "publish": ["spec", "project"],
-        "next": translate("close.next", lang),
     });
-    if let Some(pages) = pages {
-        out["md"] = json!(pages.md);
-        out["html"] = json!(pages.html);
+    match &pages {
+        Ok(pages) => {
+            out["md"] = json!(pages.md);
+            out["html"] = json!(pages.html);
+        }
+        Err(refusal) => {
+            crate::commands::spec_events::pages::push_warning(&mut out, refusal.reason(), &refusal.message(lang));
+        }
     }
+    // O fechamento é um marco: manda publicar, menos com item retido, que
+    // espera o expurgo — e o pull request espera a publicação.
+    let then = translate("close.next", lang);
+    crate::commands::spec_events::pages::end_milestone(
+        &mut out,
+        pages.as_ref().ok(),
+        "close",
+        then,
+        &crate::commands::spec_events::pages::after_purge("close", then, lang),
+        lang,
+    );
     Ok(out)
 }
 
@@ -382,8 +396,10 @@ mod tests {
     }
 
     /// A resposta da rodada e a do fechamento mandam publicar a página da
-    /// spec e a do projeto, e nenhuma delas traz o endereço da página para a
-    /// conversa. A do plano prova o mesmo no teste dela.
+    /// spec e a do projeto e dizem como gravar as duas publicações, e nenhuma
+    /// delas traz o endereço da página para a conversa. A do plano prova o
+    /// mesmo no teste dela. Um passo comum — o levantamento, a gravação de um
+    /// item, a página refeita a pedido — não manda publicar.
     #[test]
     fn the_round_and_the_close_order_the_publish_and_never_carry_a_link() {
         let dir = tempdir().unwrap();
@@ -400,11 +416,82 @@ mod tests {
         );
         let closed = close(root, "x");
 
-        for report in [&rounded, &closed] {
+        for (report, milestone) in [(&rounded, "round"), (&closed, "close")] {
             assert_eq!(report["publish"], json!(["spec", "project"]), "{report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            for page in ["spec", "project"] {
+                let record = format!(r#"'{{"page":"{page}","milestone":"{milestone}","#);
+                assert!(next.contains(&record), "{milestone} says how to record the {page} page: {next}");
+            }
             let shown = report.to_string();
             assert!(!shown.contains("http"), "nenhum endereço na resposta: {shown}");
         }
+
+        // Os passos comuns, numa spec em levantamento.
+        let other = tempdir().unwrap();
+        let root = other.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "y", "feature/y", "dev"), Ok(true));
+        let said = write(root, "y", "message", json!({"author": "user", "text": "Quero a busca de lições."}));
+        let context = write(root, "y", "context", json!({"text": "Quero a busca de lições.", "origin": id_of(&said)}));
+        let grilled = crate::commands::flow::grill::grill_for(
+            &crate::commands::flow::grill::GrillOpts {
+                root: root.to_path_buf(),
+                spec: Some("y".into()),
+                kinds: Some("feature".into()),
+                condensed: false,
+            },
+            None,
+        );
+        assert_eq!(grilled["ok"], json!(true), "{grilled}");
+        let paged = crate::commands::spec::page::build(&crate::commands::spec::page::PageOpts {
+            root: root.to_path_buf(),
+            spec: Some("y".into()),
+            body: None,
+            out: None,
+            title: None,
+            subtitle: None,
+            kind: None,
+        });
+        assert_eq!(paged["ok"], json!(true), "{paged}");
+        for report in [&grilled, &context, &paged] {
+            assert!(report.get("publish").is_none(), "um passo comum não manda publicar: {report}");
+            let shown = report.to_string();
+            assert!(!shown.contains("write publish"), "um passo comum não manda publicar: {shown}");
+        }
+    }
+
+    /// Com um item de texto que parece senha, a rodada e o fechamento dizem o
+    /// código do item a expurgar e não mandam publicar; a rodada continua
+    /// mandando despachar, e o fechamento deixa o pull request para depois da
+    /// publicação. O `.html` local sai sem o texto do item.
+    #[test]
+    fn a_withheld_item_holds_the_publish_of_the_round_and_the_close() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let said = write(root, "x", "message", json!({"author": "user", "text": "anota"}));
+        let note = write(root, "x", "note",
+            json!({"text": "GITHUB_TOKEN=a1b2c3d4e5f6g7h8i9j0", "keys": ["token"], "origin": id_of(&said)}));
+        let code = note["code"].as_str().unwrap_or_default().to_string();
+
+        let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let closed = close(root, "x");
+        for (report, milestone, then) in
+            [(&rounded, "round", translate("round.next", Locale::PtBr)), (&closed, "close", translate("close.next", Locale::PtBr))]
+        {
+            assert_eq!(report["ok"], json!(true), "{report}");
+            assert!(report.get("publish").is_none(), "{milestone}: {report}");
+            assert_eq!(report["withheld"], json!([code]), "{milestone}: {report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            assert!(next.contains(&code) && next.contains("write purge"), "{milestone}: {next}");
+            assert!(next.contains(&format!("`{milestone}`")) && next.ends_with(then), "{milestone}: {next}");
+            assert!(!next.contains("write publish"), "{milestone}: {next}");
+            let warned = report["warnings"].as_array().cloned().unwrap_or_default();
+            assert!(warned.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
+        }
+        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
+        assert!(!html.contains("a1b2c3d4e5f6g7h8i9j0"), "the local page keeps the secret out");
     }
 
     /// Ao gravar a fase fechada, o fechamento arma a cobrança das pendências

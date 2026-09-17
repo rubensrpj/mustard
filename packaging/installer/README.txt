@@ -79,8 +79,9 @@ Como usar depois
   comando; se o add falhar ao clonar, use a URL completa do repositório:
       /plugin marketplace add https://github.com/rubensrpj/mustard.git
 - Rode o Claude Code normalmente. Os hooks do Mustard vêm do plugin instalado no
-  passo acima, não do `mustard init`: o init só escreve o .claude/ e o
-  mustard.json, e o .claude/settings.json que ele grava não traz hook nenhum.
+  passo acima, não do `mustard init`: o init escreve o .claude/ e o
+  mustard.json, e o .claude/settings.local.json que ele grava traz só o gancho
+  do rtk.
 - Versão instalada:  mustard --version   /   mustard-rt --version
 
 

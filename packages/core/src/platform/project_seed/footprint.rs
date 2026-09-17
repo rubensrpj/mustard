@@ -12,7 +12,7 @@ use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
 use crate::platform::git_exclude;
 
-use super::files::INJECTABLE_SEEDS;
+use super::files::harness_text_paths;
 use super::{
     CLAUDE_GITIGNORE_PATH, CLAUDE_LOCAL_MD, CLAUDE_MD, GITHUB_PR_TEMPLATE, MUSTARD_JSON,
     MUSTARD_JSON_RULE, SETTINGS_JSON, SETTINGS_LOCAL_JSON,
@@ -227,9 +227,8 @@ fn at_any_depth(rule: &str) -> Option<FootprintEntry> {
 /// The Mustard FOOTPRINT, declared in exactly one place.
 ///
 /// Derived rather than re-typed: the seed entries are the same constants
-/// [`upsert_project`] records, the injectable instruction files come straight
-/// from [`INJECTABLE_SEEDS`] (so a new injectable is covered the day it is
-/// added), and each of those seeds gains its depth-reaching twin through
+/// [`upsert_project`] records, Mustard's own texts come straight from
+/// [`harness_text_paths`] (so a new one is covered the day it is added), and each of those seeds gains its depth-reaching twin through
 /// [`at_any_depth`] instead of being spelled a second time. Three entries are
 /// not seeds and are here on purpose:
 ///
@@ -259,11 +258,7 @@ fn at_any_depth(rule: &str) -> Option<FootprintEntry> {
 #[must_use]
 pub fn footprint() -> Vec<FootprintEntry> {
     let mut out = vec![seeded(SETTINGS_JSON), seeded(SETTINGS_LOCAL_JSON)];
-    out.extend(
-        INJECTABLE_SEEDS
-            .iter()
-            .map(|(name, _)| seeded(&format!(".claude/mustard/{name}"))),
-    );
+    out.extend(harness_text_paths().iter().map(|rel| seeded(&format!(".claude/{rel}"))));
     out.push(seeded(CLAUDE_GITIGNORE_PATH));
     out.push(anchored(MUSTARD_JSON_RULE, MUSTARD_JSON));
     out.push(seeded(CLAUDE_LOCAL_MD));
@@ -379,13 +374,13 @@ mod tests {
     use crate::platform::project_seed::upsert_project;
     use std::fs as std_fs;
 
-    /// The footprint is derived, so adding an injectable seed grows it without
-    /// anyone editing a second list.
+    /// The footprint is derived, so adding a text of Mustard's own grows it
+    /// without anyone editing a second list.
     #[test]
     fn the_footprint_is_derived_from_the_seeds_it_hides() {
         let rules = footprint_rules();
-        for (name, _) in INJECTABLE_SEEDS {
-            let expected = format!(".claude/mustard/{name}");
+        for rel in harness_text_paths() {
+            let expected = format!(".claude/{rel}");
             assert!(rules.contains(&expected), "{expected} missing: {rules:?}");
         }
         for expected in [
@@ -581,8 +576,12 @@ mod tests {
         upsert_project(root, Some("9.9.9"), InstallMode::Private).unwrap();
 
         // The scan census, the grain model, the capability docs and the spec
-        // directories — the root `.claude/`.
+        // directories — the root `.claude/`. And the shared settings file the
+        // first install wrote: the private upsert takes the seed's lines out of
+        // it, and with nothing else in it the file goes, so it is laid back
+        // down here.
         for (name, body) in [
+            ("settings.json", "{}\n"),
             ("scan-map.md", "Type: cargo\n"),
             ("grain.model.json", "{}\n"),
             ("scan-declined.json", "{}\n"),

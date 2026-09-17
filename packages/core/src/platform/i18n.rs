@@ -733,8 +733,10 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "Where: {remote}/{branch}=spec only on the remote, no local branch carries the \
              directory (fetch the branch before acting)"
         }
-        ("statusline.wave", Locale::PtBr) => "onda {current}/{total}",
-        ("statusline.wave", Locale::EnUs) => "wave {current}/{total}",
+        // O andamento é uma contagem, e não o número de uma onda: os números
+        // das ondas não seguem a ordem, e o da onda que vem fica na retomada.
+        ("statusline.wave", Locale::PtBr) => "{delivered} de {total} ondas",
+        ("statusline.wave", Locale::EnUs) => "{delivered} of {total} waves",
         ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
         ("statusline.harness.inert", Locale::EnUs) => "harness inert",
         // Dormant is NOT inert: inert means someone switched the plugin off,
@@ -750,6 +752,44 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("session.merged", Locale::EnUs) => {
             "[Mustard] The work of {count} branch(es) already went into the base through a merge, and \
              the branch(es) are still alive: {branches}."
+        }
+        // O merge feito por outra pessoa: o pull request da spec atual entrou,
+        // e o início da sessão rodou o mesmo caminho do merge do Mustard.
+        ("session.landed", Locale::PtBr) => {
+            "[Mustard] O pull request #{pr} da spec {spec} entrou pelas mãos de outra pessoa: a \
+             spec foi gravada como entregue."
+        }
+        ("session.landed", Locale::EnUs) => {
+            "[Mustard] Pull request #{pr} of the spec {spec} was merged by someone else: the spec \
+             was recorded as delivered."
+        }
+        ("session.landed.settled", Locale::PtBr) => {
+            "A base foi atualizada e a branch {branch} saiu desta máquina."
+        }
+        ("session.landed.settled", Locale::EnUs) => {
+            "The base was updated and the branch {branch} left this machine."
+        }
+        ("session.landed.unsettled", Locale::PtBr) => {
+            "A arrumação da branch {branch} não terminou ({reason}), e ela ficou nesta máquina."
+        }
+        ("session.landed.unsettled", Locale::EnUs) => {
+            "Tidying up the branch {branch} did not finish ({reason}), and it stayed on this machine."
+        }
+        ("session.landed.pending", Locale::PtBr) => {
+            "Pergunte ao usuário o que fazer com cada pendência nascida nela — virar spec, ficar na \
+             lista ou sair com motivo —, pelo título: {items}."
+        }
+        ("session.landed.pending", Locale::EnUs) => {
+            "Ask the user what to do with each pending item born in it — turn it into a spec, keep \
+             it on the list, or drop it with a reason —, by title: {items}."
+        }
+        ("session.provider_silent", Locale::PtBr) => {
+            "[Mustard] A spec {spec} está com o pull request aberto, e o provedor não respondeu se \
+             ele entrou ({reason}): nada foi mudado."
+        }
+        ("session.provider_silent", Locale::EnUs) => {
+            "[Mustard] The spec {spec} has its pull request open, and the provider did not answer \
+             whether it was merged ({reason}): nothing was changed."
         }
         ("session.version.drift", Locale::PtBr) => {
             "[Mustard] Este projeto está com o Mustard {stamped}, e o que roda é o {running}. Sugira \
@@ -1402,14 +1442,48 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "The plan has {count} things to fix before the approval question. Nothing was written."
         }
         ("plan.next", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto (`.claude/spec/project.html`), e faça a \
-             pergunta de aprovação, com \"Aprovar\" e \"Ajustar\". O endereço não vai para a conversa: \
-             ele fica na barra de status."
+            "Depois, faça a pergunta de aprovação, com \"Aprovar\" e \"Ajustar\"."
         }
-        ("plan.next", Locale::EnUs) => {
-            "Publish the spec page and the project page (`.claude/spec/project.html`), then ask the \
-             approval question, with \"Approve\" and \"Adjust\". The address never goes to the \
-             conversation: it lives in the status line."
+        ("plan.next", Locale::EnUs) => "Then ask the approval question, with \"Approve\" and \"Adjust\".",
+        ("plan.held", Locale::PtBr) => {
+            "Depois, rode `mustard-rt run plan` de novo: com a página sem item retido, ele manda \
+             publicar e fazer a pergunta de aprovação."
+        }
+        ("plan.held", Locale::EnUs) => {
+            "Then run `mustard-rt run plan` again: with no item withheld from the page, it orders \
+             the publish and the approval question."
+        }
+        // A publicação nos marcos, dita pelo plano, pela rodada e pelo
+        // fechamento (`commands/spec_events/pages.rs`).
+        ("page.publish", Locale::PtBr) => {
+            "Publique a página da spec e a do projeto (`.claude/spec/project.html`) e grave as duas \
+             publicações: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
+             e `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
+             cada uma com `\"ok\":false` e `\"reason\"` quando falhar. Os endereços não vão para a \
+             conversa: ficam na barra de status."
+        }
+        ("page.publish", Locale::EnUs) => {
+            "Publish the spec page and the project page (`.claude/spec/project.html`) and record both \
+             publications: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
+             and `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
+             each with `\"ok\":false` and a `\"reason\"` when it fails. The addresses never go to \
+             the conversation: they live in the status line."
+        }
+        ("page.hold", Locale::PtBr) => {
+            "Não publique as páginas: {codes} têm texto com cara de segredo e ficaram fora da página. \
+             Expurgue cada item com `mustard-rt run write purge --spec <spec> --json '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
+        }
+        ("page.hold", Locale::EnUs) => {
+            "Do not publish the pages: {codes} have text that looks like a secret and were left off \
+             the page. Purge each item with `mustard-rt run write purge --spec <spec> --json '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
+        }
+        ("page.after_purge", Locale::PtBr) => {
+            "Depois, refaça a página com `mustard-rt run page --spec <spec>` e, sem item retido, \
+             publique as duas páginas e grave cada publicação com o marco `{milestone}`."
+        }
+        ("page.after_purge", Locale::EnUs) => {
+            "Then rebuild the page with `mustard-rt run page --spec <spec>` and, with no item \
+             withheld, publish both pages and record each publication with the `{milestone}` milestone."
         }
         ("plan.copy", Locale::PtBr) => {
             "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
@@ -1502,18 +1576,22 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // O descarte de uma spec (`commands/flow/discard.rs`).
         ("discard.preview", Locale::PtBr) => {
             "Descartar a spec {spec} fecha o pull request dela, apaga a branch {branch} \
-             (no servidor: {remote}), {what} a pasta da spec e tira a linha dela do índice. \
+             (no servidor: {remote}) e {what}. \
              Isso não tem volta. Mostre ao usuário e, com o sim dele, repita com o código {token}."
         }
         ("discard.preview", Locale::EnUs) => {
             "Discarding spec {spec} closes its pull request, deletes branch {branch} \
-             (on the server: {remote}), {what} the spec folder and drops its line from the index. \
+             (on the server: {remote}) and {what}. \
              This cannot be undone. Show it to the user and, once they say yes, run again with code {token}."
         }
-        ("discard.archive", Locale::PtBr) => "guarda",
-        ("discard.archive", Locale::EnUs) => "archives",
-        ("discard.delete", Locale::PtBr) => "apaga",
-        ("discard.delete", Locale::EnUs) => "deletes",
+        ("discard.archive", Locale::PtBr) => {
+            "guarda a pasta da spec, que continua no índice e na página do projeto, marcada como descartada"
+        }
+        ("discard.archive", Locale::EnUs) => {
+            "archives the spec folder, which stays in the index and on the project page, marked as discarded"
+        }
+        ("discard.delete", Locale::PtBr) => "apaga a pasta da spec e tira a linha dela do índice",
+        ("discard.delete", Locale::EnUs) => "deletes the spec folder and drops its line from the index",
         ("discard.yes", Locale::PtBr) => "sim",
         ("discard.yes", Locale::EnUs) => "yes",
         ("discard.no", Locale::PtBr) => "não",
@@ -1527,10 +1605,10 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "That code is not this discard's: ask for the first call again. Nothing was removed."
         }
         ("discard.incomplete", Locale::PtBr) => {
-            "O descarte não terminou: a pasta da spec ou a linha dela no índice ficou onde estava."
+            "O descarte não terminou: a pasta da spec não saiu do lugar, ou a linha dela no índice não mudou."
         }
         ("discard.incomplete", Locale::EnUs) => {
-            "The discard did not finish: the spec folder or its index line stayed where it was."
+            "The discard did not finish: the spec folder did not move, or its index line did not change."
         }
 
         // A retomada de uma spec (`commands/flow/resume.rs`).
@@ -1610,14 +1688,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
             "A prova do critério {code} não passou: {output}"
         }
         ("close.criterion_failed", Locale::EnUs) => "The proof of criterion {code} did not pass: {output}",
-        ("close.next", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto (`.claude/spec/project.html`), e abra o pull \
-             request."
-        }
-        ("close.next", Locale::EnUs) => {
-            "Publish the spec page and the project page (`.claude/spec/project.html`), and open the \
-             pull request."
-        }
+        ("close.next", Locale::PtBr) => "Depois, abra o pull request.",
+        ("close.next", Locale::EnUs) => "Then open the pull request.",
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => {
@@ -1671,12 +1743,18 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("round.git_refused", Locale::PtBr) => "O git recusou o commit da rodada: {detail}",
         ("round.git_refused", Locale::EnUs) => "Git refused the round's commit: {detail}",
         ("round.next", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto (`.claude/spec/project.html`), e despache os \
-             pedidos desta rodada."
+            "Despache os pedidos desta rodada: cada onda ao agente `wave` e cada revisão ao agente \
+             `review`. Quando voltarem, rode a rodada de novo com o relatório: `--report \
+             '{\"waves\":[{\"wave\":1,\"delivered\":\"…\",\"files\":[\"…\"],\"verdict\":{…}}]}'`, com o \
+             `verdict` tirado da linha `VERDICT` da revisão e, quando a onda disser que o plano não \
+             funciona, o `replan` da linha `DELIVERED`."
         }
         ("round.next", Locale::EnUs) => {
-            "Publish the spec page and the project page (`.claude/spec/project.html`), and dispatch \
-             this round's requests."
+            "Dispatch this round's requests: each wave to the `wave` agent and each review to \
+             the `review` agent. When they come back, run the round again with the report: `--report \
+             '{\"waves\":[{\"wave\":1,\"delivered\":\"…\",\"files\":[\"…\"],\"verdict\":{…}}]}'`, with the \
+             `verdict` taken from the review's `VERDICT` line and, when the wave says its plan does \
+             not work, the `replan` from the `DELIVERED` line."
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
@@ -2278,14 +2356,16 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              commit through the round, and the assistant's response at the end of each answer."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
-            "A mensagem do usuário na spec {spec} não é gravada, tirada ou revista pelo \
-             `run write`, e nada foi gravado: ela chega pelo gancho da entrada, e a resposta a uma \
-             pergunta com opções, pela testemunha."
+            "Na spec {spec}, a resposta a uma pergunta com opções (a mensagem com `witness`, de \
+             qualquer autor) e a fala do usuário que só o gancho grava não são gravadas, tiradas \
+             ou revistas pelo `run write`, e nada foi gravado: a resposta chega pela testemunha, e \
+             a fala, pelo gancho da entrada."
         }
         ("spec_events.user_message_by_hook", Locale::EnUs) => {
-            "The user's message in the spec {spec} is not written, removed or revised by \
-             `run write`, and nothing was written: it arrives through the entry hook, and the \
-             answer to a question with options, through the witness."
+            "In the spec {spec}, the answer to a question with options (the message with \
+             `witness`, from any author) and the user's speech that only the hook records are not \
+             written, removed or revised by `run write`, and nothing was written: the answer \
+             arrives through the witness, and the speech, through the entry hook."
         }
         ("spec_events.binary_author", Locale::PtBr) => {
             "O autor `binary` fica para as gravações de dentro do binário, e nada foi gravado: o \
@@ -2540,39 +2620,12 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
              .claude/settings.local.json (`attribution`). Run `mustard-rt run upsert` to turn it off."
         }
         ("doctor.claude_md.leftovers", Locale::PtBr) => {
-            "Sobras do Mustard em arquivos que não são dele: {paths}. Rode `mustard-rt run upsert`, \
-             confira a lista e, com o sim, tire-as."
+            "Sobras do Mustard em arquivos que não são dele: {paths}. Rode `mustard-rt run upsert`: \
+             ele as tira."
         }
         ("doctor.claude_md.leftovers", Locale::EnUs) => {
-            "Mustard leftovers in files that are not its own: {paths}. Run `mustard-rt run upsert`, \
-             check the list and, after a yes, take them out."
-        }
-        // The cleanup the `upsert` lists and applies only after a yes.
-        ("upsert.cleanup.ask", Locale::PtBr) => {
-            "Mostre a lista `cleanup` à pessoa, dizendo que as Guards que saem viram lições e que o \
-             commit fica com ela. Só com o sim, rode `mustard-rt run upsert --confirm {token}`."
-        }
-        ("upsert.cleanup.ask", Locale::EnUs) => {
-            "Show the `cleanup` list to the person, saying that the Guards that leave become lessons \
-             and that the commit is theirs. Only after a yes, run `mustard-rt run upsert --confirm {token}`."
-        }
-        ("upsert.cleanup.mismatch", Locale::PtBr) => {
-            "O código não é o da lista de agora, e nada foi tirado: a lista mudou desde que foi \
-             mostrada. Rode `mustard-rt run upsert`, mostre a lista nova e peça o sim de novo."
-        }
-        ("upsert.cleanup.mismatch", Locale::EnUs) => {
-            "The code is not the one of the current list, and nothing was taken out: the list \
-             changed since it was shown. Run `mustard-rt run upsert`, show the new list and ask again."
-        }
-        ("upsert.cleanup.nothing", Locale::PtBr) => "Não há nada do Mustard a tirar neste projeto.",
-        ("upsert.cleanup.nothing", Locale::EnUs) => "There is nothing of Mustard's to take out in this project.",
-        ("upsert.cleanup.done", Locale::PtBr) => {
-            "A lista saiu. O commit dessas mudanças fica com a pessoa: nada foi preparado nem \
-             gravado no git."
-        }
-        ("upsert.cleanup.done", Locale::EnUs) => {
-            "The list is out. Committing these changes is the person's call: nothing was staged or \
-             committed."
+            "Mustard leftovers in files that are not its own: {paths}. Run `mustard-rt run upsert`: \
+             it takes them out."
         }
         ("spec_index.no_specs", Locale::PtBr) => {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
@@ -3041,6 +3094,8 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         ("page.value.refused", Locale::PtBr) => "recusada",
         ("page.value.refused", Locale::EnUs) => "refused",
         ("page.value.spec", _) => "spec",
+        ("page.value.project", Locale::PtBr) => "projeto",
+        ("page.value.project", Locale::EnUs) => "project",
         ("page.value.approval", Locale::PtBr) => "aprovação",
         ("page.value.approval", Locale::EnUs) => "approval",
         ("page.value.round", Locale::PtBr) => "rodada",
@@ -3605,6 +3660,10 @@ mod tests {
             ("pending.gate.block", &["{spec}", "{count}", "{items}"][..]),
             ("pending.duplicate", &["{id}", "{title}"][..]),
             ("scratch.residue.notice", &["{total}", "{count}"][..]),
+            ("session.landed.settled", &["{branch}"][..]),
+            ("session.landed.unsettled", &["{branch}", "{reason}"][..]),
+            ("session.landed.pending", &["{items}"][..]),
+            ("statusline.wave", &["{delivered}", "{total}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -3663,6 +3722,8 @@ mod tests {
             ("subagent.not_approved", &["{spec}", "{phase}"][..]),
             ("subagent.no_wave", &["{spec}", "{wave}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
+            ("session.landed", &["{pr}", "{spec}"][..]),
+            ("session.provider_silent", &["{spec}", "{reason}"][..]),
             ("session.version.drift", &["{stamped}", "{running}"][..]),
             ("session.version.stale", &["{running}", "{installed}"][..]),
             ("session.version.behind", &["{running}", "{plugin}"][..]),
@@ -3976,6 +4037,10 @@ mod tests {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
             ("plan.next", &[][..]),
+            ("plan.held", &[][..]),
+            ("page.publish", &["{milestone}"][..]),
+            ("page.hold", &["{codes}"][..]),
+            ("page.after_purge", &["{milestone}"][..]),
             ("plan.copy", &[][..]),
             ("plan.wave_loop", &["{waves}"][..]),
             ("plan.depends_on_missing", &["{wave}", "{on}"][..]),
@@ -4185,8 +4250,8 @@ mod tests {
         assert_eq!(sorted.len(), create.len(), "no duplicates: {create:?}");
     }
 
-    /// As mensagens do diagnóstico das chaves do projeto e da limpeza do
-    /// `upsert` saem nos dois idiomas, com as vagas que o chamador preenche.
+    /// As mensagens do diagnóstico das chaves do projeto e das sobras saem
+    /// nos dois idiomas, com as vagas que o chamador preenche.
     #[test]
     fn i18n_translates_switch_and_cleanup_keys() {
         for (key, slots) in [
@@ -4195,10 +4260,6 @@ mod tests {
             ("doctor.switches.rtk_left", &[][..]),
             ("doctor.switches.signature_on", &[][..]),
             ("doctor.claude_md.leftovers", &["{paths}"][..]),
-            ("upsert.cleanup.ask", &["{token}"][..]),
-            ("upsert.cleanup.mismatch", &[][..]),
-            ("upsert.cleanup.nothing", &[][..]),
-            ("upsert.cleanup.done", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

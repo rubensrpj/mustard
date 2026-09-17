@@ -6,7 +6,8 @@
 //!
 //! O que a barra mostra: na primeira linha, o nome do projeto como link da
 //! página dele, a branch, a spec como link da página dela, a fase e o
-//! andamento das ondas ("onda 2/4"), o uso da conversa, o tempo, as linhas
+//! andamento das ondas como contagem ("1 de 4 ondas", entregues de total), o
+//! uso da conversa, o tempo, as linhas
 //! mudadas, o custo e o aviso vermelho de quando o Mustard está desligado; na
 //! segunda, a economia do rtk e o modelo. Nenhuma versão aparece: a do
 //! Mustard vai para o `doctor` e para o aviso do início da sessão, e a do
@@ -190,8 +191,9 @@ mod tests {
 
     /// Retrato da barra com uma spec em execução na onda 2 de 4: aparecem o
     /// link da página do projeto, a branch, o nome da spec como link, a fase e
-    /// "onda 2/4"; nenhuma versão aparece — nem a do Mustard, nem a do Claude
-    /// Code.
+    /// o andamento como contagem — "1 de 4 ondas", uma entregue das quatro, nos
+    /// dois idiomas, e nunca o número da onda que vem; nenhuma versão aparece —
+    /// nem a do Mustard, nem a do Claude Code.
     #[test]
     fn a_session_with_a_spec_running_wave_two_of_four_shows_the_links_the_phase_and_the_progress() {
         use crate::shared::spec_state::seed_event;
@@ -238,19 +240,25 @@ mod tests {
         assert!(text(segment::SegmentKind::Git).starts_with("\u{2387} feature/checkout"), "the branch");
         assert_eq!(
             text(segment::SegmentKind::Unit),
-            format!("\u{25b8} {} running onda 2/4", link(spec_url, "checkout")),
-            "the spec name as a link, the phase and the wave progress"
+            format!("\u{25b8} {} running 1 de 4 ondas", link(spec_url, "checkout")),
+            "the spec name as a link, the phase and the count of delivered waves"
         );
 
         let lines: Vec<String> = render(&data).iter().map(|line| visible(line)).collect();
         let shown = lines.join("\n");
-        for expected in ["loja", "feature/checkout", "checkout running onda 2/4", "Opus 5"] {
+        for expected in ["loja", "feature/checkout", "checkout running 1 de 4 ondas", "Opus 5"] {
             assert!(shown.contains(expected), "{expected} is on the bar: {shown}");
         }
+        assert!(!shown.contains("onda 2"), "the number of the next wave stays in the resume line: {shown}");
         for version in ["2.1.267", "v2.1", "0.0.1-velha", &format!("m{}", mustard_core::harness_version())] {
             assert!(!shown.contains(version), "no version on the bar ({version}): {shown}");
         }
         assert!(!shown.contains('\u{2702}'), "no branch count to prune: {shown}");
+
+        // Em inglês, a mesma contagem.
+        std::fs::write(root.join("mustard.json"), r#"{"version":"0.0.1-velha","language":{"text":"en-US"}}"#).unwrap();
+        let english = segment::unit_segment(&root).expect("the spec is on the bar");
+        assert!(english.text.ends_with(" running 1 of 4 waves"), "{}", english.text);
     }
 
     /// Every segment kind lands on exactly one row — a kind added later without

@@ -37,11 +37,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mustard_core::{
-    footprint_rules, upsert_project, InstallMode, CLAUDE_GITIGNORE, DISPATCH_MD, MATERIAL_MD,
-    ORCHESTRATOR_MD,
-    SETTINGS_SEED,
-};
+use mustard_core::platform::i18n::Locale;
+use mustard_core::{footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED};
 
 // ---------------------------------------------------------------------------
 // AC-1 — the clone-local exclude file
@@ -200,9 +197,10 @@ fn ac4_shared_install_is_byte_identical_to_today() {
         report.created,
         vec![
             ".claude/settings.json",
-            ".claude/mustard/orchestrator.md",
-            ".claude/mustard/dispatch.md",
-            ".claude/mustard/material.md",
+            ".claude/mustard/mapa-inicio-sessao.md",
+            ".claude/agents/mustard/wave.md",
+            ".claude/agents/mustard/review.md",
+            ".claude/agents/mustard/skill.md",
             ".claude/.gitignore",
             "mustard.json",
         ],
@@ -217,12 +215,9 @@ fn ac4_shared_install_is_byte_identical_to_today() {
         serde_json::to_string_pretty(&seed).expect("re-render the seed"),
     );
     assert_eq!(read(&root.join(".claude/settings.json")), Some(expected_settings));
-    assert_eq!(
-        read(&root.join(".claude/mustard/orchestrator.md")),
-        Some(ORCHESTRATOR_MD.to_string()),
-    );
-    assert_eq!(read(&root.join(".claude/mustard/dispatch.md")), Some(DISPATCH_MD.to_string()));
-    assert_eq!(read(&root.join(".claude/mustard/material.md")), Some(MATERIAL_MD.to_string()));
+    for (rel, body) in harness_texts(Locale::PtBr) {
+        assert_eq!(read(&root.join(".claude").join(&rel)), Some(body.to_string()), "{rel}");
+    }
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");
 
@@ -321,9 +316,8 @@ fn ac11_private_install_refuses_when_it_cannot_hide() {
     for path in [
         ".claude/settings.json",
         ".claude/settings.local.json",
-        ".claude/mustard/orchestrator.md",
-        ".claude/mustard/dispatch.md",
-        ".claude/mustard/material.md",
+        ".claude/mustard/mapa-inicio-sessao.md",
+        ".claude/agents/mustard/wave.md",
         ".claude/.gitignore",
         ".claude",
         "mustard.json",

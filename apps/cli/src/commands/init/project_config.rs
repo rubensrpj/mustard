@@ -34,7 +34,7 @@ pub(super) fn write_project_config(project_path: &Path, runtime: &Runtime, inter
     // defaults live in the core (`project_seed::default_inject_entries`).
     if config.inject.is_empty() {
         config.inject = mustard_core::default_inject_entries();
-        println!("  seeded inject declarations (.claude/mustard/*.md ride the session hooks)");
+        println!("  seeded the inject declaration (the session map rides the session start)");
     }
 
     config.runtime = Some(runtime.clone());

@@ -56,27 +56,23 @@ pub enum MaintCmd {
     /// `.claude/settings.json` — plus `.claude/.gitignore` and the
     /// project-root `mustard.json` are yours and are merged, never clobbered:
     /// an existing file is preserved, only what is missing is created or
-    /// backfilled. The three injectable instruction files under
-    /// `.claude/mustard/` — `orchestrator.md`, `dispatch.md` and
-    /// `material.md` — are ALWAYS rewritten: they are the harness's own
-    /// rules, not project configuration, so a copy you edited is replaced and
-    /// listed under `updated`, while one that already matched the shipped
-    /// text comes back under `preserved` because there was nothing left to
-    /// write. Emits the `UpsertReport` as deterministic pretty JSON.
+    /// backfilled. Mustard's own texts — the session map
+    /// `.claude/mustard/mapa-inicio-sessao.md` and the three agents under
+    /// `.claude/agents/mustard/` — are ALWAYS rewritten, in the language of
+    /// `language.text`: they are the harness's own text, not project
+    /// configuration, so a copy you edited is replaced and listed under
+    /// `updated`, while one that already matched the shipped text comes back
+    /// under `preserved` because there was nothing left to write. Emits the
+    /// `UpsertReport` as deterministic pretty JSON.
     ///
     /// What an older Mustard wrote into files that are not its own — the
     /// marks in the `CLAUDE.md` files, the seed's lines in the team's
-    /// `.claude/settings.json`, a planted `.claude/CLAUDE.md` — comes back as
-    /// a list under `cleanup`, with a `token`, and nothing of it is touched.
-    /// After the person says yes to that list, `--confirm <token>` takes it
-    /// out and turns the Guards that leave into project-rule lessons. The
-    /// commit stays with the person.
+    /// `.claude/settings.json`, a planted `.claude/CLAUDE.md` — leaves in the
+    /// same call, with no question: the Guards become project-rule lessons
+    /// first, and `cleanup` and `cleaned` say what left. A file without a mark
+    /// is only listed. The commit stays with the person.
     #[command(display_order = 19)]
-    Upsert {
-        /// The `token` the list came with, after the person said yes to it.
-        #[arg(long)]
-        confirm: Option<String>,
-    },
+    Upsert,
 }
 
 /// Dispatch one `maint`-family `run` subcommand.
@@ -90,7 +86,7 @@ pub fn dispatch(cmd: MaintCmd) {
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
-        MaintCmd::Upsert { confirm } => maint::upsert::run(confirm.as_deref()),
+        MaintCmd::Upsert => maint::upsert::run(),
     }
 }
 
@@ -129,5 +125,13 @@ mod tests {
         assert!(parse(&["--apply"]).is_ok());
         assert!(parse(&["--dry-run"]).is_ok());
         assert!(parse(&[]).is_ok());
+    }
+
+    /// A limpeza das sobras não pede código: o `upsert` não aceita mais o
+    /// `--confirm`.
+    #[test]
+    fn upsert_takes_no_confirm_code() {
+        assert!(Probe::try_parse_from(["probe", "upsert"]).is_ok());
+        assert!(Probe::try_parse_from(["probe", "upsert", "--confirm", "abcd1234"]).is_err());
     }
 }

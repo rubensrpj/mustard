@@ -1,8 +1,9 @@
 //! The harness settings: the seed laid into the local settings layer, the
 //! point migrations that reach inside keys the merge preserves, the two
 //! switches Mustard keeps there (the rtk hook and Claude Code's own
-//! signature), and the reading of a team's `.claude/settings.json` for the
-//! lines the seed wrote into it.
+//! signature), the response style of the project's text language, and the
+//! reading of a team's `.claude/settings.json` for the lines the seed wrote
+//! into it.
 //!
 //! Nothing here ever reads or writes `~/.claude/`: every path is under the
 //! project's own `.claude/`.
@@ -15,6 +16,8 @@ use crate::domain::config::ProjectConfig;
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
 use crate::platform::error::Result;
+use crate::platform::harness::PLUGIN_NAME;
+use crate::platform::i18n::Locale;
 use crate::platform::seeds::SETTINGS_SEED;
 
 use super::{InstallMode, SeedOutcome, SETTINGS_JSON, SETTINGS_LOCAL_JSON};
@@ -77,6 +80,13 @@ const RETIRED_DENY_RULES: &[&str] = &[
 /// The signature value the seed used to write before it wrote the empty one.
 const RETIRED_SIGNATURE: &str = "assistant";
 
+/// A chave das configurações do Claude Code que escolhe o estilo de resposta.
+const OUTPUT_STYLE_KEY: &str = "outputStyle";
+
+/// O estilo de resposta que o plugin entregava antes dos dois de hoje, pelo
+/// nome com que o Claude Code o chamava.
+const RETIRED_OUTPUT_STYLE: &str = "mustard-didactic";
+
 /// Seed the harness settings from the compiled-in [`SETTINGS_SEED`].
 ///
 /// The destination follows `mode`: `.claude/settings.json` when shared,
@@ -92,7 +102,8 @@ const RETIRED_SIGNATURE: &str = "assistant";
 /// [`retire_planted_plugin_enablement`], [`rename_dead_skill_validate_key`],
 /// [`backfill_own_permission_rules`] and [`retire_old_rules`] — and through the
 /// two switches this file holds: in the local layer, the rtk hook follows `rtk`
-/// ([`apply_rtk_hook`]); and Claude Code's own signature is kept off
+/// ([`apply_rtk_hook`]) and the response style follows `text`
+/// ([`apply_output_style`]); and Claude Code's own signature is kept off
 /// ([`turn_signature_off`]). These are the only writes that reach INSIDE a key
 /// the merge preserves. Each one is narrow by construction: the top-level merge
 /// refuses to guess what an absent sub-key means, so anything that must reach an
@@ -108,6 +119,7 @@ pub fn seed_settings(
     overwrite: bool,
     mode: InstallMode,
     rtk: bool,
+    text: Locale,
 ) -> Result<SeedOutcome> {
     let dest = settings_dest(claude_dir, mode);
     let existing_raw = fs::read_to_string(&dest).ok();
@@ -137,6 +149,7 @@ pub fn seed_settings(
     // team's file, and the hook is a choice of whoever programs.
     if mode.is_private() {
         apply_rtk_hook(&mut settings, rtk);
+        apply_output_style(&mut settings, text);
     }
     turn_signature_off(&mut settings);
 
@@ -394,6 +407,36 @@ fn is_rtk_hook(hook: &Value) -> bool {
     hook.get("command").and_then(Value::as_str).map(str::trim) == Some(RTK_HOOK_COMMAND)
 }
 
+/// O estilo de resposta do Mustard no idioma `text`, pelo nome com que o
+/// Claude Code chama um estilo de plugin: o nome do plugin, dois-pontos e o
+/// `name` do arquivo do estilo (`mustard:mustard-pt-BR`).
+#[must_use]
+pub fn output_style_for(text: Locale) -> String {
+    format!("{PLUGIN_NAME}:mustard-{text}")
+}
+
+/// Se o valor da chave é um estilo que só o Mustard escreve: o de um dos dois
+/// idiomas, ou o que eles substituíram.
+fn is_mustard_style(value: &str) -> bool {
+    value == format!("{PLUGIN_NAME}:{RETIRED_OUTPUT_STYLE}")
+        || [Locale::PtBr, Locale::EnUs].into_iter().any(|text| value == output_style_for(text))
+}
+
+/// Escolhe o estilo de resposta do idioma `text` nas configurações locais.
+///
+/// A chave ausente, ou com um estilo do próprio Mustard, recebe o do idioma:
+/// trocar o `language.text` e instalar de novo troca o estilo. Um estilo que a
+/// pessoa escolheu por conta própria fica como está.
+pub fn apply_output_style(settings: &mut Map<String, Value>, text: Locale) {
+    let chosen_by_person = settings
+        .get(OUTPUT_STYLE_KEY)
+        .and_then(Value::as_str)
+        .is_some_and(|value| !is_mustard_style(value));
+    if !chosen_by_person {
+        settings.insert(OUTPUT_STYLE_KEY.to_string(), Value::String(output_style_for(text)));
+    }
+}
+
 /// Keep the signature Claude Code adds to commits and pull requests off: both
 /// halves of `attribution` empty, which is how Claude Code reads "none".
 fn turn_signature_off(settings: &mut Map<String, Value>) {
@@ -615,7 +658,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_settings(&root.join(".claude"), false, InstallMode::Shared, true).unwrap();
+        seed_settings(&root.join(".claude"), false, InstallMode::Shared, true, Locale::PtBr).unwrap();
 
         let settings: Value = serde_json::from_str(
             &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
@@ -931,7 +974,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_settings(&claude, false, InstallMode::Private, true).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
 
         let settings = local_settings(dir.path());
         let deny: Vec<&str> = settings["permissions"]["deny"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
@@ -995,5 +1038,53 @@ mod tests {
         assert_eq!(left["cleanupPeriodDays"], json!(7));
         assert!(left.get("hooks").is_some());
         assert!(left.get("attribution").is_none());
+    }
+
+    /// O estilo de resposta segue o idioma do texto: a instalação local grava
+    /// o do `language.text`, troca quando o idioma troca, e deixa o estilo que
+    /// a pessoa escolheu. O nome gravado é o que o Claude Code dá ao estilo do
+    /// plugin: o nome do plugin e o `name` do arquivo do estilo.
+    #[test]
+    fn the_response_style_follows_the_text_language() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        let style = || -> Value {
+            let raw = std_fs::read_to_string(claude.join("settings.local.json")).unwrap();
+            serde_json::from_str::<Value>(&raw).unwrap()["outputStyle"].clone()
+        };
+
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::EnUs).unwrap();
+        assert_eq!(style(), json!("mustard:mustard-en-US"));
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        assert_eq!(style(), json!("mustard:mustard-pt-BR"), "a language change swaps the style");
+
+        let mut settings = parse_json_object(r#"{"outputStyle":"Explanatory"}"#);
+        apply_output_style(&mut settings, Locale::EnUs);
+        assert_eq!(settings["outputStyle"], json!("Explanatory"), "the person's own style stays");
+        let mut retired = parse_json_object(r#"{"outputStyle":"mustard:mustard-didactic"}"#);
+        apply_output_style(&mut retired, Locale::EnUs);
+        assert_eq!(retired["outputStyle"], json!("mustard:mustard-en-US"));
+
+        let shared = dir.path().join("shared/.claude");
+        std_fs::create_dir_all(&shared).unwrap();
+        seed_settings(&shared, false, InstallMode::Shared, true, Locale::EnUs).unwrap();
+        let team: Value = serde_json::from_str(&std_fs::read_to_string(shared.join("settings.json")).unwrap()).unwrap();
+        assert!(team.get("outputStyle").is_none(), "the team's file never gets the style");
+
+        // A outra metade: o plugin entrega um estilo com esse nome.
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        let manifest: Value =
+            serde_json::from_str(&std_fs::read_to_string(plugin.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
+        for text in [Locale::PtBr, Locale::EnUs] {
+            let body = std_fs::read_to_string(plugin.join(format!("output-styles/mustard-{text}.md"))).unwrap();
+            let name = body.lines().find_map(|l| l.strip_prefix("name: ")).unwrap_or_default();
+            assert_eq!(
+                format!("{}:{name}", manifest["name"].as_str().unwrap()),
+                output_style_for(text),
+                "the style the installer names is not the one the plugin ships",
+            );
+            assert!(!body.contains("force-for-plugin"), "a forced style would override the language choice");
+        }
     }
 }

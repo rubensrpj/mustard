@@ -1,30 +1,32 @@
 //! `mustard-rt run upsert` — install or update Mustard in the current project.
 //!
 //! The plugin's bootstrap door: everything the harness needs in a project —
-//! `.claude/settings.local.json`, the injectable instruction files under
-//! `.claude/mustard/`, `.claude/.gitignore`, and the project-root
-//! `mustard.json` — is seeded by `mustard_core::upsert_project`, idempotently.
+//! `.claude/settings.local.json`, Mustard's own texts (the session map under
+//! `.claude/mustard/` and the three agents under `.claude/agents/mustard/`),
+//! `.claude/.gitignore`, and the project-root `mustard.json` — is seeded by
+//! `mustard_core::upsert_project`, idempotently.
 //! The settings file is the LOCAL one because the install is always
 //! private-mode (see [`run`]); the shared `.claude/settings.json` is never
 //! written here. What the OPERATOR owns is merge-only: an existing
 //! `.claude/settings.local.json`, `.claude/.gitignore` or `mustard.json` is
-//! preserved, and only what is missing is created or backfilled. The three
-//! injectable instruction files — `.claude/mustard/orchestrator.md`,
-//! `.claude/mustard/dispatch.md` and `.claude/mustard/material.md` — are
-//! ALWAYS rewritten: they are the harness's own rules, not project
-//! configuration, so a copy that diverged is replaced and reported as
+//! preserved, and only what is missing is created or backfilled. Mustard's
+//! own texts — `.claude/mustard/mapa-inicio-sessao.md` and
+//! `.claude/agents/mustard/{wave,review,skill}.md` — are ALWAYS rewritten, in
+//! the language of `language.text`: they are the harness's own text, not
+//! project configuration, so a copy that diverged is replaced and reported as
 //! `Updated`, while a copy already byte-identical to the shipped text is
 //! reported as `Preserved` because there was nothing left to write.
 //!
 //! What an older Mustard left in files that are not its own (the marks in the
 //! `CLAUDE.md` files, the seed's lines in the team's `.claude/settings.json`,
-//! a planted `.claude/CLAUDE.md`) is only LISTED, under `cleanup`, with the
-//! code under `confirm.token`. The person reads the list; after their yes,
-//! `--confirm <token>` takes exactly that list out and turns the Guards that
-//! leave into project-rule lessons. Nothing is staged or committed.
+//! a planted `.claude/CLAUDE.md`) is its own leftover, and leaves in this same
+//! call, with no question: the Guards become project-rule lessons first, then
+//! the lines leave. `cleanup` lists what left and the files without a mark,
+//! which are never touched; `cleaned` says what was done. Nothing is staged or
+//! committed.
 //!
 //! Output: the serialized [`Report`] as pretty JSON — the engine's
-//! `UpsertReport` flattened, with `confirm` and `pluginRefresh` appended — deterministic
+//! `UpsertReport` flattened, with `pluginRefresh` appended — deterministic
 //! (fixed field order, no timestamps, project-root-relative names only), per
 //! the `run`-face byte-stability contract. Fail-open: an engine error is
 //! reported as a JSON `{"error": …}` object and the process still exits 0.
@@ -66,10 +68,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use mustard_core::platform::i18n::translate;
 use mustard_core::InstallMode;
 use serde::Serialize;
-use serde_json::{json, Value};
 
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 
@@ -154,74 +154,27 @@ struct PluginRefresh {
 ///
 /// The engine's report is flattened, so every key callers already read
 /// (`installedBefore`, `created`, `private`, …) keeps its name and its place;
-/// `confirm` and `pluginRefresh` are appended after them.
+/// `pluginRefresh` is appended after them.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Report {
     #[serde(flatten)]
     project: mustard_core::UpsertReport,
-    /// How to say yes to the `cleanup` list. Absent when the list changes
-    /// nothing (empty, or only files the person decides about by hand).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    confirm: Option<CleanupAsk>,
     plugin_refresh: PluginRefresh,
 }
 
-/// The code of the cleanup list and the sentence that says how to use it.
-#[derive(Debug, Serialize)]
-struct CleanupAsk {
-    token: String,
-    hint: String,
-}
-
-/// Apply the cleanup list the person said yes to, and say what was done.
-///
-/// The list is read again and its code compared with `token`: a yes given to
-/// one list never applies another, so a file that changed since the list was
-/// shown makes the call refuse, and nothing is touched. `false` on a refusal.
-fn confirm_cleanup(root: &Path, token: &str) -> (Value, bool) {
-    let lang = crate::commands::spec_events::project(root).lang;
-    let plan = mustard_core::platform::project_seed::cleanup::plan(root);
-    if !plan.has_changes() {
-        return (json!({ "ok": true, "cleaned": {}, "hint": translate("upsert.cleanup.nothing", lang) }), true);
-    }
-    if plan.token() != token.trim() {
-        return (
-            json!({ "ok": false, "reason": "confirm-mismatch", "hint": translate("upsert.cleanup.mismatch", lang) }),
-            false,
-        );
-    }
-    match mustard_core::platform::project_seed::cleanup::apply(root, &plan) {
-        Ok(done) => {
-            let ok = done.failed.is_empty();
-            (json!({ "ok": ok, "cleaned": done, "hint": translate("upsert.cleanup.done", lang) }), ok)
-        }
-        Err(err) => (json!({ "ok": false, "reason": "cleanup-failed", "error": err.to_string() }), false),
-    }
-}
-
-/// Execute `mustard-rt run upsert`, or, with `confirm`, apply the cleanup list
-/// the person said yes to.
+/// Execute `mustard-rt run upsert`.
 ///
 /// The `mustard.json#version` stamp is [`mustard_core::harness_version`] —
 /// the installed plugin's manifest version when launched by the plugin
 /// (`CLAUDE_PLUGIN_ROOT`), the core crate's own version otherwise. The field
 /// records "which harness last set this project up"; a legacy 3.1.x CLI stamp
 /// reads as drift once and this very command realigns it.
-pub fn run(confirm: Option<&str>) {
+pub fn run() {
     // Workspace-root walk first (an already-installed project resolves to its
     // anchor even from a subdirectory), then `CLAUDE_PROJECT_DIR`, then the
     // process cwd — the fresh-install path, where no anchor exists yet.
     let root = PathBuf::from(crate::shared::context::env::project_dir());
-
-    if let Some(token) = confirm {
-        let (report, ok) = confirm_cleanup(&root, token);
-        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
-        if !ok {
-            std::process::exit(1);
-        }
-        return;
-    }
 
     // Unconditional. The mode is not read from anywhere and not asked for
     // anywhere: a harness that installs itself into someone else's repository
@@ -235,13 +188,7 @@ pub fn run(confirm: Option<&str>) {
             // The refresh is the LAST step, and only on the path where the
             // project was really seeded: a run that wrote nothing has no
             // installation to finish.
-            let lang = crate::commands::spec_events::project(&root).lang;
-            let confirm = report.cleanup.as_ref().filter(|plan| plan.has_changes()).map(|plan| {
-                let token = plan.token();
-                let hint = translate("upsert.cleanup.ask", lang).replace("{token}", &token);
-                CleanupAsk { token, hint }
-            });
-            let outcome = Report { project: report, confirm, plugin_refresh: refresh_plugin(&root) };
+            let outcome = Report { project: report, plugin_refresh: refresh_plugin(&root) };
             let json = serde_json::to_string_pretty(&outcome)
                 .unwrap_or_else(|e| format!("{{\"error\": \"serializing report: {e}\"}}"));
             println!("{json}");
@@ -764,7 +711,6 @@ mod tests {
                 version: Some("0.1.43".to_string()),
                 ..mustard_core::UpsertReport::default()
             },
-            confirm: None,
             plugin_refresh: skipped(None, "no install".to_string()),
         };
         let first = serde_json::to_string_pretty(&outcome).expect("serialize");
@@ -776,33 +722,6 @@ mod tests {
         assert_eq!(value["version"], serde_json::json!("0.1.43"));
         assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(SKIPPED));
         assert!(value["pluginRefresh"].get("restart").is_none());
-    }
-
-    /// A limpeza só sai com o código da lista que a pessoa viu: um código
-    /// errado recusa sem mexer em nada, e o certo tira a lista inteira.
-    #[test]
-    fn the_cleanup_needs_the_code_of_the_list_that_was_shown() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        let md = root.join("apps/api/CLAUDE.md");
-        std::fs::create_dir_all(md.parent().expect("parent")).expect("mkdir");
-        let body = "# Api\n\nOurs.\n<!-- mustard:guards -->\n- A guard.\n<!-- /mustard:guards -->\n";
-        std::fs::write(&md, body).expect("write");
-        let token = mustard_core::platform::project_seed::cleanup::plan(root).token();
-
-        let (refused, ok) = confirm_cleanup(root, "00000000");
-        assert!(!ok, "{refused}");
-        assert_eq!(refused["reason"], json!("confirm-mismatch"));
-        assert_eq!(std::fs::read_to_string(&md).expect("read"), body, "nothing leaves without the right code");
-
-        let (done, ok) = confirm_cleanup(root, &token);
-        assert!(ok, "{done}");
-        assert_eq!(done["cleaned"]["edited"], json!(["apps/api/CLAUDE.md"]));
-        assert_eq!(std::fs::read_to_string(&md).expect("read"), "# Api\n\nOurs.\n");
-        assert_eq!(done["cleaned"]["lessons"].as_array().map(Vec::len), Some(1), "{done}");
-
-        let (again, ok) = confirm_cleanup(root, &token);
-        assert!(ok, "nothing left to take out is not a failure: {again}");
     }
 
     /// A failed step's output becomes one bounded line — the report stays a

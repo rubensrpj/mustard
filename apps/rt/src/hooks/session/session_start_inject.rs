@@ -11,9 +11,14 @@
 //! 3. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
 //!    a mesma linha que o `resume` devolve.
 //! 4. **As pendências** — uma linha só, com a contagem.
-//! 5. **O merge feito por outra pessoa** — as branches cujo trabalho já entrou
-//!    na base e que seguem vivas. Com a spec atual em "pull request aberto", o
-//!    provedor é perguntado; fora disso, vale só o que o git local prova.
+//! 5. **O merge feito por outra pessoa** — com a spec atual em "pull request
+//!    aberto", o provedor é perguntado só pelo pull request dela; se ele
+//!    entrou, o mesmo caminho do merge do Mustard roda antes de qualquer aviso
+//!    (a spec gravada como entregue, a base atualizada, a branch local
+//!    apagada), e o aviso diz o que foi feito e pede a pergunta das pendências
+//!    nascidas na spec. Se o provedor não responde, o aviso diz isso e nada
+//!    muda. As outras branches cujo trabalho já entrou na base e que seguem
+//!    vivas saem só do git local, sem pergunta nenhuma ao provedor.
 //! 6. **O disco** — as cópias descartáveis antigas acima de 5 GB.
 //! 7. **A versão velha do Mustard** — a gravada no projeto, a do plugin
 //!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
@@ -23,7 +28,8 @@
 //! Tudo junto cabe em [`MAX_BYTES`]. Os avisos de tamanho fixo são curtos por
 //! construção; os dois de tamanho variável — o terreno e os textos declarados
 //! — cedem o lugar quando o todo passa do teto, com uma linha no stderr
-//! dizendo qual saiu.
+//! dizendo qual saiu. O relato do merge feito por outra pessoa nunca cede:
+//! ele conta uma branch apagada e uma spec entregue.
 //!
 //! ## As leituras da máquina são argumento
 //!
@@ -41,8 +47,9 @@ use mustard_core::platform::i18n::{translate, Locale};
 use std::path::Path;
 
 use crate::commands::maint::scratch_gc::{human_bytes, survey, ScratchRoots};
+use crate::commands::review::pr_door::{merged_elsewhere, MergedElsewhere};
 use crate::hooks::session::injectables;
-use crate::shared::branch_state::{merged_by_another, PrQuery};
+use crate::shared::branch_state::merged_by_another;
 
 /// O teto do texto que o início da sessão coloca: 3 kB.
 const MAX_BYTES: usize = 3_000;
@@ -65,6 +72,9 @@ struct Probe<'a> {
     installed: Option<&'a str>,
     /// Onde procurar as cópias descartáveis e a partir de quanto avisar.
     scratch: Option<&'a ScratchProbe>,
+    /// O que o provedor respondeu sobre o pull request da spec atual, e o que
+    /// foi feito com a resposta: a spec e o resultado.
+    landing: Option<&'a (String, MergedElsewhere)>,
 }
 
 /// Um aviso do início da sessão: o nome, o texto — que só existe quando a
@@ -117,6 +127,9 @@ fn session_start_core(
         .get("source")
         .and_then(|v| v.as_str())
         .is_some_and(|s| s.eq_ignore_ascii_case("compact") || s.eq_ignore_ascii_case("clear"));
+    // O merge feito por outra pessoa age antes de qualquer aviso: com a spec
+    // entregue e a branch arrumada, a retomada já lê o estado novo.
+    let landing = spec_merged_elsewhere(root, session.as_deref());
     let probe = Probe {
         root,
         session: session.as_deref(),
@@ -124,6 +137,7 @@ fn session_start_core(
         refreshed,
         installed,
         scratch,
+        landing: landing.as_ref(),
     };
     let texts = within_cap(NOTICES.iter().filter_map(|notice| (notice.text)(&probe).map(|text| (notice, text))).collect());
     Ok(if texts.is_empty() { Verdict::Allow } else { Verdict::Inject { context: texts.join("\n\n") } })
@@ -195,40 +209,96 @@ pub(crate) fn pending_notice(root: &Path, lang: Locale) -> Option<String> {
     crate::commands::event::pending::count_line(root, lang)
 }
 
-/// O merge feito por outra pessoa: as branches cujo trabalho já entrou na base
-/// e que seguem vivas, pela conferência única
-/// ([`merged_by_another`]).
+/// A spec atual em "pull request aberto", com o que o provedor respondeu sobre
+/// o pull request dela e o que foi feito com a resposta
+/// ([`merged_elsewhere`]): o provedor é perguntado só por esse pull request.
 ///
-/// O provedor só é perguntado quando a spec atual está em "pull request
-/// aberto": é o caso em que alguém pode ter feito o merge, e um início de
-/// sessão não abre uma conexão por branch à toa. Fora disso, só conta o merge
-/// que o git local prova — pode contar menos, nunca inventa uma branch.
+/// `None` num projeto sem `mustard.json`, sem spec atual, com a spec em outra
+/// fase e quando o pull request segue aberto.
+fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Option<(String, MergedElsewhere)> {
+    if !mustard_core::ProjectConfig::exists(root) {
+        return None;
+    }
+    let spec = crate::shared::spec_state::DiskSpecState::new(root).active(session)?;
+    merged_elsewhere(root, &spec, session).map(|found| (spec, found))
+}
+
+/// O merge feito por outra pessoa: o que foi feito com o pull request da spec
+/// atual, ou o silêncio do provedor sobre ele, e as branches cujo trabalho já
+/// entrou na base e que seguem vivas, pela conferência única do git local
+/// ([`merged_by_another`]), que nunca pergunta ao provedor.
 ///
-/// `None` num projeto sem `mustard.json` e quando nada foi mergeado.
+/// `None` num projeto sem `mustard.json` e quando não há nada a dizer.
 fn merged_notice(probe: &Probe<'_>) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(probe.root) {
         return None;
     }
+    let lang = probe.lang;
+    let mut lines: Vec<String> = probe.landing.iter().map(|(spec, found)| landing_text(spec, found, lang)).collect();
     let config = crate::shared::context::config::project_config_cached(probe.root);
     let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, probe.root);
-    let provider = mustard_core::resolve_provider(probe.root, &config.git.provider);
-    let pr_open = crate::shared::spec_state::DiskSpecState::new(probe.root)
-        .active(probe.session)
-        .and_then(|spec| crate::shared::spec_state::lock_state(probe.root, &spec))
-        .is_some_and(|state| state.phase == Some("pr_open"));
-    let query = if pr_open { PrQuery::Ask(&provider) } else { PrQuery::Skip };
-    let merged = merged_by_another(probe.root, query, &flow);
-    if merged.is_empty() {
-        return None;
+    // A branch que o caminho do merge acabou de arrumar já foi dita acima; a
+    // cópia dela no servidor, que fica sem `git.deleteRemoteBranch`, não volta
+    // aqui como se ninguém tivesse cuidado dela.
+    let landed = match probe.landing {
+        Some((_, MergedElsewhere::Landed { branch, .. })) => Some(branch.as_str()),
+        _ => None,
+    };
+    let merged: Vec<_> =
+        merged_by_another(probe.root, &flow).into_iter().filter(|state| Some(state.branch.as_str()) != landed).collect();
+    if !merged.is_empty() {
+        let named: Vec<&str> = merged.iter().take(MERGED_NAMES).map(|state| state.branch.as_str()).collect();
+        let rest = merged.len() - named.len();
+        let branches = if rest > 0 { format!("{} (+{rest})", named.join(", ")) } else { named.join(", ") };
+        lines.push(
+            translate("session.merged", lang)
+                .replace("{count}", &merged.len().to_string())
+                .replace("{branches}", &branches),
+        );
     }
-    let named: Vec<&str> = merged.iter().take(MERGED_NAMES).map(|state| state.branch.as_str()).collect();
-    let rest = merged.len() - named.len();
-    let branches = if rest > 0 { format!("{} (+{rest})", named.join(", ")) } else { named.join(", ") };
-    Some(
-        translate("session.merged", probe.lang)
-            .replace("{count}", &merged.len().to_string())
-            .replace("{branches}", &branches),
-    )
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// O texto do pull request da spec `spec`: o que o caminho do merge fez — a
+/// spec entregue, a arrumação da branch e a pergunta das pendências nascidas
+/// nela — ou o silêncio do provedor.
+fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> String {
+    match found {
+        MergedElsewhere::Unanswered { reason } => translate("session.provider_silent", lang)
+            .replace("{spec}", spec)
+            .replace("{reason}", reason),
+        MergedElsewhere::Landed { pr, branch, settle, pending_open } => {
+            let mut text = translate("session.landed", lang).replace("{pr}", &pr.to_string()).replace("{spec}", spec);
+            text.push(' ');
+            text.push_str(&tidy_text(branch, settle.as_ref(), lang));
+            if !pending_open.is_empty() {
+                let items = crate::commands::event::pending::format_pending_items(pending_open, pending_open.len());
+                text.push(' ');
+                text.push_str(&translate("session.landed.pending", lang).replace("{items}", &items));
+            }
+            text
+        }
+    }
+}
+
+/// A arrumação da branch `branch`, pelo relatório dela: a base atualizada e a
+/// branch fora da máquina, ou o motivo por que ela ficou. Sem relatório, foi
+/// uma promoção de base para base, que não tem branch a arrumar.
+fn tidy_text(branch: &str, settle: Option<&serde_json::Value>, lang: Locale) -> String {
+    let Some(report) = settle else {
+        return translate("session.landed.unsettled", lang)
+            .replace("{branch}", branch)
+            .replace("{reason}", "base-to-base-promotion");
+    };
+    let unit = |field: &str| report.get("unit").and_then(|unit| unit.get(field));
+    if report["ok"] == serde_json::json!(true) && unit("branchDeleted") == Some(&serde_json::json!(true)) {
+        return translate("session.landed.settled", lang).replace("{branch}", branch);
+    }
+    let reason = report["reason"]
+        .as_str()
+        .or_else(|| unit("action").and_then(serde_json::Value::as_str).filter(|action| *action != "settled"))
+        .unwrap_or("branch-kept");
+    translate("session.landed.unsettled", lang).replace("{branch}", branch).replace("{reason}", reason)
 }
 
 /// O disco: as cópias descartáveis antigas acima do limite, com o total e
@@ -407,7 +477,9 @@ mod tests {
 
     /// Todos os avisos de tamanho fixo juntos, com textos do tamanho real,
     /// cabem nos 3 kB ao lado de um texto declarado do tamanho do mapa
-    /// aprovado; um texto declarado grande demais sai, e os outros ficam.
+    /// aprovado; um texto declarado grande demais sai, e os outros ficam. O
+    /// relato do merge feito por outra pessoa, com três pendências, também
+    /// cabe ao lado do mapa, da retomada e da contagem.
     #[test]
     fn everything_fits_in_three_kilobytes_and_the_declared_text_yields_first() {
         let fixed: Vec<(&Notice, String)> = vec![
@@ -424,6 +496,30 @@ mod tests {
         let kept = within_cap(all);
         assert_eq!(kept.len(), 6, "the approved map and every fixed notice fit together");
         assert!(kept.join("\n\n").len() <= MAX_BYTES, "{}", kept.join("\n\n").len());
+
+        let items: Vec<crate::commands::event::pending::OpenPending> = ["Humanize", "HTML padrão da spec", "Revisor de fora"]
+            .iter()
+            .enumerate()
+            .map(|(n, title)| crate::commands::event::pending::OpenPending { id: format!("P-{}", n + 10), title: title.to_string() })
+            .collect();
+        let settled = serde_json::json!({"ok": true, "unit": {"branchDeleted": true}});
+        let landed = MergedElsewhere::Landed {
+            pr: 1234,
+            branch: "feature/uma-spec-de-nome-longo".into(),
+            settle: Some(settled),
+            pending_open: items,
+        };
+        let landed = landing_text("uma-spec-de-nome-longo", &landed, Locale::PtBr);
+        assert!(landed.contains("Revisor de fora") && landed.contains("saiu desta máquina"), "{landed}");
+        let with_landing = vec![
+            (&NOTICES[1], "m".repeat(2_066)),
+            fixed[0].clone(),
+            fixed[1].clone(),
+            (&NOTICES[4], landed),
+            fixed[4].clone(),
+        ];
+        let kept = within_cap(with_landing);
+        assert_eq!(kept.len(), 5, "the landing report fits beside the approved map");
 
         let mut too_big = vec![(&NOTICES[0], "t".repeat(400)), (&NOTICES[1], "d".repeat(2_900))];
         too_big.extend(fixed.iter().cloned());

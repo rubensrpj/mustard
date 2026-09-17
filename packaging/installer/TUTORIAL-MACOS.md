@@ -91,18 +91,17 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso escreve a pasta `.claude/` (a configuração do projeto) e o `mustard.json` na
-raiz. Só isso: os **hooks** do Mustard **não** vêm daqui — o
-`.claude/settings.json` que o `init` grava não tem nenhum. Eles chegam junto com
-o plugin, que é o passo do item 6, e é por isso que ele não é opcional.
+Isso escreve, escondidos do git do projeto, o `mustard.json` na raiz e a pasta
+`.claude/`: o `.claude/settings.local.json` (com o gancho do rtk e o estilo de
+resposta do idioma do projeto), o mapa do início da sessão e os três agentes do
+Mustard. Os **hooks** do Mustard **não** vêm daqui: chegam junto com o plugin,
+que é o passo do item 6, e é por isso que ele não é opcional.
 
 ---
 
 ## 6. Instalar o plugin dentro do Claude Code
 
-O `.pkg` traz **binários e templates**; ele não toca no seu `~/.claude`. Os
-comandos `/mustard:*` e os agentes vêm do **plugin do
-Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
+O `.pkg` traz **binários e templates**; ele não toca no seu `~/.claude`. Os comandos `/mustard:*`, o estilo de resposta e os hooks vêm do **plugin do Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
 
 Abra o Claude Code no projeto (`claude`) e digite:
 
@@ -116,9 +115,9 @@ O primeiro comando registra o *marketplace* (o repositório do Mustard, que traz
 dele — daí o `@mustard-local`, que é o **nome do marketplace**, não um caminho.
 Recarregue o Claude Code (feche e abra) para os hooks e comandos entrarem.
 
-São quatro portas dentro do Claude Code: `/mustard:git`, `/mustard:pr`,
-`/mustard:spec` e `/mustard:upsert`. Para COMEÇAR um trabalho não há comando —
-descreva o pedido em palavras suas e o roteador escolhe o fluxo sozinho.
+São três comandos dentro do Claude Code: `/mustard:continue`, `/mustard:pr` e
+`/mustard:upsert`. Para COMEÇAR um trabalho não há comando — descreva o pedido
+em palavras suas, e cada passo do fluxo diz qual é o próximo.
 
 ---
 
@@ -139,7 +138,7 @@ Em casos raros o `rtk` não vem no pacote. Instale-o com `brew install rtk` ou
 
 **Dentro do Claude Code aparece só a barra de status, e nenhum comando `/mustard:*`**
 Falta o item 6: o plugin não foi instalado. O `mustard init` semeia a barra de
-status em `.claude/settings.json`, então o projeto PARECE instalado mesmo sem o
+status em `.claude/settings.local.json`, então o projeto PARECE instalado mesmo sem o
 plugin. Rode os dois comandos do item 6 e recarregue o Claude Code.
 
 **`Plugin "mustard" not found in any marketplace`**
