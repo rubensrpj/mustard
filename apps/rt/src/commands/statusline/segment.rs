@@ -327,7 +327,7 @@ pub fn unit_segment(cwd: &Path) -> Option<Segment> {
         return None;
     }
     let root = cwd.to_string_lossy();
-    let slug = crate::shared::context::current_spec(&root).filter(|s| !s.is_empty())?;
+    let slug = crate::shared::context::checkout::current_spec(&root).filter(|s| !s.is_empty())?;
     // A etapa é conveniência, não o ponto: um arquivo de eventos ilegível
     // ainda deixa a unidade NOMEADA, que é o trabalho inteiro aqui.
     let stage = crate::shared::spec_state::lock_state(cwd, &slug)
@@ -337,7 +337,7 @@ pub fn unit_segment(cwd: &Path) -> Option<Segment> {
     // unidade, o nome já está na linha de cima e repeti-lo é ruído. Sem etapa
     // o nome fica, porque uma seta sozinha não diz nada.
     let on_own_branch =
-        crate::shared::context::spec_of_checkout_branch(&root).as_deref() == Some(slug.as_str());
+        crate::shared::context::checkout::spec_of_checkout_branch(&root).as_deref() == Some(slug.as_str());
     let label = match stage {
         Some(phase) if on_own_branch => format!("\u{25b8} {phase}"),
         Some(phase) => format!("\u{25b8} {slug} {phase}"),

@@ -219,7 +219,7 @@ pub(crate) fn seed_spec(root: &Path, spec: &str, born: &[u64], session: &str) {
         let deferred = json!({ "text": format!("pedido {n}"), "keys": ["pedido"], "pending": n, "origin": 1 });
         store::write(&path, "deferred", draft(deferred), &[]).expect("deferred");
     }
-    crate::shared::context::bind_session_spec(&root.to_string_lossy(), session, spec);
+    crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, spec);
 }
 
 #[cfg(test)]
@@ -509,7 +509,7 @@ mod tests {
         let dir = project_with_two_open_items();
         let root = dir.path();
         seed_spec(root, SPEC, &[1], "s-solta");
-        crate::shared::context::unbind_session_spec(&root.to_string_lossy(), "s-solta");
+        crate::shared::context::session::unbind_session_spec(&root.to_string_lossy(), "s-solta");
         assert!(record_phase(root, SPEC, "closed", None));
 
         match verdict(root, &stop("s-solta", "Spec fechada.")) {
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(verdict(root, &stop("s-antes", "Seguem P-1 e P-2.")), Verdict::Allow);
 
         crate::shared::spec_state::stand_on_spec_branch(root, SPEC);
-        crate::shared::context::bind_session_spec(&root.to_string_lossy(), "s-depois", SPEC);
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s-depois", SPEC);
         assert_eq!(verdict(root, &stop("s-depois", "Oi, vamos continuar.")), Verdict::Allow);
     }
 

@@ -580,7 +580,7 @@ fn capture_return_report_with_session(_project: &Path, cwd: &str, input: &HookIn
     // O gravador velho de eventos saiu: o relatório do filho não tem mais onde
     // ser gravado. O gancho em si sai com os ganchos.
     let Some(_wave) = wave_from_child_transcript(input)
-        .or_else(|| super::common::current_wave_id().and_then(|w| w.parse::<u32>().ok()))
+        .or_else(|| crate::shared::context::env::current_wave().and_then(|w| u32::try_from(w).ok()))
         .filter(|w| *w > 0)
     else {
         return;
@@ -731,7 +731,7 @@ impl Check for SubagentInject {
         // so truncating it by size would contradict the gate — relevance, not
         // size, decides what enters.
         let mut memory = String::new();
-        if let Some(spec) = crate::shared::context::current_spec(&cwd)
+        if let Some(spec) = crate::shared::context::checkout::current_spec(&cwd)
             && !spec.is_empty() {
                 memory = spec_memory_block(&project, &spec, &prompt, &role);
             }

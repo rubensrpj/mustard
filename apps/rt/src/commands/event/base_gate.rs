@@ -506,7 +506,7 @@ mod tests {
         // A porta real, e só ela: nada disso é trabalho de ninguém, então o
         // corte acontece de verdade.
         let sid = "sess-census-only-open";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = cut_pending_work_branch(root, sid);
         assert_eq!(
             outcome,
@@ -576,7 +576,7 @@ mod tests {
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
 
         let sid = "sess-stale-base";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = cut_pending_work_branch(root, sid);
         assert_eq!(
             outcome,
@@ -619,7 +619,7 @@ mod tests {
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
         let sid = "sess-base-unknown";
-        crate::shared::context::set_pending_branch(&root_s, sid, "hotfix/urgente", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "hotfix/urgente", None);
         // Amostrado DEPOIS do marcador, que também escreve na árvore: o que
         // este teste mede é o que o corte faz, não o que o marcador fez.
         let dirty_before = porcelain(root);
@@ -747,7 +747,7 @@ mod tests {
         );
 
         let sid = "sess-census-in-the-way";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = cut_pending_work_branch(root, sid);
         assert_eq!(outcome, CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
 
@@ -1108,7 +1108,7 @@ mod tests {
         );
 
         let sid = "sess-staged-census";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = cut_pending_work_branch(root, sid);
         assert_eq!(outcome, CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
         assert!(

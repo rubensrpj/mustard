@@ -31,7 +31,6 @@
 //! The first keys:
 //!
 //! - `banner.close.success` — "Pipeline closed successfully." (CLOSE phase)
-//! - `banner.amend.drift` — drift-warning message body.
 //! - `wave.label` — short label for a wave index (`W{n}` / `Onda {n}`).
 //! - `ac.label` — short label for an AC index (`AC-{id}`).
 //! - `prompt.continue` — "Continue?" / "Continuar?" confirmation prompt.
@@ -171,18 +170,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         // CLOSE-phase success banner.
         ("banner.close.success", Locale::PtBr) => "Pipeline fechado com sucesso.",
         ("banner.close.success", Locale::EnUs) => "Pipeline closed successfully.",
-
-        // Drift warning emitted by `apps/rt/src/hooks/amend_capture.rs`.
-        ("banner.amend.drift", Locale::PtBr) => {
-            "Você está editando um arquivo fora do escopo da spec ativa (pós-CLOSE). \
-             Considere abrir `/mustard:feature` ou `/mustard:task` separado — a sessão \
-             continua, mas o drift não é absorvido pela spec original."
-        }
-        ("banner.amend.drift", Locale::EnUs) => {
-            "You're editing a file outside the active spec scope (post-CLOSE). \
-             Consider opening a separate `/mustard:feature` or `/mustard:task` — the \
-             session continues, but drift is not absorbed by the original spec."
-        }
 
         // Short wave label (e.g. "W3" vs "Onda 3"). The numeric suffix is
         // interpolated by the caller via `format!("{} {n}", translate(...))`.
@@ -2160,13 +2147,15 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
         }
         ("spec_events.binary_only_type", Locale::PtBr) => {
             "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
-             ele, e nada foi gravado: o binário grava a execução dos critérios quando roda o QA, e o \
-             veredito quando registra a revisão."
+             ele, e nada foi gravado: o binário grava a execução dos critérios quando roda o QA, o \
+             veredito quando registra a revisão, o envio quando a rodada despacha uma onda e a \
+             resposta do assistente no fim de cada resposta."
         }
         ("spec_events.binary_only_type", Locale::EnUs) => {
             "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
-             and nothing was written: the binary writes the criteria runs when it runs the QA, and \
-             the verdict when it records the review."
+             and nothing was written: the binary writes the criteria runs when it runs the QA, the \
+             verdict when it records the review, the send when the round dispatches a wave, and the \
+             assistant's response at the end of each answer."
         }
         ("spec_events.binary_author", Locale::PtBr) => {
             "O autor `binary` fica para as gravações de dentro do binário, e nada foi gravado: o \

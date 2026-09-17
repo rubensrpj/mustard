@@ -1,48 +1,15 @@
-//! `paths` — the one reader of a DECLARED file path, and the one classifier of
-//! the file a hook is about to touch.
+//! `paths` — o classificador do arquivo que um gancho vai tocar.
 //!
-//! A declared injectable path is written by hand as often as it is seeded: in
-//! `mustard.json#inject`, in the `--inject` flag of a hook registration, and in
-//! the seed itself. One file therefore has several honest spellings — a `./`
-//! prefix, backslashes on Windows, a trailing separator, mixed case on a
-//! case-insensitive filesystem.
-//!
-//! Comparing the raw strings makes each of those a different file, and the
-//! symptom is never an error: a sibling hook silently delivers nothing, or the
-//! blocks that belong to the whole invocation are dropped because no sibling
-//! recognised itself as the elected one. Both were found in review of the unit
-//! that introduced sibling hooks, in two of the three places that needed the
-//! comparison — which is why it lives here now instead of being written a
-//! fourth time.
-//!
-//! ## The file a hook is about to touch
-//!
-//! [`WriteTarget::classify`] is the write gate's one classifier: the tool
-//! (read or write), the path relative to the root and the class of the file
-//! ([`PathClass`]). [`relative_to_cwd`] is the one "path relative to the root"
-//! computation of the write hooks.
+//! [`WriteTarget::classify`] é o classificador único do portão de escrita: a
+//! ferramenta (leitura ou escrita), o caminho relativo à raiz e a classe do
+//! arquivo ([`PathClass`]). [`relative_to_cwd`] é a conta única do "caminho
+//! relativo à raiz".
 
 use std::path::Path;
 
 use mustard_core::domain::model::contract::HookInput;
 use mustard_core::io::claude_paths::{LESSONS_FILE, SPEC_INDEX_FILE};
 use mustard_core::io::spec_events::spec_root;
-
-/// `true` when two declared paths name the SAME file.
-///
-/// Normalisation is deliberately conservative: separators, one leading `./`,
-/// trailing separators, and ASCII case. It never resolves symlinks and never
-/// touches the filesystem — callers compare paths that may not exist yet
-/// (install time), and a filesystem probe would make the answer depend on
-/// state the caller cannot see.
-#[must_use]
-pub fn same_declared_file(a: &str, b: &str) -> bool {
-    // Delegated, never re-implemented. `mustard-core` seeds and migrates the
-    // same declarations this crate reads, so a second normalisation here would
-    // be a second answer to one question — and review already found three
-    // copies of it, two of them subtly different at the call site.
-    mustard_core::platform::project_seed::same_declared_path(a, b)
-}
 
 /// The files of a spec folder only the binary writes. The spec root's
 /// `meta.json` counts too: it is what says whether an old draft, with no event
@@ -279,34 +246,6 @@ fn spec_file(rel: &str) -> Option<PathClass> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn equivalent_spellings_name_one_file() {
-        let canonical = ".claude/mustard/orchestrator.md";
-        for spelling in [
-            ".claude/mustard/orchestrator.md",
-            "./.claude/mustard/orchestrator.md",
-            ".claude\\mustard\\orchestrator.md",
-            ".claude/Mustard/Orchestrator.md",
-            "  .claude/mustard/orchestrator.md  ",
-        ] {
-            assert!(same_declared_file(spelling, canonical), "`{spelling}` should match");
-        }
-    }
-
-    #[test]
-    fn different_files_stay_different() {
-        assert!(!same_declared_file(
-            ".claude/mustard/orchestrator.md",
-            ".claude/mustard/dispatch.md",
-        ));
-        // A prefix is not a match: `dispatch.md` and `dispatch.md.bak` are two
-        // files, and treating them as one would elect the wrong sibling.
-        assert!(!same_declared_file(
-            ".claude/mustard/dispatch.md",
-            ".claude/mustard/dispatch.md.bak",
-        ));
-    }
 
     fn input(tool: &str, file_path: &str) -> HookInput {
         let field = if tool == "NotebookEdit" { "notebook_path" } else { "file_path" };

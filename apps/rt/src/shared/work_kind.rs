@@ -338,18 +338,6 @@ impl WorkKind {
         format!("{}/{slug}", self.0)
     }
 
-    /// `true` when `segment` is a kind's own path segment — the directory a
-    /// unit's `{kind}/{slug}` worktree sits INSIDE, rather than a worktree of
-    /// anybody's. A collector walking `.claude/worktrees/` meets these before it
-    /// meets any unit, and deleting one would take every unit under it.
-    ///
-    /// Opening the vocabulary makes this answer `true` more often, and that is
-    /// the SAFE direction for both callers: here a false `true` leaves a stale
-    /// directory standing, while a false `false` deletes every unit inside it.
-    pub(crate) fn is_container_segment(segment: &str) -> bool {
-        Self::parse(segment).is_some()
-    }
-
     /// The kind `branch` carries, or `None` when its name is not of this shape
     /// (an integration base, a unit still in the `{base}_{slug}` shape, a
     /// hand-cut branch). Tolerates the harness's `worktree-` prefix.

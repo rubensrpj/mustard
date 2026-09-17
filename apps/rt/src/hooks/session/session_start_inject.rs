@@ -233,7 +233,7 @@ fn session_start_core(
     // once-per-session terrain map so the AI opens the session already
     // knowing the subprojects instead of grepping to orient. Fail-open: a
     // missing / unreadable model yields no terrain.
-    let i18n = I18n::new(crate::shared::context::project_config_cached(Path::new(&cwd)).language().text_or_default());
+    let i18n = I18n::new(crate::shared::context::config::project_config_cached(Path::new(&cwd)).language().text_or_default());
     let terrain_lang = i18n.lang;
     let terrain = crate::commands::orient::render_terrain(
         &crate::commands::orient::compute_orientation(Path::new(&cwd)),
@@ -263,7 +263,6 @@ fn session_start_core(
         Some(session.as_str()),
         "sessionstart",
         source_refreshes_window,
-        None,
     );
     // The `userPromptSubmit` family is NOT folded in here, and that is
     // deliberate. Doing so was tried and MEASURED at 11,973 characters on

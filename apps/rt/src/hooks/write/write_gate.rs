@@ -317,7 +317,7 @@ fn local_tree_of(input: &HookInput, root: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::context;
+    use crate::shared::context::session::bind_session_spec;
     use crate::shared::spec_state::stand_on_spec_branch;
     use mustard_core::io::spec_events as store;
     use mustard_core::ProjectConfig;
@@ -619,7 +619,7 @@ mod tests {
         let root = dir.path();
         repo_on(root, "feature/x");
         record_state(root, "x", json!({ "phase": "plan", "branch": "feature/x" }));
-        context::bind_session_spec(&root.to_string_lossy(), "s-sub", "x");
+        bind_session_spec(&root.to_string_lossy(), "s-sub", "x");
         let source = upstream.path().to_string_lossy().into_owned();
         git(root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &source, "libs/sub"]);
         git(&root.join("libs").join("sub"), &["checkout", "-q", "-B", "master"]);
@@ -649,7 +649,7 @@ mod tests {
         let root = dir.path();
         repo_on(root, "minha-branch");
         record_state(root, "x", json!({ "phase": "plan" }));
-        context::bind_session_spec(&root.to_string_lossy(), "s-no-branch", "x");
+        bind_session_spec(&root.to_string_lossy(), "s-no-branch", "x");
         let input = call(root, "Write", &abs(root, "src/a.rs"), Some("s-no-branch"));
         let expected = say("write_gate.not_approved", lang(root), &[("{spec}", "x"), ("{file}", "src/a.rs")]);
         assert_eq!(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"), Verdict::Deny { reason: expected });
@@ -662,7 +662,7 @@ mod tests {
         let dir = project(DEV_MAIN);
         let root = dir.path();
         repo_on(root, "dev");
-        context::bind_session_spec(&root.to_string_lossy(), "s-read", "x");
+        bind_session_spec(&root.to_string_lossy(), "s-read", "x");
         record_state(root, "x", json!({ "phase": "plan" }));
         let read = |path: &str| {
             WriteGate.evaluate(&call(root, "Read", path, Some("s-read")), &ctx(root)).expect("never errors")
@@ -773,7 +773,7 @@ mod tests {
         let root = dir.path();
         repo_on(root, "feature/outra");
         std::fs::create_dir_all(root.join(".claude").join("spec").join("x")).expect("spec folder");
-        context::bind_session_spec(&root.to_string_lossy(), "s-unopened", "x");
+        bind_session_spec(&root.to_string_lossy(), "s-unopened", "x");
         let input = call(root, "Write", &abs(root, "src/a.rs"), Some("s-unopened"));
         assert_eq!(WriteGate.evaluate(&input, &ctx(root)).expect("never errors"), Verdict::Allow);
     }
@@ -909,7 +909,7 @@ mod tests {
 
         let bound = project("{}");
         record_state(bound.path(), "epic", json!({ "phase": "plan" }));
-        context::bind_session_spec(&bound.path().to_string_lossy(), "sess-1", "epic");
+        bind_session_spec(&bound.path().to_string_lossy(), "sess-1", "epic");
         assert_eq!(write(bound.path(), "src/main.rs", Some("sess-1")), "deny");
     }
 

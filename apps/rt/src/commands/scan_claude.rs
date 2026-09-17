@@ -191,7 +191,7 @@ fn run_full(
     // The scan-map language follows the project's text language — resolved
     // once at the scan root, applied to every unit. Fail-open: no or
     // unreadable config gives the `pt-BR` default.
-    let lang = crate::shared::context::project_config_cached(root).language().text_or_default();
+    let lang = crate::shared::context::config::project_config_cached(root).language().text_or_default();
 
     for project in projects {
         let dir = root.join(&project.dir);

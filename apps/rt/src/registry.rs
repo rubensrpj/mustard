@@ -1,485 +1,193 @@
-//! The module registry — which enforcement modules run for which event/tool.
+//! O registro dos ganchos: qual gancho roda em qual evento e em qual
+//! ferramenta.
 //!
-//! Open/Closed in practice (SOLID): adding a check is
-//! *only* registering a [`Module`] here. The dispatcher reads the registry and
-//! never changes. A module is keyed by the `(Trigger, tool)` pairs it applies
-//! to, so an unrelated invocation skips it entirely instead of running it just
-//! to have it self-`Allow`.
+//! Acrescentar um gancho é só registrar um [`Module`] aqui; o despachante lê o
+//! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
+//! roda, e uma chamada que não casa com nenhum deles nem o executa.
+//!
+//! São nove, e só eles: a trava de comandos, o portão de escrita, o pedido do
+//! subagente, a testemunha da aprovação, a entrada da mensagem, o início da
+//! sessão, o conserto da barra de status, a faxina do fim da sessão e a
+//! conferência do fim da resposta.
 
-use crate::hooks::observe::amend_window_inject::AmendWindowInject;
-use crate::hooks::observe::change_request_log::ChangeRequestLog;
+use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
-use crate::hooks::observe::picker_approval_observer::PickerApprovalObserver;
-use crate::hooks::observe::plan_approval_observer::PlanApprovalObserver;
-use crate::hooks::bash::bash_command_gate::BashCommandGate;
-use crate::hooks::task::context_budget_gate::ContextBudgetGate;
-use crate::hooks::task::delegation_advisory::DelegationAdvisory;
-use crate::hooks::write::active_spec_limit_gate::ActiveSpecLimitGate;
-use crate::hooks::write::mold_gate::MoldGate;
-use crate::hooks::write::scan_gate::ScanGate;
-use crate::hooks::write::write_gate::WriteGate;
-use crate::hooks::session::session_knowledge_observer::SessionKnowledgeObserver;
-use crate::hooks::observe::prompt_observer::PromptObserver;
-use crate::hooks::write::boundary_gate::BoundaryGate;
-use crate::hooks::write::post_edit::PostEdit;
-use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
+use crate::hooks::session::prompt_entry::PromptEntry;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
 use crate::hooks::session::statusline_heal_observer::StatuslineHealObserver;
-use crate::hooks::write::size_gate::SizeGate;
-use crate::hooks::session::spec_hygiene_observer::SpecHygieneObserver;
-use crate::hooks::task::subagent_inject::SubagentInject;
-use crate::hooks::observe::tool_result_observer::ToolResultObserver;
-use crate::hooks::task::main_context_counter::MainContextCounter;
 use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
-use crate::hooks::task::tool_use_counter::ToolUseCounter;
-use crate::hooks::observe::wikilink_footer_observer::WikilinkFooterObserver;
+use crate::hooks::task::subagent_inject::SubagentInject;
+use crate::hooks::write::write_gate::WriteGate;
 use mustard_core::domain::model::contract::{Check, Observer, Trigger};
 
-/// Which tool an `(event, tool)` registration entry applies to.
-///
-/// The JS `settings.json` matchers are one of: a literal tool name (`"Bash"`,
-/// `"Task"`), an alternation (`"Task|Agent"` — expressed as two entries here),
-/// the wildcard `".*"` (every tool), or absent (a non-tool lifecycle event
-/// like `SubagentStart`). [`ToolMatch`] models the two cases a module can register.
+/// Em que ferramenta uma entrada do registro roda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolMatch {
-    /// Every tool (the `".*"` matcher), and also non-tool events: the JS `.*`
-    /// `PreToolUse` matcher fires for any invocation.
+pub enum ToolMatch {
+    /// Toda ferramenta, e também os eventos que não têm ferramenta.
     Any,
-    /// One specific tool name.
+    /// Uma ferramenta.
     Named(&'static str),
+    /// Qualquer uma destas ferramentas.
+    OneOf(&'static [&'static str]),
 }
 
 impl ToolMatch {
-    /// `true` if this matcher applies to an invocation carrying `tool`.
+    /// `true` quando a entrada vale para uma chamada da ferramenta `tool`.
     #[must_use]
     fn matches(self, tool: Option<&str>) -> bool {
         match self {
             Self::Any => true,
             Self::Named(name) => tool == Some(name),
+            Self::OneOf(names) => tool.is_some_and(|tool| names.contains(&tool)),
         }
     }
 }
 
-/// One enforcement concern. A module is a `Check`, an `Observer`, or both.
-/// `bash_command_gate`, for example, is both — the four ported PreToolUse(Bash) gates
-/// (`Check`) and the `pr-detect` PostToolUse(Bash) telemetry (`Observer`).
+/// Um gancho: um `Check`, um `Observer`, ou os dois.
 pub struct Module {
-    /// Stable id used by `mustard-rt check <id>` and by the enforcement
-    /// config (`MUSTARD_<ID>_MODE`). Lowercase, snake or kebab.
+    /// O nome do gancho, que o despachante grava quando ele age.
     pub id: &'static str,
-    /// The `(Trigger, ToolMatch)` pairs this module applies to.
+    /// Os pares `(Trigger, ToolMatch)` em que o gancho roda.
     pub applies_to: &'static [(Trigger, ToolMatch)],
-    /// The gate behaviour, if this module decides anything. `None` for a
-    /// pure-`Observer` module.
+    /// O que o gancho decide; `None` num gancho que só observa.
     pub check: Option<Box<dyn Check>>,
-    /// The telemetry behaviour, if this module observes. `None` for a
-    /// pure-`Check` module.
+    /// O que o gancho faz sem decidir nada; `None` num gancho que só decide.
     pub observer: Option<Box<dyn Observer>>,
 }
 
 impl Module {
-    /// `true` if this module is applicable to the given event/tool.
+    /// `true` quando o gancho roda neste evento e nesta ferramenta.
     #[must_use]
     pub fn matches(&self, trigger: Trigger, tool: Option<&str>) -> bool {
-        self.applies_to
-            .iter()
-            .any(|(t, want_tool)| *t == trigger && want_tool.matches(tool))
+        self.applies_to.iter().any(|(t, want_tool)| *t == trigger && want_tool.matches(tool))
     }
 }
 
-/// The set of registered enforcement modules.
+/// As ferramentas que escrevem ou leem arquivo, que o portão de escrita
+/// confere.
+const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"];
+
+/// As ferramentas que despacham um subagente.
+const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
+
+/// Os ganchos registrados.
 pub struct Registry {
     modules: Vec<Module>,
 }
 
 impl Registry {
-    /// Build the registry with every module Mustard ships.
-    ///
-    /// Early port stages register only `bash_command_gate`; later stages push their
-    /// families (`budget`, `size_gate`, …) here, leaving the dispatcher
-    /// untouched.
+    /// O registro com os ganchos que o Mustard entrega.
     #[must_use]
-    // Registry::new() is a flat list of module registrations — refactoring into
-    // helper functions would obscure the registry structure without reducing complexity.
-    #[allow(clippy::too_many_lines)]
     pub fn new() -> Self {
         let modules = vec![
+            // A trava de comandos: recusa o comando que destrói trabalho e o
+            // redirecionamento para um caminho do Windows.
             Module {
-                id: "bash_command_gate",
-                // `bash_command_gate` is both a `Check` and an `Observer`: the
-                // command guard, the Windows-path check, the native redirect,
-                // the commit review and the pull-request advisories as
-                // PreToolUse(Bash) gates, plus `pr-detect` as PostToolUse(Bash)
-                // telemetry.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Bash")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Bash")),
-                ],
-                check: Some(Box::new(BashCommandGate)),
-                observer: Some(Box::new(BashCommandGate)),
-            },
-            // ── Task / Subagent family ───────────────────────────────────────
-            Module {
-                id: "context_budget_gate",
-                // `context-budget` (PreToolUse(Task) prompt-size gate) +
-                // `output-budget` (PostToolUse(Task) return-size advisory).
-                // Both flow through the `Check` — the over-budget advisory is
-                // an `Inject` verdict, not a raw stdout write (the old
-                // `budget::observe` wrote to stdout, around the contract).
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: Some(Box::new(ContextBudgetGate)),
+                id: "command_guard",
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Bash"))],
+                check: Some(Box::new(CommandGuard)),
                 observer: None,
             },
-            Module {
-                id: "tool_use_counter",
-                // `tool-use-counter` — caps tool uses per Explore subagent.
-                // The JS matcher is `.*` on PreToolUse (every tool counts),
-                // plus the Subagent lifecycle and SessionStart.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Any),
-                    (Trigger::SubagentStart, ToolMatch::Any),
-                    (Trigger::SubagentStop, ToolMatch::Any),
-                    (Trigger::SessionStart, ToolMatch::Any),
-                ],
-                check: Some(Box::new(ToolUseCounter)),
-                observer: None,
-            },
-            Module {
-                id: "main_context_counter",
-                // `main-context-counter` — enforces delegation on the orchestrator.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Any),
-                    (Trigger::SubagentStart, ToolMatch::Any),
-                    (Trigger::SubagentStop, ToolMatch::Any),
-                    (Trigger::SessionStart, ToolMatch::Any),
-                ],
-                check: Some(Box::new(MainContextCounter)),
-                observer: None,
-            },
-            Module {
-                id: "tool_result_observer",
-                // `tool-result` — PostToolUse capture of rich tool output
-                // (Bash stdout/stderr/exit, Edit/MultiEdit before/after, Write
-                // content, Read content excerpt). Emits a `tool.result` event
-                // that carries the same identifier as the matching `tool.use`,
-                // so a reader can join the two.
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Bash")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::PostToolUse, ToolMatch::Named("MultiEdit")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Read")),
-                ],
-                check: None,
-                observer: Some(Box::new(ToolResultObserver)),
-            },
-            // ── Write/Edit family ────────────────────────────────────────────
-            Module {
-                id: "size_gate",
-                // `spec-size-gate` + `skill-size-gate` + `skill-validate-gate` —
-                // PreToolUse(Write|Edit) structural gates.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: Some(Box::new(SizeGate)),
-                observer: None,
-            },
-            // `write_gate` — the write gate, on the five file tools. The
-            // rules, in order: secret, files only the binary writes, approval,
-            // the spec's branch (warning only) and the `git.flow` base. The
-            // first one that answers decides.
+            // O portão de escrita, nas cinco ferramentas de arquivo. As
+            // regras, em ordem: segredo, arquivos que só o binário escreve,
+            // aprovação, a branch da spec (só aviso) e a base do `git.flow`.
+            // A primeira que responde decide.
             Module {
                 id: "write_gate",
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Read")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::PreToolUse, ToolMatch::Named("MultiEdit")),
-                    (Trigger::PreToolUse, ToolMatch::Named("NotebookEdit")),
-                ],
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(FILE_TOOLS))],
                 check: Some(Box::new(WriteGate)),
                 observer: None,
             },
-            Module {
-                id: "boundary_gate",
-                // `boundary-gate` — PreToolUse(Write|Edit) spec-boundary gate.
-                // The sensitive-file law lives in `permissions.deny` (first
-                // line) + the `write_gate` above; boundary itself never
-                // inspects Read.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: Some(Box::new(BoundaryGate)),
-                observer: None,
-            },
-            Module {
-                id: "scan_gate",
-                // `scan-gate` — PreToolUse(Skill) pre-pipeline gate (grain model).
-                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
-                check: Some(Box::new(ScanGate)),
-                observer: None,
-            },
-            // Hard cap on concurrently active pipelines. A
-            // PreToolUse(Skill) gate sibling to `scan_gate`: it sits
-            // on the entry of `/feature` and `/bugfix` and refuses (strict) or
-            // warns (default) when opening another pipeline would exceed
-            // `mustard.json#maxActiveSpecs` (default 10). Mode via
-            // `MUSTARD_MAX_ACTIVE_SPECS_MODE` (off|warn|strict). Fail-open: a
-            // counting error can only under-count, never trip the cap.
-            Module {
-                id: "active_spec_limit_gate",
-                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Skill"))],
-                check: Some(Box::new(ActiveSpecLimitGate)),
-                observer: None,
-            },
-            // Skill-usage loop, the "during" hook: on a NEW file whose kind
-            // matches a `{role}-pattern` mold of its subproject, a non-blocking
-            // advisory points at the SKILL.md before the first byte lands.
-            // Creation-only (no per-edit nagging); advisory-only by design
-            // (mold enforcement belongs to REVIEW). Fail-open inside.
-            Module {
-                id: "mold_gate",
-                applies_to: &[(Trigger::PreToolUse, ToolMatch::Named("Write"))],
-                check: Some(Box::new(MoldGate)),
-                observer: None,
-            },
-            Module {
-                id: "delegation_advisory",
-                // Advisory (delegate to subagents): on PostToolUse(Write|Edit)
-                // it counts DISTINCT files the main context edits during an
-                // active pipeline and, past a threshold, reminds the
-                // orchestrator to delegate via Task. Pure Observer —
-                // side-effects only, NEVER blocks (it cannot return a verdict).
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: None,
-                observer: Some(Box::new(DelegationAdvisory)),
-            },
-            Module {
-                id: "post_edit",
-                // `auto-format` + `checklist-auto-mark` + `guard-verify` +
-                // `pipeline-phase` — PostToolUse(Write|Edit). Both a `Check`
-                // (guard-verify) and an `Observer` (the other three).
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: Some(Box::new(PostEdit)),
-                observer: Some(Box::new(PostEdit)),
-            },
-            // ── session-lifecycle families ───────────────────────────────────
-            // `spec_hygiene_observer` is registered *before* `session_start_inject`
-            // so its gated auto-close (and the spec-header rewrite it performs)
-            // runs ahead of the SessionStart memory injection. It is a pure
-            // side effect (an `Observer`), and the dispatcher runs a module's
-            // observer before its check, so registering it first preserves the
-            // ordering.
-            Module {
-                id: "spec_hygiene_observer",
-                // SessionStart-only side effect — emits `hygiene.*` events and,
-                // for a green close-gate, auto-closes a candidate spec. No
-                // verdict (its output is the event stream) → an `Observer`.
-                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(SpecHygieneObserver)),
-            },
-            Module {
-                id: "session_start_inject",
-                // `harness-init` + `spec-hygiene` + terrain census + declared
-                // injectables (`mustard.json#inject`, `on: sessionStart`) —
-                // the SessionStart bootstrap. A `Check` (terrain + injectables
-                // compose into its single `Inject` verdict; a post-compaction
-                // start re-arms the once-per-session markers).
-                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
-                check: Some(Box::new(SessionStartInject)),
-                observer: None,
-            },
-            Module {
-                id: "session_knowledge_observer",
-                // `session-knowledge` (friction telemetry) on SessionEnd,
-                // `session-knowledge-inc` on PostToolUse(Task). Pure telemetry
-                // — an `Observer`.
-                applies_to: &[
-                    (Trigger::SessionEnd, ToolMatch::Any),
-                    (Trigger::PostToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Agent")),
-                ],
-                check: None,
-                observer: Some(Box::new(SessionKnowledgeObserver)),
-            },
-            Module {
-                id: "session_cleanup_observer",
-                // `session-cleanup` — SessionEnd stale-state cleanup. An
-                // `Observer` (pure side effect, no verdict).
-                applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(SessionCleanupObserver)),
-            },
-            Module {
-                id: "statusline_heal_observer",
-                // `statusline-heal` — SessionStart self-heal of the
-                // `statusLine` entry in `.claude/settings.local.json` (points
-                // it at the running binary). An `Observer` (pure side effect,
-                // no verdict).
-                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(StatuslineHealObserver)),
-            },
-            Module {
-                id: "prompt_submit_inject",
-                // `followup-cancel-gate` (amendment-window close, a side
-                // effect) + declared injectables (`mustard.json#inject`,
-                // `on: userPromptSubmit`) + the pipeline-in-flight
-                // banner — composed into one `Inject`; never blocks.
-                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
-                check: Some(Box::new(PromptSubmitInject)),
-                observer: None,
-            },
-            // ── Context-injection optimisation ───────────────────────────────
+            // O pedido do subagente, no despacho de um agente.
             Module {
                 id: "subagent_inject",
-                // For Task dispatches without a declared SKILL, inject a
-                // minimal CONTEXT.md + skills slice (resolved via the
-                // `skill-resolve`).
-                //
-                // `SubagentStop` is added so the same module
-                // can run the span-level regression eval per returning child
-                // (never batched to wave end). The `SubagentStop` branch is fail-open and never
-                // emits a blocking verdict — the per-child verdict lands in
-                // `_review-spans.md` and the consolidation gate reads
-                // the ledger at wave close.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Task")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Agent")),
-                    (Trigger::SubagentStop, ToolMatch::Any),
-                ],
+                applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(AGENT_TOOLS))],
                 check: Some(Box::new(SubagentInject)),
                 observer: None,
             },
-            // The approval witness — on the user's answer to the question
-            // "Aprovar esta spec?", it records in `spec.ndjson` the approved
-            // `state`, with the question and the chosen option, when the
-            // current spec is in the plan phase. The answer comes from the
-            // harness, which the model does not write. A lock that never
-            // blocks: it returns `Inject` to suggest `/clear` after the
-            // approval, or to say why nothing was recorded.
+            // A testemunha da aprovação: na resposta à pergunta com opções,
+            // grava a resposta na conversa e, quando é o "Aprovar" da
+            // pergunta de aprovação com a spec em plano, a aprovação. Nunca
+            // barra: devolve `Inject` para falar com o assistente.
             Module {
                 id: "approval_witness",
                 applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("AskUserQuestion"))],
                 check: Some(Box::new(ApprovalWitness)),
                 observer: None,
             },
-            // The plan-mode door — accepting a plan approves no spec, and the
-            // approval has a single door, the witness above. It stays
-            // registered, with nothing to do, until it leaves with the other
-            // old doors.
+            // A entrada da mensagem, numa chamada só: a trava de instalação,
+            // a mensagem gravada e a linha curta.
             Module {
-                id: "plan_approval_observer",
-                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named("ExitPlanMode"))],
-                check: None,
-                observer: Some(Box::new(PlanApprovalObserver)),
+                id: "prompt_entry",
+                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
+                check: Some(Box::new(PromptEntry)),
+                observer: None,
             },
-            // `end_of_turn_check` — a conferência do fim da resposta, o único
-            // gancho do `Stop`. No `Stop` da sessão principal, passa o texto
-            // final do turno pelas regras (`TurnRule`): as pendências
-            // (`pending_gate.rs`) e a clareza (`clarity_check.rs`). O que elas
-            // acham sai num bloqueio só; na reescrita que o bloqueio pediu
-            // (`stop_hook_active`), a clareza só avisa o usuário. O `hooks.json`
-            // dá 30 segundos ao `Stop`.
+            // O início da sessão, que roda de novo depois de `/clear` e da
+            // compactação.
+            Module {
+                id: "session_start_inject",
+                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
+                check: Some(Box::new(SessionStartInject)),
+                observer: None,
+            },
+            // O conserto da barra de status no início da sessão.
+            Module {
+                id: "statusline_heal_observer",
+                applies_to: &[(Trigger::SessionStart, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(StatuslineHealObserver)),
+            },
+            // A faxina do fim da sessão.
+            Module {
+                id: "session_cleanup_observer",
+                applies_to: &[(Trigger::SessionEnd, ToolMatch::Any)],
+                check: None,
+                observer: Some(Box::new(SessionCleanupObserver)),
+            },
+            // A conferência do fim da resposta, o único gancho do `Stop`: as
+            // regras dela (as pendências e a clareza) saem num bloqueio só.
             Module {
                 id: "end_of_turn_check",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
                 check: Some(Box::new(EndOfTurnCheck)),
                 observer: None,
             },
-            Module {
-                id: "user_prompt_observer",
-                // `UserPromptSubmit` lifecycle observer — appends a single
-                // `user.prompt {prompt}` event to the per-spec NDJSON log (or
-                // the per-session sink under `.claude/.session/{id}/.events/`
-                // when no spec is resolvable), so a reader of the log can tell
-                // what was asked. Observe-only, unconditional, never blocks the
-                // prompt.
-                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(PromptObserver)),
-            },
-            // The spec slash-command door — typing `/mustard:spec a` only picks
-            // which spec to open, and approves nothing. It stays registered,
-            // with nothing to do, until it leaves with the other old doors.
-            Module {
-                id: "picker_approval_observer",
-                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(PickerApprovalObserver)),
-            },
-            // ── Wikilink footer ──────────────────────────────────────────────
-            Module {
-                id: "wikilink_footer_observer",
-                // PostToolUse(Write|Edit) auto-footer renderer for
-                // `.claude/{memory,knowledge,spec}/**/*.md`. Pure Observer —
-                // the render logic lives in `mustard_core::io::atomic_md::wikilink`.
-                applies_to: &[
-                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
-                ],
-                check: None,
-                observer: Some(Box::new(WikilinkFooterObserver)),
-            },
-            // ── session-bound amendment window ───────────────────────────────
-            Module {
-                id: "amend_window_inject",
-                // Tracks in-session edits after pipeline close.
-                // Observer: PostToolUse(Bash|Write|Edit) + UserPromptSubmit.
-                // Check: PreToolUse(Write|Edit) for look-ahead drift injection.
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PreToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Bash")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Write")),
-                    (Trigger::PostToolUse, ToolMatch::Named("Edit")),
-                    (Trigger::UserPromptSubmit, ToolMatch::Any),
-                ],
-                check: Some(Box::new(AmendWindowInject)),
-                observer: Some(Box::new(AmendWindowInject)),
-            },
-            // Mid-pipeline counterpart to `amend_window_inject`: records every
-            // user request made WHILE a spec is Active to
-            // `.claude/spec/{id}/change-requests.ndjson` + a
-            // `pipeline.change.request` event, so chat-driven changes no longer
-            // vanish. Pure Observer — side-effects only, never blocks.
-            Module {
-                id: "change_request_log",
-                applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
-                check: None,
-                observer: Some(Box::new(ChangeRequestLog)),
-            },
         ];
         Self { modules }
     }
 
-    /// Every module applicable to the given event/tool, in registration order.
+    /// Os ganchos que rodam neste evento e nesta ferramenta, na ordem do
+    /// registro.
     #[must_use]
     pub fn applicable(&self, trigger: Trigger, tool: Option<&str>) -> Vec<&Module> {
-        self.modules
-            .iter()
-            .filter(|m| m.matches(trigger, tool))
-            .collect()
+        self.modules.iter().filter(|m| m.matches(trigger, tool)).collect()
     }
 
-    /// The module with the given id, regardless of event/tool — used by
-    /// `mustard-rt check <id>`.
+    /// Os nomes dos ganchos registrados, na ordem do registro. Quem lê é o
+    /// teste que confere o registro contra o manifesto do Claude Code.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn ids(&self) -> Vec<&'static str> {
+        self.modules.iter().map(|m| m.id).collect()
+    }
+
+    /// Os eventos em que algum gancho roda. Quem lê é o mesmo teste.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn triggers(&self) -> Vec<Trigger> {
+        let mut out: Vec<Trigger> = Vec::new();
+        for (trigger, _) in self.modules.iter().flat_map(|m| m.applies_to.iter()) {
+            if !out.contains(trigger) {
+                out.push(*trigger);
+            }
+        }
+        out
+    }
+
+    /// O gancho de nome `id`, em qualquer evento.
+    #[cfg(test)]
     #[must_use]
     pub fn by_id(&self, id: &str) -> Option<&Module> {
         self.modules.iter().find(|m| m.id == id)
@@ -496,227 +204,125 @@ impl Default for Registry {
 mod tests {
     use super::*;
 
-    /// The ids of every module applicable to the given event/tool.
-    fn applicable_ids(
-        registry: &Registry,
-        trigger: Trigger,
-        tool: Option<&str>,
-    ) -> Vec<&'static str> {
-        registry
-            .applicable(trigger, tool)
-            .iter()
-            .map(|m| m.id)
-            .collect()
+    /// Os nomes dos ganchos que rodam neste evento e nesta ferramenta.
+    fn applicable_ids(registry: &Registry, trigger: Trigger, tool: Option<&str>) -> Vec<&'static str> {
+        registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
+    /// O registro tem os nove ganchos que ficam, e só eles.
     #[test]
-    fn bash_command_gate_applies_to_bash_events() {
+    fn the_registry_holds_exactly_the_nine_hooks() {
         let registry = Registry::new();
-        // `bash_command_gate` is the Bash-tool gate for both Pre- and PostToolUse.
-        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash"))
-            .contains(&"bash_command_gate"));
-        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash"))
-            .contains(&"bash_command_gate"));
-        // It does not apply to a Write tool or a bare lifecycle event.
-        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
-            .contains(&"bash_command_gate"));
-    }
-
-    #[test]
-    fn wildcard_counters_apply_to_every_pre_tool_use() {
-        let registry = Registry::new();
-        // `tool_use_counter` / `main_context_counter` use `ToolMatch::Any` —
-        // they fire on PreToolUse for any tool (the JS `.*` matcher).
-        for tool in ["Bash", "Write", "Read", "Task"] {
-            let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            assert!(ids.contains(&"tool_use_counter"), "missing for {tool}");
-            assert!(ids.contains(&"main_context_counter"), "missing for {tool}");
-        }
-    }
-
-    #[test]
-    fn task_family_applies_on_pre_tool_use_task() {
-        let registry = Registry::new();
-        let ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Task"));
-        for want in ["context_budget_gate", "subagent_inject"] {
-            assert!(ids.contains(&want), "missing {want}");
-        }
-    }
-
-    #[test]
-    fn subagent_lifecycle_runs_only_the_counters() {
-        let registry = Registry::new();
-        // `SubagentStart` (a non-tool event) → only the two counters apply.
-        let ids = applicable_ids(&registry, Trigger::SubagentStart, None);
-        assert!(ids.contains(&"tool_use_counter"));
-        assert!(ids.contains(&"main_context_counter"));
-        assert!(!ids.contains(&"bash_command_gate"));
-    }
-
-
-    #[test]
-    fn exit_plan_mode_post_tool_use_runs_plan_approval_observer() {
-        let registry = Registry::new();
-        // The plan-mode approval recorder fires only on PostToolUse(ExitPlanMode).
-        assert!(
-            applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode"))
-                .contains(&"plan_approval_observer")
-        );
-        // Never on the Pre side, nor on an unrelated tool.
-        assert!(
-            !applicable_ids(&registry, Trigger::PreToolUse, Some("ExitPlanMode"))
-                .contains(&"plan_approval_observer")
-        );
-        assert!(
-            !applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"))
-                .contains(&"plan_approval_observer")
+        let mut ids = registry.ids();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                "approval_witness",
+                "command_guard",
+                "end_of_turn_check",
+                "prompt_entry",
+                "session_cleanup_observer",
+                "session_start_inject",
+                "statusline_heal_observer",
+                "subagent_inject",
+                "write_gate",
+            ]
         );
     }
 
-    /// The approval witness runs only on the `PostToolUse` of the question
-    /// with options, and it is a lock that returns a verdict, not an observer.
+    /// Uma entrada com várias ferramentas casa com cada uma delas, e com
+    /// nenhuma outra; sem ferramenta, não casa.
     #[test]
-    fn ask_user_question_post_tool_use_runs_approval_witness() {
-        let registry = Registry::new();
-        assert!(
-            applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion"))
-                .contains(&"approval_witness")
-        );
-        // Never on the Pre side, nor on any other tool.
-        assert!(
-            !applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion"))
-                .contains(&"approval_witness")
-        );
-        assert!(
-            !applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
-                .contains(&"approval_witness")
-        );
-        let module = registry.by_id("approval_witness").expect("registered");
-        assert!(module.check.is_some() && module.observer.is_none());
-        assert!(registry.by_id("approval_marker_observer").is_none(), "the old recorder left");
+    fn one_of_matches_each_listed_tool_and_nothing_else() {
+        let pair = ToolMatch::OneOf(&["Task", "Agent"]);
+        assert!(pair.matches(Some("Task")));
+        assert!(pair.matches(Some("Agent")));
+        assert!(!pair.matches(Some("Bash")));
+        assert!(!pair.matches(None));
+        assert!(ToolMatch::Any.matches(None));
+        assert!(ToolMatch::Named("Bash").matches(Some("Bash")));
+        assert!(!ToolMatch::Named("Bash").matches(Some("bash")));
     }
 
-
-    /// O fim da resposta é uma conferência só: o `end_of_turn_check` é o único
-    /// módulo do `Stop`, um `Check` puro, e nunca roda no `Stop` de um
-    /// subagente. Os ganchos que derrubavam os outros saíram.
+    /// A trava de comandos roda só no `PreToolUse` do Bash.
     #[test]
-    fn end_of_turn_check_is_the_only_module_on_stop() {
+    fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
-        assert_eq!(applicable_ids(&registry, Trigger::Stop, None), vec!["end_of_turn_check"]);
-        let module = registry.by_id("end_of_turn_check").expect("registered");
-        assert!(module.check.is_some() && module.observer.is_none());
-        assert!(!applicable_ids(&registry, Trigger::SubagentStop, None).contains(&"end_of_turn_check"));
-        for gone in [
-            "stop_gate",
-            "crystallise_nudge",
-            "spec_doc_present",
-            "session_stop_observer",
-            "pending_gate",
-            "clarity_check",
-        ] {
-            assert!(registry.by_id(gone).is_none(), "{gone} left the registry");
-        }
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
+        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")).is_empty());
+        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
-
-
-    #[test]
-    fn the_session_families_apply_to_their_events() {
-        let registry = Registry::new();
-        // `session_start_inject` on SessionStart.
-        assert!(applicable_ids(&registry, Trigger::SessionStart, None)
-            .contains(&"session_start_inject"));
-        // `spec_hygiene_observer` also runs on SessionStart, *before* `session_start_inject`.
-        let start = applicable_ids(&registry, Trigger::SessionStart, None);
-        assert!(start.contains(&"spec_hygiene_observer"));
-        let hyg_idx = start.iter().position(|id| *id == "spec_hygiene_observer");
-        let ss_idx = start.iter().position(|id| *id == "session_start_inject");
-        assert!(hyg_idx < ss_idx, "spec_hygiene_observer must precede session_start_inject");
-        // `statusline_heal_observer` also rides SessionStart.
-        assert!(start.contains(&"statusline_heal_observer"));
-        // `session_cleanup_observer` + `session_knowledge_observer` on SessionEnd.
-        let end = applicable_ids(&registry, Trigger::SessionEnd, None);
-        assert!(end.contains(&"session_cleanup_observer"));
-        assert!(end.contains(&"session_knowledge_observer"));
-        // `prompt_submit_inject` on UserPromptSubmit.
-        assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
-            .contains(&"prompt_submit_inject"));
-        // `user_prompt_observer` also rides UserPromptSubmit.
-        assert!(applicable_ids(&registry, Trigger::UserPromptSubmit, None)
-            .contains(&"user_prompt_observer"));
-        // `session_knowledge_observer` also covers PostToolUse(Task).
-        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("Task"))
-            .contains(&"session_knowledge_observer"));
-    }
-
-    /// The write gate runs on the `PreToolUse` of the five file tools, and
-    /// only on them, in place of the three hooks it joined.
+    /// O portão de escrita roda antes das cinco ferramentas de arquivo, e só
+    /// delas.
     #[test]
     fn the_write_gate_runs_on_the_five_file_tools() {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
-            assert!(
-                applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"),
-                "write_gate missing on {tool}"
-            );
-            assert!(
-                !applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"write_gate"),
-                "write_gate never runs after {tool}"
-            );
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
+            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).is_empty(), "{tool}");
         }
         for tool in ["Bash", "Task", "Agent", "Skill"] {
-            assert!(
-                !applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"),
-                "write_gate is not a gate of {tool}"
-            );
+            assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
         }
         let module = registry.by_id("write_gate").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
-        for gone in ["secret_files", "work_branch_gate", "scope_guard"] {
-            assert!(registry.by_id(gone).is_none(), "{gone} left the registry");
-        }
     }
 
+    /// O pedido do subagente roda no despacho de um agente, e o início e o
+    /// fim de subagente não têm gancho nenhum.
     #[test]
-    fn write_edit_family_applies_on_pre_tool_use() {
+    fn the_agent_dispatch_runs_only_the_subagent_inject() {
         let registry = Registry::new();
-        // The Write/Edit gates fire on PreToolUse(Write) and (Edit).
-        for tool in ["Write", "Edit"] {
-            let ids = applicable_ids(&registry, Trigger::PreToolUse, Some(tool));
-            for want in ["size_gate", "write_gate", "boundary_gate"] {
-                assert!(ids.contains(&want), "missing {want} for {tool}");
-            }
+        for tool in ["Task", "Agent"] {
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject"], "{tool}");
+            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).is_empty(), "{tool}");
         }
-        // `boundary_gate` stays Write/Edit-only: it never inspects Read.
-        let read_ids = applicable_ids(&registry, Trigger::PreToolUse, Some("Read"));
-        assert!(!read_ids.contains(&"boundary_gate"));
-        // `post_edit` runs on PostToolUse(Write|Edit).
-        for tool in ["Write", "Edit"] {
-            assert!(
-                applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"post_edit")
-            );
-        }
-        // `delegation_advisory` rides PostToolUse(Write|Edit) too.
-        for tool in ["Write", "Edit"] {
-            assert!(
-                applicable_ids(&registry, Trigger::PostToolUse, Some(tool))
-                    .contains(&"delegation_advisory"),
-                "delegation_advisory missing for {tool}"
-            );
-        }
-        // It does not fire on a PreToolUse(Write) nor on a Read.
-        assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write"))
-            .contains(&"delegation_advisory"));
-        assert!(!applicable_ids(&registry, Trigger::PostToolUse, Some("Read"))
-            .contains(&"delegation_advisory"));
-        // `scan_gate` + `active_spec_limit_gate` run on
-        // PreToolUse(Skill) — the two pipeline-entry gates.
-        for want in ["scan_gate", "active_spec_limit_gate"] {
-            assert!(
-                applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")).contains(&want),
-                "missing {want} on PreToolUse(Skill)"
-            );
-        }
+        assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
+        assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
+        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")).is_empty());
+    }
+
+    /// A testemunha roda só depois da pergunta com opções, e é uma trava que
+    /// devolve veredito, não um observador.
+    #[test]
+    fn ask_user_question_post_tool_use_runs_approval_witness() {
+        let registry = Registry::new();
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")), ["approval_witness"]);
+        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")).is_empty());
+        assert!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")).is_empty());
+        let module = registry.by_id("approval_witness").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+    }
+
+    /// O fim da resposta é uma conferência só, um `Check` puro.
+    #[test]
+    fn end_of_turn_check_is_the_only_module_on_stop() {
+        let registry = Registry::new();
+        assert_eq!(applicable_ids(&registry, Trigger::Stop, None), ["end_of_turn_check"]);
+        let module = registry.by_id("end_of_turn_check").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
+    }
+
+    /// A mensagem tem um gancho só; o início da sessão, dois, com o que
+    /// coloca texto primeiro; o fim da sessão, a faxina.
+    #[test]
+    fn the_session_hooks_apply_to_their_events() {
+        let registry = Registry::new();
+        assert_eq!(applicable_ids(&registry, Trigger::UserPromptSubmit, None), ["prompt_entry"]);
+        assert_eq!(
+            applicable_ids(&registry, Trigger::SessionStart, None),
+            ["session_start_inject", "statusline_heal_observer"]
+        );
+        assert_eq!(applicable_ids(&registry, Trigger::SessionEnd, None), ["session_cleanup_observer"]);
+    }
+
+    /// Os eventos com gancho são exatamente os que o registro nomeia.
+    #[test]
+    fn the_triggers_are_the_events_with_a_hook() {
+        let mut names: Vec<&str> = Registry::new().triggers().into_iter().map(Trigger::as_event_name).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["PostToolUse", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]);
     }
 }

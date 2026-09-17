@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on PreToolUse",
-            "timeout": 310
+            "timeout": 30
           }
         ]
       }
@@ -61,69 +61,13 @@
         ]
       }
     ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on SubagentStart",
-            "statusMessage": "Registering agent...",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on SubagentStop",
-            "statusMessage": "Agent completed",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "WorktreeCreate": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on WorktreeCreate",
-            "statusMessage": "Cutting work-unit worktree from its integration base...",
-            "timeout": 60
-          }
-        ]
-      }
-    ],
     "UserPromptSubmit": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on UserPromptSubmit --inject .claude/mustard/orchestrator.md",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on UserPromptSubmit --inject .claude/mustard/dispatch.md",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on UserPromptSubmit --inject .claude/mustard/material.md",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot\" on UserPromptSubmit",
             "timeout": 10
           }
         ]

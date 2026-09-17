@@ -127,7 +127,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     };
     let index_dropped = mustard_core::io::spec_index::drop_line(&project.root, &spec).is_ok();
     if let Some(sid) = session {
-        crate::shared::context::unbind_session_spec(&opts.root.to_string_lossy(), sid);
+        crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
     }
 
     let mut out = json!({
@@ -181,14 +181,6 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
-/// Descarta a spec e imprime o relatório; sai com 1 na recusa.
-pub fn run_cmd(opts: &DiscardOpts) {
-    let report = discard_at(opts);
-    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
-    if report["ok"] != json!(true) {
-        std::process::exit(1);
-    }
-}
 
 #[cfg(test)]
 mod tests {

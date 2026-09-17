@@ -1,8 +1,8 @@
 //! Que specs estão abertas, lido pelo arquivo de eventos de cada uma.
 //!
 //! O comando que listava as specs saiu — quem lista hoje é o `read` sem spec,
-//! pelo índice. Ficou a leitura que o portão da base e os dois avisos de
-//! paralelismo fazem: quais unidades ainda estão em andamento.
+//! pelo índice. Ficou a leitura que o portão da base faz: quais unidades
+//! ainda estão em andamento.
 //!
 //! Uma regra só, a mesma que a trava da aprovação usa: a fase gravada no
 //! `spec.ndjson`. Uma spec sem fase terminal está aberta; fechada, com pull
@@ -77,16 +77,9 @@ pub(crate) fn active_spec_names(root: &Path) -> Vec<String> {
     nomes
 }
 
-/// Quantas specs estão em andamento — a contagem que os dois avisos de
-/// paralelismo leem, derivada da MESMA lista que o portão relata.
-#[must_use]
-pub fn count_active(root: &Path) -> usize {
-    active_spec_names(root).len()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{active_spec_names, count_active, without_spec_date_prefix};
+    use super::{active_spec_names, without_spec_date_prefix};
     use crate::shared::spec_state::seed_event;
     use serde_json::json;
     use tempfile::tempdir;
@@ -109,6 +102,5 @@ mod tests {
         seed_event(root, "c-fechada", "state", json!({ "phase": "closed" }));
 
         assert_eq!(active_spec_names(root), vec!["a-aberta", "b-aberta"]);
-        assert_eq!(count_active(root), 2);
     }
 }

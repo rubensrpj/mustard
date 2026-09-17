@@ -20,7 +20,8 @@ use mustard_core::domain::spec_state::{approval_event, resolve, SpecState, State
 use mustard_core::io::spec_events as store;
 use serde_json::Value;
 
-use crate::shared::context;
+use crate::shared::context::checkout::spec_of_checkout_branch;
+use crate::shared::context::session::spec_for_session;
 
 /// As variáveis de ambiente que dizem a sessão, na ordem em que valem: a do
 /// Mustard, a que o Claude Code põe no ambiente dos comandos, e a antiga. O
@@ -51,8 +52,8 @@ fn session_from(var: impl Fn(&str) -> Option<String>) -> Option<String> {
 #[must_use]
 pub(crate) fn active_spec(root: &str, session: Option<&str>) -> Option<String> {
     let env = std::env::var("MUSTARD_ACTIVE_SPEC").ok();
-    let branch = context::spec_of_checkout_branch(root);
-    let bound = session.and_then(|sid| context::spec_for_session(root, sid));
+    let branch = spec_of_checkout_branch(root);
+    let bound = session.and_then(|sid| spec_for_session(root, sid));
     resolve(env.as_deref(), branch, bound)
 }
 
@@ -240,6 +241,7 @@ pub(crate) fn stand_on_spec_branch(root: &std::path::Path, spec: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::context::session::bind_session_spec;
     use mustard_core::domain::model::contract::HookInput;
     use mustard_core::platform::git;
     use tempfile::tempdir;
@@ -316,7 +318,7 @@ mod tests {
         }
         let dir = tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
-        context::bind_session_spec(root, SESSION, "da-sessao");
+        bind_session_spec(root, SESSION, "da-sessao");
         assert_eq!(active_spec(root, Some(SESSION)).as_deref(), Some("da-sessao"));
         assert_eq!(active_spec(root, Some("outra-sessao")), None);
         assert_eq!(active_spec(root, None), None);

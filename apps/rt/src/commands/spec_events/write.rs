@@ -108,11 +108,13 @@ use super::pages::SpecPages;
 use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, quando ele
-/// roda o QA; o veredito, quando ele registra a revisão; e o envio do pedido
-/// de uma onda, que só a rodada grava, com o pedido exato como foi injetado.
-/// O `run write` não os grava, nem tira ou revê um deles. O `entregou` e o
-/// commit seguem aceitos à mão enquanto os ganchos estiverem desligados.
-const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send"];
+/// roda o QA; o veredito, quando ele registra a revisão; o envio do pedido de
+/// uma onda, que só a rodada grava, com o pedido exato como foi injetado; e a
+/// resposta do assistente, que o despachante grava no fim de cada resposta.
+/// O `run write` não os grava, nem tira ou revê um deles. O `entregou`, o
+/// commit e a mensagem do usuário seguem aceitos à mão enquanto os ganchos
+/// estiverem desligados.
+const BINARY_ONLY: &[&str] = &["criterion_run", "verdict", "send", "response"];
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
@@ -802,9 +804,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&md).unwrap(), document, "the document is left alone");
     }
 
-    /// A execução de um critério e o veredito são gravados só pelo binário: o
-    /// `run write` recusa os dois, e recusa tirar uma execução gravada. Uma
-    /// execução aprovada escrita à mão nunca abre o fechamento.
+    /// A execução de um critério, o veredito e a resposta do assistente são
+    /// gravados só pelo binário: o `run write` recusa os três, e recusa tirar
+    /// uma execução gravada. Uma execução aprovada escrita à mão nunca abre o
+    /// fechamento.
     #[test]
     fn criteria_runs_and_verdicts_are_written_by_the_binary_only() {
         use crate::shared::spec_state::{seed_run, seed_runs};
@@ -824,6 +827,15 @@ mod tests {
         assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
         let removal = write(root, "remove", &format!(r#"{{"targets":[{failing}],"reason":"engano"}}"#));
         assert_eq!(removal["reason"], json!("binary-only-type"), "taking the red run out is refused too: {removal}");
+
+        // A resposta do assistente também é do binário: escrita à mão, ela é
+        // recusada, e a mensagem do usuário segue aceita.
+        let asked = message(root, "user", "e agora?");
+        let reply = format!(r#"{{"author":"assistant","text":"Pronto.","reply_to":{asked}}}"#);
+        let before = lines(root);
+        let refused = write(root, "response", &reply);
+        assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
+        assert_eq!(lines(root), before, "nothing was written");
 
         let fechamento = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
             spec: Some("teste".to_string()),
@@ -2014,8 +2026,8 @@ mod tests {
         let root = dir.path();
         let (said, points) = listed(root, &["fix"], false);
         let asked = message(root, "user", "Isso vale para o dev?");
-        let reply = write(root, "response", &json!({"author": "assistant", "text": "Vale.", "reply_to": asked}).to_string());
-        assert_eq!(reply["ok"], json!(true), "{reply}");
+        let reply = json!({"author": "assistant", "text": "Vale.", "reply_to": asked});
+        assert!(record(root, "teste", "response", reply.as_object().cloned().unwrap(), PhaseWriter::Binary).is_ok());
         let mut end = Value::Null;
         for point in &points {
             end = settle(root, point, said);

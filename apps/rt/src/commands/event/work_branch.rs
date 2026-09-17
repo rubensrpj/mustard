@@ -727,7 +727,7 @@ pub(crate) fn recorded_or_derived_base(
     target: &str,
     config: &mustard_core::ProjectConfig,
 ) -> Result<String, Vec<String>> {
-    let recorded = crate::shared::context::pending_base_for(root, session)
+    let recorded = crate::shared::context::pending_branch::pending_base_for(root, session)
         .filter(|b| crate::shared::work_kind::base_still_on_remote(Path::new(root), b));
     match recorded {
         Some(recorded) => Ok(recorded),
@@ -963,7 +963,7 @@ thread_local! {
 /// some. The harness knows what the harness writes; it asks itself.
 ///
 /// The first thing the delegation misread was `.claude/.session/`, where
-/// [`crate::shared::context::set_pending_branch`] writes the very marker this
+/// [`crate::shared::context::pending_branch::set_pending_branch`] writes the very marker this
 /// decision consumes: the cut refused over the gate's own droppings, and told
 /// the operator to commit or stash them.
 ///
@@ -1366,13 +1366,13 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
         return CutOutcome::NoPending;
     }
     let root = project.to_string_lossy().into_owned();
-    let Some(target) = crate::shared::context::pending_branch_for(&root, session) else {
+    let Some(target) = crate::shared::context::pending_branch::pending_branch_for(&root, session) else {
         return CutOutcome::NoPending;
     };
 
     let current = mustard_core::current_branch(project);
     if current.as_deref() == Some(target.as_str()) {
-        crate::shared::context::clear_pending_branch(&root, session);
+        crate::shared::context::pending_branch::clear_pending_branch(&root, session);
         return CutOutcome::AlreadyThere(target);
     }
 
@@ -1425,7 +1425,7 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
             // draft folds into `meta.json#base` — a no-op wherever the flow can
             // still re-derive it (see `BaseFlow::record_cut_base`).
             BaseFlow::of_at(&config.git, project).record_cut_base(&target, &base);
-            crate::shared::context::clear_pending_branch(&root, session);
+            crate::shared::context::pending_branch::clear_pending_branch(&root, session);
             CutOutcome::Cut(target)
         }
         Err(error) => CutOutcome::Failed {
@@ -1792,7 +1792,7 @@ mod tests {
         // The operator picks the MIDDLE base. That answer reaches the cut the
         // one way it can — the pending marker `emit-pipeline` writes.
         let sid = "sess-hotfix-pick";
-        crate::shared::context::set_pending_branch(&root_s, sid, "hotfix/my-unit", Some("qas"));
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "hotfix/my-unit", Some("qas"));
 
         let outcome = super::cut_pending_work_branch(root, sid);
         assert_eq!(outcome, super::CutOutcome::Cut("hotfix/my-unit".to_string()), "{outcome:?}");
@@ -1806,7 +1806,7 @@ mod tests {
         assert_ne!(head, git_rev(root, "main"), "…and not from the pre-marked one");
 
         // The marker is GONE — which is why it cannot be the durable answer.
-        assert!(crate::shared::context::pending_base_for(&root_s, sid).is_none());
+        assert!(crate::shared::context::pending_branch::pending_base_for(&root_s, sid).is_none());
 
         // Every LATER read answers the middle base. This is the assertion the
         // unit shipped without: each of these resolved `hotfix/…` through the
@@ -1880,7 +1880,7 @@ mod tests {
 
         // The operator picks the release line out of the catalogue.
         let sid = "sess-release-pick";
-        crate::shared::context::set_pending_branch(
+        crate::shared::context::pending_branch::set_pending_branch(
             &root_s,
             sid,
             "fix/erro-no-boleto",
@@ -1903,7 +1903,7 @@ mod tests {
 
         // The marker is spent, and every later read still answers the pick —
         // the unit's own record carries it from here.
-        assert!(crate::shared::context::pending_base_for(&root_s, sid).is_none());
+        assert!(crate::shared::context::pending_branch::pending_base_for(&root_s, sid).is_none());
         let config = mustard_core::ProjectConfig::load(root);
         assert_eq!(
             super::base_for(root, "fix/erro-no-boleto", &config).as_deref(),
@@ -1945,7 +1945,7 @@ mod tests {
             );
 
             let sid = "sess-any-project";
-            crate::shared::context::set_pending_branch(
+            crate::shared::context::pending_branch::set_pending_branch(
                 &root_s,
                 sid,
                 "fix/erro-no-boleto",
@@ -1992,7 +1992,7 @@ mod tests {
             "a clone carries a local head for the default branch alone",
         );
         let sid = "sess-real-clone";
-        crate::shared::context::set_pending_branch(
+        crate::shared::context::pending_branch::set_pending_branch(
             &fresh_s,
             sid,
             "fix/erro-no-boleto",
@@ -2025,7 +2025,7 @@ mod tests {
             git_rev(&stale, "origin/release/2026-Q3"),
             "the fixture really does park the local head behind the remote",
         );
-        crate::shared::context::set_pending_branch(
+        crate::shared::context::pending_branch::set_pending_branch(
             &stale_s,
             sid,
             "fix/erro-no-boleto",
@@ -2310,7 +2310,7 @@ mod tests {
 
         // A SECOND unit is signalled — this is what `spec-draft` consumes.
         let sid = "sess-cut-refuses";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
 
         let outcome = super::cut_pending_work_branch(root, sid);
         let super::CutOutcome::Refused(busy) = outcome else {
@@ -2347,7 +2347,7 @@ mod tests {
         // The marker SURVIVES — the unit was never started, so nothing was
         // consumed and the next attempt retries after the commit or stash.
         assert_eq!(
-            crate::shared::context::pending_branch_for(&root_s, sid).as_deref(),
+            crate::shared::context::pending_branch::pending_branch_for(&root_s, sid).as_deref(),
             Some("dev_second"),
             "a refusal consumes no intent",
         );
@@ -2385,7 +2385,7 @@ mod tests {
         );
 
         let sid = "sess-cut-unmeasured";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         let outcome = super::cut_pending_work_branch(root, sid);
         let super::CutOutcome::Refused(busy) = outcome else {
             panic!("an unmeasurable checkout must be refused, got {outcome:?}");
@@ -2435,7 +2435,7 @@ mod tests {
         git(root, &["commit", "-m", "first unit work"]);
 
         let sid = "sess-cut-clean";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
         // Precondition: the marker really is on disk and really is invisible to
         // this project's ignore rules — otherwise the assertion below would
         // pass for the reason the field does not have.
@@ -2629,7 +2629,7 @@ mod tests {
         std::fs::write(spec.join("spec.md"), "# first unit\n").expect("spec");
 
         let sid = "sess-cut-spec-counts";
-        crate::shared::context::set_pending_branch(&root_s, sid, "dev_second", None);
+        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
 
         let super::CheckoutWork::Holds { theirs: dirty, .. } = super::checkout_work(root) else {
             panic!("the unit's own spec is uncommitted work: {:?}", super::checkout_work(root));

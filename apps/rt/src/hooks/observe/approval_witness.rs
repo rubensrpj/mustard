@@ -9,6 +9,15 @@
 //! segundo passo. Em seguida, ela diz ao assistente para sugerir `/clear`: a
 //! execução começa numa janela limpa, e a retomada lê o estado da spec.
 //!
+//! ## A resposta de cada pergunta
+//!
+//! Toda pergunta com opções respondida, a de aprovação ou qualquer outra, vai
+//! para o bloco da conversa da spec atual como mensagem do usuário: a
+//! pergunta, a resposta e a nota, quando ele escreveu uma. A resposta chega
+//! pelo harness e não passa pela entrada da mensagem, então é aqui que ela é
+//! gravada. Texto livre também vale: gravar o que o usuário disse não
+//! destrava nada. Uma pergunta cancelada não grava nada.
+//!
 //! ## O que conta como aprovação
 //!
 //! Três fatos, todos juntos; na dúvida, nada é gravado.
@@ -62,13 +71,14 @@
 
 use std::path::Path;
 
-use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::model::contract::{AskAnswers, Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use crate::commands::spec_events::conversation::record_message;
 use crate::hooks::write::write_gate::say;
 use crate::shared::spec_state::DiskSpecState;
 
@@ -224,18 +234,37 @@ fn truncate(s: &str) -> String {
     format!("{head}…")
 }
 
+/// Grava cada pergunta respondida como mensagem do usuário, na spec atual: a
+/// pergunta, a resposta (várias escolhas separadas por vírgula) e a nota,
+/// cada uma numa linha. Pergunta sem resposta não grava nada.
+fn record_answers(root: &Path, session: Option<&str>, answers: &AskAnswers) {
+    for item in &answers.items {
+        let question = item.question.trim();
+        let answer = item.labels.iter().map(|label| label.trim()).collect::<Vec<_>>().join(", ");
+        if question.is_empty() || answer.is_empty() {
+            continue;
+        }
+        let mut text = format!("{question}\n{answer}");
+        if let Some(notes) = item.notes.as_deref().map(str::trim).filter(|notes| !notes.is_empty()) {
+            text.push('\n');
+            text.push_str(notes);
+        }
+        let _ = record_message(root, session, &text);
+    }
+}
+
 impl Check for ApprovalWitness {
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         if ctx.trigger != Some(Trigger::PostToolUse) {
             return Ok(Verdict::Allow);
         }
-        // Só a pergunta de aprovação conta; qualquer outra passa calada.
-        let Some(answer) =
-            input.ask_answers().items.into_iter().find(|item| is_approval_question(&item.question))
-        else {
+        let root = ctx.project_dir_or_cwd(input);
+        let answers = input.ask_answers();
+        record_answers(Path::new(&root), input.session_id.as_deref(), &answers);
+        // Só a pergunta de aprovação decide; qualquer outra passa calada.
+        let Some(answer) = answers.items.into_iter().find(|item| is_approval_question(&item.question)) else {
             return Ok(Verdict::Allow);
         };
-        let root = ctx.project_dir_or_cwd(input);
         let lang = ctx.config.language().text_or_default();
         let offered = offered_for(input, &answer.question);
         let chosen = answer.labels.iter().find(|l| is_offered(l, &offered) && is_approve_option(l));
@@ -255,7 +284,7 @@ impl Check for ApprovalWitness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::context;
+    use crate::shared::context::session::bind_session_spec;
     use mustard_core::domain::spec_state::State;
     use mustard_core::io::spec_events as store;
     use mustard_core::ProjectConfig;
@@ -318,7 +347,7 @@ mod tests {
         for fields in states {
             record(dir.path(), fields.clone());
         }
-        context::bind_session_spec(&dir.path().to_string_lossy(), SESSION, "epic");
+        bind_session_spec(&dir.path().to_string_lossy(), SESSION, "epic");
         dir
     }
 
@@ -330,8 +359,20 @@ mod tests {
         DiskSpecState::new(root).state("epic").expect("the spec has its event file")
     }
 
+    /// As linhas do arquivo da spec fora das mensagens: a resposta de cada
+    /// pergunta sempre vai para a conversa, e o que estes testes olham é o
+    /// que a aprovação grava.
+    fn outside_messages(file: &Path) -> Vec<String> {
+        std::fs::read_to_string(file)
+            .unwrap()
+            .lines()
+            .filter(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["type"] != "message"))
+            .map(str::to_string)
+            .collect()
+    }
+
     fn events(root: &Path) -> usize {
-        std::fs::read_to_string(store::spec_file(root, "epic").unwrap()).unwrap().lines().count()
+        outside_messages(&store::spec_file(root, "epic").unwrap()).len()
     }
 
     fn witness(root: &Path, input: &HookInput) -> Verdict {
@@ -592,14 +633,14 @@ mod tests {
             json!({ "block": "limits", "gap": "Os limites, com os valores", "from": "gap", "status": "open",
                 "origin": 1, "facts": [{ "text": "f", "source": "mensagem 1" }] }),
         );
-        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+        bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
         let file = store::spec_file(root, "epic").unwrap();
-        let before = std::fs::read_to_string(&file).unwrap();
+        let before = outside_messages(&file);
         match witness(root, &approve_or_adjust("Aprovar")) {
             Verdict::Inject { context } => assert!(context.contains("MSTD-POINT-0001"), "names the point: {context}"),
             other => panic!("the refusal is explained, got {other:?}"),
         }
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "the refusal wrote nothing");
+        assert_eq!(outside_messages(&file), before, "the refusal wrote nothing but the answer");
         let lock = crate::shared::spec_state::lock_state(root, "epic").expect("the spec has its event file");
         assert_eq!(lock.phase, Some("plan"), "the lock still reads plan");
         assert!(!lock.approved, "nothing approved");
@@ -619,7 +660,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         record_for(root, "epic", "message", json!({ "author": "user", "text": "oi" }));
-        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+        bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
         witness(root, &approve_or_adjust("Aprovar"));
         assert!(state(root).approved, "the spec with no phase is approved");
         let log = std::fs::read_to_string(store::spec_file(root, "epic").unwrap()).unwrap();
@@ -648,7 +689,7 @@ mod tests {
             r#"{"scope":"light","stage":"Analyze","parent":" Epic-1/ "}"#,
         )
         .unwrap();
-        context::bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");
+        bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");
 
         let said = witness(root, &approve_or_adjust("Aprovar"));
         let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
@@ -670,7 +711,7 @@ mod tests {
         crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
         record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
         record_for(root, "outra", "state", json!({ "phase": "plan", "branch": "feature/outra" }));
-        context::bind_session_spec(&root.to_string_lossy(), SESSION, "outra");
+        bind_session_spec(&root.to_string_lossy(), SESSION, "outra");
 
         let said = witness(root, &approve_or_adjust("Aprovar"));
         let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
@@ -739,7 +780,7 @@ mod tests {
         std::fs::create_dir_all(&spec_dir).unwrap();
         std::fs::write(spec_dir.join("meta.json"), r#"{"scope":"light","stage":"Plan","base":"dev"}"#).unwrap();
         std::fs::write(spec_dir.join("spec.md"), "# Epic\n").unwrap();
-        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+        bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
 
         let said = witness(root, &approve_or_adjust("Aprovar"));
         assert_eq!(said, Verdict::Inject { context: say("approval.witness.no_plan", lang(root), &[]) });
@@ -761,7 +802,7 @@ mod tests {
         record_for(root, "epic", "message", json!({ "author": "user", "text": "oi" }));
         let meta = r#"{"scope":"light","stage":"Plan","base":"dev","parent":"mae"}"#;
         std::fs::write(root.join(".claude").join("spec").join("epic").join("meta.json"), meta).unwrap();
-        context::bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
+        bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
 
         witness(root, &approve_or_adjust("Aprovar"));
         let after = state(root);
@@ -783,5 +824,53 @@ mod tests {
         cancelled.raw = json!({ "tool_response": { "answers": {} } });
         assert_eq!(witness(root, &cancelled), Verdict::Allow);
         assert!(!state(root).approved);
+    }
+
+    /// As mensagens de usuário gravadas na spec `epic`.
+    fn user_messages(root: &Path) -> Vec<String> {
+        DiskSpecState::new(root)
+            .log("epic")
+            .map(|log| {
+                log.visible()
+                    .into_iter()
+                    .filter(|e| e.event_type == "message" && e.str_field("author") == Some("user"))
+                    .filter_map(|e| e.str_field("text").map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A resposta de cada pergunta do levantamento vai para a conversa, com a
+    /// pergunta e a nota; a resposta digitada também. A de aprovação vai do
+    /// mesmo jeito, ao lado do estado aprovado. Uma pergunta cancelada e uma
+    /// resposta sem spec atual não gravam nada.
+    #[test]
+    fn each_answered_question_is_recorded_as_a_user_message() {
+        if ambient_override() {
+            return;
+        }
+        let dir = in_plan();
+        let root = dir.path();
+        let mut survey = ask_on("Qual o objetivo?", &["Enxugar", "Crescer"], json!("Enxugar"));
+        survey.raw["tool_response"]["annotations"] = json!({ "Qual o objetivo?": { "notes": "sem peça nova" } });
+        assert_eq!(witness(root, &survey), Verdict::Allow, "another question never decides");
+        witness(root, &ask_on("Quais telas?", &["Login", "Painel"], json!(["Login", "Painel"])));
+        witness(root, &ask_on("Qual a base?", &["dev"], json!("a main, por favor")));
+        witness(root, &ask_on("Cancelada?", &["Sim"], json!({})));
+        witness(root, &approve_or_adjust("Aprovar"));
+        assert!(state(root).approved);
+        assert_eq!(
+            user_messages(root),
+            [
+                "Qual o objetivo?\nEnxugar\nsem peça nova",
+                "Quais telas?\nLogin, Painel",
+                "Qual a base?\na main, por favor",
+                "Aprovar esta spec?\nAprovar",
+            ]
+        );
+
+        let bare = tempdir().unwrap();
+        witness(bare.path(), &ask_on("Qual o objetivo?", &["Enxugar"], json!("Enxugar")));
+        assert!(!bare.path().join(".claude").exists(), "no spec, nothing recorded");
     }
 }

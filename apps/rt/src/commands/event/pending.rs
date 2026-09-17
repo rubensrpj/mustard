@@ -477,7 +477,7 @@ fn ledger_root(root: &Path) -> PathBuf {
     if root.join("mustard.json").is_file() {
         return root.to_path_buf();
     }
-    let anchor = PathBuf::from(crate::shared::context::project_dir());
+    let anchor = PathBuf::from(crate::shared::context::env::project_dir());
     main_checkout_root(&anchor).unwrap_or(anchor)
 }
 

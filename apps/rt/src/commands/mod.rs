@@ -1,7 +1,7 @@
 //! The `run` face of `mustard-rt` — the script port.
 //!
-//! `mustard-rt on` / `mustard-rt check` are the enforcement faces: they read
-//! the harness JSON from stdin and run hook modules. The `run` face is
+//! `mustard-rt on` is the enforcement face: it reads the harness JSON from
+//! stdin and runs the hooks. The `run` face is
 //! different — it ports the utility *scripts* that used to live under
 //! `templates/scripts/` as standalone `bun` programs. A `run` subcommand takes
 //! its inputs as `clap` arguments (a directory, flags), never from stdin, and

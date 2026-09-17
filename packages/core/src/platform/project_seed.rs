@@ -1952,6 +1952,14 @@ mod tests {
         );
     }
 
+    /// Um caminho declarado com espaços nas pontas é o mesmo arquivo, e um
+    /// nome que só começa igual a outro é outro arquivo.
+    #[test]
+    fn a_declared_path_ignores_padding_and_never_matches_a_prefix() {
+        assert!(super::same_declared_path("  .claude/mustard/orchestrator.md  ", super::ORCHESTRATOR_INJECT_FILE));
+        assert!(!super::same_declared_path(".claude/mustard/dispatch.md", ".claude/mustard/dispatch.md.bak"));
+    }
+
     use super::*;
     use serde_json::json;
     use std::fs as std_fs;

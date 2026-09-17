@@ -279,7 +279,7 @@ mod tests {
         put(root, "message", json!({"author": "user", "text": "oi"}));
         crate::shared::spec_state::stand_on_spec_branch(root, "teste");
         // Uma sessão ligada a outra spec não vence a branch.
-        crate::shared::context::bind_session_spec(root.to_str().unwrap(), "s-leitura", "outra");
+        crate::shared::context::session::bind_session_spec(root.to_str().unwrap(), "s-leitura", "outra");
 
         let report = read_for(&without_spec(root, "conversation"), Some("s-leitura")).unwrap();
         let parsed: Value = serde_json::from_str(&report).unwrap();
@@ -295,7 +295,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         put(root, "message", json!({"author": "user", "text": "oi"}));
-        crate::shared::context::bind_session_spec(root.to_str().unwrap(), "s-leitura", "teste");
+        crate::shared::context::session::bind_session_spec(root.to_str().unwrap(), "s-leitura", "teste");
 
         let report = read_for(&without_spec(root, "conversation"), Some("s-leitura")).unwrap();
         let parsed: Value = serde_json::from_str(&report).unwrap();

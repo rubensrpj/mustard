@@ -39,7 +39,6 @@
 //!   WARN e a mensagem no idioma do projeto, que manda rodar
 //!   `mustard-rt run index`.
 
-use crate::shared::context;
 use crate::util::sha256::Sha256;
 use mustard_core::io::fs;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -1177,7 +1176,7 @@ pub struct DoctorOpts {
 /// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
 pub fn run(opts: DoctorOpts) {
     let started = std::time::Instant::now();
-    let cwd = crate::shared::context::workspace_root_strict()
+    let cwd = crate::shared::context::env::workspace_root_strict()
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let claude_dir = ClaudePaths::for_project(&cwd)
         .map(|p| p.claude_dir())

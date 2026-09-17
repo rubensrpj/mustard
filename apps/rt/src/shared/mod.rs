@@ -16,8 +16,6 @@
 //!   close gate: it answers *did the code move since that green*.
 //! - [`context`] — run-context resolution (cwd / session-id / current-spec),
 //!   the port of `hook-env.js`'s runtime probing.
-//! - [`gate_mode`] — the three-state gate mode (`off`/`warn`/`strict`) and its
-//!   cascade resolver, shared by the size gates and the close-gate engine.
 //! - [`events`] — the NDJSON event bus: classification/routing ([`events::route`])
 //!   and the append-only writer ([`events::writer_ndjson`]).
 //! - [`prompt`] — tells a person's prompt apart from the runtime's own notices,
@@ -52,7 +50,6 @@ pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about.
 pub mod dag;
-pub mod gate_mode;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod paths;
 pub mod pr_azure;

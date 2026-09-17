@@ -280,6 +280,7 @@ pub(crate) fn message_of(repo: &Path, spec: &str) -> Result<(String, String), St
 /// already carries a pull request has its body REWRITTEN — the door never asks
 /// for a second one.
 pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: bool, draft: bool) {
+    let started = std::time::Instant::now();
     let repo = project_root(root);
     let provider = provider_for(&repo);
     let sourced = if fill {
@@ -309,6 +310,8 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
         }
     };
     report.warning = warning;
+    let shown = serde_json::to_value(&report).unwrap_or_default();
+    let _ = crate::commands::spec_events::conversation::record_call(&repo, "pr-open", spec, started, &shown);
     emit(&report);
 }
 

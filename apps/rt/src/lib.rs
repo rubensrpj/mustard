@@ -6,8 +6,8 @@
 //! `run/` submodules reference via `crate::` paths.
 //!
 //! Only `dead_code` is suppressed at crate level, and only because the
-//! `hooks`/`report`/`registry`/`dispatch` modules are reached **only**
-//! from the binary face (`main.rs`), so the lib build sees them as unused —
+//! `hooks`/`report`/`dispatch` modules are reached **only** from the binary
+//! face (`main.rs`), so the lib build sees them as unused —
 //! false positives inherent to this test-only re-export face. The real
 //! dead-code signal is the bin build (`cargo build --bin mustard-rt`), which
 //! declares the same modules without this allow. `unused_imports` /
@@ -35,7 +35,9 @@ pub mod shared;
 pub mod util;
 mod dispatch;
 mod hooks;
-mod registry;
+// Público para o teste que confere o registro dos ganchos contra o manifesto
+// que o Claude Code lê.
+pub mod registry;
 mod report;
 // Declared here so the harness-response tests run on the LIB target. The binary
 // declares it too but no longer runs any test (`test = false`), which is what

@@ -17,6 +17,7 @@
 //! `pending`.
 
 pub mod cli;
+pub(crate) mod conversation;
 pub mod index;
 pub(crate) mod pages;
 pub mod read;

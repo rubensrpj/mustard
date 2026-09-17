@@ -166,7 +166,7 @@ pub fn run() {
     // Workspace-root walk first (an already-installed project resolves to its
     // anchor even from a subdirectory), then `CLAUDE_PROJECT_DIR`, then the
     // process cwd — the fresh-install path, where no anchor exists yet.
-    let root = PathBuf::from(crate::shared::context::project_dir());
+    let root = PathBuf::from(crate::shared::context::env::project_dir());
 
     // Unconditional. The mode is not read from anywhere and not asked for
     // anywhere: a harness that installs itself into someone else's repository

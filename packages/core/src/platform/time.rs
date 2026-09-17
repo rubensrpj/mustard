@@ -177,6 +177,16 @@ mod tests {
         assert_eq!(b - a, 1000);
     }
 
+    /// A hora de agora sai no formato `AAAA-MM-DDThh:mm:ss.sssZ`.
+    #[test]
+    fn now_iso8601_is_well_formed() {
+        let ts = now_iso8601();
+        assert_eq!(ts.len(), 24, "ts: {ts}");
+        assert!(ts.ends_with('Z'));
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[10..11], "T");
+    }
+
     #[test]
     fn now_is_after_2026() {
         // 2026-01-01T00:00:00Z in millis.

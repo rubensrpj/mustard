@@ -483,14 +483,6 @@ pub struct Ctx {
     /// point at a monorepo subproject). `None` when resolution failed; the
     /// dispatcher fails open in that case.
     pub workspace_root: Option<std::path::PathBuf>,
-    /// The single declared injectable this invocation must deliver, when the
-    /// hook was registered with `--inject <file>`.
-    ///
-    /// Each injectable rides its OWN sibling hook, because the 10,000-character
-    /// `additionalContext` ceiling is per hook RESPONSE and siblings do not
-    /// share one (measured 2026-08-25). `None` means the legacy behaviour:
-    /// deliver every entry declared on the trigger, folded into one payload.
-    pub inject_only: Option<String>,
     /// The project's `mustard.json`. A missing or broken file is the default
     /// configuration, the same answer every reader of the file gets.
     pub config: crate::domain::config::ProjectConfig,
@@ -620,7 +612,7 @@ mod tests {
         let ctx = Ctx::for_test("/p", Some(Trigger::Stop));
         assert_eq!(ctx.project_dir, "/p");
         assert_eq!(ctx.trigger, Some(Trigger::Stop));
-        assert!(ctx.workspace_root.is_none() && ctx.inject_only.is_none());
+        assert!(ctx.workspace_root.is_none());
     }
 
     #[test]

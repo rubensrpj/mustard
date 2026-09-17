@@ -1,12 +1,8 @@
 //! Reading a Bash `command` string, shared by the Bash gate family.
 //!
-//! Two faces. [`segments`] reads the command the way the terminal does —
-//! words, quotes, separators, redirects, substitutions, heredocs, comments —
-//! and hands back each simple command it would run. The older text helpers
-//! below it (`split_after`, `mask_quoted_operators`, `strip_leading_rtk`, …)
-//! still serve the gates that scan the raw text. No verdicts are produced here.
-
-use mustard_core::domain::text::{Boundaries, WordChars};
+//! [`segments`] reads the command the way the terminal does — words, quotes,
+//! separators, redirects, substitutions, heredocs, comments — and hands back
+//! each simple command it would run. No verdicts are produced here.
 
 /// How deep the reader descends into `$(…)`, backticks and `bash -c "…"`.
 /// Past this depth the rest of the substitution is kept as plain text.
@@ -733,13 +729,6 @@ fn base_name(text: &str) -> &str {
     text.rsplit('/').next().unwrap_or(text)
 }
 
-/// The word boundaries the commit review uses to find `git commit` in the raw
-/// text, for [`mustard_core::domain::text::has_word_sequence`]: a letter or
-/// digit is a word char and `_` is not (`git_commit` has a boundary before
-/// `commit`), and two words match when only blanks separate them.
-pub(super) const SHELL_WORDS: Boundaries =
-    Boundaries { word_chars: WordChars::Alphanumeric, left: true, right: true };
-
 /// Truncate a string to `max` bytes (char-boundary safe).
 pub(super) fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
@@ -750,68 +739,6 @@ pub(super) fn truncate(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
-}
-
-/// The whitespace-separated tokens that appear *after* the first occurrence of
-/// `anchor` as a word. Empty when `anchor` is absent.
-pub(super) fn split_after<'a>(cmd: &'a str, anchor: &str) -> Vec<&'a str> {
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
-    if let Some(pos) = tokens.iter().position(|t| *t == anchor) {
-        tokens[pos + 1..].to_vec()
-    } else {
-        Vec::new()
-    }
-}
-
-/// Replace shell metacharacters that appear *inside single/double quotes* with
-/// spaces, leaving everything else (including the quote chars and the byte
-/// length) intact. Used so that a quoted argument like a Grep alternation
-/// pattern (`"emit-pipeline|emit-phase"`) is not mistaken for a real shell
-/// pipe by the operator and segment scans. Only single ASCII operator bytes
-/// are swapped for a single ASCII space, so the result is always valid UTF-8
-/// and byte-aligned with the input.
-pub(super) fn mask_quoted_operators(cmd: &str) -> String {
-    let mut out: Vec<u8> = Vec::with_capacity(cmd.len());
-    let mut quote: Option<u8> = None;
-    for &b in cmd.as_bytes() {
-        if let Some(q) = quote {
-            if b == q {
-                quote = None;
-                out.push(b);
-            } else if matches!(b, b'&' | b'|' | b';' | b'>' | b'<' | b'`' | b'\n' | b'\r') {
-                out.push(b' ');
-            } else {
-                out.push(b);
-            }
-        } else {
-            if b == b'\'' || b == b'"' {
-                quote = Some(b);
-            }
-            out.push(b);
-        }
-    }
-    String::from_utf8(out).unwrap_or_else(|_| cmd.to_string())
-}
-
-/// `true` when `c` separates one shell command from the next in the raw text:
-/// `&`, `|`, `;`, or a line break. The Bash tool often receives several lines
-/// in one `command`, and the terminal treats a line break exactly like `;`,
-/// so the gates that split the raw text (the native-tool advice, the commit
-/// review, the pull-request detection) split there too and see the command
-/// of every line.
-pub(super) fn is_cmd_separator(c: char) -> bool {
-    c == '&' || c == '|' || c == ';' || c == '\n' || c == '\r'
-}
-
-/// Strip a single leading `rtk ` wrapper token, returning the rest. When `cmd`
-/// is not `rtk`-prefixed it is returned unchanged.
-pub(super) fn strip_leading_rtk(cmd: &str) -> &str {
-    let trimmed = cmd.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("rtk")
-        && rest.starts_with(char::is_whitespace) {
-            return rest.trim_start();
-        }
-    cmd
 }
 
 #[cfg(test)]

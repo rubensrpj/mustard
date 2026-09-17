@@ -188,32 +188,43 @@ pub enum FlowCmd {
     },
 }
 
-/// Despacha um comando `run` da família do fluxo.
+/// Despacha um comando `run` da família do fluxo: roda o passo e responde
+/// por [`flow::answer`], que grava a chamada.
 pub fn dispatch(cmd: FlowCmd) {
+    let started = std::time::Instant::now();
     match cmd {
         FlowCmd::Open { kind, name, base, pending, root } => {
-            flow::open::run(&flow::open::OpenOpts { root, kind, name, base, pending });
+            let opts = flow::open::OpenOpts { root, kind, name, base, pending };
+            let named = opts.name.clone();
+            flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts));
         }
         FlowCmd::Grill { spec, kinds, condensed, root } => {
-            flow::grill::run(&flow::grill::GrillOpts { root, spec, kinds, condensed });
+            let opts = flow::grill::GrillOpts { root, spec, kinds, condensed };
+            flow::answer("grill", &opts.root, opts.spec.as_deref(), started, &flow::grill::grill_at(&opts));
         }
         FlowCmd::Plan { spec, root } => {
-            flow::plan::run(&flow::plan::PlanOpts { root, spec });
+            let opts = flow::plan::PlanOpts { root, spec };
+            flow::answer("plan", &opts.root, opts.spec.as_deref(), started, &flow::plan::plan_at(&opts));
         }
         FlowCmd::Round { spec, report, yes, root } => {
-            flow::round::run_cmd(&flow::round::RoundOpts { root, spec, report, yes });
+            let opts = flow::round::RoundOpts { root, spec, report, yes };
+            flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts));
         }
         FlowCmd::Close { spec, report, root } => {
-            flow::close::run_cmd(&flow::close::CloseOpts { root, spec, report });
+            let opts = flow::close::CloseOpts { root, spec, report };
+            flow::answer("close", &opts.root, opts.spec.as_deref(), started, &flow::close::close_at(&opts));
         }
         FlowCmd::Resume { spec, root } => {
-            flow::resume::run_cmd(&flow::resume::ResumeOpts { root, spec });
+            let opts = flow::resume::ResumeOpts { root, spec };
+            flow::answer("resume", &opts.root, opts.spec.as_deref(), started, &flow::resume::resume_at(&opts));
         }
         FlowCmd::Discard { spec, remote, delete, confirm, root } => {
-            flow::discard::run_cmd(&flow::discard::DiscardOpts { root, spec, remote, delete, confirm });
+            let opts = flow::discard::DiscardOpts { root, spec, remote, delete, confirm };
+            flow::answer("discard", &opts.root, opts.spec.as_deref(), started, &flow::discard::discard_at(&opts));
         }
         FlowCmd::Reopen { reason, spec, root } => {
-            flow::reopen::run(&flow::reopen::ReopenOpts { root, spec, reason });
+            let opts = flow::reopen::ReopenOpts { root, spec, reason };
+            flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts));
         }
     }
 }

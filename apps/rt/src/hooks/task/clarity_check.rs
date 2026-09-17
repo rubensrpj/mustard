@@ -171,7 +171,7 @@ fn write_record(path: &Path, record: &ClarityRecord) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::session::prompt_submit_inject::PromptSubmitInject;
+    use crate::hooks::session::prompt_entry::PromptEntry;
     use crate::hooks::task::end_of_turn_check::run_rules;
     use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
     use serde_json::json;
@@ -277,7 +277,7 @@ mod tests {
             other => panic!("the rewrite only warns, got {other:?}"),
         }
 
-        let next = match PromptSubmitInject.evaluate(
+        let next = match PromptEntry.evaluate(
             &HookInput {
                 hook_event_name: Some("UserPromptSubmit".to_string()),
                 session_id: Some("s1".to_string()),

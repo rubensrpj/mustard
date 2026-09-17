@@ -194,7 +194,7 @@ fn ac_timeout_secs(command: &str) -> u64 {
     // ceiling is not a list of tool names this file happens to know. Both are
     // already declared in `mustard.json`; fail-open to none.
     let declared = mustard_core::ProjectConfig::load(Path::new(
-        &crate::shared::context::project_dir(),
+        &crate::shared::context::env::project_dir(),
     ))
     .commands();
     let compiling: Vec<String> = [declared.build, declared.type_check]

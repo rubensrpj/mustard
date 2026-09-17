@@ -28,7 +28,7 @@
 //! `.claude/spec/{spec}/qa-report.html` and prints its path on stderr; JSON is
 //! still emitted on stdout — HTML is an artifact, never a replacement.
 
-use crate::shared::context::project_dir;
+use crate::shared::context::env::project_dir;
 use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

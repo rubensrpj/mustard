@@ -21,28 +21,15 @@
         clippy::items_after_test_module,
     )
 )]
-//! `mustard-rt` — the Mustard enforcement runtime.
+//! `mustard-rt` — o binário do Mustard.
 //!
-//! One binary replaces the dozens of per-hook `node` processes the harness
-//! used to spawn. It has two faces (b3 spec § Arquitetura):
+//! Duas faces:
 //!
-//! - `mustard-rt on <event>` — run every enforcement module applicable to a
-//!   whole harness lifecycle event (the target shape after the b3 collapse).
-//! - `mustard-rt check <id>` — run a single named module, so `settings.json`
-//!   can migrate entry-by-entry while `node` and `mustard-rt` coexist.
-//!
-//! A third face — `mustard-rt run <name>` — is now implemented (the b4 script
-//! port). Unlike `on` / `check` it does not read harness JSON from stdin: a
-//! `run` subcommand takes `clap` arguments and prints its own output, porting
-//! what used to be a standalone `bun` script under `templates/scripts/`.
-//!
-//! ## Protocol parity with the JS hooks
-//!
-//! The JS hooks (see `_lib/hook-env.js` and each `*.js`) speak a fixed
-//! stdin/stdout contract: read the harness JSON from stdin, optionally write
-//! one JSON object to stdout, always exit `0` (fail-open — a hook bug must
-//! never block the agent). [`emit_outcome`] reproduces that exactly: one
-//! stdout write, exit code `0`.
+//! - `mustard-rt on <evento>` — roda os ganchos de um evento do Claude Code:
+//!   lê o JSON do evento no stdin, escreve no máximo um JSON no stdout e sai
+//!   sempre com 0. Barrar é o JSON, nunca o código de saída.
+//! - `mustard-rt run <nome>` — um comando: lê os argumentos, nunca o stdin, e
+//!   imprime o próprio relatório.
 
 mod dispatch;
 mod registry;
@@ -69,31 +56,16 @@ struct Cli {
     command: Command,
 }
 
-/// The three-faced binary: the `On` / `Check` enforcement faces and the `Run`
-/// face (the b4 script port). `Run` skips the harness stdin read.
+/// As faces do binário. `Run` não lê o stdin.
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum — single-use stack alloc, indirection adds no value
 enum Command {
-    /// Run every module applicable to a whole harness lifecycle event.
+    /// Roda os ganchos de um evento do Claude Code.
     On {
-        /// The harness event name, e.g. `PreToolUse`, `PostToolUse`.
+        /// O nome do evento, como `PreToolUse` ou `Stop`.
         event: String,
-        /// Deliver ONLY this declared injectable (the project-relative path in
-        /// `mustard.json#inject`), instead of every entry of the event.
-        ///
-        /// This is how a sibling hook claims one injectable. The 10,000-char
-        /// `additionalContext` ceiling is per hook RESPONSE, so one hook per
-        /// injectable gives each its own; siblings do not share a budget
-        /// (measured 2026-08-25 — `plugin/refs/mustard/router-rationale.md`).
-        #[arg(long, value_name = "FILE")]
-        inject: Option<String>,
     },
-    /// Run a single named enforcement module.
-    Check {
-        /// The module id, e.g. `bash_guard`.
-        id: String,
-    },
-    /// Run a ported utility script (the b4 face). Takes `clap` args, not stdin.
+    /// Roda um comando. Recebe argumentos, não o stdin.
     Run {
         #[command(subcommand)]
         command: commands::RunCmd,
@@ -112,53 +84,20 @@ fn main() {
 
     let cli = Cli::parse_from(std::env::args());
 
-    // The `Run` face is not an enforcement face: it never reads the harness
-    // stdin contract. Handle it before the stdin read so it does not block
-    // waiting for harness JSON.
     match cli.command {
-        Command::Run { command } => {
-            commands::dispatch(command);
-            return;
+        // Um comando não lê o stdin: ele é tratado antes da leitura, para não
+        // ficar esperando um JSON que não vem.
+        Command::Run { command } => commands::dispatch(command),
+        // Uma entrada que não se lê vira uma entrada vazia, que todo gancho
+        // deixa passar: a regra de nunca falhar mora aqui, uma vez.
+        Command::On { event } => {
+            let input = read_stdin_input();
+            let outcome = dispatch::run_event(Trigger::from_event_name(&event), &input);
+            // O nome do evento volta como veio: o Claude Code recusa a
+            // resposta cujo `hookEventName` não é o do evento que ele chamou.
+            emit_outcome(&event, &outcome);
         }
-        // `WorktreeCreate` is an isolation event with its OWN protocol: stdout
-        // carries the created path (not `hookSpecificOutput` JSON) and a
-        // non-zero exit aborts the creation. It reads the harness stdin like
-        // the enforcement faces, but must never flow into `emit_outcome`.
-        Command::On { ref event, .. } if event == "WorktreeCreate" => {
-            hooks::worktree_create::run(&read_stdin_input());
-        }
-        _ => {}
     }
-
-    // Read the harness JSON from stdin. A read failure or a parse failure is
-    // *not* fatal: the central fail-open contract (b3 spec § Arquitetura step
-    // 1) says any bad input degrades to `Allow`. We never replicate fail-open
-    // inside a module — it lives here, once.
-    let input = read_stdin_input();
-
-    let (event_name, outcome) = match cli.command {
-        Command::On { event, inject } => {
-            let trigger = Trigger::from_event_name(&event);
-            // Echo the harness event name back unchanged so the
-            // response's `hookEventName` matches the dispatched event
-            // (e.g. `UserPromptSubmit`). Claude Code errors out when
-            // the value disagrees with the event it just dispatched.
-            (event, dispatch::run_event(trigger, &input, inject.as_deref()))
-        }
-        Command::Check { id } => (
-            // `check <id>` is invoked outside the harness event loop;
-            // default to `PreToolUse` (the home event of every blocking
-            // module), matching the historical hardcoded value.
-            Trigger::PreToolUse.as_event_name().to_string(),
-            dispatch::run_check(&id, &input),
-        ),
-        // `Run` is handled above, before the stdin read.
-        Command::Run { .. } => {
-            unreachable!("Run is dispatched before the stdin read")
-        }
-    };
-
-    emit_outcome(&event_name, &outcome);
 }
 
 /// Hand this whole invocation to the newer `mustard-rt` the plugin registry

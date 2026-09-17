@@ -188,7 +188,7 @@ fn run_close(
     // velho, não é chamada.
     crate::commands::spec_events::write::record_phase(&opts.root, &spec, "closed", session);
     if let Some(sid) = session {
-        crate::shared::context::unbind_session_spec(&opts.root.to_string_lossy(), sid);
+        crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
     }
     let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang).ok();
 
@@ -264,14 +264,6 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
     Ok(())
 }
 
-/// Fecha a spec e imprime o relatório; sai com 1 na recusa.
-pub fn run_cmd(opts: &CloseOpts) {
-    let report = close_at(opts);
-    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
-    if report["ok"] != json!(true) {
-        std::process::exit(1);
-    }
-}
 
 #[cfg(test)]
 mod tests {

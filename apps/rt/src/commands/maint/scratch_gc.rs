@@ -70,7 +70,7 @@
 //! modo, inclusive a lista e o `--apply` — um diretório temporário inseguro
 //! (a raiz do disco, a home, ou uma pasta acima da home).
 
-use crate::shared::context;
+use crate::shared::context::session::session_id;
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -197,7 +197,7 @@ impl ScratchRoots {
             temp_root: std::env::temp_dir(),
             shared_target: shared_target_dir(),
             cap_bytes: cap_bytes_from_env(),
-            current_session: context::session_id(),
+            current_session: session_id(),
             current_dir: std::env::current_dir().ok(),
             home: crate::util::home_dir(),
             clock: AgeClock::Changed,

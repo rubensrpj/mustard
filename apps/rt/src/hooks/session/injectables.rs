@@ -5,14 +5,10 @@
 //! `mustard.json#inject` declares `[{on, file, once}]`: instruction files
 //! (canonically `.claude/mustard/*.md`, seeded by `mustard init`, freely
 //! editable by the user) that ride a hook trigger as `additionalContext`.
-//! This module is the shared engine both consumer hooks call:
-//!
-//! - [`super::prompt_submit_inject`] collects the `on: userPromptSubmit`
-//!   entries (skipped entirely for `/mustard:*` prompts — a slash command is
-//!   already inside the flow);
-//! - [`super::session_start_inject`] collects the `on: sessionStart` entries
-//!   (and, on a post-compaction `SessionStart`, re-arms everything via
-//!   [`clear_markers`]).
+//! O início da sessão ([`super::session_start_inject`]) junta as entradas
+//! `on: sessionStart` e, depois de uma compactação, rearma tudo por
+//! [`clear_markers`]. A mensagem do usuário não entrega mais injetável
+//! nenhum: a cada mensagem vai só a linha curta.
 //!
 //! ## Once-per-session markers
 //!
@@ -44,21 +40,7 @@ const MARKER_PREFIX: &str = "injected-";
 /// (unless `ignore_markers` — the post-compaction re-delivery), read the file
 /// project-root-relative, and record a delivery marker for what was read.
 /// Returns the blocks joined by a blank line, or `None` when nothing applies.
-///
-/// `only` narrows the collection to ONE declared file, which is how a sibling
-/// hook claims its own injectable. Each injectable is delivered by its own hook
-/// invocation, so each is measured alone against the 10,000-character ceiling a
-/// hook response carries — siblings do not share one (measured 2026-08-25; see
-/// `plugin/refs/mustard/router-rationale.md`). `None` keeps the legacy
-/// behaviour of folding every entry of the trigger into one payload, which is
-/// what the post-compaction re-delivery still wants.
-pub fn collect(
-    project_dir: &str,
-    session_id: Option<&str>,
-    trigger_on: &str,
-    ignore_markers: bool,
-    only: Option<&str>,
-) -> Option<String> {
+pub fn collect(project_dir: &str, session_id: Option<&str>, trigger_on: &str, ignore_markers: bool) -> Option<String> {
     let root = Path::new(project_dir);
     let config = ProjectConfig::load(root);
     let mut blocks: Vec<String> = Vec::new();
@@ -67,9 +49,6 @@ pub fn collect(
     for entry in config.injectables() {
         if entry.on != trigger_on {
             continue;
-        }
-        if only.is_some_and(|wanted| !crate::shared::paths::same_declared_file(&entry.file, wanted)) {
-            continue; // another sibling hook owns this one.
         }
         let marker_name = marker_basename(&entry.file);
         if entry.once
@@ -200,7 +179,7 @@ mod tests {
         let project = dir.path().to_str().unwrap();
         seed_project(dir.path(), "userPromptSubmit", ".claude/mustard/orchestrator.md", true, "RULES\n");
 
-        let got = collect(project, Some("s1"), "userpromptsubmit", false, None);
+        let got = collect(project, Some("s1"), "userpromptsubmit", false);
         assert_eq!(got.as_deref(), Some("RULES"));
         assert!(
             dir.path()
@@ -210,11 +189,11 @@ mod tests {
         );
 
         // Second collect in the same session: once → nothing.
-        let again = collect(project, Some("s1"), "userpromptsubmit", false, None);
+        let again = collect(project, Some("s1"), "userpromptsubmit", false);
         assert_eq!(again, None, "once entry must not re-deliver in the session");
 
         // A DIFFERENT session delivers again (its own marker namespace).
-        let other = collect(project, Some("s2"), "userpromptsubmit", false, None);
+        let other = collect(project, Some("s2"), "userpromptsubmit", false);
         assert_eq!(other.as_deref(), Some("RULES"));
     }
 
@@ -228,13 +207,13 @@ mod tests {
             r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/nope.md","once":true}]}"#,
         )
         .unwrap();
-        assert_eq!(collect(project, Some("s1"), "sessionstart", false, None), None);
+        assert_eq!(collect(project, Some("s1"), "sessionstart", false), None);
         assert!(
             !dir.path().join(".claude/.session/s1/injected-nope.md").exists(),
             "no marker for an undelivered entry"
         );
         // A trigger with no declared entry → None.
-        assert_eq!(collect(project, Some("s1"), "userpromptsubmit", false, None), None);
+        assert_eq!(collect(project, Some("s1"), "userpromptsubmit", false), None);
     }
 
     #[test]
@@ -244,9 +223,9 @@ mod tests {
         seed_project(dir.path(), "userPromptSubmit", "rules.md", true, "X");
         // No usable session id: markers cannot be recorded, so the entry
         // delivers every time (fail-open: deliver, never silently drop).
-        assert!(collect(project, None, "userpromptsubmit", false, None).is_some());
-        assert!(collect(project, Some("unknown"), "userpromptsubmit", false, None).is_some());
-        assert!(collect(project, None, "userpromptsubmit", false, None).is_some());
+        assert!(collect(project, None, "userpromptsubmit", false).is_some());
+        assert!(collect(project, Some("unknown"), "userpromptsubmit", false).is_some());
+        assert!(collect(project, None, "userpromptsubmit", false).is_some());
     }
 
     #[test]
@@ -272,52 +251,13 @@ mod tests {
         let project = dir.path().to_str().unwrap();
         seed_project(dir.path(), "sessionStart", "style.md", true, "STYLE");
         // First delivery records the marker…
-        assert!(collect(project, Some("s1"), "sessionstart", false, None).is_some());
+        assert!(collect(project, Some("s1"), "sessionstart", false).is_some());
         // …the guarded path now skips…
-        assert_eq!(collect(project, Some("s1"), "sessionstart", false, None), None);
+        assert_eq!(collect(project, Some("s1"), "sessionstart", false), None);
         // …but the post-compaction path (ignore_markers) re-delivers.
         assert_eq!(
-            collect(project, Some("s1"), "sessionstart", true, None).as_deref(),
+            collect(project, Some("s1"), "sessionstart", true).as_deref(),
             Some("STYLE")
-        );
-    }
-
-    /// Sibling hooks on ONE event, each claiming one injectable of its own.
-    ///
-    /// The ceiling is per hook RESPONSE, so this is how each document gets its
-    /// own: `--inject <file>` narrows the invocation to one entry, and the
-    /// sibling that did not claim it delivers nothing of it.
-    #[test]
-    fn a_sibling_hook_collects_only_the_injectable_it_claims() {
-        let dir = tempdir().unwrap();
-        let project = dir.path().to_str().unwrap();
-        std::fs::write(
-            dir.path().join("mustard.json"),
-            r#"{"inject":[
-                {"on":"userPromptSubmit","file":".claude/mustard/orchestrator.md","once":true},
-                {"on":"userPromptSubmit","file":".claude/mustard/dispatch.md","once":true}
-            ]}"#,
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude/mustard")).unwrap();
-        std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "ROUTER").unwrap();
-        std::fs::write(dir.path().join(".claude/mustard/dispatch.md"), "DISPATCH").unwrap();
-
-        assert_eq!(
-            collect(project, Some("s1"), "userpromptsubmit", false, Some(".claude/mustard/orchestrator.md")).as_deref(),
-            Some("ROUTER"),
-            "the claiming sibling delivers its own file and nothing else",
-        );
-        assert_eq!(
-            collect(project, Some("s1"), "userpromptsubmit", false, Some(".claude/mustard/dispatch.md")).as_deref(),
-            Some("DISPATCH"),
-            "the other sibling is unaffected by the first one's marker",
-        );
-        // Equivalent spellings of one path name the same file: a registration
-        // written by hand must not silently deliver nothing.
-        assert_eq!(
-            collect(project, Some("s2"), "userpromptsubmit", false, Some("./.claude/Mustard/Orchestrator.md")).as_deref(),
-            Some("ROUTER"),
         );
     }
 
@@ -343,7 +283,7 @@ mod tests {
         std::fs::write(dir.path().join(".claude/mustard/orchestrator.md"), "ROUTER").unwrap();
 
         assert_eq!(
-            collect(project, Some("s1"), "userpromptsubmit", false, None).as_deref(),
+            collect(project, Some("s1"), "userpromptsubmit", false).as_deref(),
             Some("ROUTER"),
             "the missing entry must not take the readable one down with it",
         );

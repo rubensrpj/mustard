@@ -15,7 +15,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 /// Run `mustard-rt on PreToolUse` for one Bash command in `dir` and return
-/// what it printed. The commit gate is off so it never joins the answer.
+/// what it printed.
 fn run_guard(dir: &Path, command: &str) -> String {
     let input = serde_json::json!({
         "hook_event_name": "PreToolUse",
@@ -27,7 +27,6 @@ fn run_guard(dir: &Path, command: &str) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["on", "PreToolUse"])
         .current_dir(dir)
-        .env("MUSTARD_COMMIT_GATE_MODE", "off")
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("MUSTARD_WORKSPACE_ROOT")
         .stdin(Stdio::piped())

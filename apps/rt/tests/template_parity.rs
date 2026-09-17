@@ -14,6 +14,10 @@
 //!   exceções: com 22 comandos, um comando que nenhum texto chama é superfície
 //!   escura — ele é entregue, apodrece, e nada percebe.
 //!
+//! - **GANCHOS** — o registro dos ganchos tem só os que ficam, nenhum que
+//!   saiu, e casa com os eventos do `plugin/hooks/hooks.json`: uma entrada que
+//!   chama evento sem gancho gasta uma chamada à toa.
+//!
 //! Deterministic: walks the repo tree only (sorted), no network, no env vars.
 
 use std::collections::BTreeSet;
@@ -474,9 +478,82 @@ fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
     );
 }
 
+/// Os ganchos que ficam: os únicos que o registro pode ter.
+const KEPT_HOOKS: &[&str] = &[
+    "approval_witness",
+    "command_guard",
+    "end_of_turn_check",
+    "prompt_entry",
+    "session_cleanup_observer",
+    "session_start_inject",
+    "statusline_heal_observer",
+    "subagent_inject",
+    "write_gate",
+];
+
+/// Os ganchos que saíram, pelo nome com que estavam registrados. Nenhum deles
+/// volta ao registro.
+const REMOVED_HOOKS: &[&str] = &[
+    "active_spec_limit_gate",
+    "amend_window_inject",
+    "bash_command_gate",
+    "boundary_gate",
+    "change_request_log",
+    "clarification_observer",
+    "context_budget_gate",
+    "delegation_advisory",
+    "main_context_counter",
+    "metrics_observer",
+    "mold_gate",
+    "picker_approval_observer",
+    "plan_approval_observer",
+    "post_edit",
+    "prompt_submit_inject",
+    "rewave_observer",
+    "scan_gate",
+    "session_knowledge_observer",
+    "size_gate",
+    "skill_usage_observer",
+    "spec_hygiene_observer",
+    "subagent_observer",
+    "tool_result_observer",
+    "tool_use_counter",
+    "user_prompt_observer",
+    "wave_complete_observer",
+    "wave_start_observer",
+    "wikilink_footer_observer",
+    "worktree_create",
+];
+
+/// Os eventos que o manifesto do Claude Code registra.
+fn manifest_events(root: &Path) -> BTreeSet<String> {
+    let text = read_lossy(&root.join("plugin").join("hooks").join("hooks.json"));
+    let manifest: serde_json::Value = serde_json::from_str(&text).expect("hooks.json is JSON");
+    manifest["hooks"].as_object().expect("hooks.json has hooks").keys().cloned().collect()
+}
+
+/// Os cortes terminaram: nenhum gancho que saiu segue registrado, o registro
+/// tem só os que ficam, o manifesto só chama evento que tem gancho e todo
+/// evento com gancho está no manifesto; e nenhum comando `run` fica sem
+/// chamador.
 #[test]
 fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     let root = repo_root();
+
+    let registry = mustard_rt::registry::Registry::new();
+    let mut registered = registry.ids();
+    let back: Vec<&str> = registered.iter().copied().filter(|id| REMOVED_HOOKS.contains(id)).collect();
+    assert!(back.is_empty(), "hooks that left are registered again: {back:?}");
+    registered.sort_unstable();
+    assert_eq!(registered, KEPT_HOOKS, "the registry holds exactly the hooks that stay");
+    let with_hook: BTreeSet<String> =
+        registry.triggers().into_iter().map(|trigger| trigger.as_event_name().to_string()).collect();
+    assert_eq!(
+        manifest_events(&root),
+        with_hook,
+        "an entry of hooks.json calls an event with no hook, or a hook has no entry that calls it",
+    );
+
     let instructed: BTreeSet<String> = reverse_prose_corpus(&root)
         .iter()
         .flat_map(|p| extract_run_names(&read_lossy(p)))

@@ -977,8 +977,9 @@ pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>, critical:
 /// call, the delivery recorded and the pending item that became the spec
 /// closed.
 pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
+    let started = std::time::Instant::now();
     let repo = project_root(root);
-    match resolve_pr(&repo, pr) {
+    let report = match resolve_pr(&repo, pr) {
         Ok(facts) => {
             let (flow, _) = bases_and_branch(&repo);
             let settle = |r: &Path, branch: &str| settle_at(r, Some(branch));
@@ -987,10 +988,13 @@ pub fn run_merge(root: &Path, pr: Option<u64>, confirm: bool) {
             // must not learn a second provider's vocabulary to ask it.
             let checks = |r: &Path, number: u64| provider_for(r).checks(number);
             let session = crate::shared::spec_state::session_from_env();
-            emit(&merge_core(&repo, &facts, &flow, confirm, &checks, &gh_merge, &settle, session.as_deref()));
+            let merged = merge_core(&repo, &facts, &flow, confirm, &checks, &gh_merge, &settle, session.as_deref());
+            serde_json::to_value(&merged).unwrap_or_default()
         }
-        Err(e) => emit(&serde_json::json!({ "ok": false, "reason": e, "pr": pr })),
-    }
+        Err(e) => serde_json::json!({ "ok": false, "reason": e, "pr": pr }),
+    };
+    let _ = crate::commands::spec_events::conversation::record_call(&repo, "pr-merge", None, started, &report);
+    emit(&report);
 }
 
 #[cfg(test)]

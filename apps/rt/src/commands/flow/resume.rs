@@ -117,14 +117,6 @@ pub fn next_command(phase: &str, spec: &str) -> Value {
     }
 }
 
-/// Retoma a spec e imprime o relatório; sai com 1 na recusa.
-pub fn run_cmd(opts: &ResumeOpts) {
-    let report = resume_at(opts);
-    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
-    if report["ok"] != json!(true) {
-        std::process::exit(1);
-    }
-}
 
 #[cfg(test)]
 mod tests {

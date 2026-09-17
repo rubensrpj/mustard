@@ -584,14 +584,6 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     report
 }
 
-/// Roda o `open` e imprime o relatório em JSON; sai com 1 na recusa.
-pub fn run(opts: &OpenOpts) {
-    let report = open_at(opts);
-    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
-    if report["ok"] != json!(true) {
-        std::process::exit(1);
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -601,7 +593,8 @@ mod tests {
     };
     use crate::commands::spec_events::write::{write_at, WriteOpts};
     use crate::hooks::write::write_gate::WriteGate;
-    use crate::shared::context;
+    use crate::shared::context::checkout::spec_of_checkout_branch;
+use crate::shared::context::pending_branch::set_pending_branch;
     use crate::shared::spec_state::active_spec;
     use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
     use tempfile::tempdir;
@@ -815,7 +808,7 @@ mod tests {
             let branch = head(root);
             assert_eq!(branch, format!("fix/{name}"));
             assert_eq!(slug_of_work_branch(&branch, &config).as_deref(), Some(name));
-            assert_eq!(context::spec_of_checkout_branch(&root.to_string_lossy()).as_deref(), Some(name));
+            assert_eq!(spec_of_checkout_branch(&root.to_string_lossy()).as_deref(), Some(name));
             assert_eq!(active_spec(&root.to_string_lossy(), None).as_deref(), Some(name));
         }
     }
@@ -946,7 +939,7 @@ mod tests {
         std::fs::write(root.join("src").join("main.rs"), "fn main() { todo!() }\n").unwrap();
         std::fs::write(root.join("src").join("novo.rs"), "fn novo() {}\n").unwrap();
 
-        context::set_pending_branch(&root.to_string_lossy(), "sess-lado", "feature/x", Some("dev"));
+        set_pending_branch(&root.to_string_lossy(), "sess-lado", "feature/x", Some("dev"));
         let CutOutcome::Refused(busy) = cut_pending_work_branch(root, "sess-lado") else {
             panic!("the old cut refuses the busy checkout");
         };

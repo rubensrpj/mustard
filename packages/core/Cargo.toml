@@ -11,7 +11,7 @@ publish = false
 # table (root Cargo.toml); each crate references them with `{ workspace = true }`.
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
 # Multi-pattern string matching for `vocabulary::VocabularyMatcher`. The
 # automaton matches all needles in a single linear pass over the haystack

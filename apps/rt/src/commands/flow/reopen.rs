@@ -145,14 +145,6 @@ fn say(key: &str, lang: Locale, spec: &str) -> String {
     translate(key, lang).replace("{spec}", spec)
 }
 
-/// Roda o `reopen` e imprime o relatório em JSON; sai com 1 na recusa.
-pub fn run(opts: &ReopenOpts) {
-    let report = reopen_at(opts);
-    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
-    if report["ok"] != json!(true) {
-        std::process::exit(1);
-    }
-}
 
 #[cfg(test)]
 mod tests {
