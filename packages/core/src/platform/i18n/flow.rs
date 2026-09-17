@@ -120,12 +120,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              A task that changes no file says so in its own text."
         }
         ("plan.task_wrong_wave", Locale::PtBr) => {
-            "A tarefa {task} está na onda {wave} e o texto dela não casa com o texto dessa onda; \
-             casa melhor com a onda {best}. Mova a tarefa ou reescreva o texto da onda."
+            "A tarefa {task} está na onda {wave} e o texto dela casa com o dessa onda menos do que \
+             casa, em média, com o das outras; casa melhor com a onda {best}. Mova a tarefa ou \
+             reescreva o texto da onda."
         }
         ("plan.task_wrong_wave", Locale::EnUs) => {
-            "Task {task} sits in wave {wave} and its text does not match that wave's text; \
-             it matches wave {best} better. Move the task or rewrite the wave's text."
+            "Task {task} sits in wave {wave} and its text matches that wave's text less than it \
+             matches the other waves' on average; it matches wave {best} better. Move the task or \
+             rewrite the wave's text."
+        }
+        ("plan.task_matches_no_wave", Locale::PtBr) => {
+            "A tarefa {task} está na onda {wave} e o texto dela não casa com o de onda nenhuma do \
+             plano. Reescreva o texto da tarefa ou o da onda."
+        }
+        ("plan.task_matches_no_wave", Locale::EnUs) => {
+            "Task {task} sits in wave {wave} and its text matches no wave of the plan. Rewrite the \
+             task's text or the wave's."
         }
         ("plan.task_could_name_a_skill", Locale::PtBr) => {
             "A tarefa {task} não nomeia skill, e a skill {skill} serve para ela. Nomeie-a na tarefa."
@@ -735,8 +745,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            103,
-            0xb650_ab55_fffb_abbe,
+            104,
+            0xa0f9_49dd_0768_c046,
         );
     }
 
@@ -826,6 +836,7 @@ mod tests {
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}", "{files}"][..]),
             ("plan.task_wrong_wave", &["{task}", "{wave}", "{best}"][..]),
+            ("plan.task_matches_no_wave", &["{task}", "{wave}"][..]),
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
             ("plan.skill_to_be_born", &["{task}"][..]),
             ("plan.no_suggestion", &[][..]),
