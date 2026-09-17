@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::domain::wave_prompt::WaveCopy;
+use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::{copy_path, recorded_copy, shown};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-use super::commit::git_lock;
 use super::stops::waves_replanned;
 use crate::commands::wave::wave_overlap_check::wave_graph;
 
@@ -99,11 +99,14 @@ fn build_dirs(root: &Path, count: usize) -> Vec<PathBuf> {
 /// revisão compila na pasta da onda que ela revisa. Cada cópia sai do commit
 /// atual; a que já existe, de um envio anterior da mesma onda, é a mesma. A
 /// onda cuja cópia não pôde ser criada não sai, e o aviso diz por quê; a
-/// onda sem pasta livre também não sai, e fica para a rodada seguinte.
+/// onda sem pasta livre também não sai, e fica para a rodada seguinte. Roda
+/// com a trava do passo do git que o despacho já prendeu (`_held`): duas
+/// rodadas ao mesmo tempo não criam a mesma cópia duas vezes.
 pub(super) fn open_copies(
     root: &Path,
     spec: &str,
     log: &SpecLog,
+    _held: &LockedFile,
     waves: &[u64],
     running: &BTreeMap<u64, u64>,
     lang: Locale,
@@ -121,19 +124,15 @@ pub(super) fn open_copies(
         let hint = translate("round.copy_failed", lang).replace("{wave}", &wave.to_string()).replace("{detail}", &detail);
         json!({ "reason": "copy-not-created", "wave": wave, "hint": hint })
     };
-    // A criação das cópias passa pela trava do passo do git: duas rodadas ao
-    // mesmo tempo não criam a mesma cópia duas vezes.
-    let held_lock = git_lock(root);
     let head = git::run(root, &["rev-parse", "HEAD"]).result();
     for wave in waves.iter().copied() {
         if free.is_empty() {
             break;
         }
         let path = copy_path(root, spec, wave, false);
-        let made = match (&held_lock, &head) {
-            (Err(refusal), _) => Err(refusal.message(lang)),
-            (_, Err(detail)) => Err(detail.clone()),
-            (Ok(_), Ok(head)) => ensure_copy(root, &path, head),
+        let made = match &head {
+            Err(detail) => Err(detail.clone()),
+            Ok(head) => ensure_copy(root, &path, head),
         };
         match made {
             Ok(()) => {
@@ -231,14 +230,18 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
 
 /// As ondas que voltam para a fila: a última revisão delas reprovou, e o
 /// conserto ainda não saiu — o pedido mais novo da onda e a entrega mais nova
-/// dela são anteriores a essa reprovação. Depois que o conserto sai, a onda espera a revisão dele, e não
-/// é despachada de novo pela mesma reprovação.
+/// dela são anteriores a essa reprovação. Depois que o conserto sai, a onda
+/// espera a revisão dele, e não é despachada de novo pela mesma reprovação.
+/// O pedido do conserto que o plano da onda deixou para trás, por uma versão
+/// nova da onda ou de uma tarefa dela, conta como se não existisse: a onda
+/// volta para a fila e sai com o pedido do plano atual.
 pub(super) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
     let last_send = log.last_by_wave("send");
+    let replanned = waves_replanned(log);
     let delivered = log.last_by_wave("delivered");
     log.last_rejected()
         .into_iter()
-        .filter(|(n, id)| last_send.get(n).is_none_or(|sent| sent < id))
+        .filter(|(n, id)| replanned.contains(n) || last_send.get(n).is_none_or(|sent| sent < id))
         .filter(|(n, id)| delivered.get(n).is_none_or(|fix| fix < id))
         .map(|(n, _)| n)
         .collect()
@@ -471,6 +474,41 @@ mod tests {
             .filter_map(|review| review["wave"].as_u64())
             .collect();
         assert_eq!(waves, vec![1], "o conserto entregue volta para a revisão: {back}");
+    }
+
+    /// A onda reprovada cujo conserto já saiu e que ganha uma tarefa nova
+    /// depois desse envio volta para a fila, como se o envio não existisse: a
+    /// rodada seguinte a despacha de novo, com a tarefa nova no pedido, e ela
+    /// fica em andamento com o envio novo; a rodada depois dessa não a solta
+    /// outra vez.
+    #[test]
+    fn a_rejected_wave_that_gets_a_new_task_after_its_fix_went_out_goes_out_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou o teste")));
+        assert_eq!(waves_in(&fix, "dispatch"), vec![1], "{fix}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
+        let task = write(root, "x", "task", json!({"wave": 1, "text": "Tarefa nova da onda 1.",
+            "files": [{"path": "src/b.rs"}], "origin": said}));
+        let task_code = task["code"].as_str().unwrap_or_else(|| panic!("{task}")).to_string();
+
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![1], "the replanned fix goes out again: {again}");
+        let prompt = again["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        assert!(prompt.contains(&format!("--term {task_code}`")), "{prompt}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let newest = log.visible().into_iter().rfind(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).unwrap();
+        assert_eq!(again["running"], json!([{"wave": 1, "send": newest}]), "{again}");
+
+        let quiet = round(root, "x", None);
+        assert_eq!(waves_in(&quiet, "dispatch"), Vec::<u64>::new(), "{quiet}");
+        assert_eq!(waves_in(&quiet, "running"), vec![1], "{quiet}");
     }
 
     /// O estado de cada onda que a página mostra acompanha a rodada: em

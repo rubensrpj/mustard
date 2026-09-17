@@ -71,8 +71,9 @@ pub(crate) struct Taken {
 /// da rodada e faz o commit; depois grava os vereditos, as entregas, a versão
 /// nova de cada critério com prova nova e o commit, e apaga as cópias. O git,
 /// que pode recusar, roda antes da primeira gravação na spec, e a recusa dele
-/// devolve o repositório principal ao que era: a chamada corrigida depois de
-/// uma recusa junta e grava tudo uma vez só. A entrega que a junção segura
+/// devolve o disco e o índice do repositório principal ao que eram: a chamada
+/// corrigida depois de uma recusa junta e grava tudo uma vez só, e o commit de
+/// outra onda nunca leva nada da recusada. A entrega que a junção segura
 /// por conflito fica de fora, e a resposta traz a recusa dela; só quando o
 /// relatório não tem mais nada a recusa é a resposta. A rodada e o fechamento
 /// fecham o relatório por aqui.
@@ -153,14 +154,10 @@ pub(crate) fn take_report(
             "hint": translate("round.formatter_missing", lang).replace("{name}", &name),
         }));
     }
+    // A recusa do git volta o índice e o disco antes de sair, com a trava ainda
+    // presa.
     let made = match message {
-        Some((title, body)) => match make_commit(root, &held_lock, &title, &body, &files) {
-            Ok(sha) => Some((sha, title)),
-            Err(refused) => {
-                write_joined(root, &joined, false)?;
-                return Err(refused);
-            }
-        },
+        Some((title, body)) => Some((make_commit(root, &held_lock, &title, &body, &files, &joined)?, title)),
         None => None,
     };
     // A entrega segurada se resolve no commit que já leva as outras.
@@ -862,6 +859,87 @@ mod tests {
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "// principal\nfn um() {}\n// onda 1\n");
         assert_eq!(delivered_count(root), 1);
+    }
+
+    /// Duas ondas, cada uma na sua cópia e no seu arquivo, a primeira com um
+    /// arquivo novo. O gancho do commit recusa a entrega da primeira: enquanto
+    /// ele roda, nada da rodada está preparado no checkout, e depois da
+    /// recusa o disco e o índice voltam ao que eram — o arquivo mudado volta,
+    /// o novo some e o git não guarda registro de nenhum dos dois. A entrega
+    /// da segunda é comitada só com o arquivo dela. A primeira, reenviada, é
+    /// juntada e comitada uma vez, com os seus dois arquivos, e cada entrega é
+    /// gravada uma vez.
+    #[cfg(unix)]
+    #[test]
+    fn two_waves_one_refused_by_git_leave_nothing_staged_and_each_commit_carries_only_its_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
+        std::fs::write(copy(1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(copy(2).join("src/b.rs"), "fn um() {}\n// onda 2\n").unwrap();
+
+        // A cada commit, o gancho anota que rodou e o que está preparado no
+        // índice do checkout, e recusa enquanto o sinal de recusa existir.
+        let hooks = tempdir().unwrap();
+        let (staged, refuse) = (hooks.path().join("preparado"), hooks.path().join("recusa"));
+        let hook = hooks.path().join("pre-commit");
+        let script = format!(
+            "#!/bin/sh\necho commit >> '{0}'\nenv -u GIT_INDEX_FILE git diff --cached --name-only >> '{0}'\n\
+             if [ -f '{1}' ]; then echo 'o gancho recusou' >&2; exit 1; fi\n",
+            staged.display(),
+            refuse.display()
+        );
+        std::fs::write(&hook, script).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_at(root, &["config", "core.hooksPath", &hooks.path().to_string_lossy()]);
+        std::fs::write(&refuse, b"").unwrap();
+
+        let pending = || {
+            let out = Command::new("git").args(["status", "--porcelain", "--", "src"]).current_dir(root).output();
+            String::from_utf8_lossy(&out.unwrap().stdout).to_string()
+        };
+        let committed = || {
+            let out = Command::new("git").args(["show", "--name-only", "--format=%s", "HEAD"]).current_dir(root).output();
+            let text = String::from_utf8_lossy(&out.unwrap().stdout).to_string();
+            text.lines().filter(|line| !line.is_empty()).map(str::to_string).collect::<Vec<_>>()
+        };
+        let report = |wave: u64, files: &[&str]| {
+            line("DELIVERED", json!({"wave": wave, "text": format!("A onda {wave} saiu."), "files": files,
+                "commit": format!("a onda {wave} sai")}))
+        };
+        let first = report(1, &["src/a.rs", "src/novo.rs"]);
+
+        let refused = round(root, "x", Some(&first));
+        assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains("o gancho recusou"), "{refused}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n");
+        assert!(!root.join("src/novo.rs").exists(), "the new file left the disk");
+        assert_eq!(pending(), "", "the disk and the index are back: {refused}");
+        assert_eq!(delivered_count(root), 0);
+
+        std::fs::remove_file(&refuse).unwrap();
+        let second = round(root, "x", Some(&report(2, &["src/b.rs"])));
+        assert_eq!(second["ok"], json!(true), "{second}");
+        assert_eq!(committed(), ["feat(onda-2): a onda 2 sai", "src/b.rs"], "{second}");
+        assert_eq!(pending(), "", "{second}");
+
+        let went = round(root, "x", Some(&first));
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(committed(), ["feat(onda-1): a onda 1 sai", "src/a.rs", "src/novo.rs"], "{went}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// onda 1\n");
+        assert_eq!(pending(), "", "{went}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let commits: Vec<Vec<u64>> = log.visible().iter().filter(|e| e.event_type == "commit").map(|e| e.ints("waves")).collect();
+        assert_eq!(commits, [vec![2], vec![1]], "each wave committed once: {went}");
+        assert_eq!(delivered_count(root), 2, "each delivery recorded once");
+        assert!(!copy(1).exists() && !copy(2).exists(), "both copies are gone: {went}");
+        let seen = std::fs::read_to_string(&staged).unwrap_or_default();
+        assert_eq!(seen, "commit\ncommit\ncommit\n", "nothing of the round was staged while a commit ran");
     }
 
     /// O conserto que diz as ondas que fecha grava a entrega também nelas, o

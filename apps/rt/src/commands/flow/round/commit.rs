@@ -214,41 +214,76 @@ pub(super) fn head(root: &Path) -> String {
 }
 
 /// Faz o commit da rodada com a mensagem já conferida e devolve o código dele.
-/// Não grava nada: roda antes de qualquer gravação, e a recusa do git para a
-/// rodada com a spec intacta. Roda com a trava do passo do git que quem chama
-/// já prendeu antes da junção (`_held`), e não a pega de novo: duas rodadas ao
-/// mesmo tempo no mesmo checkout não dividem o índice, e um commit nunca leva
-/// o arquivo da outra.
+/// Não grava nada na spec: roda antes de qualquer gravação, e a recusa do git
+/// para a rodada com a spec intacta. Roda com a trava do passo do git que quem
+/// chama já prendeu antes da junção (`_held`), e não a pega de novo.
+///
+/// O commit leva só os arquivos da rodada, por caminho, com o conteúdo do
+/// disco, e nada do que estiver preparado fora deles. O preparo do checkout só
+/// muda quando o commit sai: a rodada que morre no meio dele não deixa nada
+/// preparado. Quando o git recusa, o bloco inteiro é desfeito ali mesmo,
+/// dentro da trava: o registro dos arquivos novos sai do índice e cada arquivo
+/// que a junção mudou (`joined`) volta ao que era no disco.
 pub(super) fn make_commit(
     root: &Path,
     _held: &LockedFile,
     title: &str,
     body: &str,
     files: &[String],
+    joined: &[Joined],
 ) -> Result<String, RoundRefusal> {
-    // O arquivo que ainda existe entra pelo `add`. O apagado sai do índice por
-    // outra porta: o `add` recusa o caminho que já saiu do índice, e a remoção
-    // que só aconteceu no disco sai do mesmo jeito. O caminho que já não está
-    // no índice não é erro — a remoção dele já estava pronta para o commit.
+    let mut registered: Vec<String> = Vec::new();
+    let made = commit_paths(root, title, body, files, &mut registered);
+    if made.is_err() {
+        if !registered.is_empty() {
+            let mut undo: Vec<&str> = vec!["rm", "-q", "--cached", "--ignore-unmatch", "--"];
+            undo.extend(registered.iter().map(String::as_str));
+            let _ = git(root, &undo);
+        }
+        write_joined(root, joined, false)?;
+    }
+    made
+}
+
+/// O commit por caminho de [`make_commit`]. O commit por caminho só aceita o
+/// que o git já conhece: o arquivo novo é registrado antes, só como intenção,
+/// sem conteúdo, e vai para `registered`, que é o que o desfazer tira. O
+/// apagado que o git nunca conheceu fica de fora, porque não há o que levar
+/// dele; o que só saiu do disco, ou já saiu do índice, vai como remoção.
+fn commit_paths(
+    root: &Path,
+    title: &str,
+    body: &str,
+    files: &[String],
+    registered: &mut Vec<String>,
+) -> Result<String, RoundRefusal> {
+    let refused = |detail: String| RoundRefusal::Git { detail };
     let (present, gone): (Vec<&str>, Vec<&str>) =
         files.iter().map(String::as_str).partition(|file| root.join(file).exists());
     if !present.is_empty() {
-        let mut add: Vec<&str> = vec!["add", "--"];
-        add.extend(&present);
-        git(root, &add).map_err(|detail| RoundRefusal::Git { detail })?;
+        let mut others: Vec<&str> = vec!["ls-files", "-z", "--others", "--"];
+        others.extend(&present);
+        let listed = git(root, &others).map_err(refused)?;
+        registered.extend(listed.split('\0').filter(|path| !path.is_empty()).map(str::to_string));
     }
-    if !gone.is_empty() {
-        let mut remove: Vec<&str> = vec!["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"];
-        remove.extend(&gone);
-        git(root, &remove).map_err(|detail| RoundRefusal::Git { detail })?;
+    if !registered.is_empty() {
+        let mut add: Vec<&str> = vec!["add", "--intent-to-add", "--"];
+        add.extend(registered.iter().map(String::as_str));
+        git(root, &add).map_err(refused)?;
     }
-    let mut args: Vec<&str> = vec!["commit", "-m", title];
+    let known_gone = gone
+        .into_iter()
+        .filter(|file| git(root, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", file]).is_ok());
+    let mut args: Vec<&str> = vec!["commit", "--only", "-m", title];
     if !body.is_empty() {
         args.push("-m");
         args.push(body);
     }
-    git(root, &args).map_err(|detail| RoundRefusal::Git { detail })?;
-    let sha = git(root, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
+    args.push("--");
+    args.extend(present);
+    args.extend(known_gone);
+    git(root, &args).map_err(refused)?;
+    let sha = git(root, &["rev-parse", "HEAD"]).map_err(refused)?;
     Ok(sha.trim().to_string())
 }
 
@@ -407,7 +442,7 @@ pub(super) fn join_copies(
 
 /// Grava no repositório principal o que a junção decidiu (`after`), ou volta
 /// cada arquivo ao que era (`!after`): é assim que a recusa do git depois da
-/// junção deixa o repositório como estava.
+/// junção deixa o disco como estava.
 pub(super) fn write_joined(root: &Path, joined: &[Joined], after: bool) -> Result<(), RoundRefusal> {
     let io = |e: std::io::Error| RoundRefusal::Refused(Refusal::Io { detail: e.to_string() });
     for one in joined {

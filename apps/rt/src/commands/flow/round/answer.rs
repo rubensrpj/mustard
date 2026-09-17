@@ -13,6 +13,7 @@ use mustard_core::io::wave_prompt::{prompts, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use super::commit::git_lock;
 use super::queue::{first_unfinished, max_parallel, next_waves, open_copies, reviews_due, sent_items, waves_in_progress};
 use super::report::{take_report, Taken};
 use super::stops::{change_question, stopped_waves, waves_stuck};
@@ -163,11 +164,14 @@ pub(super) fn run_round(
             None => Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None },
         };
 
+    // O despacho — a entrada na execução, a leitura da spec, a escolha das
+    // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a
+    // trava do passo do git presa: a rodada que chega ao mesmo tempo só lê a
+    // spec depois dos envios desta, e nunca solta a mesma onda de novo.
+    let held_lock = git_lock(root)?;
     // A primeira rodada leva a spec para a execução.
-    let entering = phase == "approved";
-    if entering {
-        crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
-    }
+    let entering = phase == "approved"
+        && crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
 
     let log = store::read(&path)
         .map_err(RoundRefusal::Refused)?
@@ -181,7 +185,7 @@ pub(super) fn run_round(
     let running = waves_in_progress(&log);
     let stuck = waves_stuck(&log);
     let ready = next_waves(&log, max_parallel(root), &running, &stuck);
-    let (copies, not_copied) = open_copies(root, &spec, &log, &ready, &running, lang);
+    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &ready, &running, lang);
     warnings.extend(not_copied);
     let next: Vec<u64> = ready.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as que
@@ -217,6 +221,7 @@ pub(super) fn run_round(
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, code);
     }
+    drop(held_lock);
     let reviews = reviews_due(&log, &built);
 
     // O próximo passo: despachar o que saiu agora; esperar as que estão em
@@ -401,10 +406,37 @@ mod tests {
     /// linha do fechamento pronta, que o binário aceita.
     #[test]
     fn the_round_answers_close_when_every_wave_is_approved_and_names_the_missing_one() {
+        let report_back = translate("round.report", Locale::PtBr);
+
+        // A cópia da única onda não pode ser criada: nada sai, o aviso diz por
+        // quê, e a resposta diz que falta a onda 1. Desfeito o impedimento, a
+        // onda sai na rodada seguinte.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let blocked = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
+        std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+        std::fs::write(&blocked, b"no caminho da copia").unwrap();
+        let held = round(root, "x", None);
+        assert_eq!(held["ok"], json!(true), "{held}");
+        assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "{held}");
+        assert_eq!(held["running"], json!([]), "{held}");
+        let warnings = held["warnings"].as_array().cloned().unwrap_or_default();
+        assert_eq!(warnings.len(), 1, "{held}");
+        assert_eq!((&warnings[0]["reason"], &warnings[0]["wave"]), (&json!("copy-not-created"), &json!(1)), "{held}");
+        let failed = translate("round.copy_failed", Locale::PtBr).replace("{wave}", "1");
+        let (before, after) = failed.split_once("{detail}").unwrap();
+        let hint = warnings[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.starts_with(before) && hint.ends_with(after) && hint.len() > failed.len(), "{hint}");
+        let missing = translate("round.missing", Locale::PtBr).replace("{wave}", "1");
+        assert!(held["next"].as_str().unwrap_or_default().ends_with(&missing), "{held}");
+        assert!(held.get("command").is_none(), "{held}");
+        std::fs::remove_file(&blocked).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        let report_back = translate("round.report", Locale::PtBr);
 
         let first = round(root, "x", None);
         let next = first["next"].as_str().unwrap_or_default();
@@ -418,8 +450,8 @@ mod tests {
         assert!(waiting.get("command").is_none(), "{waiting}");
 
         // As duas voltam; a 1 aprovada, a 2 reprovada. O conserto da 2 sai,
-        // e o plano dela muda depois: nada se move, e a resposta diz que
-        // falta a onda 2.
+        // e o plano dela muda depois: o conserto sai de novo, com o plano
+        // atual, e a rodada manda despachá-lo.
         let both = format!("{}\n{}", delivered(root, 1, "Saiu.", &["src/a.rs"]), delivered(root, 2, "Saiu.", &["src/b.rs"]));
         let back = round(root, "x", Some(&both));
         assert_eq!(waves_in(&back, "reviews"), vec![1, 2], "{back}");
@@ -427,13 +459,11 @@ mod tests {
         let fix = round(root, "x", Some(&judged));
         assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
         replan(root, 2);
-        let held = round(root, "x", None);
-        assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "{held}");
-        assert_eq!(held["reviews"], json!([]), "{held}");
-        assert_eq!(held["running"], json!([]), "{held}");
-        let missing = translate("round.missing", Locale::PtBr).replace("{wave}", "2");
-        assert!(held["next"].as_str().unwrap_or_default().ends_with(&missing), "{held}");
-        assert!(held.get("command").is_none(), "{held}");
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![2], "{again}");
+        let next = again["next"].as_str().unwrap_or_default();
+        assert!(next.ends_with(&format!("{} {report_back}", translate("round.next", Locale::PtBr))), "{again}");
+        assert!(again.get("command").is_none(), "{again}");
 
         // O conserto volta aprovado: tudo entregue e aprovado, a rodada manda
         // fechar.
@@ -445,5 +475,43 @@ mod tests {
         crate::commands::flow::resume::assert_parses(command);
         let close = translate("round.close", Locale::PtBr).replace("{command}", command);
         assert!(done["next"].as_str().unwrap_or_default().ends_with(&close), "{done}");
+    }
+
+    /// Duas rodadas ao mesmo tempo, sem relatório, com uma onda pronta. As
+    /// duas chegam ao despacho enquanto outro passo do git segura a trava;
+    /// solta a trava, uma despacha a onda, e a outra lê a spec depois do envio
+    /// dela: vê a onda em andamento e não a solta de novo. A onda tem um envio
+    /// só, as duas respostas a mostram em andamento com esse envio, e a spec
+    /// entra na execução uma vez.
+    #[test]
+    fn two_rounds_at_the_same_time_dispatch_a_wave_only_once() {
+        use std::time::Duration;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+
+        let outs: Vec<Value> = std::thread::scope(|scope| {
+            let Ok(lock) = super::git_lock(root) else { panic!("the git lock") };
+            let rounds = [scope.spawn(|| round(root, "x", None)), scope.spawn(|| round(root, "x", None))];
+            // O tempo de as duas lerem a spec e chegarem à trava.
+            std::thread::sleep(Duration::from_millis(1000));
+            drop(lock);
+            rounds.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        for out in &outs {
+            assert_eq!(out["ok"], json!(true), "{outs:?}");
+        }
+        let dispatched: Vec<u64> = outs.iter().flat_map(|out| waves_in(out, "dispatch")).collect();
+        assert_eq!(dispatched, vec![1], "only one round sends the wave out: {outs:?}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let visible = log.visible();
+        let sends: Vec<String> = visible.iter().filter(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).collect();
+        assert_eq!(sends.len(), 1, "the wave has one send: {outs:?}");
+        for out in &outs {
+            assert_eq!(out["running"], json!([{"wave": 1, "send": sends[0]}]), "{outs:?}");
+        }
+        let entered = visible.iter().filter(|e| e.event_type == "state" && e.str_field("phase") == Some("running"));
+        assert_eq!(entered.count(), 1, "the spec enters the run once: {outs:?}");
     }
 }

@@ -45,9 +45,13 @@
 //! cópia; só quando o relatório não traz mais nada a recusa é a resposta.
 //!
 //! **O passo do git.** Da leitura do repositório à junção, ao commit e ao
-//! desfazer quando o git recusa, a rodada segura uma trava só dela, a mesma da criação e da remoção
-//! das cópias: duas rodadas ao mesmo tempo no mesmo checkout fazem esse passo
-//! uma depois da outra.
+//! desfazer quando o git recusa, a rodada segura uma trava só dela, a mesma da
+//! remoção das cópias e do despacho — da escolha das ondas à criação das
+//! cópias e à gravação dos envios: duas rodadas ao mesmo tempo no mesmo
+//! checkout fazem cada um desses passos uma depois da outra, e nunca soltam a
+//! mesma onda duas vezes. O commit leva só os arquivos da rodada, por caminho;
+//! a recusa do git volta o disco e o índice deles, e nada da onda recusada
+//! entra no commit de outra.
 //!
 //! **O que avisa.** O formatador que o projeto declara e que não foi achado
 //! sai pelo nome, em vez de a formatação ser pulada em silêncio; a prova nova
