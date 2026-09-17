@@ -11,11 +11,13 @@
 //! **O que trava.** Uma spec que ainda não foi aprovada; um `entregou` acima
 //! do teto de caracteres; uma mensagem de commit fora do modelo (título e
 //! corpo acima do teto, link do claude.ai, o nome do modelo, assinatura de
-//! coautoria ou e-mail de alguém); e o relatório em que um agente diz que o
+//! coautoria ou e-mail de alguém); o relatório em que um agente diz que o
 //! plano da onda não funciona, que para a rodada e só segue com o "sim" do
-//! usuário. O "sim" é o clique em "Aceitar" na pergunta da mudança, gravado
-//! pela testemunha como na aprovação da spec, e nunca a leitura que o modelo
-//! faz de uma frase: a rodada não aceita código nenhum de quem a chama.
+//! usuário; e a onda reprovada depois da segunda rodada de conserto, que para
+//! a rodada e devolve a pergunta ao usuário com os vereditos. O "sim" da
+//! mudança de plano é o clique em "Aceitar" na pergunta dela, gravado pela
+//! testemunha como na aprovação da spec, e nunca a leitura que o modelo faz
+//! de uma frase: a rodada não aceita código nenhum de quem a chama.
 //!
 //! **O que avisa.** O formatador que o projeto declara e que não foi achado
 //! sai pelo nome, em vez de a formatação ser pulada em silêncio.
@@ -58,6 +60,14 @@ pub struct RoundOpts {
 /// quanto a máquina aguenta compilando ao mesmo tempo.
 const DEFAULT_PARALLEL: usize = 2;
 
+/// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
+/// última delas para a rodada: o problema é de desenho, e vai ao usuário.
+const MAX_FIX_ROUNDS: usize = 2;
+
+/// O passo que a rodada devolve quando todas as ondas estão entregues e
+/// aprovadas.
+pub const DONE_STEP: &str = "close";
+
 /// Por que a rodada não correu.
 enum RoundRefusal {
     /// Uma recusa do arquivo de eventos.
@@ -75,8 +85,18 @@ enum RoundRefusal {
     /// Um agente disse que o plano da onda não funciona: a rodada para e
     /// mostra a mudança proposta, com a pergunta que decide.
     Replan { wave: u64, change: String, code: String },
+    /// Ondas reprovadas depois da última rodada de conserto: a rodada para e
+    /// devolve a pergunta ao usuário, com os vereditos de cada uma.
+    FixLimit { waves: Vec<StuckWave> },
     /// O git recusou o commit.
     Git { detail: String },
+}
+
+/// Uma onda parada pelo limite de consertos, com as reprovações seguidas que
+/// a pararam: o código e o texto de cada veredito.
+struct StuckWave {
+    wave: u64,
+    verdicts: Vec<(String, String)>,
 }
 
 impl RoundRefusal {
@@ -89,6 +109,7 @@ impl RoundRefusal {
             Self::CommitTooLong { .. } => "commit-too-long".into(),
             Self::CommitForbidden { .. } => "commit-forbidden-text".into(),
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
+            Self::FixLimit { .. } => "wave-fix-limit".into(),
             Self::Git { .. } => "git-refused".into(),
         }
     }
@@ -126,6 +147,22 @@ impl RoundRefusal {
                     ("{no}", translate("change.decline", lang).to_string()),
                 ],
             ),
+            Self::FixLimit { waves } => waves
+                .iter()
+                .map(|stuck| {
+                    let codes: Vec<&str> = stuck.verdicts.iter().map(|(code, _)| code.as_str()).collect();
+                    fill(
+                        "round.fix_limit",
+                        &[
+                            ("{wave}", stuck.wave.to_string()),
+                            ("{count}", stuck.verdicts.len().to_string()),
+                            ("{max}", MAX_FIX_ROUNDS.to_string()),
+                            ("{verdicts}", codes.join(", ")),
+                        ],
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
         }
     }
@@ -137,6 +174,25 @@ impl RoundRefusal {
         if let Self::Replan { code, .. } = self {
             out["question"] = json!(change_question(code, lang));
             out["options"] = json!([translate("change.accept", lang), translate("change.decline", lang)]);
+        }
+        // Cada onda parada leva a pergunta ao usuário e os vereditos que a
+        // pararam, por inteiro: é com eles que o usuário decide.
+        if let Self::FixLimit { waves } = self {
+            let stopped: Vec<Value> = waves
+                .iter()
+                .map(|stuck| {
+                    let question = translate("round.fix_limit.question", lang)
+                        .replace("{wave}", &stuck.wave.to_string())
+                        .replace("{max}", &MAX_FIX_ROUNDS.to_string());
+                    let verdicts: Vec<Value> = stuck
+                        .verdicts
+                        .iter()
+                        .map(|(code, text)| json!({ "code": code, "text": text }))
+                        .collect();
+                    json!({ "wave": stuck.wave, "question": question, "verdicts": verdicts })
+                })
+                .collect();
+            out["stopped"] = json!(stopped);
         }
         out
     }
@@ -249,14 +305,50 @@ fn run_round(
         crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);
     }
 
-    // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
-    // projeto deixa compilar ao mesmo tempo, nunca duas que dividem arquivo.
     let log = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
-    let next = next_waves(&log, max_parallel(root));
+    let codes = log.codes();
+
+    // A onda reprovada depois da última rodada de conserto não sai de novo:
+    // a rodada para aqui, depois de gravar o que voltou, e devolve a pergunta
+    // ao usuário com os vereditos.
+    let stuck = waves_stuck(&log);
+    if !stuck.is_empty() {
+        let waves = stuck
+            .iter()
+            .map(|(wave, verdicts)| StuckWave {
+                wave: *wave,
+                verdicts: verdicts
+                    .iter()
+                    .map(|v| {
+                        let code = codes.get(&v.id).cloned().unwrap_or_else(|| v.id.to_string());
+                        (code, v.str_field("text").unwrap_or_default().to_string())
+                    })
+                    .collect(),
+            })
+            .collect();
+        let _ = crate::commands::spec_events::pages::refresh(root, &spec, lang);
+        let mut out = RoundRefusal::FixLimit { waves }.to_value(lang);
+        out["spec"] = json!(spec);
+        out["recorded"] = json!(recorded);
+        if let Some(commit) = commit {
+            out["commit"] = commit;
+        }
+        return Ok(out);
+    }
+
+    // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
+    // projeto deixa compilar ao mesmo tempo contando as que já estão em
+    // andamento, nunca duas que dividem arquivo — nem com uma em andamento.
+    let running = waves_in_progress(&log);
+    let next = next_waves(&log, max_parallel(root), &running);
     let built = prompts(root, &spec, &log, lang);
     let mut dispatched: Vec<Value> = Vec::new();
+    let mut in_flight: BTreeMap<u64, String> = running
+        .iter()
+        .map(|(wave, sent)| (*wave, codes.get(sent).cloned().unwrap_or_else(|| sent.to_string())))
+        .collect();
     for wave in &next {
         let Some(prompt) = built.iter().find(|p| p.wave == *wave) else { continue };
         let mut draft = Map::new();
@@ -272,7 +364,30 @@ fn run_round(
             .map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
         dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "prompt": prompt.text }));
+        let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
+        in_flight.insert(*wave, code);
     }
+    let reviews = reviews_due(&log, &built);
+
+    // O próximo passo: despachar o que saiu agora; esperar as que estão em
+    // andamento; fechar, com tudo entregue e aprovado; ou dizer qual onda
+    // falta, quando nada se move.
+    let report_back = translate("round.report", lang);
+    let mut command: Option<String> = None;
+    let then = if !dispatched.is_empty() || !reviews.is_empty() {
+        format!("{} {report_back}", translate("round.next", lang))
+    } else if !running.is_empty() {
+        let waves: Vec<String> = running.keys().map(u64::to_string).collect();
+        format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))
+    } else if let Some(wave) = first_unfinished(&log, &running) {
+        translate("round.missing", lang).replace("{wave}", &wave.to_string())
+    } else {
+        let state = State::from_log(&log);
+        let close = crate::commands::flow::resume::step_command(DONE_STEP, &spec, &state);
+        let text = translate("round.close", lang).replace("{command}", close.as_deref().unwrap_or_default());
+        command = close;
+        text
+    };
 
     // A página sai no fim do passo, uma vez, e a rodada manda publicá-la,
     // menos com item retido ou quando ela não pôde ser refeita.
@@ -284,13 +399,16 @@ fn run_round(
     // só para reparar que ele tinha envelhecido.
     let rewritten = rewrite_open_pr(root, &spec);
 
+    let running: Vec<Value> =
+        in_flight.iter().map(|(wave, send)| json!({ "wave": wave, "send": send })).collect();
     let mut out = json!({
         "ok": true,
         "spec": spec,
         "recorded": recorded,
         "formatted": formatted,
         "dispatch": dispatched,
-        "reviews": reviews_due(&log, &built),
+        "reviews": reviews,
+        "running": running,
     });
     if entering {
         out["phase"] = json!("running");
@@ -305,15 +423,17 @@ fn run_round(
     if !warnings.is_empty() {
         out["warnings"] = json!(warnings);
     }
-    let dispatch = translate("round.next", lang);
     crate::commands::spec_events::pages::end_milestone(
         &mut out,
         pages.as_ref(),
         "round",
-        dispatch,
-        &crate::commands::spec_events::pages::after_purge("round", dispatch, lang),
+        &then,
+        &crate::commands::spec_events::pages::after_purge("round", &then, lang),
         lang,
     );
+    if let Some(command) = command {
+        out["command"] = json!(command);
+    }
     if let Some(number) = rewritten {
         out["pr"] = json!({ "number": number, "body": "rewritten" });
     }
@@ -607,10 +727,21 @@ fn make_commit(
     files: &[String],
 ) -> Result<Value, RoundRefusal> {
     let (title, body) = message;
-    let mut add: Vec<&str> = vec!["add", "--"];
-    add.extend(files.iter().map(String::as_str));
-    if !files.is_empty() {
+    // O arquivo que ainda existe entra pelo `add`. O apagado sai do índice por
+    // outra porta: o `add` recusa o caminho que já saiu do índice, e a remoção
+    // que só aconteceu no disco sai do mesmo jeito. O caminho que já não está
+    // no índice não é erro — a remoção dele já estava pronta para o commit.
+    let (present, gone): (Vec<&str>, Vec<&str>) =
+        files.iter().map(String::as_str).partition(|file| root.join(file).exists());
+    if !present.is_empty() {
+        let mut add: Vec<&str> = vec!["add", "--"];
+        add.extend(&present);
         git(root, &add).map_err(|detail| RoundRefusal::Git { detail })?;
+    }
+    if !gone.is_empty() {
+        let mut remove: Vec<&str> = vec!["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"];
+        remove.extend(&gone);
+        git(root, &remove).map_err(|detail| RoundRefusal::Git { detail })?;
     }
     let mut args: Vec<&str> = vec!["commit", "-m", title];
     if !body.is_empty() {
@@ -656,14 +787,17 @@ fn max_parallel(root: &Path) -> usize {
 }
 
 /// As ondas que saem nesta rodada: as que ainda não saíram nem entregaram,
-/// cujas dependências já foram entregues, no máximo `limit`, e nunca duas que
-/// declaram o mesmo arquivo — duas ondas assim seriam dois agentes editando o
-/// mesmo arquivo ao mesmo tempo.
-fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
+/// cujas dependências já foram entregues, no máximo `limit` junto com as que
+/// estão em andamento (`running`), e nunca duas que declaram o mesmo arquivo —
+/// duas ondas assim seriam dois agentes editando o mesmo arquivo ao mesmo
+/// tempo. A onda em andamento conta como uma que já saiu nesta rodada: ocupa
+/// uma vaga e reserva os arquivos das tarefas dela.
+fn next_waves(log: &SpecLog, limit: usize, running: &BTreeMap<u64, u64>) -> Vec<u64> {
     let graph = wave_graph(log);
     // A onda reprovada volta para a fila: sem isso o ciclo de conserto não
     // fecha, porque o fechamento recusa e diz qual refazer e a rodada nunca a
-    // despacharia de novo.
+    // despacharia de novo. A que passou do limite de consertos nem chega
+    // aqui: a rodada para antes do despacho.
     let to_redo = waves_to_redo(log);
     // O pedido gravado descreve o plano daquele momento: a onda que ganhou
     // versão nova depois dele, e ainda não entregou, sai de novo com o pedido
@@ -692,19 +826,156 @@ fn next_waves(log: &SpecLog, limit: usize) -> Vec<u64> {
             depends.insert(n, wave.ints("depends_on"));
         }
     }
+    let files = task_files(log);
+    let done = waves_done(log, running);
+    let slots = limit.saturating_sub(running.len());
     let mut out: Vec<u64> = Vec::new();
-    let mut taken: BTreeSet<String> = BTreeSet::new();
-    for (n, files) in ready_in_order(&graph, &depends, &already_out, &delivered, log) {
-        if out.len() >= limit {
+    let mut taken: BTreeSet<String> =
+        running.keys().flat_map(|n| files.get(n).cloned().unwrap_or_default()).collect();
+    for n in ready_in_order(&graph, &depends, &already_out, &delivered, &done) {
+        if out.len() >= slots {
             break;
         }
-        if files.iter().any(|f| taken.contains(f)) {
+        let declared = files.get(&n).cloned().unwrap_or_default();
+        if declared.iter().any(|f| taken.contains(f)) {
             continue;
         }
-        taken.extend(files);
+        taken.extend(declared);
         out.push(n);
     }
     out
+}
+
+/// Os arquivos que as tarefas de cada onda declaram.
+fn task_files(log: &SpecLog) -> BTreeMap<u64, BTreeSet<String>> {
+    let mut files: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
+        let Some(n) = task.wave() else { continue };
+        let entry = files.entry(n).or_default();
+        for file in task
+            .fields
+            .get("files")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| f.as_str().or_else(|| f.get("path").and_then(Value::as_str)))
+        {
+            entry.insert(file.replace('\\', "/"));
+        }
+    }
+    files
+}
+
+/// As ondas em andamento, cada uma com o número do pedido dela: a onda tem
+/// pedido e nenhuma entrega depois dele. O pedido mais antigo que a versão
+/// mais nova da onda ou de uma tarefa dela descreve um plano que já mudou, e
+/// não conta. Uma onda que já entregou só volta a sair por uma reprovação: o
+/// pedido que veio depois de uma entrega, sem reprovação entre as duas, não é
+/// trabalho em curso.
+pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
+    let replanned = waves_replanned(log);
+    let verdicts = verdicts_by_wave(log);
+    let mut deliveries: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
+        if let Some(n) = delivered.wave() {
+            deliveries.entry(n).or_default().push(delivered.id);
+        }
+    }
+    last_sends(log)
+        .into_iter()
+        .filter(|(n, _)| !replanned.contains(n))
+        .filter(|(n, sent)| {
+            let ids = deliveries.get(n).map(Vec::as_slice).unwrap_or_default();
+            if ids.iter().any(|id| id > sent) {
+                return false;
+            }
+            let judged_before = verdicts
+                .get(n)
+                .and_then(|list| list.iter().rev().find(|v| v.id < *sent))
+                .and_then(|v| v.str_field("result"));
+            !ids.iter().any(|id| id < sent) || judged_before == Some("rejected")
+        })
+        .collect()
+}
+
+/// Os vereditos de cada onda, do mais velho ao mais novo.
+fn verdicts_by_wave(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
+    let mut out: BTreeMap<u64, Vec<&SpecEvent>> = BTreeMap::new();
+    for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
+        if let Some(n) = verdict.wave() {
+            out.entry(n).or_default().push(verdict);
+        }
+    }
+    out
+}
+
+/// As ondas paradas pelo limite de consertos, cada uma com as reprovações
+/// seguidas que a pararam: depois da primeira reprovação vêm no máximo
+/// [`MAX_FIX_ROUNDS`] rodadas de conserto, e a reprovação seguinte para. A
+/// conta começa na versão mais nova do plano da onda: a onda que o usuário
+/// replanejou volta à fila com a conta zerada.
+fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
+    let planned = last_planned(log);
+    let mut out = BTreeMap::new();
+    for (n, verdicts) in verdicts_by_wave(log) {
+        let since = planned.get(&n).copied().unwrap_or(0);
+        let mut rejected: Vec<&SpecEvent> = verdicts
+            .iter()
+            .rev()
+            .take_while(|v| v.id > since && v.str_field("result") == Some("rejected"))
+            .copied()
+            .collect();
+        if rejected.len() > MAX_FIX_ROUNDS {
+            rejected.reverse();
+            out.insert(n, rejected);
+        }
+    }
+    out
+}
+
+/// As ondas entregues e aprovadas: têm entrega, não estão em andamento, não
+/// esperam revisão, e a última revisão delas não reprovou. A onda entregue
+/// antes de a rodada existir, sem pedido e sem veredito, está provada pelo
+/// código que entrou.
+fn waves_done(log: &SpecLog, running: &BTreeMap<u64, u64>) -> BTreeSet<u64> {
+    let awaiting: BTreeSet<u64> = waves_awaiting_review(log).into_iter().collect();
+    let rejected: BTreeSet<u64> = verdicts_by_wave(log)
+        .into_iter()
+        .filter(|(_, verdicts)| verdicts.last().and_then(|v| v.str_field("result")) == Some("rejected"))
+        .map(|(n, _)| n)
+        .collect();
+    log.delivered_waves()
+        .into_iter()
+        .filter(|n| !running.contains_key(n) && !awaiting.contains(n) && !rejected.contains(n))
+        .collect()
+}
+
+/// A primeira onda planejada que ainda não está entregue e aprovada, com as
+/// em andamento em `running`. `None` quando todas estão.
+fn first_unfinished(log: &SpecLog, running: &BTreeMap<u64, u64>) -> Option<u64> {
+    let done = waves_done(log, running);
+    log.block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "wave")
+        .filter_map(SpecEvent::wave)
+        .collect::<BTreeSet<u64>>()
+        .into_iter()
+        .find(|n| !done.contains(n))
+}
+
+/// A onda `n` depende de todas as outras que ainda não terminaram: as
+/// dependências dela, diretas ou por outra onda, alcançam cada onda planejada
+/// que não está entregue e aprovada. É a última onda da obra.
+fn depends_on_all(n: u64, depends: &BTreeMap<u64, Vec<u64>>, done: &BTreeSet<u64>) -> bool {
+    let mut reached: BTreeSet<u64> = BTreeSet::new();
+    let mut stack: Vec<u64> = depends.get(&n).cloned().unwrap_or_default();
+    while let Some(on) = stack.pop() {
+        if reached.insert(on) {
+            stack.extend(depends.get(&on).cloned().unwrap_or_default());
+        }
+    }
+    depends.keys().filter(|w| **w != n && !done.contains(w)).all(|w| reached.contains(w))
 }
 
 /// As ondas que voltam para a fila: a última revisão delas reprovou, e o
@@ -740,62 +1011,58 @@ fn last_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     last_send
 }
 
-/// As ondas replanejadas depois do último pedido: a onda, ou uma tarefa dela,
-/// ganhou versão nova depois do envio. A tarefa que muda de onda replaneja as
-/// duas — a de onde saiu, pela versão que ela substitui, e a para onde foi.
-fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
-    let last_send = last_sends(log);
+/// O número do evento mais novo do plano de cada onda: a versão mais nova da
+/// onda ou de uma tarefa dela. A tarefa que muda de onda conta para as duas —
+/// a de onde saiu, pela versão que ela substitui, e a para onde foi.
+fn last_planned(log: &SpecLog) -> BTreeMap<u64, u64> {
     let by_id: BTreeMap<u64, &SpecEvent> = log.events.iter().map(|e| (e.id, e)).collect();
-    let mut replanned = BTreeSet::new();
+    let mut planned: BTreeMap<u64, u64> = BTreeMap::new();
     for event in log.block(BlockQuery::Block(Block::Waves)) {
         if !matches!(event.event_type.as_str(), "wave" | "task") {
             continue;
         }
         let before = event.int("replaces").and_then(|old| by_id.get(&old)).and_then(|old| old.wave());
         for n in event.wave().into_iter().chain(before) {
-            if last_send.get(&n).is_some_and(|sent| *sent < event.id) {
-                replanned.insert(n);
-            }
+            let newest = planned.entry(n).or_insert(0);
+            *newest = (*newest).max(event.id);
         }
     }
-    replanned
+    planned
 }
 
-/// As ondas prontas para sair, em ordem de nível e de número, cada uma com os
-/// arquivos que as tarefas dela declaram. `already_out` são as ondas que já
-/// saíram da fila e `delivered` as que já entregaram, que é o que solta as
-/// ondas dependentes delas.
+/// As ondas replanejadas depois do último pedido: a onda, ou uma tarefa dela,
+/// ganhou versão nova depois do envio.
+fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
+    let last_send = last_sends(log);
+    last_planned(log)
+        .into_iter()
+        .filter(|(n, planned)| last_send.get(n).is_some_and(|sent| sent < planned))
+        .map(|(n, _)| n)
+        .collect()
+}
+
+/// As ondas prontas para sair, em ordem de nível e de número. `already_out`
+/// são as ondas que já saíram da fila e `delivered` as que já entregaram, que
+/// é o que solta as ondas dependentes delas. A onda que depende de todas as
+/// outras só sai com as dependências entregues e aprovadas (`done`).
 fn ready_in_order(
     graph: &crate::commands::wave::wave_overlap_check::WaveGraph,
     depends: &BTreeMap<u64, Vec<u64>>,
     already_out: &BTreeSet<u64>,
     delivered: &BTreeSet<u64>,
-    log: &SpecLog,
-) -> Vec<(u64, BTreeSet<String>)> {
-    let mut files: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
-    for task in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task") {
-        let Some(n) = task.wave() else { continue };
-        let entry = files.entry(n).or_default();
-        for file in task
-            .fields
-            .get("files")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|f| f.as_str().or_else(|| f.get("path").and_then(Value::as_str)))
-        {
-            entry.insert(file.replace('\\', "/"));
-        }
-    }
+    done: &BTreeSet<u64>,
+) -> Vec<u64> {
     let mut ready: Vec<(u32, u64)> = depends
         .iter()
         .filter(|(n, _)| !already_out.contains(n))
-        .filter(|(_, on)| on.iter().all(|d| delivered.contains(d)))
+        .filter(|(n, on)| {
+            let released = if depends_on_all(**n, depends, done) { done } else { delivered };
+            on.iter().all(|d| released.contains(d))
+        })
         .map(|(n, _)| (graph.level.get(n).copied().unwrap_or(0), *n))
         .collect();
     ready.sort_unstable();
-    ready.into_iter().map(|(_, n)| (n, files.get(&n).cloned().unwrap_or_default())).collect()
+    ready.into_iter().map(|(_, n)| n).collect()
 }
 
 /// As revisões que esta rodada pede: uma por onda entregue e ainda sem
@@ -1329,6 +1596,288 @@ mod tests {
         let commit = log.visible().into_iter().find(|e| e.event_type == "commit").expect("commit");
         assert_eq!(commit.str_field("sha"), Some(sha.as_str()));
         assert_eq!(commit.ints("waves"), vec![1]);
+    }
+
+    /// As ondas de uma resposta da rodada, num campo dela.
+    fn waves_in(out: &Value, field: &str) -> Vec<u64> {
+        out[field].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect()
+    }
+
+    /// A versão nova da tarefa da onda `n`: o plano da onda muda depois do
+    /// pedido dela.
+    fn replan(root: &Path, n: u64) {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let task = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "task" && e.wave() == Some(n))
+            .unwrap_or_else(|| panic!("sem tarefa da onda {n}"));
+        let mut fields = task.fields.clone();
+        for key in ["v", "id", "code", "at", "search", "type", "author"] {
+            fields.remove(key);
+        }
+        let mut body = Value::Object(fields);
+        body["replaces"] = json!(task.id);
+        body["text"] = json!(format!("Tarefa da onda {n}, revista."));
+        id_of(&write(root, "x", "task", body));
+    }
+
+    /// A onda em andamento — com pedido e sem entrega depois dele — ocupa uma
+    /// vaga do limite e reserva os arquivos das tarefas dela: a rodada não
+    /// solta a onda que divide arquivo com ela, nem passa do limite contando
+    /// as que já saíram. O pedido anterior ao replanejamento da onda não conta
+    /// como andamento. A resposta lista as ondas em andamento com o código do
+    /// pedido de cada uma.
+    #[test]
+    fn a_wave_in_flight_holds_a_slot_and_its_files_and_a_send_before_the_replan_does_not_count() {
+        // A onda 2 divide arquivo com a 1, que está em andamento.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1, 3], "{first}");
+        let report = json!({"waves": [{"wave": 3, "delivered": "Saiu.", "files": ["src/c.rs"]}]});
+        let out = round(root, "x", Some(&report.to_string()));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "a onda 2 divide arquivo com a 1: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let sent = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "send" && e.wave() == Some(1))
+            .map(|e| codes[&e.id].clone())
+            .unwrap();
+        assert_eq!(out["running"], json!([{"wave": 1, "send": sent}]), "{out}");
+
+        // Duas ondas em andamento enchem o limite de duas.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        let full = round(root, "x", None);
+        assert_eq!(waves_in(&full, "dispatch"), Vec::<u64>::new(), "as duas vagas estão ocupadas: {full}");
+        assert_eq!(waves_in(&full, "running"), vec![1, 2], "{full}");
+
+        // Replanejada depois do pedido, a onda 2 deixa de estar em andamento:
+        // ela sai de novo, e a vaga dela não fica presa ao pedido velho.
+        replan(root, 2);
+        let again = round(root, "x", None);
+        assert_eq!(waves_in(&again, "dispatch"), vec![2], "{again}");
+        let running = again["running"].as_array().cloned().unwrap_or_default();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let newest = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "send" && e.wave() == Some(2))
+            .map(|e| codes[&e.id].clone())
+            .next_back()
+            .unwrap();
+        assert_eq!(running[1], json!({"wave": 2, "send": newest}), "o pedido novo é o que conta: {again}");
+
+        // A onda 1 entregou antes de a rodada existir, e um pedido saiu para
+        // ela depois, sem reprovação no meio: ela não está em andamento, e as
+        // duas vagas ficam para as outras.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        write(root, "x", "delivered", json!({"wave": 1, "text": "Saiu antes da rodada.", "files": ["src/a.rs"]}));
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": 1, "role": "wave",
+            "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary"}));
+        let free = round(root, "x", None);
+        assert_eq!(waves_in(&free, "dispatch"), vec![2, 3], "{free}");
+        assert_eq!(waves_in(&free, "running"), vec![2, 3], "a onda 1 não está em andamento: {free}");
+    }
+
+    /// O commit da rodada leva a remoção nos dois casos: o arquivo apagado só
+    /// no disco e o que já saiu do índice. A mudança comum vai junto.
+    #[test]
+    fn the_round_commits_a_file_deleted_on_disk_and_one_already_removed_from_the_index() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs", "src/b.rs", "src/c.rs"], &[])]);
+        round(root, "x", None);
+        git_at(root, &["config", "user.email", "t@t"]);
+        git_at(root, &["config", "user.name", "t"]);
+        git_at(root, &["config", "commit.gpgsign", "false"]);
+
+        std::fs::remove_file(root.join("src/a.rs")).unwrap();
+        git_at(root, &["rm", "-q", "src/b.rs"]);
+        std::fs::write(root.join("src/c.rs"), "fn um() {}\nfn tres() {}\n").unwrap();
+
+        let files = ["src/a.rs", "src/b.rs", "src/c.rs"];
+        let report = json!({"waves": [{"wave": 1, "delivered": "Dois arquivos saíram.", "files": files}],
+            "commit": {"title": "refactor(onda-1): tira dois arquivos", "body": "A onda 1 apagou a e b."}});
+        let out = round(root, "x", Some(&report.to_string()));
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let shown = Command::new("git")
+            .args(["show", "--name-status", "--format=", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&shown.stdout).to_string();
+        let changes: Vec<&str> = shown.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(changes, ["D\tsrc/a.rs", "D\tsrc/b.rs", "M\tsrc/c.rs"], "{out}");
+        let status = Command::new("git").args(["status", "--porcelain"]).current_dir(root).output().unwrap();
+        let pending = String::from_utf8_lossy(&status.stdout).to_string();
+        assert!(!pending.contains("src/"), "nada da onda ficou fora do commit: {pending}");
+    }
+
+    /// Cada onda tem no máximo duas rodadas de conserto. Depois da terceira
+    /// reprovação seguida a rodada não a manda de novo: para, nada sai, e a
+    /// resposta traz a pergunta ao usuário com os três vereditos. A parada
+    /// segue até o plano da onda mudar; replanejada, ela volta à fila.
+    #[test]
+    fn a_wave_rejected_after_its_second_fix_round_stops_the_round_and_asks_the_user() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+
+        let rejected = |n: usize| {
+            json!({"waves": [{"wave": 1, "delivered": format!("Tentativa {n}."), "files": ["src/a.rs"],
+                "verdict": {"result": "rejected", "text": format!("reprovação {n}"),
+                            "criteria": [{"criterion": 1, "tests_rule": false}]}}]})
+            .to_string()
+        };
+        for n in 1..=2 {
+            let fix = round(root, "x", Some(&rejected(n)));
+            assert_eq!(waves_in(&fix, "dispatch"), vec![1], "rodada de conserto {n}: {fix}");
+        }
+        let sends = |root: &Path| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.visible().iter().filter(|e| e.event_type == "send").count()
+        };
+        assert_eq!(sends(root), 3);
+        // O conserto que saiu está em andamento e ocupa a única vaga.
+        let busy = round(root, "x", None);
+        assert_eq!(waves_in(&busy, "dispatch"), Vec::<u64>::new(), "{busy}");
+        assert_eq!(waves_in(&busy, "running"), vec![1], "{busy}");
+
+        let stopped = round(root, "x", Some(&rejected(3)));
+        assert_eq!(stopped["ok"], json!(false), "{stopped}");
+        assert_eq!(stopped["reason"], json!("wave-fix-limit"), "{stopped}");
+        assert_eq!(sends(root), 3, "nada saiu depois da terceira reprovação");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let verdicts: Vec<Value> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "verdict")
+            .map(|e| json!({"code": codes[&e.id], "text": e.str_field("text").unwrap()}))
+            .collect();
+        assert_eq!(verdicts.len(), 3, "a terceira reprovação foi gravada");
+        let question = translate("round.fix_limit.question", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{max}", &MAX_FIX_ROUNDS.to_string());
+        assert_eq!(stopped["stopped"], json!([{"wave": 1, "question": question, "verdicts": verdicts}]), "{stopped}");
+        let hint = stopped["hint"].as_str().unwrap_or_default();
+        assert!(verdicts.iter().all(|v| hint.contains(v["code"].as_str().unwrap())), "{hint}");
+
+        // Parada continua parada, e a onda 2 também não sai.
+        let still = round(root, "x", None);
+        assert_eq!(still["reason"], json!("wave-fix-limit"), "{still}");
+        assert_eq!(sends(root), 3);
+
+        // O plano revisto devolve a onda à fila.
+        replan(root, 1);
+        let back = round(root, "x", None);
+        assert_eq!(back["ok"], json!(true), "{back}");
+        assert_eq!(waves_in(&back, "dispatch"), vec![1], "{back}");
+    }
+
+    /// A rodada diz o próximo passo de cada situação: despachar o que saiu;
+    /// esperar as ondas em andamento; dizer qual onda falta quando nada se
+    /// move; e, com todas as ondas entregues e aprovadas, fechar — com a
+    /// linha do fechamento pronta, que o binário aceita.
+    #[test]
+    fn the_round_answers_close_when_every_wave_is_approved_and_names_the_missing_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        let report_back = translate("round.report", Locale::PtBr);
+
+        let first = round(root, "x", None);
+        let next = first["next"].as_str().unwrap_or_default();
+        assert!(next.ends_with(&format!("{} {report_back}", translate("round.next", Locale::PtBr))), "{first}");
+        assert!(first.get("command").is_none(), "{first}");
+
+        let waiting = round(root, "x", None);
+        let next = waiting["next"].as_str().unwrap_or_default();
+        let expected = translate("round.waiting", Locale::PtBr).replace("{waves}", "1, 2");
+        assert!(next.ends_with(&format!("{expected} {report_back}")), "{waiting}");
+        assert!(waiting.get("command").is_none(), "{waiting}");
+
+        // As duas voltam; a 1 aprovada, a 2 reprovada. O conserto da 2 sai,
+        // e o plano dela muda depois: nada se move, e a resposta diz que
+        // falta a onda 2.
+        let verdict = |result: &str| json!({"result": result, "text": result,
+            "criteria": [{"criterion": 1, "tests_rule": true}]});
+        let back = json!({"waves": [
+            {"wave": 1, "delivered": "Saiu.", "files": ["src/a.rs"], "verdict": verdict("approved")},
+            {"wave": 2, "delivered": "Saiu.", "files": ["src/b.rs"], "verdict": verdict("rejected")}]});
+        let fix = round(root, "x", Some(&back.to_string()));
+        assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
+        replan(root, 2);
+        let held = round(root, "x", None);
+        assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "{held}");
+        assert_eq!(held["reviews"], json!([]), "{held}");
+        assert_eq!(held["running"], json!([]), "{held}");
+        let missing = translate("round.missing", Locale::PtBr).replace("{wave}", "2");
+        assert!(held["next"].as_str().unwrap_or_default().ends_with(&missing), "{held}");
+        assert!(held.get("command").is_none(), "{held}");
+
+        // O conserto volta aprovado: tudo entregue e aprovado, a rodada manda
+        // fechar.
+        let fixed = json!({"waves": [
+            {"wave": 2, "delivered": "Consertou.", "files": ["src/b.rs"], "verdict": verdict("approved")}]});
+        let done = round(root, "x", Some(&fixed.to_string()));
+        assert_eq!(done["ok"], json!(true), "{done}");
+        let command = done["command"].as_str().unwrap_or_default();
+        assert_eq!(command, "mustard-rt run close --spec x", "{done}");
+        crate::commands::flow::resume::assert_parses(command);
+        let close = translate("round.close", Locale::PtBr).replace("{command}", command);
+        assert!(done["next"].as_str().unwrap_or_default().ends_with(&close), "{done}");
+    }
+
+    /// A onda que depende de todas as outras só sai depois das aprovações
+    /// delas, não só das entregas. A que depende de uma parte sai com a
+    /// entrega, como antes.
+    #[test]
+    fn the_wave_that_depends_on_all_the_others_waits_for_their_approvals() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[1, 2])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+
+        let delivered = json!({"waves": [
+            {"wave": 1, "delivered": "Saiu.", "files": ["src/a.rs"]},
+            {"wave": 2, "delivered": "Saiu.", "files": ["src/b.rs"]}]});
+        let out = round(root, "x", Some(&delivered.to_string()));
+        assert_eq!(waves_in(&out, "reviews"), vec![1, 2], "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "entregues não bastam: {out}");
+
+        let verdict = |n: u64, file: &str| json!({"wave": n, "delivered": "Saiu.", "files": [file], "verdict":
+            {"result": "approved", "text": "passou", "criteria": [{"criterion": 1, "tests_rule": true}]}});
+        let one = round(root, "x", Some(&json!({"waves": [verdict(1, "src/a.rs")]}).to_string()));
+        assert_eq!(one["ok"], json!(true), "{one}");
+        assert_eq!(waves_in(&one, "dispatch"), Vec::<u64>::new(), "a onda 2 ainda espera revisão: {one}");
+        let both = round(root, "x", Some(&json!({"waves": [verdict(2, "src/b.rs")]}).to_string()));
+        assert_eq!(waves_in(&both, "dispatch"), vec![3], "as duas aprovadas soltam a 3: {both}");
+
+        // A onda 2 depende só da 1, e a 3 não passa por ela: a 2 sai com a
+        // entrega da 1.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1]), (3, &["src/c.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 3]);
+        let first = json!({"waves": [{"wave": 1, "delivered": "Saiu.", "files": ["src/a.rs"]}]});
+        let out = round(root, "x", Some(&first.to_string()));
+        assert_eq!(waves_in(&out, "dispatch"), vec![2], "a entrega basta para quem não depende de todas: {out}");
     }
 
     /// Num projeto sem formatador configurado nada é formatado e nada é

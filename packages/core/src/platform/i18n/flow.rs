@@ -240,8 +240,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A prova do critério {code} não passou: {output}"
         }
         ("close.criterion_failed", Locale::EnUs) => "The proof of criterion {code} did not pass: {output}",
-        ("close.next", Locale::PtBr) => "Depois, abra o pull request.",
-        ("close.next", Locale::EnUs) => "Then open the pull request.",
+        ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
+        ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
 
         // A rodada de ondas (`commands/flow/round.rs`).
         ("round.bad_report", Locale::PtBr) => {
@@ -296,17 +296,63 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.git_refused", Locale::EnUs) => "Git refused the round's commit: {detail}",
         ("round.next", Locale::PtBr) => {
             "Despache os pedidos desta rodada: cada onda ao agente `wave` e cada revisão ao agente \
-             `review`. Quando voltarem, rode a rodada de novo com o relatório: `--report \
+             `review`."
+        }
+        ("round.next", Locale::EnUs) => {
+            "Dispatch this round's requests: each wave to the `wave` agent and each review to \
+             the `review` agent."
+        }
+        ("round.report", Locale::PtBr) => {
+            "Quando voltarem, rode a rodada de novo com o relatório: `--report \
              '{\"waves\":[{\"wave\":1,\"delivered\":\"…\",\"files\":[\"…\"],\"verdict\":{…}}]}'`, com o \
              `verdict` tirado da linha `VERDICT` da revisão e, quando a onda disser que o plano não \
              funciona, o `replan` da linha `DELIVERED`."
         }
-        ("round.next", Locale::EnUs) => {
-            "Dispatch this round's requests: each wave to the `wave` agent and each review to \
-             the `review` agent. When they come back, run the round again with the report: `--report \
+        ("round.report", Locale::EnUs) => {
+            "When they come back, run the round again with the report: `--report \
              '{\"waves\":[{\"wave\":1,\"delivered\":\"…\",\"files\":[\"…\"],\"verdict\":{…}}]}'`, with the \
              `verdict` taken from the review's `VERDICT` line and, when the wave says its plan does \
              not work, the `replan` from the `DELIVERED` line."
+        }
+        ("round.waiting", Locale::PtBr) => {
+            "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
+             delas já saiu."
+        }
+        ("round.waiting", Locale::EnUs) => {
+            "Nothing new to dispatch or review: waves {waves} are in flight, and their requests \
+             already went out."
+        }
+        ("round.close", Locale::PtBr) => {
+            "Todas as ondas estão entregues e aprovadas: feche a spec com `{command}`."
+        }
+        ("round.close", Locale::EnUs) => {
+            "Every wave is delivered and approved: close the spec with `{command}`."
+        }
+        ("round.missing", Locale::PtBr) => {
+            "Nada a despachar nem a revisar, e a onda {wave} ainda não está entregue e aprovada: \
+             mostre ao usuário o que a segura antes de fechar."
+        }
+        ("round.missing", Locale::EnUs) => {
+            "Nothing to dispatch or review, and wave {wave} is not delivered and approved yet: \
+             show the user what holds it before closing."
+        }
+        ("round.fix_limit", Locale::PtBr) => {
+            "A onda {wave} foi reprovada {count} vezes seguidas, e o limite é de {max} rodadas de \
+             conserto: a rodada parou e não a manda de novo. Mostre ao usuário os vereditos \
+             {verdicts} e faça a pergunta desta onda em `stopped`. O que a segura é de desenho: ela \
+             só volta à fila com o plano dela revisto."
+        }
+        ("round.fix_limit", Locale::EnUs) => {
+            "Wave {wave} was rejected {count} times in a row, and the limit is {max} fix rounds: \
+             the round stopped and does not send it again. Show the user the verdicts {verdicts} \
+             and ask this wave's question in `stopped`. What holds it is a design problem: it only \
+             goes back to the queue with its plan revised."
+        }
+        ("round.fix_limit.question", Locale::PtBr) => {
+            "A onda {wave} foi reprovada de novo depois de {max} rodadas de conserto. O que fazer com ela?"
+        }
+        ("round.fix_limit.question", Locale::EnUs) => {
+            "Wave {wave} was rejected again after {max} fix rounds. What should be done with it?"
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
@@ -611,8 +657,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            87,
-            0x5446_ae01_ac8d_c8f0,
+            93,
+            0x1477_2b37_50bd_2e1e,
         );
     }
 
@@ -728,7 +774,7 @@ mod tests {
             ("close.wave_rejected", &["{wave}"][..]),
             ("close.request_not_delivered", &["{code}"][..]),
             ("close.criterion_failed", &["{code}", "{output}"][..]),
-            ("close.next", &[][..]),
+            ("close.next", &["{command}"][..]),
             ("round.bad_report", &["{detail}"][..]),
             ("round.not_approved", &["{phase}"][..]),
             ("round.delivered_too_long", &["{wave}", "{chars}", "{max}"][..]),
@@ -738,6 +784,12 @@ mod tests {
             ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
+            ("round.report", &[][..]),
+            ("round.waiting", &["{waves}"][..]),
+            ("round.close", &["{command}"][..]),
+            ("round.missing", &["{wave}"][..]),
+            ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
+            ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),

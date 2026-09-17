@@ -69,7 +69,7 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         "phase": phase,
         "line": resume_line(&spec, &log, lang),
         "next": translate(next_key(phase), lang),
-        "command": next_command(phase, &spec),
+        "command": next_command(phase, &spec, &state),
     });
     if let Some(branch) = state.branch {
         out["branch"] = json!(branch);
@@ -123,15 +123,20 @@ fn last_step(log: &SpecLog) -> Option<String> {
 /// passo seguinte.
 fn next_item(spec: &str, phase: &str, log: &SpecLog, lang: Locale) -> Option<String> {
     let wave = |n: u64| translate("resume.wave", lang).replace("{n}", &n.to_string());
+    let state = State::from_log(log);
+    let command = || next_command(phase, spec, &state).as_str().map(str::to_string);
     match phase {
         "survey" => {
             let codes = log.codes();
             survey::open_points(log)
                 .first()
                 .map(|point| codes.get(&point.id).cloned().unwrap_or_else(|| point.id.to_string()))
-                .or_else(|| next_command(phase, spec).as_str().map(str::to_string))
+                .or_else(command)
         }
         "approved" | "running" => {
+            // Em andamento é o que a rodada diz que está: o pedido anterior ao
+            // replanejamento da onda não conta.
+            let running = crate::commands::flow::round::waves_in_progress(log);
             let delivered = log.delivered_waves();
             let planned: BTreeSet<u64> = log
                 .block(BlockQuery::Block(Block::Waves))
@@ -139,17 +144,10 @@ fn next_item(spec: &str, phase: &str, log: &SpecLog, lang: Locale) -> Option<Str
                 .filter(|e| e.event_type == "wave")
                 .filter_map(|e| e.wave())
                 .collect();
-            let sent: BTreeSet<u64> = log
-                .block(BlockQuery::Block(Block::Waves))
-                .into_iter()
-                .filter(|e| e.event_type == "send")
-                .filter_map(|e| e.wave())
-                .collect();
-            let pending = planned.iter().copied().filter(|n| !delivered.contains(n));
-            let running = pending.clone().find(|n| sent.contains(n));
-            running.or_else(|| pending.clone().next()).map(wave).or_else(|| next_command(phase, spec).as_str().map(str::to_string))
+            let mut pending = planned.iter().copied().filter(|n| !delivered.contains(n));
+            running.keys().next().copied().or_else(|| pending.next()).map(wave).or_else(command)
         }
-        _ => next_command(phase, spec).as_str().map(str::to_string),
+        _ => command(),
     }
 }
 
@@ -182,16 +180,45 @@ pub const NEXT_BY_PHASE: &[(&str, &str)] = &[
 ];
 
 /// O comando do próximo passo, pronto para rodar, pela [`NEXT_BY_PHASE`]. A
-/// fase que não tem próximo passo no binário não devolve comando nenhum.
+/// fase que não tem próximo passo no binário não devolve comando nenhum, e a
+/// que tem também não, quando o estado não traz o que o passo exige.
 ///
 /// É público porque a catraca da prosa confere esta instrução como confere a
 /// de qualquer arquivo do produto: ela não mora em arquivo nenhum, é montada
 /// aqui na hora, e um teste que copiasse o formato conferiria a cópia.
-pub fn next_command(phase: &str, spec: &str) -> Value {
-    let cmd = |name: &str| json!(format!("mustard-rt run {name} --spec {spec}"));
-    match NEXT_BY_PHASE.iter().find(|(fase, _)| *fase == phase).map(|(_, nome)| *nome) {
-        Some(nome) => cmd(nome),
-        None => Value::Null,
+pub fn next_command(phase: &str, spec: &str, state: &State) -> Value {
+    NEXT_BY_PHASE
+        .iter()
+        .find(|(fase, _)| *fase == phase)
+        .and_then(|(_, nome)| step_command(nome, spec, state))
+        .map_or(Value::Null, Value::from)
+}
+
+/// A linha inteira do passo `name` da spec `spec`, com as opções que o passo
+/// exige tiradas do estado: o pull request sai da branch da spec para a base
+/// dela. `None` quando o estado não traz o que o passo exige — uma linha sem
+/// uma opção obrigatória é recusada pelo binário antes de fazer qualquer coisa.
+pub fn step_command(name: &str, spec: &str, state: &State) -> Option<String> {
+    match name {
+        "pr-open" => {
+            let base = state.base.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
+            let head = state.branch.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
+            Some(format!("mustard-rt run pr-open --base {base} --head {head} --spec {spec}"))
+        }
+        _ => Some(format!("mustard-rt run {name} --spec {spec}")),
+    }
+}
+
+/// A linha inteira que uma resposta manda rodar passa pelo parser do binário,
+/// com todas as opções que o comando exige.
+#[cfg(test)]
+pub(crate) fn assert_parses(line: &str) {
+    use clap::Subcommand;
+    let mut tree = crate::commands::RunCmd::augment_subcommands(clap::Command::new("run"));
+    let argv: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(argv.first(), Some(&"mustard-rt"), "{line}");
+    if let Err(error) = tree.try_get_matches_from_mut(&argv[1..]) {
+        panic!("o binário recusa `{line}`: {error}");
     }
 }
 
@@ -257,11 +284,14 @@ mod tests {
         }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
         seed("state", json!({"phase": "running", "author": "binary"}));
-        seed("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
-        for n in [1, 2] {
+        // A onda 1 saiu e entregou; a onda 2 saiu e está em andamento.
+        let send = |n: u64| {
             seed("send", json!({"wave": n, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
-                "items": [crit], "mustard": "0", "author": "binary"}));
-        }
+                "items": [crit], "mustard": "0", "author": "binary"}))
+        };
+        send(1);
+        seed("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
+        send(2);
         seed("call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
         seed("call", json!({"command": "close", "ms": 3, "result": "refused", "author": "binary"}));
 
@@ -275,6 +305,61 @@ mod tests {
 
         let started = crate::hooks::session::session_start_inject::started_after_clear(root, "s-clear");
         assert!(started.lines().any(|l| l == line), "the session start carries the resume line: {started}");
+    }
+
+    /// Na linha de retomada, a onda em andamento é a que a rodada diz que
+    /// está: o pedido anterior ao replanejamento da onda não conta, e o
+    /// próximo item é a primeira onda que falta.
+    #[test]
+    fn the_resume_line_does_not_count_a_send_older_than_the_replan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        let said = seed("message", json!({"author": "user", "text": "o plano"}));
+        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "origin": said}));
+        let wave = |n: u64| json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x", "origin": said});
+        seed("wave", wave(1));
+        let second = seed("wave", wave(2));
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        seed("state", json!({"phase": "running", "author": "binary"}));
+        seed("send", json!({"wave": 2, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+            "items": [crit], "mustard": "0", "author": "binary"}));
+        let mut revised = wave(2);
+        revised["replaces"] = json!(second);
+        seed("wave", revised);
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let line = translate("resume.line", Locale::PtBr)
+            .replace("{spec}", "x")
+            .replace("{phase}", "running")
+            .replace("{last}", translate("resume.none", Locale::PtBr))
+            .replace("{next}", &translate("resume.wave", Locale::PtBr).replace("{n}", "1"));
+        assert_eq!(resume_line("x", &log, Locale::PtBr), line);
+    }
+
+    /// A retomada da spec fechada devolve a linha inteira do pull request,
+    /// com a base e a branch tiradas do estado, e o binário a aceita. A linha
+    /// de retomada traz a mesma. Sem a base no estado, não há linha: uma linha
+    /// sem opção obrigatória seria recusada antes de fazer qualquer coisa.
+    #[test]
+    fn a_closed_spec_resumes_with_the_whole_pull_request_line() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        crate::shared::spec_state::seed_event(root, "x", "state", json!({"phase": "closed", "author": "binary"}));
+
+        let out = resume(root, "x");
+        let line = "mustard-rt run pr-open --base dev --head feature/x --spec x";
+        assert_eq!(out["command"], json!(line), "{out}");
+        assert_parses(line);
+        assert!(out["line"].as_str().unwrap_or_default().contains(line), "{out}");
+
+        let without_base = State { branch: Some("feature/x".into()), ..State::default() };
+        assert_eq!(next_command("closed", "x", &without_base), Value::Null);
     }
 
     /// Sem spec nenhuma, a retomada recusa dizendo que não há spec atual.

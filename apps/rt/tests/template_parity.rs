@@ -25,7 +25,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Command, Subcommand};
-use mustard_rt::commands::flow::resume::{next_command, NEXT_BY_PHASE};
+use mustard_core::domain::spec_state::State;
+use mustard_rt::commands::flow::resume::{next_command, step_command, NEXT_BY_PHASE};
+use mustard_rt::commands::flow::round::DONE_STEP;
 use mustard_rt::commands::RunCmd;
 
 /// Declared long flags that NO product prose spells, kept deliberately. Sorted
@@ -368,47 +370,69 @@ fn forward_every_instructed_flag_is_declared() {
 
 /// O campo do próximo passo é uma instrução como a de qualquer arquivo do
 /// produto, e passa pela mesma catraca: o nome que ele manda rodar tem de estar
-/// registrado, e a opção que ele já vem escrita, declarada.
+/// registrado, a opção que ele já vem escrita, declarada, e a linha inteira,
+/// com as opções que o comando exige, aceita pelo parser.
 ///
 /// A ida anda pelos arquivos do repositório, e esta instrução não mora em
 /// arquivo nenhum: o binário a monta na hora e a entrega no campo `command` da
 /// resposta, de onde quem conduz a conversa a copia e roda. Um renome do
-/// comando, ou a opção `--spec` deixando de ser declarada, entrega um passo que
-/// morre em `error: unexpected argument` e código 2 — e nada no repositório
-/// teria como acusar, porque nenhum texto do produto escreve essa linha.
+/// comando, a opção `--spec` deixando de ser declarada, ou uma opção
+/// obrigatória que a linha não traz, entrega um passo que morre num erro do
+/// parser e código 2 — e nada no repositório teria como acusar, porque nenhum
+/// texto do produto escreve essa linha.
 ///
 /// A instrução conferida é a que o próprio binário monta, nunca uma cópia do
 /// formato dela escrita aqui: um teste que remontasse a linha à mão conferiria
-/// a própria cópia e continuaria verde depois de a montagem mudar.
+/// a própria cópia e continuaria verde depois de a montagem mudar. Entram as
+/// fases da tabela e o fechamento, que a rodada devolve com tudo aprovado.
 #[test]
 fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
     let tree = run_command_tree();
     assert!(!NEXT_BY_PHASE.is_empty(), "a tabela do próximo passo está vazia");
 
+    let estado = State {
+        branch: Some("feature/alguma-spec".to_string()),
+        base: Some("dev".to_string()),
+        ..State::default()
+    };
+    let mut montadas: Vec<(String, Option<String>)> = NEXT_BY_PHASE
+        .iter()
+        .map(|(fase, _)| {
+            (format!("a fase `{fase}`"), next_command(fase, "alguma-spec", &estado).as_str().map(str::to_string))
+        })
+        .collect();
+    montadas.push(("a rodada com tudo aprovado".to_string(), step_command(DONE_STEP, "alguma-spec", &estado)));
+
     let mut offenders = Vec::new();
-    for (fase, _) in NEXT_BY_PHASE {
-        let montado = next_command(fase, "alguma-spec");
-        let Some(instrucao) = montado.as_str() else {
-            offenders.push(format!("a fase `{fase}` está na tabela e não monta comando nenhum"));
+    for (quem, montado) in &montadas {
+        let Some(instrucao) = montado.as_deref() else {
+            offenders.push(format!("{quem} está na tabela e não monta comando nenhum"));
             continue;
         };
         let mut invocacoes = extract_run_invocations(instrucao);
         let Some(inv) = invocacoes.pop() else {
-            offenders.push(format!("a fase `{fase}` monta `{instrucao}`, que não é uma chamada de `mustard-rt run`"));
+            offenders.push(format!("{quem} monta `{instrucao}`, que não é uma chamada de `mustard-rt run`"));
             continue;
         };
         let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
-            offenders.push(format!("a fase `{fase}` manda rodar `run {}`, que não é registrado", inv.name));
+            offenders.push(format!("{quem} manda rodar `run {}`, que não é registrado", inv.name));
             continue;
         };
         let declaradas = declared_long_flags(cmd);
         for flag in inv.flags {
             if !declaradas.contains(flag.as_str()) {
                 offenders.push(format!(
-                    "a fase `{fase}` manda rodar `run {} --{flag}`, que esse comando não declara",
+                    "{quem} manda rodar `run {} --{flag}`, que esse comando não declara",
                     inv.name
                 ));
             }
+        }
+        // A linha inteira, como quem obedece a resposta a roda: o parser de
+        // verdade cobra as opções obrigatórias que a conferência das opções
+        // escritas não vê.
+        let argv: Vec<&str> = instrucao.split_whitespace().skip(1).collect();
+        if let Err(erro) = tree.clone().try_get_matches_from(argv) {
+            offenders.push(format!("{quem} monta `{instrucao}`, que o parser recusa: {erro}"));
         }
     }
     assert!(

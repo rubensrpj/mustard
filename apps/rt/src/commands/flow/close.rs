@@ -192,6 +192,10 @@ fn run_close(
     }
     let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang);
 
+    // O pull request é o passo seguinte, e a linha dele sai pronta, com a base
+    // e a branch tiradas do estado — pela mesma tabela que a retomada usa.
+    let command = crate::commands::flow::resume::next_command("closed", &spec, &State::from_log(&read(&path)?));
+
     let mut out = json!({
         "ok": true,
         "spec": spec,
@@ -206,15 +210,21 @@ fn run_close(
     // O fechamento é um marco: manda publicar, menos com item retido ou com a
     // página que não pôde ser refeita, que esperam — e o pull request espera
     // a publicação.
-    let then = translate("close.next", lang);
+    let then = match command.as_str() {
+        Some(line) => translate("close.next", lang).replace("{command}", line),
+        None => translate("resume.next.closed", lang).to_string(),
+    };
     crate::commands::spec_events::pages::end_milestone(
         &mut out,
         pages.as_ref(),
         "close",
-        then,
-        &crate::commands::spec_events::pages::after_purge("close", then, lang),
+        &then,
+        &crate::commands::spec_events::pages::after_purge("close", &then, lang),
         lang,
     );
+    if !command.is_null() {
+        out["command"] = command;
+    }
     Ok(out)
 }
 
@@ -457,10 +467,18 @@ mod tests {
         }
     }
 
+    /// O fim do `next` de cada marco, com o comando que a resposta devolve: a
+    /// rodada com tudo entregue e aprovado manda fechar, e o fechamento manda
+    /// abrir o pull request.
+    fn then_of(report: &Value, key: &str) -> String {
+        let command = report["command"].as_str().unwrap_or_else(|| panic!("sem comando: {report}"));
+        translate(key, Locale::PtBr).replace("{command}", command)
+    }
+
     /// Com um item de texto que parece senha, a rodada e o fechamento dizem o
     /// código do item a expurgar e não mandam publicar; a rodada continua
-    /// mandando despachar, e o fechamento deixa o pull request para depois da
-    /// publicação. O `.html` local sai sem o texto do item.
+    /// dizendo o próximo passo, e o fechamento deixa o pull request para
+    /// depois da publicação. O `.html` local sai sem o texto do item.
     #[test]
     fn a_withheld_item_holds_the_publish_of_the_round_and_the_close() {
         let dir = tempdir().unwrap();
@@ -474,14 +492,14 @@ mod tests {
         let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
         let closed = close(root, "x");
         for (report, milestone, then) in
-            [(&rounded, "round", translate("round.next", Locale::PtBr)), (&closed, "close", translate("close.next", Locale::PtBr))]
+            [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
         {
             assert_eq!(report["ok"], json!(true), "{report}");
             assert!(report.get("publish").is_none(), "{milestone}: {report}");
             assert_eq!(report["withheld"], json!([code]), "{milestone}: {report}");
             let next = report["next"].as_str().unwrap_or_default();
             assert!(next.contains(&code) && next.contains("write purge"), "{milestone}: {next}");
-            assert!(next.contains(&format!("`{milestone}`")) && next.ends_with(then), "{milestone}: {next}");
+            assert!(next.contains(&format!("`{milestone}`")) && next.ends_with(&then), "{milestone}: {next}");
             assert!(!next.contains("write publish"), "{milestone}: {next}");
             let warned = report["warnings"].as_array().cloned().unwrap_or_default();
             assert!(warned.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
@@ -506,7 +524,7 @@ mod tests {
         let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
         let closed = close(root, "x");
         for (report, milestone, then) in
-            [(&rounded, "round", translate("round.next", Locale::PtBr)), (&closed, "close", translate("close.next", Locale::PtBr))]
+            [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
         {
             assert_eq!(report["ok"], json!(true), "{report}");
             assert!(report.get("publish").is_none(), "{milestone}: {report}");
@@ -514,10 +532,27 @@ mod tests {
             assert!(!next.contains("write publish"), "{milestone}: {next}");
             assert!(next.starts_with(translate("page.not_rebuilt", Locale::PtBr)), "{milestone}: {next}");
             assert!(next.contains("run page --spec") && next.contains(&format!("`{milestone}`")), "{milestone}: {next}");
-            assert!(next.ends_with(then), "{milestone}: {next}");
+            assert!(next.ends_with(&then), "{milestone}: {next}");
             let warned = report["warnings"].as_array().cloned().unwrap_or_default();
             assert!(warned.iter().any(|w| w["reason"] == json!("io-failed")), "{milestone} gives the reason: {report}");
         }
+    }
+
+    /// O fechamento devolve a linha inteira do pull request, com a base e a
+    /// branch da spec, o binário a aceita, e o próximo passo em palavras a
+    /// traz.
+    #[test]
+    fn closing_answers_the_whole_pull_request_line() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+
+        let out = close(root, "x");
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let line = "mustard-rt run pr-open --base dev --head feature/x --spec x";
+        assert_eq!(out["command"], json!(line), "{out}");
+        crate::commands::flow::resume::assert_parses(line);
+        assert!(out["next"].as_str().unwrap_or_default().ends_with(&then_of(&out, "close.next")), "{out}");
     }
 
     /// Ao gravar a fase fechada, o fechamento arma a cobrança das pendências

@@ -175,16 +175,31 @@ fn no_agent_text_tells_to_copy_the_project_or_build_in_a_copy() {
     }
 }
 
-/// Cada comando do fluxo responde o próximo passo: a abertura e o
-/// levantamento dizem em palavras o que fazer, a retomada devolve o passo e o
-/// comando, e a rodada e o fechamento mandam publicar e seguir. O que o
-/// modelo roda a seguir vem dessa resposta, nunca de um texto do Mustard.
+/// Roda, pelo binário de verdade, a linha inteira que a resposta `report`
+/// devolveu em `command`. Uma linha que o parser recusa sai com código 2 e sem
+/// resposta JSON, e o [`rt`] cai dizendo o erro do parser.
+fn run_returned(root: &Path, home: &Path, report: &Value) -> Value {
+    let line = report["command"].as_str().unwrap_or_else(|| panic!("the answer returns no command: {report}"));
+    let argv: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(argv.first(), Some(&"mustard-rt"), "{line}");
+    rt(root, home, &argv[1..], None)
+}
+
+/// Cada comando do fluxo responde o próximo passo, e o comando que ele
+/// devolve roda inteiro, sem o parser recusar opção nenhuma: a retomada no
+/// levantamento devolve o levantamento; a rodada sem nada a despachar, sem
+/// revisão pendente e com tudo entregue e aprovado devolve o fechamento; o
+/// fechamento devolve o pull request com a base e a branch da spec; e a
+/// retomada da spec fechada devolve a mesma linha. O que o modelo roda a
+/// seguir vem dessa resposta, nunca de um texto do Mustard.
 #[test]
 fn every_flow_command_answers_its_next_step() {
     let dir = tempfile::tempdir().unwrap();
+    // Um provedor que ninguém atende: o pull request roda até o provedor e
+    // responde, sem sair da máquina.
     let (root, home) = installed(
         dir.path(),
-        r#"{"version":"1.0.0","language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+        r#"{"version":"1.0.0","language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"},"provider":"nenhum"}}"#,
     );
     let said = |report: &Value, field: &str| report[field].as_str().is_some_and(|t| !t.trim().is_empty());
 
@@ -198,22 +213,33 @@ fn every_flow_command_answers_its_next_step() {
     let resumed = rt(&root, &home, &["run", "resume", "--spec", "passo"], None);
     assert!(said(&resumed, "next"), "the resume says no next step: {resumed}");
     assert_eq!(resumed["command"], json!("mustard-rt run grill --spec passo"), "{resumed}");
+    // A linha chega ao levantamento, que responde por si: aqui, que falta o
+    // objetivo.
+    let again = run_returned(&root, &home, &resumed);
+    assert_eq!(again["reason"], json!("goal-missing"), "{again}");
 
-    // A spec em execução, gravada direto no arquivo de eventos: a rodada sem
-    // onda nenhuma a despachar e o fechamento sem onda a conferir.
+    // A spec em execução, gravada direto no arquivo de eventos, sem onda
+    // nenhuma: nada a despachar, nada a revisar, e nada que falte.
     let file = root.join(".claude/spec/passo/spec.ndjson");
     let running = json!({"phase": "running", "branch": "feature/passo"});
     store::write(&file, "state", running.as_object().cloned().unwrap(), &[]).unwrap();
     let round = rt(&root, &home, &["run", "round", "--spec", "passo"], None);
-    assert!(said(&round, "next"), "the round says no next step: {round}");
-    assert!(round["next"].as_str().unwrap().contains("`wave`"), "the round does not name the wave agent: {round}");
-    let closed = rt(&root, &home, &["run", "close", "--spec", "passo"], None);
-    assert!(said(&closed, "next"), "the close says no next step: {closed}");
+    assert_eq!(round["command"], json!("mustard-rt run close --spec passo"), "{round}");
+    let close = translate("round.close", Locale::PtBr).replace("{command}", "mustard-rt run close --spec passo");
+    assert!(round["next"].as_str().is_some_and(|next| next.ends_with(&close)), "{round}");
+
+    let closed = run_returned(&root, &home, &round);
+    assert_eq!(closed["ok"], json!(true), "{closed}");
+    let pr_open = "mustard-rt run pr-open --base dev --head feature/passo --spec passo";
+    assert_eq!(closed["command"], json!(pr_open), "{closed}");
+    let then = translate("close.next", Locale::PtBr).replace("{command}", pr_open);
+    assert!(closed["next"].as_str().is_some_and(|next| next.ends_with(&then)), "{closed}");
+    let asked = run_returned(&root, &home, &closed);
+    assert_eq!(asked["provider"], json!("nenhum"), "the pull request line ran up to the provider: {asked}");
 
     let resumed = rt(&root, &home, &["run", "resume", "--spec", "passo"], None);
     assert!(said(&resumed, "next"), "the resume says no next step: {resumed}");
-    assert!(
-        resumed["command"].as_str().is_some_and(|c| c.starts_with("mustard-rt run pr-open ")),
-        "a closed spec is not sent to the pull request: {resumed}",
-    );
+    assert_eq!(resumed["command"], json!(pr_open), "{resumed}");
+    let asked = run_returned(&root, &home, &resumed);
+    assert_eq!(asked["provider"], json!("nenhum"), "{asked}");
 }
