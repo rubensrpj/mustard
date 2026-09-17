@@ -58,7 +58,7 @@ use mustard_core::domain::survey::{open_points, open_refusal};
 use mustard_core::domain::wave_prompt::{self, Owner};
 use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::{prompts, WavePrompt};
+use mustard_core::io::wave_prompt::{prompts, Flight, WavePrompt};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
@@ -264,7 +264,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     };
 
     let running = crate::commands::flow::round::waves_in_progress(&log).into_keys().collect();
-    let built = prompts(&project.root, &spec, &log, lang, &running);
+    let built = prompts(&project.root, &spec, &log, lang, &Flight { running, ..Flight::default() });
     let findings = check(&opts.root, &project.root, &spec, &log, &built);
     // Cada achado vira anotação no arquivo de eventos, aqui, uma vez por
     // plano: a página o mostra de lá, sem olhar o disco nem o git ao ser
@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(report["ok"], json!(true), "{report}");
         let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let built = prompts(root, "x", &log, Locale::PtBr, &BTreeSet::new());
+        let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
         assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
         // A página mostra o pedido como um arquivo `.md`: cada linha aparece
         // com o texto dela, sem as marcas do markdown.

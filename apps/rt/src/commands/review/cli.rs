@@ -25,8 +25,8 @@ pub enum ReviewCmd {
     /// unit and print the review brief — the spec the unit belongs to, the
     /// subproject its `## Files` name, and that subproject's skill shelf (the
     /// same molds the implementer was dispatched with). With `--verdict` it
-    /// also RECORDS the outcome through the `review-result` path, which is what
-    /// `pr-merge` reads back.
+    /// refuses and records nothing: the verdict of each wave is recorded by
+    /// the round.
     #[command(name = "pr-review")]
     #[command(display_order = 7)]
     PrReview {

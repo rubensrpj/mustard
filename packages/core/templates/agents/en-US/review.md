@@ -10,9 +10,10 @@ You check someone else's work. You are not the one who did it, and you accept no
 
 ## How to check
 
-- Only read and run tests. Never edit a file, never commit, push or switch branches, and never touch `.claude/` or the `mustard.json`.
-- Test with the binary already built. Experiments live in an empty folder: `D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`. Never copy or rebuild the project: each copy takes 2 to 5 GB.
-- For each criterion, read the test and say whether it really checks the rule, with the agreed numbers.
+- Only read, run tests and make cuts, undone right after. Never commit, push or switch branches, and never touch the main repository, `.claude/` or the `mustard.json`.
+- Work in the separate copy the request names and build in the build folder it names. Never create a copy on your own.
+- Beyond the tests, prove it end to end: in an empty temporary folder (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`), install Mustard (`mustard init`) and run what the user would run.
+- For each criterion, run its recorded proof, read the test and say whether it really checks the rule, with the agreed numbers. Read the red proof the delivery reports and spend your cuts where the wave did not cut, without repeating its own.
 - For each defect already seen that the request carries, say whether it happened again.
 - In a fix round, check only the fix, never the whole wave again.
 - At the end, the project's `git status` must be exactly what you found.

@@ -1,14 +1,17 @@
-//! O commit da rodada: a mensagem montada do resumo de cada entrega e
-//! conferida, a formatação só dos arquivos da rodada, o commit e a gravação
-//! dele na spec.
+//! O commit da rodada: a junção de cada cópia ao repositório principal, a
+//! mensagem montada do resumo de cada entrega e conferida, a formatação só dos
+//! arquivos da rodada, o commit, a gravação dele na spec e a cópia apagada.
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mustard_core::domain::spec_events::{check_message, MessageRefusal, Refusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
+use mustard_core::domain::spec_events::{
+    check_message, MessageRefusal, Refusal, SpecLog, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
+};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::fs::lock::LockedFile;
+use mustard_core::io::wave_prompt::recorded_copy;
 use mustard_core::platform::git as git_exec;
 use mustard_core::ClaudePaths;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -266,20 +269,215 @@ pub(super) fn record_commit(
     Ok(json!({ "sha": sha, "title": title }))
 }
 
-/// Cada arquivo entregue está no disco ou no índice, contando o que saiu do
-/// índice desde o último commit; senão, a recusa vem antes de gravar, e não
-/// do commit, depois (a remoção aceita calada o caminho que não existe).
-pub(super) fn unknown_file(root: &Path, waves: &[WaveReport]) -> Result<(), RoundRefusal> {
+/// Cada arquivo entregue está no disco ou no índice, do repositório principal
+/// ou da cópia da onda, contando o que saiu do índice desde o último commit;
+/// senão, a recusa vem antes de gravar, e não do commit, depois (a remoção
+/// aceita calada o caminho que não existe).
+pub(super) fn unknown_file(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> Result<(), RoundRefusal> {
     for wave in waves {
+        let copy = copy_of(log, wave.wave);
         for file in &wave.files {
-            let known = root.join(file).exists()
-                || git(root, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", file]).is_ok();
+            let known = std::iter::once(root).chain(copy.as_deref()).any(|dir| {
+                dir.join(file).exists()
+                    || git(dir, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", file]).is_ok()
+            });
             if !known {
                 return Err(RoundRefusal::FileUnknown { file: file.clone(), wave: wave.wave });
             }
         }
     }
     Ok(())
+}
+
+/// A pasta da cópia que a rodada criou para a onda `wave`, quando o envio
+/// dela gravou uma e ela ainda está no disco.
+fn copy_of(log: &SpecLog, wave: u64) -> Option<PathBuf> {
+    recorded_copy(log, wave).map(|copy| PathBuf::from(copy.path)).filter(|path| path.is_dir())
+}
+
+/// Um arquivo que a junção muda no repositório principal: o que ele era e o
+/// que passa a ser. `None` é o arquivo que não existe.
+pub(super) struct Joined {
+    file: String,
+    before: Option<Vec<u8>>,
+    after: Option<Vec<u8>>,
+}
+
+/// Junta ao repositório principal cada arquivo entregue pelas ondas que têm
+/// cópia, por uma fusão de três vias com o commit da cópia como base, sem
+/// gravar nada: devolve o que gravar. O arquivo que a cópia não mudou fica
+/// como está; o que só a cópia mudou vem dela, apagado e novo inclusive; o
+/// que os dois lados mudaram é fundido. O conflito que a fusão não resolve
+/// recusa, com os trechos da primeira onda que conflita e a cópia dela. Duas
+/// ondas do mesmo relatório no mesmo arquivo se somam, na ordem do
+/// relatório. O caminho que sai do repositório não é tocado: o git o recusa
+/// no commit.
+pub(super) fn join_copies(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> Result<Vec<Joined>, RoundRefusal> {
+    let mut joined: BTreeMap<String, Joined> = BTreeMap::new();
+    for wave in waves {
+        let Some(copy) = copy_of(log, wave.wave) else { continue };
+        let base = git(&copy, &["rev-parse", "HEAD"]).map_err(|detail| RoundRefusal::Git { detail })?;
+        let base = base.trim();
+        let mut conflicts: Vec<String> = Vec::new();
+        for file in wave.files.iter().filter(|file| inside(file)) {
+            let theirs = std::fs::read(copy.join(file)).ok();
+            let base_id = git(&copy, &["rev-parse", "--verify", "-q", &format!("{base}:{file}")])
+                .ok()
+                .map(|id| id.trim().to_string());
+            if blob_id(&copy, file, theirs.as_deref()) == base_id {
+                continue;
+            }
+            let ours = match joined.get(file) {
+                Some(done) => done.after.clone(),
+                None => std::fs::read(root.join(file)).ok(),
+            };
+            if ours == theirs {
+                continue;
+            }
+            let after = if blob_id(root, file, ours.as_deref()) == base_id {
+                theirs
+            } else {
+                let base_text = match base_id.as_deref() {
+                    Some(id) => blob_text(&copy, id).ok(),
+                    None => Some(String::new()),
+                };
+                match merge_texts(root, ours.as_deref(), base_text.as_deref(), theirs.as_deref()) {
+                    Ok(merged) => Some(merged.into_bytes()),
+                    Err(lines) if lines.is_empty() => {
+                        conflicts.push(file.clone());
+                        continue;
+                    }
+                    Err(lines) => {
+                        conflicts.extend(lines.iter().map(|line| format!("{file}:{line}")));
+                        continue;
+                    }
+                }
+            };
+            let before = std::fs::read(root.join(file)).ok();
+            joined
+                .entry(file.clone())
+                .and_modify(|done| done.after.clone_from(&after))
+                .or_insert(Joined { file: file.clone(), before, after });
+        }
+        if !conflicts.is_empty() {
+            let head = git(root, &["rev-parse", "HEAD"]).unwrap_or_default().trim().to_string();
+            let copy = copy.to_string_lossy().replace('\\', "/");
+            return Err(RoundRefusal::MergeConflict { wave: wave.wave, copy, conflicts, head });
+        }
+    }
+    Ok(joined.into_values().collect())
+}
+
+/// Grava no repositório principal o que a junção decidiu (`after`), ou volta
+/// cada arquivo ao que era (`!after`): é assim que a recusa do git depois da
+/// junção deixa o repositório como estava.
+pub(super) fn write_joined(root: &Path, joined: &[Joined], after: bool) -> Result<(), RoundRefusal> {
+    let io = |e: std::io::Error| RoundRefusal::Refused(Refusal::Io { detail: e.to_string() });
+    for one in joined {
+        let path = root.join(&one.file);
+        match if after { &one.after } else { &one.before } {
+            Some(bytes) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(io)?;
+                }
+                std::fs::write(&path, bytes).map_err(io)?;
+            }
+            None => match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(e)),
+                _ => {}
+            },
+        }
+    }
+    Ok(())
+}
+
+/// O caminho fica dentro do repositório: relativo, sem subir de pasta.
+fn inside(file: &str) -> bool {
+    Path::new(file).components().all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+}
+
+/// O número que o controle de versão daria ao conteúdo `bytes` do arquivo
+/// `file` da pasta `dir`, com as regras de fim de linha dela; `None` para o
+/// arquivo que não existe. É a comparação que não depende de o conteúdo ser
+/// texto.
+fn blob_id(dir: &Path, file: &str, bytes: Option<&[u8]>) -> Option<String> {
+    let bytes = bytes?;
+    let scratch = tempfile::tempdir().ok()?;
+    let held = scratch.path().join("conteudo");
+    std::fs::write(&held, bytes).ok()?;
+    git(dir, &["hash-object", "--path", file, &held.to_string_lossy()]).ok().map(|id| id.trim().to_string())
+}
+
+/// O texto do objeto `id`, como o controle de versão o guarda.
+fn blob_text(dir: &Path, id: &str) -> Result<String, String> {
+    let out = git_exec::run(dir, &["cat-file", "blob", id]);
+    if out.ok { Ok(out.stdout) } else { Err(out.stderr) }
+}
+
+/// A fusão de três vias de três textos. `Err` traz a linha de cada trecho em
+/// conflito, no texto fundido; vazio quando a fusão nem pôde ser feita — um
+/// dos lados apagado, ou um conteúdo que não é texto.
+fn merge_texts(dir: &Path, ours: Option<&[u8]>, base: Option<&str>, theirs: Option<&[u8]>) -> Result<String, Vec<usize>> {
+    let text = |bytes: Option<&[u8]>| bytes.and_then(|b| std::str::from_utf8(b).ok()).map(str::to_string);
+    let base = base.filter(|b| !b.contains('\u{fffd}')).map(str::to_string);
+    let (Some(ours), Some(base), Some(theirs)) = (text(ours), base, text(theirs)) else {
+        return Err(Vec::new());
+    };
+    let scratch = tempfile::tempdir().map_err(|_| Vec::new())?;
+    let mut names: Vec<String> = Vec::new();
+    for (name, body) in [("principal", &ours), ("base", &base), ("copia", &theirs)] {
+        let path = scratch.path().join(name);
+        std::fs::write(&path, body.as_bytes()).map_err(|_| Vec::new())?;
+        names.push(path.to_string_lossy().to_string());
+    }
+    let labels = ["-L", "principal", "-L", "base", "-L", "copia"];
+    let mut args: Vec<&str> = vec!["merge-file", "-p"];
+    args.extend(labels);
+    args.extend(names.iter().map(String::as_str));
+    let out = git_exec::run(dir, &args);
+    if out.ok {
+        return Ok(out.stdout);
+    }
+    Err(out.stdout.lines().enumerate().filter(|(_, line)| line.starts_with("<<<<<<< ")).map(|(at, _)| at + 1).collect())
+}
+
+/// Apaga a cópia de cada onda do relatório, depois do commit. A cópia com
+/// mudança fora da lista de arquivos entregue fica, e o aviso diz quais: ela
+/// se perderia com a cópia.
+pub(super) fn close_copies(root: &Path, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<Value> {
+    let mut warnings = Vec::new();
+    for wave in waves {
+        let Some(copy) = copy_of(log, wave.wave) else { continue };
+        let shown = copy.to_string_lossy().replace('\\', "/");
+        let changed = git(&copy, &["status", "--porcelain", "-z", "--untracked-files=all"]).unwrap_or_default();
+        let left: Vec<String> = changed_paths(&changed).into_iter().filter(|path| !wave.files.contains(path)).collect();
+        let removed = left.is_empty()
+            && git_lock(root).is_ok_and(|_held| git(root, &["worktree", "remove", "--force", &shown]).is_ok());
+        if !removed {
+            let files = if left.is_empty() { shown.clone() } else { left.join(", ") };
+            let hint = translate("round.copy_kept", lang)
+                .replace("{wave}", &wave.wave.to_string())
+                .replace("{copy}", &shown)
+                .replace("{files}", &files);
+            warnings.push(json!({ "reason": "copy-kept", "wave": wave.wave, "hint": hint }));
+        }
+    }
+    warnings
+}
+
+/// Os caminhos que o `status --porcelain -z` lista, inclusive o nome antigo
+/// de um arquivo renomeado.
+fn changed_paths(status: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut entries = status.split('\0').filter(|entry| !entry.is_empty());
+    while let Some(entry) = entries.next() {
+        let (code, path) = entry.split_at(entry.len().min(3));
+        out.push(path.to_string());
+        if code.contains('R') || code.contains('C') {
+            out.extend(entries.next().map(str::to_string));
+        }
+    }
+    out
 }
 
 /// O nome do repositório: o da pasta do projeto.
@@ -412,6 +610,42 @@ mod tests {
         let status = Command::new("git").args(["status", "--porcelain"]).current_dir(root).output().unwrap();
         let pending = String::from_utf8_lossy(&status.stdout).to_string();
         assert!(!pending.contains("src/"), "nada da onda ficou fora do commit: {pending}");
+    }
+
+    /// A junção leva ao repositório principal o arquivo que a cópia apagou, e
+    /// o commit leva a remoção. A cópia com uma mudança fora da lista
+    /// entregue fica no disco, e o aviso diz qual arquivo e qual cópia; a que
+    /// só mudou o que entregou é apagada.
+    #[test]
+    fn a_file_deleted_in_the_copy_is_deleted_and_a_copy_with_more_changes_stays_with_a_warning() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[]), (2, &["src/c.rs"], &[])]);
+        round(root, "x", None);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        std::fs::remove_file(copy(1).join("src/a.rs")).unwrap();
+        std::fs::write(copy(1).join("src/b.rs"), "fn um() {}\nfn b() {}\n").unwrap();
+        std::fs::write(copy(2).join("src/c.rs"), "fn um() {}\nfn c() {}\n").unwrap();
+        std::fs::write(copy(2).join("src/esquecido.rs"), "fn esquecido() {}\n").unwrap();
+
+        let one = line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "src/b.rs"], "commit": "a sai"}));
+        let two = line("DELIVERED", json!({"wave": 2, "text": "Saiu.", "files": ["src/c.rs"], "commit": "c muda"}));
+        let out = round(root, "x", Some(&format!("{one}\n{two}")));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(!root.join("src/a.rs").exists());
+        assert_eq!(std::fs::read_to_string(root.join("src/c.rs")).unwrap(), "fn um() {}\nfn c() {}\n");
+        assert!(!root.join("src/esquecido.rs").exists(), "only the delivered files are merged");
+        let shown = Command::new("git").args(["show", "--name-status", "--format=", "HEAD"]).current_dir(root).output();
+        let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
+        assert_eq!(shown.lines().collect::<Vec<_>>(), ["D\tsrc/a.rs", "M\tsrc/b.rs", "M\tsrc/c.rs"], "{out}");
+
+        assert!(!copy(1).exists(), "the copy with only delivered changes is gone");
+        assert!(copy(2).join("src/esquecido.rs").is_file(), "the copy with more changes stays");
+        let kept = translate("round.copy_kept", Locale::PtBr)
+            .replace("{wave}", "2")
+            .replace("{copy}", &mustard_core::io::wave_prompt::shown(&copy(2)))
+            .replace("{files}", "src/esquecido.rs");
+        assert_eq!(out["warnings"], json!([{"reason": "copy-kept", "wave": 2, "hint": kept}]), "{out}");
     }
 
     /// Cada relatório de `wrong` é recusado pelo git, com o motivo que o git

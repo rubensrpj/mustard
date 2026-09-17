@@ -465,6 +465,11 @@ pub const TYPES: &[TypeSpec] = &[
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
+            // A cópia separada que a rodada criou para a onda e a pasta de
+            // compilação dela: a volta junta os arquivos da cópia, e a pasta
+            // fica ocupada enquanto a onda está em andamento.
+            opt("copy", Kind::Text),
+            opt("build_dir", Kind::Text),
         ],
     ),
     ty(

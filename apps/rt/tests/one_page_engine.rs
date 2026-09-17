@@ -99,14 +99,20 @@ fn page(root: &Path, args: &[&str]) -> Value {
 
 /// Como [`page`], dizendo se o comando saiu com sucesso em vez de exigir.
 fn page_run(root: &Path, args: &[&str]) -> (bool, Value) {
+    rt(root, "page", args)
+}
+
+/// Roda `mustard-rt run <command>` com `args` no projeto `root`: se saiu com
+/// sucesso, e o relatório.
+fn rt(root: &Path, command: &str, args: &[&str]) -> (bool, Value) {
     let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
-        .args(["run", "page"])
+        .args(["run", command])
         .args(args)
         .arg("--root")
         .arg(root)
         .current_dir(root)
         .output()
-        .expect("run page");
+        .expect("run the command");
     let report: Value = serde_json::from_slice(&out.stdout).expect("a JSON report");
     (out.status.success(), report)
 }
@@ -191,6 +197,82 @@ fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
         .collect();
     for mark in ["<!doctype", "<style", "<code>", "<strong>"] {
         assert!(engine_marks.contains(&mark), "the scan never sees {mark} even in the engine");
+    }
+}
+
+/// O grupo `group` da página: do começo dele até o começo do grupo seguinte.
+fn group<'a>(html: &'a str, group: &str) -> &'a str {
+    let open = format!("<details class=\"group\" id=\"{group}\"");
+    let at = html.find(&open).unwrap_or_else(|| panic!("the page has no {group} group"));
+    let rest = &html[at + open.len()..];
+    &rest[..rest.find("<details class=\"group\"").unwrap_or(rest.len())]
+}
+
+/// Um rascunho vira arquivo de eventos item por item: cada regra, critério,
+/// limite e caso de borda gravado pelo comando do seu tipo volta, na leitura
+/// do bloco dele, com o tipo certo e o texto igual; e a página que o motor
+/// gera desse arquivo mostra cada um no grupo do seu tipo.
+#[test]
+fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
+    let project = tempfile::tempdir().expect("tempdir");
+    let root = project.path();
+    fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
+    let spec = root.join(".claude").join("spec").join("demo");
+    fs::create_dir_all(&spec).expect("spec dir");
+    fs::write(
+        spec.join("spec.ndjson"),
+        concat!(
+            r#"{"v":1,"id":1,"at":"2026-09-11T08:40:00-03:00","type":"state","author":"binary","phase":"survey"}"#,
+            "\n",
+            r#"{"v":1,"id":2,"at":"2026-09-11T08:41:00-03:00","type":"message","author":"user","text":"Converta o rascunho."}"#,
+            "\n",
+        ),
+    )
+    .expect("events");
+
+    // (tipo, bloco da leitura, grupo da página, campos, os textos que ficam iguais)
+    let items: [(&str, &str, &str, Value, &[&str]); 4] = [
+        ("rule", "agreed", "agreed-rule",
+            serde_json::json!({"text": "A trava confere o programa, nunca o texto entre aspas.",
+                "example": "rm -rf pasta é barrado.", "keys": ["trava"], "origin": 2}),
+            &["text"]),
+        ("criterion", "criteria", "criteria-criterion",
+            serde_json::json!({"when": "O pedido de uma onda passa de 500 linhas.",
+                "then": "O binário recusa o despacho.", "proof": "cargo test", "origin": 2}),
+            &["when", "then"]),
+        ("limit", "agreed", "agreed-limit",
+            serde_json::json!({"text": "Tamanho do pedido de cada onda.", "value": "500 linhas",
+                "keys": ["pedido"], "origin": 2}),
+            &["text"]),
+        ("edge_case", "agreed", "agreed-edge_case",
+            serde_json::json!({"text": "Duas sessões gravam a mesma spec ao mesmo tempo.",
+                "expected": "A segunda espera a trava.", "keys": ["trava"], "origin": 2}),
+            &["text"]),
+    ];
+    let mut written = Vec::new();
+    for (kind, _, _, fields, _) in &items {
+        let (ok, report) = rt(root, "write", &[*kind, "--spec", "demo", "--json", &fields.to_string()]);
+        assert!(ok, "write {kind}: {report}");
+        written.push(report["id"].as_u64().unwrap_or_else(|| panic!("write {kind} gives no number: {report}")));
+    }
+
+    page(root, &["--spec", "demo"]);
+    let html = fs::read_to_string(spec.join("spec.html")).expect("the spec page");
+    for ((kind, block, group_id, fields, same), id) in items.iter().zip(written) {
+        let (ok, read) = rt(root, "read", &[*block, "--spec", "demo"]);
+        assert!(ok, "read {block}: {read}");
+        let events = read["events"].as_array().cloned().unwrap_or_default();
+        let event = events
+            .iter()
+            .find(|e| e["id"].as_u64() == Some(id))
+            .unwrap_or_else(|| panic!("the {kind} written as {id} is not in the {block} block: {read}"));
+        assert_eq!(event["type"], *kind, "{event}");
+        let shown = group(&html, group_id);
+        for field in *same {
+            assert_eq!(event[field], fields[field], "the {kind} {field} changed on the way: {event}");
+            let text = fields[field].as_str().expect("a text field");
+            assert!(shown.contains(text), "the {group_id} group does not show {text:?}:\n{shown}");
+        }
     }
 }
 

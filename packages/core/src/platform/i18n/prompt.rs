@@ -54,11 +54,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              trabalhar naquele item, um de cada vez, e leia do mesmo jeito qualquer item que o \
              texto dele citar. Nunca procure o conteúdo em outro arquivo do projeto.\n\n\
              **O que fazer.** As tarefas desta onda, e só elas. Cada critério listado abaixo ganha \
-             um teste que prova a regra dele.\n\n\
+             um teste que prova a regra dele e nasce vermelho: corte a ligação no caminho que o \
+             usuário usa — o comando ou o evento do gancho, e não só a função auxiliar —, veja o \
+             teste cair e desfaça o corte.\n\n\
              **Quando parar.** Se faltar alguma coisa, ou se uma tarefa parecer pedir o que a spec \
              não diz, pare e relate: não decida sozinho e não invente peça nenhuma.\n\n\
-             **O que devolver.** O que mudou, arquivo por arquivo; o teste que prova cada critério; \
-             e o que ficou aberto."
+             **O que devolver.** O que mudou, arquivo por arquivo; o teste que prova cada critério e \
+             como a prova do vermelho foi feita — o que foi cortado e o que o teste disse ao cair; e o \
+             que ficou aberto."
         }
         ("prompt.fixed", Locale::EnUs) => {
             "**What this is.** The list of this wave's items, in execution order, assembled by the \
@@ -68,11 +71,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              you get to that item, one at a time, and read any item its text cites the same way. \
              Never look for the content in another project file.\n\n\
              **What to do.** This wave's tasks, and only those. Every criterion listed below gets a \
-             test that proves its rule.\n\n\
+             test that proves its rule and is born red: cut the link on the path the user takes — the \
+             command or the hook event, not only the helper function —, watch the test fail and undo \
+             the cut.\n\n\
              **When to stop.** If something is missing, or a task seems to ask for what the spec \
              does not say, stop and report: do not decide alone and do not invent anything.\n\n\
-             **What to return.** What changed, file by file; the test that proves each criterion; \
-             and what is left open."
+             **What to return.** What changed, file by file; the test that proves each criterion and \
+             how the red proof was made — what was cut and what the test said when it failed; and \
+             what is left open."
         }
         ("prompt.review.title", Locale::PtBr) => "{spec} — revisão da onda {n}",
         ("prompt.review.title", Locale::EnUs) => "{spec} — review of wave {n}",
@@ -81,8 +87,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              spec. Nenhum texto vem copiado: cada linha traz o número do item, o tipo dele e o \
              comando que o lê.\n\n\
              **O que fazer.** Confira o que a onda entregou contra cada critério listado abaixo, \
-             lendo cada item pelo número. Olhe primeiro os defeitos já vistos nestes arquivos: o \
-             erro que já aconteceu ali é o que tem mais chance de voltar.\n\n\
+             lendo cada item pelo número. Rode a prova gravada de cada critério e leia as provas do \
+             vermelho que a entrega relata; gaste os seus cortes onde a onda não cortou, sem repetir \
+             os dela. Olhe primeiro os defeitos já vistos nestes arquivos: o erro que já aconteceu \
+             ali é o que tem mais chance de voltar.\n\n\
              **O que devolver.** O veredito — aprovado ou reprovado —, o que cada critério provou, \
              e a lição que valha para as próximas ondas."
         }
@@ -91,8 +99,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              No text is copied in: each line carries the item's number, its type and the command \
              that reads it.\n\n\
              **What to do.** Check what the wave delivered against every criterion listed below, \
-             reading each item by its number. Look first at the defects already seen in these \
-             files: the mistake that happened there is the one most likely to come back.\n\n\
+             reading each item by its number. Run each criterion's recorded proof and read the red \
+             proofs the delivery reports; spend your cuts where the wave did not cut, without \
+             repeating its own. Look first at the defects already seen in these files: the mistake \
+             that happened there is the one most likely to come back.\n\n\
              **What to return.** The verdict — approved or rejected —, what each criterion proved, \
              and any lesson worth keeping for the next waves."
         }
@@ -155,30 +165,51 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Do not commit and do not use `git add`: the commit belongs to the round."
         }
         ("prompt.execution.running", Locale::PtBr) => {
-            "Ondas em andamento, feitas agora por outros agentes: não mexa nos arquivos delas."
+            "Ondas em andamento, cada uma na sua cópia: o arquivo que você dividir com elas é juntado \
+             na volta, e o trecho que conflitar para a rodada até ser resolvido."
         }
         ("prompt.execution.running", Locale::EnUs) => {
-            "Waves in flight, being done right now by other agents: do not touch their files."
+            "Waves in flight, each in its own copy: a file you share with them is merged on the way \
+             back, and a conflicting hunk stops the round until it is resolved."
         }
         ("prompt.execution.wave", Locale::PtBr) => "Onda {n}",
         ("prompt.execution.wave", Locale::EnUs) => "Wave {n}",
+        ("prompt.execution.copy", Locale::PtBr) => {
+            "Trabalhe só na cópia separada `{copy}`, que a rodada criou no commit atual, e rode cada \
+             comando de dentro dela; nunca crie outra. Nada se edita no repositório principal \
+             `{root}`, e a cópia fica onde está: na volta, a rodada junta os arquivos entregues, novos \
+             e apagados inclusive, e depois do commit a apaga."
+        }
+        ("prompt.execution.copy", Locale::EnUs) => {
+            "Work only in the separate copy `{copy}`, which the round created at the current commit, \
+             and run every command from inside it; never create another. Nothing is edited in the \
+             main repository `{root}`, and the copy stays where it is: on the way back, the round \
+             merges the delivered files, new and deleted ones included, and deletes it after the commit."
+        }
+        ("prompt.execution.build_dir", Locale::PtBr) => {
+            "Compile e teste só na pasta de compilação `{dir}` (no Cargo, `CARGO_TARGET_DIR={dir}`), \
+             em primeiro plano: ela é fixa e passa de uma cópia para a seguinte."
+        }
+        ("prompt.execution.build_dir", Locale::EnUs) => {
+            "Build and test only in the build folder `{dir}` (with Cargo, `CARGO_TARGET_DIR={dir}`), in \
+             the foreground: it is fixed and passes from one copy to the next."
+        }
+        ("prompt.execution.root", Locale::PtBr) => {
+            "A spec mora no repositório principal: toda leitura dela leva `--root {root}`, como em \
+             `mustard-rt run read waves --root {root} --spec …`."
+        }
+        ("prompt.execution.root", Locale::EnUs) => {
+            "The spec lives in the main repository: every read of it takes `--root {root}`, as in \
+             `mustard-rt run read waves --root {root} --spec …`."
+        }
         ("prompt.review.copy", Locale::PtBr) => {
-            "Revise numa cópia separada, nunca no repositório principal: anote a pasta em que você \
-             começou, que é o repositório principal, crie a cópia no commit da onda com \
-             `git worktree add --detach <pasta da cópia> {commit}` e rode tudo dentro dela."
+            "Revise na cópia separada `{copy}`, nunca no repositório principal `{root}`: crie-a no \
+             commit da onda com `git worktree add --detach {copy} {commit}` e rode tudo dentro dela."
         }
         ("prompt.review.copy", Locale::EnUs) => {
-            "Review in a separate copy, never in the main repository: note the folder you started in, \
-             which is the main repository, create the copy at the wave's commit with \
-             `git worktree add --detach <copy folder> {commit}` and run everything inside it."
-        }
-        ("prompt.review.root", Locale::PtBr) => {
-            "A spec mora no repositório principal: toda leitura dela leva `--root <repositório \
-             principal>`, como em `mustard-rt run read waves --root <repositório principal> --spec …`."
-        }
-        ("prompt.review.root", Locale::EnUs) => {
-            "The spec lives in the main repository: every read of it takes `--root <main repository>`, \
-             as in `mustard-rt run read waves --root <main repository> --spec …`."
+            "Review in the separate copy `{copy}`, never in the main repository `{root}`: create it at \
+             the wave's commit with `git worktree add --detach {copy} {commit}` and run everything \
+             inside it."
         }
         ("prompt.review.jobs", Locale::PtBr) => {
             "Compile e teste com menos processos em paralelo que o normal: as ondas compilam ao mesmo \
@@ -188,12 +219,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Build and test with fewer parallel jobs than usual: the waves are compiling at the same \
              time as you."
         }
-        ("prompt.review.cleanup", Locale::PtBr) => {
-            "No fim, apague a cópia com `git worktree remove --force <pasta da cópia>`."
-        }
-        ("prompt.review.cleanup", Locale::EnUs) => {
-            "At the end, delete the copy with `git worktree remove --force <copy folder>`."
-        }
+        ("prompt.review.cleanup", Locale::PtBr) => "No fim, apague a cópia com `git worktree remove --force {copy}`.",
+        ("prompt.review.cleanup", Locale::EnUs) => "At the end, delete the copy with `git worktree remove --force {copy}`.",
         _ => return None,
     })
 }
@@ -208,8 +235,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            32,
-            0x2458_f505_ccb6_3020,
+            34,
+            0x6ea9_a7c8_8043_3820,
         );
     }
 }

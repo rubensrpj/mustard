@@ -296,13 +296,35 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A `<{line}>` line of the report lacks the `{field}` field: ask the agent for the whole \
              line, as its text teaches. Nothing was recorded."
         }
-        ("round.file_reserved", Locale::PtBr) => {
-            "A onda {wave} entregou {file}, que está reservado para a onda {other}, ainda em andamento: \
-             duas ondas não mexem no mesmo arquivo ao mesmo tempo. Mostre ao usuário. Nada foi gravado."
+        ("round.merge_conflict", Locale::PtBr) => {
+            "A entrega da onda {wave} conflita com o repositório principal nestes trechos: {conflicts}. \
+             Nada foi gravado. Resolva na cópia {copy}: leve-a ao commit atual com \
+             `git -C {copy} checkout --merge --detach {head}`, acerte os trechos marcados e rode a \
+             rodada de novo com o mesmo relatório."
         }
-        ("round.file_reserved", Locale::EnUs) => {
-            "Wave {wave} delivered {file}, which is reserved for wave {other}, still in flight: two \
-             waves never touch the same file at once. Show the user. Nothing was recorded."
+        ("round.merge_conflict", Locale::EnUs) => {
+            "Wave {wave}'s delivery conflicts with the main repository in these hunks: {conflicts}. \
+             Nothing was recorded. Resolve it in the copy {copy}: bring it to the current commit with \
+             `git -C {copy} checkout --merge --detach {head}`, fix the marked hunks and run the round \
+             again with the same report."
+        }
+        ("round.copy_failed", Locale::PtBr) => {
+            "A cópia da onda {wave} não pôde ser criada: {detail}. A onda não saiu nesta rodada; \
+             corrija e rode a rodada de novo."
+        }
+        ("round.copy_failed", Locale::EnUs) => {
+            "Wave {wave}'s copy could not be created: {detail}. The wave did not go out this round; \
+             fix it and run the round again."
+        }
+        ("round.copy_kept", Locale::PtBr) => {
+            "A cópia da onda {wave}, {copy}, ficou no disco: {files} mudou nela e não estava na \
+             entrega. Leve o que servir ao repositório principal e apague a cópia com \
+             `git worktree remove --force {copy}`."
+        }
+        ("round.copy_kept", Locale::EnUs) => {
+            "Wave {wave}'s copy, {copy}, stayed on disk: {files} changed in it and was not in the \
+             delivery. Bring what is useful to the main repository and delete the copy with \
+             `git worktree remove --force {copy}`."
         }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
@@ -597,23 +619,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              {pending}, so the merge will not close it by itself. Call open again with the same \
              arguments to record the note."
         }
-        ("retired.spec_draft", Locale::PtBr) => {
-            "O `spec-draft` saiu do fluxo. Abra a spec com `mustard-rt run open`, que cria a branch e \
-             a spec com o mesmo nome. Nada foi criado."
-        }
-        ("retired.spec_draft", Locale::EnUs) => {
-            "`spec-draft` has left the flow. Open the spec with `mustard-rt run open`, which creates \
-             the branch and the spec with the same name. Nothing was created."
-        }
-        ("retired.pipeline_door", Locale::PtBr) => {
-            "O `emit-pipeline {kind}` não cria nem avança mais uma spec. Abra a spec com `mustard-rt \
-             run open`; as fases passam pelos comandos do fluxo novo. Nada foi gravado."
-        }
-        ("retired.pipeline_door", Locale::EnUs) => {
-            "`emit-pipeline {kind}` no longer creates or advances a spec. Open the spec with \
-             `mustard-rt run open`; the phases go through the new flow's commands. Nothing was \
-             written."
-        }
         ("retired.wait_close", Locale::PtBr) => {
             "O `{command}` não grava mais na spec. Os critérios vão rodar, e a spec vai fechar, pelo \
              `mustard-rt run close`, que ainda não existe nesta versão. Nada foi gravado."
@@ -666,16 +671,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("message.no_title", Locale::EnUs) => {
             "This spec has no goal written down, and the pull request title comes from it. Write \
              the spec's context first. Nothing was sent."
-        }
-        ("retired.approve_spec", Locale::PtBr) => {
-            "O `approve-spec` não aprova nem avança mais uma spec. Quem aprova é o usuário, na \
-             pergunta \"Aprovar esta spec?\": ele escolhe \"Aprovar\", e a testemunha grava a spec \
-             como aprovada. Nada foi gravado."
-        }
-        ("retired.approve_spec", Locale::EnUs) => {
-            "`approve-spec` no longer approves or advances a spec. The user approves it in the \
-             question \"Approve this spec?\": they choose \"Approve\", and the witness records the \
-             spec as approved. Nothing was written."
         }
         ("reopen.reason_missing", Locale::PtBr) => {
             "A volta ao levantamento precisa do motivo: passe `--reason` com uma frase dizendo por \
@@ -745,8 +740,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            104,
-            0xa0f9_49dd_0768_c046,
+            103,
+            0xfde2_f394_ca64_dc77,
         );
     }
 
@@ -785,18 +780,12 @@ mod tests {
         }
     }
 
-    /// As recusas dos comandos antigos que saíram do fluxo saem do catálogo
-    /// nos dois idiomas, cada uma com as vagas que o chamador preenche, e
-    /// todas dizem por qual comando esperar, ou para qual ir. A da aprovação
-    /// não tem comando para onde ir: ela diz a pergunta de aprovação.
+    /// As recusas das portas antigas que ainda respondem saem do catálogo nos
+    /// dois idiomas, cada uma com as vagas que o chamador preenche, e todas
+    /// dizem por qual comando esperar.
     #[test]
     fn i18n_translates_retired_keys() {
-        let (pt, en) = (translate("retired.approve_spec", Locale::PtBr), translate("retired.approve_spec", Locale::EnUs));
-        assert!(pt.contains(translate("approval.question", Locale::PtBr)), "{pt}");
-        assert!(en.contains(translate("approval.question", Locale::EnUs)), "{en}");
         for (key, slots, points_to) in [
-            ("retired.spec_draft", &[][..], "mustard-rt run open"),
-            ("retired.pipeline_door", &["{kind}"][..], "mustard-rt run open"),
             ("retired.wait_close", &["{command}"][..], "mustard-rt run close"),
             ("retired.wait_round", &["{command}"][..], "mustard-rt run round"),
         ] {
@@ -869,7 +858,9 @@ mod tests {
             ("round.bad_report", &["{detail}"][..]),
             ("round.line_missing", &[][..]),
             ("round.line_field", &["{line}", "{field}"][..]),
-            ("round.file_reserved", &["{file}", "{wave}", "{other}"][..]),
+            ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),
+            ("round.copy_failed", &["{wave}", "{detail}"][..]),
+            ("round.copy_kept", &["{wave}", "{copy}", "{files}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
@@ -905,6 +896,11 @@ mod tests {
             ("prompt.part.delivered", &[][..]),
             ("prompt.skill.stale", &[][..]),
             ("prompt.skill.read", &[][..]),
+            ("prompt.execution.copy", &["{copy}", "{root}"][..]),
+            ("prompt.execution.build_dir", &["{dir}"][..]),
+            ("prompt.execution.root", &["{root}"][..]),
+            ("prompt.review.copy", &["{copy}", "{root}", "{commit}"][..]),
+            ("prompt.review.cleanup", &["{copy}"][..]),
             ("page.wave.prompt", &["{n}"][..]),
             ("page.wave.prompt.summary", &["{lines}"][..]),
         ] {

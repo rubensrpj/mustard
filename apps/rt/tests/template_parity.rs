@@ -491,6 +491,369 @@ const REMOVED_HOOKS: &[&str] = &[
     "worktree_create",
 ];
 
+/// Os comandos `run` que saíram, pelo nome com que estavam registrados: os
+/// que viraram parte de outro comando e os que saíram sem substituto. Nenhum
+/// deles volta ao que o binário imprime nem à prosa.
+const REMOVED_COMMANDS: &[&str] = &[
+    "ac-add",
+    "ac-amend",
+    "ac-negative-check",
+    "active-specs",
+    "adapt-cursor",
+    "agent-prompt-render",
+    "amend-finalize",
+    "analyze-validation",
+    "approve-spec",
+    "artifact-update",
+    "base-candidates",
+    "capability",
+    "change-request",
+    "claude-dir-prune",
+    "close-orchestrate",
+    "close-pipeline",
+    "complete-spec",
+    "context-slice",
+    "dependency-precheck",
+    "diagnose-otel",
+    "diff-context",
+    "digest-adherence-finalize",
+    "doc-page",
+    "docs-stale-check",
+    "emit-event",
+    "emit-phase",
+    "emit-pipeline",
+    "equivalence-learn",
+    "event-projections",
+    "exec-rewave-check",
+    "feature",
+    "finding-collect",
+    "gate-regression-check",
+    "git-delete",
+    "git-settle",
+    "glossary-coverage",
+    "grill-capture",
+    "language-audit",
+    "maint-deps",
+    "maint-validate",
+    "mark-checklist-item",
+    "mark-finding",
+    "material-add",
+    "metrics",
+    "metrics-wave-status",
+    "notebook",
+    "orient",
+    "otel-collector",
+    "otel-stop",
+    "pipeline-summary",
+    "plan-materialize",
+    "plan-prepare",
+    "pr-edit",
+    "pr-list",
+    "pr-ready",
+    "qa-run",
+    "rebuild-specs",
+    "rehook",
+    "resume-bootstrap",
+    "review-dispatch",
+    "review-prefetch",
+    "review-result",
+    "scan-guards-apply",
+    "scan-guards-list",
+    "scan-lapidation",
+    "scan-patterns-apply",
+    "scan-patterns-decline",
+    "scan-patterns-list",
+    "scan-patterns-relay",
+    "scan-patterns-sweep",
+    "scan-spec",
+    "scope-classify",
+    "scope-decompose",
+    "scratch-gc",
+    "security-scan",
+    "spec-children",
+    "spec-children-tree",
+    "spec-doc",
+    "spec-draft",
+    "status",
+    "tactical-fix-create",
+    "tactical-fix-detect",
+    "unhook",
+    "verify-pipeline",
+    "wave-advance",
+    "wave-collapse",
+    "wave-dependency",
+    "wave-done",
+    "wave-files",
+    "wave-overlap-check",
+    "wave-scaffold",
+    "wave-size-check",
+    "wave-tree",
+    "work-unit-open",
+    "worktree-gc",
+];
+
+/// `true` quando o byte pode continuar um nome de comando ou de gancho.
+fn is_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+/// Os começos de cada ocorrência de `name` inteiro em `text`: nem colado a
+/// outra letra antes, nem continuado depois.
+fn whole_name_at<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let bytes = text.as_bytes();
+    text.match_indices(name).map(|(at, _)| at).filter(move |&at| {
+        let end = at + name.len();
+        (at == 0 || !is_name_byte(bytes[at - 1])) && bytes.get(end).is_none_or(|b| !is_name_byte(*b))
+    })
+}
+
+/// Os nomes que saíram e que `text` ainda dá ao leitor. Um gancho conta em
+/// qualquer lugar, porque o nome dele não é palavra comum. Um comando conta
+/// quando o texto manda rodá-lo (`run <nome>`) ou, se o nome tem hífen, quando
+/// o cita como código (`` `<nome>` ``): é assim que o leitor o toma por um
+/// comando que existe. Um nome de uma palavra só, como `status`, citado como
+/// código é outra coisa, e não conta.
+fn removed_names_in(text: &str) -> Vec<&'static str> {
+    let bytes = text.as_bytes();
+    let hooks = REMOVED_HOOKS.iter().filter(|name| whole_name_at(text, name).next().is_some());
+    let commands = REMOVED_COMMANDS.iter().filter(|name| {
+        whole_name_at(text, name).any(|at| {
+            text[..at].ends_with("run ") || (name.contains('-') && at > 0 && bytes[at - 1] == b'`')
+        })
+    });
+    hooks.chain(commands).copied().collect()
+}
+
+/// O literal de string que começa em `rest[0]` (`"…"`, `b"…"`, `r#"…"#` ou
+/// `br"…"`), com o tamanho que ele ocupa no código. O texto sai como o
+/// programa o vê: os escapes comuns viram o caractere, os outros viram um
+/// espaço, e a continuação de linha some com os espaços que a seguem.
+fn string_literal(rest: &[u8]) -> Option<(String, usize)> {
+    let prefix = usize::from(matches!(rest.first(), Some(b'b' | b'c')));
+    let raw = rest.get(prefix) == Some(&b'r');
+    let hashes = if raw { rest[prefix + 1..].iter().take_while(|c| **c == b'#').count() } else { 0 };
+    let open = prefix + usize::from(raw) + hashes;
+    if rest.get(open) != Some(&b'"') {
+        return None;
+    }
+    let body = &rest[open + 1..];
+    if raw {
+        let close = [&b"\""[..], &vec![b'#'; hashes]].concat();
+        let end = body.windows(close.len()).position(|w| w == close.as_slice())?;
+        return Some((String::from_utf8_lossy(&body[..end]).into_owned(), open + 1 + end + close.len()));
+    }
+    let mut text = Vec::new();
+    let mut j = 0;
+    while j < body.len() && body[j] != b'"' {
+        if body[j] != b'\\' {
+            text.push(body[j]);
+            j += 1;
+            continue;
+        }
+        let escaped = body.get(j + 1).copied().unwrap_or(b' ');
+        j += 2;
+        match escaped {
+            b'\n' | b'\r' => j += body[j..].iter().take_while(|c| c.is_ascii_whitespace()).count(),
+            b'n' => text.push(b'\n'),
+            b't' => text.push(b'\t'),
+            b'"' | b'\\' | b'\'' => text.push(escaped),
+            _ => text.push(b' '),
+        }
+    }
+    Some((String::from_utf8_lossy(&text).into_owned(), open + 1 + j + 1))
+}
+
+/// O tamanho do literal de caractere que começa em `rest[0]`, ou 1 quando o
+/// apóstrofo abre um tempo de vida, como `'static`.
+fn char_literal_len(rest: &[u8]) -> usize {
+    if rest.get(1) == Some(&b'\\') {
+        return rest[2..].iter().position(|c| *c == b'\'').map_or(1, |at| at + 3);
+    }
+    let width = match rest.get(1) {
+        Some(0xC0..=0xDF) => 2,
+        Some(0xE0..=0xEF) => 3,
+        Some(0xF0..=0xFF) => 4,
+        _ => 1,
+    };
+    if rest.get(1 + width) == Some(&b'\'') { width + 2 } else { 1 }
+}
+
+/// O texto de cada literal de string do código de produção de um arquivo
+/// `.rs`, em ordem. Os comentários ficam de fora, e cada item marcado com
+/// `#[cfg(test)]` também, até o `;` ou a vírgula dele ou até o fim do bloco de
+/// chaves dele; as chaves dentro de um literal não contam.
+fn production_literals(source: &str) -> Vec<String> {
+    const TEST_ONLY: &[u8] = b"#[cfg(test)]";
+    let b = source.as_bytes();
+    let mut out = Vec::new();
+    // O item de teste que está sendo pulado: a fundura das chaves e dos
+    // parênteses dele, e se o bloco de chaves já abriu.
+    let mut skipping: Option<(usize, usize, bool)> = None;
+    let mut i = 0;
+    while i < b.len() {
+        let rest = &b[i..];
+        // Um prefixo de literal (`b`, `r`, `c`) só abre um literal no começo
+        // de um nome, nunca no fim de outro.
+        let literal = match rest[0] {
+            b'"' => string_literal(rest),
+            b'b' | b'r' | b'c' if i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') => {
+                string_literal(rest)
+            }
+            _ => None,
+        };
+        if rest.starts_with(b"//") {
+            i += rest.iter().position(|c| *c == b'\n').unwrap_or(rest.len());
+        } else if rest.starts_with(b"/*") {
+            i += rest.windows(2).position(|w| w == b"*/").map_or(rest.len(), |end| end + 2);
+        } else if let Some((text, len)) = literal {
+            if skipping.is_none() {
+                out.push(text);
+            }
+            i += len;
+        } else if rest[0] == b'\'' {
+            i += char_literal_len(rest);
+        } else if skipping.is_none() && rest.starts_with(TEST_ONLY) {
+            skipping = Some((0, 0, false));
+            i += TEST_ONLY.len();
+        } else {
+            if let Some((braces, nest, opened)) = skipping.as_mut() {
+                let ends = match rest[0] {
+                    b'{' => {
+                        (*braces, *opened) = (*braces + 1, true);
+                        false
+                    }
+                    b'}' => {
+                        *braces = braces.saturating_sub(1);
+                        *braces == 0
+                    }
+                    b'(' | b'[' => {
+                        *nest += 1;
+                        false
+                    }
+                    b')' | b']' if *nest > 0 => {
+                        *nest -= 1;
+                        false
+                    }
+                    b')' | b']' | b';' | b',' => !*opened && *nest == 0,
+                    _ => false,
+                };
+                if ends {
+                    skipping = None;
+                }
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// O que o código de produção de um arquivo `.rs` pode imprimir: cada
+/// literal, e cada comando mandado rodar por argumentos separados
+/// (`"run", "<nome>"`), escrito como `run <nome>`.
+fn rust_texts(source: &str) -> Vec<String> {
+    let literals = production_literals(source);
+    let argv: Vec<String> =
+        literals.windows(2).filter(|pair| pair[0] == "run").map(|pair| format!("run {}", pair[1])).collect();
+    literals.into_iter().chain(argv).collect()
+}
+
+/// Todo texto que o binário imprime ou grava para o leitor, com a origem de
+/// cada um: a prosa do plugin e os moldes que o instalador grava no projeto;
+/// cada literal de string do código de produção, que é de onde saem o
+/// catálogo de textos, as dicas e as recusas; a ajuda de cada comando `run`; e
+/// o próximo passo de cada fase.
+fn printed_texts(root: &Path) -> Vec<(String, String)> {
+    let shown = |path: &Path| path.strip_prefix(root).unwrap_or(path).display().to_string();
+    let mut texts = Vec::new();
+    for dir in ["plugin", "packages/core/templates"] {
+        let mut files = Vec::new();
+        walk_files(&root.join(dir), &mut files);
+        assert!(!files.is_empty(), "{dir} holds no text to sweep");
+        texts.extend(files.iter().map(|file| (shown(file), read_lossy(file))));
+    }
+    for dir in ["apps/rt/src", "apps/cli/src", "packages/core/src"] {
+        let mut files = Vec::new();
+        walk_files(&root.join(dir), &mut files);
+        for file in files.iter().filter(|f| has_extension(f, &["rs"])) {
+            texts.extend(rust_texts(&read_lossy(file)).into_iter().map(|text| (shown(file), text)));
+        }
+    }
+    let tree = run_command_tree();
+    texts.push(("run --help".to_string(), tree.clone().render_long_help().to_string()));
+    for sub in tree.get_subcommands() {
+        texts.push((format!("run {} --help", sub.get_name()), sub.clone().render_long_help().to_string()));
+    }
+    let state = State { branch: Some("feature/alguma-spec".to_string()), base: Some("dev".to_string()), ..State::default() };
+    for (phase, _) in NEXT_BY_PHASE {
+        let next = next_command(phase, "alguma-spec", &state);
+        texts.push((format!("the next step of `{phase}`"), next.as_str().unwrap_or_default().to_string()));
+    }
+    let done = step_command(DONE_STEP, "alguma-spec", &state).unwrap_or_default();
+    texts.push(("the next step once every wave is approved".to_string(), done));
+    texts
+}
+
+/// Nenhum texto que o binário imprime ou grava — o catálogo, as dicas, a
+/// ajuda, o próximo passo — nem a prosa do plugin dá ao leitor um comando ou
+/// um gancho que saiu. Cortar um comando e esquecer uma frase que o cita manda
+/// quem lê gastar uma chamada num comando que não existe.
+#[test]
+fn no_printed_text_names_a_command_or_hook_that_left() {
+    let root = repo_root();
+    let surface: BTreeSet<String> = surface_names().into_iter().collect();
+    let back: Vec<&&str> = REMOVED_COMMANDS.iter().filter(|name| surface.contains(**name)).collect();
+    assert!(back.is_empty(), "commands that left are registered again: {back:?}");
+
+    let texts = printed_texts(&root);
+    let helps = texts.iter().filter(|(origin, _)| origin.ends_with("--help")).count();
+    assert_eq!(helps, surface.len() + 2, "every `run` command's help is swept, plus `run --help` and `help`");
+    assert!(texts.len() > 2_000, "the sweep read only {} texts", texts.len());
+    // A varredura enxerga o que procura: o catálogo de textos está nela.
+    assert!(
+        texts.iter().any(|(origin, text)| origin.ends_with("i18n/flow.rs") && text.contains("mustard-rt run open")),
+        "the sweep never reads the catalog",
+    );
+
+    let found: Vec<String> = texts
+        .iter()
+        .flat_map(|(origin, text)| removed_names_in(text).into_iter().map(move |name| format!("{origin}: {name}")))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "texts the binary prints or writes still name a command or hook that left - \
+         whoever reads them is sent to something that does not exist:\n{}",
+        found.join("\n")
+    );
+}
+
+/// A varredura acha o nome que saiu em cada forma que o leitor toma por
+/// comando, e deixa passar o que não é chamada: o comando que fica, a palavra
+/// comum citada como código, o comentário e o código de teste.
+#[test]
+fn the_sweep_finds_each_way_a_removed_name_reaches_the_reader() {
+    assert_eq!(removed_names_in("rode `mustard-rt run qa-run --spec x`"), ["qa-run"]);
+    assert_eq!(removed_names_in("O `spec-draft` saiu do fluxo."), ["spec-draft"]);
+    assert_eq!(removed_names_in("mustard-rt run status"), ["status"]);
+    assert_eq!(removed_names_in("o gancho amend_window_inject grava"), ["amend_window_inject"]);
+    for clean in ["mustard-rt run statusline", "o campo `status`", "[qa-run] aviso", "run open-spec-draft", "subagent_inject"] {
+        assert!(removed_names_in(clean).is_empty(), "{clean}");
+    }
+
+    let source = concat!(
+        "// \"`qa-run`\" num comentário\n",
+        "fn a() -> &'static str { let _ = '\"'; let _ = b'{'; \"rode \\\n    `mustard-rt run git-settle`\" }\n",
+        "const B: &str = r#\"um \"cru\" `emit-event`\"#;\n",
+        "#[cfg(test)]\nconst C: &[&str] = &[\"`spec-doc`\"];\n",
+        "const D: &str = \"fica\";\n",
+        "#[cfg(test)]\nmod tests {\n    fn t() { let _ = \"{ `wave-done`\"; }\n}\n",
+        "fn e() { spawn(&[\"run\", \"orient\"]); }\n",
+    );
+    let texts = rust_texts(source);
+    assert_eq!(texts, ["rode `mustard-rt run git-settle`", "um \"cru\" `emit-event`", "fica", "run", "orient", "run orient"]);
+    let found: Vec<&str> = texts.iter().flat_map(|text| removed_names_in(text)).collect();
+    assert_eq!(found, ["git-settle", "emit-event", "orient"]);
+}
+
 /// Os eventos que o manifesto do Claude Code registra.
 fn manifest_events(root: &Path) -> BTreeSet<String> {
     let text = read_lossy(&root.join("plugin").join("hooks").join("hooks.json"));

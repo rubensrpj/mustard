@@ -268,7 +268,8 @@ mod tests {
 
     /// Um gancho que deixa passar não grava nada; o que barra grava `hook`;
     /// o que avisa grava `hook` com a ação de aviso; o que coloca texto grava
-    /// `injection` com o tamanho; e um passo do fluxo grava `call`.
+    /// `injection` com o tamanho; e um passo do fluxo, rodado pelo mesmo
+    /// despacho que o `mustard-rt run` usa, grava `call`.
     #[test]
     fn the_dispatcher_records_only_what_a_hook_did() {
         let dir = project_on("despacho");
@@ -291,15 +292,10 @@ mod tests {
         }
         assert!(outcome.is_blocking());
 
-        let started = std::time::Instant::now();
-        crate::commands::spec_events::conversation::record_call(
-            root,
-            "plan",
-            Some("despacho"),
-            started,
-            &json!({"ok": true}),
-        )
-        .expect("the call is recorded");
+        crate::commands::flow::cli::dispatch(crate::commands::flow::cli::FlowCmd::Resume {
+            spec: Some("despacho".to_string()),
+            root: root.to_path_buf(),
+        });
 
         let events = recorded(root, "despacho");
         let hooks: Vec<&str> = events.iter().filter_map(|e| e.get("hook").and_then(Value::as_str)).collect();
@@ -312,7 +308,7 @@ mod tests {
         assert_eq!(events[2]["type"], json!("hook"));
         assert_eq!((events[2]["action"].as_str(), events[2]["reason"].as_str()), (Some("block"), Some("apaga trabalho")));
         assert_eq!(events[3]["type"], json!("call"));
-        assert_eq!((events[3]["command"].as_str(), events[3]["result"].as_str()), (Some("plan"), Some("ok")));
+        assert_eq!((events[3]["command"].as_str(), events[3]["result"].as_str()), (Some("resume"), Some("ok")));
         assert_eq!(events.len(), 4, "{events:?}");
     }
 

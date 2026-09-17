@@ -1,10 +1,11 @@
 //! O pedido de uma onda: o texto que o agente dela recebe, montado dos blocos
 //! já lidos do arquivo de eventos.
 //!
-//! Tudo aqui é puro: sem disco, sem relógio e sem caminho da máquina. Quem lê
-//! o arquivo, o banco de lições e os arquivos das skills entrega os blocos
-//! prontos em [`Material`]; esta função só os escreve, sempre na mesma ordem,
-//! então o mesmo material dá sempre os mesmos bytes.
+//! Tudo aqui é puro: sem disco, sem relógio e sem descobrir caminho nenhum.
+//! Quem lê o arquivo, o banco de lições e os arquivos das skills entrega os
+//! blocos prontos em [`Material`] — inclusive as pastas da cópia separada, que
+//! a rodada escolhe —; esta função só os escreve, sempre na mesma ordem, então
+//! o mesmo material dá sempre os mesmos bytes.
 //!
 //! O pedido leva a lista, não o texto. Nenhum item é copiado: cada um entra
 //! como uma linha com o número, o tipo e o comando que o lê pelo binário, e o
@@ -46,6 +47,17 @@ pub struct Skill {
     pub stale: bool,
 }
 
+/// Uma cópia separada do repositório e a pasta de compilação em que ela
+/// compila.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WaveCopy {
+    /// A pasta da cópia.
+    pub path: String,
+    /// A pasta de compilação fixa, que passa de uma cópia para a seguinte;
+    /// sem ela, o pedido não diz onde compilar.
+    pub build_dir: Option<String>,
+}
+
 /// As regras da execução que o pedido leva, lidas do projeto e da rodada.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Execution {
@@ -54,11 +66,18 @@ pub struct Execution {
     /// O comando que roda os testes do projeto, quando ele declara um.
     pub test: Option<String>,
     /// As outras ondas em andamento, cada uma com os arquivos das tarefas
-    /// dela: o agente da onda não mexe neles.
+    /// dela: o arquivo dividido com elas é juntado na volta.
     pub running: Vec<(u64, Vec<String>)>,
     /// O commit da onda, em que a revisão cria a cópia separada; sem ele, a
     /// cópia sai do commit atual.
     pub commit: Option<String>,
+    /// O repositório principal: onde a spec mora e onde nada é editado.
+    pub root: String,
+    /// A cópia que a rodada criou para a onda; sem ela, o pedido não fala de
+    /// cópia.
+    pub copy: Option<WaveCopy>,
+    /// A cópia em que o revisor da onda trabalha.
+    pub review: WaveCopy,
 }
 
 /// Os blocos já lidos de que o pedido de uma onda é feito.
@@ -802,12 +821,20 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// As regras da execução do agente da onda: os comandos do projeto, a
-    /// proibição de comitar e as outras ondas em andamento, com os arquivos
-    /// delas.
+    /// As regras da execução do agente da onda: a cópia separada que a rodada
+    /// criou, a pasta de compilação dela e de onde ler a spec, quando há
+    /// cópia; os comandos do projeto, a proibição de comitar e as outras ondas
+    /// em andamento, com os arquivos delas.
     fn execution(&self, out: &mut String) {
-        let running = &self.material.execution.running;
+        let execution = &self.material.execution;
+        let running = &execution.running;
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.execution"));
+        if let Some(copy) = &execution.copy {
+            let line = self.t("prompt.execution.copy").replace("{copy}", &copy.path).replace("{root}", &execution.root);
+            let _ = writeln!(out, "- {line}");
+            self.build_dir(out, copy);
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.root").replace("{root}", &execution.root));
+        }
         self.commands(out);
         let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
         if !running.is_empty() {
@@ -825,19 +852,31 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// As regras da execução do revisor: criar a cópia separada no commit da
-    /// onda, ler a spec do repositório principal, os comandos do projeto com
-    /// menos processos, não comitar e apagar a cópia no fim.
+    /// As regras da execução do revisor: criar a cópia que o pedido indica no
+    /// commit da onda, compilar na pasta de compilação dela, ler a spec do
+    /// repositório principal, os comandos do projeto com menos processos, não
+    /// comitar e apagar a cópia no fim.
     fn review_execution(&self, out: &mut String) {
-        let commit = self.material.execution.commit.as_deref().unwrap_or("HEAD");
+        let execution = &self.material.execution;
+        let (copy, root) = (&execution.review, &execution.root);
+        let commit = execution.commit.as_deref().unwrap_or("HEAD");
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.execution"));
-        let _ = writeln!(out, "- {}", self.t("prompt.review.copy").replace("{commit}", commit));
-        let _ = writeln!(out, "- {}", self.t("prompt.review.root"));
+        let line = self.t("prompt.review.copy").replace("{copy}", &copy.path).replace("{root}", root);
+        let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
+        self.build_dir(out, copy);
+        let _ = writeln!(out, "- {}", self.t("prompt.execution.root").replace("{root}", root));
         self.commands(out);
         let _ = writeln!(out, "- {}", self.t("prompt.review.jobs"));
         let _ = writeln!(out, "- {}", self.t("prompt.execution.no_commit"));
-        let _ = writeln!(out, "- {}", self.t("prompt.review.cleanup"));
+        let _ = writeln!(out, "- {}", self.t("prompt.review.cleanup").replace("{copy}", &copy.path));
         out.push('\n');
+    }
+
+    /// A pasta de compilação da cópia, quando ela tem uma.
+    fn build_dir(&self, out: &mut String, copy: &WaveCopy) {
+        if let Some(dir) = &copy.build_dir {
+            let _ = writeln!(out, "- {}", self.t("prompt.execution.build_dir").replace("{dir}", dir));
+        }
     }
 
     /// Os comandos de compilar e de testar que o projeto declara, um por
@@ -1536,25 +1575,39 @@ mod tests {
         assert!(section(&write_review(&plain, Locale::PtBr), "Conserto").is_empty());
     }
 
-    /// O pedido da onda traz as regras da execução: os comandos do projeto,
-    /// não comitar e as outras ondas em andamento com os arquivos delas. O
-    /// da revisão diz como criar a cópia separada no commit da onda, ler a
-    /// spec do repositório principal, compilar com menos processos e apagar a
-    /// cópia no fim; sem commit, a cópia sai do atual.
-    #[test]
-    fn the_requests_carry_the_execution_rules_and_the_review_the_separate_copy() {
-        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        let mut m = material(&log, 1);
-        m.execution = Execution {
+    /// A execução de um pedido montado com a cópia que a rodada criou.
+    fn with_copy() -> Execution {
+        Execution {
             build: Some("make".into()),
             test: Some("make test".into()),
             running: vec![(2, vec!["src/b.rs".into(), "src/c.rs".into()]), (3, Vec::new())],
             commit: Some("abc1234".into()),
-        };
+            root: "/repo".into(),
+            copy: Some(WaveCopy { path: "/repo/copia-1".into(), build_dir: Some("/repo/target/copias/a".into()) }),
+            review: WaveCopy { path: "/repo/revisao-1".into(), build_dir: Some("/repo/target/copias/b".into()) },
+        }
+    }
+
+    /// O pedido da onda traz as regras da execução: a cópia separada que a
+    /// rodada criou, a pasta de compilação dela, a leitura da spec pelo
+    /// repositório principal, os comandos do projeto, não comitar e as outras
+    /// ondas em andamento com os arquivos delas. O da revisão diz em que
+    /// cópia trabalhar, como criá-la no commit da onda, onde compilar, ler a
+    /// spec do repositório principal, compilar com menos processos e apagar a
+    /// cópia no fim; sem commit, a cópia sai do atual. Sem cópia, o pedido da
+    /// onda não fala de cópia nem de pasta de compilação.
+    #[test]
+    fn the_requests_carry_the_execution_rules_the_copy_and_its_build_folder() {
+        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
+        let mut m = material(&log, 1);
+        m.execution = with_copy();
         let t = |key: &str| translate(key, Locale::PtBr);
         let wave = write(&m, Locale::PtBr);
         let rules = section(&wave, t("prompt.part.execution"));
         for line in [
+            format!("- {}", t("prompt.execution.copy").replace("{copy}", "/repo/copia-1").replace("{root}", "/repo")),
+            format!("- {}", t("prompt.execution.build_dir").replace("{dir}", "/repo/target/copias/a")),
+            "`--root /repo`".to_string(),
             "- Compile com `make`.".to_string(),
             "- Teste com `make test`.".to_string(),
             format!("- {}", t("prompt.execution.no_commit")),
@@ -1564,29 +1617,63 @@ mod tests {
         ] {
             assert!(rules.contains(&line), "{line}: {rules}");
         }
-        assert!(!rules.contains("worktree"), "{rules}");
+        assert!(!rules.contains("worktree") && !rules.contains("revisao-1"), "{rules}");
 
         let review = write_review(&m, Locale::PtBr);
         let rules = section(&review, t("prompt.part.execution"));
         for line in [
-            "`git worktree add --detach <pasta da cópia> abc1234`",
-            "`--root <repositório principal>`",
+            "`git worktree add --detach /repo/revisao-1 abc1234`",
+            "`CARGO_TARGET_DIR=/repo/target/copias/b`",
+            "`--root /repo`",
             t("prompt.review.jobs"),
-            "`git worktree remove --force <pasta da cópia>`",
+            "`git worktree remove --force /repo/revisao-1`",
             "- Compile com `make`.",
             t("prompt.execution.no_commit"),
         ] {
             assert!(rules.contains(line), "{line}: {rules}");
         }
-        assert!(!rules.contains("Onda 2"), "a revisão roda na cópia: {rules}");
+        assert!(!rules.contains("Onda 2") && !rules.contains("copia-1"), "a revisão roda na cópia dela: {rules}");
 
-        m.execution = Execution::default();
+        m.execution = Execution { root: "/repo".into(), ..Execution::default() };
         let wave = write(&m, Locale::PtBr);
         let rules = section(&wave, t("prompt.part.execution"));
         assert!(!rules.contains("Compile com") && !rules.contains(t("prompt.execution.running")), "{rules}");
+        assert!(!rules.contains("CARGO_TARGET_DIR") && !rules.contains("--root"), "{rules}");
         assert!(rules.contains(t("prompt.execution.no_commit")), "{rules}");
-        assert!(write_review(&m, Locale::PtBr).contains("<pasta da cópia> HEAD`"));
-        assert!(!section(&write(&m, Locale::EnUs), translate("prompt.part.execution", Locale::EnUs)).is_empty());
+        assert!(write_review(&m, Locale::PtBr).contains("--detach  HEAD`"));
+        let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
+        let rules = section(&en, translate("prompt.part.execution", Locale::EnUs));
+        assert!(rules.contains("`/repo/copia-1`") && rules.contains("`/repo/target/copias/a`"), "{rules}");
+    }
+
+    /// As instruções fixas do pedido da onda exigem o teste de cada critério
+    /// nascendo vermelho pelo caminho que o usuário usa, e não só pela função
+    /// auxiliar, e a entrega dizendo como a prova foi feita; as do pedido da
+    /// revisão mandam rodar a prova gravada, ler as provas do vermelho da
+    /// entrega e cortar onde a onda não cortou, sem repetir os cortes dela.
+    #[test]
+    fn the_fixed_instructions_ask_for_the_red_proof_by_the_real_path_and_the_review_skips_the_waves_cuts() {
+        for (lang, wave, review) in [
+            (
+                Locale::PtBr,
+                ["nasce vermelho", "o comando ou o evento do gancho", "não só a função auxiliar", "como a prova do vermelho foi feita"],
+                ["Rode a prova gravada de cada critério", "provas do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
+            ),
+            (
+                Locale::EnUs,
+                ["is born red", "the command or the hook event", "not only the helper function", "how the red proof was made"],
+                ["Run each criterion's recorded proof", "red proofs the delivery reports", "where the wave did not cut", "without repeating its own"],
+            ),
+        ] {
+            let fixed = translate("prompt.fixed", lang);
+            for said in wave {
+                assert!(fixed.contains(said), "{lang:?} wave: {said}: {fixed}");
+            }
+            let fixed = translate("prompt.review.fixed", lang);
+            for said in review {
+                assert!(fixed.contains(said), "{lang:?} review: {said}: {fixed}");
+            }
+        }
     }
 
     /// Um texto casa com a onda dele quando a nota dela não fica abaixo da

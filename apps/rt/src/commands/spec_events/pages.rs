@@ -216,7 +216,8 @@ fn write_pages(
     // O pedido de cada onda é montado aqui, com o disco, e vai pronto para a
     // página: quem aprova lê exatamente o que o agente da onda vai ler.
     let running = crate::commands::flow::round::waves_in_progress(log).into_keys().collect();
-    let prompts: WavePrompts = mustard_core::io::wave_prompt::prompts(root, spec.trim(), log, lang, &running)
+    let flight = mustard_core::io::wave_prompt::Flight { running, ..Default::default() };
+    let prompts: WavePrompts = mustard_core::io::wave_prompt::prompts(root, spec.trim(), log, lang, &flight)
         .into_iter()
         .map(|built| (built.wave, built.text))
         .collect();

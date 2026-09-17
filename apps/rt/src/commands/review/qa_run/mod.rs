@@ -786,7 +786,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     let Some(spec_file) = runner::find_spec_file(state, spec) else {
         eprintln!(
             "[qa-run] Spec file not found for \"{spec}\" under {} (work dir: {}) — check the \
-             slug with `mustard-rt run active-specs`; a submodule has its own `.claude/`.",
+             slug; a submodule has its own `.claude/`.",
             state.display(),
             cwd.display()
         );

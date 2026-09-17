@@ -1,8 +1,8 @@
 //! O relatório da rodada e as linhas dos agentes: o que cada agente devolve,
-//! lido como veio, conferido antes de qualquer gravação e gravado pela mesma
-//! porta das outras gravações, com o commit no meio.
+//! lido como veio, conferido antes de qualquer gravação, juntado da cópia de
+//! cada onda e gravado pela mesma porta das outras gravações, com o commit no
+//! meio.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use mustard_core::domain::spec_events::{Refusal, SpecLog, DELIVERED_MAX_CHARS};
@@ -13,9 +13,9 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::commit::{
-    commit_draft, commit_message, format_round_files, make_commit, record_commit, unknown_file, UNMADE_SHA,
+    close_copies, commit_draft, commit_message, format_round_files, join_copies, make_commit, record_commit,
+    unknown_file, write_joined, UNMADE_SHA,
 };
-use super::queue::{task_files, waves_in_progress};
 use super::stops::{change_accepted, replan_code};
 use crate::commands::spec_events::write::{record, RecordCheck};
 
@@ -65,11 +65,14 @@ pub(crate) struct Taken {
 }
 
 /// Fecha o que voltou de uma rodada, a partir do texto `raw` com as linhas
-/// dos agentes: confere tudo, formata os arquivos da rodada e faz o commit, e
-/// só então grava os vereditos, as entregas, a versão nova de cada critério
-/// com prova nova e o commit. O git, que pode recusar, roda antes da primeira
-/// gravação: a chamada corrigida depois de uma recusa grava tudo uma vez só.
-/// A rodada e o fechamento fecham o relatório por aqui.
+/// dos agentes: confere tudo e junta a cópia de cada onda ao repositório
+/// principal sem gravar nada, e só então grava a junção, formata os arquivos
+/// da rodada e faz o commit; depois grava os vereditos, as entregas, a versão
+/// nova de cada critério com prova nova e o commit, e apaga as cópias. O git,
+/// que pode recusar, roda antes da primeira gravação na spec, e a recusa dele
+/// devolve o repositório principal ao que era: a chamada corrigida depois de
+/// uma recusa junta e grava tudo uma vez só. A rodada e o fechamento fecham o
+/// relatório por aqui.
 pub(crate) fn take_report(
     start: &Path,
     root: &Path,
@@ -96,8 +99,10 @@ pub(crate) fn take_report(
             return Err(RoundRefusal::DeliveredTooLong { wave: wave.wave, chars });
         }
     }
-    reserved_elsewhere(log, &report.waves)?;
-    unknown_file(root, &report.waves)?;
+    unknown_file(root, log, &report.waves)?;
+    // A junção de cada cópia é decidida antes de qualquer gravação: o conflito
+    // que ela não resolve para a rodada com o repositório principal intacto.
+    let joined = join_copies(root, log, &report.waves)?;
     // A mensagem do commit é montada e conferida junto das outras travas,
     // antes de qualquer gravação: recusá-la depois de gravar o entregou e o
     // veredito faria a chamada seguinte, com a mensagem corrigida, duplicar os
@@ -122,6 +127,10 @@ pub(crate) fn take_report(
     let checked = check_reports(start, spec, &report, planned).map_err(RoundRefusal::Refused)?;
 
     let mut warnings: Vec<Value> = Vec::new();
+    if let Err(refused) = write_joined(root, &joined, true) {
+        let _ = write_joined(root, &joined, false);
+        return Err(refused);
+    }
     // A formatação roda uma vez por rodada, só nos arquivos da rodada.
     let outcome = format_round_files(root, &files);
     for name in outcome.missing {
@@ -131,7 +140,13 @@ pub(crate) fn take_report(
         }));
     }
     let made = match message {
-        Some((title, body)) => Some((make_commit(root, &title, &body, &files)?, title)),
+        Some((title, body)) => match make_commit(root, &title, &body, &files) {
+            Ok(sha) => Some((sha, title)),
+            Err(refused) => {
+                write_joined(root, &joined, false)?;
+                return Err(refused);
+            }
+        },
         None => None,
     };
     let (recorded, proofs) = record_reports(start, spec, checked).map_err(RoundRefusal::Refused)?;
@@ -139,6 +154,7 @@ pub(crate) fn take_report(
         Some((sha, title)) => Some(record_commit(start, root, spec, &sha, &title, &waves, &files)?),
         None => None,
     };
+    warnings.extend(close_copies(root, log, &report.waves, lang));
     // A prova nova roda uma vez: a que sai verde sem rodar teste nenhum é
     // avisada agora, antes de o fechamento recusá-la.
     for (code, proof) in proofs {
@@ -227,24 +243,6 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
         return Err(RoundRefusal::LineMissing);
     }
     Ok(Report { waves, verdicts })
-}
-
-/// Um arquivo entregue que está reservado para outra onda em andamento: duas
-/// ondas no mesmo arquivo seriam dois agentes editando o mesmo arquivo ao mesmo
-/// tempo. As ondas que entregam neste relatório já não estão em andamento.
-fn reserved_elsewhere(log: &SpecLog, waves: &[WaveReport]) -> Result<(), RoundRefusal> {
-    let reporting: BTreeSet<u64> = waves.iter().flat_map(|w| std::iter::once(w.wave).chain(w.fixes.clone())).collect();
-    let running: Vec<u64> =
-        waves_in_progress(log).into_keys().filter(|n| !reporting.contains(n)).collect();
-    let reserved = task_files(log);
-    for wave in waves {
-        for file in &wave.files {
-            if let Some(other) = running.iter().find(|n| reserved.get(n).is_some_and(|files| files.contains(file))) {
-                return Err(RoundRefusal::FileReserved { file: file.clone(), wave: wave.wave, other: *other });
-            }
-        }
-    }
-    Ok(())
 }
 
 /// O número do critério `reference`, dado pelo código que a página mostra ou
@@ -588,30 +586,119 @@ mod tests {
         assert!(log.visible().iter().all(|e| e.event_type != "verdict"), "no verdict was left behind");
     }
 
-    /// A lista de arquivos entregue é conferida contra os arquivos
-    /// reservados: o arquivo de outra onda ainda em andamento é recusado, e o
-    /// de uma onda que já não está em andamento passa.
+    /// A rodada despacha duas ondas que mexem no mesmo arquivo, com o limite
+    /// de compilações em 2: as duas saem juntas, cada uma com a sua cópia e a
+    /// sua pasta de compilação no pedido. A entrega da primeira é juntada ao
+    /// repositório principal — o arquivo novo inclusive —, comitada, e a cópia
+    /// dela é apagada. A da segunda, com um trecho que conflita com a
+    /// primeira, é recusada sem gravar nada, com a lista dos trechos e a cópia
+    /// em que se resolve; resolvido o conflito na cópia, a mesma entrega é
+    /// juntada e comitada uma vez só, e a cópia some.
     #[test]
-    fn a_delivered_file_reserved_for_another_wave_in_flight_is_refused() {
+    fn two_waves_on_the_same_file_are_merged_and_a_conflict_is_refused_until_resolved() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
+        let copy = |wave: u64| mustard_core::io::wave_prompt::copy_path(root, "x", wave, false);
+        let shown = |wave: u64| mustard_core::io::wave_prompt::shown(&copy(wave));
+        let prompts: Vec<&str> = (0..2).map(|at| out["dispatch"][at]["prompt"].as_str().unwrap_or_default()).collect();
+        for (at, wave) in [1_u64, 2].iter().enumerate() {
+            assert!(prompts[at].contains(&format!("`{}`", shown(*wave))), "{}", prompts[at]);
+        }
+        let folder = |prompt: &str| prompt.split("CARGO_TARGET_DIR=").nth(1).and_then(|rest| rest.split('`').next()).map(str::to_string);
+        assert!(folder(prompts[0]).is_some() && folder(prompts[0]) != folder(prompts[1]), "{prompts:?}");
 
-        let refused = round(root, "x", Some(&delivered(root, 1, "Mexi na b também.", &["src/a.rs", "src/b.rs"])));
-        assert_eq!(refused["reason"], json!("round-file-reserved"), "{refused}");
-        let expected = translate("round.file_reserved", Locale::PtBr)
-            .replace("{file}", "src/b.rs")
-            .replace("{wave}", "1")
-            .replace("{other}", "2");
+        // Cada agente trabalha na sua cópia.
+        std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
+        std::fs::write(copy(1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(copy(2).join("src/a.rs"), "fn um() {}\n// onda 2\n").unwrap();
+        let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
+        let head = || {
+            let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let commits_of = |wave: u64| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.visible().iter().filter(|e| e.event_type == "commit" && e.ints("waves").contains(&wave)).count()
+        };
+
+        let first = line("DELIVERED", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs", "src/novo.rs"],
+            "commit": "a onda 1 sai"}));
+        let went = round(root, "x", Some(&first));
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// onda 1\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/novo.rs")).unwrap(), "fn novo() {}\n");
+        assert_eq!(last_commit(root).0, "feat(onda-1): a onda 1 sai");
+        let shown_files = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output();
+        let shown_files = String::from_utf8_lossy(&shown_files.unwrap().stdout).to_string();
+        assert_eq!(shown_files.lines().collect::<Vec<_>>(), ["src/a.rs", "src/novo.rs"], "{went}");
+        assert!(!copy(1).exists(), "the first copy is gone after the commit: {went}");
+        assert!(went.get("warnings").is_none(), "{went}");
+
+        let (seed, before) = (head(), spec_lines());
+        let second = line("DELIVERED", json!({"wave": 2, "text": "A onda 2 saiu.", "files": ["src/a.rs"],
+            "commit": "a onda 2 sai"}));
+        let refused = round(root, "x", Some(&second));
+        assert_eq!(refused["reason"], json!("round-merge-conflict"), "{refused}");
+        let expected = translate("round.merge_conflict", Locale::PtBr)
+            .replace("{wave}", "2")
+            .replace("{conflicts}", "src/a.rs:2")
+            .replace("{copy}", &shown(2))
+            .replace("{head}", &seed);
         assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert_eq!((head(), spec_lines()), (seed.clone(), before), "nothing was committed or recorded: {refused}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// onda 1\n");
+        assert!(copy(2).exists(), "the conflicting copy stays to be resolved");
+
+        // Resolvido como a recusa ensina: a cópia vai ao commit atual e o
+        // trecho marcado é acertado.
+        git_at(&copy(2), &["checkout", "-q", "--merge", "--detach", &seed]);
+        assert!(std::fs::read_to_string(copy(2).join("src/a.rs")).unwrap().contains("<<<<<<<"));
+        std::fs::write(copy(2).join("src/a.rs"), "fn um() {}\n// onda 1\n// onda 2\n").unwrap();
+        let went = round(root, "x", Some(&second));
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// onda 1\n// onda 2\n");
+        assert_eq!(last_commit(root).0, "feat(onda-2): a onda 2 sai");
+        assert_eq!((commits_of(1), commits_of(2), delivered_count(root)), (1, 1, 2), "each delivery went in once");
+        assert!(!copy(2).exists(), "the second copy is gone after the commit: {went}");
+    }
+
+    /// A junção que o git recusa depois de gravada volta o repositório
+    /// principal ao que era: a chamada corrigida junta de novo, sem conflito,
+    /// e grava a entrega uma vez só.
+    #[cfg(unix)]
+    #[test]
+    fn a_merge_the_commit_refuses_leaves_the_main_repository_as_it_was() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let copy = mustard_core::io::wave_prompt::copy_path(root, "x", 1, false);
+        std::fs::write(root.join("src/a.rs"), "// principal\nfn um() {}\n").unwrap();
+        git_at(root, &["commit", "-q", "-am", "outra mudança"]);
+        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
+        let hooks = root.join("ganchos");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+
+        let report = line("DELIVERED", json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a onda 1 sai"}));
+        let refused = round(root, "x", Some(&report));
+        assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "// principal\nfn um() {}\n");
         assert_eq!(delivered_count(root), 0);
 
-        // As duas voltam juntas: nenhuma está mais em andamento.
-        let both = format!("{}\n{}", delivered(root, 1, "A.", &["src/a.rs"]), delivered(root, 2, "B.", &["src/b.rs"]));
-        let went = round(root, "x", Some(&both));
+        std::fs::remove_file(&hook).unwrap();
+        let went = round(root, "x", Some(&report));
         assert_eq!(went["ok"], json!(true), "{went}");
-        assert_eq!(last_commit(root).0, "feat(ondas-1-2): a onda 1 saiu");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "// principal\nfn um() {}\n// onda 1\n");
+        assert_eq!(delivered_count(root), 1);
     }
 
     /// O conserto que diz as ondas que fecha grava a entrega também nelas, o

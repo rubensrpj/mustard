@@ -3,17 +3,17 @@
 //! voltou, despachar as ondas prontas, pedir as revisões e dizer o que fazer
 //! em seguida.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use mustard_core::domain::spec_events::{Refusal, DELIVERED_MAX_CHARS};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::prompts;
+use mustard_core::io::wave_prompt::{prompts, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::queue::{first_unfinished, max_parallel, next_waves, reviews_due, sent_items, waves_in_progress};
+use super::queue::{first_unfinished, max_parallel, next_waves, open_copies, reviews_due, sent_items, waves_in_progress};
 use super::report::{take_report, Taken};
 use super::stops::{change_question, stopped_waves, waves_stuck};
 use super::{can_run, RoundOpts, DONE_STEP};
@@ -30,8 +30,9 @@ pub(crate) enum RoundRefusal {
     LineMissing,
     /// Uma linha do relatório não traz um campo obrigatório.
     LineField { line: &'static str, field: &'static str },
-    /// Um arquivo entregue está reservado para outra onda em andamento.
-    FileReserved { file: String, wave: u64, other: u64 },
+    /// A entrega de uma onda conflita com o repositório principal: os
+    /// trechos, a cópia em que se resolve e o commit atual.
+    MergeConflict { wave: u64, copy: String, conflicts: Vec<String>, head: String },
     /// Um arquivo entregue não está no disco nem é conhecido do git.
     FileUnknown { file: String, wave: u64 },
     /// A spec ainda não foi aprovada.
@@ -56,7 +57,7 @@ impl RoundRefusal {
             Self::BadReport { .. } => "round-bad-report".into(),
             Self::LineMissing => "round-line-missing".into(),
             Self::LineField { .. } => "round-line-field-missing".into(),
-            Self::FileReserved { .. } => "round-file-reserved".into(),
+            Self::MergeConflict { .. } => "round-merge-conflict".into(),
             Self::FileUnknown { .. } => "round-file-unknown".into(),
             Self::NotApproved { .. } => "round-not-approved".into(),
             Self::DeliveredTooLong { .. } => "delivered-too-long".into(),
@@ -78,9 +79,14 @@ impl RoundRefusal {
             Self::LineField { line, field } => {
                 fill("round.line_field", &[("{line}", (*line).to_string()), ("{field}", (*field).to_string())])
             }
-            Self::FileReserved { file, wave, other } => fill(
-                "round.file_reserved",
-                &[("{file}", file.clone()), ("{wave}", wave.to_string()), ("{other}", other.to_string())],
+            Self::MergeConflict { wave, copy, conflicts, head } => fill(
+                "round.merge_conflict",
+                &[
+                    ("{wave}", wave.to_string()),
+                    ("{conflicts}", conflicts.join(", ")),
+                    ("{copy}", copy.clone()),
+                    ("{head}", head.clone()),
+                ],
             ),
             Self::FileUnknown { file, wave } => {
                 fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())])
@@ -151,7 +157,7 @@ pub(super) fn run_round(
         return Err(RoundRefusal::NotApproved { phase });
     }
 
-    let Taken { mut recorded, formatted, warnings, commit } =
+    let Taken { mut recorded, formatted, mut warnings, commit } =
         match opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
             Some(raw) => take_report(&opts.root, root, &spec, raw, &log, lang)?,
             None => Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None },
@@ -170,14 +176,17 @@ pub(super) fn run_round(
 
     // O despacho da rodada seguinte: as ondas prontas, no máximo o que o
     // projeto deixa compilar ao mesmo tempo contando as que já estão em
-    // andamento, nunca duas que dividem arquivo — nem com uma em andamento —,
-    // e nenhuma que a onda parada pelo limite de consertos segura.
+    // andamento, e nenhuma que a onda parada pelo limite de consertos segura.
+    // Cada uma sai com a sua cópia e a sua pasta de compilação.
     let running = waves_in_progress(&log);
     let stuck = waves_stuck(&log);
-    let next = next_waves(&log, max_parallel(root), &running, &stuck);
+    let ready = next_waves(&log, max_parallel(root), &running, &stuck);
+    let (copies, not_copied) = open_copies(root, &spec, &log, &ready, &running, lang);
+    warnings.extend(not_copied);
+    let next: Vec<u64> = ready.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as que
-    // saem junto com ela nesta rodada.
-    let flight: BTreeSet<u64> = running.keys().chain(&next).copied().collect();
+    // saem junto com ela nesta rodada, e traz a cópia dela.
+    let flight = Flight { running: running.keys().chain(&next).copied().collect(), copies };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     let mut in_flight: BTreeMap<u64, String> = running
@@ -194,6 +203,12 @@ pub(super) fn run_round(
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
         draft.insert("items".into(), json!(sent_items(&log, *wave)));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
+        if let Some(copy) = flight.copies.get(wave) {
+            draft.insert("copy".into(), json!(copy.path));
+            if let Some(dir) = &copy.build_dir {
+                draft.insert("build_dir".into(), json!(dir));
+            }
+        }
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
@@ -376,7 +391,8 @@ mod tests {
             assert!(fix_part.contains(line), "{line}: {review}");
         }
         assert!(review.contains("## O que esta onda entregou\n\n- MSTD-DELIV-0002 (entregou) — `mustard-rt run read waves --spec x --term MSTD-DELIV-0002`\n\n"), "{review}");
-        assert!(!sha.is_empty() && review.contains(&format!("<pasta da cópia> {sha}`")), "{sha}: {review}");
+        let review_copy = mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", 1, true));
+        assert!(!sha.is_empty() && review.contains(&format!("--detach {review_copy} {sha}`")), "{sha}: {review}");
     }
 
     /// A rodada diz o próximo passo de cada situação: despachar o que saiu;

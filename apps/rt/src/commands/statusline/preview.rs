@@ -1,6 +1,9 @@
-//! `mustard-rt run statusline --preview` — render every shipped theme on its
-//! own line, using a synthetic payload. Independent of any project state, so
-//! it stays deterministic for screenshots.
+//! `mustard-rt run statusline --preview` — a face que mostra os temas da
+//! barra: cada tema numa linha, com o nome dele, sobre um exemplo fixo que não
+//! depende do projeto. Os temas que pedem a fonte especial (Nerd Font, que o
+//! `mustard install-nerd-font` instala) saem marcados.
+
+use std::fmt::Write as _;
 
 use super::segment::{cost_segment, diff_segment, duration_segment, model_segment, savings_segment, Segment, SegmentKind};
 use super::theme::{render_line, ThemeId};
@@ -57,19 +60,25 @@ fn synthetic_segments() -> Vec<Segment> {
     segs
 }
 
-/// Print one labeled line per shipped theme.
-pub fn run() {
+/// O texto da face: para cada tema, a linha do nome, marcada quando ele pede
+/// a fonte especial, a barra de exemplo nesse tema e uma linha em branco.
+fn preview_text() -> String {
     let segs = synthetic_segments();
     // Width the longest name will take, so the previews left-align cleanly.
     let max_name = ThemeId::ALL.iter().map(|id| id.name().len()).max().unwrap_or(0);
+    let mut out = String::new();
     for id in ThemeId::ALL {
         let theme = id.theme();
         let nf = if theme.requires_nerdfont { " (Nerd Font)" } else { "" };
         let label = format!("{:width$}", id.name(), width = max_name);
-        println!("{label}{nf}:");
-        println!("  {}", render_line(theme, &segs));
-        println!();
+        let _ = writeln!(out, "{label}{nf}:\n  {}\n", render_line(theme, &segs));
     }
+    out
+}
+
+/// Print one labeled line per shipped theme.
+pub fn run() {
+    print!("{}", preview_text());
 }
 
 #[cfg(test)]
@@ -95,6 +104,28 @@ mod tests {
         }
         // Cost is forged into the synthetic payload → must appear
         assert!(kinds.contains(&SegmentKind::Cost));
+    }
+
+    /// A barra tem mais de um tema, alguns pedem a fonte especial e outros
+    /// não, e a face da prévia mostra cada um, pelo nome, marcando só os que
+    /// pedem a fonte.
+    #[test]
+    fn the_preview_shows_every_theme_and_marks_the_ones_that_need_the_font() {
+        let shown = preview_text();
+        let needs_font = ThemeId::ALL.iter().filter(|id| id.theme().requires_nerdfont).count();
+        assert!(needs_font > 0 && needs_font < ThemeId::ALL.len(), "some themes need the font and some do not");
+        let labels: Vec<(&str, bool)> = shown
+            .lines()
+            .filter(|line| !line.starts_with(' ') && line.ends_with(':'))
+            .map(|line| {
+                let label = line.trim_end_matches(':');
+                (label.trim_end_matches(" (Nerd Font)").trim_end(), label.ends_with(" (Nerd Font)"))
+            })
+            .collect();
+        let expected: Vec<(&str, bool)> =
+            ThemeId::ALL.iter().map(|id| (id.name(), id.theme().requires_nerdfont)).collect();
+        assert_eq!(labels, expected, "{shown}");
+        assert_eq!(shown.lines().filter(|line| line.starts_with("  ")).count(), ThemeId::ALL.len(), "{shown}");
     }
 
     #[test]

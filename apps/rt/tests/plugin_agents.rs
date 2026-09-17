@@ -7,9 +7,11 @@
 //!
 //! O projeto recebe exatamente três agentes — `mustard-wave`,
 //! `mustard-review` e `mustard-skill` —, no idioma do `language.text` e com
-//! até 3.072 bytes cada; os dois idiomas existem como molde do produto; nenhum texto manda copiar o projeto nem
-//! compilar numa cópia; e cada comando do fluxo responde o próximo passo, que
-//! o modelo não escolhe sozinho.
+//! até 3.072 bytes cada; os dois idiomas existem como molde do produto; nenhum
+//! texto manda criar cópia do projeto por conta própria, e os de onda e de
+//! revisão mandam trabalhar na cópia e na pasta de compilação que o pedido
+//! indica; e cada comando do fluxo responde o próximo passo, que o modelo não
+//! escolhe sozinho.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -22,10 +24,11 @@ use serde_json::{json, Value};
 /// O teto de um texto de agente, em bytes.
 const AGENT_CAP: usize = 3_072;
 
-/// O jeito de mandar copiar o projeto ou compilar numa cópia: a cópia em si,
-/// a pasta de compilação compartilhada que só servia às cópias, e a porta que
-/// apagava a cópia depois.
-const COPY_OR_BUILD_ELSEWHERE: &[&str] = &[
+/// O jeito de o agente criar uma cópia do projeto por conta própria: a cópia
+/// em si, a pasta de compilação escolhida por ele, a pasta compartilhada que
+/// só servia às cópias soltas, e a porta que apagava a cópia depois. Só o
+/// pedido que o binário monta diz em que cópia e em que pasta trabalhar.
+const COPY_ON_ITS_OWN: &[&str] = &[
     "CARGO_TARGET_DIR",
     "scratch-target",
     "cp -r",
@@ -185,13 +188,15 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
     }
 }
 
-/// Nenhum texto de agente manda copiar o projeto nem compilar numa cópia —
+/// Nenhum texto de agente manda criar cópia do projeto por conta própria —
 /// nem os três que o projeto recebe, em cada idioma, nem as instruções fixas
-/// que o binário monta no pedido da onda e da revisão — e os dois que rodam
-/// código dizem que não se copia. O aviso das sobras no disco continua no
+/// que o binário monta no pedido da onda e da revisão —; os de onda e de
+/// revisão mandam trabalhar na cópia separada e na pasta de compilação que o
+/// pedido indica. O pedido que a rodada monta, pelo binário, traz a cópia que
+/// ela criou e a pasta de compilação. O aviso das sobras no disco continua no
 /// catálogo do início da sessão, com o comando que as limpa.
 #[test]
-fn no_agent_text_tells_to_copy_the_project_or_build_in_a_copy() {
+fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_copy_and_the_build_folder() {
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let mut texts: Vec<(String, String)> =
             ["wave", "review", "skill"].iter().map(|name| (format!("{lang} {name}"), template(lang, name))).collect();
@@ -199,18 +204,66 @@ fn no_agent_text_tells_to_copy_the_project_or_build_in_a_copy() {
             texts.push((format!("{lang} {key}"), translate(key, text).to_string()));
         }
         for (what, body) in &texts {
-            for forbidden in COPY_OR_BUILD_ELSEWHERE {
+            for forbidden in COPY_ON_ITS_OWN {
                 assert!(!body.contains(forbidden), "{what} still says `{forbidden}`");
             }
         }
-        let never_copy = if text == Locale::PtBr { "Nunca copie" } else { "Never copy" };
+        let said: [&str; 3] = if text == Locale::PtBr {
+            ["cópia separada que o pedido indica", "pasta de compilação que ele indica", "Nunca crie cópia por conta própria"]
+        } else {
+            ["separate copy the request names", "build folder it names", "Never create a copy on your own"]
+        };
         for name in ["wave", "review"] {
-            assert!(template(lang, name).contains(never_copy), "the {lang} `{name}` agent never forbids the copy");
+            for line in said {
+                assert!(template(lang, name).contains(line), "the {lang} `{name}` agent does not say `{line}`");
+            }
+        }
+        // O revisor prova de ponta a ponta, numa pasta temporária com o
+        // Mustard instalado, além dos testes.
+        let end_to_end = if text == Locale::PtBr { "prove de ponta a ponta" } else { "prove it end to end" };
+        for line in [end_to_end, "mktemp -d", "`mustard init`"] {
+            assert!(template(lang, "review").contains(line), "the {lang} reviewer does not say `{line}`");
         }
 
         let notice = translate("scratch.residue.notice", text);
         assert!(notice.contains("mustard-rt run clean"), "the {lang} disk notice lost its cleanup command");
     }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"pt-BR"},"maxCompilingWaves":2}"#);
+    let opened = rt(&root, &home, &["run", "open", "--kind", "feature", "--name", "copia", "--base", "dev"], None);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let file = root.join(".claude/spec/copia/spec.ndjson");
+    let put = |event_type: &str, body: Value| store::write(&file, event_type, body.as_object().cloned().unwrap(), &[]).unwrap().id;
+    let said = put("message", json!({"author": "user", "text": "o objetivo"}));
+    let crit = put("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true", "origin": said}));
+    for n in [1, 2] {
+        put("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "passa", "origin": said}));
+        put("task", json!({"wave": n, "text": "Mexer no mesmo arquivo.", "files": [{"path": "src/main.rs"}], "origin": said}));
+    }
+    put("state", json!({"phase": "running", "branch": "feature/copia"}));
+
+    let round = rt(&root, &home, &["run", "round", "--spec", "copia"], None);
+    assert_eq!(round["ok"], json!(true), "{round}");
+    let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
+    assert_eq!(dispatched.len(), 2, "the two waves on the same file go out together: {round}");
+    let log = store::read(&file).unwrap().unwrap();
+    let mut dirs = Vec::new();
+    for sent in dispatched {
+        let wave = sent["wave"].as_u64().unwrap();
+        let prompt = sent["prompt"].as_str().unwrap_or_default();
+        let send = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(wave)).unwrap();
+        let copy = send.str_field("copy").unwrap_or_else(|| panic!("wave {wave} recorded no copy: {round}"));
+        let build = send.str_field("build_dir").unwrap_or_else(|| panic!("wave {wave} recorded no build folder"));
+        assert!(copy.ends_with(&format!("/.claude/worktrees/mustard-copia-{wave}")), "{copy}");
+        assert!(Path::new(copy).join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
+        assert!(build.contains("/target/copias/"), "{build}");
+        assert!(prompt.contains(&format!("`{copy}`")), "the request names the copy: {prompt}");
+        assert!(prompt.contains(&format!("`CARGO_TARGET_DIR={build}`")), "the request names the build folder: {prompt}");
+        assert!(prompt.contains("nasce vermelho") && prompt.contains("o comando ou o evento do gancho"), "{prompt}");
+        dirs.push(build.to_string());
+    }
+    assert_ne!(dirs[0], dirs[1], "each copy builds in its own folder");
 }
 
 /// Roda, pelo binário de verdade, a linha inteira que a resposta `report`

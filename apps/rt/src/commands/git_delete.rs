@@ -172,7 +172,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
             "ok": false,
             "reason": "no-unit",
             "branch": branch,
-            "hint": "name the work branch to delete: `mustard-rt run git-delete --unit dev_my-unit`",
+            "hint": "name the work branch to delete; nothing was touched",
         });
     }
     // A unit no ref carries is a typo, not a job already done. Answering

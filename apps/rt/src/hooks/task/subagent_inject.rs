@@ -21,7 +21,7 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::State;
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::prompts;
+use mustard_core::io::wave_prompt::{prompts, Flight};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use serde_json::Value;
@@ -78,7 +78,8 @@ fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
     // As ondas em andamento são as da rodada, que já gravou o pedido desta e
     // o das que saíram junto: o pedido montado aqui é o mesmo que ela devolveu.
     let running = crate::commands::flow::round::waves_in_progress(&log).into_keys().collect();
-    let prompt = prompts(&project.root, spec, &log, lang, &running)
+    let flight = Flight { running, ..Flight::default() };
+    let prompt = prompts(&project.root, spec, &log, lang, &flight)
         .into_iter()
         .find(|built| built.wave == wave)
         .ok_or_else(|| say("subagent.no_wave", lang, &[("{spec}", spec), ("{wave}", &wanted)]))?;
@@ -181,7 +182,7 @@ mod tests {
     /// O pedido que a rodada e a página montam para a onda 1.
     fn assembled(root: &Path) -> String {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        prompts(root, "x", &log, Locale::PtBr, &std::collections::BTreeSet::new()).into_iter().find(|p| p.wave == 1).expect("the wave's request").text
+        prompts(root, "x", &log, Locale::PtBr, &Flight::default()).into_iter().find(|p| p.wave == 1).expect("the wave's request").text
     }
 
     fn denied(verdict: Verdict) -> String {

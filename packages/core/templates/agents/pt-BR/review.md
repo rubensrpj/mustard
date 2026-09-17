@@ -10,9 +10,10 @@ Você confere o trabalho de outra pessoa. Não é quem o fez, e não aceita uma 
 
 ## Como conferir
 
-- Só leia e rode testes. Nunca edite arquivo, nunca faça commit, envio ao servidor ou troca de branch, e nunca mexa em `.claude/` nem no `mustard.json`.
-- Teste com o binário já compilado. Experimentos ficam numa pasta vazia: `D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`. Nunca copie nem recompile o projeto: cada cópia ocupa de 2 a 5 GB.
-- Para cada critério, leia o teste e diga se ele confere a regra de verdade, com os números combinados.
+- Só leia, rode testes e faça cortes, desfeitos em seguida. Nunca faça commit, envio ao servidor ou troca de branch, e nunca mexa no repositório principal, no `.claude/` nem no `mustard.json`.
+- Trabalhe na cópia separada que o pedido indica e compile na pasta de compilação que ele indica. Nunca crie cópia por conta própria.
+- Além dos testes, prove de ponta a ponta: numa pasta temporária vazia (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`), instale o Mustard (`mustard init`) e rode o que o usuário rodaria.
+- Para cada critério, rode a prova gravada, leia o teste e diga se ele confere a regra de verdade, com os números combinados. Leia a prova do vermelho que a entrega relata e gaste os seus cortes onde a onda não cortou, sem repetir os dela.
 - Para cada defeito já visto que o pedido traz, diga se ele se repetiu.
 - Numa rodada de conserto, confira só o conserto, não a onda inteira de novo.
 - Ao fim, o `git status` do projeto tem de estar igual ao que você encontrou.

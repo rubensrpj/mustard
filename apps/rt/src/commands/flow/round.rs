@@ -1,11 +1,14 @@
 //! `mustard-rt run round [--spec <nome>]` — uma rodada de ondas.
 //!
 //! É a porta única da execução, e cada rodada é uma chamada só. Sem relatório,
-//! a rodada despacha: escolhe as ondas que podem sair juntas, monta o pedido
-//! de cada uma, grava o envio com o pedido exato como foi injetado e marca a
-//! spec como em execução na primeira rodada. Com o relatório da rodada
-//! anterior (`--report`), ela primeiro fecha o que voltou e só então despacha
-//! a rodada seguinte.
+//! a rodada despacha: escolhe as ondas que podem sair juntas — duas no mesmo
+//! arquivo inclusive —, cria a cópia separada de cada uma no commit atual e
+//! escolhe a pasta de compilação dela, monta o pedido de cada uma com as duas,
+//! grava o envio com o pedido exato como foi injetado e marca a spec como em
+//! execução na primeira rodada. Com o relatório da rodada anterior
+//! (`--report`), ela primeiro fecha o que voltou — junta ao repositório
+//! principal os arquivos que cada cópia entregou, comita e apaga a cópia — e
+//! só então despacha a rodada seguinte.
 //!
 //! **O relatório é o que os agentes devolvem, como veio.** A rodada lê, do
 //! texto recebido, cada linha `<DELIVERED>{…}</DELIVERED>` do agente de onda e
@@ -21,9 +24,10 @@
 //!
 //! **O que trava.** Uma spec que ainda não foi aprovada; um relatório sem
 //! nenhuma das duas linhas, ou com uma linha sem campo obrigatório; um
-//! `entregou` acima do teto de caracteres; um arquivo entregue que está
-//! reservado para outra onda em andamento, ou que não está no disco nem no
-//! git; uma mensagem de commit fora do
+//! `entregou` acima do teto de caracteres; um arquivo entregue que não está no
+//! disco nem no git, nem no repositório principal nem na cópia; o trecho que a
+//! junção da cópia não resolve, que para sem gravar nada e diz em que cópia
+//! resolvê-lo; uma mensagem de commit fora do
 //! modelo (título e corpo acima do teto, link do claude.ai, o nome do modelo,
 //! assinatura de coautoria ou e-mail de alguém); o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
@@ -38,8 +42,10 @@
 //! onda que sai do plano deixa de contar, na rodada e no fechamento.
 //!
 //! **O que avisa.** O formatador que o projeto declara e que não foi achado
-//! sai pelo nome, em vez de a formatação ser pulada em silêncio; e a prova
-//! nova que sai verde sem rodar teste nenhum sai pelo código do critério.
+//! sai pelo nome, em vez de a formatação ser pulada em silêncio; a prova nova
+//! que sai verde sem rodar teste nenhum sai pelo código do critério; a cópia
+//! que não pôde ser criada, cuja onda fica para a rodada seguinte; e a cópia
+//! com mudança fora da entrega, que fica no disco em vez de ser apagada.
 //!
 //! A página da spec e a do projeto são refeitas no fim da rodada, e a resposta
 //! manda publicá-las: a rodada é um dos marcos de publicação. Nenhum endereço

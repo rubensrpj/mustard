@@ -15,7 +15,7 @@
 //! descrição do frontmatter. A skill cujo exemplo mudou no git depois dela
 //! sai marcada como a revisar.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -23,7 +23,7 @@ use serde_json::Value;
 use crate::domain::lessons::{in_scope, Scope};
 use crate::domain::project_map::{check_skill, file_history, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
-use crate::domain::wave_prompt::{self, wave_files, Execution, Material, Skill};
+use crate::domain::wave_prompt::{self, wave_files, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -47,20 +47,60 @@ pub struct WavePrompt {
     pub stale_skills: Vec<String>,
 }
 
-/// Os pedidos de todas as ondas do plano, em ordem de número. `running` são
-/// as ondas em andamento como quem monta os vê — a rodada conta também as que
-/// saem junto nela —, e o pedido de cada onda lista as outras, com os
-/// arquivos delas.
+/// As ondas que estão fora, como quem monta os pedidos as vê.
+#[derive(Debug, Default)]
+pub struct Flight {
+    /// As ondas em andamento — a rodada conta também as que saem junto nela.
+    /// O pedido de cada onda lista as outras, com os arquivos delas.
+    pub running: BTreeSet<u64>,
+    /// A cópia de cada onda que sai agora, que a rodada criou antes de gravar
+    /// o envio. A cópia de uma onda que já saiu vem do envio gravado dela.
+    pub copies: BTreeMap<u64, WaveCopy>,
+}
+
+/// Os pedidos de todas as ondas do plano, em ordem de número, com as ondas
+/// que estão fora em `flight`.
 #[must_use]
-pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, running: &BTreeSet<u64>) -> Vec<WavePrompt> {
+pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
     let bank = crate::ClaudePaths::for_project(root)
         .ok()
         .and_then(|paths| crate::io::lessons::read(&paths.lessons_path()).ok().flatten());
     let map = crate::io::project_map::read(root).ok();
     let commands = crate::ProjectConfig::load(root).commands();
-    let base = Execution { build: commands.build, test: commands.test, ..Execution::default() };
-    let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, running, lang };
+    let base = Execution {
+        build: commands.build,
+        test: commands.test,
+        root: shown(root),
+        ..Execution::default()
+    };
+    let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, flight, lang };
     log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
+}
+
+/// A pasta da cópia separada da onda `wave` da spec `spec`, dentro das cópias
+/// do checkout `root`: a do agente da onda, ou a do revisor dela
+/// (`review`). A rodada cria a primeira; o pedido da revisão manda criar a
+/// segunda.
+#[must_use]
+pub fn copy_path(root: &Path, spec: &str, wave: u64, review: bool) -> PathBuf {
+    let name = if review { format!("mustard-{spec}-{wave}-review") } else { format!("mustard-{spec}-{wave}") };
+    crate::ClaudePaths::compose_unchecked(root).claude_dir().join("worktrees").join(name)
+}
+
+/// A cópia gravada no envio mais novo da onda `wave`, com a pasta de
+/// compilação dele. `None` quando esse envio não criou cópia.
+#[must_use]
+pub fn recorded_copy(log: &SpecLog, wave: u64) -> Option<WaveCopy> {
+    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
+    let path = sent.str_field("copy")?.to_string();
+    Some(WaveCopy { path, build_dir: sent.str_field("build_dir").map(str::to_string) })
+}
+
+/// Um caminho como o pedido e o envio gravado o mostram: sempre com barras
+/// normais, que o terminal e o controle de versão aceitam nos três sistemas.
+#[must_use]
+pub fn shown(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// O que é igual para o pedido de todas as ondas de uma montagem.
@@ -72,7 +112,7 @@ struct Context<'a> {
     map: Option<&'a ProjectMap>,
     /// Os comandos do projeto.
     base: &'a Execution,
-    running: &'a BTreeSet<u64>,
+    flight: &'a Flight,
     lang: Locale,
 }
 
@@ -186,11 +226,13 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
-/// ondas em andamento com os arquivos delas e o commit mais novo que leva a
-/// onda, em que a revisão cria a cópia separada.
+/// ondas em andamento com os arquivos delas, a cópia da onda — a que sai agora
+/// ou a gravada no envio da que está em andamento — e a cópia do revisor, no
+/// commit mais novo que leva a onda e na pasta de compilação que a cópia da
+/// onda usou.
 fn execution(context: &Context, wave: u64) -> Execution {
-    let log = context.log;
-    let running = context
+    let (log, flight) = (context.log, context.flight);
+    let running = flight
         .running
         .iter()
         .filter(|n| **n != wave)
@@ -202,7 +244,16 @@ fn execution(context: &Context, wave: u64) -> Execution {
         .rev()
         .filter(|e| e.event_type == "commit" && e.ints("waves").contains(&wave))
         .find_map(|e| e.str_field("sha").map(str::to_string));
-    Execution { running, commit, ..context.base.clone() }
+    let recorded = recorded_copy(log, wave);
+    let copy = match flight.copies.get(&wave) {
+        Some(copy) => Some(copy.clone()),
+        None => recorded.clone().filter(|_| flight.running.contains(&wave)),
+    };
+    let review = WaveCopy {
+        path: shown(&copy_path(context.root, context.spec, wave, true)),
+        build_dir: recorded.and_then(|copy| copy.build_dir),
+    };
+    Execution { running, commit, copy, review, ..context.base.clone() }
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.
@@ -350,7 +401,7 @@ mod tests {
             "somar",
             "---\nname: somar\ndescription: Use ao somar dois números no motor.\n---\n\n# Somar\n\nUm passo por linha.\n",
         );
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
         assert_eq!(built.len(), 1);
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         assert!(
@@ -369,7 +420,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         assert!(
             built[0].text.contains("- **somar** — `apps/rt/.claude/skills/somar/SKILL.md`"),
@@ -390,7 +441,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             write_skill(root, "apps/rt", "somar", text);
-            let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
+            let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
             assert_eq!(built[0].bad_skills.len(), 1, "{reason}");
             assert_eq!(built[0].bad_skills[0].0, "somar");
             assert_eq!(built[0].bad_skills[0].1.reason(), reason);
@@ -408,7 +459,7 @@ mod tests {
         let root = dir.path();
         write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
         write_skill(root, "apps/rt", "subtrair", "# Subtrair\n\nOutro molde da mesma pasta.\n");
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default());
         assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("skills/subtrair/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
@@ -431,7 +482,7 @@ mod tests {
                        "replaces": 1, "waves": [1]}),
             ),
         ]);
-        let built = prompts(root, "teste", &log, Locale::PtBr, &BTreeSet::new());
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(built[0].text.contains("--term MSTD-LIMIT-0001"), "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 2, "{}", built[0].text);
         assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
@@ -466,7 +517,7 @@ mod tests {
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}]})),
         ]);
 
-        let built = prompts(root, "teste", &log, Locale::PtBr, &BTreeSet::new());
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let heading = crate::platform::i18n::translate("prompt.part.defects", Locale::PtBr);
         let (before, defects) = built[0].review.split_once(heading).expect("a seção dos defeitos");
         assert!(defects.contains("Apagar a pasta perde trabalho."), "{defects}");
@@ -508,7 +559,7 @@ mod tests {
                 json!({"name": "somar", "action": "create", "text": "O molde", "sha": "3f9a1c2e",
                        "examples": [{"path": "apps/rt/src/exemplo.rs", "why": "mesma pasta"}]}),
             ));
-            let built = prompts(root, "teste", &log_of(&events), Locale::PtBr, &BTreeSet::new());
+            let built = prompts(root, "teste", &log_of(&events), Locale::PtBr, &Flight::default());
             assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
             assert_eq!(built[0].stale_skills.is_empty(), !marked, "mudou em {moved}");
             let review = crate::platform::i18n::translate("prompt.skill.stale", Locale::PtBr);
@@ -517,12 +568,50 @@ mod tests {
         }
     }
 
+    /// O pedido da onda que sai agora traz a cópia que a rodada escolheu; o da
+    /// onda em andamento, a cópia gravada no envio dela, e o da onda que não
+    /// está fora não fala de cópia. O pedido do revisor traz a cópia dele,
+    /// dentro das cópias do checkout, e a pasta de compilação que a cópia da
+    /// onda usou.
+    #[test]
+    fn the_request_carries_the_copy_the_round_chose_or_recorded_and_the_review_its_build_folder() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
+            ("wave", json!({"n": 2, "text": "Outra onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Subtrair", "files": [{"path": "src/a.rs"}]})),
+            (
+                "send",
+                json!({"wave": 1, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1], "mustard": "0",
+                       "author": "binary", "copy": "/c/um", "build_dir": "/t/a"}),
+            ),
+        ]);
+        let chosen = WaveCopy { path: "/c/dois".into(), build_dir: Some("/t/b".into()) };
+        let flight = Flight { running: [1, 2].into(), copies: [(2, chosen)].into() };
+        let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
+        let rule = |key: &str, from: &str, to: &str| crate::platform::i18n::translate(key, Locale::PtBr).replace(from, to);
+        assert!(built[0].text.contains(&rule("prompt.execution.build_dir", "{dir}", "/t/a")), "{}", built[0].text);
+        assert!(built[0].text.contains("`/c/um`"), "{}", built[0].text);
+        assert!(built[1].text.contains("`/c/dois`") && built[1].text.contains("CARGO_TARGET_DIR=/t/b"), "{}", built[1].text);
+
+        let review = shown(&copy_path(root, "teste", 1, true));
+        assert!(review.ends_with("/.claude/worktrees/mustard-teste-1-review"), "{review}");
+        assert!(built[0].review.contains(&format!("--detach {review} HEAD`")), "{}", built[0].review);
+        assert!(built[0].review.contains("CARGO_TARGET_DIR=/t/a`"), "{}", built[0].review);
+        assert!(built[0].review.contains(&format!("`--root {}`", shown(root))), "{}", built[0].review);
+
+        let still = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        assert!(!still[0].text.contains("/c/um") && !still[0].text.contains("CARGO_TARGET_DIR"), "{}", still[0].text);
+    }
+
     /// A skill que a tarefa nomeia e que não está no disco é recusada, com o
     /// caminho em que ela devia estar.
     #[test]
     fn a_named_skill_that_is_not_on_disk_is_refused_with_the_path() {
         let dir = tempdir().unwrap();
-        let built = prompts(dir.path(), "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
+        let built = prompts(dir.path(), "teste", &plan_log(), Locale::PtBr, &Flight::default());
         assert_eq!(built[0].bad_skills.len(), 1);
         assert_eq!(built[0].bad_skills[0].1.reason(), "skill-missing-path");
         assert!(built[0].bad_skills[0].1.message(Locale::PtBr).contains("somar"));
@@ -549,7 +638,7 @@ mod tests {
         let owners = wave_prompt::owners(&log);
         let by_code: std::collections::BTreeMap<&str, u64> =
             codes.iter().map(|(id, code)| (code.as_str(), *id)).collect();
-        let built = prompts(&root, &spec, &log, Locale::PtBr, &BTreeSet::new());
+        let built = prompts(&root, &spec, &log, Locale::PtBr, &Flight::default());
         assert_eq!(built.len(), log.planned_waves().len());
         for prompt in &built {
             for (start, end) in mustard_id::find(&prompt.text) {
