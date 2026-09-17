@@ -17,10 +17,10 @@
 //! formato velho: ela ficou onde estava, e a fase `closed` passa a sair só por
 //! aqui.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -234,26 +234,12 @@ fn run_close(
 
 /// A obra terminou? Recusa enquanto houver onda sem commit, onda cuja última
 /// revisão foi reprovada ou pedido do usuário que nenhuma onda entregou. Não
-/// basta os testes passarem.
+/// basta os testes passarem. As ondas e os vereditos são lidos como a rodada
+/// os lê: a onda que saiu do plano não é cobrada.
 fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
-    let waves: BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(SpecEvent::wave)
-        .collect();
-
-    // A última revisão de cada onda: é a que vale.
-    let mut last: BTreeMap<u64, &str> = BTreeMap::new();
-    for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
-        if let (Some(n), Some(result)) = (verdict.wave(), verdict.str_field("result")) {
-            last.insert(n, result);
-        }
-    }
-    for (wave, result) in &last {
-        if *result == "rejected" {
-            return Err(CloseRefusal::WaveRejected { wave: *wave });
-        }
+    use crate::commands::flow::round::{last_rejected, planned_waves};
+    if let Some(wave) = last_rejected(log).into_keys().next() {
+        return Err(CloseRefusal::WaveRejected { wave });
     }
 
     let committed: BTreeSet<u64> = log
@@ -262,9 +248,9 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
         .filter(|e| e.event_type == "commit")
         .flat_map(|e| e.ints("waves"))
         .collect();
-    for wave in &waves {
-        if !committed.contains(wave) {
-            return Err(CloseRefusal::WaveWithoutCommit { wave: *wave });
+    for wave in planned_waves(log) {
+        if !committed.contains(&wave) {
+            return Err(CloseRefusal::WaveWithoutCommit { wave });
         }
     }
 
@@ -294,6 +280,7 @@ mod tests {
     use super::*;
     use crate::commands::flow::round::{round_for, RoundOpts};
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
+    use mustard_core::domain::spec_events::SpecEvent;
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -623,6 +610,45 @@ mod tests {
         crate::shared::spec_state::seed_request(root, "x", "Quero também a barra de status.");
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("request-not-delivered"), "{refused}");
+    }
+
+    /// A onda parada pelo limite de consertos trava o fechamento enquanto está
+    /// no plano, e a rodada faz a pergunta dela. Tirada do plano, com a
+    /// tarefa, ela deixa de contar nos dois: a rodada manda fechar e o
+    /// fechamento passa, sem cobrar dela veredito nem commit.
+    #[test]
+    fn a_stuck_wave_taken_out_of_the_plan_no_longer_counts_in_the_round_or_the_close() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "mais uma"})));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+        let wave = id_of(&write(root, "x", "wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit],
+            "done_when": "passa", "origin": said})));
+        let task = id_of(&write(root, "x", "task", json!({"wave": 2, "text": "Tarefa.",
+            "files": [{"path": "src/a.rs"}], "origin": said})));
+        for attempt in 0..3 {
+            crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": 2, "role": "wave",
+                "text": "pedido", "lines": 1, "chars": 6, "items": [wave], "mustard": "0", "author": "binary"}));
+            write(root, "x", "delivered", json!({"wave": 2, "text": format!("Tentativa {attempt}."), "files": ["src/a.rs"]}));
+            crate::shared::spec_state::seed_verdict(root, "x", 2, "rejected", crit);
+        }
+        let round = || round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+
+        let stopped = round();
+        assert_eq!(stopped["stopped"][0]["wave"], json!(2), "{stopped}");
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains('2'), "{refused}");
+
+        write(root, "x", "remove", json!({"targets": [wave, task], "reason": "o usuário tirou a onda do plano"}));
+        let rounded = round();
+        assert!(rounded.get("stopped").is_none(), "{rounded}");
+        assert_eq!(rounded["command"], json!("mustard-rt run close --spec x"), "{rounded}");
+        let closed = close(root, "x");
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
     }
 
     /// Uma prova do cargo com o nome do teste errado e `--exact` sai verde sem

@@ -374,21 +374,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.fix_limit", Locale::PtBr) => {
             "A onda {wave} foi reprovada {count} vezes seguidas, e o limite é de {max} rodadas de \
-             conserto: a rodada parou e não a manda de novo. Mostre ao usuário os vereditos \
-             {verdicts} e faça a pergunta desta onda em `stopped`. O que a segura é de desenho: ela \
-             só volta à fila com o plano dela revisto."
+             conserto: a rodada não a manda de novo, nem as ondas que dependem dela, e o resto \
+             segue. Mostre ao usuário os vereditos {verdicts} e faça a pergunta desta onda em \
+             `stopped`. As saídas são duas: revisar o plano dela, e a versão nova zera a conta; ou \
+             tirá-la do plano, com a onda e as tarefas dela, e os vereditos dela deixam de contar."
         }
         ("round.fix_limit", Locale::EnUs) => {
             "Wave {wave} was rejected {count} times in a row, and the limit is {max} fix rounds: \
-             the round stopped and does not send it again. Show the user the verdicts {verdicts} \
-             and ask this wave's question in `stopped`. What holds it is a design problem: it only \
-             goes back to the queue with its plan revised."
+             the round does not send it again, nor the waves that depend on it, and the rest goes \
+             on. Show the user the verdicts {verdicts} and ask this wave's question in `stopped`. \
+             There are two ways out: revise its plan, and the new version resets the count; or take \
+             it out of the plan, with its wave and tasks, and its verdicts stop counting."
         }
         ("round.fix_limit.question", Locale::PtBr) => {
-            "A onda {wave} foi reprovada de novo depois de {max} rodadas de conserto. O que fazer com ela?"
+            "A onda {wave} foi reprovada de novo depois de {max} rodadas de conserto. Revisar o plano dela ou tirá-la do plano?"
         }
         ("round.fix_limit.question", Locale::EnUs) => {
-            "Wave {wave} was rejected again after {max} fix rounds. What should be done with it?"
+            "Wave {wave} was rejected again after {max} fix rounds. Revise its plan or take it out of the plan?"
         }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
@@ -694,7 +696,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             100,
-            0xbb46_39ea_c747_3eb1,
+            0x98ad_b26d_00d2_3d8a,
         );
     }
 
