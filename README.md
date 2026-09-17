@@ -22,7 +22,7 @@ flowchart LR
 ```
 
 1. A **varredura** minera o repositório para um modelo durável (`grain.model.json`) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
-2. Os comandos de pipeline consomem esse modelo via **digest** (`mustard-rt run feature`, `scan spec`) e leem apenas as ~12 *anchors* que o digest aponta.
+2. Os comandos do fluxo consomem esse modelo via **digest** e leem apenas as ~12 *anchors* que o digest aponta.
 3. Resultado: **economia de contexto** — o digest acha *onde olhar*, não substitui ler.
 
 > O peso real do harness não são os comandos, e sim a **reinjeção da cerimônia no contexto a cada turno**. Por isso o roteamento escolhe sempre o **caminho mais barato que serve** — o pipeline completo é a exceção que precisa se justificar (≥2 camadas/subprojetos **ou** entidade nova), não o default.
@@ -86,23 +86,20 @@ Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, 
 
 ---
 
-## Pipeline canônico
+## O fluxo
 
 ```mermaid
 flowchart LR
-    A["ANALYZE"] --> P["PLAN"]
-    P -->|/approve| E["EXECUTE"]
-    E --> R["REVIEW"]
-    R --> Q["QA"]
-    Q -->|gate: pass| C["CLOSE"]
+    A["open"] --> G["grill"]
+    G --> P["plan"]
+    P -->|clique de aprovação| R["round"]
+    R --> C["close"]
+    C --> PR["pr-open"]
 ```
 
-| Escopo | Detecção | Fluxo |
-|---|---|---|
-| **Light** | 1-2 camadas, ≤5 arquivos, padrão conhecido | Pula o PLAN: `ANALYZE → EXECUTE → REVIEW → QA → CLOSE` |
-| **Full** | 3+ camadas ou entidade nova | Completo, com **aprovação humana** entre PLAN e EXECUTE |
+Cada passo é uma chamada só, e cada comando termina dizendo qual é o próximo. O `open` abre a spec; o `grill` levanta o que falta, pergunta por pergunta; o `plan` monta as ondas e as põe para aprovação; a aprovação é o clique do usuário, que o gancho da conversa registra; o `round` despacha as ondas que podem sair juntas, cada uma na sua cópia, e grava o que elas entregaram e o veredito de cada revisão; o `close` roda o lint do projeto e cada critério uma vez e, numa spec de duas ondas ou mais, pede a revisão final do conjunto; o `pr-open` abre o pull request. O merge é o único passo que só acontece quando o usuário pede.
 
-Cada fase emite eventos; os *gates* bloqueiam o avanço. Os **portões do fechamento** não deixam fechar enquanto algum critério da spec não tiver a última execução aprovada no `spec.ndjson`; um critério revisto depois da execução marca o pass como *stale* e re-bloqueia até o critério rodar de novo.
+O fechamento não fecha enquanto algum critério não tiver a última execução aprovada no `spec.ndjson`, enquanto o lint do projeto falhar, ou enquanto a revisão final do conjunto não tiver sido aprovada.
 
 ---
 
@@ -165,7 +162,7 @@ O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
 ```jsonc
 {
   // "flow" é OPCIONAL e não restringe nada: ele apenas pré-seleciona a base
-  // no seletor. De onde uma unidade pode sair vem do git (`run base-candidates`);
+  // no seletor. De onde uma unidade pode sair vem do git;
   // onde o commit direto é recusado vem do branch padrão do remoto, mais o que
   // "protected" acrescentar. Uma instalação nova não grava "flow".
   "git":  { "provider": "github" },

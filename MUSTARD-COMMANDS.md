@@ -20,8 +20,8 @@ flowchart LR
 | 2. Levantamento | `mustard-rt run grill --spec <spec> --kinds feature` | Grava o tipo de trabalho e monta a lista de pontos. `--condensed` junta todos os pontos num bloco só, para um pedido que cabe numa frase. Cada resposta é gravada com `write`, que devolve o próximo ponto. |
 | 3. Plano | `mustard-rt run plan --spec <spec>` | Monta o pedido de cada onda e confere o plano; refaz a página e manda publicá-la e fazer a pergunta de aprovação. |
 | 4. Aprovação | nenhum | O clique em "Aprovar" é gravado pela testemunha. "Ajustar" não aprova. |
-| 5. Ondas e revisão | `mustard-rt run round --spec <spec>` | Despacha as ondas que podem sair juntas. Com `--report '<json>'`, grava o que cada onda entregou e o veredito da revisão, faz o commit da rodada e despacha a seguinte. |
-| 6. Fechamento | `mustard-rt run close --spec <spec>` | Roda cada critério uma vez e fecha a spec. `--report '<json>'` traz o relatório da última rodada. |
+| 5. Ondas e revisão | `mustard-rt run round --spec <spec>` | Despacha as ondas que podem sair juntas. Com `--report '<as linhas do fim de cada agente>'`, grava o que cada onda entregou e o veredito da revisão, faz o commit da rodada e despacha a seguinte. |
+| 6. Fechamento | `mustard-rt run close --spec <spec>` | Roda cada critério uma vez e fecha a spec. `--report '<as linhas do fim de cada agente>'` traz o relatório da última rodada, no mesmo formato da rodada. |
 | 7. Pull request | `mustard-rt run pr-open --base <base> --head <branch> --spec <spec>` | Monta o título e o corpo a partir da spec e abre o pull request; o que já existe só tem o corpo reescrito. Com submódulo mexido pela spec, abre antes o de cada submódulo e o do principal como rascunho, que fica pronto quando eles entram (`pr-merge --root <submódulo>` ou o início da sessão). `--draft` abre como rascunho; `--fill` monta título e corpo pelos commits, para o repositório sem spec. |
 | 8. Merge | `mustard-rt run pr-merge --pr <n>` | Só quando o usuário pede. Sem veredito aprovado, pergunta e não mexe em nada; `--confirm` é a resposta. |
 
@@ -68,7 +68,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 
 ## Os comandos `mustard-rt run`
 
-Todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lido; sem ela, vale a pasta atual. Os que trabalham numa spec aceitam `--spec <spec>`; sem ela, vale a spec atual.
+Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lido; sem ela, vale a pasta atual. Não a aceitam `clean`, `upsert`, `doctor` e `statusline`, que trabalham sempre na pasta atual. Os que trabalham numa spec aceitam `--spec <spec>`; sem ela, vale a spec atual.
 
 | Comando | O que faz |
 |---|---|

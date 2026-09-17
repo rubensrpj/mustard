@@ -22,7 +22,7 @@ flowchart LR
 ```
 
 1. The **census** mines the repository into a durable model (`grain.model.json`) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
-2. Pipeline commands consume that model through a **digest** (`mustard-rt run feature`, `scan spec`) and read only the ~12 anchors the digest points at.
+2. The flow's commands consume that model through a **digest** and read only the ~12 anchors the digest points at.
 3. Result: **context economy** — the digest finds *where to look*; it does not replace reading.
 
 > The harness's real weight is not the commands but the **re-injection of ceremony into the context on every turn**. Routing therefore always picks the **cheapest path that serves** — the full pipeline is the exception that must justify itself (≥2 layers/subprojects **or** a new entity), never the default.
@@ -86,23 +86,20 @@ This creates `mustard.json` (the single configuration) and the `.claude/` folder
 
 ---
 
-## Canonical pipeline
+## The flow
 
 ```mermaid
 flowchart LR
-    A["ANALYZE"] --> P["PLAN"]
-    P -->|/approve| E["EXECUTE"]
-    E --> R["REVIEW"]
-    R --> Q["QA"]
-    Q -->|gate: pass| C["CLOSE"]
+    A["open"] --> G["grill"]
+    G --> P["plan"]
+    P -->|approval click| R["round"]
+    R --> C["close"]
+    C --> PR["pr-open"]
 ```
 
-| Scope | Detection | Flow |
-|---|---|---|
-| **Light** | 1-2 layers, ≤5 files, known pattern | Skips PLAN: `ANALYZE → EXECUTE → REVIEW → QA → CLOSE` |
-| **Full** | 3+ layers or a new entity | Complete, with **human approval** between PLAN and EXECUTE |
+Every step is a single call, and every command ends by naming the next one. `open` starts the spec; `grill` surveys what is missing, one question at a time; `plan` builds the waves and puts them up for approval; the approval is the user's click, recorded by the conversation hook; `round` dispatches the waves that can go out together, each in its own copy, and records what they delivered and each review's verdict; `close` runs the project lint and every criterion once and, on a spec of two waves or more, asks for the final review of the whole; `pr-open` opens the pull request. The merge is the only step that happens only when the user asks.
 
-Every phase emits events; gates block progress. The **close-gate** refuses to close without a `qa.result` with `overall=pass`; editing the spec after an approved QA marks the pass *stale* and re-blocks until QA runs again.
+The close refuses while any criterion lacks an approved run in `spec.ndjson`, while the project lint fails, or while the final review of the whole has not been approved.
 
 ---
 
@@ -165,7 +162,7 @@ cargo clippy --workspace           # lint
 ```jsonc
 {
   // "flow" is OPTIONAL and restricts nothing: it only PRE-SELECTS a base in the
-  // picker. Where a unit may be cut from comes from git (`run base-candidates`);
+  // picker. Where a unit may be cut from comes from git;
   // where a direct commit is refused comes from the remote's default branch plus
   // whatever "protected" adds. A fresh install writes no "flow".
   "git":  { "provider": "github" },
