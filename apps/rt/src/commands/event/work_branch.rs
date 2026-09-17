@@ -24,155 +24,10 @@
 use std::path::Path;
 
 use mustard_core::platform::git;
-use mustard_core::platform::i18n::translate;
 
-use crate::shared::work_kind::{BaseFlow, UnitBase, WorkKind, CUT_BASE_FILE};
-
-/// Resolve the base a unit is cut from.
-///
-/// The base is no longer a CONSEQUENCE of the kind. It used to be: an ordinary
-/// unit came from the work base, an emergency from one that was not, and a
-/// `hotfix` cut from the work base was refused as a contradiction. That whole
-/// mechanism existed because the base could not be asked for — the candidate
-/// set was a two-entry list in `mustard.json` and the kind was the only signal
-/// available to choose between its members.
-///
-/// The base is now ASKED, against the branches git really has, so:
-///
-/// - an explicit base is the operator's answer and is taken;
-/// - it is validated against the real catalogue, not against a declaration, so
-///   a typo is still caught while `release/2026-Q3` is not;
-/// - an empty catalogue is UNMEASURED (no git, offline, no remote) and accepts
-///   whatever was asked for — refusing on an unmeasured fact is how a gate
-///   grounds a session it cannot reason about;
-/// - no base at all falls back to the project's primary, which is a default
-///   for the cursor and never a correction of an answer.
-///
-/// The hotfix-versus-work-base refusal is gone with the inference that made it
-/// meaningful. `hotfix/` is a prefix on a name now; where the unit lands is the
-/// base the operator picked, and picking is the whole feature.
-pub(crate) fn resolve_kind_base(
-    root: &Path,
-    requested: Option<&str>,
-    config: &mustard_core::ProjectConfig,
-) -> Result<String, String> {
-    let Some(requested) = requested.map(str::trim).filter(|b| !b.is_empty()) else {
-        // **The default must be a branch that EXISTS, not a literal.**
-        // The declared primary used to floor to a hardcoded name when no
-        // `git.flow` was written — the shape the installer produces today — so
-        // with no `--base` this recorded a branch the repository does not have.
-        // It passed through unchallenged; once the reader started checking
-        // existence, the invented name was correctly dropped and the write gate
-        // DENIED the first edit of every such project.
-        //
-        // Order: what the project STATES, then what the remote states, then the
-        // branch the operator is standing on — each a name that really exists.
-        // There is no fourth rung: when none of the three can answer, the cut
-        // says so instead of naming a branch nobody measured.
-        return config
-            .git
-            .primary_base()
-            .or_else(|| mustard_core::default_branch(root))
-            .or_else(|| mustard_core::current_branch(root))
-            .ok_or_else(|| {
-                translate("base.unmeasured", config.language().text_or_default()).to_string()
-            });
-    };
-    let catalog = mustard_core::branch_catalog(root, &config.git, false);
-    if catalog.is_empty() || catalog.iter().any(|b| b.name == requested) {
-        return Ok(requested.to_string());
-    }
-    let mut known: Vec<&str> = catalog.iter().map(|b| b.name.as_str()).take(12).collect();
-    known.sort_unstable();
-    Err(format!(
-        "a branch '{requested}' não existe no remoto deste repositório. \
-         Branches disponíveis (mais recentes primeiro): {}.",
-        known.join(", ")
-    ))
-}
-
-/// A short, ref-safe fallback token from the session id. `unknown`/empty →
-/// `work` so the branch always has a non-empty tail.
-fn short_sid(sid: &str) -> String {
-    let s = sid.trim();
-    if s.is_empty() || s == "unknown" {
-        return "work".to_string();
-    }
-    s.chars().take(8).collect()
-}
-
-/// Sanitise `{kind}/{slug}` into a valid git ref: keep `[A-Za-z0-9-_./]`,
-/// map everything else to `-`, collapse `..` runs (git forbids them), and trim
-/// leading `-`/`.`/`/` and trailing `/`/`.`. Never empty — floors to `work`.
-///
-/// Idempotent, and that is what makes it usable as a COMPARISON normaliser and
-/// not only as a builder: a name a branch already carries is a fixed point, so
-/// putting both sides of a slug equality through it lets a raw slug meet the ref
-/// it was spelled as ([`crate::commands::pipeline::resume_bootstrap`]'s
-/// `inside_own_work_branch`, which asks whether the checkout IS a spec's own
-/// branch). Comparing a ref's slug against an unsanitised one answers `false`
-/// for every slug that needed sanitising at all.
-pub(crate) fn sanitize_git_ref(raw: &str) -> String {
-    let mut out: String = raw
-        .chars()
-        .map(|ch| match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '/' => ch,
-            _ => '-',
-        })
-        .collect();
-    while out.contains("..") {
-        out = out.replace("..", "-");
-    }
-    let trimmed = out
-        .trim_start_matches(['-', '.', '/'])
-        .trim_end_matches(['/', '.']);
-    if trimmed.is_empty() {
-        "work".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Compute the auto-branch name for a `pipeline.kind` work-type signal:
-/// `{kind}/{slug}`, sanitised to a valid git ref. The prefix records WHAT the
-/// unit is — a feature, a fix, an emergency — which is what an operator reading
-/// a branch list needs; the base is no longer parsed back out of the name, and
-/// it is not derived from the kind either — it is the operator's own answer,
-/// taken against the real catalogue and recorded with the unit
-/// ([`BaseFlow::base_of`]). Slug precedence:
-/// 1. `--spec` when present (already a slug — at the base gate that is the
-///    name `emit_pipeline` just MINTED, so this leg carries the canonical one);
-/// 2. else `--intent` through the canonical derivation
-///    ([`crate::commands::spec::spec_slug::canonical_for_project`]) — the SAME
-///    one `spec-draft` names the spec directory with, so the branch half and
-///    the directory cannot be two different spellings of one unit;
-/// 3. else a date-based fallback (`YYYY-MM-DD` from the event `ts`) suffixed
-///    with a short session id for uniqueness.
-///    Never fails — every branch degrades to a valid ref.
-pub(crate) fn compute_work_branch(
-    kind: WorkKind,
-    spec: &str,
-    intent: Option<&str>,
-    sid: &str,
-    ts: &str,
-    project: &str,
-) -> String {
-    let slug = if !spec.trim().is_empty() {
-        spec.trim().to_string()
-    } else if let Some(intent) = intent.map(str::trim).filter(|s| !s.is_empty()) {
-        crate::commands::spec::spec_slug::canonical_for_project(intent, Path::new(project))
-    } else {
-        // Date-based fallback from the shared event timestamp, plus a short
-        // session id so two spec-less/intent-less runs on the same day differ.
-        let date = ts.split('T').next().unwrap_or("").trim();
-        if date.is_empty() {
-            short_sid(sid)
-        } else {
-            format!("{date}-{}", short_sid(sid))
-        }
-    };
-    sanitize_git_ref(&kind.branch_name(&slug))
-}
+use crate::shared::work_kind::{BaseFlow, CUT_BASE_FILE};
+#[cfg(test)]
+use crate::shared::work_kind::UnitBase;
 
 // ---------------------------------------------------------------------------
 // The cut — git primitives shared by the hook gate and the draft
@@ -227,7 +82,7 @@ fn run_git(root: &Path, args: &[&str]) -> Result<(), String> {
 ///    still trails the remote.
 /// 2. the REMOTE-TRACKING ref `refs/remotes/origin/{base}` — the clone shape,
 ///    and the reason this step had to exist. The base is now the operator's
-///    pick out of the REAL catalogue ([`resolve_kind_base`]), which offers
+///    pick out of the REAL catalogue, which offers
 ///    every branch `origin` has; a fresh clone materialises a local head for
 ///    exactly ONE of them, so any other pick has no `refs/heads/` entry until
 ///    the refresh above creates one — and the refresh is skipped whole whenever
@@ -651,6 +506,10 @@ pub(crate) fn fast_forward_base(
 ///   request target and its merged-ancestry check included — at a base the
 ///   operator never chose. Callers that must produce a name now say so
 ///   themselves, where they can be heard.
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) fn base_for(
     root: &Path,
     target: &str,
@@ -669,7 +528,7 @@ pub(crate) fn base_for(
 
 /// The SLUG half of a work branch — `feature/my-unit` → `my-unit`, and
 /// `dev_my-unit` → `my-unit` for a unit still in flight. The inverse of
-/// [`compute_work_branch`]'s `{kind}/{slug}` join.
+/// the `{kind}/{slug}` join.
 ///
 /// This is the DURABLE record of a unit's name. The `pending-work-branch`
 /// marker that carried the name from the gate is consumed and deleted by the
@@ -706,7 +565,7 @@ pub(crate) fn slug_of_work_branch(
 /// falling back to the derivation. What it must never go back to asking is
 /// whether the recorded name appears in `git.flow`'s declared set — that test
 /// refuses a base the operator picked out of the REAL catalogue
-/// ([`resolve_kind_base`], which validates against git and not against a
+/// (a validação contra o git, e não contra uma
 /// declaration) for the sole reason that a file written at `mustard init` does
 /// not list it, and `git.flow` refuses nothing any more
 /// ([`mustard_core::domain::config::GitConfig::preselected_bases`]). Existence
@@ -721,6 +580,10 @@ pub(crate) fn slug_of_work_branch(
 /// behind its back: an emergency whose pick nothing carries has no base a
 /// derivation can honestly supply, and the cut that consumes it
 /// can refuse or warn in its own shape, where the operator reads it.
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) fn recorded_or_derived_base(
     root: &str,
     session: &str,
@@ -1292,6 +1155,10 @@ impl BusyCheckout {
 /// No serde derive — the JSON shape belongs to whichever command reports it
 /// (`spec-draft` folds it into its own document).
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) enum CutOutcome {
     /// No `pending-work-branch` marker for this session (or no VCS at all):
     /// nothing was ever promised, so nothing was cut.
@@ -1356,6 +1223,10 @@ pub(crate) enum CutOutcome {
 /// [`crate::commands::event::census_settlement::settle`], the same one the gate
 /// takes — one question, one answer, and the base refresh happens inside it
 /// rather than in either door.
+// Sem chamador na produção desde a refatoração que enxugou o runtime: o que
+// ainda exercita o corte da branch pendente são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutcome {
     let config = mustard_core::ProjectConfig::load(project);
     // An explicit `vcs: ""` opt-out (or a non-git tree) means there is no
@@ -1442,7 +1313,7 @@ mod tests {
     // Auto-branch name computation
     // -----------------------------------------------------------------------
 
-    use crate::shared::work_kind::{BaseFlow, WorkKind, CUT_BASE_FILE};
+    use crate::shared::work_kind::BaseFlow;
 
     /// Uma base é o que o projeto declarou, ou o que o próprio remoto chama de
     /// padrão — e nada mais.
@@ -1508,76 +1379,6 @@ mod tests {
     /// about the DERIVATION alone, with nothing recorded to prefer over it.
     fn nowhere() -> &'static std::path::Path {
         std::path::Path::new("/no/project")
-    }
-
-    /// The branch is named by what the unit IS, never by the base it was
-    /// cut from.
-    ///
-    /// The name an operator reads in `git branch` is the assertion: a feature
-    /// says `feature/`, a fix says `fix/`, an emergency says `hotfix/`, and no
-    /// integration base appears in any of them. The old shape put the base
-    /// there, which is the information the operator did NOT need and the only
-    /// one the program did — that split is what this unit undoes.
-    #[test]
-    fn a_unit_branch_is_named_by_its_kind() {
-        let named = |kind| {
-            super::compute_work_branch(
-                kind,
-                "parcelas-virtuais",
-                None,
-                "sess-abcdef12",
-                "2026-07-02T10:00:00.000Z",
-                "/no/project",
-            )
-        };
-        assert_eq!(named(WorkKind::parse("feature").expect("suggested token parses")), "feature/parcelas-virtuais");
-        assert_eq!(named(WorkKind::parse("fix").expect("suggested token parses")), "fix/parcelas-virtuais");
-        assert_eq!(named(WorkKind::parse("hotfix").expect("suggested token parses")), "hotfix/parcelas-virtuais");
-
-        // No integration base of this project appears in any of the names —
-        // stated against the DECLARED bases, not against the literals, so the
-        // assertion means the same thing in a develop/master project.
-        let config = two_tier();
-        for token in WorkKind::SUGGESTED {
-            let kind = WorkKind::parse(token).expect("suggested token parses");
-            let branch = named(kind);
-            for base in config.git.declared_bases() {
-                assert!(
-                    !branch.starts_with(&format!("{base}_")),
-                    "the name records the kind, not the cut: {branch}",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn compute_work_branch_prefers_spec_slug() {
-        let b = super::compute_work_branch(WorkKind::parse("feature").expect("suggested token parses"), "2026-07-02-my-spec", None, "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "feature/2026-07-02-my-spec");
-    }
-
-    #[test]
-    fn compute_work_branch_falls_back_to_intent_slug() {
-        // No spec → the intent is slugified (pt-BR strips accents by default).
-        let b = super::compute_work_branch(WorkKind::parse("fix").expect("suggested token parses"), "", Some("Corrigir botão de login"), "sess-abcdef12", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "fix/corrigir-botao-login");
-    }
-
-    #[test]
-    fn compute_work_branch_date_fallback_when_no_spec_or_intent() {
-        // No spec, no intent → date-from-ts + short session id.
-        let b = super::compute_work_branch(WorkKind::parse("feature").expect("suggested token parses"), "", None, "sess-abcdef1234", "2026-07-02T10:00:00.000Z", "/no/project");
-        assert_eq!(b, "feature/2026-07-02-sess-abc");
-    }
-
-    #[test]
-    fn compute_work_branch_sanitizes_unsafe_slug() {
-        // A spec with unsafe chars is sanitised into a valid ref.
-        let b = super::compute_work_branch(WorkKind::parse("feature").expect("suggested token parses"), "weird ..slug/", None, "unknown", "2026-07-02T10:00:00.000Z", "/no/project");
-        // ".." collapsed, spaces mapped to '-', trailing '/' trimmed.
-        assert_eq!(b, "feature/weird--slug");
-        assert!(!b.contains(".."), "no `..` runs in a git ref");
-        assert!(!b.starts_with('-'), "no leading dash");
     }
 
     /// With the base gone from the name, it is recovered from the
@@ -1697,72 +1498,6 @@ mod tests {
             assert_eq!(super::slug_of_work_branch(other, &config), None, "not a unit: {other}");
         }
     }
-
-    /// The rule that replaced "the kind decides the base": nothing decides it
-    /// but the operator, and the only thing validated is that the branch EXISTS.
-    ///
-    /// The test this replaced asserted the opposite — that a `hotfix` could not
-    /// be cut from the work base — and that refusal was only meaningful while
-    /// the base was inferred. `hotfix/` is a prefix on a name now.
-    #[test]
-    fn the_base_is_the_operators_answer_not_a_consequence_of_the_kind() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path(); // not a repository: the catalogue is UNMEASURED
-        let config = two_tier();
-
-        assert_eq!(
-            super::resolve_kind_base(root, None, &config).as_deref(),
-            Ok(config.git.primary_base().expect("o fluxo declara uma base").as_str()),
-            "no answer falls back to the primary base, which is a default",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("release/2026-Q3"), &config).as_deref(),
-            Ok("release/2026-Q3"),
-            "an unmeasured catalogue accepts the answer rather than refusing on a fact nobody measured",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("dev"), &config).as_deref(),
-            Ok("dev"),
-            "and the work base is an ordinary answer for ANY kind — the old contradiction is gone",
-        );
-    }
-
-    /// With NO flow declared and NO `--base`, the default is the remote's own
-    /// answer — never the literal `main`.
-    ///
-    /// This is the shape `mustard init` produces today, and it had no test at
-    /// all. `primary_base()` floors to the hardcoded `main` there, so the gate
-    /// recorded a branch the repository does not have; once the reader began
-    /// checking existence, that invented name was correctly dropped and the
-    /// write gate DENIED the first edit of every such project. Measured A/B on
-    /// one fixture: the baseline cut the branch, the wave denied it. A default
-    /// nobody can check out is not a default.
-    #[test]
-    fn with_no_flow_and_no_answer_the_default_is_the_remote_own_head() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        seed_repo_declaring(root, None);
-
-        let config = mustard_core::ProjectConfig::load(root);
-        assert!(
-            config.git.declared_bases().is_empty(),
-            "fixture must be the installer's shape: no flow declared",
-        );
-        let answer = super::resolve_kind_base(root, None, &config);
-        assert_ne!(
-            answer.as_deref(),
-            Ok("main"),
-            "the default is the hardcoded literal again — in a repository that has \
-             no `main`, that name is recorded and then dropped, and the first edit \
-             is denied",
-        );
-        assert_eq!(
-            answer.as_deref(),
-            Ok("dev"),
-            "the default must be the branch `origin/HEAD` really names",
-        );
-    }
-
 
     /// The half the sibling above could not reach — *"and the operator
     /// chooses when more than one candidate exists"*.
@@ -2167,54 +1902,6 @@ mod tests {
             git(root, &["add", "-A"]);
             git(root, &["commit", "-m", branch]);
         }
-    }
-
-    /// The validation that replaced "is it in `git.flow`?": is it a branch the
-    /// REMOTE really has. Same loudness, opposite source — a typo is still
-    /// caught, and a branch cut this morning is not.
-    #[test]
-    fn resolve_kind_base_validates_against_the_real_catalogue() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let run = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
-        if !run(&["init", "-q", "-b", "main", "."]) {
-            return;
-        }
-        let _ = run(&["config", "user.email", "t@t.t"]);
-        let _ = run(&["config", "user.name", "t"]);
-        if !run(&["commit", "-q", "--allow-empty", "-m", "seed"]) {
-            return;
-        }
-        // The catalogue reads remote-tracking refs, so the fixture states them.
-        for branch in ["main", "dev", "release/2026-Q3"] {
-            let _ = run(&["update-ref", &format!("refs/remotes/origin/{branch}"), "HEAD"]);
-        }
-
-        let config = two_tier(); // declares dev and main, and NOT the release line
-        assert_eq!(
-            super::resolve_kind_base(root, Some("dev"), &config).as_deref(),
-            Ok("dev"),
-            "a declared branch resolves, as it always did",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("release/2026-Q3"), &config).as_deref(),
-            Ok("release/2026-Q3"),
-            "and so does one no configuration ever mentioned — the whole point",
-        );
-        assert_eq!(
-            super::resolve_kind_base(root, Some("   "), &config).as_deref(),
-            Ok(config.git.primary_base().expect("o fluxo declara uma base").as_str()),
-            "blank counts as omitted",
-        );
-
-        let err = super::resolve_kind_base(root, Some("dve"), &config)
-            .expect_err("a branch the remote does not have is refused");
-        assert!(err.contains("dve"), "names the rejected base: {err}");
-        assert!(err.contains("dev"), "and lists what is really there: {err}");
-        assert!(
-            !err.contains("git.flow"),
-            "and no longer points at a configuration file as the fix: {err}",
-        );
     }
 
     // -----------------------------------------------------------------------

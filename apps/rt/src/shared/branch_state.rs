@@ -76,7 +76,7 @@ use std::path::Path;
 use std::process::Command;
 
 use mustard_core::platform::git;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::shared::work_kind::BaseFlow;
 
@@ -113,8 +113,9 @@ pub(crate) struct BranchRefs {
     /// The remotes carrying it, sorted. Empty means no remote has it — which is
     /// NOT evidence of a merge (see [`UnitState::Danger`]).
     pub(crate) remotes: Vec<String>,
-    /// The commit its readable ref ([`read_ref`](Self::read_ref)) points at, or
-    /// empty when the sweep carried no object name.
+    /// The commit the ref a reader would read points at — the local head when
+    /// there is one, else the remote-tracking ref — or empty when the sweep
+    /// carried no object name.
     ///
     /// Still identity, not state: WHERE the ref points is part of what the ref
     /// IS. What that position means is [`refs_ahead_of_base`]'s answer, and the
@@ -123,29 +124,6 @@ pub(crate) struct BranchRefs {
 }
 
 impl BranchRefs {
-    /// The ref a READER should read this unit's tree from: the local head when
-    /// there is one, else the first remote-tracking ref (`<remote>/<branch>`).
-    ///
-    /// The ONE place `<remote>/<branch>` is spelled. A consumer assembling it
-    /// itself would have to name a remote, and no remote name is written in
-    /// this crate — the name comes out of the ref that was swept.
-    pub(crate) fn read_ref(&self) -> String {
-        if self.local {
-            return self.branch.clone();
-        }
-        match self.remotes.first() {
-            Some(remote) => format!("{remote}/{branch}", branch = self.branch),
-            None => self.branch.clone(),
-        }
-    }
-
-    /// `true` when NO local ref carries this unit — only a remote does. Such a
-    /// unit is invisible to any sweep of `refs/heads/` alone, which is the
-    /// blind spot this module was built to close.
-    pub(crate) fn is_remote_only(&self) -> bool {
-        !self.local && !self.remotes.is_empty()
-    }
-
     /// Every ref that CURRENTLY carries this unit, spelled the way
     /// `for-each-ref` spells it — the local head first, then one per remote.
     ///
@@ -228,7 +206,7 @@ impl BranchEnumerator {
             match remote {
                 None => {
                     entry.local = true;
-                    // The local head is the ref `read_ref` reads, so its tip is
+                    // The local head is the ref a reader reads, so its tip is
                     // the unit's tip — whichever order the listing arrived in.
                     entry.tip = tip.to_string();
                 }
@@ -452,19 +430,6 @@ pub(crate) enum PrStatus {
     Unknown(&'static str),
 }
 
-impl PrStatus {
-    /// The stable token this status prints as in a report.
-    pub(crate) fn token(self) -> &'static str {
-        match self {
-            PrStatus::Absent => "absent",
-            PrStatus::Open => "open",
-            PrStatus::Merged => "merged",
-            PrStatus::Closed => "closed",
-            PrStatus::Unknown(_) => "unknown",
-        }
-    }
-}
-
 /// Reason: the configured provider has no adapter here, so nothing was asked.
 pub(crate) const PR_UNSUPPORTED: &str = "provider-unsupported";
 /// Reason: the provider's CLI could not be launched (absent from `PATH`).
@@ -680,21 +645,6 @@ pub(crate) enum UnitState {
 }
 
 impl UnitState {
-    /// The stable token this state prints as in a report.
-    pub(crate) fn token(self) -> &'static str {
-        match self {
-            UnitState::DraftAbandoned => "draft-abandoned",
-            UnitState::PushedWithoutPr => "pushed-without-pr",
-            UnitState::InReview => "in-review",
-            UnitState::AwaitingPrune => "awaiting-prune",
-            UnitState::AwaitingPruneLocal => "awaiting-prune-local",
-            UnitState::Danger => "danger",
-            UnitState::RemoteOnly => "remote-only",
-            UnitState::MovedAfterMerge => "moved-after-merge",
-            UnitState::Unmeasured => "unmeasured",
-        }
-    }
-
     /// Whether this state means "the work landed; the branch may go".
     pub(crate) fn is_awaiting_prune(self) -> bool {
         matches!(self, UnitState::AwaitingPrune | UnitState::AwaitingPruneLocal)
@@ -961,73 +911,10 @@ pub(crate) fn merged_by_another(root: &Path, flow: &BaseFlow) -> Vec<BranchState
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// The report — read-only by construction
-// ---------------------------------------------------------------------------
-
-/// One repository's inventory as JSON: sorted, tokenised, no timestamps and no
-/// machine paths, so the output is byte-stable per the crate's Guard.
-///
-/// It takes measured states and nothing else — no repository, no git handle —
-/// which is what makes the reading phase provably incapable of deleting
-/// anything rather than merely disciplined about it.
-pub(crate) fn report_value(repo: &str, states: &[BranchState]) -> Value {
-    let units: Vec<Value> = states
-        .iter()
-        .map(|s| {
-            json!({
-                "branch": s.branch,
-                "base": s.base,
-                "state": s.state.token(),
-                "local": s.local,
-                "remotes": s.remotes,
-                // The evidence the verdict was reached on, per REF. Without it a
-                // `moved-after-merge` is an assertion the reader cannot check —
-                // and WHICH ref moved is the only actionable part of it.
-                "refs": s.refs.iter().map(ref_value).collect::<Vec<Value>>(),
-                "ancestry": s.ancestry,
-                "ahead": s.ahead,
-                "pr": pr_value(s.pr),
-            })
-        })
-        .collect();
-    let awaiting: Vec<String> = states
-        .iter()
-        .filter(|s| s.state.is_awaiting_prune())
-        .map(|s| s.branch.clone())
-        .collect();
-    json!({
-        "repo": repo,
-        // Stated, because the sibling shape a consumer prints when the refs
-        // would not read carries `ok:false`: an empty `units` then means
-        // "measured, nothing in flight" rather than "nobody looked".
-        "ok": true,
-        "units": units,
-        "awaitingPrune": awaiting,
-    })
-}
-
-/// One ref's own row: what it is, and what accounts for it.
-fn ref_value(verdict: &RefVerdict) -> Value {
-    json!({
-        "ref": verdict.refname,
-        "contained": verdict.contained,
-        "coveredByPr": verdict.covered,
-    })
-}
-
-/// The PR column: the status token, plus the REASON whenever nothing was
-/// measured.
-fn pr_value(pr: PrStatus) -> Value {
-    match pr {
-        PrStatus::Unknown(reason) => json!({ "status": pr.token(), "reason": reason }),
-        _ => json!({ "status": pr.token() }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// O fluxo de duas camadas que todo teste daqui lê: o trabalho sobe para
     /// `dev` e `dev` sobe para `main`.
@@ -1144,7 +1031,7 @@ refs/tags/v1.0_dev aaa7
         assert!(both.local, "the local head of dev_both was seen");
         assert_eq!(both.remotes, vec!["origin", "upstream"], "every remote carrying it, sorted");
         assert_eq!(both.base, "dev", "the base comes from the prefix, never from a literal");
-        assert_eq!(both.tip, "aaa2", "the tip of the ref `read_ref` reads — the local head");
+        assert_eq!(both.tip, "aaa2", "the tip of the ref a reader reads — the local head");
 
         let local_only = &found.units()[1];
         assert!(local_only.local);
@@ -1165,31 +1052,14 @@ refs/tags/v1.0_dev aaa7
         );
     }
 
-    /// A ref que só o remoto carrega é lida por `<remoto>/<branch>`, e a
-    /// varredura que o git não respondeu continua separada do repositório que
-    /// respondeu "nenhuma branch de trabalho".
+    /// A varredura que o git não respondeu continua separada do repositório
+    /// que respondeu "nenhuma branch de trabalho".
     ///
     /// As duas respostas são medidas em pastas de verdade: um lugar que não é
     /// repositório é onde o git não responde, e um repositório recém-criado é
     /// onde ele responde nada.
     #[test]
-    fn remote_only_units_carry_their_read_ref_and_a_failed_sweep_is_not_an_empty_one() {
-        let found = BranchEnumerator::from_refs(
-            "refs/heads/dev_local\nrefs/remotes/origin/dev_remote\n",
-            &bases(),
-        );
-        let local = &found.units()[0];
-        assert!(!local.is_remote_only());
-        assert_eq!(local.read_ref(), "dev_local", "a local head is read by its own name");
-
-        let remote = &found.units()[1];
-        assert!(remote.is_remote_only(), "no local ref carries it");
-        assert_eq!(
-            remote.read_ref(),
-            "origin/dev_remote",
-            "the remote name comes out of the swept ref, never from a literal",
-        );
-
+    fn a_failed_sweep_is_not_an_empty_one() {
         // Não respondeu × respondeu nada: quem RELATA precisa das duas.
         let nowhere = tempfile::tempdir().expect("tempdir");
         assert!(
@@ -1266,9 +1136,9 @@ refs/tags/v1.0_dev aaa7
             "only a verified merge turns a gone remote into a prune",
         );
 
-        // E o relatório concorda: exatamente uma branch é listada como podável.
+        // E exatamente uma branch fica podável.
         let (_dir, root) = scratch_repo();
-        let states = vec![
+        let states = [
             state_of(&root, &unmerged, &evidence(PrStatus::Open, &[]), &BTreeSet::new(), &ahead_of(&[&unmerged, &landed]), true),
             state_of(
                 &root,
@@ -1281,8 +1151,9 @@ refs/tags/v1.0_dev aaa7
         ];
         assert_eq!(states[0].state, UnitState::Danger);
         assert_eq!(states[1].state, UnitState::AwaitingPruneLocal);
-        let value = report_value(".", &states);
-        assert_eq!(value["awaitingPrune"], json!(["dev_gone-merged"]));
+        let prunable: Vec<&str> =
+            states.iter().filter(|s| s.state.is_awaiting_prune()).map(|s| s.branch.as_str()).collect();
+        assert_eq!(prunable, vec!["dev_gone-merged"]);
     }
 
     /// Todas as unidades citadas carregam commit próprio.
@@ -1339,7 +1210,7 @@ refs/tags/v1.0_dev aaa7
         // --- a metade da classificação: desconhecido nunca vira negativo -----
         let (_dir, root) = scratch_repo();
         let pushed = unit("dev_pushed", true, true);
-        let states = vec![state_of(
+        let states = [state_of(
             &root,
             &pushed,
             &evidence(PrStatus::Unknown(PR_CLI_FAILED), &[]),
@@ -1354,11 +1225,9 @@ refs/tags/v1.0_dev aaa7
             "reporting an unmeasured state as a negative is the defect this module ends",
         );
 
-        // --- e o relatório carrega o MOTIVO, não só a não-resposta -----------
-        let value = report_value(".", &states);
-        assert_eq!(value["units"][0]["pr"]["status"], json!("unknown"));
-        assert_eq!(value["units"][0]["pr"]["reason"], json!(PR_CLI_FAILED));
-        assert_eq!(value["awaitingPrune"], json!([]), "nothing unmeasured is ever prunable");
+        // --- e o estado carrega o MOTIVO, não só a não-resposta -------------
+        assert_eq!(states[0].pr, PrStatus::Unknown(PR_CLI_FAILED));
+        assert!(!states[0].state.is_awaiting_prune(), "nothing unmeasured is ever prunable");
     }
 
     /// O provedor azure não é mais "sem adaptador": a pergunta o encaminha para
@@ -1475,27 +1344,28 @@ refs/tags/v1.0_dev aaa7
         assert!(measured, "a leitura de contenção respondeu");
         let ahead = refs_ahead_of_base(&root, std::slice::from_ref(&unit), &bases());
         let merged_pr = evidence(PrStatus::Merged, &[&frozen]);
-        let states = vec![state_of(&root, &unit, &merged_pr, &contained, &ahead, measured)];
+        let states = [state_of(&root, &unit, &merged_pr, &contained, &ahead, measured)];
 
         assert_eq!(states[0].state, UnitState::MovedAfterMerge, "{:?}", states[0]);
-        assert_eq!(states[0].state.token(), "moved-after-merge");
         assert!(
             !states[0].state.is_awaiting_prune(),
             "a ref carrying commits the merge never saw must never be offered for deletion",
         );
-        // O relatório diz QUAL ref andou — sem isso o veredicto é uma
+        // A evidência diz QUAL ref andou — sem isso o veredicto é uma
         // afirmação que o leitor não tem como conferir.
-        let value = report_value(".", &states);
-        assert_eq!(value["awaitingPrune"], json!([]));
-        assert_eq!(value["units"][0]["state"], json!("moved-after-merge"));
+        let refs: Vec<(&str, bool, bool)> = states[0]
+            .refs
+            .iter()
+            .map(|verdict| (verdict.refname.as_str(), verdict.contained, verdict.covered))
+            .collect();
         assert_eq!(
-            value["units"][0]["refs"],
-            json!([
-                { "ref": "refs/heads/dev_shipped", "contained": true, "coveredByPr": true },
-                { "ref": "refs/remotes/origin/dev_shipped", "contained": false, "coveredByPr": false },
-            ]),
+            refs,
+            vec![
+                ("refs/heads/dev_shipped", true, true),
+                ("refs/remotes/origin/dev_shipped", false, false),
+            ],
             "the local head is accounted for TWICE over and the remote not at all — the name-keyed \
-             set could only hold the first of those two answers: {value}",
+             set could only hold the first of those two answers: {refs:?}",
         );
 
         // A outra metade: o remoto nunca andou, então o merge explica as duas
@@ -1639,7 +1509,9 @@ refs/tags/v1.0_dev aaa7
         let merged = try_merged_refs(&root, &bases()).0;
         let ahead = refs_ahead_of_base(&root, swept.units(), &bases());
         let states = classify(&root, PrQuery::Skip, swept.units(), &merged, &ahead, true);
-        assert_eq!(report_value(".", &states)["awaitingPrune"], json!(["dev_landed"]));
+        let prunable: Vec<&str> =
+            states.iter().filter(|s| s.state.is_awaiting_prune()).map(|s| s.branch.as_str()).collect();
+        assert_eq!(prunable, vec!["dev_landed"]);
 
         // E a reordenação não engoliu nada: uma unidade só no remoto que NÃO
         // aterrissou continua sendo só do remoto.

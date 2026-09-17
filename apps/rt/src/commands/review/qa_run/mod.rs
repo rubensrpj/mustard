@@ -52,11 +52,6 @@ mod runner;
 /// `overall: skip` — single parser source, no drift.
 pub(crate) struct AcItem {
     pub(crate) id: String,
-    /// The AC description — the EARS `when X, then Y` statement, with any inline
-    /// `Command:` tail stripped. Exposed so `analyze_validation`'s tautology
-    /// linter and the close-time capability synthesis read it without a second
-    /// parser (single parser source, no drift).
-    pub(crate) statement: String,
     pub(crate) command: String,
     /// The optional `Expect:` evidence regex — a backtick-wrapped pattern
     /// qa-run matches against the command's combined stdout+stderr once the
@@ -65,21 +60,6 @@ pub(crate) struct AcItem {
     /// line, mirroring the `Command:` lookahead. Exposed so `analyze_validation`
     /// can warn about a test-runner AC that declares no evidence regex.
     pub(crate) expect: Option<String>,
-    /// The optional `Control:` command — a command that must come back GREEN
-    /// against the tree AS IT IS, proving the criterion's expression can match
-    /// something at all. `None` ⇒ the criterion declares no control, which
-    /// o fechamento avisa, nomeando o critério.
-    ///
-    /// It answers the question the red pass cannot: a broken regex, a shell
-    /// incompatibility, a missing binary and a quoting error all come back red,
-    /// and so does an honest criterion whose behaviour is merely absent. A
-    /// control that must be green TODAY separates them at PLAN time, where the
-    /// remedy costs one edit.
-    ///
-    /// Parsed off the `Command:` line or a following line, by the SAME
-    /// last-occurrence + backtick rules `Command:` and `Expect:` use — one
-    /// marker reader, three markers, no second parser.
-    pub(crate) control: Option<String>,
 }
 
 /// One AC execution outcome.
@@ -164,13 +144,6 @@ fn graded(out: AcResult, is_proof: bool) -> ProofRun {
     }
 }
 
-/// Locate the markdown carrying a spec's acceptance criteria, by slug — the
-/// SAME locator qa-run uses, exposed so the finding collector cannot disagree
-/// with QA about which file a spec name names.
-pub(crate) fn spec_file_for(cwd: &Path, spec: &str) -> Option<PathBuf> {
-    runner::find_spec_file(cwd, spec)
-}
-
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
 /// recognizing the EN and PT headings via [`crate::commands::spec::spec_sections`].
 ///
@@ -223,8 +196,7 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
         // optional `Expect:` may ride the same line after the command.
         if let Some(command) = extract_command(after_sep) {
             let expect = extract_expect(after_sep);
-            let control = extract_control(after_sep);
-            items.push(AcItem { id, statement: statement_of(after_sep), command, expect, control });
+            items.push(AcItem { id, command, expect });
             i += 1;
             continue;
         }
@@ -236,7 +208,6 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
         let mut j = i + 1;
         let mut command = None;
         let mut expect = None;
-        let mut control = None;
         while j < lines.len() {
             let line = lines[j];
             if parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ")
@@ -246,25 +217,19 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
             if command.is_none() {
                 if let Some(cmd) = extract_command(line) {
                     command = Some(cmd);
-                    // Same-line optional markers, if any.
+                    // Same-line optional marker, if any.
                     expect = extract_expect(line);
-                    control = extract_control(line);
                 }
-            } else {
-                if expect.is_none() {
-                    expect = extract_expect(line); // standalone `Expect:` line
-                }
-                if control.is_none() {
-                    control = extract_control(line); // standalone `Control:` line
-                }
+            } else if expect.is_none() {
+                expect = extract_expect(line); // standalone `Expect:` line
             }
-            if command.is_some() && expect.is_some() && control.is_some() {
-                break; // all three captured — nothing more to scan in this block
+            if command.is_some() && expect.is_some() {
+                break; // both captured — nothing more to scan in this block
             }
             j += 1;
         }
         if let Some(command) = command {
-            items.push(AcItem { id, statement: statement_of(after_sep), command, expect, control });
+            items.push(AcItem { id, command, expect });
         }
         // Resume after the header line; the next header (if any) is re-parsed
         // on its own iteration regardless of where the lookahead landed.
@@ -285,8 +250,7 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     let (id, after_sep) = parse_ac_header(line)?;
     let command = extract_command(after_sep)?;
     let expect = extract_expect(after_sep);
-    let control = extract_control(after_sep);
-    Some(AcItem { id, statement: statement_of(after_sep), command, expect, control })
+    Some(AcItem { id, command, expect })
 }
 
 /// Parse the AC **header** part of a line: the bullet, an OPTIONAL `[ ]`/`[x]`
@@ -489,96 +453,6 @@ fn extract_expect(fragment: &str) -> Option<String> {
     extract_marker(fragment, "expect:")
 }
 
-/// Extract the optional `Control:` command from a fragment. Same
-/// last-occurrence + backtick-quoting rules as [`extract_command`]; `None` when
-/// no `Control:` marker is present.
-fn extract_control(fragment: &str) -> Option<String> {
-    extract_marker(fragment, "control:")
-}
-
-/// `true` when `text` still carries an UNFILLED skeleton marker — the
-/// `<…>` token the spec drafter emits for a criterion nobody has authored yet.
-///
-/// The ONE spelling of that question in the crate. It replaces a bare
-/// `text.contains('<')`, which was spelled independently in four places and
-/// refused a criterion for carrying a JSX tag, a generic, or a shell
-/// redirection — none of which is an unfilled placeholder, and each of which
-/// left a real criterion permanently unrun.
-///
-/// The rule, stated in full. A span is a skeleton marker when:
-///
-/// 1. its `<` sits at the start of `text` or directly after whitespace — this
-///    is what a placeholder looks like and what `Vec<String>` /
-///    `HashMap<K, V>` never do, since their `<` follows an identifier;
-/// 2. a `>` closes it before any further `<`;
-/// 3. the enclosed text is non-empty and neither starts nor ends with
-///    whitespace — `cmd < in > out` encloses `" in "` and is redirection, not a
-///    placeholder;
-/// 4. the `<` is OUTSIDE any quoted run — `rg -q '<div>' src/` names an HTML
-///    tag it is searching FOR, and refusing it would refuse the criterion for
-///    doing its job.
-///
-/// Pure, total, never panics. Reads a STATEMENT as readily as a command: the
-/// drafter seeds both (`when <the new behaviour is invoked>, …`), and the
-/// close-time capability synthesis has to drop both.
-pub(crate) fn is_skeleton(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    let mut quote: Option<u8> = None;
-    let mut prev_is_boundary = true; // start of string counts as a boundary
-    while i < bytes.len() {
-        let b = bytes[i];
-        match quote {
-            Some(q) => {
-                if b == q {
-                    quote = None;
-                }
-                prev_is_boundary = false;
-                i += 1;
-            }
-            None => {
-                if b == b'\'' || b == b'"' || b == b'`' {
-                    quote = Some(b);
-                    prev_is_boundary = false;
-                    i += 1;
-                    continue;
-                }
-                if b == b'<' && prev_is_boundary {
-                    // Rule 2: the closing `>` must arrive before another `<`.
-                    let rest = &text[i + 1..];
-                    let close = rest.find('>');
-                    let next_open = rest.find('<');
-                    if let Some(close) = close
-                        && next_open.is_none_or(|open| close < open) {
-                            let inner = &rest[..close];
-                            // Rule 3: a non-empty, non-padded span.
-                            if !inner.is_empty() && inner.trim() == inner {
-                                return true;
-                            }
-                        }
-                }
-                prev_is_boundary = b.is_ascii_whitespace();
-                i += 1;
-            }
-        }
-    }
-    false
-}
-
-/// Extract the AC **statement** (the description) from the text after the id
-/// separator: everything before an inline `Command:` marker, trimmed of a
-/// trailing separator run (`—` / `-` / space). The multi-line drafter form
-/// carries no inline command, so its whole `after_sep` — the EARS
-/// `when X, then Y` — is the statement. Pure, total, never panics.
-fn statement_of(after_sep: &str) -> String {
-    let lower = after_sep.to_lowercase();
-    let head = match lower.rfind("command:") {
-        Some(idx) => &after_sep[..idx],
-        None => after_sep,
-    };
-    head.trim().trim_end_matches(['—', '-', ' ']).trim().to_string()
-}
-
 /// The criteria array, as the JSON payload shape.
 pub(crate) fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
     criteria
@@ -598,24 +472,13 @@ pub(crate) fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
 /// Result of a QA run — `overall` plus the criteria.
 ///
 /// `pub(crate)` so `close-pipeline` reads the per-criterion detail (which AC
-/// failed) that the count-only [`QaSpecOutcome`] does not carry.
+/// failed).
 pub(crate) struct QaResult {
     pub(crate) overall: String,
     pub(crate) criteria: Vec<AcResult>,
 }
 
-/// Public outcome type returned by [`run_for_spec_at`].
-///
-/// Callers that do not want process::exit (e.g. `complete_spec`)
-/// use this instead of the stdout-emitting [`run`] entry point.
-pub struct QaSpecOutcome {
-    pub spec: String,
-    pub overall: String,
-    pub passed: u32,
-    pub total: u32,
-}
-
-/// Options for [`run_for_spec_at`].
+/// Options for one qa-run, carried on the thread-local the executor reads.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QaRunOptions {
     /// `true` when invoked from a process that **could be** the binary some AC
@@ -634,64 +497,6 @@ pub struct QaRunOptions {
     /// `complete_spec::run_qa_fail_open` sets this. External callers
     /// (`mustard-rt run qa-run --spec X` from a CI shell) leave it `false`.
     pub self_invoked: bool,
-}
-
-/// Roda o QA da spec `spec` no projeto de `cwd`, grava o `qa.result` e devolve
-/// o resultado contado, sem imprimir e sem encerrar o processo.
-///
-/// Serve a quem precisa do resultado sem entregar o processo (o
-/// `complete-spec`). O projeto é sempre o de `cwd`, nunca a pasta do processo:
-/// o QA roda, e grava a métrica, no mesmo projeto que quem chamou vai admitir.
-/// Falha sem travar: uma spec que não existe volta com `overall` sem aprovação.
-/// `opts` liga o [`QaRunOptions::self_invoked`], que troca a compilação do
-/// próprio binário.
-pub(crate) fn run_for_spec_at(cwd: &Path, spec: &str, opts: QaRunOptions) -> QaSpecOutcome {
-    let result = run_qa_with_options(cwd, spec, opts);
-    let (mut passed, mut failed, mut skipped) = (0u32, 0u32, 0u32);
-    for c in &result.criteria {
-        match c.status.as_str() {
-            "pass" => passed += 1,
-            "fail" => failed += 1,
-            _ => skipped += 1,
-        }
-    }
-    let total = passed + failed + skipped;
-    QaSpecOutcome {
-        spec: spec.to_string(),
-        overall: result.overall,
-        passed,
-        total,
-    }
-}
-
-/// Cwd-aware QA run returning the full per-criterion [`QaResult`] (not the
-/// count-only outcome). The `close-pipeline` composite uses this so its report
-/// can name the failed ACs. Sets/resets the thread-local [`QaRunOptions`]
-/// around the run exactly like [`run_for_spec_at`].
-pub(crate) fn run_qa_with_options(cwd: &Path, spec: &str, opts: QaRunOptions) -> QaResult {
-    runner::QA_OPTIONS.with(|cell| cell.set(opts));
-    let result = run_qa(cwd, spec);
-    runner::QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
-    result
-}
-
-/// `true` when `spec` carries at least one **executable** acceptance criterion
-/// — the exact union [`run_qa`] would run: the spec's own `## Acceptance
-/// Criteria` items PLUS any linked-capability ACs. This is the inverse of the
-/// "`qa-run` would `skip`" predicate (an empty union is precisely the
-/// `overall: skip` case), reusing the same `find_spec_file` +
-/// [`extract_ac_section`] + [`parse_ac_items`] + [`gather_capability_acs`] path
-/// so the two can never drift.
-///
-/// Consumed by the final-wave auto-settle in `emit-pipeline` to decide whether
-/// a finished spec still owes a QA pass. Fail-open: a missing / unreadable spec
-/// file with no linked-capability ACs reads as `false` (no criteria to verify).
-pub(crate) fn spec_has_executable_acs(cwd: &Path, spec: &str) -> bool {
-    let has_own_acs = runner::find_spec_file(cwd, spec)
-        .and_then(|file| fs::read_to_string(&file).ok())
-        .and_then(|markdown| extract_ac_section(&markdown))
-        .is_some_and(|section| !parse_ac_items(&section).is_empty());
-    has_own_acs
 }
 
 /// The overall verdict of a finished run, from the per-criterion statuses and
@@ -854,7 +659,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     // The spec's OWN ACs — parsed exactly as before. An absent / unparseable
     // `## Acceptance Criteria` section yields none (it is no longer a hard skip
     // on its own, because the spec may still carry executable capability ACs).
-    let mut items: Vec<(String, String, Option<String>)> = extract_ac_section(&markdown)
+    let items: Vec<(String, String, Option<String>)> = extract_ac_section(&markdown)
         .map(|section| {
             parse_ac_items(&section)
                 .into_iter()
@@ -1069,19 +874,6 @@ mod tests {
         assert_eq!(items[2].command, "rtk x");
     }
 
-    /// The exposed `AcItem.statement` captures the EARS description with any
-    /// inline `Command:` tail stripped — for both the multi-line drafter form
-    /// and the historical one-line form.
-    #[test]
-    fn ac_item_captures_statement() {
-        let items = parse_ac_items("- **AC-1** — when x happens, then y holds.\n  Command: `true`\n");
-        assert_eq!(items[0].statement, "when x happens, then y holds.");
-        assert_eq!(items[0].command, "true");
-        let oneline = parse_ac_line("- [ ] AC-2: builds clean — Command: `cargo build`").unwrap();
-        assert_eq!(oneline.statement, "builds clean", "inline Command tail stripped");
-        assert_eq!(oneline.command, "cargo build");
-    }
-
     /// Drafter header with NO `Command:` anywhere (neither same-line nor on a
     /// following line) must yield NO item — not a panic, and crucially not a
     /// false item that bleeds the NEXT AC's command into this one. The
@@ -1181,59 +973,6 @@ mod tests {
             Some("cargo test `foo".to_string()),
             "an odd backtick must not swallow the value",
         );
-    }
-
-    /// The `Control:` marker parses beside `Command:` and `Expect:`, in BOTH AC
-    /// shapes and in both marker positions — through the one parser, since a
-    /// second reader for the third marker is exactly the drift the other two
-    /// were consolidated to avoid.
-    #[test]
-    fn parses_the_control_marker_beside_command_and_expect() {
-        // Multi-line drafter form, each marker on its own line.
-        let items = parse_ac_items(
-            "- **AC-1** — when x, then y.\n  Command: `cargo test foo`\n  \
-             Expect: `1 passed`\n  Control: `cargo test bar`\n",
-        );
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].command, "cargo test foo");
-        assert_eq!(items[0].expect.as_deref(), Some("1 passed"));
-        assert_eq!(items[0].control.as_deref(), Some("cargo test bar"));
-
-        // Historical one-line form, all three markers on the AC line.
-        let one = parse_ac_line(
-            "- [ ] AC-2: x — Command: `a` Expect: `b` Control: `c`",
-        )
-        .unwrap();
-        assert_eq!((one.command.as_str(), one.expect.as_deref(), one.control.as_deref()),
-                   ("a", Some("b"), Some("c")));
-
-        // Two-sided: a criterion that declares no control reads as declaring
-        // none — never as declaring an empty one.
-        let none = parse_ac_items("- **AC-3** — z.\n  Command: `cd .`\n");
-        assert_eq!(none[0].control, None, "an absent marker is absent, not empty");
-    }
-
-    /// `is_skeleton` separates an UNFILLED marker from the three shapes a bare
-    /// `contains('<')` refused: a generic, an HTML/JSX tag inside a search
-    /// pattern, and a shell redirection.
-    ///
-    /// Two-sided by construction — the accepting half cannot pass by the
-    /// predicate answering `false` for everything, and the rejecting half
-    /// cannot pass by it answering `true` for everything.
-    #[test]
-    fn placeholder_matches_the_skeleton_token_not_any_angle_bracket() {
-        // Placeholders — the drafter's own seeds, and a hand-written one.
-        assert!(is_skeleton("<runnable command that verifies this criterion>"));
-        assert!(is_skeleton("<comando executável que verifica este critério>"));
-        assert!(is_skeleton("cargo test -p mustard-rt <test-name>"));
-        assert!(is_skeleton("when <the new behaviour is invoked>, then it holds"));
-
-        // NOT placeholders — every one of these was refused unrun before.
-        assert!(!is_skeleton("cargo test -p mustard-rt vec_of::<String>"), "a generic");
-        assert!(!is_skeleton("rg -q '<div>' src/app.tsx"), "an HTML tag being searched FOR");
-        assert!(!is_skeleton("sort < in.txt > out.txt"), "shell redirection");
-        assert!(!is_skeleton("cargo build"), "a command with no angle bracket at all");
-        assert!(!is_skeleton("cmd <<EOF"), "a heredoc opener closes nothing");
     }
 
     /// A spec this run could not find is `spec-not-found`, never `skip`.
@@ -1396,7 +1135,7 @@ mod tests {
              - **AC-1** — the program does not exist.\n  Command: `mustard-no-such-program-9f3c`\n\
              - **AC-2** — incidental green.\n  Command: `cd .`\n",
         );
-        let out = run_qa_with_options(cwd, "unrunnable", QaRunOptions { self_invoked: false });
+        let out = run_qa(cwd, "unrunnable");
         assert_eq!(out.criteria.len(), 2, "the shape under test");
         assert_ne!(
             out.overall, "pass",

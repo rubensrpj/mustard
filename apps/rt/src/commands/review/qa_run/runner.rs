@@ -397,7 +397,7 @@ pub(super) fn find_spec_file(cwd: &Path, spec: &str) -> Option<PathBuf> {
 /// leaves out the one crate whose output IS the running binary.
 ///
 /// **The catch-22 this solves:** `complete-spec` calls
-/// [`super::run_for_spec_at`] which forks shell commands for each AC. When
+/// o qa-run, que forks shell commands for each AC. When
 /// this process is itself running from `target/debug`, an AC like
 /// `cargo build --workspace` tries to relink the very executable in the
 /// foreground — `Acesso negado. (os error 5)` on Windows.
@@ -797,7 +797,7 @@ pub(super) fn emit_qa_metric(cwd: &Path, spec: &str, overall: &str, criteria: &[
 thread_local! {
     /// Active [`QaRunOptions`] for the current thread's qa-run.
     ///
-    /// Set by [`super::run_for_spec_at`] and read by
+    /// Set by the qa-run entry point and read by
     /// [`run_ac_command_with_timeout`]. A `thread_local!` Cell — not an env
     /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
     /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`

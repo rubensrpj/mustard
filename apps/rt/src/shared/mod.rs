@@ -11,9 +11,6 @@
 //!   and asking about pull requests only when the consumer says to
 //!   ([`branch_state::PrQuery`]). Both faces ask it: the exit ritual
 //!   (`commands::git_settle`), the spec inventory and the statusline.
-//! - [`code_state`] — a fingerprint of the working tree, so a recorded test
-//!   run can be told apart from a stale one. Written by `qa-run`, read by the
-//!   close gate: it answers *did the code move since that green*.
 //! - [`context`] — run-context resolution (cwd / session-id / current-spec),
 //!   the port of `hook-env.js`'s runtime probing.
 //! - [`events`] — the NDJSON event bus: classification/routing ([`events::route`])
@@ -45,7 +42,6 @@
 //!   consumed.
 
 pub mod branch_state;
-pub mod code_state;
 pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about.
@@ -65,7 +61,5 @@ pub mod spec_state;
 pub mod test_fixture;
 pub mod work_kind;
 
-// Vieram da economia quando ela saiu: a barra de status le o ganho do rtk e
-// o carregador da retomada conta a janela.
+// Veio da economia quando ela saiu: a barra de status le o ganho do rtk.
 pub mod rtk_gain;
-pub mod token_budget;

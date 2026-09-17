@@ -9,11 +9,8 @@
 //! the binary crate, shared by every hook module. It is `mustard-rt`-local — it does not
 //! touch `mustard-core`.
 
-pub(crate) mod glob;
-pub mod json_io;
 pub mod platform;
 pub mod sha256;
-pub mod source_class;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;

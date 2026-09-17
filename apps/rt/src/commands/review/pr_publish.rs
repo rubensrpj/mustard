@@ -67,7 +67,6 @@ use crate::shared::spec_state::DiskSpecState;
 /// byte-stable and no caller re-parses a free string.
 const ACTION_OPEN: &str = "open";
 const ACTION_EDIT: &str = "edit";
-const ACTION_READY: &str = "ready";
 /// O pull request do submódulo que já entrou: nada foi enviado nem reescrito.
 const ACTION_MERGED: &str = "merged";
 
@@ -204,24 +203,6 @@ pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublis
 pub(crate) fn rewrite_body(provider: &dyn PrProvider, head: &str, body: &str) -> Option<u64> {
     let view = provider.view(PrRef::Head(head)).ok()?;
     provider.edit_body(view.number, body).ok().map(|()| view.number)
-}
-
-/// Ask `provider` to mark draft PR `number` ready for review.
-#[must_use]
-pub(crate) fn ready_report(provider: &dyn PrProvider, number: u64) -> PrPublishReport {
-    let name = provider.provider().to_string();
-    match provider.ready(number) {
-        Ok(()) => PrPublishReport {
-            ok: true,
-            action: ACTION_READY,
-            provider: name,
-            number: Some(number),
-            url: None,
-            error: None,
-            warning: None,
-        },
-        Err(error) => PrPublishReport::failed(ACTION_READY, name, Some(number), error),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -560,31 +541,6 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     emit(&shown);
 }
 
-/// Dispatch `mustard-rt run pr-edit`: rewrite the body of pull request
-/// `number` from the spec's event file — the same text `pr-open` builds, so
-/// the two can never describe the unit differently.
-pub fn run_edit(root: &Path, number: u64, spec: &str) {
-    let repo = project_root(root);
-    let provider = provider_for(&repo);
-    let report = match message_of(&repo, spec) {
-        Ok((_, body)) => edit_report(provider.as_ref(), number, &body),
-        Err(error) => PrPublishReport::failed(
-            ACTION_EDIT,
-            provider.provider().to_string(),
-            Some(number),
-            error,
-        ),
-    };
-    emit(&report);
-}
-
-/// Dispatch `mustard-rt run pr-ready`.
-pub fn run_ready(root: &Path, number: u64) {
-    let repo = project_root(root);
-    let provider = provider_for(&repo);
-    emit(&ready_report(provider.as_ref(), number));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,7 +747,7 @@ mod tests {
         );
     }
 
-    /// Every failure — table-driven over the three actions — degrades into the
+    /// Every failure — table-driven over the two actions — degrades into the
     /// `error` field with the provider still named: `ok:false`, exit stays 0,
     /// and `open` echoes NO number because nothing was created to point at.
     #[test]
@@ -800,18 +756,13 @@ mod tests {
         let cases: Vec<(PrPublishReport, &str, Option<u64>)> = vec![
             (open_report(&fake, &to_open()), "open", None),
             (edit_report(&fake, 12, "new body"), "edit", Some(12)),
-            (ready_report(&fake, 12), "ready", Some(12)),
         ];
         for (report, action, number) in cases {
             assert_eq!(
                 report,
                 PrPublishReport {
                     ok: false,
-                    action: match action {
-                        "open" => ACTION_OPEN,
-                        "edit" => ACTION_EDIT,
-                        _ => ACTION_READY,
-                    },
+                    action: if action == "open" { ACTION_OPEN } else { ACTION_EDIT },
                     provider: "azure".into(),
                     number,
                     url: None,
@@ -823,19 +774,14 @@ mod tests {
         }
     }
 
-    /// `edit` and `ready` echo the number the caller pointed at and hand the
-    /// port the body verbatim — no re-reading, no rewriting.
+    /// `edit` echoes the number the caller pointed at and hands the port the
+    /// body verbatim — no re-reading, no rewriting.
     #[test]
-    fn edit_and_ready_echo_the_number_and_pass_the_body_through() {
+    fn edit_echoes_the_number_and_passes_the_body_through() {
         let fake = FakePub::green("github");
         let edited = edit_report(&fake, 42, "line one\nline two");
         assert_eq!((edited.ok, edited.number, edited.url), (true, Some(42), None));
-        let readied = ready_report(&fake, 42);
-        assert_eq!((readied.ok, readied.action, readied.number), (true, "ready", Some(42)));
-        assert_eq!(
-            fake.seen.borrow().as_slice(),
-            ["edit 42 body=line one\nline two", "ready 42"],
-        );
+        assert_eq!(fake.seen.borrow().as_slice(), ["edit 42 body=line one\nline two"]);
     }
 
     /// The title comes out of the body document itself: the first heading

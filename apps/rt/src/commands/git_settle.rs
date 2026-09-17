@@ -1273,81 +1273,6 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     report
 }
 
-/// The READING pass — every work branch of every repo of the project, each with
-/// the ONE state it is in. Acts on nothing, by construction: it holds no
-/// deleting step, and what it hands the printer is a list of plain state values
-/// (`shared::branch_state::BranchState`) that carry no handle to a repository.
-///
-/// Per repository, like `repos` in [`settle_at`]: the acting side of this
-/// command is per-repo, so the reading side has to be too — a monorepo answer
-/// that folded the submodules into the parent would hide exactly the branches
-/// the exit ritual keeps having to be told about.
-pub(crate) fn report_at(start: &Path) -> Value {
-    let Some(main) = main_checkout_root(start) else {
-        return json!({
-            "ok": false,
-            "reason": "not-a-git-repo",
-            "path": show(start),
-            "exists": start.exists(),
-            "hint": "git não resolveu repositório nesse caminho — confira o --root",
-        });
-    };
-    let (cfg_root, _superproject) = config_root(&main);
-    let cfg = mustard_core::ProjectConfig::load(&cfg_root);
-    let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
-    let bases: Vec<String> = flow.bases().to_vec();
-    let provider = mustard_core::resolve_provider(&cfg_root, &cfg.git.provider);
-
-    let mut repos = vec![repo_inventory(&main, ".", &flow, &provider)];
-    for rel in submodules_of(&main) {
-        repos.push(repo_inventory(&main.join(&rel), &rel, &flow, &provider));
-    }
-    json!({ "ok": true, "bases": bases, "repos": repos })
-}
-
-/// One repository's inventory: sweep its refs, measure ancestry locally, then
-/// let the PR port confirm. The provider is whatever `mustard.json` declares —
-/// this command names no CLI of its own.
-///
-/// Asked through the enumerator's FALLIBLE face, because this is a REPORTING
-/// consumer: a sweep git never answered, printed as an empty inventory, is the
-/// same lie as an unmeasured PR printed as "no PR" — and refusing that lie is
-/// why this module exists. A repository whose refs would not read says so.
-fn repo_inventory(
-    repo: &Path,
-    label: &str,
-    flow: &crate::shared::work_kind::BaseFlow,
-    provider: &str,
-) -> Value {
-    let Some(units) = BranchEnumerator::try_sweep(repo, flow) else {
-        return json!({
-            "repo": label,
-            "ok": false,
-            "reason": "refs-unreadable",
-            "units": [],
-            "awaitingPrune": [],
-        });
-    };
-    let (merged, measured) = branch_state::try_merged_refs(repo, flow);
-    let ahead = branch_state::refs_ahead_of_base(repo, units.units(), flow);
-    let states = branch_state::classify(
-        repo,
-        PrQuery::Ask(provider),
-        units.units(),
-        &merged,
-        &ahead,
-        measured,
-    );
-    branch_state::report_value(label, &states)
-}
-
-/// Run `git-settle` from `root` and print the JSON report. `report` selects the
-/// reading pass, which settles nothing.
-pub fn run(root: &Path, unit: Option<&str>, report: bool) {
-    let result = if report { report_at(root) } else { settle_at(root, unit) };
-    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1960,51 +1885,6 @@ mod tests {
             json!(["dev_inplace"]),
             "the merged in-place unit must be reported pending: {v}",
         );
-    }
-
-    /// The READING face at the COMMAND level: what `--report` actually prints.
-    ///
-    /// The other tests of this ritual classify through the shared module; this
-    /// one goes through `report_at`, because that is the face the field
-    /// measurement read — and what it read of a branch cut seconds earlier was
-    /// `awaiting-prune-local`, the unit the user was editing announced as
-    /// delivered. Both halves, so the assertions can fail: a unit that really
-    /// landed is in the same report, listed.
-    #[test]
-    fn report_lists_delivered_units_and_never_a_freshly_cut_one() {
-        let (_dir, main) = fixture();
-        // A unit that really landed: commits of its own, merged into the base,
-        // branch alive on both sides.
-        git(&main, &["checkout", "-b", "dev_landed"]);
-        std::fs::write(main.join("landed.txt"), "l").expect("file");
-        git(&main, &["add", "-A"]);
-        git(&main, &["commit", "-m", "landed work"]);
-        git(&main, &["push", "origin", "dev_landed"]);
-        git(&main, &["checkout", "dev"]);
-        git(&main, &["merge", "--no-ff", "dev_landed", "-m", "merge dev_landed"]);
-        // And a unit shaped the way the work-branch gate opens every one: a
-        // branch at the base's tip with nothing committed on it yet.
-        git(&main, &["branch", "dev_justcut"]);
-
-        let v = report_at(&main);
-        let repo = &v["repos"][0];
-        assert_eq!(repo["ok"], json!(true), "the refs WERE read — an empty list would mean empty");
-        assert_eq!(repo["awaitingPrune"], json!(["dev_landed"]), "{v}");
-
-        let row = |branch: &str| -> Value {
-            repo["units"]
-                .as_array()
-                .expect("units")
-                .iter()
-                .find(|u| u["branch"] == json!(branch))
-                .cloned()
-                .expect("the report must carry a row per swept unit")
-        };
-        let cut = row("dev_justcut");
-        assert_eq!(cut["ancestry"], json!(true), "a fresh cut IS reachable from its base");
-        assert_eq!(cut["ahead"], json!(false), "…and carries no commit of its own");
-        assert_ne!(cut["state"], json!("awaiting-prune-local"), "cutting is not delivering: {cut}");
-        assert_eq!(row("dev_landed")["state"], json!("awaiting-prune"));
     }
 
     /// The module's prose may not assert a merge method nobody measured.

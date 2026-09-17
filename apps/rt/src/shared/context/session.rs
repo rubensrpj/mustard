@@ -121,7 +121,7 @@ fn invalidate_session_spec(project_dir_path: &str, session_id: &str) {
 /// only reliable binding is the `pipeline.scope` event the CLI run-face emits,
 /// which carries BOTH `session_id` and `spec`. Rather than scan the NDJSON log
 /// on every tool call, the router persists that binding as a small marker file
-/// (see [`bind_session_spec`]); this reads it back in O(1).
+/// (o marcador `active-spec`); this reads it back in O(1).
 ///
 /// Marker location: `.claude/.session/<session_id>/active-spec` — beside the
 /// session's own `.events/` directory.
@@ -131,7 +131,7 @@ fn invalidate_session_spec(project_dir_path: &str, session_id: &str) {
 #[must_use]
 pub fn spec_for_session(project_dir_path: &str, session_id: &str) -> Option<String> {
     // Per-dispatch memo of the marker read; evicted on any binding change via
-    // `invalidate_session_spec` (see `bind_session_spec` / `unbind_session_spec`).
+    // `invalidate_session_spec` (see `unbind_session_spec`).
     let cache_key = (project_dir_path.to_string(), session_id.to_string());
     if let Ok(cache) = session_spec_cache().lock()
         && let Some(hit) = cache.get(&cache_key) {
@@ -159,62 +159,17 @@ fn spec_for_session_uncached(project_dir_path: &str, session_id: &str) -> Option
     }
 }
 
-/// Inverse lookup: the session currently bound to `spec` via its
-/// `active-spec` marker. Scans `.claude/.session/*/active-spec` and, when
-/// more than one session is bound to the same spec (rare — concurrent
-/// sessions on one spec), returns the binding with the newest marker mtime.
-///
-/// Exists for spec-scoped READERS (e.g. `digest-adherence-finalize`): the
-/// emitter and the reader run as separate processes minutes apart, and the
-/// env-less newest-session-by-mtime fallback of [`session_id`] races against
-/// any other session touching the project in between — the field symptom was
-/// `digestUsed: false` with two digest queries on record. The marker is the
-/// binding the researching session itself wrote, so resolving through it is
-/// stable. `None` when no session is bound to `spec` — never panics.
-#[must_use]
-pub fn session_for_spec(project_dir_path: &str, spec: &str) -> Option<String> {
-    if spec.is_empty() {
-        return None;
-    }
-    let base = ClaudePaths::for_project(Path::new(project_dir_path))
-        .ok()?
-        .claude_dir()
-        .join(".session");
-    let entries = fs::read_dir(&base).ok()?;
-    let mut best: Option<(std::time::SystemTime, String)> = None;
-    for entry in entries {
-        if !entry.path.is_dir() || is_placeholder_session(&entry.file_name) {
-            continue;
-        }
-        let marker = entry.path.join("active-spec");
-        let Ok(content) = fs::read_to_string(&marker) else {
-            continue;
-        };
-        if content.trim() != spec {
-            continue;
-        }
-        let Ok(mtime) = fs::modified(&marker) else {
-            continue;
-        };
-        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            best = Some((mtime, entry.file_name.clone()));
-        }
-    }
-    best.map(|(_, name)| name)
-}
-
 /// Persist the session→spec binding as the `active-spec` marker, best-effort.
 ///
-/// Called from the event router whenever an event already carries both a
-/// non-empty `spec` and a resolved `session_id` (the `pipeline.scope` /
-/// `pipeline.stage` / `pipeline.status` events the run-face emits). Later
-/// spec-less hook events for the same session then inherit the spec via
-/// [`spec_for_session`]. Fail-open: any IO error is swallowed — telemetry must
-/// never block tool execution.
+/// Sem chamador na produção desde a refatoração que enxugou o runtime: quem
+/// escreve a ligação hoje são os testes dos portões que a LEEM por
+/// [`spec_for_session`], e por isso ela mora sob `cfg(test)` em vez de sair.
+/// Fail-open: qualquer erro de IO é engolido.
 ///
 /// A placeholder session id ([`is_placeholder_session`]) is REFUSED: a binding
 /// written under a bucket no hook is ever handed is unreachable, and the gates
 /// keyed on it would silently fall back to whichever spec is newest.
+#[cfg(test)]
 pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
     if is_placeholder_session(session_id) || spec.is_empty() {
         return;
@@ -241,7 +196,7 @@ pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
 ///
 /// Called on the terminal close of a spec so events in the gap after the close
 /// no longer inherit the just-finished spec via [`spec_for_session`]. Resolves
-/// the same `active-spec` marker [`bind_session_spec`] writes and deletes it.
+/// o mesmo marcador `active-spec` da ligação e o apaga.
 /// A missing marker is a no-op, and any IO error is swallowed — telemetry
 /// teardown must never block the close.
 pub fn unbind_session_spec(project_dir: &str, session_id: &str) {
@@ -278,33 +233,6 @@ mod tests {
     use super::*;
     use crate::shared::context::pending_branch::{pending_branch_for, set_pending_branch};
     use tempfile::tempdir;
-
-    /// The spec-scoped reader must resolve the session BOUND to the spec via
-    /// its `active-spec` marker — not the newest session dir by mtime, which
-    /// races against unrelated concurrent sessions (field symptom: a false
-    /// `digestUsed: false` in digest-adherence-finalize).
-    #[test]
-    fn session_for_spec_resolves_bound_session_not_newest() {
-        let dir = tempdir().unwrap();
-        let base = dir.path().join(".claude").join(".session");
-        // sess-a is bound to the spec under test.
-        std::fs::create_dir_all(base.join("sess-a")).unwrap();
-        std::fs::write(base.join("sess-a").join("active-spec"), "minha-spec\n").unwrap();
-        // sess-b is created LAST (newest mtime) and bound to another spec —
-        // the mtime-based fallback would wrongly pick it.
-        std::fs::create_dir_all(base.join("sess-b")).unwrap();
-        std::fs::write(base.join("sess-b").join("active-spec"), "outra-spec").unwrap();
-
-        let root = dir.path().to_str().unwrap();
-        assert_eq!(
-            session_for_spec(root, "minha-spec").as_deref(),
-            Some("sess-a"),
-            "the bound session wins regardless of mtime order"
-        );
-        assert_eq!(session_for_spec(root, "outra-spec").as_deref(), Some("sess-b"));
-        assert_eq!(session_for_spec(root, "spec-sem-binding"), None);
-        assert_eq!(session_for_spec(root, ""), None);
-    }
 
     // -----------------------------------------------------------------------
     // session_id — filesystem fallback (no env mutation needed)

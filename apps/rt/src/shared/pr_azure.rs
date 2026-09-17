@@ -612,71 +612,6 @@ pub(crate) fn evidence_of(repo: &Path, branch: &str) -> PrEvidence {
 }
 
 // ---------------------------------------------------------------------------
-// The prefetch reads — what review-prefetch composes its document from
-// ---------------------------------------------------------------------------
-
-/// GET PR `number` VERBATIM — the raw `GitPullRequest` document, for the one
-/// consumer (review-prefetch) that needs fields the port's [`PrView`] does
-/// not carry (`description`, `createdBy`).
-pub(crate) fn fetch_pr(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<Value, String> {
-    let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
-    transport.call("GET", &url, auth, None)
-}
-
-/// GET the comment THREADS of PR `number` — where the human conversation
-/// lives on Azure (there is no flat comment list like GitHub's).
-pub(crate) fn fetch_threads(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<Vec<Value>, String> {
-    let url = format!("{}/{number}/threads?api-version={API_VERSION}", remote.api_pulls());
-    let doc = transport.call("GET", &url, auth, None)?;
-    doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())
-}
-
-/// GET the REVIEWERS of PR `number` — each row carries the reviewer's `vote`,
-/// the Azure spelling of a review verdict.
-pub(crate) fn fetch_reviewers(
-    remote: &AzureRemote,
-    transport: &dyn AzureTransport,
-    auth: &str,
-    number: u64,
-) -> Result<Vec<Value>, String> {
-    let url = format!("{}/{number}/reviewers?api-version={API_VERSION}", remote.api_pulls());
-    let doc = transport.call("GET", &url, auth, None)?;
-    doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())
-}
-
-/// The three documents `review-prefetch`'s Azure route composes from, fetched
-/// in ONE resolution of the remote + credential. Diff counters and file lists
-/// are deliberately absent: the local git already has them, identically on
-/// every provider — the port's own long-standing decision.
-pub(crate) struct AzurePrefetch {
-    pub(crate) pr: Value,
-    pub(crate) threads: Vec<Value>,
-    pub(crate) reviewers: Vec<Value>,
-}
-
-/// Fetch an [`AzurePrefetch`] over the real transport.
-pub(crate) fn prefetch(repo: &Path, number: u64) -> Result<AzurePrefetch, String> {
-    let adapter = AzurePrRest::new(repo);
-    let (remote, auth) = adapter.context()?;
-    let transport = adapter.transport.as_ref();
-    Ok(AzurePrefetch {
-        pr: fetch_pr(&remote, transport, &auth, number)?,
-        threads: fetch_threads(&remote, transport, &auth, number)?,
-        reviewers: fetch_reviewers(&remote, transport, &auth, number)?,
-    })
-}
-
-// ---------------------------------------------------------------------------
 // The adapter — context resolution wired onto the pure operations
 // ---------------------------------------------------------------------------
 
@@ -1012,28 +947,6 @@ mod tests {
             Err("parse-error".to_string()),
             "a document without `value` could not be read — never an empty answer",
         );
-    }
-
-    /// The prefetch fetchers address the PR's own sub-resources and
-    /// answer their `value` arrays; the raw PR document travels verbatim.
-    #[test]
-    fn prefetch_fetchers_address_the_pr_subresources() {
-        let remote = remote();
-        let pr_url = format!("{}/7?api-version=7.1", remote.api_pulls());
-        let threads_url = format!("{}/7/threads?api-version=7.1", remote.api_pulls());
-        let reviewers_url = format!("{}/7/reviewers?api-version=7.1", remote.api_pulls());
-        let fake = FakeTransport::of(&[
-            ("GET", &pr_url, json!({ "pullRequestId": 7, "description": "why" })),
-            ("GET", &threads_url, json!({ "value": [{ "status": "active" }] })),
-            ("GET", &reviewers_url, json!({ "value": [{ "vote": 10 }] })),
-        ]);
-
-        let pr = fetch_pr(&remote, &fake, "a", 7).expect("pr answers");
-        assert_eq!(pr["description"], json!("why"), "the raw document travels verbatim");
-        let threads = fetch_threads(&remote, &fake, "a", 7).expect("threads answer");
-        assert_eq!(threads, vec![json!({ "status": "active" })]);
-        let reviewers = fetch_reviewers(&remote, &fake, "a", 7).expect("reviewers answer");
-        assert_eq!(reviewers, vec![json!({ "vote": 10 })]);
     }
 
     /// A política da branch é perguntada ao Azure pela branch, e só conta a

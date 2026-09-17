@@ -105,13 +105,6 @@ pub(crate) fn cut_base_in(dir: &Path) -> Option<String> {
     (!base.is_empty()).then(|| base.to_string())
 }
 
-/// Retire `dir`'s cut record — called once its content has been folded into the
-/// sidecar, so the answer has exactly one home again. Best-effort: a file that
-/// could not be removed is still redundant, never wrong.
-pub(crate) fn clear_cut_base_in(dir: &Path) {
-    let _ = std::fs::remove_file(dir.join(CUT_BASE_FILE));
-}
-
 /// Process-wide memo of [`mustard_core::remote_branch_names`], keyed by the
 /// root it was measured in. `None` inside the entry is the probe's own "could
 /// not measure", memoised like any other answer.
@@ -266,6 +259,10 @@ fn names_obey(names: Option<&BTreeSet<String>>, base: &str) -> bool {
 /// Same probe and same memo as [`base_still_on_remote`], so the two halves of
 /// one pick — whether it is written down, and whether it is still obeyed — read
 /// the identical set of refs.
+// Sem chamador na produção desde a refatoração que enxugou o runtime: quem
+// ainda lê e escreve a base do corte são os testes do portão de base,
+// guardado por decisão do usuário até ele decidir se o portão volta.
+#[cfg(test)]
 fn catalogue_offers_a_choice(root: &Path) -> Option<bool> {
     with_remote_names(root, |names| match names {
         Some(names) if !names.is_empty() => Some(names.len() > 1),
@@ -292,14 +289,6 @@ impl WorkKind {
     /// is not corrected.
     pub(crate) const SUGGESTED: [&'static str; 6] =
         ["feature", "fix", "hotfix", "chore", "refactor", "docs"];
-
-    /// The kind a chooser pre-marks when the caller named none — the first
-    /// SUGGESTED token. A constructor rather than a `const` because the token
-    /// is owned now; a default that cannot be spelled is worse than a function
-    /// call.
-    pub(crate) fn suggested_default() -> Self {
-        Self(Self::SUGGESTED[0].to_string())
-    }
 
     /// The stable token this kind is spelled with — in a branch name, on the
     /// command line, and in a report.
@@ -593,6 +582,7 @@ impl BaseFlow {
     /// unit's own directory ([`record_cut_base`](Self::record_cut_base)), which
     /// is what [`base_of`](Self::base_of) reads back — consumers that must agree
     /// about when an answer exists to be remembered.
+    #[cfg(test)]
     pub(crate) fn base_must_be_recorded(&self, branch: &str) -> bool {
         if WorkKind::of_branch(branch).is_none() {
             return false;
@@ -653,6 +643,7 @@ impl BaseFlow {
     /// this runs inside a HOOK that has already cut the branch, and a record
     /// that could not be written must never turn a successful cut into a blocked
     /// session.
+    #[cfg(test)]
     pub(crate) fn record_cut_base(&self, branch: &str, base: &str) {
         if !self.base_must_be_recorded(branch) {
             return;

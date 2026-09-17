@@ -43,6 +43,11 @@
 //! it and nothing here commits. What the opening door does after `Open` —
 //! refreshing the base from `origin` — belongs to [`super::census_settlement`].
 
+// Sem nenhum chamador desde a refatoração que enxugou o runtime: o portão
+// segue no repositório por decisão do usuário, até ele decidir se volta a ser
+// ligado. Decidido em 17/09.
+#![allow(dead_code)]
+
 use std::path::Path;
 
 use mustard_core::ProjectConfig;

@@ -136,7 +136,7 @@ impl Scene {
         ];
         let spec_dir = work.join(".claude/spec").join(SPEC);
         std::fs::create_dir_all(&spec_dir).unwrap();
-        let body: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let body: String = lines.iter().map(|line| line.to_string() + "\n").collect();
         std::fs::write(spec_dir.join("spec.ndjson"), body).unwrap();
 
         // O `gh` falso.

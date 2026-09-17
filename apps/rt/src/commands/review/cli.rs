@@ -29,7 +29,7 @@ pub enum ReviewCmd {
     /// the round.
     #[command(name = "pr-review")]
     #[command(display_order = 7)]
-    PrReview {
+    Review {
         /// PR number. Omitted: the open pull requests are LISTED, so the
         /// reviewer picks the colleague's one instead of being handed their
         /// own branch's.
@@ -52,7 +52,7 @@ pub enum ReviewCmd {
     /// the operator's answer coming back.
     #[command(name = "pr-merge")]
     #[command(display_order = 6)]
-    PrMerge {
+    Merge {
         /// PR number. Omitted: the open pull requests are LISTED, so the
         /// reviewer picks the colleague's one instead of being handed their
         /// own branch's.
@@ -74,7 +74,7 @@ pub enum ReviewCmd {
     /// `error` field with exit 0, never a panic.
     #[command(name = "pr-open")]
     #[command(display_order = 5)]
-    PrOpen {
+    Open {
         /// The integration base the PR targets (short branch name).
         #[arg(long)]
         base: String,
@@ -104,13 +104,13 @@ pub enum ReviewCmd {
 /// Dispatch one `review`-family `run` subcommand.
 pub fn dispatch(cmd: ReviewCmd) {
     match cmd {
-        ReviewCmd::PrReview { pr, verdict, root } => {
+        ReviewCmd::Review { pr, verdict, root } => {
             review::pr_door::run_review(&root, pr, verdict.as_deref());
         }
-        ReviewCmd::PrMerge { pr, confirm, root } => {
+        ReviewCmd::Merge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);
         }
-        ReviewCmd::PrOpen { base, head, spec, fill, draft, root } => {
+        ReviewCmd::Open { base, head, spec, fill, draft, root } => {
             review::pr_publish::run_open(&root, &base, &head, spec.as_deref(), fill, draft);
         }
     }

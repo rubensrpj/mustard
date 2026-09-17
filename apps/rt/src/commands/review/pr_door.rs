@@ -146,7 +146,7 @@ fn detect_subproject(files: &[String], repo_root: &Path) -> Option<PathBuf> {
 /// Run `gh` in `root` and return its trimmed stdout, or the reason it did not
 /// answer.
 ///
-/// Same shape [`crate::commands::review::review_prefetch`] uses (the `cmd /C`
+/// Same shape the antigo review-prefetch usava (the `cmd /C`
 /// hop is how a `gh.cmd` shim is found on Windows) plus one addition that
 /// matters here: the working directory. `gh` resolves the repository from the
 /// cwd, and every command in this module asks about THIS project's pull

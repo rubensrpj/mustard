@@ -589,7 +589,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
 mod tests {
     use super::*;
     use crate::commands::event::work_branch::{
-        cut_pending_work_branch, sanitize_git_ref, slug_of_work_branch, CutOutcome,
+        cut_pending_work_branch, slug_of_work_branch, CutOutcome,
     };
     use crate::commands::spec_events::write::{seed_at, WriteOpts};
     use crate::hooks::write::write_gate::WriteGate;
@@ -779,18 +779,12 @@ use crate::shared::context::pending_branch::set_pending_branch;
         }
     }
 
-    /// O nome ajustado não muda quando passa de novo pelo ajuste, nem pelo
-    /// sanitizador de branch que a retomada usa para comparar a branch com a
-    /// spec.
+    /// O nome ajustado não muda quando passa de novo pelo ajuste.
     #[test]
-    fn an_adjusted_name_is_a_fixed_point_of_the_branch_sanitizer() {
+    fn an_adjusted_name_is_a_fixed_point_of_the_adjustment() {
         for asked in ["trava de pendências", "..x..y.", "nome.lock", "Ação_Rápida.v2", "a/b/c", "x.lock.lock", "@{u}"] {
             let (name, _) = adjust_name(asked);
             assert_eq!(adjust_name(&name), (name.clone(), Vec::new()), "{asked}");
-            if !name.is_empty() {
-                let branch = format!("feature/{name}");
-                assert_eq!(sanitize_git_ref(&branch), branch, "{asked}");
-            }
         }
     }
 

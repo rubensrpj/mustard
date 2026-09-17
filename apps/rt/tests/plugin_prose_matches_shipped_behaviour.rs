@@ -150,12 +150,9 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
     // Read the PRODUCTION half: the tests below each file quote the removed
     // sentence in order to forbid it, and a negative assertion answered by its
     // own guard proves nothing.
-    let open = production_half("apps/rt/src/commands/work_unit_open.rs");
     let pr = production_half("apps/rt/src/commands/review/pr_door.rs");
     let delete = production_half("apps/rt/src/commands/git_delete.rs");
-    for (name, body) in
-        [("work_unit_open", &open), ("pr_door", &pr), ("git_delete", &delete)]
-    {
+    for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
         assert!(
             !body.contains("is not an integration base of this"),
             "{name} still pronounces a verdict about a configuration file over a \

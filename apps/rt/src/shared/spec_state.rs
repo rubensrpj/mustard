@@ -16,8 +16,9 @@
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::SpecLog;
-use mustard_core::domain::spec_state::{approval_event, resolve, SpecState, State};
+use mustard_core::domain::spec_state::{resolve, SpecState, State};
 use mustard_core::io::spec_events as store;
+#[cfg(test)]
 use serde_json::Value;
 
 use crate::shared::context::checkout::spec_of_checkout_branch;
@@ -88,20 +89,10 @@ impl SpecState for DiskSpecState {
     }
 }
 
-/// A spec `spec` do projeto em `root` foi aprovada pelo usuário: o estado
-/// que a trava lê ([`lock_state`]) está numa fase de spec aprovada. A única
-/// resposta a "está aprovada?": o `approve-spec`, a retomada, a página da
-/// spec e o `wave-scaffold` perguntam aqui, e o `status` pergunta pela
-/// [`approval`], que passa por aqui antes de ler a testemunha.
-#[must_use]
-pub(crate) fn approved(root: &Path, spec: &str) -> bool {
-    lock_state(root, spec).is_some_and(|state| state.approved)
-}
-
 /// O estado que a trava da aprovação lê, pela regra única do núcleo
 /// ([`mustard_core::domain::spec_state::lock_state_of`]), com o arquivo de
-/// eventos da spec, o do checkout principal num worktree. O portão, a
-/// testemunha e [`approved`] passam por aqui.
+/// eventos da spec, o do checkout principal num worktree. O portão e a
+/// testemunha passam por aqui.
 ///
 /// Só o arquivo de eventos conta: uma pasta de spec antiga, só com o
 /// `meta.json`, fica livre, e um `meta.json` ao lado de um arquivo de eventos
@@ -109,32 +100,6 @@ pub(crate) fn approved(root: &Path, spec: &str) -> bool {
 #[must_use]
 pub(crate) fn lock_state(root: &Path, spec: &str) -> Option<State> {
     mustard_core::domain::spec_state::lock_state_of(DiskSpecState::new(root).log(spec).as_ref())
-}
-
-/// A aprovação que vale de uma spec: a pergunta, a opção que o usuário
-/// escolheu e a hora em que a testemunha gravou.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Approval {
-    pub(crate) question: String,
-    pub(crate) answer: String,
-    pub(crate) at: String,
-}
-
-/// A aprovação da spec `spec`: a que vale pelo núcleo
-/// ([`mustard_core::domain::spec_state::approval_event`]), a mesma que a
-/// página e o aviso de crescimento das ondas leem, enquanto a trava a lê
-/// aprovada ([`approved`]). `None` numa spec que não está aprovada ou que não
-/// tem arquivo de eventos.
-#[must_use]
-pub(crate) fn approval(root: &Path, spec: &str) -> Option<Approval> {
-    if !approved(root, spec) {
-        return None;
-    }
-    let log = DiskSpecState::new(root).log(spec)?;
-    let event = approval_event(&log)?;
-    let witness = event.fields.get("witness").filter(|witness| witness.is_object())?;
-    let text = |key: &str| witness.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-    Some(Approval { question: text("question"), answer: text("answer"), at: event.at().to_string() })
 }
 
 /// Grava na pasta `spec_dir` a spec em plano e, em seguida, aprovada pelo
@@ -242,20 +207,10 @@ pub(crate) fn stand_on_spec_branch(root: &std::path::Path, spec: &str) {
 mod tests {
     use super::*;
     use crate::shared::context::session::bind_session_spec;
-    use mustard_core::domain::model::contract::HookInput;
     use mustard_core::platform::git;
     use tempfile::tempdir;
 
     const SESSION: &str = "s-lado-a-lado";
-
-
-    /// A spec folder with a `spec.md`, which the checklist door also needs.
-    fn spec_with_md(root: &std::path::Path, spec: &str) {
-        let dir = root.join(".claude").join("spec").join(spec);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("spec.md"), "# Spec\n").unwrap();
-    }
-
 
 
     /// A sessão do ambiente vem da primeira variável dita, na ordem: a do
@@ -426,111 +381,5 @@ mod tests {
         assert!(state.approved);
         assert_eq!(state.branch.as_deref(), Some("feature/com-arquivo"), "the branch is inherited");
         assert_eq!(state.base.as_deref(), Some("dev"));
-    }
-
-    /// O leitor da aprovação do rt e o do núcleo veem a mesma aprovação, lado
-    /// a lado: nenhuma em plano, a primeira, nenhuma de volta ao plano e a
-    /// última depois de reaprovada.
-    #[test]
-    fn the_approval_reader_and_the_core_see_the_same_approval() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let path = store::spec_file(root, "epic").unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let state = |fields: serde_json::Value, at: &str| {
-            store::write_at(&path, "state", fields.as_object().cloned().unwrap(), &[], at).unwrap();
-        };
-        let approve = |answer: &str, at: &str| {
-            state(
-                serde_json::json!({
-                    "phase": "approved",
-                    "author": "user",
-                    "witness": { "question": "Aprovar esta spec?", "answer": answer }
-                }),
-                at,
-            );
-        };
-        let both = || {
-            let log = DiskSpecState::new(root).log("epic").unwrap();
-            let core = approval_event(&log).map(|event| event.at().to_string());
-            (approval(root, "epic").map(|a| (a.answer, a.at)), core)
-        };
-
-        state(serde_json::json!({ "phase": "plan" }), "2026-09-12T09:00:00-03:00");
-        assert_eq!(both(), (None, None), "in plan");
-        approve("Aprovar", "2026-09-12T09:03:00-03:00");
-        let first = "2026-09-12T09:03:00-03:00".to_string();
-        assert_eq!(both(), (Some(("Aprovar".into(), first.clone())), Some(first)));
-        state(serde_json::json!({ "phase": "plan" }), "2026-09-12T10:00:00-03:00");
-        assert_eq!(both(), (None, None), "back in plan");
-        approve("Aprovar de novo", "2026-09-12T11:00:00-03:00");
-        let last = "2026-09-12T11:00:00-03:00".to_string();
-        assert_eq!(both(), (Some(("Aprovar de novo".into(), last.clone())), Some(last)));
-    }
-
-    /// A página e o leitor da aprovação veem a mesma aprovação, lado a lado:
-    /// depois de reaprovada, a página marca só o que veio depois da aprovação
-    /// que o leitor devolve.
-    #[test]
-    fn the_page_and_the_approval_reader_see_the_same_approval() {
-        use mustard_core::platform::i18n::Locale;
-        use mustard_core::view::document::{spec_document, Node, WavePrompts};
-        use serde_json::json;
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let path = store::spec_file(root, "epic").unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let write = |event_type: &str, fields: Value, at: &str| {
-            store::write_at(&path, event_type, fields.as_object().cloned().unwrap(), &[], at).unwrap().id
-        };
-        let at = |time: &str| format!("2026-09-12T{time}:00-03:00");
-        let msg = write("message", json!({ "author": "user", "text": "combine" }), &at("08:00"));
-        let rule = |text: &str, time: &str| {
-            write("rule", json!({ "text": text, "keys": ["k"], "example": "e", "origin": msg }), &at(time));
-        };
-        let approve = |answer: &str, time: &str| {
-            let witness = json!({ "question": "Aprovar esta spec?", "answer": answer });
-            write("state", json!({ "phase": "approved", "author": "user", "witness": witness }), &at(time));
-        };
-        write("state", json!({ "phase": "plan" }), &at("08:01"));
-        rule("Antes de tudo.", "08:02");
-        approve("Aprovar", "09:00");
-        rule("Entre as aprovações.", "09:30");
-        write("state", json!({ "phase": "plan" }), &at("10:00"));
-        approve("Aprovar de novo", "11:00");
-        rule("Depois da última.", "11:30");
-
-        let reader = approval(root, "epic").expect("the spec is approved");
-        let log = DiskSpecState::new(root).log("epic").unwrap();
-        let boundary = log
-            .visible()
-            .into_iter()
-            .find(|event| event.event_type == "state" && event.at() == reader.at)
-            .map(|event| event.id)
-            .unwrap();
-        let doc = spec_document("epic", &log, &WavePrompts::new(), Locale::PtBr);
-        let agreed = doc
-            .body
-            .iter()
-            .find_map(|node| match node {
-                Node::Section(section) if section.anchor.as_deref() == Some("agreed") => Some(section),
-                _ => None,
-            })
-            .unwrap();
-        let marked: Vec<(String, bool)> =
-            Node::items(&agreed.body).into_iter().map(|item| (item.text.clone(), item.note().is_some())).collect();
-        assert_eq!(
-            marked,
-            [
-                ("Antes de tudo.".to_string(), false),
-                ("Entre as aprovações.".to_string(), false),
-                ("Depois da última.".to_string(), true),
-            ]
-        );
-        for event in log.visible().into_iter().filter(|event| event.event_type == "rule") {
-            let text = event.str_field("text").unwrap_or_default();
-            let on_page = marked.iter().find(|(shown, _)| shown == text).map(|(_, mark)| *mark);
-            assert_eq!(on_page, Some(event.id > boundary), "{text}: the page and the reader disagree");
-        }
     }
 }

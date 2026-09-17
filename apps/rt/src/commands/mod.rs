@@ -44,7 +44,6 @@ pub mod map;
 // O `orient` e o `work-unit-open` deixaram de ser comandos: sobraram como
 // motor do mapa do inicio da sessao e da porta do pull request.
 pub mod orient;
-pub mod work_unit_open;
 pub mod spec_events;
 pub mod flow;
 pub mod retired;

@@ -96,7 +96,7 @@ pub fn published_to<'a>(event: &'a SpecEvent, page: &str) -> Option<&'a str> {
 /// e o endereço.
 #[must_use]
 pub fn project_publish(log: &SpecLog) -> Option<(&str, &str)> {
-    log.visible().into_iter().filter_map(|e| published_to(e, PROJECT_PAGE).map(|url| (e.at(), url))).last()
+    log.visible().into_iter().filter_map(|e| published_to(e, PROJECT_PAGE).map(|url| (e.at(), url))).next_back()
 }
 
 /// A linha da spec `name`, montada do arquivo de eventos dela. `None` quando
@@ -154,7 +154,7 @@ pub fn spec_line(name: &str, log: &SpecLog) -> Option<String> {
 /// página do projeto, gravada na mesma spec, não conta.
 #[must_use]
 pub fn spec_page_url(log: &SpecLog) -> Option<&str> {
-    log.visible().into_iter().filter_map(|e| published_to(e, SPEC_PAGE)).last()
+    log.visible().into_iter().filter_map(|e| published_to(e, SPEC_PAGE)).next_back()
 }
 
 /// O objetivo da spec numa frase: a primeira frase do primeiro `context`, na

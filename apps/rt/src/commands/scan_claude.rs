@@ -6,15 +6,10 @@
 //! a guard against a runaway generator. That file is Mustard's and stays out
 //! of git. No `CLAUDE.md` (nor `CLAUDE.local.md`) is ever read or written:
 //! those files belong to the project.
-//!
-//! The `## Guards` markers below are still the single source of the literals
-//! the Guards commands match on.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
-#[cfg(test)]
-use mustard_core::domain::vocabulary::stacks::StackDetection;
 use mustard_core::{translate, SupportedLocale};
 
 /// Hard ceiling on the machine-owned `.claude/scan-map.md`. The map is a terse
@@ -23,19 +18,6 @@ use mustard_core::{translate, SupportedLocale};
 /// reports a deterministic error. Curated `CLAUDE.md` prose is never measured
 /// against this (or any) ceiling.
 pub const SCAN_MAP_HARD_CAP_BYTES: usize = 8192;
-
-/// Marcador de abertura do bloco `## Guards` pendente que o scan semeia num
-/// `CLAUDE.md` de subprojeto. Mora aqui, num lugar só, para o gerador e o
-/// leitor nunca discordarem do literal.
-pub const GUARDS_PENDING_OPEN: &str = "<!-- mustard:guards pending -->";
-/// Opening marker of an authored `## Guards` block — the `pending` token
-/// dropped. Only the tests still write it, as fixtures of old files.
-#[cfg(test)]
-pub const GUARDS_DONE_OPEN: &str = "<!-- mustard:guards -->";
-/// Closing marker of the `## Guards` block (pairs with both opening markers).
-/// Only the tests still write it, as fixtures of old files.
-#[cfg(test)]
-pub const GUARDS_CLOSE: &str = "<!-- /mustard:guards -->";
 
 /// Result of running the scan-map pass over a set of projects.
 pub struct ClaudeMdResult {
@@ -110,56 +92,6 @@ fn render_commands(commands: &mustard_core::domain::config::Commands) -> String 
     for (label, cmd) in present {
         let _ = writeln!(out, "| {label} | `{cmd}` |");
     }
-    out
-}
-
-/// Build the enrichable `## Guards` section for a SUBPROJECT: a `pending`
-/// sentinel block ([`GUARDS_PENDING_OPEN`] … [`GUARDS_CLOSE`]) whose body carries
-/// the deterministic facts (kind, frameworks, detected stacks) the enrich
-/// agent needs as context, tucked inside an HTML comment so they never render as
-/// prose. The returned string is a complete section (`## Guards\n\n` + block)
-/// ending in a newline. The block stays empty of guards on purpose — the enrich step
-/// fills it; the `pending` marker is the contract that it has not been enriched
-/// yet.
-///
-/// The `stacks=` segment (`stacks=laravel(0.95),nextjs(0.65)`) is emitted only
-/// when `stacks` is non-empty, so a unit without detections renders the legacy
-/// line byte-for-byte. `frameworks=` stays regardless — it is the raw
-/// frequency-ranked dep list, a different signal than the inferred stacks.
-#[cfg(test)]
-pub(crate) fn build_guards_block(
-    kind: &str,
-    frameworks: &[String],
-    stacks: &[StackDetection],
-    scripts: &[String],
-) -> String {
-    let fw = if frameworks.is_empty() { "(none)".to_string() } else { frameworks.join(", ") };
-    let mut facts = format!("kind={kind}; frameworks={fw}");
-    if !stacks.is_empty() {
-        let joined = stacks
-            .iter()
-            // `{:.2}` keeps the segment byte-stable (engine confidences are
-            // two-decimal by construction) and round-trip-safe for the parser.
-            .map(|s| format!("{}({:.2})", s.name, s.confidence))
-            .collect::<Vec<_>>()
-            .join(",");
-        let _ = write!(facts, "; stacks={joined}");
-    }
-    // Mined build/codegen scripts (manifest-declared) — emitted only when the
-    // unit has any, so a script-less unit renders the legacy line byte-for-byte.
-    // The enrich agent grounds codegen rules on these (e.g. "X is a codegen
-    // step — regenerate, never hand-edit its output"); a fact, mined by
-    // recurrence, never named knowledge. Order-preserving (manifest order).
-    if !scripts.is_empty() {
-        let _ = write!(facts, "; scripts={}", scripts.join(", "));
-    }
-    let mut out = String::from("## Guards\n\n");
-    let _ = writeln!(out, "{GUARDS_PENDING_OPEN}");
-    // Facts for the enrich agent — kept in a comment so they are context, not
-    // content.
-    let _ = writeln!(out, "<!-- facts: {facts} -->");
-    out.push_str(GUARDS_CLOSE);
-    out.push('\n');
     out
 }
 
@@ -272,64 +204,6 @@ mod tests {
 
     fn no_commands() -> Commands {
         Commands::default()
-    }
-
-    #[test]
-    fn stacks_facts_guards_block_emits_segment() {
-        let frameworks = vec!["serde".to_string()];
-        let stacks = vec![
-            StackDetection {
-                name: "laravel".into(),
-                confidence: 0.95,
-                signals: vec!["dep:laravel/framework".into()],
-            },
-            StackDetection { name: "nextjs".into(), confidence: 0.65, signals: vec!["dep:next".into()] },
-        ];
-        // With detections the facts line gains the `stacks=` segment —
-        // name(confidence) tokens, comma-joined; signals stay off the line so
-        // the comment stays terse. `frameworks=` survives beside it.
-        let with = build_guards_block("rust", &frameworks, &stacks, &[]);
-        assert!(
-            with.contains("<!-- facts: kind=rust; frameworks=serde; stacks=laravel(0.95),nextjs(0.65) -->"),
-            "stacks segment missing or malformed: {with}"
-        );
-        // Without detections the whole block is byte-identical to the legacy form.
-        let without = build_guards_block("rust", &frameworks, &[], &[]);
-        assert_eq!(
-            without,
-            format!(
-                "## Guards\n\n{GUARDS_PENDING_OPEN}\n<!-- facts: kind=rust; frameworks=serde -->\n{GUARDS_CLOSE}\n"
-            ),
-            "empty stacks must reproduce the legacy block exactly"
-        );
-    }
-
-    #[test]
-    fn scripts_facts_guards_block_emits_segment() {
-        // Mined codegen/build scripts ride the facts line as a `scripts=`
-        // segment so the enrich agent can ground a "X is codegen — regenerate,
-        // never hand-edit its output" rule. Order-preserving; emitted only when
-        // present, so a script-less unit reproduces the legacy line byte-for-byte.
-        let frameworks = vec!["serde".to_string()];
-        let scripts = vec!["generate:api".to_string(), "build".to_string()];
-        let with = build_guards_block("rust", &frameworks, &[], &scripts);
-        assert!(
-            with.contains("<!-- facts: kind=rust; frameworks=serde; scripts=generate:api, build -->"),
-            "scripts segment missing or malformed: {with}"
-        );
-        // Sits AFTER the stacks segment when both are present (terse, stable order).
-        let stacks = vec![StackDetection { name: "laravel".into(), confidence: 0.95, signals: vec![] }];
-        let both = build_guards_block("php", &[], &stacks, &scripts);
-        assert!(
-            both.contains("stacks=laravel(0.95); scripts=generate:api, build -->"),
-            "scripts must follow stacks: {both}"
-        );
-        // Script-less unit is byte-identical to the legacy line.
-        let without = build_guards_block("rust", &frameworks, &[], &[]);
-        assert!(
-            without.contains("<!-- facts: kind=rust; frameworks=serde -->"),
-            "no scripts ⇒ legacy line: {without}"
-        );
     }
 
     #[test]
