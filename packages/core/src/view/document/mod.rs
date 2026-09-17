@@ -6,9 +6,13 @@
 //! de eventos. Assim a mesma árvore sai como `.md` e como `.html`, e toda
 //! página tem o mesmo desenho.
 //!
+//! A página abre curta: cada seção junta os itens em grupos recolhidos, e
+//! cada item mostra numa linha o código, o título, a situação e a data; o
+//! texto e os campos abrem por baixo.
+//!
 //! O texto guardado na árvore é markdown de linha: código entre crases,
-//! negrito entre asteriscos duplos e link. [`Item::text`] é a exceção e pode
-//! ter parágrafos, listas e títulos.
+//! negrito entre asteriscos duplos e link. [`Item::text`] e
+//! [`Node::Markdown`] são a exceção e podem ter parágrafos, listas e títulos.
 //!
 //! Tudo aqui é puro: sem disco, sem relógio e sem caminho da máquina. A mesma
 //! entrada dá sempre a mesma árvore.
@@ -19,7 +23,10 @@ mod project;
 mod spec;
 
 pub use project::project_document;
-pub use spec::{conversation_len, cut_oldest_conversation, spec_document, spec_page, RtkDay, SpecInputs, WavePrompts};
+pub use spec::{
+    conversation_len, cut_oldest_conversation, spec_document, spec_page, RtkDay, SpecInputs, WavePrompts,
+    WaveState, WaveStates,
+};
 
 /// Uma página inteira.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +71,10 @@ pub enum Node {
     Table(Table),
     /// Um bloco de texto monoespaçado, mostrado como está.
     Code(String),
+    /// Um documento em markdown dentro da página, como o pedido enviado a
+    /// um agente: a página o mostra formatado, como um arquivo `.md`, e o
+    /// `.md` o traz cercado, linha por linha.
+    Markdown(String),
     /// Um trecho recolhido: o resumo aparece, e os blocos abrem ao clicar.
     /// `owner` é o código do item de quem o trecho é, quando é de um: o texto
     /// enviado de um pedido é do envio que o gravou.
@@ -74,6 +85,11 @@ pub enum Node {
     Rule,
     /// Um item com código, como uma regra ou um critério de uma spec.
     Item(Item),
+    /// Um grupo de uma seção, recolhido numa linha só.
+    Group(Group),
+    /// A visão geral no topo de uma seção: uma ficha por parte, com o estado
+    /// dela e o atalho para o grupo dela.
+    Overview(Overview),
 }
 
 /// Uma seção: o título, o endereço e os blocos.
@@ -83,9 +99,67 @@ pub struct Section {
     pub anchor: Option<String>,
     /// O título, em markdown de linha.
     pub heading: String,
-    /// Quando existe, a seção vem recolhida e este é o texto que a abre.
-    pub collapsed: Option<String>,
     pub body: Vec<Node>,
+}
+
+/// Um grupo: a linha recolhida com o título, o resumo e a contagem dos
+/// itens, e os blocos que abrem por baixo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    /// O endereço do grupo na página, único nela.
+    pub anchor: String,
+    /// O título, em texto.
+    pub title: String,
+    /// A situação que abre o resumo, como o estado de uma onda.
+    pub status: Option<Status>,
+    /// O resumo, em markdown de linha: o nome da onda ou a conta das
+    /// situações dos itens.
+    pub summary: String,
+    /// `true` no grupo que a página abre aberto.
+    pub open: bool,
+    pub body: Vec<Node>,
+}
+
+/// A situação de um item ou de um grupo: o que se lê e o tom da cor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub label: String,
+    pub tone: Tone,
+}
+
+/// O tom de uma situação. Só aprovado, reprovado e em andamento têm cor; a
+/// coisa por fazer e a entregue têm só o traço, e a versão antiga de um item
+/// sai apagada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Plain,
+    Good,
+    Bad,
+    Running,
+    Todo,
+    Done,
+    Old,
+}
+
+/// A visão geral: o título, a conta das situações e uma ficha por parte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overview {
+    pub title: String,
+    /// A conta das situações, como "3 entregues · 1 a fazer".
+    pub legend: String,
+    pub cards: Vec<Card>,
+}
+
+/// Uma ficha da visão geral.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Card {
+    /// O endereço do grupo que a ficha abre.
+    pub target: String,
+    /// O que a ficha mostra em destaque, como o número da onda.
+    pub label: String,
+    pub status: Status,
+    /// O nome da parte, em markdown de linha, mostrado ao passar o mouse.
+    pub hint: String,
 }
 
 /// Uma tabela: o cabeçalho e as linhas.
@@ -95,7 +169,8 @@ pub struct Table {
     pub rows: Vec<Vec<String>>,
 }
 
-/// Um item com código (`MSTD-RULE-0005`), o texto e os campos dele.
+/// Um item com código (`MSTD-RULE-0005`), a linha recolhida, o texto e os
+/// campos dele.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     /// O código do item.
@@ -103,12 +178,51 @@ pub struct Item {
     /// `true` quando o código é o endereço deste item na página. A versão
     /// antiga de um item revisto mostra o código sem ser o endereço dele.
     pub anchored: bool,
-    /// Uma marca curta depois do código, como o autor e a hora.
-    pub note: Option<String>,
+    /// O título da linha recolhida, em markdown de linha.
+    pub title: String,
+    /// A situação da linha recolhida.
+    pub status: Option<Status>,
+    /// De que é e de quem é o item, como "mensagem · usuário".
+    pub who: Option<String>,
+    /// Uma marca que só o `.md` diz depois do código, como "depois da
+    /// aprovação".
+    pub mark: Option<String>,
+    /// A hora do item, até o minuto: "2026-09-11 21:03".
+    pub date: Option<String>,
     /// O texto do item, em markdown; pode ter parágrafos e listas.
     pub text: String,
     /// Os outros campos, na ordem.
     pub fields: Vec<Field>,
+}
+
+impl Item {
+    /// A marca curta que o `.md` põe depois do código: de que e de quem é, a
+    /// marca e a hora. Sem nada a dizer além da hora, nada.
+    #[must_use]
+    pub fn note(&self) -> Option<String> {
+        if self.who.is_none() && self.mark.is_none() {
+            return None;
+        }
+        let parts: Vec<&str> =
+            [&self.who, &self.mark, &self.date].into_iter().filter_map(|part| part.as_deref()).collect();
+        Some(parts.join(" · "))
+    }
+}
+
+impl Node {
+    /// Os itens destes blocos, também os de dentro de um grupo, na ordem.
+    #[must_use]
+    pub fn items(nodes: &[Self]) -> Vec<&Item> {
+        let mut out = Vec::new();
+        for node in nodes {
+            match node {
+                Self::Item(item) => out.push(item),
+                Self::Group(group) => out.extend(Self::items(&group.body)),
+                _ => {}
+            }
+        }
+        out
+    }
 }
 
 /// Um campo de um item: o rótulo e o valor em markdown de linha.
@@ -200,12 +314,19 @@ fn redact_nodes(nodes: &mut [Node], redactor: &Redactor<'_>, codes: &mut Vec<Str
         match node {
             Node::Section(section) => {
                 plain(&mut section.heading, loose);
-                if let Some(summary) = section.collapsed.as_mut() {
-                    plain(summary, loose);
-                }
                 redact_nodes(&mut section.body, redactor, codes, loose);
             }
-            Node::Heading { text, .. } | Node::Paragraph(text) | Node::Code(text) => {
+            Node::Group(group) => {
+                plain(&mut group.title, loose);
+                plain(&mut group.summary, loose);
+                redact_nodes(&mut group.body, redactor, codes, loose);
+            }
+            Node::Overview(overview) => {
+                for card in &mut overview.cards {
+                    plain(&mut card.hint, loose);
+                }
+            }
+            Node::Heading { text, .. } | Node::Paragraph(text) | Node::Code(text) | Node::Markdown(text) => {
                 plain(text, loose);
             }
             Node::List { items, .. } => {
@@ -234,8 +355,9 @@ fn redact_nodes(nodes: &mut [Node], redactor: &Redactor<'_>, codes: &mut Vec<Str
             Node::Rule => {}
             Node::Item(item) => {
                 let mut found = redactor.apply(&mut item.text);
-                if let Some(note) = item.note.as_mut() {
-                    found |= redactor.apply(note);
+                found |= redactor.apply(&mut item.title);
+                for part in [&mut item.who, &mut item.mark].into_iter().flatten() {
+                    found |= redactor.apply(part);
                 }
                 for field in &mut item.fields {
                     found |= redactor.apply(&mut field.label);
@@ -257,6 +379,10 @@ fn collect_anchors(nodes: &[Node], out: &mut BTreeSet<String>) {
                     out.insert(anchor.clone());
                 }
                 collect_anchors(&section.body, out);
+            }
+            Node::Group(group) => {
+                out.insert(group.anchor.clone());
+                collect_anchors(&group.body, out);
             }
             Node::Item(item) if item.anchored => {
                 out.insert(item.code.clone());

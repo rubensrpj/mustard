@@ -39,7 +39,7 @@ pub fn page(md: &str) -> Vec<Node> {
                 if let Some(section) = current.take() {
                     out.push(Node::Section(section));
                 }
-                current = Some(Section { anchor: None, heading: text, collapsed: None, body: Vec::new() });
+                current = Some(Section { anchor: None, heading: text, body: Vec::new() });
             }
             other => match current.as_mut() {
                 Some(section) => section.body.push(other),

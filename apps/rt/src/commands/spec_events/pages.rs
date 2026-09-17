@@ -12,7 +12,8 @@
 //! - o `page --spec`, quando alguém pede.
 //!
 //! Os dois saem da mesma árvore (`view::document`), então dizem sempre a mesma
-//! coisa, e a mesma lista de eventos dá sempre os mesmos bytes.
+//! coisa, e a mesma lista de eventos dá sempre os mesmos bytes. O estado de
+//! cada onda vai pronto para a árvore, lido pela rodada.
 //!
 //! Os dois são refeitos sempre com a trava do arquivo de eventos presa: o
 //! `entregou` dentro da própria gravação, o [`refresh`] pedindo a trava. Assim
@@ -206,11 +207,15 @@ fn write_pages(
 ) -> Result<SpecPages, Refusal> {
     // O pedido de cada onda é montado aqui, com o disco, e vai pronto para a
     // página: quem aprova lê exatamente o que o agente da onda vai ler.
-    let prompts: WavePrompts = mustard_core::io::wave_prompt::prompts(root, spec.trim(), log, lang)
+    let running = crate::commands::flow::round::waves_in_progress(log).into_keys().collect();
+    let prompts: WavePrompts = mustard_core::io::wave_prompt::prompts(root, spec.trim(), log, lang, &running)
         .into_iter()
         .map(|built| (built.wave, built.text))
         .collect();
-    let doc = spec_page(spec.trim(), log, SpecInputs { prompts: &prompts, rtk }, lang);
+    // O estado de cada onda sai da mesma leitura que decide o que a rodada
+    // despacha: a página não tem regra própria para ele.
+    let waves = crate::commands::flow::round::wave_states(log);
+    let doc = spec_page(spec.trim(), log, SpecInputs { prompts: &prompts, rtk, waves: &waves }, lang);
     write(&files.md, &Render::Md.render(&doc))?;
     let checked = publishable(doc, lang, PAGE_MAX_BYTES);
     write(&files.html, &checked.html)?;
@@ -468,7 +473,7 @@ mod tests {
         let mut fewer = spec_page(
             "grande",
             &store::read(&root.join(".claude/spec/grande/spec.ndjson")).unwrap().unwrap(),
-            SpecInputs { prompts: &WavePrompts::new(), rtk: &[] },
+            SpecInputs { prompts: &WavePrompts::new(), rtk: &[], waves: &Default::default() },
             Locale::PtBr,
         );
         cut_oldest_conversation(&mut fewer, pages.trimmed - 1, Locale::PtBr);
@@ -526,11 +531,11 @@ mod tests {
         assert_eq!(pages.project.as_deref(), Some(".claude/spec/project.html"));
         let html = read(root, ".claude/spec/project.html");
         assert_eq!(html, discarded, "the discard left the project page as the next step makes it");
-        for (spec, state) in [("busca", "em execução"), ("trava", "plano"), ("velha", "descartada")] {
-            let row = format!(
-                "<tr><td><a href=\"https://claude.ai/code/artifact/{spec}\">{spec}</a></td><td>{state}</td>"
-            );
-            assert!(html.contains(&row), "{spec} is not listed with its state and link:\n{html}");
+        for (spec, state) in [("busca", "tag run\">em execução"), ("trava", "tag\">plano"), ("velha", "tag\">descartada")] {
+            let row = format!("<code class=\"c\">{spec}</code><span class=\"t\"></span><span class=\"tail\"><span class=\"{state}</span>");
+            assert!(html.contains(&row), "{spec} is not listed with its state:\n{html}");
+            let link = format!("<dd><a href=\"https://claude.ai/code/artifact/{spec}\">{spec}</a></dd>");
+            assert!(html.contains(&link), "{spec} is not listed with its link:\n{html}");
         }
         assert!(
             html.contains("<footer>Índice das specs: <code>.claude/spec/index.ndjson</code></footer>"),

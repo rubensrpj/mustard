@@ -435,7 +435,7 @@ pub fn points(log: &SpecLog) -> Vec<SurveyPoint<'_>> {
 
 /// A primeira versão do ponto que `event` fecha pelo `closes`; `None` quando
 /// ele não fecha ponto nenhum.
-fn closed_first(log: &SpecLog, event: &SpecEvent) -> Option<u64> {
+pub(crate) fn closed_first(log: &SpecLog, event: &SpecEvent) -> Option<u64> {
     let target = log.get(event.int("closes")?).filter(|target| target.event_type == "point")?;
     Some(original_of(log, target))
 }

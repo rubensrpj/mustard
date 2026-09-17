@@ -116,6 +116,84 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.skill.stale", Locale::EnUs) => "to review",
         ("prompt.skill.read", Locale::PtBr) => "Leia o arquivo da skill antes de começar a tarefa que a nomeia.",
         ("prompt.skill.read", Locale::EnUs) => "Read the skill file before starting the task that names it.",
+
+        // O conserto: a onda que volta por reprovação e a revisão dela.
+        ("prompt.part.fix", Locale::PtBr) => "Conserto",
+        ("prompt.part.fix", Locale::EnUs) => "Fix",
+        ("prompt.fix.wave", Locale::PtBr) => {
+            "Esta onda voltou por reprovação. As linhas abaixo são o veredito que reprovou, a entrega \
+             anterior desta onda e os itens combinados gravados depois do último envio. Conserte só o \
+             que o veredito aponta, à luz desses itens: não refaça a onda."
+        }
+        ("prompt.fix.wave", Locale::EnUs) => {
+            "This wave came back rejected. The lines below are the verdict that rejected it, this \
+             wave's previous delivery and the agreed items recorded after the last send. Fix only what \
+             the verdict points out, in light of those items: do not redo the wave."
+        }
+        ("prompt.fix.review", Locale::PtBr) => {
+            "Esta revisão é de um conserto. As linhas abaixo são o veredito que reprovou, a entrega \
+             anterior e os itens combinados gravados depois do último envio. Olhe só o conserto — o \
+             que o veredito apontou —, não a onda inteira de novo."
+        }
+        ("prompt.fix.review", Locale::EnUs) => {
+            "This review is of a fix. The lines below are the verdict that rejected the wave, its \
+             previous delivery and the agreed items recorded after the last send. Look only at the \
+             fix — what the verdict pointed out —, not the whole wave again."
+        }
+        ("prompt.part.own_delivered", Locale::PtBr) => "O que esta onda entregou",
+        ("prompt.part.own_delivered", Locale::EnUs) => "What this wave delivered",
+
+        // As regras da execução: o que o orquestrador acrescentava à mão.
+        ("prompt.part.execution", Locale::PtBr) => "Regras da execução",
+        ("prompt.part.execution", Locale::EnUs) => "Execution rules",
+        ("prompt.execution.build", Locale::PtBr) => "Compile com `{command}`.",
+        ("prompt.execution.build", Locale::EnUs) => "Build with `{command}`.",
+        ("prompt.execution.test", Locale::PtBr) => "Teste com `{command}`.",
+        ("prompt.execution.test", Locale::EnUs) => "Test with `{command}`.",
+        ("prompt.execution.no_commit", Locale::PtBr) => "Não comite e não use `git add`: o commit é da rodada.",
+        ("prompt.execution.no_commit", Locale::EnUs) => {
+            "Do not commit and do not use `git add`: the commit belongs to the round."
+        }
+        ("prompt.execution.running", Locale::PtBr) => {
+            "Ondas em andamento, feitas agora por outros agentes: não mexa nos arquivos delas."
+        }
+        ("prompt.execution.running", Locale::EnUs) => {
+            "Waves in flight, being done right now by other agents: do not touch their files."
+        }
+        ("prompt.execution.wave", Locale::PtBr) => "Onda {n}",
+        ("prompt.execution.wave", Locale::EnUs) => "Wave {n}",
+        ("prompt.review.copy", Locale::PtBr) => {
+            "Revise numa cópia separada, nunca no repositório principal: anote a pasta em que você \
+             começou, que é o repositório principal, crie a cópia no commit da onda com \
+             `git worktree add --detach <pasta da cópia> {commit}` e rode tudo dentro dela."
+        }
+        ("prompt.review.copy", Locale::EnUs) => {
+            "Review in a separate copy, never in the main repository: note the folder you started in, \
+             which is the main repository, create the copy at the wave's commit with \
+             `git worktree add --detach <copy folder> {commit}` and run everything inside it."
+        }
+        ("prompt.review.root", Locale::PtBr) => {
+            "A spec mora no repositório principal: toda leitura dela leva `--root <repositório \
+             principal>`, como em `mustard-rt run read waves --root <repositório principal> --spec …`."
+        }
+        ("prompt.review.root", Locale::EnUs) => {
+            "The spec lives in the main repository: every read of it takes `--root <main repository>`, \
+             as in `mustard-rt run read waves --root <main repository> --spec …`."
+        }
+        ("prompt.review.jobs", Locale::PtBr) => {
+            "Compile e teste com menos processos em paralelo que o normal: as ondas compilam ao mesmo \
+             tempo que você."
+        }
+        ("prompt.review.jobs", Locale::EnUs) => {
+            "Build and test with fewer parallel jobs than usual: the waves are compiling at the same \
+             time as you."
+        }
+        ("prompt.review.cleanup", Locale::PtBr) => {
+            "No fim, apague a cópia com `git worktree remove --force <pasta da cópia>`."
+        }
+        ("prompt.review.cleanup", Locale::EnUs) => {
+            "At the end, delete the copy with `git worktree remove --force <copy folder>`."
+        }
         _ => return None,
     })
 }
@@ -130,8 +208,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            18,
-            0xf8fa_636a_46db_172c,
+            32,
+            0x2458_f505_ccb6_3020,
         );
     }
 }

@@ -150,7 +150,7 @@ fn only_the_page_engine_writes_html_pages_or_converts_markdown() {
         assert_eq!(html.matches("<style>").count(), 1, "{name} carries a second style");
     }
     assert!(pages[0].contains("<code>tudo</code>"), "the spec page did not convert markdown");
-    assert!(pages[1].contains("<code>demo</code>"), "the project page does not list the spec");
+    assert!(pages[1].contains("<code class=\"c\">demo</code>"), "the project page does not list the spec");
     assert!(pages[2].contains("<strong>negrito</strong>"), "the loose page did not convert markdown");
 
     let root = repo_root();

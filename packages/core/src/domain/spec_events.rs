@@ -316,6 +316,10 @@ const fn ty(
 const TEXT: Field = req("text", Kind::Text);
 const KEYS: Field = req("keys", Kind::Texts);
 const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
+/// As ondas donas de um item combinado, além das ondas das tarefas que o
+/// cobrem. O item do projeto diz, em vez disso, que vale no projeto todo
+/// (`applies_to` com os arquivos `["**"]`).
+const WAVES: Field = opt("waves", Kind::Ints);
 /// O item combinado que não vira código: o valor é o motivo. Quem o traz sai
 /// do aviso dos itens sem tarefa, porque não há tarefa que o implemente.
 const NO_CODE: Field = opt("no_code", Kind::Text);
@@ -426,13 +430,16 @@ pub const TYPES: &[TypeSpec] = &[
             opt("reminders", Kind::List),
         ],
     ),
-    ty("rule", "RULE", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, NO_CODE]),
-    ty("limit", "LIMIT", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, NO_CODE]),
-    ty("contract", "CONTR", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, NO_CODE]),
-    ty("error", "ERR", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text), NO_CODE]),
-    ty("edge_case", "EDGE", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text), NO_CODE]),
-    ty("out_of_scope", "SCOPE", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text), NO_CODE]),
-    ty("decision", "DEC", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text), NO_CODE]),
+    // Os itens combinados. Cada um tem dono: as ondas (as das tarefas que o
+    // cobrem e as que ele diz em `waves`) ou o projeto (`applies_to` no
+    // projeto todo).
+    ty("rule", "RULE", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty("limit", "LIMIT", Block::Agreed, true, &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty("contract", "CONTR", Block::Agreed, true, &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty("error", "ERR", Block::Agreed, true, &[TEXT, KEYS, req("message", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty("edge_case", "EDGE", Block::Agreed, true, &[TEXT, KEYS, req("expected", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty("out_of_scope", "SCOPE", Block::Agreed, true, &[TEXT, KEYS, opt("reason", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
+    ty("decision", "DEC", Block::Agreed, true, &[TEXT, KEYS, req("why", Kind::Text), APPLIES_TO, WAVES, NO_CODE]),
     // Especificação.
     ty("context", "CTX", Block::Specification, true, &[TEXT]),
     ty("concern", "CONC", Block::Specification, true, &[TEXT]),
@@ -714,6 +721,10 @@ pub enum Refusal {
     /// O texto do entregou de uma onda passa do teto de caracteres: ele volta
     /// para a janela principal e precisa caber nela.
     DeliveredTooLong { chars: usize, max: usize },
+    /// Um item combinado novo, gravado depois da aprovação, que não tem dono:
+    /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
+    /// todo.
+    OwnerMissing { event_type: String },
     Io { detail: String },
 }
 
@@ -765,6 +776,7 @@ impl Refusal {
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
             Self::WavePromptTooLong { .. } => "wave-prompt-too-long",
             Self::DeliveredTooLong { .. } => "delivered-too-long",
+            Self::OwnerMissing { .. } => "owner-missing",
             Self::Io { .. } => "io-failed",
         }
     }
@@ -942,6 +954,9 @@ impl Refusal {
                 "spec_events.delivered_too_long",
                 &[("{chars}", chars.to_string()), ("{max}", max.to_string())],
             ),
+            Self::OwnerMissing { event_type } => {
+                fill("plan.owner_missing", &[("{type}", event_type.clone())])
+            }
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
@@ -1608,21 +1623,49 @@ pub fn purge_excerpts(
     if let Some(item) = targets.iter().map(item_of).find(|item| !touched.contains(item)) {
         return Err(Refusal::PurgeExcerptNotFound { code: item });
     }
+    reach_point_pairs(log, &mut out);
     Ok(out)
+}
+
+/// O fechamento de um ponto copia a lacuna do original, e por isso o trecho
+/// achado num ponto do levantamento sai de todas as linhas do mesmo par — o
+/// original e o fechamento, em qualquer versão, inclusive as que já saíram
+/// da leitura — em que ele aparece. A lacuna segue igual nos dois lados.
+fn reach_point_pairs(log: &SpecLog, out: &mut BTreeMap<u64, Vec<String>>) {
+    let pair_of = |event: &SpecEvent| {
+        (event.event_type == "point")
+            .then(|| survey::closed_first(log, event).unwrap_or_else(|| original_of(log, event)))
+    };
+    let mut by_pair: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for (id, excerpts) in out.iter() {
+        if let Some(pair) = log.get(*id).and_then(pair_of) {
+            by_pair.entry(pair).or_default().extend(excerpts.iter().cloned());
+        }
+    }
+    for event in &log.events {
+        let Some(excerpts) = pair_of(event).and_then(|pair| by_pair.get(&pair)) else { continue };
+        let texts = texts_of(&event.fields);
+        let mut reached: Vec<String> = out.get(&event.id).cloned().unwrap_or_default();
+        for excerpt in excerpts {
+            if !reached.contains(excerpt) && texts.iter().any(|t| t.contains(excerpt.as_str())) {
+                reached.push(excerpt.clone());
+            }
+        }
+        if !reached.is_empty() {
+            reached.sort_by_key(|excerpt| std::cmp::Reverse(excerpt.len()));
+            out.insert(event.id, reached);
+        }
+    }
 }
 
 /// O campo `key` de um item do tipo `event_type` guarda texto de quem gravou:
 /// o texto, as palavras-chave, o rótulo e os campos do tipo que são texto,
-/// lista ou objeto. A situação, o bloco, a fase e os outros campos de palavra
-/// fixa, os números e as horas não são texto, e o expurgo não mexe neles. A
-/// lacuna de um ponto também fica: ela é a identidade do ponto, e sem ela a
-/// lacuna voltaria a ser pedida.
+/// lista ou objeto — a lacuna de um ponto também. A situação, o bloco, a fase
+/// e os outros campos de palavra fixa, os números e as horas não são texto, e
+/// o expurgo não mexe neles.
 fn holds_text(event_type: &str, key: &str) -> bool {
     if matches!(key, "text" | "keys" | "label") {
         return true;
-    }
-    if event_type == "point" && key == "gap" {
-        return false;
     }
     type_spec(event_type)
         .and_then(|spec| spec.fields.iter().find(|field| field.name == key))
@@ -2028,12 +2071,12 @@ pub enum Step {
     /// Retomar: o estado.
     Resume,
     /// Despachar uma onda: o bloco da onda, os critérios dela, a
-    /// especificação com os limites, os itens combinados que o binário
-    /// escolhe para ela e o entregou das ondas de que ela depende. Nunca a
-    /// conversa.
+    /// especificação, que é do projeto, os itens combinados de que a onda ou
+    /// o projeto são donos, o entregou das ondas de que ela depende e, no
+    /// conserto, as linhas dele. Nunca a conversa.
     Dispatch { wave: u64 },
-    /// Revisar uma onda: o bloco da onda, com o entregou dela, e os critérios
-    /// dela.
+    /// Revisar uma onda: o bloco da onda, com o entregou dela, os critérios
+    /// dela e, na revisão de um conserto, as linhas dele.
     Review { wave: u64 },
     /// Fechar: o estado e os critérios.
     Close,
@@ -2192,6 +2235,59 @@ impl SpecLog {
             .collect()
     }
 
+    /// As ondas do plano: as que a leitura mostra. O que foi gravado em nome
+    /// de uma onda que saiu do plano — o veredito, que o binário não deixa
+    /// tirar, e o pedido e a entrega — não conta na rodada, no fechamento nem
+    /// no pedido.
+    #[must_use]
+    pub fn planned_waves(&self) -> BTreeSet<u64> {
+        self.block(BlockQuery::Block(Block::Waves))
+            .into_iter()
+            .filter(|e| e.event_type == "wave")
+            .filter_map(SpecEvent::wave)
+            .collect()
+    }
+
+    /// Os vereditos de cada onda do plano, do mais velho ao mais novo.
+    #[must_use]
+    pub fn verdicts_by_wave(&self) -> BTreeMap<u64, Vec<&SpecEvent>> {
+        let planned = self.planned_waves();
+        let mut out: BTreeMap<u64, Vec<&SpecEvent>> = BTreeMap::new();
+        for verdict in self.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
+            if let Some(n) = verdict.wave().filter(|n| planned.contains(n)) {
+                out.entry(n).or_default().push(verdict);
+            }
+        }
+        out
+    }
+
+    /// As ondas do plano cuja última revisão reprovou, cada uma com o número
+    /// dessa reprovação. A rodada, o fechamento e o pedido leem daqui.
+    #[must_use]
+    pub fn last_rejected(&self) -> BTreeMap<u64, u64> {
+        self.verdicts_by_wave()
+            .into_iter()
+            .filter_map(|(n, verdicts)| {
+                verdicts.last().filter(|v| v.str_field("result") == Some("rejected")).map(|v| (n, v.id))
+            })
+            .collect()
+    }
+
+    /// O número do último evento do tipo `event_type` de cada onda, no bloco
+    /// das ondas: o último pedido (`send`) ou a última entrega (`delivered`).
+    /// A entrega que chega depois de uma reprovação é o conserto, mesmo quando
+    /// veio pela linha de outra onda.
+    #[must_use]
+    pub fn last_by_wave(&self, event_type: &str) -> BTreeMap<u64, u64> {
+        let mut last: BTreeMap<u64, u64> = BTreeMap::new();
+        for event in self.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == event_type) {
+            if let Some(n) = event.wave() {
+                last.insert(n, event.id);
+            }
+        }
+        last
+    }
+
     /// Um bloco, só com o que a leitura mostra. Uma onda (`wave-2`) traz a
     /// onda, as tarefas, os envios e os entregou dela, e as skills que as
     /// tarefas dela nomeiam.
@@ -2244,10 +2340,11 @@ impl SpecLog {
             Step::Review { wave } => {
                 pick(&mut picked,self.block(BlockQuery::Wave(*wave)));
                 pick(&mut picked,self.wave_criteria(*wave));
+                pick(&mut picked, crate::domain::wave_prompt::fix_lines(self, *wave));
             }
             Step::Dispatch { wave } => {
                 let own = self.block(BlockQuery::Wave(*wave));
-                let covered = crate::domain::wave_prompt::agreed_for(self, *wave);
+                let owned = crate::domain::wave_prompt::agreed_for(self, *wave);
                 let depends: Vec<u64> = own
                     .iter()
                     .filter(|e| e.event_type == "wave")
@@ -2258,17 +2355,12 @@ impl SpecLog {
                     .flat_map(|d| self.block(BlockQuery::Wave(d)))
                     .filter(|e| e.event_type == "delivered")
                     .collect();
-                let limits: Vec<&SpecEvent> = self
-                    .block(BlockQuery::Block(Block::Agreed))
-                    .into_iter()
-                    .filter(|e| e.event_type == "limit")
-                    .collect();
                 pick(&mut picked,own);
                 pick(&mut picked,self.wave_criteria(*wave));
                 pick(&mut picked,self.block(BlockQuery::Block(Block::Specification)));
-                pick(&mut picked,limits);
-                pick(&mut picked,covered);
+                pick(&mut picked,owned);
                 pick(&mut picked,delivered);
+                pick(&mut picked, crate::domain::wave_prompt::fix_lines(self, *wave));
             }
         }
         picked.into_values().collect()

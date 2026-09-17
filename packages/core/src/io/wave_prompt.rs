@@ -1,5 +1,6 @@
 //! O pedido de cada onda, montado do disco: o arquivo de eventos da spec, o
-//! banco de lições e os arquivos das skills que as tarefas nomeiam.
+//! banco de lições, os arquivos das skills que as tarefas nomeiam e os
+//! comandos de compilar e testar que o projeto declara.
 //!
 //! A regra de escrever o pedido mora em `domain::wave_prompt`, sem disco;
 //! aqui ficam só as leituras. Os dois leitores do pedido — o passo do plano,
@@ -22,7 +23,7 @@ use serde_json::Value;
 use crate::domain::lessons::{in_scope, Scope};
 use crate::domain::project_map::{check_skill, file_history, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
-use crate::domain::wave_prompt::{self, Material, Skill};
+use crate::domain::wave_prompt::{self, Execution, Material, Skill};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -46,38 +47,37 @@ pub struct WavePrompt {
     pub stale_skills: Vec<String>,
 }
 
-/// Os pedidos de todas as ondas do plano, em ordem de número.
+/// Os pedidos de todas as ondas do plano, em ordem de número. `running` são
+/// as ondas em andamento como quem monta os vê — a rodada conta também as que
+/// saem junto nela —, e o pedido de cada onda lista as outras, com os
+/// arquivos delas.
 #[must_use]
-pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Vec<WavePrompt> {
+pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, running: &BTreeSet<u64>) -> Vec<WavePrompt> {
     let bank = crate::ClaudePaths::for_project(root)
         .ok()
         .and_then(|paths| crate::io::lessons::read(&paths.lessons_path()).ok().flatten());
     let map = crate::io::project_map::read(root).ok();
-    waves_of(log).into_iter().map(|n| one(root, spec, log, n, bank.as_ref(), map.as_ref(), lang)).collect()
+    let commands = crate::ProjectConfig::load(root).commands();
+    let base = Execution { build: commands.build, test: commands.test, ..Execution::default() };
+    let context = Context { root, spec, log, bank: bank.as_ref(), map: map.as_ref(), base: &base, running, lang };
+    log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
 }
 
-/// Os números das ondas do plano, em ordem.
-fn waves_of(log: &SpecLog) -> Vec<u64> {
-    let mut numbers: BTreeSet<u64> = BTreeSet::new();
-    for event in log.block(BlockQuery::Block(Block::Waves)) {
-        if event.event_type == "wave"
-            && let Some(n) = event.wave()
-        {
-            numbers.insert(n);
-        }
-    }
-    numbers.into_iter().collect()
-}
-
-fn one(
-    root: &Path,
-    spec: &str,
-    log: &SpecLog,
-    wave: u64,
-    bank: Option<&SpecLog>,
-    map: Option<&ProjectMap>,
+/// O que é igual para o pedido de todas as ondas de uma montagem.
+struct Context<'a> {
+    root: &'a Path,
+    spec: &'a str,
+    log: &'a SpecLog,
+    bank: Option<&'a SpecLog>,
+    map: Option<&'a ProjectMap>,
+    /// Os comandos do projeto.
+    base: &'a Execution,
+    running: &'a BTreeSet<u64>,
     lang: Locale,
-) -> WavePrompt {
+}
+
+fn one(context: &Context, wave: u64) -> WavePrompt {
+    let Context { root, spec, log, bank, map, lang, .. } = *context;
     let read = log.step(&Step::Dispatch { wave });
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
@@ -94,6 +94,15 @@ fn one(
         .iter()
         .copied()
         .filter(|e| e.event_type == "delivered" && e.wave() != Some(wave))
+        .collect();
+    // O revisor confere o que a onda entregou depois da última revisão dela:
+    // no conserto, as entregas do conserto, mesmo as que vieram pela linha de
+    // outra onda.
+    let judged = log.verdicts_by_wave().get(&wave).and_then(|v| v.last()).map_or(0, |v| v.id);
+    let own_delivered: Vec<&SpecEvent> = read
+        .iter()
+        .copied()
+        .filter(|e| e.event_type == "delivered" && e.wave() == Some(wave) && e.id > judged)
         .collect();
     let agreed: Vec<&SpecEvent> = read
         .iter()
@@ -160,6 +169,9 @@ fn one(
         specification,
         agreed,
         delivered,
+        fix: wave_prompt::fix_lines(log, wave),
+        own_delivered,
+        execution: execution(context, wave),
         lessons,
         defects,
         skills,
@@ -171,6 +183,26 @@ fn one(
     let too_long =
         (lines > wave_prompt::MAX_LINES).then(|| wave_prompt::too_long(&material, lines, lang));
     WavePrompt { wave, text, review, lines, too_long, bad_skills, stale_skills }
+}
+
+/// As regras da execução da onda `wave`: os comandos do projeto, as outras
+/// ondas em andamento com os arquivos delas e o commit mais novo que leva a
+/// onda, em que a revisão cria a cópia separada.
+fn execution(context: &Context, wave: u64) -> Execution {
+    let log = context.log;
+    let running = context
+        .running
+        .iter()
+        .filter(|n| **n != wave)
+        .map(|n| (*n, wave_files(log, *n)))
+        .collect();
+    let commit = log
+        .block(BlockQuery::Block(Block::Progress))
+        .into_iter()
+        .rev()
+        .filter(|e| e.event_type == "commit" && e.ints("waves").contains(&wave))
+        .find_map(|e| e.str_field("sha").map(str::to_string));
+    Execution { running, commit, ..context.base.clone() }
 }
 
 /// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
@@ -333,7 +365,7 @@ mod tests {
             "somar",
             "---\nname: somar\ndescription: Use ao somar dois números no motor.\n---\n\n# Somar\n\nUm passo por linha.\n",
         );
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr);
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
         assert_eq!(built.len(), 1);
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         assert!(
@@ -352,7 +384,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr);
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         assert!(
             built[0].text.contains("- **somar** — `apps/rt/.claude/skills/somar/SKILL.md`"),
@@ -373,7 +405,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             write_skill(root, "apps/rt", "somar", text);
-            let built = prompts(root, "teste", &plan_log(), Locale::PtBr);
+            let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
             assert_eq!(built[0].bad_skills.len(), 1, "{reason}");
             assert_eq!(built[0].bad_skills[0].0, "somar");
             assert_eq!(built[0].bad_skills[0].1.reason(), reason);
@@ -391,7 +423,7 @@ mod tests {
         let root = dir.path();
         write_skill(root, "apps/rt", "somar", "# Somar\n\nUm passo por linha.\n");
         write_skill(root, "apps/rt", "subtrair", "# Subtrair\n\nOutro molde da mesma pasta.\n");
-        let built = prompts(root, "teste", &plan_log(), Locale::PtBr);
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
         assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("skills/subtrair/SKILL.md"), "{}", built[0].text);
         assert!(!built[0].text.contains("MOLDS FOR THIS WAVE"), "{}", built[0].text);
@@ -410,7 +442,7 @@ mod tests {
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}], "skill": "somar"})),
             ("limit", json!({"text": "O pedido cabe em 500 linhas.", "value": "500 linhas", "keys": ["pedido"], "replaces": 1})),
         ]);
-        let built = prompts(root, "teste", &log, Locale::PtBr);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &BTreeSet::new());
         assert!(built[0].text.contains("--term MSTD-LIMIT-0001"), "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 2, "{}", built[0].text);
         assert!(!built[0].text.contains("linhas."), "nenhum texto de item entra: {}", built[0].text);
@@ -445,7 +477,7 @@ mod tests {
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}]})),
         ]);
 
-        let built = prompts(root, "teste", &log, Locale::PtBr);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &BTreeSet::new());
         let heading = crate::platform::i18n::translate("prompt.part.defects", Locale::PtBr);
         let (before, defects) = built[0].review.split_once(heading).expect("a seção dos defeitos");
         assert!(defects.contains("Apagar a pasta perde trabalho."), "{defects}");
@@ -487,7 +519,7 @@ mod tests {
                 json!({"name": "somar", "action": "create", "text": "O molde", "sha": "3f9a1c2e",
                        "examples": [{"path": "apps/rt/src/exemplo.rs", "why": "mesma pasta"}]}),
             ));
-            let built = prompts(root, "teste", &log_of(&events), Locale::PtBr);
+            let built = prompts(root, "teste", &log_of(&events), Locale::PtBr, &BTreeSet::new());
             assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
             assert_eq!(built[0].stale_skills.is_empty(), !marked, "mudou em {moved}");
             let review = crate::platform::i18n::translate("prompt.skill.stale", Locale::PtBr);
@@ -501,7 +533,7 @@ mod tests {
     #[test]
     fn a_named_skill_that_is_not_on_disk_is_refused_with_the_path() {
         let dir = tempdir().unwrap();
-        let built = prompts(dir.path(), "teste", &plan_log(), Locale::PtBr);
+        let built = prompts(dir.path(), "teste", &plan_log(), Locale::PtBr, &BTreeSet::new());
         assert_eq!(built[0].bad_skills.len(), 1);
         assert_eq!(built[0].bad_skills[0].1.reason(), "skill-missing-path");
         assert!(built[0].bad_skills[0].1.message(Locale::PtBr).contains("somar"));

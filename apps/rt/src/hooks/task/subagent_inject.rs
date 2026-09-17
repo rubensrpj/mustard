@@ -75,7 +75,10 @@ fn assemble(start: &Path, spec: &str, wave: u64) -> Result<String, String> {
         return Err(say("subagent.not_approved", lang, &[("{spec}", spec), ("{phase}", phase)]));
     }
     let wanted = wave.to_string();
-    let prompt = prompts(&project.root, spec, &log, lang)
+    // As ondas em andamento são as da rodada, que já gravou o pedido desta e
+    // o das que saíram junto: o pedido montado aqui é o mesmo que ela devolveu.
+    let running = crate::commands::flow::round::waves_in_progress(&log).into_keys().collect();
+    let prompt = prompts(&project.root, spec, &log, lang, &running)
         .into_iter()
         .find(|built| built.wave == wave)
         .ok_or_else(|| say("subagent.no_wave", lang, &[("{spec}", spec), ("{wave}", &wanted)]))?;
@@ -178,7 +181,7 @@ mod tests {
     /// O pedido que a rodada e a página montam para a onda 1.
     fn assembled(root: &Path) -> String {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        prompts(root, "x", &log, Locale::PtBr).into_iter().find(|p| p.wave == 1).expect("the wave's request").text
+        prompts(root, "x", &log, Locale::PtBr, &std::collections::BTreeSet::new()).into_iter().find(|p| p.wave == 1).expect("the wave's request").text
     }
 
     fn denied(verdict: Verdict) -> String {

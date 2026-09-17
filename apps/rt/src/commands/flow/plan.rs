@@ -17,7 +17,9 @@
 //! que não existe e não está marcado como novo; tarefa que mexe em código
 //! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere; e
 //! tarefa cujo texto não casa com o texto da onda dela, que volta dizendo com
-//! qual onda ele casaria melhor.
+//! qual onda ele casaria melhor; e item combinado sem dono — nenhuma tarefa
+//! de uma onda do plano o cobre, ele não diz as ondas dele nem vale no
+//! projeto todo.
 //!
 //! Tudo isso olha só as ondas que ainda vêm: a tarefa de onda que já tem
 //! registro de entrega não é conferida, porque o que ela fez está provado
@@ -27,9 +29,9 @@
 //! **O que só avisa**, e a decisão fica com quem aprova: arquivo citado fora
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
 //! mapa não acha; ondas que saem na mesma rodada e dividem arquivo; item
-//! combinado que nenhuma tarefa cobre — menos o marcado como "não vira
-//! código", que traz o motivo na linha dele; e contrato que nenhum critério
-//! cita.
+//! combinado de uma onda que nenhuma tarefa cobre — menos o marcado como "não
+//! vira código", que traz o motivo na linha dele, e o do projeto, que vale
+//! sempre; e contrato que nenhum critério cita.
 //!
 //! Cada achado, dos que travam e dos que só avisam, é gravado como anotação
 //! no arquivo de eventos quando este comando roda, com o rótulo do achado do
@@ -52,7 +54,7 @@ use mustard_core::domain::search;
 use mustard_core::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{open_points, open_refusal};
-use mustard_core::domain::wave_prompt;
+use mustard_core::domain::wave_prompt::{self, Owner};
 use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, WavePrompt};
@@ -93,6 +95,8 @@ enum PlanFinding {
     Cited { task: String, finding: Finding },
     /// Um item combinado que nenhuma tarefa cobre.
     ItemWithoutTask { code: String },
+    /// Um item combinado sem dono.
+    ItemWithoutOwner { code: String },
     /// Um contrato que nenhum critério cita.
     ContractWithoutCriterion { code: String },
     /// Uma tarefa que mexe em código e não diz em que arquivo mexe, com os
@@ -116,6 +120,7 @@ impl PlanFinding {
             | Self::WaveLoop { .. }
             | Self::DependsOnMissing { .. }
             | Self::TaskWithoutWave { .. }
+            | Self::ItemWithoutOwner { .. }
             | Self::TaskWithoutFile { .. }
             | Self::TaskInTheWrongWave { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
@@ -146,6 +151,7 @@ impl PlanFinding {
                 Finding::NoMap => "names-unchecked".into(),
             },
             Self::ItemWithoutTask { .. } => "item-without-task".into(),
+            Self::ItemWithoutOwner { .. } => "item-without-owner".into(),
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
             Self::TaskInTheWrongWave { .. } => "task-in-the-wrong-wave".into(),
@@ -190,6 +196,7 @@ impl PlanFinding {
                 format!("{task}: {text}")
             }
             Self::ItemWithoutTask { code } => fill("plan.item_without_task", &[("{code}", code.clone())]),
+            Self::ItemWithoutOwner { code } => fill("plan.item_without_owner", &[("{code}", code.clone())]),
             Self::ContractWithoutCriterion { code } => {
                 fill("plan.contract_without_criterion", &[("{code}", code.clone())])
             }
@@ -247,7 +254,8 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         Err(refusal) => return refuse(&refusal),
     };
 
-    let built = prompts(&project.root, &spec, &log, lang);
+    let running = crate::commands::flow::round::waves_in_progress(&log).into_keys().collect();
+    let built = prompts(&project.root, &spec, &log, lang, &running);
     let findings = check(&opts.root, &project.root, &spec, &log, &built);
     // Cada achado vira anotação no arquivo de eventos, aqui, uma vez por
     // plano: a página o mostra de lá, sem olhar o disco nem o git ao ser
@@ -480,8 +488,9 @@ fn check(
         }
     }
 
-    // A cobertura: item combinado sem tarefa, contrato sem critério e tarefa
-    // sem arquivo só avisam, e a decisão fica com quem aprova.
+    // O dono e a cobertura: o item combinado sem dono trava; o item de uma
+    // onda sem tarefa e o contrato sem critério só avisam, e a decisão fica
+    // com quem aprova.
     let covered: BTreeSet<u64> = tasks
         .iter()
         .flat_map(|task| task.ints("covers"))
@@ -492,12 +501,19 @@ fn check(
         .into_iter()
         .filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty()))
         .collect();
-    // O item marcado como "não vira código" traz o motivo na própria linha e
-    // não tem tarefa que o implemente: avisar sobre ele seria avisar para
-    // sempre.
+    // O item do projeto é regra que vale sempre, sem tarefa que o implemente;
+    // o marcado como "não vira código" traz o motivo na própria linha. Avisar
+    // sobre eles seria avisar para sempre.
+    let owners = wave_prompt::owners(log);
     for item in &agreed {
-        if !covered.contains(&item.id) && item.str_field("no_code").is_none() {
-            out.push(PlanFinding::ItemWithoutTask { code: code_of(item) });
+        match owners.get(&item.id) {
+            None => out.push(PlanFinding::ItemWithoutOwner { code: code_of(item) }),
+            Some(Owner::Project) => {}
+            Some(Owner::Waves(_)) => {
+                if !covered.contains(&item.id) && item.str_field("no_code").is_none() {
+                    out.push(PlanFinding::ItemWithoutTask { code: code_of(item) });
+                }
+            }
         }
     }
     // Cada tarefa casa com a onda em que está: o texto dela contra o texto
@@ -824,7 +840,7 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "rule", json!({"text": "No máximo 3 tentativas de compilação.",
-            "example": "a quarta para", "keys": ["tentativas"], "origin": said}));
+            "example": "a quarta para", "keys": ["tentativas"], "applies_to": {"files": ["**"]}, "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Subtrair.", "criteria": [crit], "done_when": "passa", "depends_on": [1], "origin": said}));
@@ -834,21 +850,43 @@ mod tests {
         assert_eq!(report["ok"], json!(true), "{report}");
         let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let built = prompts(root, "x", &log, Locale::PtBr);
+        let built = prompts(root, "x", &log, Locale::PtBr, &BTreeSet::new());
         assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
+        // A página mostra o pedido como um arquivo `.md`: cada linha aparece
+        // com o texto dela, sem as marcas do markdown.
+        let text = page_text(&page);
+        let shown = |line: &str| {
+            let line = line.trim().trim_start_matches('#').trim_start();
+            line.strip_prefix("- ").unwrap_or(line).replace("**", "").replace('`', "")
+        };
         for prompt in &built {
             assert!(prompt.lines > 0);
             for line in prompt.text.lines().filter(|l| !l.trim().is_empty()) {
-                let escaped = crate::report::escape(line);
                 assert!(
-                    page.contains(&escaped),
+                    text.contains(&shown(line)),
                     "a onda {} não mostra a linha {line:?}",
                     prompt.wave
                 );
             }
         }
         // As instruções fixas, que todo agente recebe, estão entre elas.
-        assert!(page.contains(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap()));
+        assert!(text.contains(&shown(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap())));
+    }
+
+    /// O texto que a página mostra: sem as marcas do HTML, com os caracteres
+    /// escapados de volta.
+    fn page_text(page: &str) -> String {
+        let mut out = String::with_capacity(page.len());
+        let mut in_tag = false;
+        for c in page.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' if in_tag => in_tag = false,
+                _ if !in_tag => out.push(c),
+                _ => {}
+            }
+        }
+        out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
     }
 
     /// Um ponto do levantamento ainda aberto trava a pergunta de aprovação, e
@@ -933,7 +971,8 @@ mod tests {
     }
 
     /// Só avisam, e a pergunta segue: arquivo fora do git, ondas da mesma
-    /// rodada dividindo arquivo, item sem tarefa e contrato sem critério. A
+    /// rodada dividindo arquivo, item de uma onda sem tarefa e contrato sem
+    /// critério. A
     /// tarefa que diz no texto que não mexe em arquivo passa sem o campo.
     #[test]
     fn the_advisory_findings_never_block_the_question() {
@@ -942,7 +981,7 @@ mod tests {
         let said = surveyed(root, "x");
         std::fs::write(root.join("src/fora.rs"), "fn tres() {}\n").unwrap();
         let crit = criterion(root, "x", said);
-        write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "origin": said}));
+        write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}, {"path": "src/fora.rs"}], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 2, "text": "Outra.", "criteria": [crit], "done_when": "passa", "origin": said}));
@@ -1076,9 +1115,9 @@ mod tests {
         let said = surveyed(root, "x");
         let crit = criterion(root, "x", said);
         write(root, Some("x"), "decision", json!({"text": "Quem decidiu sozinho.", "keys": ["registro"],
-            "why": "registro da conversa", "no_code": "é registro de processo, não vira código", "origin": said}));
+            "why": "registro da conversa", "no_code": "é registro de processo, não vira código", "waves": [1], "origin": said}));
         write(root, Some("x"), "decision", json!({"text": "A rodada formata os arquivos dela.", "keys": ["formatador"],
-            "why": "o commit sai formatado", "origin": said}));
+            "why": "o commit sai formatado", "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}], "origin": said}));
 
@@ -1093,6 +1132,51 @@ mod tests {
             .collect();
         assert_eq!(uncovered.len(), 1, "só o item sem a marca avisa: {report}");
         assert!(uncovered[0].contains("MSTD-DEC-0002"), "{uncovered:?}");
+    }
+
+    /// O item combinado sem dono trava o plano, pelo código, e a recusa diz
+    /// como dar dono a ele. Têm dono, e não travam, o item que a tarefa de uma
+    /// onda cobre, o que diz a onda dele e o do projeto todo, que nem avisa
+    /// por não ter tarefa; a onda que o plano não tem não é dona de nada.
+    #[test]
+    fn an_item_without_owner_blocks_the_plan_and_says_how_to_give_it_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        let decision = |text: &str, extra: Value| {
+            let mut body = json!({"text": text, "keys": ["k"], "why": "w", "origin": said});
+            body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
+            id_of(&write(root, Some("x"), "decision", body))
+        };
+        decision("Sem dono.", json!({}));
+        let covered = decision("Coberta.", json!({}));
+        decision("Da onda um.", json!({"waves": [1]}));
+        decision("Do projeto.", json!({"applies_to": {"files": ["**"]}}));
+        decision("Da onda que não existe.", json!({"waves": [9]}));
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
+            "covers": [covered], "origin": said}));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let hints = |field: &str, reason: &str| -> Vec<String> {
+            report[field]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter(|f| f["reason"] == json!(reason))
+                .filter_map(|f| f["hint"].as_str().map(str::to_string))
+                .collect()
+        };
+        let unowned = hints("blocking", "item-without-owner");
+        assert_eq!(unowned.len(), 2, "{report}");
+        assert!(unowned[0].contains("MSTD-DEC-0001") && unowned[1].contains("MSTD-DEC-0005"), "{unowned:?}");
+        assert!(unowned[0].contains("`\"waves\":[<ondas>]`") && unowned[0].contains("**"), "{unowned:?}");
+        let uncovered = hints("warnings", "item-without-task");
+        assert_eq!(uncovered.len(), 1, "só a da onda um avisa, o do projeto não: {report}");
+        assert!(uncovered[0].contains("MSTD-DEC-0003"), "{uncovered:?}");
     }
 
     /// A tarefa que mexe em código e não nomeia arquivo trava o plano, e a
@@ -1129,7 +1213,7 @@ mod tests {
         let said = surveyed(root, "x");
         std::fs::write(root.join("src/fora.rs"), "fn tres() {}\n").unwrap();
         let crit = criterion(root, "x", said);
-        write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "origin": said}));
+        write(root, Some("x"), "contract", json!({"text": "A barra tem duas linhas.", "example": "dev · x", "keys": ["barra"], "waves": [1], "origin": said}));
         write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer.", "files": [{"path": "src/fora.rs"}], "origin": said}));
         write(root, Some("x"), "task", json!({"wave": 1, "text": "Não mexe em arquivo: é escrita na spec.", "origin": said}));

@@ -79,6 +79,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("plan.item_without_task", Locale::EnUs) => {
             "No task says it covers item {code}. If it does not become code, say why."
         }
+        // O dono de cada item combinado: o plano recusa o item sem dono, e o
+        // item novo depois da aprovação nasce com dono.
+        ("plan.item_without_owner", Locale::PtBr) => {
+            "O item {code} não tem dono: nenhuma tarefa de uma onda do plano o cobre, ele não diz as \
+             ondas dele em `waves` e não vale no projeto todo. Cubra-o com a tarefa da onda que o faz, \
+             ou grave uma versão nova dele com `\"waves\":[<ondas>]` ou, quando vale para todas as \
+             ondas, com `\"applies_to\":{\"files\":[\"**\"]}`."
+        }
+        ("plan.item_without_owner", Locale::EnUs) => {
+            "Item {code} has no owner: no task of a planned wave covers it, it names no waves in \
+             `waves` and it does not hold for the whole project. Cover it with the task of the wave \
+             that does it, or record a new version of it with `\"waves\":[<waves>]` or, when it holds \
+             for every wave, with `\"applies_to\":{\"files\":[\"**\"]}`."
+        }
+        ("plan.owner_missing", Locale::PtBr) => {
+            "O item novo do tipo {type} não tem dono, e a spec já foi aprovada: todo item combinado tem \
+             dono. Diga em `waves` as ondas cujas tarefas o cobrem ou vão cobrir, como `\"waves\":[3]`, \
+             ou, quando ele vale para todas as ondas, grave-o com \
+             `\"applies_to\":{\"files\":[\"**\"]}`. Nada foi gravado."
+        }
+        ("plan.owner_missing", Locale::EnUs) => {
+            "The new {type} item has no owner, and the spec is already approved: every agreed item has \
+             an owner. Name in `waves` the waves whose tasks cover it or will cover it, as in \
+             `\"waves\":[3]`, or, when it holds for every wave, record it with \
+             `\"applies_to\":{\"files\":[\"**\"]}`. Nothing was written."
+        }
         ("plan.contract_without_criterion", Locale::PtBr) => {
             "Nenhum critério cita o contrato {code}: nada prova que ele foi cumprido."
         }
@@ -267,6 +293,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.file_reserved", Locale::EnUs) => {
             "Wave {wave} delivered {file}, which is reserved for wave {other}, still in flight: two \
              waves never touch the same file at once. Show the user. Nothing was recorded."
+        }
+        ("round.file_unknown", Locale::PtBr) => {
+            "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
+             levar. Peça ao agente o caminho certo. Nada foi gravado."
+        }
+        ("round.file_unknown", Locale::EnUs) => {
+            "Wave {wave} delivered {file}, which is neither on disk nor in git: the commit would have \
+             nothing to take. Ask the agent for the right path. Nothing was recorded."
         }
         ("round.proof_ran_no_test", Locale::PtBr) => {
             "A prova nova do critério {code} saiu verde sem rodar teste nenhum: o nome do teste não \
@@ -695,8 +729,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            100,
-            0x98ad_b26d_00d2_3d8a,
+            103,
+            0x2cee_02be_26f8_d952,
         );
     }
 
@@ -781,6 +815,8 @@ mod tests {
             ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
+            ("plan.item_without_owner", &["{code}"][..]),
+            ("plan.owner_missing", &["{type}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}", "{files}"][..]),
             ("plan.task_wrong_wave", &["{task}", "{wave}", "{best}"][..]),
@@ -817,6 +853,7 @@ mod tests {
             ("round.line_missing", &[][..]),
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.file_reserved", &["{file}", "{wave}", "{other}"][..]),
+            ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),
             ("round.commit.scope.many", &["{waves}"][..]),

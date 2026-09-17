@@ -2,7 +2,33 @@
 
 spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **dev**
 
-## Estado
+## Andamento
+
+**Ondas**: 1 a fazer · 1 aprovada
+
+- 1: a fazer — A trava lê o comando como o terminal.
+- 2: aprovada — A aprovação e as pendências leem o estado.
+
+### Medição
+
+| Medida | Valor |
+|---|---|
+| Texto colocado pelos ganchos | 2870 caracteres, cerca de 717 tokens |
+| Bloqueios por gancho | 1 bloqueios, 0 avisos — `command_guard`: 1 bloqueios, 0 avisos |
+| Passos do fluxo contra trabalho | 1 chamadas, 0 recusadas, para 1 ondas prontas — `grill` 1 |
+| Tempo por fase | levantamento 1 d 0 h, aprovada 2 h 10 min |
+| Revisões | 1 aprovadas, 0 reprovadas |
+| Pontos do levantamento | 1 pendentes, 0 fechados |
+| Lembretes que apareceram | 0 mensagens antigas lembradas nos pontos |
+| Pedidos enviados aos agentes | 1, o maior com 312 linhas |
+
+### Tamanho do pedido e revisão, por onda
+
+| Onda | Linhas do pedido | Reprovações | Última revisão |
+|---|---|---|---|
+| 2 | 312 | 0 | aprovada |
+
+### Fases e publicações
 
 - **MSTD-STATE-0001**
 
@@ -22,24 +48,31 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Deu certo: sim
   - Endereço: [https://claude.ai/code/artifact/demo](https://claude.ai/code/artifact/demo)
 
-## Painel de medição
+### Commits
 
-| Medida | Valor |
-|---|---|
-| Texto colocado pelos ganchos | 2870 caracteres, cerca de 717 tokens |
-| Bloqueios por gancho | 1 bloqueios, 0 avisos — `command_guard`: 1 bloqueios, 0 avisos |
-| Passos do fluxo contra trabalho | 1 chamadas, 0 recusadas, para 1 ondas prontas — `grill` 1 |
-| Tempo por fase | levantamento 1 d 0 h, aprovada 2 h 10 min |
-| Revisões | 1 aprovadas, 0 reprovadas |
-| Pontos do levantamento | 1 pendentes, 0 fechados |
-| Lembretes que apareceram | 0 mensagens antigas lembradas nos pontos |
-| Pedidos enviados aos agentes | 1, o maior com 312 linhas |
+- **MSTD-COMMIT-0001**
 
-### Tamanho do pedido e revisão, por onda
+  - Identificador: `5e0c7a91`
+  - Título: fix(write-gate): a aprovação sai do estado
+  - Ondas: 2
+  - Arquivos: `apps/rt/src/hooks/write/scope_guard.rs`
+  - Repositório: `.`
 
-| Onda | Linhas do pedido | Reprovações | Última revisão |
-|---|---|---|---|
-| 2 | 312 | 0 | aprovada |
+- **MSTD-PRSUM-0001** — O portão de escrita passa a ler a aprovação do estado. Nada muda para quem usa.
+
+## Especificação
+
+### Contexto
+
+- **MSTD-CTX-0001** — O Rust roda rápido: 3 a 14 ms por gancho. O custo está nas rodadas do modelo.
+
+  - Origem: MSTD-MSG-0001
+
+### Preocupações
+
+- **MSTD-CONC-0001** — Cerca de 11 arquivos de teste prendem frases da prosa atual.
+
+  - Origem: MSTD-MSG-0001
 
 ## Combinado
 
@@ -111,21 +144,9 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Por quê: Cada publicação gasta tokens.
   - Origem: MSTD-MSG-0001
 
-## Especificação
-
-### Contexto
-
-- **MSTD-CTX-0001** — O Rust roda rápido: 3 a 14 ms por gancho. O custo está nas rodadas do modelo.
-
-  - Origem: MSTD-MSG-0001
-
-### Preocupações
-
-- **MSTD-CONC-0001** — Cerca de 11 arquivos de teste prendem frases da prosa atual.
-
-  - Origem: MSTD-MSG-0001
-
 ## Critérios
+
+### Critérios de aceite
 
 - **MSTD-CRIT-0001**
 
@@ -155,9 +176,9 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Pronta quando: A suíte da trava passa.
   - Origem: MSTD-MSG-0001
   - Estado da onda: a fazer
-  - Recebe: Especificação (2), Combinado (6), A onda e as tarefas dela (1), Critérios (1)
+  - Recebe: Especificação (2), Combinado (6), A onda e as tarefas dela (1), Critérios (1), Regras da execução (1)
 
-**O pedido da onda 1 · 33 linhas, como o agente as recebe**
+**O pedido da onda 1 · 37 linhas, como o agente as recebe**
 
 ```
 # demo — onda 1
@@ -194,6 +215,10 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
 - MSTD-CRIT-0001 (critério) — `mustard-rt run read criteria --spec demo --term MSTD-CRIT-0001`
 
+## Regras da execução
+
+- Não comite e não use `git add`: o commit é da rodada.
+
 ```
 
 ### Onda 2
@@ -204,7 +229,7 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Pronta quando: A suíte das travas passa lendo só o spec.ndjson.
   - Depende das ondas: 1
   - Origem: MSTD-MSG-0001
-  - Estado da onda: revisada
+  - Estado da onda: aprovada
   - Commit: `5e0c7a91` (MSTD-COMMIT-0001)
   - Recebe: A onda e as tarefas dela (2)
 
@@ -258,6 +283,8 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
 ## Revisão e QA
 
+### Onda 2
+
 - **MSTD-VERD-0001** — Sem achados.
 
   - Onda: 2
@@ -265,25 +292,17 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Critérios: MSTD-CRIT-0001 (confere a regra)
   - Lições: 7 (não repetiu)
 
-## Andamento
-
-- **MSTD-COMMIT-0001**
-
-  - Identificador: `5e0c7a91`
-  - Título: fix(write-gate): a aprovação sai do estado
-  - Ondas: 2
-  - Arquivos: `apps/rt/src/hooks/write/scope_guard.rs`
-  - Repositório: `.`
-
-- **MSTD-PRSUM-0001** — O portão de escrita passa a ler a aprovação do estado. Nada muda para quem usa.
-
 ## O que o plano achou
+
+### Sobre tarefas
 
 - **MSTD-NOTE-0003** · depois da aprovação · 2026-09-12 11:13 — A tarefa MSTD-TASK-0001 cita `src/fora.rs`, que o git não guarda: um agente noutra sessão não o vê.
 
   - Origem: MSTD-MSG-0001
 
 ## Anotações
+
+### Anotações
 
 - **MSTD-REQ-0001** · depois da aprovação · 2026-09-12 11:06 — Incluir o Windows no teste de duas gravações ao mesmo tempo.
 
@@ -300,6 +319,8 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Origem: MSTD-MSG-0001
 
 ## Conversa
+
+### Dia 11/09
 
 - **MSTD-MSG-0001** · mensagem · usuário · 2026-09-11 08:40 — Revise o Mustard inteiro.
 
@@ -329,6 +350,8 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
 
   - Por quê: Mostra tudo na hora.
   - Origem: MSTD-MSG-0001
+
+### Dia 12/09
 
 - **MSTD-RMV-0001** · remoção · assistente · 2026-09-12 11:10
 

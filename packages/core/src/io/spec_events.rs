@@ -382,9 +382,9 @@ mod tests {
         add("work_type", "work_type", "08:42", json!({"kinds": ["refactor"], "origin": msg}));
         add("context", "context", "08:43", json!({"text": "O Rust roda rápido.", "origin": msg}));
         add("concern", "concern", "08:44", json!({"text": "Testes prendem frases.", "origin": msg}));
-        add("decision", "decision", "08:45", json!({"text": "A página sai só nos marcos.", "why": "Cada publicação gasta.", "keys": ["página"], "origin": msg}));
+        add("decision", "decision", "08:45", json!({"text": "A página sai só nos marcos.", "why": "Cada publicação gasta.", "keys": ["página"], "applies_to": {"files": ["**"]}, "origin": msg}));
         add("out_of_scope", "out_of_scope", "08:46", json!({"text": "Supabase.", "keys": ["servidor"], "origin": msg}));
-        add("edge_case", "edge_case", "08:47", json!({"text": "Duas sessões gravam juntas.", "expected": "A segunda espera a trava.", "keys": ["trava"], "origin": msg}));
+        add("edge_case", "edge_case", "08:47", json!({"text": "Duas sessões gravam juntas.", "expected": "A segunda espera a trava.", "keys": ["trava"], "waves": [1], "origin": msg}));
         let rule = add("rule", "rule", "08:48", json!({"text": "A trava confere o programa.", "example": "rm -rf pasta é barrado.", "keys": ["trava", "apagar"], "origin": msg}));
         add("contract", "contract", "08:49", json!({"text": "A barra tem duas linhas.", "example": "dev · teste", "keys": ["barra"], "origin": msg}));
         add("error", "error", "08:50", json!({"text": "Título longo.", "message": "O título passa de 60.", "keys": ["título"], "origin": msg}));
@@ -483,12 +483,12 @@ mod tests {
             got(Step::Review { wave: 2 }),
             spec.ids(&["criterion_2", "wave_2", "task_2", "skill", "send", "delivered_2"])
         );
-        // The dispatch brings the wave, its criteria, the specification with the
-        // current limit, the agreed items the binary picked for it and what the
-        // wave it depends on delivered — and never a line of the conversation.
-        // The picked items are the one the task covers plus every item that
-        // matches no wave in particular, which goes to all of them; the edge
-        // case, whose words match the OTHER wave's task, stays out.
+        // O despacho traz a onda, os critérios dela, a especificação, os itens
+        // combinados de que ela ou o projeto são donos e o que a onda de que
+        // ela depende entregou — e nunca uma linha da conversa. Os itens são o
+        // que a tarefa cobre, a decisão do projeto todo e, enquanto os itens
+        // antigos não ganham dono, os sem dono, que vão para todas as ondas;
+        // o caso de borda, que é da OUTRA onda, fica fora.
         assert_eq!(
             got(Step::Dispatch { wave: 2 }),
             spec.ids(&[

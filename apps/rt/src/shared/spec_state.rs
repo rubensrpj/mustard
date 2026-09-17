@@ -517,14 +517,8 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let marked: Vec<(String, bool)> = agreed
-            .body
-            .iter()
-            .filter_map(|node| match node {
-                Node::Item(item) => Some((item.text.clone(), item.note.is_some())),
-                _ => None,
-            })
-            .collect();
+        let marked: Vec<(String, bool)> =
+            Node::items(&agreed.body).into_iter().map(|item| (item.text.clone(), item.note().is_some())).collect();
         assert_eq!(
             marked,
             [

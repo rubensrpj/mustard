@@ -71,8 +71,10 @@
 //! grava e o clique: ele não tira o item da leitura, só troca por "…", no
 //! próprio arquivo, o trecho que nunca podia ter sido gravado. O trecho é o
 //! que o pedido indica em `excerpt` — que nunca vai para o arquivo — ou, sem
-//! ele, o que a procura de segredo acha nos campos de texto do item; o item
-//! em que o trecho não aparece é recusado.
+//! ele, o que a procura de segredo acha nos campos de texto do item, a
+//! lacuna do ponto inclusive; o item em que o trecho não aparece é recusado.
+//! Num ponto do levantamento, o trecho sai do par inteiro: do original e do
+//! fechamento, que copiou a lacuna dele.
 //!
 //! Este comando não grava o tipo `state`: o estado da spec é dos comandos do
 //! fluxo e da testemunha da aprovação. As portas que gravam `state` são
@@ -95,6 +97,12 @@
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
 //! de pontos junto: este comando não o grava, nem o tira ou o revê.
 //!
+//! Depois da aprovação, o item combinado novo nasce com dono
+//! (`mustard_core::domain::wave_prompt::owner_rule`): as ondas das tarefas
+//! que o cobrem, as que ele diz em `waves` — mesmo a que ainda vai entrar no
+//! plano —, ou o projeto todo, em `applies_to`. O item sem dono é recusado,
+//! e nada é gravado.
+//!
 //! Numa spec em levantamento com o tipo de trabalho ou algum ponto gravado,
 //! a saída traz o passo seguinte (`mustard_core::domain::survey::next_step`):
 //! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
@@ -116,6 +124,7 @@ use mustard_core::domain::spec_state::{
     birth_event, goal_rule, phase_write_allowed, survey_rule, waves_grown_by, PhaseWriter, SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
+use mustard_core::domain::wave_prompt::owner_rule;
 use mustard_core::io::{lessons, project_map, spec_events as store};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
@@ -470,6 +479,7 @@ fn record_in(
             phase_rule(&name, before, after, carried.as_deref(), replaces, by)?;
             goal_rule(&name, before, after)?;
             survey_rule(&name, before, after)?;
+            owner_rule(before, after)?;
             // O passo do levantamento só vai ao relatório do modelo.
             if by.is_none() {
                 survey = survey_report(&project.root, &name, before, after, lang);
@@ -1000,7 +1010,7 @@ mod tests {
         super::super::pages::refresh(root, "teste", Locale::PtBr).expect("os dois saem no fim do passo");
         let md = std::fs::read_to_string(spec.join("spec.md")).unwrap();
         let html = std::fs::read_to_string(spec.join("spec.html")).unwrap();
-        let (html_before, html_talk) = html.split_once("<section id=\"conversation\">").unwrap();
+        let (html_before, html_talk) = html.split_once("<section id=\"conversation\" class=\"block\"").unwrap();
         let (md_before, md_talk) = md.rsplit_once("\n## ").unwrap();
         for (before, talk) in [(html_before, html_talk), (md_before, md_talk)] {
             assert!(before.contains("Texto novo.") && !before.contains("Texto antigo."), "{before}");
@@ -1328,6 +1338,40 @@ mod tests {
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
     }
 
+    /// Depois da aprovação, o item combinado que o modelo grava nasce com
+    /// dono: sem onda nem o projeto todo, a gravação é recusada com o jeito de
+    /// dar dono, e nada é gravado; a onda que ainda vai entrar no plano vale.
+    /// Antes da aprovação, o dono vem do plano, e a gravação passa.
+    #[test]
+    fn after_the_approval_a_new_agreed_item_is_written_only_with_an_owner() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let said = write(root, "message", r#"{"author":"user","text":"decidi"}"#)["id"].as_u64().unwrap();
+        let crit = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "p", "origin": said}).to_string());
+        let wave = json!({"n": 1, "text": "Onda.", "criteria": [crit["id"]], "done_when": "passa", "origin": said});
+        assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
+        let decision = |extra: Value| {
+            let mut body = json!({"text": "Decidido.", "keys": ["d"], "why": "o usuário disse", "origin": said});
+            body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
+            body.to_string()
+        };
+        assert_eq!(write(root, "decision", &decision(json!({})))["ok"], json!(true), "em plano o dono vem do plano");
+
+        witness_approves(root);
+        for refused_owner in [json!({}), json!({"applies_to": {"files": ["src/**"]}})] {
+            let before = lines(root);
+            let refused = write(root, "decision", &decision(refused_owner.clone()));
+            assert_eq!(refused["reason"], json!("owner-missing"), "{refused_owner}: {refused}");
+            assert!(refused["hint"].as_str().unwrap().contains("`\"waves\":[3]`"), "{refused}");
+            assert_eq!(lines(root), before, "nada foi gravado");
+        }
+        for owner in [json!({"waves": [1]}), json!({"waves": [2]}), json!({"applies_to": {"files": ["**"]}})] {
+            let out = write(root, "decision", &decision(owner.clone()));
+            assert_eq!(out["ok"], json!(true), "{owner}: {out}");
+        }
+    }
+
     /// A ponte do fechamento não fecha uma spec em plano: o fechamento só vem
     /// depois da aprovação.
     #[test]
@@ -1598,7 +1642,7 @@ mod tests {
         for page in ["spec.md", "spec.html"] {
             let shown = std::fs::read_to_string(spec.join(page)).unwrap();
             assert!(shown.contains("Apagando a pasta, a trava barra o comando."), "{page}");
-            assert!(!shown.contains(&search) && !shown.contains("\"search\""), "{page} shows the search field");
+            assert!(!shown.contains(&search) && !shown.contains("\"search\":"), "{page} shows the search field");
         }
     }
 
@@ -2721,6 +2765,63 @@ mod tests {
         assert_eq!(shown.fields["facts"][0]["text"], json!("o banco usa DB_PASSWORD=…"));
         assert_eq!(shown.str_field("status"), Some("open"));
         assert_eq!(shown.str_field("block"), Some(points[0].block.as_str()));
+    }
+
+    /// A lacuna de um ponto também é expurgada, só no trecho. Com o segredo
+    /// só na lacuna, o expurgo pela procura de segredo e o com o trecho
+    /// indicado passam; o trecho sai do arquivo também no fechamento, que
+    /// copiou a lacuna do original; e cada ponto segue como estava, o fechado
+    /// com a mesma lacuna nos dois lados e o aberto ainda aberto.
+    #[test]
+    fn a_secret_only_in_the_gap_leaves_the_point_and_its_closing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], false);
+        let block = points[0].block.as_str();
+        let secret = ["DB_PASSWORD=", "S3nh4F0rte", "2024"].concat();
+        let client = "Loja Exemplo 42";
+        let open = |gap: String| {
+            let point = json!({"block": block, "gap": gap, "from": "outside_review", "status": "open",
+                "origin": said, "facts": [{"text": "O revisor de fora apontou.", "source": format!("mensagem {said}")}]});
+            let report = write(root, "point", &point.to_string());
+            assert_eq!(report["ok"], json!(true), "{report}");
+            (report["id"].as_u64().unwrap(), report["code"].as_str().unwrap().to_string())
+        };
+        let (closed, closed_code) = open(format!("o revisor colou {secret} no pedido"));
+        let (still, still_code) = open(format!("o revisor citou a {client}"));
+        let decided = answer(root, said)["id"].as_u64().unwrap();
+        let closing = json!({"block": block, "gap": "outra", "from": "outside_review", "status": "closed",
+            "closes": closed, "result": [decided], "origin": said});
+        let closing = write(root, "point", &closing.to_string());
+        assert_eq!(closing["ok"], json!(true), "{closing}");
+        let closing = closing["id"].as_u64().unwrap();
+        let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let raw = std::fs::read_to_string(&file).unwrap();
+        let line_of = |raw: &str, id: u64| raw.lines().find(|l| l.contains(&format!("\"id\":{id},"))).unwrap().to_string();
+        assert!(line_of(&raw, closing).contains("S3nh4F0rte"), "the closing copied the gap");
+
+        let found = write(root, "purge", &json!({"targets": [closed_code], "reason": "secret"}).to_string());
+        assert_eq!(found["ok"], json!(true), "{found}");
+        let asked =
+            write(root, "purge", &json!({"targets": [still_code], "reason": "client_data", "excerpt": client}).to_string());
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+
+        let raw = std::fs::read_to_string(&file).unwrap();
+        assert!(!raw.contains("S3nh4F0rte"), "the excerpt left the point and its closing");
+        assert!(!raw.contains(client), "the asked excerpt left the gap");
+        let gap = "o revisor colou DB_PASSWORD=… no pedido";
+        for id in [closed, closing] {
+            assert!(line_of(&raw, id).contains(gap), "{}", line_of(&raw, id));
+        }
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let pairs = survey::points(&log);
+        let pair = pairs.iter().find(|p| p.first() == closed).expect("the closed point stays");
+        assert!(!pair.is_open(), "the point stays closed");
+        assert_eq!(pair.closing().map(|c| c.id), Some(closing));
+        assert_eq!(pair.gap(), Some(gap));
+        let open_one = pairs.iter().find(|p| p.first() == still).expect("the open point stays");
+        assert!(open_one.is_open(), "the point stays open");
+        assert_eq!(open_one.gap(), Some("o revisor citou a …"));
     }
 
     /// O veredito, que só o binário grava, também é expurgado só no trecho:

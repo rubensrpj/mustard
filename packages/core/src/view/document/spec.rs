@@ -1,21 +1,32 @@
 //! A página de uma spec, montada dos eventos do `spec.ndjson`.
 //!
-//! Os dez blocos saem sempre, na ordem aprovada: estado, painel de medição,
-//! combinado, especificação, critérios, ondas, revisão e QA, andamento,
-//! anotações e conversa, esta recolhida. Um bloco sem nada diz que está vazio.
+//! As seções saem sempre, na ordem aprovada: andamento, especificação,
+//! combinado, critérios, ondas, revisão e QA, o que o plano achou (só quando
+//! há achado), anotações e conversa. Cada seção junta os itens em grupos
+//! recolhidos; uma seção sem nada diz que está vazia.
 //!
-//! Cada onda mostra o estado dela, o commit que a fechou, o que o agente dela
-//! recebe e o pedido, recolhido: o que foi enviado, com o texto exato, ou,
-//! antes do envio, o que o binário montou para enviar.
+//! - O andamento abre com a visão das ondas, cada uma com o estado dela, e
+//!   traz a medição (o único grupo aberto), as fases e publicações e os
+//!   commits.
+//! - A especificação e o combinado têm um grupo por tipo; os critérios, um
+//!   para os critérios e outro para as execuções.
+//! - As ondas e a revisão têm um grupo por onda; o que o plano achou, um por
+//!   assunto; a conversa, um por dia.
+//!
+//! O estado de cada onda chega pronto, lido por quem decide o que a rodada
+//! despacha: a página não tem regra própria para ele. Cada onda mostra o
+//! estado, o commit que a fechou, o que o agente dela recebe e o pedido,
+//! recolhido: o que foi enviado, com o texto exato, ou, antes do envio, o
+//! que o binário montou para enviar.
 //!
 //! O painel de medição sai só dos eventos, mais a economia do rtk nos dias da
 //! spec, que chega pronta de quem roda o rtk.
 //!
-//! Entre o andamento e as anotações entra "O que o plano achou", montada com
-//! as anotações que a conferência do plano gravou, reconhecidas pelo rótulo
-//! do achado do plano: quem vai aprovar vê o que o plano encontrou sem
-//! procurar no meio das outras anotações. Sem achado nenhum, ela não aparece,
-//! e a anotação sem esse rótulo continua nas anotações.
+//! "O que o plano achou" junta as anotações que a conferência do plano
+//! gravou, reconhecidas pelo rótulo do achado do plano: quem vai aprovar vê o
+//! que o plano encontrou sem procurar no meio das outras anotações. Sem
+//! achado nenhum, ela não aparece, e a anotação sem esse rótulo continua nas
+//! anotações.
 //!
 //! Só aparece o que a leitura mostra: um item removido some da página, e a
 //! versão antiga de um item revisto aparece só na conversa, marcada como
@@ -31,7 +42,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use super::{Document, Field, Item, Meta, Node, Section, Table};
+use super::{Card, Document, Field, Group, Item, Meta, Node, Overview, Section, Status, Table, Tone};
+use crate::domain::mustard_id;
 use crate::domain::spec_events::{type_spec, Block, Hidden, Kind, SpecEvent, SpecLog, TYPES};
 use crate::domain::spec_state::{approval_boundary, original_of};
 use crate::domain::survey;
@@ -73,6 +85,48 @@ pub struct RtkDay {
     pub saved: u64,
 }
 
+/// Em que pé está uma onda, pela leitura que decide o que a rodada despacha.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveState {
+    /// Nada saiu ainda, ou o que saiu não vale mais.
+    Todo,
+    /// O pedido saiu e a entrega ainda não voltou.
+    Running,
+    /// A entrega voltou e espera a revisão.
+    Delivered,
+    /// Entregue e aprovada.
+    Approved,
+    /// A última revisão reprovou.
+    Rejected,
+}
+
+impl WaveState {
+    /// A chave do nome do estado no catálogo de textos.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Todo => "page.value.wave_todo",
+            Self::Running => "page.value.wave_running",
+            Self::Delivered => "page.value.wave_delivered",
+            Self::Approved => "page.value.wave_approved",
+            Self::Rejected => "page.value.wave_rejected",
+        }
+    }
+
+    fn tone(self) -> Tone {
+        match self {
+            Self::Todo => Tone::Todo,
+            Self::Running => Tone::Running,
+            Self::Delivered => Tone::Done,
+            Self::Approved => Tone::Good,
+            Self::Rejected => Tone::Bad,
+        }
+    }
+}
+
+/// O estado de cada onda, pelo número dela. A onda que não está aqui está
+/// por fazer.
+pub type WaveStates = BTreeMap<u64, WaveState>;
+
 /// O que a página recebe pronto de quem lê o disco e roda o rtk.
 #[derive(Debug, Clone, Copy)]
 pub struct SpecInputs<'a> {
@@ -80,31 +134,34 @@ pub struct SpecInputs<'a> {
     pub prompts: &'a WavePrompts,
     /// A economia do rtk no projeto, um dia por linha.
     pub rtk: &'a [RtkDay],
+    /// O estado de cada onda.
+    pub waves: &'a WaveStates,
 }
 
 /// A página da spec `spec`, com os rótulos no idioma `lang`, mostrando em cada
 /// onda o pedido que `prompts` traz para ela. O painel sai sem a economia do
-/// rtk; [`spec_page`] a recebe.
+/// rtk e toda onda sai por fazer; [`spec_page`] recebe os dois.
 #[must_use]
 pub fn spec_document(spec: &str, log: &SpecLog, prompts: &WavePrompts, lang: Locale) -> Document {
-    spec_page(spec, log, SpecInputs { prompts, rtk: &[] }, lang)
+    spec_page(spec, log, SpecInputs { prompts, rtk: &[], waves: &WaveStates::new() }, lang)
 }
 
 /// A página da spec `spec` com tudo o que `inputs` traz pronto.
 #[must_use]
 pub fn spec_page(spec: &str, log: &SpecLog, inputs: SpecInputs<'_>, lang: Locale) -> Document {
     let page = Page::new(log, inputs, lang);
-    let mut body = Vec::new();
-    for block in Block::ALL {
-        // O que o plano achou vem logo antes das anotações, e só quando há
-        // achado.
-        if block == Block::Notes
-            && let Some(section) = page.findings()
-        {
-            body.push(section);
-        }
-        body.push(page.section(block));
-    }
+    let mut body = vec![
+        page.progress(),
+        page.by_type(Block::Specification),
+        page.by_type(Block::Agreed),
+        page.criteria(),
+        page.waves(),
+        page.review(),
+    ];
+    // O que o plano achou vem logo antes das anotações, e só quando há achado.
+    body.extend(page.findings());
+    body.push(page.notes());
+    body.push(page.conversation());
     Document {
         lang: lang.as_str().to_string(),
         kind: Some(page.t("page.kind.spec").to_string()),
@@ -118,30 +175,34 @@ pub fn spec_page(spec: &str, log: &SpecLog, inputs: SpecInputs<'_>, lang: Locale
 /// Quantos registros a conversa da página mostra.
 #[must_use]
 pub fn conversation_len(doc: &Document) -> usize {
-    conversation(doc).map_or(0, |section| section.body.iter().filter(|n| matches!(n, Node::Item(_))).count())
+    conversation(doc).map_or(0, |section| Node::items(&section.body).len())
 }
 
 /// Tira da página os `count` registros mais antigos da conversa e diz, no
-/// começo dela, quantos ficaram só no `.md`. Devolve quantos saíram. A página
-/// que passaria do tamanho que o claude.ai aceita é a única que perde algo.
+/// começo dela, quantos ficaram só no `.md`. Devolve quantos saíram; o dia
+/// que fica sem registro sai junto. A página que passaria do tamanho que o
+/// claude.ai aceita é a única que perde algo.
 pub fn cut_oldest_conversation(doc: &mut Document, count: usize, lang: Locale) -> usize {
     let Some(section) = conversation_mut(doc) else {
         return 0;
     };
     let mut cut = 0;
-    section.body.retain(|node| {
-        if cut < count && matches!(node, Node::Item(_)) {
-            cut += 1;
-            false
-        } else {
-            true
+    for node in &mut section.body {
+        if let Node::Group(day) = node {
+            day.body.retain(|entry| {
+                if cut < count && matches!(entry, Node::Item(_)) {
+                    cut += 1;
+                    false
+                } else {
+                    true
+                }
+            });
         }
-    });
+    }
     if cut == 0 {
         return 0;
     }
-    let left = section.body.iter().filter(|n| matches!(n, Node::Item(_))).count();
-    section.collapsed = Some(translate("page.conversation.summary", lang).replace("{count}", &left.to_string()));
+    section.body.retain(|node| !matches!(node, Node::Group(day) if Node::items(&day.body).is_empty()));
     section
         .body
         .insert(0, Node::Paragraph(translate("page.conversation.cut", lang).replace("{count}", &cut.to_string())));
@@ -173,10 +234,23 @@ fn is_plan_finding(event: &SpecEvent) -> bool {
         })
 }
 
+/// Os assuntos do que o plano achou, na ordem da página: o tipo do item de
+/// que o achado fala e o nome do grupo.
+const SUBJECTS: &[(&str, &str)] = &[
+    ("task", "tasks"),
+    ("wave", "waves"),
+    ("criterion", "criteria"),
+    ("rule", "rules"),
+    ("decision", "decisions"),
+    ("skill", "skills"),
+    ("", "others"),
+];
+
 struct Page<'a> {
     log: &'a SpecLog,
     prompts: &'a WavePrompts,
     rtk: &'a [RtkDay],
+    waves: &'a WaveStates,
     lang: Locale,
     codes: BTreeMap<u64, String>,
     visible: Vec<&'a SpecEvent>,
@@ -192,6 +266,7 @@ impl<'a> Page<'a> {
             log,
             prompts: inputs.prompts,
             rtk: inputs.rtk,
+            waves: inputs.waves,
             lang,
             codes: log.codes(),
             visible: log.visible(),
@@ -235,83 +310,183 @@ impl<'a> Page<'a> {
         meta
     }
 
-    fn section(&self, block: Block) -> Node {
-        let mut body = match block {
-            Block::Metrics => self.metrics(),
-            Block::Agreed | Block::Specification => self.grouped(block),
-            Block::Criteria => self.criteria(),
-            Block::Waves => self.waves(),
-            Block::Conversation => self.conversation(),
-            Block::State | Block::Review | Block::Progress => self.items(&self.of_block(block)),
-            // O achado do plano tem seção própria; o resto das anotações fica
-            // onde sempre esteve.
-            Block::Notes => {
-                let rest: Vec<&SpecEvent> =
-                    self.of_block(block).into_iter().filter(|e| !is_plan_finding(e)).collect();
-                self.items(&rest)
-            }
-        };
-        let shown = body.iter().filter(|n| matches!(n, Node::Item(_))).count();
+    /// Uma seção da página; sem bloco nenhum, ela diz que está vazia.
+    fn section(&self, anchor: &str, heading: &str, mut body: Vec<Node>) -> Node {
         if body.is_empty() {
             body.push(Node::Paragraph(self.t("page.empty").to_string()));
         }
-        let collapsed = (block == Block::Conversation)
-            .then(|| self.t("page.conversation.summary").replace("{count}", &shown.to_string()));
-        Node::Section(Section {
-            anchor: Some(block.name().to_string()),
-            heading: self.t(&format!("page.block.{}", block.name())).to_string(),
-            collapsed,
-            body,
-        })
+        Node::Section(Section { anchor: Some(anchor.to_string()), heading: heading.to_string(), body })
+    }
+
+    /// Um grupo recolhido com os itens de `events`; sem item, nenhum grupo.
+    fn group(&self, anchor: String, title: String, events: &[&SpecEvent]) -> Option<Node> {
+        (!events.is_empty()).then(|| group_of(anchor, title, self.items(events)))
+    }
+
+    /// Como [`Self::group`], resumido pela conta das situações dos itens, na
+    /// ordem em que cada uma aparece: é o resumo dos grupos por tipo e dos da
+    /// revisão.
+    fn tallied(&self, anchor: String, title: String, events: &[&SpecEvent]) -> Option<Node> {
+        let mut node = self.group(anchor, title, events)?;
+        if let Node::Group(group) = &mut node {
+            let mut tally: Vec<(&str, usize)> = Vec::new();
+            for status in Node::items(&group.body).into_iter().filter_map(|item| item.status.as_ref()) {
+                match tally.iter_mut().find(|(label, _)| *label == status.label) {
+                    Some((_, n)) => *n += 1,
+                    None => tally.push((&status.label, 1)),
+                }
+            }
+            let summary = tally.iter().map(|(label, n)| format!("{n} {label}")).collect::<Vec<_>>().join(" · ");
+            group.summary = summary;
+        }
+        Some(node)
     }
 
     fn items(&self, events: &[&SpecEvent]) -> Vec<Node> {
-        events.iter().map(|e| Node::Item(self.item(e, true, None))).collect()
+        events.iter().map(|e| Node::Item(self.item(e, true))).collect()
+    }
+
+    /// O andamento: a visão das ondas, a medição (o único grupo aberto), as
+    /// fases e publicações e os commits.
+    fn progress(&self) -> Node {
+        let mut body: Vec<Node> = self.overview().map(Node::Overview).into_iter().collect();
+        let metrics = self.metrics();
+        if !metrics.is_empty() {
+            body.push(Node::Group(Group {
+                anchor: "progress-metrics".to_string(),
+                title: self.t("page.group.metrics").to_string(),
+                status: None,
+                summary: String::new(),
+                open: true,
+                body: metrics,
+            }));
+        }
+        let title = |key: &str| self.t(key).to_string();
+        body.extend(self.group("progress-state".into(), title("page.group.state"), &self.of_block(Block::State)));
+        body.extend(self.group("progress-commits".into(), title("page.group.commits"), &self.of_block(Block::Progress)));
+        self.section(Block::Progress.name(), self.t("page.block.progress"), body)
+    }
+
+    /// A visão das ondas: uma ficha por onda do plano, com o estado dela e o
+    /// atalho para o grupo dela, e a conta dos estados. Sem onda, nada.
+    fn overview(&self) -> Option<Overview> {
+        let cards: Vec<Card> = self
+            .wave_names()
+            .into_iter()
+            .map(|(n, name)| Card {
+                target: wave_anchor("waves", n),
+                label: n.to_string(),
+                status: self.wave_status(n),
+                hint: name,
+            })
+            .collect();
+        if cards.is_empty() {
+            return None;
+        }
+        let mut tally: Vec<(WaveState, usize)> = Vec::new();
+        for n in cards.iter().filter_map(|card| card.label.parse::<u64>().ok()) {
+            let state = self.wave_state(n);
+            match tally.iter_mut().find(|(s, _)| *s == state) {
+                Some((_, count)) => *count += 1,
+                None => tally.push((state, 1)),
+            }
+        }
+        // A conta mais alta vem primeiro; no empate, a que aparece antes.
+        tally.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        let legend = tally
+            .into_iter()
+            .map(|(state, count)| {
+                let key = if count > 1 { format!("{}.many", state.key()) } else { state.key().to_string() };
+                format!("{count} {}", self.t(&key))
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        Some(Overview { title: self.t("page.block.waves").to_string(), legend, cards })
+    }
+
+    /// Cada onda do plano, em ordem de número, com o nome dela: a primeira
+    /// linha do texto.
+    fn wave_names(&self) -> BTreeMap<u64, String> {
+        self.of_type("wave")
+            .into_iter()
+            .filter_map(|wave| Some((wave.wave()?, first_paragraph(wave.str_field("text").unwrap_or_default()))))
+            .collect()
     }
 
     /// "O que o plano achou": as anotações que a conferência do plano gravou,
-    /// na ordem delas. Sem achado nenhum, não há seção.
+    /// um grupo por assunto. Sem achado nenhum, não há seção.
     fn findings(&self) -> Option<Node> {
         let events: Vec<&SpecEvent> =
             self.of_block(Block::Notes).into_iter().filter(|e| is_plan_finding(e)).collect();
         if events.is_empty() {
             return None;
         }
-        Some(Node::Section(Section {
-            anchor: Some("findings".to_string()),
-            heading: self.t("page.findings.heading").to_string(),
-            collapsed: None,
-            body: self.items(&events),
-        }))
+        let body = SUBJECTS
+            .iter()
+            .filter_map(|(_, subject)| {
+                let of: Vec<&SpecEvent> = events.iter().copied().filter(|e| self.subject(e) == *subject).collect();
+                let title = self.t(&format!("page.findings.{subject}")).to_string();
+                self.group(format!("findings-{subject}"), title, &of)
+            })
+            .collect();
+        Some(self.section("findings", self.t("page.findings.heading"), body))
     }
 
-    /// Os tipos do bloco, cada um com o seu subtítulo, na ordem dos tipos.
-    fn grouped(&self, block: Block) -> Vec<Node> {
-        let mut out = Vec::new();
-        for spec in TYPES.iter().filter(|t| t.block == block) {
-            let events = self.of_type(spec.name);
-            if events.is_empty() {
-                continue;
-            }
-            out.push(self.heading(&format!("page.group.{}", spec.name)));
-            out.extend(self.items(&events));
+    /// De que o achado fala: da skill ou das ondas, pelo tipo do achado; senão,
+    /// do primeiro item que o texto cita; senão, de outra coisa.
+    fn subject(&self, event: &SpecEvent) -> &'static str {
+        let kind = event
+            .fields
+            .get("keys")
+            .and_then(Value::as_array)
+            .and_then(|keys| keys.first())
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if kind.starts_with("skill-") {
+            return "skills";
         }
-        out
+        if kind.starts_with("wave-") || kind.starts_with("waves-") {
+            return "waves";
+        }
+        let text = event.str_field("text").unwrap_or_default();
+        let cited = mustard_id::find(text)
+            .into_iter()
+            .find_map(|(start, end)| mustard_id::parse(&text[start..end]).map(|(code, _)| code))
+            .and_then(|code| TYPES.iter().find(|t| t.code == code))
+            .map_or("", |t| t.name);
+        SUBJECTS.iter().find(|(name, _)| !name.is_empty() && *name == cited).map_or("others", |(_, subject)| subject)
     }
 
-    fn heading(&self, key: &str) -> Node {
-        Node::Heading { level: 3, text: self.t(key).to_string() }
+    /// Um grupo por tipo do bloco, na ordem dos tipos.
+    fn by_type(&self, block: Block) -> Node {
+        let body = TYPES
+            .iter()
+            .filter(|t| t.block == block)
+            .filter_map(|spec| {
+                let title = self.t(&format!("page.group.{}", spec.name)).to_string();
+                self.tallied(format!("{}-{}", block.name(), spec.name), title, &self.of_type(spec.name))
+            })
+            .collect();
+        self.section(block.name(), self.t(&format!("page.block.{}", block.name())), body)
+    }
+
+    /// As anotações que não são achado do plano, num grupo só.
+    fn notes(&self) -> Node {
+        let rest: Vec<&SpecEvent> = self.of_block(Block::Notes).into_iter().filter(|e| !is_plan_finding(e)).collect();
+        let title = self.t("page.block.notes");
+        let body = self.group("notes-all".to_string(), title.to_string(), &rest).into_iter().collect();
+        self.section(Block::Notes.name(), title, body)
     }
 
     /// Os critérios, cada um com o resultado da última execução, e depois as
-    /// execuções.
-    fn criteria(&self) -> Vec<Node> {
+    /// execuções, cada parte no seu grupo.
+    fn criteria(&self) -> Node {
         let runs = self.of_type("criterion_run");
-        let mut out: Vec<Node> = self
+        let criteria: Vec<Node> = self
             .of_type("criterion")
             .into_iter()
             .map(|criterion| {
-                let mut item = self.item(criterion, true, None);
+                let mut item = self.item(criterion, true);
                 let last = runs.iter().rev().find(|r| {
                     r.int("criterion").is_some_and(|id| self.code(id) == self.code(criterion.id))
                 });
@@ -322,41 +497,42 @@ impl<'a> Page<'a> {
                 Node::Item(item)
             })
             .collect();
-        if !runs.is_empty() {
-            out.push(self.heading("page.group.criterion_run"));
-            out.extend(self.items(&runs));
+        let mut body = Vec::new();
+        if !criteria.is_empty() {
+            body.push(group_of("criteria-criterion".into(), self.t("page.group.criterion").into(), criteria));
         }
-        out
+        body.extend(self.group("criteria-runs".into(), self.t("page.group.criterion_run").into(), &runs));
+        self.section(Block::Criteria.name(), self.t("page.block.criteria"), body)
     }
 
-    /// Uma parte por onda, em ordem de número, com a onda, as tarefas, os
-    /// envios e os entregou dela; as skills vêm no fim.
+    /// Um grupo por onda, em ordem de número, com o estado e o nome dela, a
+    /// onda, as tarefas, os envios e os entregou dela; as skills vêm no fim.
     ///
     /// A onda leva o estado, o commit que a fechou e o que o agente dela
-    /// recebe. O pedido vem recolhido e literal, linha por linha: cada envio
-    /// mostra o texto exato que foi injetado; a onda ainda não enviada mostra
-    /// o pedido que o binário montou, porque é por esta página que a spec é
+    /// recebe. O pedido vem recolhido, como o agente o lê: cada envio mostra
+    /// o texto exato que foi injetado; a onda ainda não enviada mostra o
+    /// pedido que o binário montou, porque é por esta página que a spec é
     /// aprovada, e quem aprova tem de ver cada linha que o agente vai ler, as
     /// instruções fixas incluídas.
-    fn waves(&self) -> Vec<Node> {
+    fn waves(&self) -> Node {
         let events = self.of_block(Block::Waves);
         let numbers: BTreeSet<u64> = events.iter().filter_map(|e| e.wave()).collect();
+        let names = self.wave_names();
         let sends = self.of_type("send");
-        let mut out = Vec::new();
+        let mut groups = Vec::new();
         for n in numbers {
-            out.push(Node::Heading {
-                level: 3,
-                text: self.t("page.wave.heading").replace("{n}", &n.to_string()),
-            });
+            let mut out = Vec::new();
             let sent: Vec<&SpecEvent> = sends.iter().copied().filter(|s| s.wave() == Some(n)).collect();
             let last_wave_send = sent.iter().rev().find(|s| s.str_field("role") == Some("wave"));
             let prompt = last_wave_send
                 .and_then(|s| s.str_field("text"))
                 .or_else(|| self.prompts.get(&n).map(String::as_str));
             for event in events.iter().filter(|e| e.wave() == Some(n)) {
-                let mut item = self.item(event, true, None);
+                let mut item = self.item(event, true);
                 if event.event_type == "wave" {
-                    item.fields.push(self.field("page.field.wave_state", self.t(self.wave_state(n)).to_string()));
+                    let status = self.wave_status(n);
+                    item.fields.push(self.field("page.field.wave_state", status.label.clone()));
+                    item.status = Some(status);
                     let commits = self.wave_commits(n);
                     if !commits.is_empty() {
                         item.fields.push(self.field("page.field.wave_commit", commits));
@@ -377,7 +553,7 @@ impl<'a> Page<'a> {
                                 .t("page.wave.sent")
                                 .replace("{role}", &role)
                                 .replace("{lines}", &count_lines(&text).to_string()),
-                            body: vec![Node::Code(text)],
+                            body: vec![Node::Markdown(text)],
                             owner: Some(item_code),
                         });
                     }
@@ -392,17 +568,40 @@ impl<'a> Page<'a> {
                 let lines = self.t("page.wave.prompt.summary").replace("{lines}", &count_lines(prompt).to_string());
                 out.push(Node::Details {
                     summary: format!("{heading} · {lines}"),
-                    body: vec![Node::Code(prompt.clone())],
+                    body: vec![Node::Markdown(prompt.clone())],
                     owner: None,
                 });
             }
+            groups.push(Node::Group(Group {
+                anchor: wave_anchor("waves", n),
+                title: self.t("page.wave.heading").replace("{n}", &n.to_string()),
+                status: names.contains_key(&n).then(|| self.wave_status(n)),
+                summary: names.get(&n).cloned().unwrap_or_default(),
+                open: false,
+                body: out,
+            }));
         }
         let skills: Vec<&SpecEvent> = events.iter().copied().filter(|e| e.wave().is_none()).collect();
-        if !skills.is_empty() {
-            out.push(self.heading("page.group.skill"));
-            out.extend(self.items(&skills));
-        }
-        out
+        groups.extend(self.group("waves-skills".into(), self.t("page.group.skill").into(), &skills));
+        self.section(Block::Waves.name(), self.t("page.block.waves"), groups)
+    }
+
+    /// A revisão e o QA: um grupo por onda, com a conta dos vereditos.
+    fn review(&self) -> Node {
+        let events = self.of_block(Block::Review);
+        let numbers: BTreeSet<Option<u64>> = events.iter().map(|e| e.wave()).collect();
+        let body = numbers
+            .into_iter()
+            .filter_map(|n| {
+                let of: Vec<&SpecEvent> = events.iter().copied().filter(|e| e.wave() == n).collect();
+                let (anchor, title) = match n {
+                    Some(n) => (wave_anchor("review", n), self.t("page.wave.heading").replace("{n}", &n.to_string())),
+                    None => ("review-others".to_string(), self.t("page.findings.others").to_string()),
+                };
+                self.tallied(anchor, title, &of)
+            })
+            .collect();
+        self.section(Block::Review.name(), self.t("page.block.review"), body)
     }
 
     /// Os commits que fecharam a onda `n`: o `sha` e o código de cada um.
@@ -415,24 +614,14 @@ impl<'a> Page<'a> {
         )
     }
 
-    /// Sem envio, a onda está por fazer; com envio e sem commit, em execução;
-    /// com commit, pronta; com veredito aprovado, revisada.
-    fn wave_state(&self, n: u64) -> &'static str {
-        let reviewed = self
-            .of_type("verdict")
-            .iter()
-            .any(|v| v.wave() == Some(n) && v.str_field("result") == Some("approved"));
-        let committed = self.wave_committed(n);
-        let sent = self.of_type("send").iter().any(|s| s.wave() == Some(n));
-        if reviewed {
-            "page.value.wave_reviewed"
-        } else if committed {
-            "page.value.wave_done"
-        } else if sent {
-            "page.value.wave_running"
-        } else {
-            "page.value.wave_todo"
-        }
+    /// O estado da onda `n`, como chegou de quem lê a rodada.
+    fn wave_state(&self, n: u64) -> WaveState {
+        self.waves.get(&n).copied().unwrap_or(WaveState::Todo)
+    }
+
+    fn wave_status(&self, n: u64) -> Status {
+        let state = self.wave_state(n);
+        Status { label: self.t(state.key()).to_string(), tone: state.tone() }
     }
 
     /// A onda `n` tem commit.
@@ -563,7 +752,7 @@ impl<'a> Page<'a> {
             rows,
         })];
         if let Some(table) = self.size_against_review(&sends, &verdicts) {
-            out.push(self.heading("page.metrics.by_wave"));
+            out.push(Node::Heading { level: 3, text: self.t("page.metrics.by_wave").to_string() });
             out.push(table);
         }
         out
@@ -664,42 +853,58 @@ impl<'a> Page<'a> {
         )
     }
 
-    /// A conversa, em ordem de número: as mensagens, as respostas, o que os
-    /// ganchos e os comandos fizeram, as remoções e, marcada como
-    /// substituída, a versão antiga de cada item revisto que ainda vale.
-    fn conversation(&self) -> Vec<Node> {
+    /// A conversa, um grupo por dia, em ordem de número: as mensagens, as
+    /// respostas, o que os ganchos e os comandos fizeram, as remoções e,
+    /// marcada como substituída, a versão antiga de cada item revisto que
+    /// ainda vale.
+    fn conversation(&self) -> Node {
         let hidden = self.log.hidden();
-        let mut entries: Vec<(u64, Item)> = self
+        let mut entries: Vec<(u64, &str, Item)> = self
             .of_block(Block::Conversation)
             .into_iter()
             .map(|e| {
+                let mut item = self.item(e, true);
                 let author = e.str_field("author").map(|a| self.t(&format!("page.author.{a}")));
-                (e.id, self.item(e, true, Some(self.note(e, author))))
+                item.who = Some(self.kind_and(e, author));
+                (e.id, e.at(), item)
             })
             .collect();
         for event in &self.log.events {
             let replaced = matches!(hidden.get(&event.id), Some(Hidden::Replaced { .. }));
             if replaced && self.log.current(event.id).is_some() {
-                let note = self.note(event, Some(self.t("page.replaced")));
-                entries.push((event.id, self.item(event, false, Some(note))));
+                let mut item = self.item(event, false);
+                item.who = Some(self.kind_and(event, None));
+                item.mark = Some(self.t("page.replaced").to_string());
+                item.status = Some(Status { label: self.t("page.old_version").to_string(), tone: Tone::Old });
+                entries.push((event.id, event.at(), item));
             }
         }
-        entries.sort_by_key(|(id, _)| *id);
-        entries.into_iter().map(|(_, item)| Node::Item(item)).collect()
+        entries.sort_by_key(|(id, _, _)| *id);
+        let mut days: BTreeMap<&str, Vec<Node>> = BTreeMap::new();
+        for (_, at, item) in entries {
+            days.entry(at.get(..10).unwrap_or(at)).or_default().push(Node::Item(item));
+        }
+        let body = days
+            .into_iter()
+            .map(|(day, items)| {
+                let shown = day.get(8..10).zip(day.get(5..7)).map_or_else(|| day.to_string(), |(d, m)| format!("{d}/{m}"));
+                let title = self.t("page.group.day").replace("{day}", &shown);
+                group_of(format!("conversation-{day}"), title, items)
+            })
+            .collect();
+        self.section(Block::Conversation.name(), self.t("page.block.conversation"), body)
     }
 
-    /// "mensagem · usuário · 2026-09-11 21:03".
-    fn note(&self, event: &SpecEvent, who: Option<&str>) -> String {
-        let mut parts = vec![self.t(&format!("page.type.{}", event.event_type)).to_string()];
-        parts.extend(who.map(str::to_string));
-        parts.extend(when(event));
+    /// "mensagem · usuário": o tipo do evento e, quando há, quem.
+    fn kind_and(&self, event: &SpecEvent, who: Option<&str>) -> String {
+        let mut parts = vec![self.t(&format!("page.type.{}", event.event_type))];
+        parts.extend(who);
         parts.join(" · ")
     }
 
-    /// "depois da aprovação · 2026-09-12 11:06": a marca do item do
-    /// combinado, da especificação, dos critérios, das ondas ou das anotações
-    /// gravado depois da aprovação que vale. Os registros da execução não a
-    /// levam.
+    /// "depois da aprovação": a marca do item do combinado, da especificação,
+    /// dos critérios, das ondas ou das anotações gravado depois da aprovação
+    /// que vale. Os registros da execução não a levam.
     fn after_approval(&self, event: &SpecEvent) -> Option<String> {
         let approval = self.approval?;
         let marked = matches!(
@@ -709,24 +914,62 @@ impl<'a> Page<'a> {
         if !marked || event.id <= approval || EXECUTION_RECORDS.contains(&event.event_type.as_str()) {
             return None;
         }
-        let mut parts = vec![self.t("page.after_approval").to_string()];
-        parts.extend(when(event));
-        Some(parts.join(" · "))
+        Some(self.t("page.after_approval").to_string())
     }
 
     // -----------------------------------------------------------------------
     // Um item e os campos dele
     // -----------------------------------------------------------------------
 
-    /// Um item; sem nota dada, o que mudou depois da aprovação leva a marca.
-    fn item(&self, event: &SpecEvent, anchored: bool, note: Option<String>) -> Item {
+    /// Um item, com a linha recolhida: o título, a situação e a hora; o que
+    /// mudou depois da aprovação leva a marca.
+    fn item(&self, event: &SpecEvent, anchored: bool) -> Item {
+        let text = event.str_field("text").unwrap_or_default().trim().to_string();
+        let fields = self.fields(event);
+        let title = if text.is_empty() {
+            let origin = self.t("page.field.origin");
+            let label = self.t("page.field.label");
+            fields
+                .iter()
+                .filter(|f| f.label != origin && f.label != label)
+                .map(|f| format!("{}: {}", f.label, f.value))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        } else {
+            first_paragraph(&text)
+        };
         Item {
             code: self.code(event.id),
             anchored,
-            note: note.or_else(|| self.after_approval(event)),
-            text: event.str_field("text").unwrap_or_default().trim().to_string(),
-            fields: self.fields(event),
+            title,
+            status: self.status(event),
+            who: None,
+            mark: self.after_approval(event),
+            date: when(event),
+            text,
+            fields,
         }
+    }
+
+    /// A situação que o item mostra na linha: o resultado de um veredito, de
+    /// uma execução ou de uma chamada, a situação de um ponto e se a
+    /// publicação deu certo.
+    fn status(&self, event: &SpecEvent) -> Option<Status> {
+        let word = match event.event_type.as_str() {
+            "verdict" | "criterion_run" | "call" => event.str_field("result")?,
+            "point" => event.str_field("status")?,
+            "publish" => {
+                if event.fields.get("ok").and_then(Value::as_bool)? { "yes" } else { "no" }
+            }
+            _ => return None,
+        };
+        let tone = match word {
+            "approved" | "pass" | "ok" | "closed" | "yes" => Tone::Good,
+            "rejected" | "fail" | "refused" | "no" => Tone::Bad,
+            "open" => Tone::Running,
+            _ => Tone::Plain,
+        };
+        Some(Status { label: self.value_label(word), tone })
     }
 
     fn field(&self, key: &str, value: String) -> Field {
@@ -912,6 +1155,24 @@ fn receives(prompt: &str) -> String {
     join(parts.into_iter().filter(|(_, n)| *n > 0).map(|(title, n)| format!("{title} ({n})")))
 }
 
+/// O primeiro parágrafo de um texto em markdown, em uma linha, sem a marca de
+/// título nem a de item de lista: é o título da linha recolhida.
+fn first_paragraph(text: &str) -> String {
+    let first = one_line(text.trim().split("\n\n").next().unwrap_or_default());
+    let line = first.trim_start_matches('#').trim_start();
+    line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line).to_string()
+}
+
+/// Um grupo recolhido com os blocos `body`, sem resumo.
+fn group_of(anchor: String, title: String, body: Vec<Node>) -> Node {
+    Node::Group(Group { anchor, title, status: None, summary: String::new(), open: false, body })
+}
+
+/// O endereço do grupo da onda `n` numa seção: `waves-3`.
+fn wave_anchor(section: &str, n: u64) -> String {
+    format!("{section}-{n}")
+}
+
 /// Quantas linhas um texto tem; a última conta mesmo sem quebra no fim.
 fn count_lines(text: &str) -> usize {
     text.lines().count()
@@ -988,14 +1249,37 @@ mod tests {
             .collect()
     }
 
-    fn items(section: &Section) -> Vec<&Item> {
-        section.body.iter().filter_map(|n| if let Node::Item(i) = n { Some(i) } else { None }).collect()
+    /// A seção de endereço `anchor`.
+    fn section<'a>(doc: &'a Document, anchor: &str) -> &'a Section {
+        sections(doc)
+            .into_iter()
+            .find(|s| s.anchor.as_deref() == Some(anchor))
+            .unwrap_or_else(|| panic!("no {anchor} section"))
     }
 
-    /// Os dez blocos saem sempre, na ordem da página, cada um com o seu
-    /// endereço; a conversa vem recolhida e um bloco vazio diz que está vazio.
+    /// Os itens da seção, também os de dentro dos grupos.
+    fn items(section: &Section) -> Vec<&Item> {
+        Node::items(&section.body)
+    }
+
+    /// Os grupos da seção, na ordem.
+    fn groups(section: &Section) -> Vec<&Group> {
+        section.body.iter().filter_map(|n| if let Node::Group(g) = n { Some(g) } else { None }).collect()
+    }
+
+    fn group<'a>(section: &'a Section, anchor: &str) -> &'a Group {
+        groups(section).into_iter().find(|g| g.anchor == anchor).unwrap_or_else(|| panic!("no {anchor} group"))
+    }
+
+    fn page_with(content: &str, waves: &WaveStates) -> Document {
+        let prompts = WavePrompts::new();
+        spec_page("s", &parse_log(content), SpecInputs { prompts: &prompts, rtk: &[], waves }, Locale::PtBr)
+    }
+
+    /// As seções saem sempre, na ordem da página, cada uma com o seu
+    /// endereço, e uma seção vazia diz que está vazia.
     #[test]
-    fn the_ten_blocks_come_out_in_page_order_even_when_empty() {
+    fn the_sections_come_out_in_page_order_even_when_empty() {
         let doc = spec_document("vazia", &parse_log(""), &WavePrompts::new(), Locale::PtBr);
         let got: Vec<(&str, &str)> = sections(&doc)
             .iter()
@@ -1004,27 +1288,199 @@ mod tests {
         assert_eq!(
             got,
             [
-                ("state", "Estado"),
-                ("metrics", "Painel de medição"),
-                ("agreed", "Combinado"),
+                ("progress", "Andamento"),
                 ("specification", "Especificação"),
+                ("agreed", "Combinado"),
                 ("criteria", "Critérios"),
                 ("waves", "Ondas"),
                 ("review", "Revisão e QA"),
-                ("progress", "Andamento"),
                 ("notes", "Anotações"),
                 ("conversation", "Conversa"),
             ]
         );
-        let all = sections(&doc);
-        assert!(all.iter().all(|s| s.body == [Node::Paragraph("Nada registrado ainda.".into())]));
-        assert_eq!(all[9].collapsed.as_deref(), Some("0 registros"));
-        assert!(all[..9].iter().all(|s| s.collapsed.is_none()));
+        assert!(sections(&doc).iter().all(|s| s.body == [Node::Paragraph("Nada registrado ainda.".into())]));
+    }
+
+    /// Cada seção junta os itens em grupos recolhidos: o combinado e a
+    /// especificação por tipo, os critérios e as execuções, a revisão por
+    /// onda, as anotações num grupo só; o andamento traz a medição aberta, as
+    /// fases e publicações e os commits. Cada grupo resume as situações dos
+    /// itens dele.
+    #[test]
+    fn each_section_groups_its_items_and_only_the_measurement_opens() {
+        let content = [
+            line(1, "state", ",\"author\":\"binary\",\"phase\":\"survey\""),
+            line(2, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(3, "rule", ",\"text\":\"Regra.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":2"),
+            line(4, "decision", ",\"text\":\"Decisão.\",\"keys\":[\"k\"],\"why\":\"w\",\"origin\":2"),
+            line(5, "context", ",\"text\":\"Contexto.\",\"origin\":2"),
+            line(6, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"p\",\"origin\":2"),
+            line(7, "criterion_run", ",\"author\":\"binary\",\"criterion\":6,\"result\":\"fail\",\"exit\":1,\"ms\":5"),
+            line(8, "verdict", ",\"author\":\"review\",\"wave\":3,\"result\":\"rejected\",\"text\":\"Faltou.\",\"criteria\":[]"),
+            line(9, "verdict", ",\"author\":\"review\",\"wave\":3,\"result\":\"approved\",\"text\":\"Pronto.\",\"criteria\":[]"),
+            line(10, "commit", ",\"author\":\"binary\",\"sha\":\"abc\",\"title\":\"t\",\"waves\":[3],\"files\":[],\"repo\":\".\""),
+            line(11, "note", ",\"text\":\"Anotação.\",\"keys\":[\"k\"],\"origin\":2"),
+            line(12, "call", ",\"author\":\"binary\",\"command\":\"grill\",\"ms\":5,\"result\":\"ok\""),
+            line(13, "publish", ",\"page\":\"spec\",\"milestone\":\"approval\",\"ok\":true,\"url\":\"https://claude.ai/code/artifact/x\""),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
+        let anchors = |s: &Section| groups(s).iter().map(|g| (g.anchor.clone(), g.title.clone())).collect::<Vec<_>>();
+        let pair = |a: &str, t: &str| (a.to_string(), t.to_string());
+        assert_eq!(
+            anchors(section(&doc, "progress")),
+            [
+                pair("progress-metrics", "Medição"),
+                pair("progress-state", "Fases e publicações"),
+                pair("progress-commits", "Commits"),
+            ]
+        );
+        assert_eq!(anchors(section(&doc, "agreed")), [pair("agreed-rule", "Regras"), pair("agreed-decision", "Decisões")]);
+        assert_eq!(anchors(section(&doc, "specification")), [pair("specification-context", "Contexto")]);
+        assert_eq!(
+            anchors(section(&doc, "criteria")),
+            [pair("criteria-criterion", "Critérios de aceite"), pair("criteria-runs", "Execuções")]
+        );
+        assert_eq!(anchors(section(&doc, "review")), [pair("review-3", "Onda 3")]);
+        assert_eq!(anchors(section(&doc, "notes")), [pair("notes-all", "Anotações")]);
+
+        let open: Vec<&str> =
+            sections(&doc).iter().flat_map(|s| groups(s)).filter(|g| g.open).map(|g| g.anchor.as_str()).collect();
+        assert_eq!(open, ["progress-metrics"], "only the measurement opens with the page");
+        assert_eq!(group(section(&doc, "review"), "review-3").summary, "1 reprovada · 1 aprovada");
+        assert_eq!(group(section(&doc, "agreed"), "agreed-rule").summary, "", "no status, no tally");
+        for (section_anchor, anchor) in [("criteria", "criteria-runs"), ("progress", "progress-state")] {
+            let quiet = group(section(&doc, section_anchor), anchor);
+            assert!(Node::items(&quiet.body).iter().any(|i| i.status.is_some()), "{anchor}");
+            assert_eq!(quiet.summary, "", "only the groups by type and the review tally: {anchor}");
+        }
+    }
+
+    /// Cada item traz a linha recolhida: o título (o primeiro parágrafo do
+    /// texto, ou os campos quando não há texto), a situação com o tom dela e
+    /// a hora que o evento gravou.
+    #[test]
+    fn each_item_row_has_its_title_status_and_date() {
+        let content = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "decision", ",\"text\":\"**Primeira linha.**\\n\\nO resto do texto.\",\"keys\":[\"k\"],\"why\":\"w\",\"origin\":1"),
+            line(3, "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"rejected\",\"text\":\"Faltou o teste.\",\"criteria\":[]"),
+            line(4, "point", ",\"block\":\"limits\",\"gap\":\"Tamanho\",\"from\":\"gap\",\"status\":\"open\",\"facts\":[],\"origin\":1"),
+            line(5, "publish", ",\"page\":\"spec\",\"milestone\":\"approval\",\"ok\":true,\"url\":\"https://claude.ai/code/artifact/x\""),
+            line(6, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"p\",\"origin\":1"),
+            line(7, "criterion_run", ",\"author\":\"binary\",\"criterion\":6,\"result\":\"pass\",\"exit\":0,\"ms\":5"),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
+        let all: Vec<&Item> = sections(&doc).into_iter().flat_map(items).collect();
+        let row = |code: &str| all.iter().find(|i| i.code == code).copied().unwrap_or_else(|| panic!("{code}"));
+        let status = |code: &str| row(code).status.clone().map(|s| (s.label, s.tone));
+
+        assert_eq!(row("MSTD-DEC-0001").title, "**Primeira linha.**");
+        assert_eq!(row("MSTD-DEC-0001").date.as_deref(), Some("2026-09-12 10:02"));
+        assert_eq!(status("MSTD-DEC-0001"), None);
+        assert_eq!(status("MSTD-VERD-0001"), Some(("reprovada".into(), Tone::Bad)));
+        assert_eq!(status("MSTD-POINT-0001"), Some(("pendente".into(), Tone::Running)));
+        assert_eq!(status("MSTD-PUB-0001"), Some(("sim".into(), Tone::Good)));
+        assert_eq!(status("MSTD-CRUN-0001"), Some(("passou".into(), Tone::Good)));
+        let publish = row("MSTD-PUB-0001");
+        assert!(publish.text.is_empty());
+        assert!(publish.title.starts_with("Página: spec · Marco: aprovação · Deu certo: sim"), "{}", publish.title);
+        let criterion = row("MSTD-CRIT-0001");
+        assert!(!criterion.title.contains("Origem"), "the origin stays out of the title: {}", criterion.title);
+        assert_eq!(criterion.note(), None, "a row with only its time says nothing more in the .md");
+    }
+
+    /// O estado de cada onda é o que chega pronto, lido pela rodada: a página
+    /// não tem regra própria. Uma onda reprovada aparece reprovada mesmo com
+    /// um veredito aprovado e um commit antes; a que não chegou está por
+    /// fazer. O estado vai para o grupo da onda, para a linha e o campo da
+    /// onda e para a visão das ondas, com a conta dos estados.
+    #[test]
+    fn the_wave_state_is_the_one_the_round_reading_gives() {
+        let wave = |id: u64, n: u64, name: &str| {
+            line(id, "wave", &format!(",\"n\":{n},\"text\":\"**{name}**\\n\\nO resto.\",\"criteria\":[1],\"done_when\":\"d\",\"origin\":1"))
+        };
+        let content = [
+            line(1, "criterion", ",\"when\":\"w\",\"then\":\"t\",\"proof\":\"p\",\"origin\":1"),
+            wave(2, 1, "Um"),
+            wave(3, 2, "Dois"),
+            wave(4, 3, "Três"),
+            wave(5, 4, "Quatro"),
+            wave(6, 5, "Cinco"),
+            line(7, "commit", ",\"author\":\"binary\",\"sha\":\"abc\",\"title\":\"t\",\"waves\":[1],\"files\":[],\"repo\":\".\""),
+            line(8, "verdict", ",\"author\":\"review\",\"wave\":1,\"result\":\"approved\",\"text\":\"x\",\"criteria\":[]"),
+        ]
+        .concat();
+        let states = WaveStates::from([
+            (1, WaveState::Rejected),
+            (2, WaveState::Running),
+            (3, WaveState::Delivered),
+            (4, WaveState::Approved),
+            (6, WaveState::Approved),
+        ]);
+        let doc = page_with(&content, &states);
+        let waves = section(&doc, "waves");
+        type Shown = (String, Option<(String, Tone)>, String);
+        let shown: Vec<Shown> = groups(waves)
+            .iter()
+            .map(|g| (g.anchor.clone(), g.status.clone().map(|s| (s.label, s.tone)), g.summary.clone()))
+            .collect();
+        let state = |label: &str, tone: Tone| Some((label.to_string(), tone));
+        assert_eq!(
+            shown,
+            [
+                ("waves-1".into(), state("reprovada", Tone::Bad), "**Um**".into()),
+                ("waves-2".into(), state("em andamento", Tone::Running), "**Dois**".into()),
+                ("waves-3".into(), state("entregue", Tone::Done), "**Três**".into()),
+                ("waves-4".into(), state("aprovada", Tone::Good), "**Quatro**".into()),
+                ("waves-5".into(), state("a fazer", Tone::Todo), "**Cinco**".into()),
+            ]
+        );
+        let one = items(waves).into_iter().find(|i| i.code == "MSTD-WAVE-0001").unwrap();
+        assert_eq!(one.status.as_ref().map(|s| s.label.as_str()), Some("reprovada"));
+        assert_eq!(one.fields.iter().find(|f| f.label == "Estado da onda").map(|f| f.value.as_str()), Some("reprovada"));
+
+        let Node::Overview(overview) = &section(&doc, "progress").body[0] else { panic!("the overview opens the progress") };
+        assert_eq!(overview.title, "Ondas");
+        let cards: Vec<(&str, &str, &str, &str)> = overview
+            .cards
+            .iter()
+            .map(|c| (c.label.as_str(), c.status.label.as_str(), c.target.as_str(), c.hint.as_str()))
+            .collect();
+        assert_eq!(
+            cards,
+            [
+                ("1", "reprovada", "waves-1", "**Um**"),
+                ("2", "em andamento", "waves-2", "**Dois**"),
+                ("3", "entregue", "waves-3", "**Três**"),
+                ("4", "aprovada", "waves-4", "**Quatro**"),
+                ("5", "a fazer", "waves-5", "**Cinco**"),
+            ]
+        );
+        assert_eq!(overview.legend, "1 reprovada · 1 em andamento · 1 entregue · 1 aprovada · 1 a fazer");
+
+        let many = WaveStates::from([(1, WaveState::Approved), (2, WaveState::Approved), (3, WaveState::Delivered)]);
+        let counted = page_with(&content, &many);
+        let Node::Overview(overview) = &section(&counted, "progress").body[0] else { panic!() };
+        assert_eq!(overview.legend, "2 aprovadas · 2 a fazer · 1 entregue", "the highest count first, in plural");
+
+        let english = spec_page(
+            "s",
+            &parse_log(&content),
+            SpecInputs { prompts: &WavePrompts::new(), rtk: &[], waves: &states },
+            Locale::EnUs,
+        );
+        let Node::Overview(overview) = &section(&english, "progress").body[0] else { panic!() };
+        assert_eq!(overview.cards[0].status.label, "rejected");
+
+        let empty = spec_document("s", &parse_log(""), &WavePrompts::new(), Locale::PtBr);
+        assert!(!section(&empty, "progress").body.iter().any(|n| matches!(n, Node::Overview(_))), "no wave, no overview");
     }
 
     /// Uma decisão revista mostra só a versão nova no combinado; a antiga
-    /// aparece só na conversa, marcada como substituída e sem ser o endereço
-    /// do código.
+    /// aparece só na conversa, marcada como substituída, apagada e sem ser o
+    /// endereço do código.
     #[test]
     fn a_revised_decision_shows_the_new_text_and_the_old_one_only_in_the_conversation() {
         let content = [
@@ -1034,23 +1490,23 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let all = sections(&doc);
-        let agreed = items(all[2]);
+        let agreed = items(section(&doc, "agreed"));
         assert_eq!(agreed.len(), 1);
         assert_eq!((agreed[0].code.as_str(), agreed[0].text.as_str()), ("MSTD-DEC-0001", "Texto novo."));
         assert!(agreed[0].anchored);
 
-        let talk = items(all[9]);
+        let talk = items(section(&doc, "conversation"));
         let old = talk.iter().find(|i| i.text == "Texto antigo.").expect("the old version is in the conversation");
         assert_eq!(old.code, "MSTD-DEC-0001");
         assert!(!old.anchored, "the address belongs to the new version");
-        assert!(old.note.as_deref().unwrap_or_default().contains("versão substituída"), "{old:?}");
-        for section in &all[..9] {
+        assert_eq!(old.note().as_deref(), Some("decisão · versão substituída · 2026-09-12 10:02"));
+        assert_eq!(old.status, Some(Status { label: "versão antiga".into(), tone: Tone::Old }));
+        for section in sections(&doc).into_iter().filter(|s| s.anchor.as_deref() != Some("conversation")) {
             assert!(items(section).iter().all(|i| i.text != "Texto antigo."), "{}", section.heading);
         }
     }
 
-    /// Um item removido some de todos os blocos; a remoção fica na conversa,
+    /// Um item removido some de todas as seções; a remoção fica na conversa,
     /// com o código do que tirou e sem o texto dele.
     #[test]
     fn a_removed_item_leaves_every_block() {
@@ -1061,18 +1517,17 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let all = sections(&doc);
-        let texts: Vec<&str> = all.iter().flat_map(|s| items(s)).map(|i| i.text.as_str()).collect();
+        let texts: Vec<&str> = sections(&doc).into_iter().flat_map(items).map(|i| i.text.as_str()).collect();
         assert!(!texts.contains(&"Regra que sai."), "{texts:?}");
         assert!(texts.contains(&"Regra que fica."));
-        let removal = items(all[9])[0];
+        let removal = items(section(&doc, "conversation"))[0];
         assert_eq!(removal.code, "MSTD-RMV-0001");
         let values: Vec<&str> = removal.fields.iter().map(|f| f.value.as_str()).collect();
         assert_eq!(values, ["engano", "MSTD-RULE-0001"]);
     }
 
     /// Toda referência a outro evento sai como o código dele, e o número da
-    /// onda vira o subtítulo da parte dela.
+    /// onda vira o título do grupo dela.
     #[test]
     fn references_come_out_as_codes_and_waves_get_their_heading() {
         let content = [
@@ -1083,17 +1538,18 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let all = sections(&doc);
-        assert_eq!(all[5].body[0], Node::Heading { level: 3, text: "Onda 1".into() });
-        let wave = items(all[5])[0];
+        let waves = section(&doc, "waves");
+        let one = group(waves, "waves-1");
+        assert_eq!((one.title.as_str(), one.summary.as_str()), ("Onda 1", "Objetivo."));
+        let wave = items(waves)[0];
         let criteria = wave.fields.iter().find(|f| f.label == "Critérios").expect("criteria field");
         assert_eq!(criteria.value, "MSTD-CRIT-0001");
         let state = wave.fields.iter().find(|f| f.label == "Estado da onda").expect("wave state");
         assert_eq!(state.value, "a fazer");
         assert!(wave.fields.iter().all(|f| f.label != "Número"), "the number is in the heading");
-        let task = items(all[5])[1];
+        let task = items(waves)[1];
         assert_eq!(task.fields[0].value, "`a.rs` (novo)");
-        let criterion = items(all[4])[0];
+        let criterion = items(section(&doc, "criteria"))[0];
         assert!(criterion.fields.iter().any(|f| f.value == "`cargo test`"));
         assert!(criterion.fields.iter().any(|f| f.value == "passou (MSTD-CRUN-0001)"), "{criterion:?}");
     }
@@ -1109,8 +1565,8 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let all = sections(&doc);
-        let tasks: Vec<&Item> = items(all[5]).into_iter().filter(|i| i.code.starts_with("MSTD-TASK-")).collect();
+        let tasks: Vec<&Item> =
+            items(section(&doc, "waves")).into_iter().filter(|i| i.code.starts_with("MSTD-TASK-")).collect();
         let files = |item: &Item| item.fields.iter().any(|f| f.label == "Arquivos");
         assert_eq!((files(tasks[0]), files(tasks[1])), (false, true), "{tasks:?}");
     }
@@ -1126,8 +1582,7 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let all = sections(&doc);
-        let proofs: Vec<&str> = items(all[4])
+        let proofs: Vec<&str> = items(section(&doc, "criteria"))
             .iter()
             .flat_map(|i| i.fields.iter())
             .filter(|f| f.label == "Prova")
@@ -1162,7 +1617,7 @@ mod tests {
             sections(&doc)
                 .into_iter()
                 .filter(|s| s.anchor.as_deref() != Some("conversation"))
-                .flat_map(|s| items(s).into_iter().map(|i| (i.code.clone(), i.note.clone())).collect::<Vec<_>>())
+                .flat_map(|s| items(s).into_iter().map(|i| (i.code.clone(), i.note())).collect::<Vec<_>>())
                 .collect()
         };
         let marked = |got: &[(String, Option<String>)]| -> Vec<(String, String)> {
@@ -1182,16 +1637,17 @@ mod tests {
         assert_eq!(english[0].1, "after the approval · 2026-09-12 10:06");
 
         let doc = spec_document("s", &parse_log(&approved), &WavePrompts::new(), Locale::PtBr);
-        let talk = items(sections(&doc)[9]);
-        assert_eq!(talk[0].note.as_deref(), Some("mensagem · usuário · 2026-09-12 10:01"), "the conversation keeps its note");
+        let talk = items(section(&doc, "conversation"));
+        assert_eq!(talk[0].note().as_deref(), Some("mensagem · usuário · 2026-09-12 10:01"), "the conversation keeps its note");
+        assert_eq!(talk[0].who.as_deref(), Some("mensagem · usuário"), "the row says what and whose it is");
 
         let never = before_approval.replace("\"phase\":\"plan\"", "\"phase\":\"survey\"") + &after_approval.replace("approved", "plan");
         assert!(marked(&notes(&never, Locale::PtBr)).is_empty(), "a spec never approved marks nothing");
     }
 
     /// A anotação com o rótulo do achado do plano sai numa seção só dela,
-    /// logo antes das anotações; a anotação sem o rótulo continua nas
-    /// anotações. Sem achado nenhum, a seção não aparece.
+    /// logo antes das anotações, num grupo por assunto; a anotação sem o
+    /// rótulo continua nas anotações. Sem achado nenhum, a seção não aparece.
     #[test]
     fn what_the_plan_found_gets_its_own_section_right_before_the_notes() {
         let found = ",\"label\":\"achado do plano\"";
@@ -1202,19 +1658,16 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let all = sections(&doc);
-        let named: Vec<(&str, &str)> = all
+        let named: Vec<(&str, &str)> = sections(&doc)
             .iter()
             .map(|s| (s.anchor.as_deref().unwrap_or_default(), s.heading.as_str()))
             .collect();
-        assert_eq!(named[8], ("findings", "O que o plano achou"), "{named:?}");
-        assert_eq!(named[9], ("notes", "Anotações"), "a seção vem logo antes das anotações");
-        let texts = |section: &Section| -> Vec<String> {
-            items(section).iter().map(|i| i.text.clone()).collect()
-        };
-        assert_eq!(texts(all[8]), ["A tarefa não diz o arquivo."]);
-        assert_eq!(texts(all[9]), ["Anotação de sempre."]);
-        let found = items(all[8])[0];
+        assert_eq!(named[6], ("findings", "O que o plano achou"), "{named:?}");
+        assert_eq!(named[7], ("notes", "Anotações"), "a seção vem logo antes das anotações");
+        let texts = |section: &Section| -> Vec<String> { items(section).iter().map(|i| i.text.clone()).collect() };
+        assert_eq!(texts(section(&doc, "findings")), ["A tarefa não diz o arquivo."]);
+        assert_eq!(texts(section(&doc, "notes")), ["Anotação de sempre."]);
+        let found = items(section(&doc, "findings"))[0];
         assert!(
             found.fields.iter().all(|f| f.value != "achado do plano"),
             "o rótulo já é o título da seção: {found:?}"
@@ -1222,12 +1675,50 @@ mod tests {
 
         // Em inglês a seção sai com o título de lá, e a mesma anotação nela.
         let english = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::EnUs);
-        assert_eq!(sections(&english)[8].heading, "What the plan found");
+        assert_eq!(section(&english, "findings").heading, "What the plan found");
 
-        // Sem achado nenhum, a página volta a ter dez seções.
+        // Sem achado nenhum, a página volta a ter oito seções.
         let only_notes = [line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""), line(2, "note", ",\"text\":\"Anotação de sempre.\",\"keys\":[\"k\"],\"origin\":1")].concat();
         let doc = spec_document("s", &parse_log(&only_notes), &WavePrompts::new(), Locale::PtBr);
-        assert_eq!(sections(&doc).len(), 10, "sem achado, nenhuma seção a mais");
+        assert_eq!(sections(&doc).len(), 8, "sem achado, nenhuma seção a mais");
+    }
+
+    /// O que o plano achou sai num grupo por assunto, na ordem da página:
+    /// o assunto é o do item que o achado cita primeiro; o achado de skill e
+    /// o das ondas vão pelo tipo do achado; o resto, para os outros.
+    #[test]
+    fn the_findings_are_grouped_by_subject() {
+        let finding = |id: u64, key: &str, text: &str| {
+            line(id, "note", &format!(",\"author\":\"binary\",\"label\":\"achado do plano\",\"keys\":[\"{key}\"],\"text\":\"{text}\",\"origin\":1"))
+        };
+        let content = [
+            line(1, "message", ",\"author\":\"user\",\"text\":\"combine\""),
+            line(2, "rule", ",\"text\":\"Regra.\",\"keys\":[\"k\"],\"example\":\"e\",\"origin\":1"),
+            line(3, "wave", ",\"n\":1,\"text\":\"Onda.\",\"criteria\":[],\"done_when\":\"d\",\"origin\":1"),
+            line(4, "task", ",\"wave\":1,\"text\":\"Tarefa.\",\"origin\":1"),
+            finding(5, "item-without-task", "Nenhuma tarefa diz que cobre o item MSTD-RULE-0001."),
+            finding(6, "task-without-file", "A tarefa MSTD-TASK-0001 não diz em que arquivo ela mexe."),
+            finding(7, "skill-missing-path", "add-run-command: A skill cita caminhos que não existem."),
+            finding(8, "wave-prompt-too-long", "O pedido da onda 1 tem 558 linhas."),
+            finding(9, "odd", "Algo sem código."),
+        ]
+        .concat();
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
+        let found: Vec<(String, String, Vec<String>)> = groups(section(&doc, "findings"))
+            .iter()
+            .map(|g| (g.anchor.clone(), g.title.clone(), Node::items(&g.body).iter().map(|i| i.code.clone()).collect()))
+            .collect();
+        let row = |a: &str, t: &str, code: &str| (a.to_string(), t.to_string(), vec![code.to_string()]);
+        assert_eq!(
+            found,
+            [
+                row("findings-tasks", "Sobre tarefas", "MSTD-NOTE-0002"),
+                row("findings-waves", "Sobre ondas", "MSTD-NOTE-0004"),
+                row("findings-rules", "Sobre regras", "MSTD-NOTE-0001"),
+                row("findings-skills", "Sobre skills", "MSTD-NOTE-0003"),
+                row("findings-others", "Outros", "MSTD-NOTE-0005"),
+            ]
+        );
     }
 
     /// Numa aprovação revista (a spec que nasceu aprovada e ganhou a branch
@@ -1245,13 +1736,14 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let rules: Vec<(&str, Option<&str>)> =
-            items(sections(&doc)[2]).iter().map(|i| (i.text.as_str(), i.note.as_deref())).collect();
+        let rules: Vec<(String, Option<String>)> =
+            items(section(&doc, "agreed")).iter().map(|i| (i.text.clone(), i.note())).collect();
+        let rule = |text: &str, note: &str| (text.to_string(), Some(note.to_string()));
         assert_eq!(
             rules,
             [
-                ("Entre as duas.", Some("depois da aprovação · 2026-09-12 10:03")),
-                ("Depois da revisão.", Some("depois da aprovação · 2026-09-12 10:05")),
+                rule("Entre as duas.", "depois da aprovação · 2026-09-12 10:03"),
+                rule("Depois da revisão.", "depois da aprovação · 2026-09-12 10:05"),
             ]
         );
     }
@@ -1262,8 +1754,8 @@ mod tests {
 
     /// Cada onda mostra o estado, o commit que a fechou e o que o agente
     /// recebe, lido do próprio pedido. A onda enviada traz o texto exato do
-    /// envio recolhido logo abaixo dele; a que ainda não foi enviada traz,
-    /// recolhido, o pedido que o binário montou.
+    /// envio recolhido logo abaixo dele, para ser lido como markdown; a que
+    /// ainda não foi enviada traz, recolhido, o pedido que o binário montou.
     #[test]
     fn each_wave_shows_its_state_commit_what_it_receives_and_the_request() {
         let sent = "# s — onda 1\n\n**O que é isto.** A lista.\n\n## Especificação\n\n- MSTD-CTX-0001 (contexto) — `ler`\n\n## Critérios\n\n- MSTD-CRIT-0001 (critério) — `ler`\n- MSTD-CRIT-0002 (critério) — `ler`\n";
@@ -1278,26 +1770,28 @@ mod tests {
         let mut prompts = WavePrompts::new();
         prompts.insert(1, "não aparece: a onda já foi enviada".into());
         prompts.insert(2, "# s — onda 2\n\n## Combinado\n\n- MSTD-RULE-0001 (regra) — `ler`\n".into());
-        let doc = spec_document("s", &parse_log(&content), &prompts, Locale::PtBr);
-        let waves = sections(&doc)[5];
+        let states = WaveStates::from([(1, WaveState::Approved)]);
+        let doc = spec_page("s", &parse_log(&content), SpecInputs { prompts: &prompts, rtk: &[], waves: &states }, Locale::PtBr);
+        let waves = section(&doc, "waves");
 
         let one = items(waves).into_iter().find(|i| i.code == "MSTD-WAVE-0001").unwrap();
-        assert_eq!(field(one, "Estado da onda"), Some("pronta"));
+        assert_eq!(field(one, "Estado da onda"), Some("aprovada"));
         assert_eq!(field(one, "Commit"), Some("`5e0c7a91` (MSTD-COMMIT-0001)"));
         assert_eq!(field(one, "Recebe"), Some("Especificação (1), Critérios (2)"), "{one:?}");
-        let send = items(waves).into_iter().find(|i| i.code == "MSTD-SEND-0001").unwrap();
+        let first = &group(waves, "waves-1").body;
+        let send = Node::items(first).into_iter().find(|i| i.code == "MSTD-SEND-0001").unwrap();
         assert!(send.text.is_empty(), "the sent text goes in the collapsed part");
-        let position = waves.body.iter().position(|n| matches!(n, Node::Item(i) if i.code == "MSTD-SEND-0001")).unwrap();
+        let position = first.iter().position(|n| matches!(n, Node::Item(i) if i.code == "MSTD-SEND-0001")).unwrap();
         assert_eq!(
-            waves.body[position + 1],
+            first[position + 1],
             Node::Details {
                 summary: "Pedido enviado (agente de onda) · 12 linhas, como o agente o recebeu".into(),
-                body: vec![Node::Code(sent.trim().into())],
+                body: vec![Node::Markdown(sent.trim().into())],
                 owner: Some("MSTD-SEND-0001".into()),
             }
         );
         assert!(
-            !waves.body.iter().any(|n| matches!(n, Node::Details { body, .. } if body == &[Node::Code("não aparece: a onda já foi enviada".into())])),
+            !first.iter().any(|n| matches!(n, Node::Details { body, .. } if body == &[Node::Markdown("não aparece: a onda já foi enviada".into())])),
             "a sent wave does not show the assembled request again"
         );
 
@@ -1305,17 +1799,18 @@ mod tests {
         assert_eq!(field(two, "Estado da onda"), Some("a fazer"));
         assert_eq!(field(two, "Commit"), None);
         assert_eq!(field(two, "Recebe"), Some("Combinado (1)"));
-        let prompt = waves.body.last().unwrap();
+        let prompt = group(waves, "waves-2").body.last().unwrap();
         let Node::Details { summary, body, owner } = prompt else { panic!("{prompt:?}") };
         assert_eq!(owner, &None, "the assembled request belongs to no single item");
         assert_eq!(summary, "O pedido da onda 2 · 5 linhas, como o agente as recebe");
-        assert_eq!(body, &[Node::Code(prompts[&2].clone())]);
+        assert_eq!(body, &[Node::Markdown(prompts[&2].clone())]);
     }
 
     /// O painel sai dos eventos: o texto colocado, os bloqueios de cada
     /// gancho, as chamadas dos passos contra as ondas prontas, o tempo de cada
     /// fase, o retrabalho, os lembretes, o tamanho de cada pedido contra a
-    /// revisão e a economia do rtk nos dias da spec.
+    /// revisão e a economia do rtk nos dias da spec. Ele é o grupo aberto do
+    /// andamento.
     #[test]
     fn the_panel_measures_hooks_steps_phases_rework_reminders_sizes_and_rtk() {
         let at = |id: u64, when: &str, event_type: &str, extra: &str| {
@@ -1351,9 +1846,14 @@ mod tests {
             day("2026-09-14", 99, 9_999, 9_999),
         ];
         let prompts = WavePrompts::new();
-        let doc = spec_page("s", &parse_log(&content), SpecInputs { prompts: &prompts, rtk: &rtk }, Locale::PtBr);
-        let panel = sections(&doc)[1];
-        let Node::Table(table) = &panel.body[0] else { panic!("{panel:?}") };
+        let waves = WaveStates::new();
+        let panel = |rtk: &[RtkDay]| -> Group {
+            let doc = spec_page("s", &parse_log(&content), SpecInputs { prompts: &prompts, rtk, waves: &waves }, Locale::PtBr);
+            group(section(&doc, "progress"), "progress-metrics").clone()
+        };
+        let metrics = panel(&rtk);
+        assert!(metrics.open, "the measurement opens with the page");
+        let Node::Table(table) = &metrics.body[0] else { panic!("{metrics:?}") };
         let rows: BTreeMap<&str, &str> = table.rows.iter().map(|r| (r[0].as_str(), r[1].as_str())).collect();
         assert_eq!(rows["Texto colocado pelos ganchos"], "400 caracteres, cerca de 100 tokens");
         assert_eq!(
@@ -1369,15 +1869,14 @@ mod tests {
         assert_eq!(rows["Lembretes que apareceram"], "2 mensagens antigas lembradas nos pontos");
         assert_eq!(rows["Pedidos enviados aos agentes"], "2, o maior com 320 linhas");
         assert_eq!(rows["Economia do rtk"], "4 comandos, 400 tokens a menos na saída (20%), de 2026-09-11 a 2026-09-13");
-        assert_eq!(panel.body[1], Node::Heading { level: 3, text: "Tamanho do pedido e revisão, por onda".into() });
-        let Node::Table(by_wave) = &panel.body[2] else { panic!("{panel:?}") };
+        assert_eq!(metrics.body[1], Node::Heading { level: 3, text: "Tamanho do pedido e revisão, por onda".into() });
+        let Node::Table(by_wave) = &metrics.body[2] else { panic!("{metrics:?}") };
         assert_eq!(by_wave.headers, ["Onda", "Linhas do pedido", "Reprovações", "Última revisão"]);
         assert_eq!(by_wave.rows, [["1", "320", "1", "aprovada"]]);
 
         // Sem comando do rtk nos dias da spec, a linha não aparece.
-        let quiet = [day("2026-09-10", 5, 10, 1)];
-        let doc = spec_page("s", &parse_log(&content), SpecInputs { prompts: &prompts, rtk: &quiet }, Locale::PtBr);
-        let Node::Table(table) = &sections(&doc)[1].body[0] else { panic!() };
+        let quiet = panel(&[day("2026-09-10", 5, 10, 1)]);
+        let Node::Table(table) = &quiet.body[0] else { panic!() };
         assert!(table.rows.iter().all(|r| r[0] != "Economia do rtk"), "{table:?}");
     }
 
@@ -1395,41 +1894,68 @@ mod tests {
         ]
         .concat();
         let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
-        let Node::Table(table) = &sections(&doc)[1].body[0] else { panic!() };
+        let metrics = group(section(&doc, "progress"), "progress-metrics");
+        let Node::Table(table) = &metrics.body[0] else { panic!() };
         let phases = table.rows.iter().find(|r| r[0] == "Tempo por fase").map(|r| r[1].as_str());
         assert_eq!(phases, Some("levantamento 1 h 00 min, plano 30 min"));
     }
 
-    /// Cortar a conversa tira os registros mais antigos, diz quantos ficaram
-    /// só no `.md` e acerta a contagem do resumo; o resto da página fica igual.
+    /// A conversa sai num grupo por dia, do mais antigo ao mais novo, em
+    /// ordem de número dentro de cada dia.
+    #[test]
+    fn the_conversation_is_grouped_by_day() {
+        let said = |id: u64, day: &str| {
+            format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-{day}T10:00:00-03:00\",\"type\":\"message\",\"author\":\"user\",\"text\":\"mensagem {id}\"}}\n")
+        };
+        let content = [said(1, "11"), said(2, "11"), said(3, "12")].concat();
+        let doc = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
+        let days: Vec<(String, String, usize)> = groups(section(&doc, "conversation"))
+            .iter()
+            .map(|g| (g.anchor.clone(), g.title.clone(), Node::items(&g.body).len()))
+            .collect();
+        assert_eq!(
+            days,
+            [
+                ("conversation-2026-09-11".to_string(), "Dia 11/09".to_string(), 2),
+                ("conversation-2026-09-12".to_string(), "Dia 12/09".to_string(), 1),
+            ]
+        );
+    }
+
+    /// Cortar a conversa tira os registros mais antigos, e o dia que fica sem
+    /// registro sai junto; ela diz quantos ficaram só no `.md`, e o resto da
+    /// página fica igual.
     #[test]
     fn cutting_the_conversation_drops_the_oldest_entries_and_says_how_many() {
-        let content = (1..=5)
-            .map(|id| line(id, "message", &format!(",\"author\":\"user\",\"text\":\"mensagem {id}\"")))
-            .collect::<String>();
+        let said = |id: u64, day: &str| {
+            format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-{day}T10:0{id}:00-03:00\",\"type\":\"message\",\"author\":\"user\",\"text\":\"mensagem {id}\"}}\n")
+        };
+        let content = [said(1, "11"), said(2, "11"), said(3, "12"), said(4, "12"), said(5, "12")].concat();
         let full = spec_document("s", &parse_log(&content), &WavePrompts::new(), Locale::PtBr);
         assert_eq!(conversation_len(&full), 5);
         let mut doc = full.clone();
         assert_eq!(cut_oldest_conversation(&mut doc, 2, Locale::PtBr), 2);
         assert_eq!(conversation_len(&doc), 3);
-        let talk = sections(&doc)[9];
-        assert_eq!(talk.collapsed.as_deref(), Some("3 registros"));
+        let talk = section(&doc, "conversation");
         let Node::Paragraph(said) = &talk.body[0] else { panic!("{talk:?}") };
         assert!(said.starts_with("Os 2 registros mais antigos da conversa ficaram só no `spec.md`"), "{said}");
+        let days: Vec<&str> = groups(talk).iter().map(|g| g.anchor.as_str()).collect();
+        assert_eq!(days, ["conversation-2026-09-12"], "the emptied day leaves too");
         let texts: Vec<&str> = items(talk).iter().map(|i| i.text.as_str()).collect();
         assert_eq!(texts, ["mensagem 3", "mensagem 4", "mensagem 5"]);
-        assert_eq!(doc.body[..9], full.body[..9], "only the conversation changes");
+        let last = doc.body.len() - 1;
+        assert_eq!(doc.body[..last], full.body[..last], "only the conversation changes");
         let mut none = full.clone();
         assert_eq!(cut_oldest_conversation(&mut none, 0, Locale::PtBr), 0);
         assert_eq!(none, full);
     }
 
-    /// Todo rótulo que a página usa existe nos dois idiomas: blocos, tipos,
-    /// campos, valores, fases e autores.
+    /// Todo rótulo que a página usa existe nos dois idiomas: seções, grupos,
+    /// tipos, campos, valores, fases, autores e a moldura.
     #[test]
     fn every_label_the_page_uses_exists_in_both_languages() {
         let mut keys: Vec<String> = Vec::new();
-        for block in Block::ALL {
+        for block in Block::ALL.iter().filter(|b| !matches!(b, Block::State | Block::Metrics)) {
             keys.push(format!("page.block.{}", block.name()));
         }
         for spec in TYPES {
@@ -1452,9 +1978,21 @@ mod tests {
         for author in crate::domain::spec_events::AUTHORS {
             keys.push(format!("page.author.{author}"));
         }
+        for (_, subject) in SUBJECTS {
+            keys.push(format!("page.findings.{subject}"));
+        }
+        for state in [WaveState::Todo, WaveState::Running, WaveState::Delivered, WaveState::Approved, WaveState::Rejected] {
+            keys.push(state.key().to_string());
+            keys.push(format!("{}.many", state.key()));
+        }
         for key in [
             "page.group.criterion_run",
+            "page.group.criterion",
             "page.group.skill",
+            "page.group.metrics",
+            "page.group.state",
+            "page.group.commits",
+            "page.group.day",
             "page.field.label",
             "page.field.origin",
             "page.field.last_run",
@@ -1466,10 +2004,6 @@ mod tests {
             "page.value.not_tests_rule",
             "page.value.repeated",
             "page.value.not_repeated",
-            "page.value.wave_todo",
-            "page.value.wave_running",
-            "page.value.wave_done",
-            "page.value.wave_reviewed",
             "page.kind.spec",
             "page.meta.spec",
             "page.meta.phase",
@@ -1477,10 +2011,10 @@ mod tests {
             "page.meta.base",
             "page.empty",
             "page.replaced",
+            "page.old_version",
             "page.after_approval",
             "page.wave.heading",
             "page.findings.heading",
-            "page.conversation.summary",
             "page.metrics.col.measure",
             "page.metrics.col.value",
             "page.metrics.calls",
@@ -1508,6 +2042,7 @@ mod tests {
             "page.metrics.col.last",
             "page.field.wave_commit",
             "page.field.wave_receives",
+            "page.field.url",
             "page.wave.prompt",
             "page.wave.prompt.summary",
             "page.wave.sent",
@@ -1515,14 +2050,22 @@ mod tests {
             "page.purge_pending",
             "page.withheld_found",
             "page.too_big",
+            "page.sections",
+            "page.search.placeholder",
+            "page.search.label",
+            "page.open_all",
+            "page.close_all",
+            "page.not_found",
+            "page.of",
+            "page.count.one",
+            "page.count.many",
+            "page.request",
             "project.kind",
             "project.specs",
             "project.stages",
             "project.no_phase",
-            "project.col.spec",
             "project.col.state",
             "project.col.branch",
-            "project.col.goal",
             "project.col.created",
             "project.col.updated",
             "project.stalled",

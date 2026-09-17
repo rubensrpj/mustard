@@ -113,7 +113,7 @@ mod tests {
             })
         );
         let page = std::fs::read_to_string(root.join(".claude/spec/project.html")).unwrap();
-        assert!(page.contains("<code>outra</code>") && page.contains("<code>teste</code>"), "{page}");
+        assert!(page.contains("<code class=\"c\">outra</code>") && page.contains("<code class=\"c\">teste</code>"), "{page}");
         let again = index_at(&IndexOpts { root: root.to_path_buf() });
         assert_eq!(again["search_updated"], json!(0), "{again}");
     }

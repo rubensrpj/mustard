@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(done["index"], json!("kept"), "{done}");
         assert_eq!(done["page"], json!(".claude/spec/project.html"), "{done}");
         let page = std::fs::read_to_string(root.join(".claude/spec/project.html")).unwrap();
-        assert!(page.contains("<td><code>x</code></td><td>descartada</td>"), "{page}");
+        assert!(page.contains("<code class=\"c\">x</code><span class=\"t\"></span><span class=\"tail\"><span class=\"tag\">descartada</span>"), "{page}");
 
         // O índice refeito do zero não a perde.
         std::fs::remove_file(root.join(".claude/spec/index.ndjson")).unwrap();

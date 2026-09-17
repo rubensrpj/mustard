@@ -22,7 +22,8 @@
 //! **O que trava.** Uma spec que ainda não foi aprovada; um relatório sem
 //! nenhuma das duas linhas, ou com uma linha sem campo obrigatório; um
 //! `entregou` acima do teto de caracteres; um arquivo entregue que está
-//! reservado para outra onda em andamento; uma mensagem de commit fora do
+//! reservado para outra onda em andamento, ou que não está no disco nem no
+//! git; uma mensagem de commit fora do
 //! modelo (título e corpo acima do teto, link do claude.ai, o nome do modelo,
 //! assinatura de coautoria ou e-mail de alguém); o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
@@ -51,7 +52,7 @@ use std::process::{Command, Stdio};
 use mustard_core::platform::git as git_exec;
 
 use mustard_core::domain::spec_events::{
-    check_message, Block, BlockQuery, MessageRefusal, Refusal, SpecEvent, SpecLog,
+    check_message, normalize, validate, Block, BlockQuery, MessageRefusal, Refusal, SpecEvent, SpecLog,
     DELIVERED_MAX_CHARS, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
 };
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
@@ -99,6 +100,8 @@ pub(crate) enum RoundRefusal {
     LineField { line: &'static str, field: &'static str },
     /// Um arquivo entregue está reservado para outra onda em andamento.
     FileReserved { file: String, wave: u64, other: u64 },
+    /// Um arquivo entregue não está no disco nem é conhecido do git.
+    FileUnknown { file: String, wave: u64 },
     /// A spec ainda não foi aprovada.
     NotApproved { phase: String },
     /// O que uma onda entregou passa do teto de caracteres.
@@ -122,6 +125,7 @@ impl RoundRefusal {
             Self::LineMissing => "round-line-missing".into(),
             Self::LineField { .. } => "round-line-field-missing".into(),
             Self::FileReserved { .. } => "round-file-reserved".into(),
+            Self::FileUnknown { .. } => "round-file-unknown".into(),
             Self::NotApproved { .. } => "round-not-approved".into(),
             Self::DeliveredTooLong { .. } => "delivered-too-long".into(),
             Self::CommitTooLong { .. } => "commit-too-long".into(),
@@ -146,6 +150,9 @@ impl RoundRefusal {
                 "round.file_reserved",
                 &[("{file}", file.clone()), ("{wave}", wave.to_string()), ("{other}", other.to_string())],
             ),
+            Self::FileUnknown { file, wave } => {
+                fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())])
+            }
             Self::NotApproved { phase } => fill("round.not_approved", &[("{phase}", phase.clone())]),
             Self::DeliveredTooLong { wave, chars } => fill(
                 "round.delivered_too_long",
@@ -297,7 +304,10 @@ fn run_round(
     let running = waves_in_progress(&log);
     let stuck = waves_stuck(&log);
     let next = next_waves(&log, max_parallel(root), &running, &stuck);
-    let built = prompts(root, &spec, &log, lang);
+    // O pedido de cada onda lista as outras em andamento, contando as que
+    // saem junto com ela nesta rodada.
+    let flight: BTreeSet<u64> = running.keys().chain(&next).copied().collect();
+    let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     let mut in_flight: BTreeMap<u64, String> = running
         .iter()
@@ -481,6 +491,7 @@ pub(crate) fn take_report(
         }
     }
     reserved_elsewhere(log, &report.waves)?;
+    unknown_file(root, &report.waves)?;
     // A mensagem do commit é montada e conferida junto das outras travas,
     // antes de qualquer gravação: recusá-la depois de gravar o entregou e o
     // veredito faria a chamada seguinte, com a mensagem corrigida, duplicar os
@@ -655,8 +666,11 @@ type RecordedReport = (Vec<Value>, Vec<(String, String)>);
 /// Grava o que voltou: primeiro os vereditos, que julgam entregas já
 /// gravadas; depois o entregou de cada onda, também em cada onda que o
 /// conserto fecha, e a versão nova de cada critério com prova nova. É a mesma
-/// porta de gravação das outras. Devolve o que foi gravado e, de cada prova
-/// nova, o código do critério e o comando.
+/// porta de gravação das outras. Cada veredito e cada entregou passa pela
+/// conferência que a gravação faz primeiro antes de o primeiro ser gravado: a
+/// linha sem campo obrigatório nunca deixa gravada a que veio antes dela.
+/// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
+/// comando.
 pub(crate) fn record_reports(
     start: &Path,
     spec: &str,
@@ -668,15 +682,30 @@ pub(crate) fn record_reports(
     // Os critérios citados existem, antes de qualquer gravação.
     let mut verdicts = Vec::new();
     for verdict in &report.verdicts {
-        let mut fields = verdict.fields.clone();
-        if let Some(Value::Array(criteria)) = fields.get_mut("criteria") {
+        let mut draft = verdict.fields.clone();
+        if let Some(Value::Array(criteria)) = draft.get_mut("criteria") {
             for item in criteria.iter_mut() {
                 if let Some(reference) = item.get("criterion").cloned() {
                     item["criterion"] = json!(criterion_id(&log, &reference)?);
                 }
             }
         }
-        verdicts.push((verdict.wave, fields));
+        draft.insert("wave".into(), json!(verdict.wave));
+        draft.insert("author".into(), json!("review"));
+        validate(&normalize(draft.clone(), "verdict"))?;
+        verdicts.push((verdict.wave, draft));
+    }
+    let mut deliveries = Vec::new();
+    for report in &report.waves {
+        for wave in std::iter::once(report.wave).chain(report.fixes.iter().copied()) {
+            let mut draft = Map::new();
+            draft.insert("wave".into(), json!(wave));
+            draft.insert("text".into(), json!(report.delivered));
+            draft.insert("files".into(), json!(report.files));
+            draft.insert("author".into(), json!("wave"));
+            validate(&normalize(draft.clone(), "delivered"))?;
+            deliveries.push((wave, draft));
+        }
     }
     let mut proofs = Vec::new();
     for wave in &report.waves {
@@ -686,22 +715,13 @@ pub(crate) fn record_reports(
     }
 
     let mut recorded = Vec::new();
-    for (wave, mut draft) in verdicts {
-        draft.insert("wave".into(), json!(wave));
-        draft.insert("author".into(), json!("review"));
+    for (wave, draft) in verdicts {
         let written = record(start, spec, "verdict", draft, PhaseWriter::Binary)?;
         recorded.push(json!({ "wave": wave, "type": "verdict", "id": written.written.id }));
     }
-    for report in &report.waves {
-        for wave in std::iter::once(report.wave).chain(report.fixes.iter().copied()) {
-            let mut draft = Map::new();
-            draft.insert("wave".into(), json!(wave));
-            draft.insert("text".into(), json!(report.delivered));
-            draft.insert("files".into(), json!(report.files));
-            draft.insert("author".into(), json!("wave"));
-            let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
-            recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id }));
-        }
+    for (wave, draft) in deliveries {
+        let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
+        recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id }));
     }
     let mut ran = Vec::new();
     for (id, proof) in proofs {
@@ -748,7 +768,7 @@ fn change_question(code: &str, lang: Locale) -> String {
 fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
     let langs = [Locale::PtBr, Locale::EnUs];
     let questions: Vec<String> = langs.iter().map(|lang| change_question(code, *lang)).collect();
-    let sent = last_sends(log).get(&wave).copied().unwrap_or(0);
+    let sent = log.last_by_wave("send").get(&wave).copied().unwrap_or(0);
     let last_click = log
         .block(BlockQuery::Block(Block::Conversation))
         .into_iter()
@@ -988,6 +1008,22 @@ fn make_commit(
     Ok(json!({ "sha": sha, "title": title }))
 }
 
+/// Cada arquivo entregue está no disco ou no índice, contando o que saiu do
+/// índice desde o último commit; senão, a recusa vem antes de gravar, e não
+/// do commit, depois (a remoção aceita calada o caminho que não existe).
+fn unknown_file(root: &Path, waves: &[WaveReport]) -> Result<(), RoundRefusal> {
+    for wave in waves {
+        for file in &wave.files {
+            let known = root.join(file).exists()
+                || git(root, &["ls-files", "--error-unmatch", "--with-tree=HEAD", "--", file]).is_ok();
+            if !known {
+                return Err(RoundRefusal::FileUnknown { file: file.clone(), wave: wave.wave });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// O nome do repositório: o da pasta do projeto.
 fn repo_name(root: &Path) -> String {
     root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "?".into())
@@ -1108,16 +1144,16 @@ fn task_files(log: &SpecLog) -> BTreeMap<u64, BTreeSet<String>> {
 /// pedido que veio depois de uma entrega, sem reprovação entre as duas, não é
 /// trabalho em curso, nem o pedido de uma onda que saiu do plano.
 pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let planned = planned_waves(log);
+    let planned = log.planned_waves();
     let replanned = waves_replanned(log);
-    let verdicts = verdicts_by_wave(log);
+    let verdicts = log.verdicts_by_wave();
     let mut deliveries: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
         if let Some(n) = delivered.wave() {
             deliveries.entry(n).or_default().push(delivered.id);
         }
     }
-    last_sends(log)
+    log.last_by_wave("send")
         .into_iter()
         .filter(|(n, _)| planned.contains(n) && !replanned.contains(n))
         .filter(|(n, sent)| {
@@ -1134,38 +1170,6 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
         .collect()
 }
 
-/// As ondas do plano: as que a leitura mostra. O que foi gravado em nome de
-/// uma onda que saiu do plano — o veredito, que o binário não deixa tirar, e
-/// o pedido e a entrega — não conta na rodada nem no fechamento.
-pub(crate) fn planned_waves(log: &SpecLog) -> BTreeSet<u64> {
-    log.block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(SpecEvent::wave)
-        .collect()
-}
-
-/// Os vereditos de cada onda do plano, do mais velho ao mais novo.
-fn verdicts_by_wave(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
-    let planned = planned_waves(log);
-    let mut out: BTreeMap<u64, Vec<&SpecEvent>> = BTreeMap::new();
-    for verdict in log.block(BlockQuery::Block(Block::Review)).into_iter().filter(|e| e.event_type == "verdict") {
-        if let Some(n) = verdict.wave().filter(|n| planned.contains(n)) {
-            out.entry(n).or_default().push(verdict);
-        }
-    }
-    out
-}
-
-/// As ondas do plano cuja última revisão reprovou, cada uma com o número
-/// dessa reprovação. A rodada e o fechamento leem daqui.
-pub(crate) fn last_rejected(log: &SpecLog) -> BTreeMap<u64, u64> {
-    verdicts_by_wave(log)
-        .into_iter()
-        .filter_map(|(n, verdicts)| verdicts.last().filter(|v| v.str_field("result") == Some("rejected")).map(|v| (n, v.id)))
-        .collect()
-}
-
 /// As ondas paradas pelo limite de consertos, cada uma com as reprovações
 /// seguidas que a pararam: depois da primeira reprovação vêm no máximo
 /// [`MAX_FIX_ROUNDS`] rodadas de conserto, e a reprovação seguinte para. A
@@ -1174,7 +1178,7 @@ pub(crate) fn last_rejected(log: &SpecLog) -> BTreeMap<u64, u64> {
 fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
     let planned = last_planned(log);
     let mut out = BTreeMap::new();
-    for (n, verdicts) in verdicts_by_wave(log) {
+    for (n, verdicts) in log.verdicts_by_wave() {
         let since = planned.get(&n).copied().unwrap_or(0);
         let mut rejected: Vec<&SpecEvent> = verdicts
             .iter()
@@ -1196,7 +1200,7 @@ fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
 /// código que entrou.
 fn waves_done(log: &SpecLog, running: &BTreeMap<u64, u64>) -> BTreeSet<u64> {
     let awaiting: BTreeSet<u64> = waves_awaiting_review(log).into_iter().collect();
-    let rejected = last_rejected(log);
+    let rejected = log.last_rejected();
     log.delivered_waves()
         .into_iter()
         .filter(|n| !running.contains_key(n) && !awaiting.contains(n) && !rejected.contains_key(n))
@@ -1207,7 +1211,7 @@ fn waves_done(log: &SpecLog, running: &BTreeMap<u64, u64>) -> BTreeSet<u64> {
 /// em andamento em `running`. `None` quando todas estão.
 fn first_unfinished(log: &SpecLog, running: &BTreeMap<u64, u64>) -> Option<u64> {
     let done = waves_done(log, running);
-    planned_waves(log).into_iter().find(|n| !done.contains(n))
+    log.planned_waves().into_iter().find(|n| !done.contains(n))
 }
 
 /// A onda `n` depende de todas as outras que ainda não terminaram: as
@@ -1235,37 +1239,14 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
 /// dela são anteriores a essa reprovação. Depois que o conserto sai, a onda espera a revisão dele, e não
 /// é despachada de novo pela mesma reprovação.
 fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
-    let last_send = last_sends(log);
-    let delivered = last_deliveries(log);
-    last_rejected(log)
+    let last_send = log.last_by_wave("send");
+    let delivered = log.last_by_wave("delivered");
+    log.last_rejected()
         .into_iter()
         .filter(|(n, id)| last_send.get(n).is_none_or(|sent| sent < id))
         .filter(|(n, id)| delivered.get(n).is_none_or(|fix| fix < id))
         .map(|(n, _)| n)
         .collect()
-}
-
-/// O número da última entrega de cada onda. A entrega que chega depois de uma
-/// reprovação é o conserto, mesmo quando veio pela linha de outra onda.
-fn last_deliveries(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let mut last: BTreeMap<u64, u64> = BTreeMap::new();
-    for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
-        if let Some(n) = delivered.wave() {
-            last.insert(n, delivered.id);
-        }
-    }
-    last
-}
-
-/// O número do último pedido de cada onda.
-fn last_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let mut last_send: BTreeMap<u64, u64> = BTreeMap::new();
-    for send in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "send") {
-        if let Some(n) = send.wave() {
-            last_send.insert(n, send.id);
-        }
-    }
-    last_send
 }
 
 /// O número do evento mais novo do plano de cada onda: a versão mais nova da
@@ -1290,7 +1271,7 @@ fn last_planned(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// As ondas replanejadas depois do último pedido: a onda, ou uma tarefa dela,
 /// ganhou versão nova depois do envio.
 fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
-    let last_send = last_sends(log);
+    let last_send = log.last_by_wave("send");
     last_planned(log)
         .into_iter()
         .filter(|(n, planned)| last_send.get(n).is_some_and(|sent| sent < planned))
@@ -1349,11 +1330,11 @@ fn reviews_due(log: &SpecLog, built: &[mustard_core::io::wave_prompt::WavePrompt
 /// dela é cobrar de novo um trabalho já feito, provado pelo código que entrou.
 /// A onda que saiu do plano não é revisada.
 fn waves_awaiting_review(log: &SpecLog) -> Vec<u64> {
-    let planned = planned_waves(log);
+    let planned = log.planned_waves();
     let last_verdict: BTreeMap<u64, u64> =
-        verdicts_by_wave(log).into_iter().filter_map(|(n, verdicts)| verdicts.last().map(|v| (n, v.id))).collect();
-    let last_send = last_sends(log);
-    last_deliveries(log)
+        log.verdicts_by_wave().into_iter().filter_map(|(n, verdicts)| verdicts.last().map(|v| (n, v.id))).collect();
+    let last_send = log.last_by_wave("send");
+    log.last_by_wave("delivered")
         .into_iter()
         .filter(|(n, _)| planned.contains(n))
         .filter(|(n, id)| last_verdict.get(n).is_none_or(|judged| judged < id))
@@ -1368,6 +1349,32 @@ fn sent_items(log: &SpecLog, wave: u64) -> Vec<u64> {
         .into_iter()
         .map(|e| e.id)
         .collect()
+}
+
+/// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
+/// rodada despacha: em andamento, entregue à espera da revisão, reprovada na
+/// última revisão ou entregue e aprovada. A onda que não está aqui está por
+/// fazer. A página da spec mostra este estado.
+pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveStates {
+    use mustard_core::view::document::WaveState;
+    let running = waves_in_progress(log);
+    let awaiting: BTreeSet<u64> = waves_awaiting_review(log).into_iter().collect();
+    let rejected = log.last_rejected();
+    let done = waves_done(log, &running);
+    let mut states = mustard_core::view::document::WaveStates::new();
+    for n in running.keys().chain(&awaiting).chain(rejected.keys()).chain(&done) {
+        let state = if running.contains_key(n) {
+            WaveState::Running
+        } else if awaiting.contains(n) {
+            WaveState::Delivered
+        } else if rejected.contains_key(n) {
+            WaveState::Rejected
+        } else {
+            WaveState::Approved
+        };
+        states.insert(*n, state);
+    }
+    states
 }
 
 
@@ -1629,6 +1636,41 @@ mod tests {
             .filter_map(|review| review["wave"].as_u64())
             .collect();
         assert_eq!(waves, vec![1], "o conserto entregue volta para a revisão: {back}");
+    }
+
+    /// O estado de cada onda que a página mostra acompanha a rodada: em
+    /// andamento depois do pedido, entregue à espera da revisão, reprovada
+    /// pela última revisão, em andamento de novo com o conserto e aprovada no
+    /// fim; a onda que ainda não saiu não aparece, e a página a mostra por
+    /// fazer.
+    #[test]
+    fn the_wave_states_follow_the_round() {
+        use mustard_core::view::document::WaveState::{Approved, Delivered, Rejected, Running};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        let states = || {
+            let log = mustard_core::io::spec_events::read(&root.join(".claude/spec/x/spec.ndjson")).unwrap().unwrap();
+            wave_states(&log).into_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(states(), [], "nothing went out yet");
+        round(root, "x", None);
+        assert_eq!(states(), [(1, Running)]);
+        round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(states(), [(1, Delivered)], "the delivery waits for its review, and the last wave waits for it");
+        // A reprovação gravada antes de a rodada seguinte despachar o conserto.
+        let events = root.join(".claude/spec/x/spec.ndjson");
+        let log = mustard_core::io::spec_events::read(&events).unwrap().unwrap();
+        let crit = log.events.iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+        let rejected = json!({"author": "review", "wave": 1, "result": "rejected", "text": "faltou o teste",
+            "criteria": [{"criterion": crit, "tests_rule": true}]});
+        mustard_core::io::spec_events::write(&events, "verdict", rejected.as_object().cloned().unwrap(), &[]).unwrap();
+        assert_eq!(states(), [(1, Rejected)]);
+        round(root, "x", None);
+        assert_eq!(states(), [(1, Running)], "the fix went out");
+        round(root, "x", Some(&delivered(root, 1, "O teste entrou.", &["src/a.rs"])));
+        round(root, "x", Some(&verdict(1, "approved", "pronto")));
+        assert_eq!(states(), [(1, Approved), (2, Running)]);
     }
 
     /// A onda que ganha versão nova depois do pedido volta para a fila, uma
@@ -1971,6 +2013,45 @@ mod tests {
         assert_eq!(lines_after, lines_before, "nothing was recorded");
     }
 
+    /// Tudo é conferido antes da primeira gravação. O caminho que não está no
+    /// disco nem no git é recusado sozinho e junto de um caminho certo, e a
+    /// chamada seguinte, com a linha corrigida, grava a entrega uma vez só. O
+    /// veredito sem resultado depois de um válido também é recusado sem
+    /// deixar o primeiro gravado.
+    #[test]
+    fn a_wrong_path_or_a_line_missing_a_field_is_refused_before_anything_is_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
+        let before = spec_lines();
+
+        for files in [&["src/nao_existe.rs"][..], &["src/a.rs", "src/nao_existe.rs"][..]] {
+            let wrong = delivered(root, 1, "Saiu.", files);
+            let refused = round(root, "x", Some(&wrong));
+            assert_eq!(refused["reason"], json!("round-file-unknown"), "{files:?}: {refused}");
+            let expected = translate("round.file_unknown", Locale::PtBr)
+                .replace("{file}", "src/nao_existe.rs")
+                .replace("{wave}", "1");
+            assert_eq!(refused["hint"], json!(expected), "{refused}");
+            assert_eq!(spec_lines(), before, "{files:?}: nothing was recorded");
+        }
+
+        let valid = verdict(1, "approved", "passou");
+        let no_result = line("VERDICT", json!({"wave": 1, "text": "sem resultado",
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}));
+        let refused = round(root, "x", Some(&format!("{valid}\n{no_result}")));
+        assert_eq!(refused["reason"], json!("missing-field"), "{refused}");
+        assert_eq!(spec_lines(), before, "the valid verdict was not recorded either");
+
+        let went = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(delivered_count(root), 1, "the corrected line records the delivery once");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(log.visible().iter().all(|e| e.event_type != "verdict"), "no verdict was left behind");
+    }
+
     /// A lista de arquivos entregue é conferida contra os arquivos
     /// reservados: o arquivo de outra onda ainda em andamento é recusado, e o
     /// de uma onda que já não está em andamento passa.
@@ -2032,6 +2113,48 @@ mod tests {
         assert_eq!(fixed_delivery.str_field("text"), Some("Consertei a onda 1."));
         let commit = visible.iter().rfind(|e| e.event_type == "commit").unwrap();
         assert_eq!(commit.ints("waves"), vec![2, 1]);
+    }
+
+    /// O pedido da onda nova traz os comandos do projeto e a outra onda que
+    /// sai junto, com o arquivo dela. O do conserto traz também o veredito,
+    /// a entrega anterior e a decisão gravada depois do envio; a revisão do
+    /// conserto, as mesmas linhas, a entrega dele e a cópia no commit dele.
+    #[test]
+    fn the_round_assembles_the_new_request_the_fix_request_and_its_review() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make","testCommand":"make test"}"#).unwrap();
+        let text = |out: &Value, field: &str, wave: u64| -> String {
+            let found = out[field].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
+            found.and_then(|d| d["prompt"].as_str()).unwrap_or_default().to_string()
+        };
+        let first = text(&round(root, "x", None), "dispatch", 1);
+        for line in ["- Compile com `make`.", "- Teste com `make test`.", "  - Onda 2: `src/b.rs`"] {
+            assert!(first.contains(line), "{line}: {first}");
+        }
+        assert!(!first.contains("## Conserto"), "{first}");
+
+        round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        write(root, "x", "decision", json!({"author": "user", "text": "A soma aceita negativos.", "keys": ["soma"],
+            "why": "o usuário pediu", "waves": [1]}));
+        let fix = text(&round(root, "x", Some(&verdict(1, "rejected", "faltou o teste"))), "dispatch", 1);
+        let heading = format!("## Conserto\n\n{}", translate("prompt.fix.wave", Locale::PtBr));
+        assert!(fix.contains(&heading), "{fix}");
+        for code in ["--term MSTD-VERD-0001`", "--term MSTD-DELIV-0001`", "--term MSTD-DEC-0001`"] {
+            assert!(fix.split("\n## ").nth(1).unwrap_or_default().contains(code), "{code}: {fix}");
+        }
+
+        let back = round(root, "x", Some(&delivered(root, 1, "Teste acrescentado.", &["src/a.rs"])));
+        let review = text(&back, "reviews", 1);
+        let sha = back["commit"]["sha"].as_str().unwrap_or_default();
+        assert!(review.contains(&format!("## Conserto\n\n{}", translate("prompt.fix.review", Locale::PtBr))), "{review}");
+        let fix_part = review.split("\n## ").nth(1).unwrap_or_default();
+        for line in ["--term MSTD-VERD-0001`", "--term MSTD-DELIV-0001`", "--term MSTD-DEC-0001`"] {
+            assert!(fix_part.contains(line), "{line}: {review}");
+        }
+        assert!(review.contains("## O que esta onda entregou\n\n- MSTD-DELIV-0002 (entregou) — `mustard-rt run read waves --spec x --term MSTD-DELIV-0002`\n\n"), "{review}");
+        assert!(!sha.is_empty() && review.contains(&format!("<pasta da cópia> {sha}`")), "{sha}: {review}");
     }
 
     /// A prova nova de um critério cujo teste mudou de nome vira a versão nova

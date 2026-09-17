@@ -193,12 +193,14 @@ mod tests {
 
         assert!(html.contains("<html lang=\"pt-BR\">"), "{html}");
         assert!(html.contains("<title>Plano da onda</title>"));
-        assert!(html.contains("<header class=\"doc\"><p class=\"kind\">Mustard · plano</p><h1>Plano da onda</h1>"));
+        assert!(html.contains("<p class=\"brand\"><b>Mustard</b> · plano</p>"), "{html}");
+        assert!(html.contains("<header class=\"top\"><p class=\"eyebrow\">plano</p><h1>Plano da onda</h1>"), "{html}");
         assert!(html.contains("<li>onda 4</li>"));
-        assert!(html.contains("<p>Abertura.</p><section><h2>Passos</h2>"), "{html}");
+        assert!(html.contains("<p>Abertura.</p><section id=\"section-1\" class=\"block\" data-crumb=\"Passos\"><h2><span>Passos</span>"), "{html}");
         assert!(html.contains("<li>ler <code>a.rs</code></li><li><strong>testar</strong></li>"), "{html}");
         assert!(html.contains("<div class=\"table\"><table>"), "{html}");
-        assert!(html.contains("&lt;script&gt;x&lt;/script&gt;") && !html.contains("<script>"), "{html}");
+        // O único script da página é o do motor; o do markdown sai escapado.
+        assert!(html.contains("&lt;script&gt;x&lt;/script&gt;") && html.matches("<script>").count() == 1, "{html}");
         assert_eq!(html.matches("<h1>").count(), 1, "the leading title leaves the body");
         crate::report::assert_only_the_fonts_are_external(&html);
     }

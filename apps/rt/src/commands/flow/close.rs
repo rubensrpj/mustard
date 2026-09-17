@@ -237,8 +237,7 @@ fn run_close(
 /// basta os testes passarem. As ondas e os vereditos são lidos como a rodada
 /// os lê: a onda que saiu do plano não é cobrada.
 fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
-    use crate::commands::flow::round::{last_rejected, planned_waves};
-    if let Some(wave) = last_rejected(log).into_keys().next() {
+    if let Some(wave) = log.last_rejected().into_keys().next() {
         return Err(CloseRefusal::WaveRejected { wave });
     }
 
@@ -248,7 +247,7 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
         .filter(|e| e.event_type == "commit")
         .flat_map(|e| e.ints("waves"))
         .collect();
-    for wave in planned_waves(log) {
+    for wave in log.planned_waves() {
         if !committed.contains(&wave) {
             return Err(CloseRefusal::WaveWithoutCommit { wave });
         }

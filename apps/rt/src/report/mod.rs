@@ -1,12 +1,14 @@
 //! O motor de página do Mustard: o único lugar que escreve uma página HTML.
 //!
 //! A página de uma spec, a do projeto, uma página avulsa escrita em markdown
-//! e os relatórios da face `run` saem daqui, no layout padrão do Mustard (v4,
-//! mostarda e carvão), com as fontes Geist e Geist Mono buscadas do Google
-//! Fonts. Nenhuma fonte vai gravada dentro da página; quem abre o arquivo sem
-//! internet vê a fonte do sistema.
+//! e os relatórios da face `run` saem daqui, no layout aprovado em 17/09
+//! (mostarda e carvão): menu lateral com as seções e os grupos, barra com a
+//! busca, grupos recolhidos e cada item numa linha. As fontes Geist e Geist
+//! Mono são buscadas do Google Fonts; nenhuma fonte vai gravada dentro da
+//! página, e quem abre o arquivo sem internet vê a fonte do sistema.
 //!
-//! - [`Report`] monta a moldura da página: o `<head>`, o estilo, o cabeçalho.
+//! - [`Report`] monta a moldura da página: o `<head>`, o estilo, o menu, a
+//!   barra, o cabeçalho e o script.
 //! - [`markdown`] é o único conversor de markdown do Mustard.
 //! - [`Render`] escreve a árvore de `view::document` como `.md` ou `.html`.
 //!
@@ -14,21 +16,33 @@
 //! encerram o processo.
 
 use std::fmt::Write as _;
+use std::str::FromStr;
+
+use mustard_core::platform::i18n::{translate, Locale};
 
 pub mod markdown;
 mod render;
 
 pub use render::Render;
 
-/// Folha de estilo do layout padrão do Mustard (v4, mostarda e carvão), a
-/// mesma para toda página. Mora em `layout.css` para ser lida e revisada como
-/// CSS, não como literal Rust.
+/// Folha de estilo do layout do Mustard, a mesma para toda página. Mora em
+/// `layout.css` para ser lida e revisada como CSS, não como literal Rust.
 const STYLE: &str = include_str!("layout.css");
+
+/// O script da página, o mesmo para toda página: o menu que acompanha a
+/// rolagem, a busca e os botões de abrir e fechar. Mora em `layout.js`, ao
+/// lado do estilo.
+const SCRIPT: &str = include_str!("layout.js");
 
 /// As fontes do layout, buscadas do Google Fonts. Sem internet, vale a pilha
 /// do sistema declarada no estilo.
 pub(crate) const FONTS: &str = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?\
 family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap\">";
+
+/// A lupa da busca.
+const SEARCH_ICON: &str = "<svg width=\"15\" height=\"15\" viewBox=\"0 0 16 16\" fill=\"none\" aria-hidden=\"true\">\
+<circle cx=\"7\" cy=\"7\" r=\"4.8\" stroke=\"currentColor\" stroke-width=\"1.6\"/>\
+<path d=\"M10.6 10.6 14 14\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"/></svg>";
 
 /// Idioma do atributo `lang` quando o chamador não pede outro.
 const DEFAULT_LANG: &str = "en";
@@ -50,16 +64,35 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// Uma seção no menu lateral: o endereço, o título em texto, quantos itens
+/// ela tem e os grupos dela.
+pub(crate) struct NavSection {
+    pub id: String,
+    pub title: String,
+    pub count: usize,
+    pub groups: Vec<NavGroup>,
+}
+
+/// Um grupo no menu lateral, debaixo da seção dele.
+pub(crate) struct NavGroup {
+    pub id: String,
+    pub title: String,
+    pub count: usize,
+}
+
 /// A moldura de uma página: o chamador acrescenta as seções, e a página
-/// pronta traz o próprio estilo e o link das fontes.
+/// pronta traz o próprio estilo, o script e o link das fontes.
 pub struct Report {
     title: String,
     subtitle: String,
     lang: String,
-    /// O que vem depois de `Mustard · ` na faixa do cabeçalho, quando houver.
+    /// O que vem depois de `Mustard · ` no menu, e no alto do cabeçalho,
+    /// quando houver.
     kind: Option<String>,
     /// Itens extras da linha `.meta`, cada um já montado como `<li>…</li>`.
     meta: Vec<String>,
+    /// As seções do menu lateral, na ordem da página.
+    nav: Vec<NavSection>,
     body: String,
 }
 
@@ -73,19 +106,22 @@ impl Report {
             lang: DEFAULT_LANG.to_string(),
             kind: None,
             meta: Vec::new(),
+            nav: Vec::new(),
             body: String::new(),
         }
     }
 
     /// Troca o idioma do atributo `lang` do `<html>` (padrão `en`) — o resumo
-    /// da spec sai em `pt-BR`, os relatórios técnicos seguem em inglês.
+    /// da spec sai em `pt-BR`, os relatórios técnicos seguem em inglês. Os
+    /// textos da moldura seguem o mesmo idioma.
     #[must_use]
     pub fn with_lang(mut self, lang: impl Into<String>) -> Self {
         self.lang = lang.into();
         self
     }
 
-    /// Diz que documento é este na faixa do cabeçalho: `Mustard · {kind}`.
+    /// Diz que documento é este: `Mustard · {kind}` no menu e `{kind}` no
+    /// alto do cabeçalho.
     #[must_use]
     pub fn with_kind(mut self, kind: impl Into<String>) -> Self {
         self.kind = Some(kind.into());
@@ -107,31 +143,40 @@ impl Report {
         self
     }
 
-    /// Acrescenta HTML já montado pelo chamador, fora de uma seção — o destaque
-    /// de abertura, subtítulos `h3` dentro de uma seção longa, o rodapé.
+    /// Acrescenta HTML já montado pelo chamador, fora de uma seção — as
+    /// seções da árvore de um documento, o rodapé.
     pub fn raw(&mut self, html: &str) -> &mut Self {
         self.body.push_str(html);
         self
     }
 
-    /// Acrescenta uma seção: um `h2` (com o traço mostarda do layout) seguido
-    /// do HTML interno já montado pelo chamador.
-    pub fn section(&mut self, heading: &str, inner_html: &str) -> &mut Self {
-        self.body.push_str("<section><h2>");
-        self.body.push_str(&escape(heading));
-        self.body.push_str("</h2>");
-        self.body.push_str(inner_html);
-        self.body.push_str("</section>");
+    /// Acrescenta uma seção ao menu lateral; o HTML dela vem por [`raw`].
+    ///
+    /// [`raw`]: Self::raw
+    pub(crate) fn nav(&mut self, section: NavSection) -> &mut Self {
+        self.nav.push(section);
         self
+    }
+
+    /// Acrescenta uma seção: um `h2` seguido do HTML interno já montado pelo
+    /// chamador, com o endereço dela no menu lateral.
+    pub fn section(&mut self, heading: &str, inner_html: &str) -> &mut Self {
+        let id = format!("section-{}", self.nav.len() + 1);
+        let title = escape(heading);
+        let _ = write!(
+            self.body,
+            "<section id=\"{id}\" class=\"block\" data-crumb=\"{title}\"><h2><span>{title}</span></h2>{inner_html}</section>"
+        );
+        self.nav(NavSection { id, title: heading.to_string(), count: 0, groups: Vec::new() })
     }
 
     /// Render the finished standalone HTML document.
     #[must_use]
     pub fn render(&self) -> String {
-        let kind = self
-            .kind
-            .as_deref()
-            .map_or_else(|| "Mustard".to_string(), |k| format!("Mustard · {}", escape(k)));
+        let lang = Locale::from_str(&self.lang).unwrap_or(Locale::EnUs);
+        let t = |key: &str| escape(translate(key, lang));
+        let brand = self.kind.as_deref().map_or_else(String::new, |k| format!(" · {}", escape(k)));
+        let eyebrow = self.kind.as_deref().map_or_else(|| "Mustard".to_string(), escape);
         // Um subtítulo vazio não vira um `<li>` vazio: o resumo da spec monta a
         // linha só com os pares de `with_meta`.
         let mut meta = String::new();
@@ -141,19 +186,78 @@ impl Report {
         for item in &self.meta {
             meta.push_str(item);
         }
+        let mut nav = String::new();
+        for section in &self.nav {
+            let _ = write!(
+                nav,
+                "<li data-sec=\"{id}\"><button type=\"button\" data-go=\"{id}\" class=\"top\"><span>{title}</span><i>{count}</i></button><ol>",
+                id = escape(&section.id),
+                title = escape(&section.title),
+                count = shown_count(section.count),
+            );
+            for group in &section.groups {
+                let _ = write!(
+                    nav,
+                    "<li><button type=\"button\" data-go=\"{id}\" data-parent=\"{parent}\"><span>{title}</span><i>{count}</i></button></li>",
+                    id = escape(&group.id),
+                    parent = escape(&section.id),
+                    title = escape(&group.title),
+                    count = shown_count(group.count),
+                );
+            }
+            nav.push_str("</ol></li>");
+        }
         format!(
-            "<!doctype html>\n<html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
+            "<!doctype html>\n<html lang=\"{lang_attr}\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{fonts}\
-<title>{title}</title><style>{style}</style></head><body><main>\
-<header class=\"doc\"><p class=\"kind\">{kind}</p><h1>{title}</h1>\
-<ul class=\"meta\">{meta}</ul></header>{body}</main></body></html>\n",
-            lang = escape(&self.lang),
+<title>{title}</title><style>{style}</style></head><body>\n\
+<div class=\"shell\" data-of=\"{of}\" data-one=\"{one}\" data-many=\"{many}\">\n\
+<aside class=\"side\" id=\"side\" aria-label=\"{sections}\">\n\
+<p class=\"brand\"><b>Mustard</b>{brand}</p>\n\
+<nav><ol class=\"nav\">{nav}</ol></nav>\n\
+<div class=\"tools\"><button type=\"button\" id=\"openAll\">{open_all}</button>\
+<button type=\"button\" id=\"closeAll\">{close_all}</button></div>\n\
+</aside>\n\
+<div id=\"content\">\n\
+<div class=\"bar\">\n\
+<button type=\"button\" class=\"menu-btn\" id=\"menuBtn\" aria-controls=\"side\" aria-expanded=\"false\">{sections}</button>\n\
+<div class=\"crumb\" aria-live=\"polite\"></div>\n\
+<label class=\"search\" id=\"searchBox\">{icon}<input id=\"q\" type=\"search\" placeholder=\"{placeholder}\" \
+autocomplete=\"off\" spellcheck=\"false\" aria-label=\"{search_label}\"><span class=\"aside\">\
+<span class=\"hits\" id=\"hits\"></span><kbd>/</kbd></span></label>\n\
+</div>\n\
+<div class=\"page\">\n\
+<header class=\"top\"><p class=\"eyebrow\">{eyebrow}</p><h1>{title}</h1><ul class=\"meta\">{meta}</ul></header>\n\
+<p class=\"empty\" id=\"empty\" hidden>{not_found}</p>\n\
+{body}\n\
+</div>\n\
+</div>\n\
+</div>\n\
+<script>{script}</script>\n\
+</body></html>\n",
+            lang_attr = escape(&self.lang),
             fonts = FONTS,
             title = escape(&self.title),
             style = STYLE,
+            of = t("page.of"),
+            one = t("page.count.one"),
+            many = t("page.count.many"),
+            sections = t("page.sections"),
+            open_all = t("page.open_all"),
+            close_all = t("page.close_all"),
+            icon = SEARCH_ICON,
+            placeholder = t("page.search.placeholder"),
+            search_label = t("page.search.label"),
+            not_found = t("page.not_found"),
             body = self.body,
+            script = SCRIPT,
         )
     }
+}
+
+/// A contagem do menu: vazia quando não há item.
+fn shown_count(count: usize) -> String {
+    if count == 0 { String::new() } else { count.to_string() }
 }
 
 /// Build a `<table>` from a header row and string cells. Each row is rendered
@@ -286,36 +390,22 @@ mod tests {
             .map(|(style, _)| style)
             .expect("página sem <style>");
 
-        // Tokens mostarda e carvão, claro e escuro.
+        // Tokens mostarda e carvão, claro e escuro, e as cores de situação.
         for token in [
             "#FAFAF7", "#2B2B29", "#E1AD01", "#8A6700", "#FBF1CF", "#2E2E2B", "#1C1C1A", "#ECEAE3",
-            "#E8B923", "#121211",
+            "#E8B923", "#121211", "#2F7A4B", "#B3261E",
         ] {
             assert!(css.contains(token), "token {token} ausente do layout");
         }
         assert!(css.contains("\"Geist\"") && css.contains("\"Geist Mono\""));
-        assert!(css.contains("max-width:860px"));
 
-        // Estrutura do layout: faixa carvão no topo, tabela em moldura.
-        assert!(html.contains("<header class=\"doc\">"));
+        // Estrutura do layout: a seção com o endereço no menu, a tabela em
+        // moldura.
+        assert!(html.contains("<section id=\"section-1\" class=\"block\" data-crumb=\"Tabela\"><h2><span>Tabela</span></h2>"));
         assert!(html.contains("<div class=\"table\"><table>"));
+        assert!(html.contains("<li data-sec=\"section-1\"><button type=\"button\" data-go=\"section-1\" class=\"top\"><span>Tabela</span><i></i></button><ol></ol></li>"));
 
         let rules = css_rules(css);
-        // Código inline nunca quebra no meio da palavra.
-        let code = rules.iter().find(|(sel, _)| sel == "code").expect("regra code ausente");
-        assert!(code.1.contains("white-space:nowrap"), "code inline sem nowrap: {}", code.1);
-        assert!(!css.contains("overflow-wrap:anywhere"), "overflow-wrap:anywhere proibido");
-        // A coluna Onde quebra a linha e fica em 40%, sem espremer a primeira.
-        let place = rules.iter().find(|(sel, _)| sel == "td.where").expect("regra td.where ausente");
-        assert!(
-            place.1.contains("white-space:normal") && place.1.contains("width:40%"),
-            "td.where: {}",
-            place.1
-        );
-
-        // A tabela larga rola dentro da própria moldura, e nenhuma palavra
-        // dela quebra no meio: nem o texto das células, nem o código, que
-        // continua sem quebra também numa tabela dentro de um item.
         let rule = |selector: &str| {
             rules
                 .iter()
@@ -323,11 +413,11 @@ mod tests {
                 .map(|(_, decls)| decls.as_str())
                 .unwrap_or_else(|| panic!("regra {selector} ausente"))
         };
+        // A tabela larga rola dentro da própria moldura, e o código dentro
+        // dela nunca quebra.
         let frame = rule(".table");
         assert!(frame.contains("overflow-x:auto") && frame.contains("max-width:100%"), ".table: {frame}");
-        let cells = rule("th,td");
-        assert!(cells.contains("overflow-wrap:normal") && cells.contains("word-break:normal"), "th,td: {cells}");
-        let table_code = rule(".table td code,.table th code,.table a");
+        let table_code = rule("td code");
         assert!(table_code.contains("white-space:nowrap") && table_code.contains("overflow-wrap:normal"), "{table_code}");
         for (selector, decls) in &rules {
             let in_table = selector.split(',').any(|s| s.split_whitespace().any(|part| matches!(part, "td" | "th" | "table")));
@@ -336,11 +426,25 @@ mod tests {
                 "a table rule breaks words: {selector}{{{decls}}}"
             );
         }
-        // Uma tabela dentro de um item não alarga a página: a coluna da grade
-        // dos itens e o próprio item podem encolher.
-        assert!(rule("dl").contains("grid-template-columns:minmax(0,1fr)"), "dl: {}", rule("dl"));
-        assert!(rule("dl>div").contains("min-width:0"), "dl>div: {}", rule("dl>div"));
+        // O conteúdo nunca alarga a página: a coluna dele pode encolher, e o
+        // bloco de código rola.
+        assert!(rule(".shell").contains("minmax(0,1fr)"), ".shell: {}", rule(".shell"));
+        assert!(rule("#content").contains("min-width:0"), "#content: {}", rule("#content"));
+        assert!(rule("dl.kv dd").contains("min-width:0"), "dl.kv dd: {}", rule("dl.kv dd"));
         assert!(rule("pre").contains("overflow-x:auto"), "pre: {}", rule("pre"));
+        // Em tela estreita, o menu vira uma gaveta aberta por um botão.
+        let somewhere = |selector: &str, decl: &str| rules.iter().any(|(sel, d)| sel == selector && d.contains(decl));
+        assert!(somewhere(".side", "position:fixed") && somewhere(".menu-btn", "display:block"));
+        // Só aprovado, reprovado e em andamento têm cor de situação.
+        let colored: Vec<&str> = rules
+            .iter()
+            .filter(|(sel, decls)| {
+                let tinted = ["color:var(--ok)", "color:var(--no)", "color:var(--mustard-text)"];
+                sel.starts_with(".tag") && tinted.iter().any(|color| decls.contains(color))
+            })
+            .map(|(sel, _)| sel.as_str())
+            .collect();
+        assert_eq!(colored, [".tag.ok", ".tag.no", ".tag.run"], "{colored:?}");
 
         // Nenhum li (nem pseudo-elemento dele) vira grid.
         for (selector, decls) in &rules {
@@ -364,12 +468,13 @@ mod tests {
         assert!(!html.contains("data:font") && !html.contains("base64"), "nenhuma fonte gravada");
         assert!(STYLE.contains("--sans:\"Geist\",") && STYLE.contains("system-ui"));
         assert!(STYLE.contains("--mono:\"Geist Mono\",") && STYLE.contains("ui-monospace"));
-        assert!(html.len() < 12_000, "a página vazia pesa {} bytes", html.len());
+        assert!(html.len() < 32_000, "a página vazia pesa {} bytes", html.len());
         assert_only_the_fonts_are_external(&html);
     }
 
-    /// A faixa do cabeçalho diz que documento é, e a linha `.meta` junta os
-    /// pares com o valor em destaque; um subtítulo vazio não deixa `<li>` vazio.
+    /// O menu e o cabeçalho dizem que documento é, e a linha `.meta` junta os
+    /// pares com o valor em destaque; um subtítulo vazio não deixa `<li>`
+    /// vazio.
     #[test]
     fn report_header_carries_kind_and_meta_pairs() {
         let html = Report::new("Resumo", "")
@@ -377,11 +482,46 @@ mod tests {
             .with_meta("spec", "demo")
             .with_note("aguardando aprovação")
             .render();
-        assert!(html.contains("<p class=\"kind\">Mustard · spec para aprovar</p>"), "{html}");
+        assert!(html.contains("<p class=\"brand\"><b>Mustard</b> · spec para aprovar</p>"), "{html}");
         assert!(html.contains(
-            "<ul class=\"meta\"><li>spec <b>demo</b></li><li>aguardando aprovação</li></ul>"
+            "<header class=\"top\"><p class=\"eyebrow\">spec para aprovar</p><h1>Resumo</h1>\
+             <ul class=\"meta\"><li>spec <b>demo</b></li><li>aguardando aprovação</li></ul></header>"
         ));
         assert!(!html.contains("<li></li>"));
+    }
+
+    /// Toda página tem o menu lateral, a barra fixa com a busca, os botões de
+    /// abrir e fechar tudo e o script lido de `layout.js`, uma vez só; os
+    /// textos da moldura e os do script seguem o idioma da página.
+    #[test]
+    fn every_page_has_the_side_menu_the_search_bar_and_the_page_script() {
+        let pt = Report::new("demo", "").with_lang("pt-BR").render();
+        for piece in [
+            "<aside class=\"side\" id=\"side\" aria-label=\"Seções\">",
+            "<nav><ol class=\"nav\">",
+            "<button type=\"button\" id=\"openAll\">Abrir tudo</button><button type=\"button\" id=\"closeAll\">Fechar tudo</button>",
+            "<div class=\"bar\">",
+            "<button type=\"button\" class=\"menu-btn\" id=\"menuBtn\" aria-controls=\"side\" aria-expanded=\"false\">Seções</button>",
+            "<input id=\"q\" type=\"search\" placeholder=\"Buscar texto ou código\"",
+            "<kbd>/</kbd>",
+            "<p class=\"empty\" id=\"empty\" hidden>Nada encontrado.",
+            "data-of=\"{n} de {total}\" data-one=\"{n} item\" data-many=\"{n} itens\"",
+        ] {
+            assert!(pt.contains(piece), "{piece} is missing:\n{pt}");
+        }
+        assert_eq!(pt.matches("<script>").count(), 1, "one script");
+        assert!(pt.contains(&format!("<script>{SCRIPT}</script>")), "the script comes from layout.js");
+        for hook in ["getElementById('q')", "'Escape'", "'Enter'", "e.key==='/'", "openAll", "closeAll", "data-of"] {
+            assert!(SCRIPT.contains(hook), "the script lost {hook}");
+        }
+        for text in ["' de '", "' item'", "' itens'"] {
+            assert!(!SCRIPT.contains(text), "the script writes {text} itself");
+        }
+
+        let en = Report::new("demo", "").with_lang("en-US").render();
+        for piece in ["placeholder=\"Search text or code\"", ">Open all</button>", "data-of=\"{n} of {total}\""] {
+            assert!(en.contains(piece), "{piece} is missing in English");
+        }
     }
 
     #[test]
