@@ -66,50 +66,6 @@ fn variants(key: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-/// Every canonical key [`variants`] resolves — the whole vocabulary a spec
-/// heading may carry, in the order [`canonical_key`] probes it.
-///
-/// One list, next to the table it mirrors: a key added above and forgotten here
-/// would make [`canonical_key`] read a perfectly canonical heading as foreign.
-/// Only the kebab spellings are listed; the camelCase aliases resolve to the
-/// same variants, so probing both would just double the work.
-const CANONICAL_KEYS: &[&str] = &[
-    "context",
-    "users",
-    "metric",
-    "summary",
-    "boundaries",
-    "files",
-    "rootcause",
-    "tasks",
-    "acceptance-criteria",
-    "non-goals",
-    "concerns",
-    "decisions",
-    "definitions",
-    "evidence",
-    "risks",
-    "reality-obligations",
-    "dependencies",
-    "entityinfo",
-    "symptom",
-];
-
-/// The canonical key a `## ` heading line resolves to, or `None` when its title
-/// is OUTSIDE the vocabulary above — a heading no reader of this repository
-/// parses, in either language.
-///
-/// The inverse of [`is_heading`], which answers "is this line the heading for
-/// key K?": here the key is the answer, not the question. A lint that has to
-/// tell a canonical section from a bespoke one needs exactly this direction —
-/// asking `is_heading` per key from the outside means restating this table at
-/// every call site, and a caller that lists only some of the keys reports every
-/// key it forgot as foreign.
-#[must_use]
-pub fn canonical_key(line: &str) -> Option<&'static str> {
-    CANONICAL_KEYS.iter().copied().find(|key| is_heading(line, key))
-}
-
 /// Whether a character ends a `\b` word boundary — i.e. is *not* a word char.
 /// JavaScript `\b` treats `[A-Za-z0-9_]` as word characters.
 fn is_word_char(c: char) -> bool {
@@ -158,7 +114,7 @@ pub fn is_heading(line: &str, key: &str) -> bool {
 }
 
 /// The line index one-past-the-end of the `## ` section whose heading sits at
-/// `heading_idx`: the first `## ` H2 boundary strictly after the heading, or
+/// `heading_idx`: the first `## ` heading boundary strictly after the heading, or
 /// `lines.len()` when the section runs to EOF. So the body is
 /// `lines[heading_idx + 1 .. section_end(lines, heading_idx)]` and the block
 /// *including* the heading is `lines[heading_idx .. section_end(..)]`.
@@ -188,8 +144,8 @@ pub fn section_end(lines: &[&str], heading_idx: usize) -> usize {
 /// section verbatim from one document into another (e.g. the parent spec's
 /// `## Acceptance Criteria` into a generated `wave-plan.md`).
 ///
-/// Defensive pick among HOMONYMOUS sections: legacy drafts (binaries before
-/// TF 2026-06-10-ac-heading-unico) duplicated the AC heading — a placeholder
+/// Defensive pick among HOMONYMOUS sections: legacy drafts (from binaries
+/// older than the single AC heading key) duplicated the AC heading — a placeholder
 /// body first ("Ver abaixo."), the real list second — so "first heading wins"
 /// returned the placeholder to every reader (qa-run, analyze-validation,
 /// wave-scaffold's AC carry). Among duplicates, the first block carrying a
@@ -307,36 +263,5 @@ mod tests {
         let block = section_block(dup, "context").expect("context found");
         assert!(block.contains("first"));
         assert!(!block.contains("second"));
-    }
-
-    /// `canonical_key` resolves EVERY display heading the table knows, in both
-    /// languages, and answers `None` for a title outside the vocabulary.
-    ///
-    /// The round trip is the point: a key listed in `CANONICAL_KEYS` that the
-    /// table does not know would resolve nothing, and a key the table knows but
-    /// the list forgot would read as bespoke — which is how a caller that has to
-    /// tell canonical from bespoke starts reporting perfectly ordinary sections.
-    #[test]
-    fn canonical_key_resolves_the_whole_vocabulary() {
-        for key in CANONICAL_KEYS {
-            let names = variants(key).unwrap_or_else(|| panic!("`{key}` is not in the table"));
-            for name in names {
-                let line = format!("## {name}");
-                assert_eq!(
-                    canonical_key(&line),
-                    Some(*key),
-                    "`{line}` must resolve to `{key}`",
-                );
-            }
-        }
-        // O título do defeito de campo: fora do vocabulário, em nenhuma língua.
-        assert_eq!(
-            canonical_key("## Decisão em aberto — como saber se uma previsão já foi efetivada"),
-            None,
-        );
-        assert_eq!(canonical_key("## Why now"), None);
-        // E o que nem é H2 nunca resolve.
-        assert_eq!(canonical_key("### Files"), None);
-        assert_eq!(canonical_key("Files"), None);
     }
 }

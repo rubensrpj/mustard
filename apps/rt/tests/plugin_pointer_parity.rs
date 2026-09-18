@@ -1,19 +1,13 @@
-//! Parity ratchet for the plugin's INTERNAL pointers — the `refs/` tree and the
-//! `${CLAUDE_PLUGIN_ROOT}/…` paths that reach it.
+//! Parity ratchet for the plugin's INTERNAL pointers — the
+//! `${CLAUDE_PLUGIN_ROOT}/…` paths a shipped text spells.
 //!
-//! Progressive disclosure is the whole design of this corpus: the loaded files
-//! stay lean and every detail lives behind a pointer that opens on demand. That
-//! makes the pointer the load-bearing part, and it is the part nothing checks.
-//! Both ways it can rot are silent at runtime:
+//! A pointer to a file that is not there fails silently at runtime: the flow
+//! reaches the line, the read fails, and the agent continues without what it
+//! was sent to fetch. Nothing errors — the instruction simply had no effect.
 //!
-//! - **A pointer to a file that is not there.** The flow reaches the line, the
-//!   read fails, and the agent continues without the rule it was sent to fetch.
-//!   Nothing errors — the instruction simply had no effect.
-//! - **A ref nobody points at.** It ships, it is maintained, it is quoted in
-//!   review, and no flow ever opens it. Orphaned prose is worse than absent
-//!   prose, because it reads as if it were in force.
-//!
-//! Both counts are zero today. This ratchet is what keeps them there.
+//! A pasta `refs/` saiu inteira: cada fluxo virou uma lista curta, e o próximo
+//! passo vem da resposta de cada comando. Nenhum texto entregue pode voltar a
+//! apontar para ela.
 //!
 //! Deterministic: walks the repo tree only (sorted), no network, no env vars.
 
@@ -67,19 +61,17 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Every markdown file that can carry a pointer: the shipped plugin tree plus
-/// the compiled-in injectables, which reach the refs by the same paths.
+/// the compiled-in texts the installer writes into a project.
 fn pointer_corpus(root: &Path) -> Vec<PathBuf> {
     let plugin = root.join("plugin");
     assert!(plugin.is_dir(), "plugin tree missing at {}", plugin.display());
-    let injectables = root.join("packages/core/templates/mustard");
-    assert!(
-        injectables.is_dir(),
-        "injectable seeds missing at {}",
-        injectables.display()
-    );
     let mut files = Vec::new();
     walk_files(&plugin, &mut files);
-    walk_files(&injectables, &mut files);
+    for seeds in ["packages/core/templates/mustard", "packages/core/templates/agents"] {
+        let dir = root.join(seeds);
+        assert!(dir.is_dir(), "seeded texts missing at {}", dir.display());
+        walk_files(&dir, &mut files);
+    }
     files.retain(|p| p.extension().and_then(|e| e.to_str()) == Some("md"));
     files
 }
@@ -110,23 +102,6 @@ fn pointer_targets(text: &str) -> Vec<String> {
         }
     }
     out
-}
-
-/// Every shipped `plugin/refs/**/*.md`, as a plugin-relative path, sorted.
-fn shipped_refs(root: &Path) -> Vec<String> {
-    let dir = root.join("plugin/refs");
-    assert!(dir.is_dir(), "refs tree missing at {}", dir.display());
-    let mut files = Vec::new();
-    walk_files(&dir, &mut files);
-    let plugin = root.join("plugin");
-    let mut rels: Vec<String> = files
-        .iter()
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
-        .filter_map(|p| p.strip_prefix(&plugin).ok())
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .collect();
-    rels.sort();
-    rels
 }
 
 /// Every `${CLAUDE_PLUGIN_ROOT}/…` pointer resolves to a file that is there.
@@ -163,39 +138,17 @@ fn every_plugin_pointer_resolves() {
     );
 }
 
-/// Every file in `refs/` is pointed at by something else.
-///
-/// A ref exists only to be opened on demand; one nothing opens is prose that
-/// reads as in force and is not. Both spellings count — the `${CLAUDE_PLUGIN_ROOT}`
-/// form the commands use and the bare `refs/…` form the injectables use — because
-/// what is being asked is whether a reader is ever SENT there, not which syntax
-/// sent them. A file naming itself is not a pointer.
+/// A pasta `refs/` não volta, e nenhum texto entregue aponta para ela.
 #[test]
-fn every_ref_file_is_pointed_at() {
+fn no_shipped_text_points_into_refs() {
     let root = repo_root();
-    let plugin = root.join("plugin");
-    let corpus = pointer_corpus(&root);
-    let refs = shipped_refs(&root);
-    assert!(!refs.is_empty(), "plugin/refs ships no *.md - the tree this guard locks is gone");
-
-    let mut orphans = Vec::new();
-    for rel in &refs {
-        let own_path = plugin.join(rel);
-        let pointed = corpus
-            .iter()
-            .filter(|p| **p != own_path)
-            .any(|p| read_lossy(p).contains(rel.as_str()));
-        if !pointed {
-            orphans.push(rel.clone());
-        }
-    }
-    assert!(
-        orphans.is_empty(),
-        "refs nothing points at. A ref is loaded on demand or not at all, so an \
-         unreachable one is maintained prose that never reaches a flow - point a \
-         command or an injectable at it, or delete it:\n{}",
-        orphans.join("\n")
-    );
+    assert!(!root.join("plugin/refs").exists(), "plugin/refs is back");
+    let pointing: Vec<String> = pointer_corpus(&root)
+        .iter()
+        .filter(|p| read_lossy(p).contains("refs/"))
+        .map(|p| p.strip_prefix(&root).unwrap_or(p).display().to_string())
+        .collect();
+    assert!(pointing.is_empty(), "texts still send the reader into refs/: {pointing:?}");
 }
 
 /// The uncommitted-target list stays sorted, justified, and necessary.

@@ -1,8 +1,9 @@
 //! `mustard-rt run doctor` — read-only installation health diagnostic.
 //!
-//! Runs four checks and prints a compact OK/WARN/FAIL report per category.
-//! Exit 1 if any check is FAIL, 0 otherwise. Fail-open on every IO error:
-//! a check that cannot complete is demoted to WARN, never crashes.
+//! Runs every check of one list and prints a compact OK/WARN/FAIL report per
+//! category. Exit 1 if any check of the full run is FAIL, 0 otherwise.
+//! Fail-open on every IO error: a check that cannot complete is demoted to
+//! WARN, never crashes.
 //!
 //! ## Checks
 //!
@@ -33,15 +34,50 @@
 //!   (`origin/HEAD` ∪ `mustard.json#git.protected`). WARN only when
 //!   `origin/HEAD` is unreadable, because protection then rests on literals
 //!   this project may not use at all.
+//! - **spec-index** — o índice das specs (`.claude/spec/index.ndjson`) contra
+//!   os arquivos de eventos: índice que falta, linha que falta, sobra ou
+//!   difere, e campo `search` calculado por outro redutor. Só lê e acusa, com
+//!   WARN e a mensagem no idioma do projeto, que manda rodar
+//!   `mustard-rt run index`.
+//! - **switches** — as escolhas do `mustard.json` contra as configurações
+//!   locais: WARN quando o Mustard está desligado no projeto, quando a opção
+//!   `rtk` e o gancho do rtk divergem, e quando a assinatura do Claude Code
+//!   está ligada.
+//! - **claude-md** — sobras do Mustard em arquivos que não são dele (as marcas
+//!   nos `CLAUDE.md`, as linhas do molde no `settings.json` da equipe), pela
+//!   mesma lista que o `upsert` mostra.
+//!
+//! ## Onde cada conferência mora
+//!
+//! Esta porta guarda o que todas dividem e o que sai para fora — o resultado
+//! de uma conferência, os eventos de gancho que o binário conhece, as opções e
+//! a lista das conferências, na ordem em que o comando as roda. Cada
+//! conferência mora numa parte da pasta ao lado, por assunto: a ligação dos
+//! ganchos (`wiring`), as sobras (`residue`), o desvio dos moldes (`drift`), o
+//! que a máquina tem instalado (`host`), a proteção das bases (`protection`),
+//! o estado das specs (`specs`), o que o Mustard deixa no projeto (`project`)
+//! e a saída do relatório (`report`).
 
-use mustard_core::domain::model::event::ActorKind;
-use crate::shared::context;
-use crate::shared::events::economy;
-use crate::util::sha256::Sha256;
-use mustard_core::io::fs;
+mod drift;
+mod host;
+mod project;
+mod protection;
+mod report;
+mod residue;
+mod specs;
+mod wiring;
+
 use mustard_core::ClaudePaths;
-use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use drift::check_drift;
+use host::{check_claude_cli, check_nerd_font, lsp_check};
+use project::{check_claude_md, check_scan_output, check_switches};
+use protection::check_branch_protection;
+use report::{render_report, render_report_json};
+use residue::{check_residue, check_scratch_residue};
+use specs::{check_spec_index, check_state_health, check_wave_integrity};
+use wiring::check_wiring;
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -93,24 +129,26 @@ impl CheckResult {
 }
 
 // ---------------------------------------------------------------------------
-// Known valid events and run subcommands
+// Known valid events
 // ---------------------------------------------------------------------------
 
 /// The shipped hook manifest (`plugin/hooks/hooks.json`), embedded at build
 /// time. That file is the only thing that decides which `<event>` names the
 /// harness ever hands to `mustard-rt on`; embedding it makes the doctor read
-/// the same artefact the harness reads, the way `known_run_subcommands` below
-/// reads the same clap tree the binary dispatches on. A hand-kept copy drifted
-/// in both directions (it carried `PreCompact`, which nothing registers, and
-/// omitted `Stop` and `WorktreeCreate`, which are registered).
+/// the same artefact the harness reads, the way the wiring check's
+/// `known_run_subcommands` reads the same clap tree the binary dispatches on.
+/// A hand-kept copy drifted in both directions (it carried `PreCompact`, which
+/// nothing registers, and omitted `Stop` and `WorktreeCreate`, which are
+/// registered).
 const SHIPPED_HOOKS_MANIFEST: &str = include_str!("../../../../../plugin/hooks/hooks.json");
 
 /// All hook event names `mustard-rt on <event>` recognizes — the keys of the
 /// shipped manifest's `hooks` object.
 ///
 /// Degrades to an empty set when the manifest cannot be parsed. An empty set
-/// means "cannot judge", and [`validate_command_string`] treats it that way:
-/// it reports nothing rather than declaring every wired event unknown.
+/// means "cannot judge", and the wiring check's `validate_command_string`
+/// treats it that way: it reports nothing rather than declaring every wired
+/// event unknown.
 #[must_use]
 pub fn known_hook_events() -> std::collections::BTreeSet<String> {
     let Ok(manifest) = serde_json::from_str::<serde_json::Value>(SHIPPED_HOOKS_MANIFEST) else {
@@ -123,1234 +161,6 @@ pub fn known_hook_events() -> std::collections::BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// All `mustard-rt run <subcommand>` names recognized by the binary — derived
-/// from the live clap tree, so the set can never drift from `RunCmd` again.
-fn known_run_subcommands() -> std::collections::BTreeSet<String> {
-    <crate::commands::RunCmd as clap::Subcommand>::augment_subcommands(clap::Command::new("run"))
-        .get_subcommands()
-        .map(|c| c.get_name().to_string())
-        .collect()
-}
-
-/// The Mustard-owned folders the drift check compares against `templates/`.
-/// They historically shipped in the payload; in Mustard 2.0 they move to the
-/// plugin, so the check degrades to a no-op where they are absent. Re-seed the
-/// harness with `mustard init` (idempotent).
-const CORE_FOLDERS: &[&str] = &["commands/mustard", "hooks", "skills", "scripts", "refs"];
-
-// ---------------------------------------------------------------------------
-// Check: wiring
-// ---------------------------------------------------------------------------
-
-/// Parse `.claude/settings.json` and verify that every `mustard-rt on <event>`
-/// and `mustard-rt run <cmd>` command string references a known event or
-/// subcommand.
-fn check_wiring(claude_dir: &Path) -> CheckResult {
-    let settings_path = claude_dir.join("settings.json");
-    let text = match fs::read_to_string(&settings_path) {
-        Ok(t) => t,
-        Err(e) => {
-            return CheckResult::warn(
-                "wiring",
-                vec![format!("cannot read settings.json: {e}")],
-            )
-        }
-    };
-    let json: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            return CheckResult::fail(
-                "wiring",
-                vec![format!("settings.json is not valid JSON: {e}")],
-            )
-        }
-    };
-
-    let mut broken: Vec<String> = Vec::new();
-    collect_commands_from_json(&json, &mut broken);
-
-    if broken.is_empty() {
-        CheckResult::ok("wiring")
-    } else {
-        CheckResult::fail("wiring", broken)
-    }
-}
-
-/// Recursively walk all `"command"` string values in a JSON value and validate
-/// any that look like `mustard-rt on <event>` or `mustard-rt run <cmd>`.
-fn collect_commands_from_json(val: &serde_json::Value, broken: &mut Vec<String>) {
-    match val {
-        serde_json::Value::Object(map) => {
-            if let Some(serde_json::Value::String(cmd)) = map.get("command") {
-                validate_command_string(cmd, broken);
-            }
-            for v in map.values() {
-                collect_commands_from_json(v, broken);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for v in arr {
-                collect_commands_from_json(v, broken);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Check one command string. Validates `mustard-rt on <event>` and
-/// `mustard-rt run <cmd>` patterns; ignores everything else.
-fn validate_command_string(cmd: &str, broken: &mut Vec<String>) {
-    let parts: Vec<&str> = cmd.split_whitespace().collect();
-    if parts.len() < 3 || parts[0] != "mustard-rt" {
-        return;
-    }
-    match parts[1] {
-        "on" => {
-            let event = parts[2];
-            let known = known_hook_events();
-            // An empty set means the shipped manifest did not parse — the check
-            // cannot judge, so it stays silent instead of flagging every event.
-            if !known.is_empty() && !known.contains(event) {
-                broken.push(format!("unknown hook event: '{event}' in command '{cmd}'"));
-            }
-        }
-        "run" => {
-            let subcommand = parts[2];
-            if !known_run_subcommands().contains(subcommand) {
-                broken.push(format!("unknown run subcommand: '{subcommand}' in command '{cmd}'"));
-            }
-        }
-        _ => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Check: residue
-// ---------------------------------------------------------------------------
-
-/// Scan `settings.json`, SKILL.md files, and refs for dead references —
-/// `.js` script names that no longer exist, `scripts/` paths with no
-/// resolvable target. WARN per hit. Only run when `--residue` is passed.
-fn check_residue(claude_dir: &Path) -> CheckResult {
-    let mut hits: Vec<String> = Vec::new();
-
-    // Check for dead .js script references in settings.json.
-    let settings_path = claude_dir.join("settings.json");
-    if let Ok(text) = fs::read_to_string(&settings_path) {
-        scan_for_dead_js_refs(&text, claude_dir, "settings.json", &mut hits);
-    }
-
-    // Scan SKILL.md files for dead .js references.
-    scan_md_files_for_dead_refs(claude_dir, &mut hits);
-
-    // Check if CORE_FOLDERS lists scripts/ but no scripts exist.
-    let scripts_dir = claude_dir.join("scripts");
-    if fs::exists(&scripts_dir) {
-        match fs::read_dir(&scripts_dir) {
-            Ok(entries) => {
-                if entries.is_empty() {
-                    hits.push("scripts/ directory is empty (CORE_FOLDER with no content)".to_string());
-                }
-            }
-            Err(e) => {
-                hits.push(format!("cannot read scripts/: {e}"));
-            }
-        }
-    }
-
-    if hits.is_empty() {
-        CheckResult::ok("residue")
-    } else {
-        CheckResult::warn("residue", hits)
-    }
-}
-
-/// Sobras de cópias descartáveis e tamanho da compilação compartilhada, lidos
-/// pela varredura do `scratch-gc` — uma leitura só, para o doctor e a porta
-/// de limpeza nunca discordarem sobre o que é sobra. Só com `--residue`: a
-/// medida percorre cada candidata inteira.
-fn check_scratch_residue(roots: &crate::commands::maint::scratch_gc::ScratchRoots) -> CheckResult {
-    use crate::commands::maint::scratch_gc::{human_bytes, survey, MIN_AGE_HOURS};
-
-    let found = survey(roots);
-    let count = found.candidates.len();
-    let mut details = vec![format!(
-        "{count} scratch leftover(s) older than {MIN_AGE_HOURS}h: {} - list with `mustard-rt run scratch-gc`, remove with `--apply`",
-        human_bytes(found.candidates_bytes())
-    )];
-    let over_cap = found.shared_target.as_ref().is_some_and(|s| s.over_cap);
-    match found.shared_target.as_ref() {
-        Some(shared) => details.push(format!(
-            "shared build {}: {} (cap {}){}",
-            shared.path,
-            human_bytes(shared.size_bytes),
-            human_bytes(shared.cap_bytes),
-            if shared.over_cap { " - over the cap, `scratch-gc --apply` empties it" } else { "" }
-        )),
-        None => details.push("shared build: not present".to_string()),
-    }
-    let status = if count > 0 || over_cap { Status::Warn } else { Status::Ok };
-    CheckResult { name: "scratch-residue", status, details }
-}
-
-/// Scan text for `.js` filename patterns and check if they exist under
-/// `.claude/` or `hooks/`.
-fn scan_for_dead_js_refs(text: &str, claude_dir: &Path, source: &str, hits: &mut Vec<String>) {
-    for word in text.split_whitespace() {
-        // Strip leading quotes or path separators for matching.
-        let clean = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ',');
-        if clean.ends_with(".js") && !clean.contains("://") {
-            // Resolve relative to claude_dir or its parent (project root).
-            let project_root = claude_dir.parent().unwrap_or(claude_dir);
-            let candidate_claude = claude_dir.join(clean);
-            let candidate_root = project_root.join(clean);
-            if !candidate_claude.exists() && !candidate_root.exists() {
-                hits.push(format!("dead .js reference '{clean}' in {source}"));
-            }
-        }
-    }
-}
-
-/// Walk `.claude/` looking for SKILL.md files and scan them for dead refs.
-fn scan_md_files_for_dead_refs(claude_dir: &Path, hits: &mut Vec<String>) {
-    let walker = collect_files_recursive(claude_dir, 4);
-    for path in walker {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.ends_with(".md") {
-            if let Ok(text) = fs::read_to_string(&path) {
-                let source = path.to_string_lossy().into_owned();
-                scan_for_dead_js_refs(&text, claude_dir, &source, hits);
-            }
-        }
-    }
-}
-
-/// Collect all files under `dir` up to `max_depth` levels deep. Fail-open.
-fn collect_files_recursive(dir: &Path, max_depth: usize) -> Vec<PathBuf> {
-    let mut results = Vec::new();
-    collect_recursive_inner(dir, max_depth, 0, &mut results);
-    results
-}
-
-fn collect_recursive_inner(dir: &Path, max_depth: usize, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > max_depth {
-        return;
-    }
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries {
-        if entry.is_dir {
-            collect_recursive_inner(&entry.path, max_depth, depth + 1, out);
-        } else {
-            out.push(entry.path);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Check: drift
-// ---------------------------------------------------------------------------
-
-/// Compare installed `.claude/` core folders against `templates/` source by
-/// SHA-256 hash. Degrades to `skip` when `templates/` is not reachable.
-fn check_drift(claude_dir: &Path) -> CheckResult {
-    // Locate templates/ relative to cwd. Walk upward up to 4 levels.
-    let templates_dir = find_templates_dir(claude_dir.parent().unwrap_or(claude_dir));
-    let Some(templates_dir) = templates_dir else {
-        return CheckResult::skip(
-            "drift",
-            "templates/ not reachable from cwd (consumer project — skipped)",
-        );
-    };
-
-    let mut drifted: Vec<String> = Vec::new();
-
-    for folder in CORE_FOLDERS {
-        let installed = claude_dir.join(folder);
-        let source = templates_dir.join(folder);
-
-        if !source.exists() {
-            // Source folder absent — skip this entry silently.
-            continue;
-        }
-        if !installed.exists() {
-            drifted.push(format!("{folder}: installed folder missing"));
-            continue;
-        }
-
-        // Collect and hash all files in both trees.
-        let installed_hash = hash_directory(&installed);
-        let source_hash = hash_directory(&source);
-
-        if installed_hash != source_hash {
-            drifted.push(format!("{folder}: differs from templates/ (run `mustard init`)"));
-        }
-    }
-
-    if drifted.is_empty() {
-        CheckResult::ok("drift")
-    } else {
-        CheckResult::warn("drift", drifted)
-    }
-}
-
-/// Try to locate a `templates/` directory by walking up from `start`.
-fn find_templates_dir(start: &Path) -> Option<PathBuf> {
-    // Look for apps/cli/templates from repo root, or templates/ at repo root.
-    let mut candidate = start.to_path_buf();
-    for _ in 0..5 {
-        let direct = candidate.join("templates");
-        if direct.exists() && direct.is_dir() {
-            return Some(direct);
-        }
-        let via_cli = candidate.join("apps").join("cli").join("templates");
-        if via_cli.exists() && via_cli.is_dir() {
-            return Some(via_cli);
-        }
-        match candidate.parent() {
-            Some(p) => candidate = p.to_path_buf(),
-            None => break,
-        }
-    }
-    None
-}
-
-/// Hash all files in a directory tree, sorted by relative path for stability.
-/// Returns a hex string; returns `"<error>"` on IO failure (fail-open).
-fn hash_directory(dir: &Path) -> String {
-    let mut files = Vec::new();
-    collect_recursive_inner(dir, 8, 0, &mut files);
-    files.sort();
-
-    let mut hasher = Sha256::new();
-    for file_path in &files {
-        if let Ok(bytes) = fs::read(file_path) {
-            // Mix in the relative path for rename detection.
-            let rel = file_path
-                .strip_prefix(dir)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            hasher.update(rel.as_bytes());
-            hasher.update(b"\x00");
-            hasher.update(&bytes);
-        }
-    }
-    hasher.hex_digest()
-}
-
-// ---------------------------------------------------------------------------
-// Check: claude_cli
-// ---------------------------------------------------------------------------
-
-/// Probe for the `claude` CLI binary and report its resolved path.
-///
-/// Searches `PATH` the same way the OS would, also probing `.cmd` / `.bat`
-/// wrappers on Windows. Produces `OK` when found, `WARN` when absent (the
-/// scan cold-path falls back to the agnostic floor without blocking).
-fn check_claude_cli() -> CheckResult {
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    let sep = if cfg!(windows) { ';' } else { ':' };
-
-    for dir in path_var.split(sep) {
-        let base = std::path::Path::new(dir).join("claude");
-        if base.exists() {
-            let p = base.to_string_lossy().into_owned();
-            return CheckResult { name: "claude_cli", status: Status::Ok, details: vec![p] };
-        }
-        // Windows: try .cmd / .bat / .exe extensions.
-        #[cfg(windows)]
-        for ext in [".cmd", ".bat", ".exe"] {
-            let candidate = std::path::Path::new(dir).join(format!("claude{ext}"));
-            if candidate.exists() {
-                let p = candidate.to_string_lossy().into_owned();
-                return CheckResult { name: "claude_cli", status: Status::Ok, details: vec![p] };
-            }
-        }
-    }
-
-    CheckResult::warn(
-        "claude_cli",
-        vec![
-            "claude CLI not found on PATH — scan cold-path will fall back to the agnostic floor."
-                .to_string(),
-            "fix: install Claude Code (https://claude.ai/code) and ensure the binary is on PATH"
-                .to_string(),
-        ],
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Check: LSP
-// ---------------------------------------------------------------------------
-
-/// Map a stack name to the canonical language-server binary name (and an
-/// install hint). The table is best-effort; unmapped stacks are silently ignored.
-fn lsp_server_for_stack(stack: &str) -> Option<(&'static str, &'static str)> {
-    match stack {
-        "rust" => Some(("rust-analyzer", "rustup component add rust-analyzer")),
-        "typescript" | "javascript" => {
-            Some(("typescript-language-server", "npm install -g typescript-language-server typescript"))
-        }
-        "python" => Some(("pyright", "pip install pyright")),
-        "go" => Some(("gopls", "go install golang.org/x/tools/gopls@latest")),
-        "java" => Some(("jdtls", "install Eclipse JDT Language Server")),
-        "csharp" => Some(("omnisharp", "install OmniSharp via .NET or VS extension")),
-        _ => None,
-    }
-}
-
-/// Detect which language stacks are active in `project_dir` by probing for
-/// well-known manifest files, reduced to stack-name strings. Fail-open: IO
-/// errors → empty list.
-fn detect_stacks(project_dir: &Path) -> Vec<&'static str> {
-    let mut stacks: Vec<&'static str> = Vec::new();
-
-    // Rust: Cargo.toml with [package]
-    let cargo = project_dir.join("Cargo.toml");
-    if cargo.is_file()
-        && fs::read_to_string(&cargo)
-            .unwrap_or_default()
-            .contains("[package]")
-    {
-        stacks.push("rust");
-    }
-
-    // Go: go.mod
-    if project_dir.join("go.mod").is_file() {
-        stacks.push("go");
-    }
-
-    // Python: pyproject.toml or requirements.txt
-    if project_dir.join("pyproject.toml").is_file()
-        || project_dir.join("requirements.txt").is_file()
-    {
-        stacks.push("python");
-    }
-
-    // TypeScript/JavaScript: package.json
-    let pkg_path = project_dir.join("package.json");
-    if pkg_path.is_file() {
-        let content = fs::read_to_string(&pkg_path).unwrap_or_default();
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            let deps_have_ts = ["dependencies", "devDependencies"].iter().any(|section| {
-                json.get(*section)
-                    .and_then(serde_json::Value::as_object)
-                    .is_some_and(|obj| obj.contains_key("typescript"))
-            });
-            if deps_have_ts {
-                stacks.push("typescript");
-            } else {
-                stacks.push("javascript");
-            }
-        } else {
-            stacks.push("javascript");
-        }
-    }
-
-    // C#: any *.csproj present
-    if let Ok(entries) = fs::read_dir(project_dir) {
-        let has_csproj = entries
-            .iter()
-            .any(|e| e.file_name.ends_with(".csproj"));
-        if has_csproj {
-            stacks.push("csharp");
-        }
-    }
-
-    // Java: pom.xml or build.gradle
-    if project_dir.join("pom.xml").is_file() || project_dir.join("build.gradle").is_file() {
-        stacks.push("java");
-    }
-
-    stacks
-}
-
-/// Look up `binary` in the directories listed in the `PATH` environment
-/// variable. On Windows, also probes with the `.exe` suffix. Fail-open:
-/// any lookup error returns `false`.
-fn which(binary: &str) -> bool {
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
-    for dir in path_var.split(sep) {
-        let candidate = std::path::Path::new(dir).join(binary);
-        if candidate.exists() {
-            return true;
-        }
-        // Windows: also try with .exe suffix.
-        #[cfg(target_os = "windows")]
-        {
-            let exe = std::path::Path::new(dir).join(format!("{binary}.exe"));
-            if exe.exists() {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Check that each detected stack's language server is present on `PATH`.
-fn lsp_check(project_dir: &Path) -> CheckResult {
-    let stacks = detect_stacks(project_dir);
-
-    // Collect mapped (stack → server) entries, ignoring unmapped stacks.
-    let mapped: Vec<(&str, &str, &str)> = stacks
-        .iter()
-        .filter_map(|s| lsp_server_for_stack(s).map(|(bin, hint)| (*s, bin, hint)))
-        .collect();
-
-    if mapped.is_empty() {
-        return CheckResult::skip("lsp", "no mapped stacks detected");
-    }
-
-    // Deduplicate by binary (typescript + javascript both map to the same server).
-    let mut seen_bins: Vec<&str> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
-
-    for (_stack, bin, hint) in &mapped {
-        if seen_bins.contains(bin) {
-            continue;
-        }
-        seen_bins.push(bin);
-        if !which(bin) {
-            missing.push(format!("missing: {bin} (install: {hint})"));
-        }
-    }
-
-    if missing.is_empty() {
-        CheckResult::ok("lsp")
-    } else {
-        CheckResult::warn("lsp", missing)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Check: branch-protection
-// ---------------------------------------------------------------------------
-
-/// Report which branches this repository REALLY protects, and warn only when
-/// nothing could be measured.
-///
-/// This check used to warn that `mustard.json#git.flow` was empty and prescribe
-/// declaring one. Two things were wrong with it, and both were load-bearing.
-/// The installer writes NO flow — `project_seed` seeds an empty map on purpose,
-/// so the project decides later — which made the warning fire on every correct
-/// installation. And the claim it made, that only `{main, master}` are then
-/// protected, is false in front of [`mustard_core::protected_branches`], which
-/// measures the remote's own default branch (`origin/HEAD`) plus whatever
-/// `git.protected` adds. A diagnostic that fires on a healthy install and
-/// describes the wrong mechanism teaches the operator to ignore diagnostics.
-///
-/// So it reports the MEASUREMENT. The one condition that still earns a warning
-/// is the one the fallback exists for: `origin/HEAD` was unreadable (no remote,
-/// a clone that never fetched), so protection fell back to literals this project
-/// may not use at all. Skip when there is no `mustard.json` at the project root
-/// (not a mustard project).
-fn check_branch_protection(cwd: &Path) -> CheckResult {
-    if !cwd.join("mustard.json").is_file() {
-        return CheckResult::skip("branch-protection", "no mustard.json at project root");
-    }
-    let config = mustard_core::ProjectConfig::load(cwd);
-    let protected: Vec<String> =
-        mustard_core::protected_branches(cwd, &config.git).into_iter().collect();
-    if mustard_core::default_branch(cwd).is_none() {
-        return CheckResult::warn(
-            "branch-protection",
-            vec![
-                format!(
-                    "origin/HEAD is unreadable here, so protection fell back to its \
-                     literals: {}. Whatever branch this project really integrates on is \
-                     NOT protected until the remote answers.",
-                    protected.join(", ")
-                ),
-                "fix: `git remote set-head origin -a` (or one `git fetch origin`) so the \
-                 default branch is measurable; name any additional branch in \
-                 mustard.json#git.protected"
-                    .to_string(),
-            ],
-        );
-    }
-    let mut r = CheckResult::ok("branch-protection");
-    r.details.push(format!("protected: {}", protected.join(", ")));
-    let declared: Vec<String> = config.git.declared_bases().into_iter().collect();
-    r.details.push(if declared.is_empty() {
-        "pre-selected bases: none declared — the picker opens on the primary base and \
-         offers every branch `origin` has"
-            .to_string()
-    } else {
-        format!(
-            "pre-selected bases (where a picker opens — refuses nothing): {}",
-            declared.join(", ")
-        )
-    });
-    r
-}
-
-// ---------------------------------------------------------------------------
-// Check: state health
-// ---------------------------------------------------------------------------
-
-/// Inspect `.claude/.pipeline-states/` for orphan or stale state files;
-/// also checks for a missing repo model (`grain.model.json`).
-fn check_state_health(claude_dir: &Path) -> CheckResult {
-    let mut warnings: Vec<String> = Vec::new();
-
-    // Check the repo model's presence (grain.model.json, produced by `scan`).
-    let model = claude_dir.join("grain.model.json");
-    if !model.exists() {
-        warnings.push("grain.model.json missing (run `mustard-rt run scan`)".to_string());
-    }
-
-    // Inspect pipeline-states/.
-    let states_dir = claude_dir
-        .parent()
-        .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
-        .and_then(|root| ClaudePaths::for_project(root).ok())
-        .map(|p| p.pipeline_states_dir())
-        .unwrap_or_else(|| claude_dir.to_path_buf());
-    if !states_dir.exists() {
-        // No states dir — clean install, nothing to warn about.
-        if warnings.is_empty() {
-            return CheckResult::ok("state-health");
-        }
-        return CheckResult::warn("state-health", warnings);
-    }
-
-    // Collect spec names from spec/ (flat layout — no buckets).
-    let active_specs = collect_active_spec_names(claude_dir);
-
-    let Ok(entries) = fs::read_dir(&states_dir) else {
-        warnings.push("cannot read .pipeline-states/ directory".to_string());
-        return CheckResult::warn("state-health", warnings);
-    };
-
-    // 24 hours in milliseconds for closed-followup expiry.
-    const FOLLOWUP_EXPIRY_MS: u128 = 24 * 60 * 60 * 1_000;
-    let now_ms = mustard_core::time::now_unix_millis() as u128;
-
-    for entry in entries {
-        let path = entry.path.clone();
-        let file_name = entry.file_name.clone();
-
-        // Parse the state file (JSON with at least a `spec` or `state` field).
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-
-        // Detect closed-followup: state files with status "closed-followup".
-        let state_val = val
-            .get("state")
-            .or_else(|| val.get("status"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-
-        if state_val == "closed-followup" {
-            // Check timestamp for expiry.
-            let ts = val
-                .get("timestamp")
-                .or_else(|| val.get("updatedAt"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            if is_timestamp_expired(ts, now_ms, FOLLOWUP_EXPIRY_MS) {
-                warnings.push(format!("expired closed-followup state: {file_name}"));
-            }
-            continue;
-        }
-
-        // Detect orphan: state file whose spec is not in spec/ (flat layout).
-        let spec_name = val
-            .get("spec")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if !spec_name.is_empty() && !active_specs.contains(&spec_name) {
-            warnings.push(format!("orphan state file '{file_name}' (spec '{spec_name}' not in spec/)"));
-        }
-    }
-
-    if warnings.is_empty() {
-        CheckResult::ok("state-health")
-    } else {
-        CheckResult::warn("state-health", warnings)
-    }
-}
-
-/// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
-fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
-    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
-    // `run()`; re-deriving with `for_project` here would be circular.
-    let active_dir = claude_dir.join("spec");
-    let Ok(entries) = fs::read_dir(&active_dir) else {
-        return Vec::new();
-    };
-    entries
-        .into_iter()
-        .filter(|e| e.is_dir)
-        .map(|e| e.file_name)
-        .collect()
-}
-
-/// Return true if `ts` (ISO-8601 string) is older than `expiry_ms` milliseconds
-/// relative to `now_ms`. Returns false on parse failure (fail-open).
-fn is_timestamp_expired(ts: &str, now_ms: u128, expiry_ms: u128) -> bool {
-    // Fail-open: a malformed / empty timestamp is treated as not-expired.
-    let Some(ts_ms) = mustard_core::time::parse_iso_millis(ts) else {
-        return false;
-    };
-    let ts_ms = ts_ms.max(0) as u128;
-    now_ms.saturating_sub(ts_ms) > expiry_ms
-}
-
-// ---------------------------------------------------------------------------
-// Check: wave-integrity (W10.T10.5)
-// ---------------------------------------------------------------------------
-
-/// For each active spec under `.claude/spec/`, parse `wave-plan.md` for
-/// `[[wave-N-<role>]]` wikilinks and verify each referenced subdirectory
-/// exists. WARN per broken wikilink (an editor typo or partial scaffold);
-/// FAIL only on an empty result paired with a non-empty wave-plan body.
-/// Fail-open: a missing spec tree, unreadable file, or malformed wikilink is
-/// silently ignored — better to skip a check than crash the doctor.
-fn check_wave_integrity(claude_dir: &Path) -> CheckResult {
-    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
-    // `run()`; re-deriving with `for_project` here would be circular.
-    let spec_root = claude_dir.join("spec");
-    let Ok(entries) = fs::read_dir(&spec_root) else {
-        return CheckResult::skip("wave-integrity", "no .claude/spec/ directory");
-    };
-    let mut warnings: Vec<String> = Vec::new();
-    let mut scanned = 0usize;
-    for entry in entries {
-        if !entry.is_dir {
-            continue;
-        }
-        let plan_path = entry.path.join("wave-plan.md");
-        if !plan_path.is_file() {
-            continue;
-        }
-        scanned += 1;
-        let Ok(text) = fs::read_to_string(&plan_path) else {
-            continue;
-        };
-        for link in extract_wave_wikilinks(&text) {
-            let dir = entry.path.join(&link);
-            if !dir.is_dir() {
-                warnings.push(format!(
-                    "{spec}: [[{link}]] -> directory missing",
-                    spec = entry.file_name,
-                ));
-            }
-        }
-    }
-    if scanned == 0 {
-        return CheckResult::skip("wave-integrity", "no wave-plan.md files found");
-    }
-    if warnings.is_empty() {
-        let mut r = CheckResult::ok("wave-integrity");
-        r.details.push(format!("scanned {scanned} wave-plan(s) — no missing dirs"));
-        r
-    } else {
-        CheckResult::warn("wave-integrity", warnings)
-    }
-}
-
-/// Pull every `[[wave-N-<role>]]` wikilink from raw markdown. Matches the
-/// `wave-N-{role}` shape only; ignores generic `[[link]]` references so cross-
-/// links to non-wave concept nodes don't trigger spurious warnings.
-fn extract_wave_wikilinks(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            // Find the closing `]]` on the same line.
-            if let Some(end) = text[i + 2..].find("]]") {
-                let link = &text[i + 2..i + 2 + end];
-                // Cut piped text (e.g. `[[wave-1-rt|label]]`).
-                let core = link.split('|').next().unwrap_or(link).trim();
-                if is_wave_link(core) && !out.iter().any(|s| s == core) {
-                    out.push(core.to_string());
-                }
-                i += 2 + end + 2;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
-/// Loose recogniser for `wave-{N}-{role}` — `N` numeric, role non-empty.
-fn is_wave_link(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix("wave-") else {
-        return false;
-    };
-    let Some((n, role)) = rest.split_once('-') else {
-        return false;
-    };
-    !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && !role.is_empty()
-}
-
-// ---------------------------------------------------------------------------
-// Check: nerd-font
-// ---------------------------------------------------------------------------
-
-/// Probe OS font directories for *any* Nerd Font (filename containing both a
-/// font-family-ish token and "nerd" or "nf-"). WARN when none is found, since
-/// the powerline statusline themes need one.
-///
-/// Fail-open: read errors degrade to "not detected" (WARN) rather than
-/// blocking the doctor run.
-fn check_nerd_font() -> CheckResult {
-    let dirs = nerd_font_search_dirs();
-    if dirs.iter().any(|d| scan_for_any_nerd_font(d)) {
-        return CheckResult::ok("nerd-font");
-    }
-    // Linux: fontconfig is authoritative if the binary is on PATH.
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(output) = std::process::Command::new("fc-list").output() {
-            if output.status.success() {
-                let listing = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-                if listing.contains("nerd") {
-                    return CheckResult::ok("nerd-font");
-                }
-            }
-        }
-    }
-    CheckResult::warn(
-        "nerd-font",
-        vec![
-            "no Nerd Font detected on this host — powerline statusline themes will render \
-             tofu (□) instead of separator arrows."
-                .to_string(),
-            "fix: run `mustard install-nerd-font` (default JetBrainsMono)".to_string(),
-            "or set MUSTARD_STATUSLINE_THEME=default (pipe-only, no Nerd Font needed)"
-                .to_string(),
-        ],
-    )
-}
-
-fn nerd_font_search_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            dirs.push(
-                PathBuf::from(local)
-                    .join("Microsoft")
-                    .join("Windows")
-                    .join("Fonts"),
-            );
-        }
-        dirs.push(PathBuf::from("C:/Windows/Fonts"));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(home).join("Library").join("Fonts"));
-        }
-        dirs.push(PathBuf::from("/Library/Fonts"));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            dirs.push(PathBuf::from(home).join(".local/share/fonts"));
-        }
-        dirs.push(PathBuf::from("/usr/share/fonts"));
-    }
-    dirs
-}
-
-/// One level + immediate subdirectories. Match any file whose lowercased
-/// name contains "nerd" or "nf-".
-fn scan_for_any_nerd_font(dir: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries {
-        let name = entry.file_name.to_ascii_lowercase();
-        if name.contains("nerd") || name.contains("nf-") {
-            return true;
-        }
-        if entry.is_dir {
-            if let Ok(sub) = fs::read_dir(&entry.path) {
-                for s in sub {
-                    let sn = s.file_name.to_ascii_lowercase();
-                    if sn.contains("nerd") || sn.contains("nf-") {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-// ---------------------------------------------------------------------------
-// Report renderer
-// ---------------------------------------------------------------------------
-
-/// Print the compact OK/WARN/FAIL/SKIP report to stdout.
-fn render_report(results: &[CheckResult]) {
-    let timestamp = mustard_core::time::now_iso8601();
-    println!("mustard doctor — {timestamp}");
-    println!("{}", "─".repeat(40));
-    for r in results {
-        let label = r.status.label();
-        println!("{label:4}  {}", r.name);
-        for detail in &r.details {
-            println!("      · {detail}");
-        }
-    }
-    println!("{}", "─".repeat(40));
-    let any_fail = results.iter().any(|r| r.status == Status::Fail);
-    let any_warn = results.iter().any(|r| r.status == Status::Warn);
-    if any_fail {
-        println!("status  FAIL — fix issues above before continuing");
-    } else if any_warn {
-        println!("status  WARN — review warnings above");
-    } else {
-        println!("status  OK — installation looks healthy");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// JSON renderer
-// ---------------------------------------------------------------------------
-
-/// Serialize the report as JSON. W10.T10.6 shape:
-///
-/// ```json
-/// {
-///   "checks": [{ "name": "...", "status": "ok|warn|fail|skip",
-///                "message": "...", "details": ["..."] }],
-///   "overall": "ok|warn|fail",
-///   "violations": [...]
-/// }
-/// ```
-///
-/// `status` is lowercased (the spec's `ok|warn|fail` contract);
-/// `message` is the first detail line, joined with `; ` when multiple exist.
-/// `details` is preserved for callers that want the full per-check list.
-fn render_report_json(results: &[CheckResult]) {
-    let checks: Vec<serde_json::Value> = results
-        .iter()
-        .map(|r| {
-            let status_str = r.status.label().to_ascii_lowercase();
-            let message = if r.details.is_empty() {
-                String::new()
-            } else if r.details.len() == 1 {
-                r.details[0].clone()
-            } else {
-                r.details.join("; ")
-            };
-            json!({
-                "name": r.name,
-                "status": status_str,
-                "message": message,
-                "details": r.details,
-            })
-        })
-        .collect();
-
-    // Aggregate overall verdict (FAIL > WARN > OK; SKIP is neutral).
-    let any_fail = results.iter().any(|r| r.status == Status::Fail);
-    let any_warn = results.iter().any(|r| r.status == Status::Warn);
-    let overall = if any_fail {
-        "fail"
-    } else if any_warn {
-        "warn"
-    } else {
-        "ok"
-    };
-
-    let violations: Vec<String> = results
-        .iter()
-        .filter(|r| r.name == "skill-discovery" && r.status == Status::Warn)
-        .flat_map(|r| r.details.iter())
-        .cloned()
-        .collect();
-
-    let body = json!({
-        "checks": checks,
-        "overall": overall,
-        "violations": violations,
-    });
-    println!("{}", serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string()));
-}
-
-// ---------------------------------------------------------------------------
-// Check: status-consistency (W2 — spec-status-consistency)
-// ---------------------------------------------------------------------------
-
-/// Check every spec directory under `.claude/spec/` for lifecycle consistency.
-///
-/// **`meta.json` is the single source of truth.** A spec is consistent when its
-/// `meta.json` declares a valid `(stage, outcome)` combination. The `spec.md`
-/// markdown carries no lifecycle header any more, so its content is never a
-/// FAIL source — a *legacy* `### Stage:` / `### Outcome:` header that diverges
-/// from `meta.json` is surfaced as a non-fatal advisory (it means the spec
-/// predates the header-strip clean-up; delete the header lines from `spec.md`).
-///
-/// FAIL conditions (all driven by `meta.json`):
-/// - `meta.json` missing.
-/// - `meta.json` missing `stage` / `outcome` fields.
-/// - Invalid `(stage, outcome)` combination in `meta.json`.
-///
-/// Recurses into `wave-N-*/` subdirectories within each spec. Returns a single
-/// FAIL result listing every problematic path, a WARN when only legacy-header
-/// drift was seen, or OK when all specs are consistent.
-fn check_status_consistency(claude_dir: &Path) -> CheckResult {
-    use mustard_core::{header_field, read_meta};
-
-    /// Valid `(stage_label, outcome_label)` pairs.
-    fn is_valid_combo(stage: &str, outcome: &str) -> bool {
-        matches!(
-            (stage, outcome),
-            ("Plan" | "Analyze" | "Execute" | "QaReview" | "Close", "Active")
-                | ("Close", "Completed" | "Cancelled" | "Abandoned" | "Superseded" | "Absorbed")
-        )
-    }
-
-    /// Per-pair outcome: hard FAILs and soft advisory WARNs (legacy drift).
-    #[derive(Default)]
-    struct PairCheck {
-        fails: Vec<String>,
-        warns: Vec<String>,
-    }
-
-    /// Check one spec dir. `meta.json` is authoritative; the `spec.md` header
-    /// (when a legacy one is still present) is only a non-fatal drift advisory.
-    fn check_pair(spec_md_path: &std::path::Path) -> PairCheck {
-        let mut out = PairCheck::default();
-        let Some(spec_dir) = spec_md_path.parent() else {
-            out.fails.push(format!("{}: no parent dir", spec_md_path.display()));
-            return out;
-        };
-        let label = spec_md_path.display().to_string();
-
-        // meta.json is the single source of truth.
-        let meta_path = spec_dir.join("meta.json");
-        if !meta_path.exists() {
-            out.fails.push(format!("{label}: meta.json missing"));
-            return out;
-        }
-        let meta = read_meta(&meta_path).unwrap_or_default();
-        let stage_meta = meta.stage.as_deref().unwrap_or("").to_string();
-        let outcome_meta = meta.outcome.as_deref().unwrap_or("").to_string();
-
-        if stage_meta.is_empty() || outcome_meta.is_empty() {
-            out.fails.push(format!(
-                "{label}: meta.json missing stage/outcome fields \
-                 (stage={stage_meta:?}, outcome={outcome_meta:?})"
-            ));
-            return out;
-        }
-
-        if !is_valid_combo(&stage_meta, &outcome_meta) {
-            out.fails.push(format!(
-                "{label}: meta.json invalid combo stage={stage_meta:?} outcome={outcome_meta:?}"
-            ));
-            return out;
-        }
-
-        // Legacy advisory: a stale `### Stage:` / `### Outcome:` header that
-        // diverges from meta.json is a WARN, not a FAIL — the markdown should
-        // no longer carry a lifecycle header at all.
-        if let Ok(content) = fs::read_to_string(spec_md_path) {
-            let stage_spec = header_field(&content, "Stage");
-            let outcome_spec = header_field(&content, "Outcome");
-            if let (Some(stage_spec), Some(outcome_spec)) = (stage_spec, outcome_spec) {
-                if !stage_spec.eq_ignore_ascii_case(&stage_meta)
-                    || !outcome_spec.eq_ignore_ascii_case(&outcome_meta)
-                {
-                    out.warns.push(format!(
-                        "{label}: legacy header drift: spec.md={stage_spec:?}/{outcome_spec:?}, \
-                         meta.json={stage_meta:?}/{outcome_meta:?} \
-                         (meta.json is authoritative — delete the `### Stage:`/`### Outcome:` lines from spec.md)"
-                    ));
-                } else {
-                    out.warns.push(format!(
-                        "{label}: legacy lifecycle header still present in spec.md \
-                         (delete the `### Stage:`/`### Outcome:` lines — meta.json is authoritative)"
-                    ));
-                }
-            }
-        }
-
-        out
-    }
-
-    // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
-    // `run()`; re-deriving with `for_project` here would be circular.
-    let spec_root = claude_dir.join("spec");
-    let Ok(entries) = fs::read_dir(&spec_root) else {
-        return CheckResult::skip("status-consistency", "no .claude/spec/ directory");
-    };
-
-    let mut fails: Vec<String> = Vec::new();
-    let mut warns: Vec<String> = Vec::new();
-    let mut scanned = 0usize;
-
-    let mut absorb = |pc: PairCheck| {
-        fails.extend(pc.fails);
-        warns.extend(pc.warns);
-    };
-
-    for entry in entries {
-        if !entry.is_dir {
-            continue;
-        }
-        // Check parent spec.md.
-        let parent_spec_md = entry.path.join("spec.md");
-        if parent_spec_md.exists() {
-            scanned += 1;
-            absorb(check_pair(&parent_spec_md));
-        }
-        // Recurse into wave-N-* subdirectories.
-        if let Ok(sub_entries) = fs::read_dir(&entry.path) {
-            for sub in sub_entries {
-                if !sub.is_dir {
-                    continue;
-                }
-                // Only wave subdirs: name starts with "wave-" followed by a digit.
-                let name = &sub.file_name;
-                let is_wave = name.starts_with("wave-")
-                    && name.chars().nth(5).is_some_and(|c| c.is_ascii_digit());
-                if !is_wave {
-                    continue;
-                }
-                let wave_spec_md = sub.path.join("spec.md");
-                if wave_spec_md.exists() {
-                    scanned += 1;
-                    absorb(check_pair(&wave_spec_md));
-                }
-            }
-        }
-    }
-
-    if scanned == 0 {
-        return CheckResult::skip("status-consistency", "no spec.md files found");
-    }
-    if !fails.is_empty() {
-        // Surface advisory warns alongside the hard fails for context.
-        fails.extend(warns);
-        return CheckResult::fail("status-consistency", fails);
-    }
-    if !warns.is_empty() {
-        return CheckResult::warn("status-consistency", warns);
-    }
-    let mut r = CheckResult::ok("status-consistency");
-    r.details.push(format!("scanned {scanned} spec(s) — all consistent"));
-    r
-}
-
-#[cfg(test)]
-mod status_consistency_tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    /// Write a spec dir with a header-less `spec.md` (pure narrative) and a
-    /// `meta.json` — the canonical post-migration shape.
-    fn make_spec_meta_only(
-        root: &std::path::Path,
-        name: &str,
-        meta_stage: &str,
-        meta_outcome: &str,
-    ) {
-        let spec_dir = root.join(".claude").join("spec").join(name);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), format!("# {name}\n\n## Body\n")).unwrap();
-        std::fs::write(
-            spec_dir.join("meta.json"),
-            format!(r#"{{"stage":"{meta_stage}","outcome":"{meta_outcome}"}}"#),
-        )
-        .unwrap();
-    }
-
-    /// Write a spec dir that still carries a legacy `### Stage:`/`### Outcome:`
-    /// header in `spec.md` alongside its `meta.json` (un-migrated shape).
-    fn make_spec_with_legacy_header(
-        root: &std::path::Path,
-        name: &str,
-        spec_stage: &str,
-        spec_outcome: &str,
-        meta_stage: &str,
-        meta_outcome: &str,
-    ) {
-        let spec_dir = root.join(".claude").join("spec").join(name);
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(
-            spec_dir.join("spec.md"),
-            format!("# {name}\n\n### Stage: {spec_stage}\n### Outcome: {spec_outcome}\n### Flags: \n\n## Body\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            spec_dir.join("meta.json"),
-            format!(r#"{{"stage":"{meta_stage}","outcome":"{meta_outcome}"}}"#),
-        )
-        .unwrap();
-    }
-
-    /// Canonical post-migration spec (meta-only, valid combo) → OK.
-    #[test]
-    fn doctor_status_consistency_meta_only_closed_followup_ok() {
-        let dir = tempdir().unwrap();
-        make_spec_meta_only(dir.path(), "fu-spec", "Close", "Active");
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
-    }
-
-    /// Invalid `(stage, outcome)` in meta.json → FAIL.
-    #[test]
-    fn doctor_status_consistency_invalid_meta_combo_fail() {
-        let dir = tempdir().unwrap();
-        make_spec_meta_only(dir.path(), "bad-spec", "Analyze", "Cancelled");
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Fail, "{:?}", result.details);
-        assert!(result.details.iter().any(|d| d.contains("invalid combo")), "{:?}", result.details);
-    }
-
-    /// meta.json missing entirely → FAIL.
-    #[test]
-    fn doctor_status_consistency_missing_meta_fail() {
-        let dir = tempdir().unwrap();
-        let spec_dir = dir.path().join(".claude").join("spec").join("no-meta");
-        std::fs::create_dir_all(&spec_dir).unwrap();
-        std::fs::write(spec_dir.join("spec.md"), "# no-meta\n\n## Body\n").unwrap();
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Fail, "{:?}", result.details);
-        assert!(result.details.iter().any(|d| d.contains("meta.json missing")), "{:?}", result.details);
-    }
-
-    /// A legacy `spec.md` header that diverges from meta.json is now an
-    /// advisory WARN (not a FAIL) — meta.json is authoritative.
-    #[test]
-    fn doctor_status_consistency_legacy_header_drift_warns() {
-        let dir = tempdir().unwrap();
-        make_spec_with_legacy_header(dir.path(), "div-spec", "Execute", "Active", "Plan", "Active");
-        let claude_dir = dir.path().join(".claude");
-        let result = check_status_consistency(&claude_dir);
-        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
-        let msg = result.details.join(" ");
-        assert!(msg.contains("legacy header drift"), "{msg}");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -1359,416 +169,184 @@ mod status_consistency_tests {
 pub struct DoctorOpts {
     /// Also scan for dead file/script references (slower).
     pub residue: bool,
-    /// Named check to run in isolation (e.g. `skill-discovery`,
-    /// `claude-paths`, `workspace-leaks`, `i1`).
+    /// A conferência que roda sozinha, por um dos nomes da lista.
     pub check: Option<String>,
     /// Output format: `text` (default) or `json`.
     pub format: String,
 }
 
+/// Onde as conferências olham: a pasta do projeto e o `.claude/` dela.
+struct Place {
+    cwd: PathBuf,
+    claude_dir: PathBuf,
+}
+
+impl Place {
+    /// A pasta de onde o comando foi chamado.
+    fn here() -> Self {
+        let cwd = crate::shared::context::env::workspace_root_strict()
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let claude_dir = ClaudePaths::for_project(&cwd)
+            .map(|p| p.claude_dir())
+            .unwrap_or_else(|_| cwd.clone());
+        Self { cwd, claude_dir }
+    }
+
+    /// A raiz das specs e o idioma do projeto.
+    fn project(&self) -> crate::commands::spec_events::Project {
+        crate::commands::spec_events::project(&self.cwd)
+    }
+}
+
+/// Em que rodada uma conferência entra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Runs {
+    /// Só na rodada inteira.
+    Round,
+    /// Na rodada inteira e também sozinha, por este nome no `--check`.
+    Named(&'static str),
+    /// Só na rodada inteira que pede as sobras (`--residue`).
+    Residue,
+}
+
+/// Uma conferência do diagnóstico: quando ela entra e o que ela confere.
+#[derive(Clone, Copy)]
+struct Check {
+    runs: Runs,
+    check: fn(&Place) -> CheckResult,
+}
+
+/// Todas as conferências, na ordem da rodada inteira. Acrescentar uma
+/// conferência é somar um item aqui, e nada mais: desta lista saem os nomes
+/// que o `--check` aceita na linha de comando, a escolha dele, a mensagem de
+/// conferência desconhecida e a rodada inteira.
+const CHECKS: &[Check] = &[
+    Check { runs: Runs::Round, check: |place| check_wiring(&place.claude_dir) },
+    // Antes do desvio dos moldes: a leitura dele só vale quando o binário que
+    // a faz é o instalado, e um arranque parado torna suspeita toda versão
+    // lida depois.
+    Check {
+        runs: Runs::Round,
+        check: |place| bootstrap_to_check_result(&crate::commands::doctor::bootstrap_check::run(&place.cwd)),
+    },
+    Check { runs: Runs::Round, check: |place| check_drift(&place.claude_dir) },
+    Check { runs: Runs::Round, check: |place| check_state_health(&place.claude_dir) },
+    Check { runs: Runs::Round, check: |_| check_claude_cli() },
+    Check { runs: Runs::Round, check: |place| lsp_check(&place.cwd) },
+    Check { runs: Runs::Round, check: |_| check_nerd_font() },
+    Check { runs: Runs::Named("wave-integrity"), check: |place| check_wave_integrity(&place.claude_dir) },
+    // O que o provedor realmente protege: uma base que só este binário recusa
+    // é uma base aberta para todo mundo, e isso não aparece até um envio
+    // direto passar.
+    Check {
+        runs: Runs::Named("branch-protection"),
+        check: |place| check_branch_protection(&place.cwd, place.project().lang),
+    },
+    // O índice das specs contra os arquivos de eventos: só acusa.
+    Check {
+        runs: Runs::Named("spec-index"),
+        check: |place| {
+            let project = place.project();
+            check_spec_index(&project.root, project.lang)
+        },
+    },
+    // O que o scan escreve fica fora do git: só acusa.
+    Check {
+        runs: Runs::Named("scan-output"),
+        check: |place| {
+            let project = place.project();
+            check_scan_output(&project.root, project.lang)
+        },
+    },
+    // As escolhas do `mustard.json` contra as configurações locais.
+    Check {
+        runs: Runs::Named("switches"),
+        check: |place| {
+            let project = place.project();
+            check_switches(&project.root, project.lang)
+        },
+    },
+    // O que um Mustard antigo deixou em arquivos que não são dele.
+    Check {
+        runs: Runs::Named("claude-md"),
+        check: |place| {
+            let project = place.project();
+            check_claude_md(&project.root, project.lang)
+        },
+    },
+    Check { runs: Runs::Residue, check: |place| check_residue(&place.claude_dir) },
+    Check {
+        runs: Runs::Residue,
+        check: |_| check_scratch_residue(&crate::commands::maint::scratch_gc::ScratchRoots::from_env()),
+    },
+];
+
+/// Os nomes que o `--check` aceita, na ordem da lista.
+fn names_of(list: &[Check]) -> Vec<&'static str> {
+    list.iter()
+        .filter_map(|item| match item.runs {
+            Runs::Named(name) => Some(name),
+            Runs::Round | Runs::Residue => None,
+        })
+        .collect()
+}
+
+/// O leitor do `--check` montado a partir de uma lista: recusa na linha de
+/// comando o nome que ela não tem, em vez de o comando responder um relatório
+/// vazio que se lê como "está tudo certo".
+fn parser_of(list: &[Check]) -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(names_of(list))
+}
+
+/// O leitor do `--check` da linha de comando.
+#[must_use]
+pub fn check_parser() -> clap::builder::PossibleValuesParser {
+    parser_of(CHECKS)
+}
+
+/// A conferência de nome `name`, ou a mensagem que diz quais existem.
+fn pick<'a>(list: &'a [Check], name: &str) -> Result<&'a Check, String> {
+    list.iter().find(|item| matches!(item.runs, Runs::Named(known) if known == name)).ok_or_else(|| {
+        format!("doctor: unknown check '{name}'. Known: {}", names_of(list).join(", "))
+    })
+}
+
+/// As conferências da rodada inteira, na ordem da lista; as das sobras só
+/// quando pedidas.
+fn round(list: &[Check], residue: bool) -> impl Iterator<Item = &Check> {
+    list.iter().filter(move |item| item.runs != Runs::Residue || residue)
+}
+
+/// O que o diagnóstico responde antes de imprimir: o resultado da conferência
+/// pedida ou de toda a rodada, ou a recusa de um nome que a lista não tem.
+fn answer(list: &[Check], opts: &DoctorOpts, place: &Place) -> Result<Vec<CheckResult>, String> {
+    match &opts.check {
+        Some(name) => pick(list, name).map(|item| vec![(item.check)(place)]),
+        None => Ok(round(list, opts.residue).map(|item| (item.check)(place)).collect()),
+    }
+}
+
 /// Dispatch `mustard-rt run doctor [--residue] [--check <CHECK>] [--format json|--json]`.
 pub fn run(opts: DoctorOpts) {
-    let started = std::time::Instant::now();
-    let cwd = crate::shared::context::workspace_root_strict()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let claude_dir = ClaudePaths::for_project(&cwd)
-        .map(|p| p.claude_dir())
-        .unwrap_or_else(|_| cwd.clone());
-
-    // When a specific --check is requested, run only that check.
-    if let Some(ref check_name) = opts.check {
-        // W3.T3.4 / T3.8 / T3.9 — the three claude-paths-single-source checks
-        // produce native JSON shapes (not the generic `CheckResult` envelope).
-        // They short-circuit BEFORE the legacy match below so their JSON form
-        // is the only output.
-        if matches!(
-            check_name.as_str(),
-            "claude-paths"
-                | "workspace-leaks"
-                | "i1"
-                | "superseded"
-                | "capability-drift"
-                | "guards-scaffold"
-                | "inject-delivery"
-        ) {
-            run_typed_check(check_name, &cwd, opts.format == "json");
-            economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
-            return;
+    let results = match answer(CHECKS, &opts, &Place::here()) {
+        Ok(results) => results,
+        Err(unknown) => {
+            eprintln!("{unknown}");
+            std::process::exit(1);
         }
-
-        let result = match check_name.as_str() {
-            "wave-integrity" => check_wave_integrity(&claude_dir),
-            "status-consistency" => check_status_consistency(&claude_dir),
-            "branch-protection" => check_branch_protection(&cwd),
-            other => {
-                eprintln!(
-                    "doctor: unknown check '{other}'. Known: \
-                     wave-integrity, claude-paths, workspace-leaks, i1, status-consistency, superseded, capability-drift, guards-scaffold, inject-delivery, branch-protection"
-                );
-                std::process::exit(1);
-            }
-        };
-        if opts.format == "json" {
-            render_report_json(&[result]);
-        } else {
-            render_report(&[result]);
-        }
-        economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": 1, "ok": true}));
-        return;
-    }
-
-    // Default: run all checks.
-    let mut results: Vec<CheckResult> = vec![
-        check_wiring(&claude_dir),
-        // Before drift: a drift reading is only meaningful once the binary the
-        // reading comes FROM is known to be the installed one. A dormant
-        // bootstrap makes every version answer below it untrustworthy.
-        bootstrap_to_check_result(&crate::commands::doctor::bootstrap_check::run(&cwd)),
-        check_drift(&claude_dir),
-        check_state_health(&claude_dir),
-        check_claude_cli(),
-        lsp_check(&cwd),
-        check_nerd_font(),
-        // W10.T10.5 — new check, always in the full run.
-        check_wave_integrity(&claude_dir),
-        // W2 spec-status-consistency — always in the full run.
-        check_status_consistency(&claude_dir),
-        // What is really protected, measured — always in the full run: a
-        // protection resting on the unmeasured fallback is invisible until it
-        // fails to stop a commit.
-        check_branch_protection(&cwd),
-    ];
-
-    if opts.residue {
-        results.push(check_residue(&claude_dir));
-        results.push(check_scratch_residue(
-            &crate::commands::maint::scratch_gc::ScratchRoots::from_env(),
-        ));
-    }
-
-    // W3.T3.10 — claude-paths-single-source check trio. Each check renders
-    // its native JSON object under its own top-level key in the JSON path;
-    // in text mode it folds into a `CheckResult` envelope so the OK/WARN/FAIL
-    // summary line still works.
-    let cp_report = crate::commands::doctor::doctor_claude_paths::run(&cwd);
-    let wl_report = crate::commands::doctor::doctor_workspace_leaks::run(&cwd);
-    let i1_report = crate::commands::doctor::doctor_i1::run(&cwd);
-    // Roadmap #6 — prune/accumulation linter. Read-only; never blocks (WARN at
-    // most) — its job is to surface archivable / likely-superseded specs.
-    let sup_report = crate::commands::doctor::superseded_check::run(&cwd);
-    // Roadmap #6 — capability/grain drift advisory. ADVISORY ONLY (WARN at
-    // most, never blocks): surfaces capabilities that cover code no longer in
-    // the grain model + emits `capability.drift` events. `None` when there is
-    // no grain model (cannot judge drift → silent no-op).
-    let drift_report = crate::commands::doctor::capability_drift_check::run(&cwd);
-    // Uncurated-rules advisory. ADVISORY ONLY (WARN at most): names the
-    // subprojects whose `## Guards` block is still the `/scan` scaffold, so an
-    // agent dispatched there is silently handed no rules. `None` when there is
-    // no scan census (nothing could carry the sentinel → silent no-op).
-    let scaffold_report = crate::commands::doctor::guards_scaffold_check::run(&cwd);
-    // Delivery of the declared injectables. NOT advisory: a router that does
-    // not reach the window means the harness is not enforcing anything, and
-    // until this check existed every way that happens failed in silence. Joins
-    // `results` so it reaches both renderers and the exit code.
-    let delivery_report = crate::commands::doctor::inject_delivery_check::run(&cwd);
-    results.push(inject_delivery_to_check_result(&delivery_report));
-
+    };
     if opts.format == "json" {
-        render_combined_json(
-            &results,
-            &cp_report,
-            &wl_report,
-            &i1_report,
-            &sup_report,
-            drift_report.as_ref(),
-            scaffold_report.as_ref(),
-        );
+        render_report_json(&results);
     } else {
-        results.push(claude_paths_to_check_result(&cp_report));
-        results.push(workspace_leaks_to_check_result(&wl_report));
-        results.push(i1_to_check_result(&i1_report));
-        results.push(superseded_to_check_result(&sup_report));
-        if let Some(ref drift) = drift_report {
-            results.push(capability_drift_to_check_result(drift));
-        }
-        if let Some(ref scaffold) = scaffold_report {
-            results.push(guards_scaffold_to_check_result(scaffold));
-        }
         render_report(&results);
     }
-
-    // i1 violations are hard errors — exit-non-zero even when every legacy
-    // check returns OK.
-    let any_fail = results.iter().any(|r| r.status == Status::Fail) || !i1_report.ok;
-    economy::emit_operation(&context::cwd(), ActorKind::Orchestrator, "doctor", started.elapsed().as_millis() as u64, None, json!({"checks": results.len() + 3, "ok": !any_fail}));
-    if any_fail {
+    // Uma conferência pedida sozinha só informa; a rodada inteira sai com 1
+    // quando alguma falha.
+    if opts.check.is_none() && results.iter().any(|r| r.status == Status::Fail) {
         std::process::exit(1);
     }
 }
 
-// ---------------------------------------------------------------------------
-// W3.T3.4 / T3.8 / T3.9 — typed-check JSON path
-// ---------------------------------------------------------------------------
-
-/// Run one of the typed checks (`claude-paths`, `workspace-leaks`, `i1`) and
-/// print its native JSON shape. Text mode renders the same payload as
-/// pretty-printed JSON — the typed checks do not have a separate text format,
-/// callers asking for text get JSON regardless (the typed shape IS the
-/// contract).
-fn run_typed_check(name: &str, cwd: &Path, json_format: bool) {
-    let value = match name {
-        "claude-paths" => serde_json::to_value(crate::commands::doctor::doctor_claude_paths::run(cwd)),
-        "workspace-leaks" => serde_json::to_value(crate::commands::doctor::doctor_workspace_leaks::run(cwd)),
-        "superseded" => serde_json::to_value(crate::commands::doctor::superseded_check::run(cwd)),
-        "capability-drift" => {
-            // Advisory: `None` when there is no grain model (cannot judge
-            // drift). Surface that explicitly so a direct `--check` is honest.
-            match crate::commands::doctor::capability_drift_check::run(cwd) {
-                Some(report) => serde_json::to_value(report),
-                None => Ok(json!({
-                    "ok": true,
-                    "skipped": "no grain.model.json — cannot judge capability drift",
-                })),
-            }
-        }
-        "guards-scaffold" => {
-            // Advisory: `None` when there is no scan census — nothing seeds a
-            // pending block without Wave 1, so an "all clear" would be vacuous.
-            match crate::commands::doctor::guards_scaffold_check::run(cwd) {
-                Some(report) => serde_json::to_value(report),
-                None => Ok(json!({
-                    "ok": true,
-                    "skipped": "no grain.model.json — no scan census to judge guards scaffolds",
-                })),
-            }
-        }
-        "inject-delivery" => {
-            // Never a no-op: "no injectable declared" is itself an answer, and
-            // the plugin switch is measurable with no project state at all.
-            //
-            // A FAIL exits NON-ZERO, like `i1`. This check is advertised as the
-            // validation command, and a script or CI job gating on it read a
-            // clean exit while the report said `failed: true` — the harness
-            // entirely inert and the gate silently green, which is the exact
-            // shape this unit exists to remove (found in review).
-            let report = crate::commands::doctor::inject_delivery_check::run(cwd);
-            let exit_non_zero = report.failed;
-            let v = serde_json::to_value(report);
-            print_typed_value(v, json_format);
-            if exit_non_zero {
-                std::process::exit(1);
-            }
-            return;
-        }
-        "i1" => {
-            let report = crate::commands::doctor::doctor_i1::run(cwd);
-            let exit_non_zero = !report.ok;
-            let v = serde_json::to_value(report);
-            // Print first so consumers see the body before we exit.
-            print_typed_value(v, json_format);
-            if exit_non_zero {
-                std::process::exit(1);
-            }
-            return;
-        }
-        _ => return,
-    };
-    print_typed_value(value, json_format);
-}
-
-fn print_typed_value(
-    value: Result<serde_json::Value, serde_json::Error>,
-    _json_format: bool,
-) {
-    let v = value.unwrap_or_else(|_| json!({}));
-    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()));
-}
-
-/// Render the default (all-checks) JSON payload. Combines the legacy
-/// `CheckResult` array shape with the three W3 typed reports under fixed
-/// top-level keys (`claude_paths`, `workspace_leaks`, `i1`) so the dashboard
-/// and CI consumers can read each independently.
-fn render_combined_json(
-    legacy: &[CheckResult],
-    cp: &crate::commands::doctor::doctor_claude_paths::ClaudePathsReport,
-    wl: &crate::commands::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
-    i1: &crate::commands::doctor::doctor_i1::I1Report,
-    sup: &crate::commands::doctor::superseded_check::SupersededReport,
-    drift: Option<&crate::commands::doctor::capability_drift_check::CapabilityDriftReport>,
-    scaffold: Option<&crate::commands::doctor::guards_scaffold_check::GuardsScaffoldReport>,
-) {
-    let checks: Vec<serde_json::Value> = legacy
-        .iter()
-        .map(|r| {
-            let status_str = r.status.label().to_ascii_lowercase();
-            let message = if r.details.is_empty() {
-                String::new()
-            } else if r.details.len() == 1 {
-                r.details[0].clone()
-            } else {
-                r.details.join("; ")
-            };
-            json!({
-                "name": r.name,
-                "status": status_str,
-                "message": message,
-                "details": r.details,
-            })
-        })
-        .collect();
-
-    let any_fail = legacy.iter().any(|r| r.status == Status::Fail) || !i1.ok;
-    // Capability drift and uncurated guards are ADVISORY: they can raise WARN
-    // but NEVER FAIL.
-    let drift_warn = drift.is_some_and(|d| !d.ok);
-    let scaffold_warn = scaffold.is_some_and(|s| !s.ok);
-    let any_warn = legacy.iter().any(|r| r.status == Status::Warn)
-        || !cp.divergences.is_empty()
-        || !wl.leaks.is_empty()
-        || !sup.ok
-        || drift_warn
-        || scaffold_warn;
-    let overall = if any_fail { "fail" } else if any_warn { "warn" } else { "ok" };
-
-    let violations: Vec<String> = legacy
-        .iter()
-        .filter(|r| r.name == "skill-discovery" && r.status == Status::Warn)
-        .flat_map(|r| r.details.iter())
-        .cloned()
-        .collect();
-
-    let mut body = json!({
-        "checks": checks,
-        "overall": overall,
-        "violations": violations,
-        // W3.T3.10 — three named, typed reports keyed verbatim.
-        "claude_paths": cp,
-        "workspace_leaks": wl,
-        "i1": i1,
-        // Roadmap #6 — prune/accumulation linter, keyed verbatim.
-        "superseded": sup,
-    });
-    // Roadmap #6 — capability/grain drift advisory, keyed verbatim. Only
-    // present when a grain model exists (otherwise the check is a no-op and
-    // the key is omitted so consumers can tell "no model" from "no drift").
-    if let Some(d) = drift {
-        if let serde_json::Value::Object(ref mut map) = body {
-            map.insert(
-                "capability_drift".to_string(),
-                serde_json::to_value(d).unwrap_or(serde_json::Value::Null),
-            );
-        }
-    }
-    // Uncurated-rules advisory, keyed verbatim. Same rule: present only when
-    // there is a scan census, so consumers can tell "no census" from "no
-    // uncurated scaffold".
-    if let Some(s) = scaffold {
-        if let serde_json::Value::Object(ref mut map) = body {
-            map.insert(
-                "guards_scaffold".to_string(),
-                serde_json::to_value(s).unwrap_or(serde_json::Value::Null),
-            );
-        }
-    }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
-    );
-}
-
-/// Project a `ClaudePathsReport` onto the legacy `CheckResult` envelope for
-/// text-mode rendering.
-fn claude_paths_to_check_result(
-    report: &crate::commands::doctor::doctor_claude_paths::ClaudePathsReport,
-) -> CheckResult {
-    if report.divergences.is_empty() {
-        let mut r = CheckResult::ok("claude-paths");
-        r.details.push("filesystem matches ClaudePaths catalog".to_string());
-        return r;
-    }
-    let details: Vec<String> = report
-        .divergences
-        .iter()
-        .map(|d| format!("{} {} ({})", d.kind, d.path, d.severity))
-        .collect();
-    CheckResult::warn("claude-paths", details)
-}
-
-/// Project a `WorkspaceLeaksReport` onto the legacy `CheckResult` envelope.
-fn workspace_leaks_to_check_result(
-    report: &crate::commands::doctor::doctor_workspace_leaks::WorkspaceLeaksReport,
-) -> CheckResult {
-    if report.leaks.is_empty() {
-        let mut r = CheckResult::ok("workspace-leaks");
-        r.details.push("no nested .claude/ holds pipeline state".to_string());
-        return r;
-    }
-    let details: Vec<String> = report
-        .leaks
-        .iter()
-        .map(|l| format!("{} -> {}", l.path, l.leaked_entries.join(", ")))
-        .collect();
-    CheckResult::warn("workspace-leaks", details)
-}
-
-/// Project a `SupersededReport` onto the legacy `CheckResult` envelope. Roadmap
-/// #6 is a WARN-only linter — surfacing prune candidates never blocks the
-/// doctor run. OK when nothing is archivable / stale.
-fn superseded_to_check_result(
-    report: &crate::commands::doctor::superseded_check::SupersededReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("superseded");
-        r.details.push(format!(
-            "{} spec(s): {} active, {} terminal — nothing to prune",
-            report.total_specs, report.active, report.terminal
-        ));
-        return r;
-    }
-    let mut details: Vec<String> = report
-        .prune_candidates
-        .iter()
-        .map(|c| format!("prune {} ({}, {})", c.slug, c.outcome, c.reason))
-        .collect();
-    details.extend(report.stale_active.iter().map(|c| {
-        format!(
-            "stale-active {} (ratio {}/1000): {}",
-            c.slug,
-            c.stale_ratio_x1000,
-            c.stale_files.join(", ")
-        )
-    }));
-    CheckResult::warn("superseded", details)
-}
-
-/// Project a `CapabilityDriftReport` onto the legacy `CheckResult` envelope.
-/// Roadmap #6 capability-drift is ADVISORY: drifted covers become WARN, never
-/// FAIL. OK when nothing drifted.
-fn capability_drift_to_check_result(
-    report: &crate::commands::doctor::capability_drift_check::CapabilityDriftReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("capability-drift");
-        r.details.push(format!(
-            "{} capabilit(ies) checked — none cover missing entities",
-            report.total_capabilities
-        ));
-        return r;
-    }
-    let details: Vec<String> = report
-        .drifted
-        .iter()
-        .map(|d| format!("drift {} covers {} (no longer in grain)", d.id, d.entity))
-        .collect();
-    CheckResult::warn("capability-drift", details)
-}
-
-/// Project an `InjectDeliveryReport` onto the legacy `CheckResult` envelope.
-///
-/// Unlike the advisories around it, this one can FAIL: a router that does not
-/// reach the window is not a style problem, it is the harness not running. Each
-/// detail line carries its own remedy, so a failing report is actionable
-/// without opening the JSON.
 /// Fold the bootstrap report into the doctor's OK/WARN/FAIL envelope.
 ///
 /// `binary-missing`, `stamp-mismatch` and `toolchain-unreachable` are FAIL:
@@ -1805,391 +383,28 @@ fn bootstrap_to_check_result(
     }
 }
 
-fn inject_delivery_to_check_result(
-    report: &crate::commands::doctor::inject_delivery_check::InjectDeliveryReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("inject-delivery");
-        r.details.push(format!(
-            "{} declared injectable(s) reach the window",
-            report.declared
-        ));
-        return r;
-    }
-    let details: Vec<String> = report
-        .findings
-        .iter()
-        .map(|f| format!("{}: {} — {}", f.kind, f.detail, f.remedy))
-        .collect();
-    if report.failed {
-        CheckResult::fail("inject-delivery", details)
-    } else {
-        CheckResult::warn("inject-delivery", details)
-    }
-}
-
-/// Project a `GuardsScaffoldReport` onto the legacy `CheckResult` envelope. The
-/// uncurated-rules advisory is ADVISORY: a scaffold becomes WARN, never FAIL.
-/// OK when every subproject's `## Guards` block has been enriched.
-fn guards_scaffold_to_check_result(
-    report: &crate::commands::doctor::guards_scaffold_check::GuardsScaffoldReport,
-) -> CheckResult {
-    if report.ok {
-        let mut r = CheckResult::ok("guards-scaffold");
-        r.details
-            .push("every subproject carries curated Guards".to_string());
-        return r;
-    }
-    let mut details: Vec<String> = report
-        .uncurated
-        .iter()
-        .map(|u| {
-            format!(
-                "{} still carries the uncurated Guards scaffold — agents dispatched there get no rules",
-                u.subproject
-            )
-        })
-        .collect();
-    details.push("fix: re-run the `/scan` guards enrich for the subprojects above".to_string());
-    CheckResult::warn("guards-scaffold", details)
-}
-
-/// Project an `I1Report` onto the legacy `CheckResult` envelope. I1 is a hard
-/// error: any violation becomes FAIL, never WARN.
-fn i1_to_check_result(report: &crate::commands::doctor::doctor_i1::I1Report) -> CheckResult {
-    if report.violations.is_empty() {
-        let mut r = CheckResult::ok("i1");
-        r.details.push("no .claude/.claude/ sequence found".to_string());
-        return r;
-    }
-    CheckResult::fail("i1", report.violations.clone())
-}
-
-// /// Telemetry — `pipeline.economy.operation.invoked` for the doctor run.
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
+/// O que os testes das partes do diagnóstico dividem, o teste que roda várias
+/// conferências juntas e o que mede o tamanho de cada parte.
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::Path;
+
     use tempfile::tempdir;
 
-    // --- Helpers ---
+    use super::*;
 
-    fn write_file(path: &Path, content: &str) {
+    pub(super) fn write_file(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, content).unwrap();
     }
 
-    fn make_minimal_settings(hooks_dir: &Path, command: &str) {
+    pub(super) fn make_minimal_settings(hooks_dir: &Path, command: &str) {
         let settings = format!(
             r#"{{ "hooks": {{ "PreToolUse": [{{ "hooks": [{{ "type": "command", "command": "{command}" }}] }}] }} }}"#
         );
         write_file(&hooks_dir.join("settings.json"), &settings);
-    }
-
-    // --- wiring tests ---
-
-    #[test]
-    fn wiring_clean_settings_is_ok() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        make_minimal_settings(&claude_dir, "mustard-rt on PreToolUse");
-        let result = check_wiring(&claude_dir);
-        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
-    }
-
-    #[test]
-    fn wiring_broken_event_is_fail() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        make_minimal_settings(&claude_dir, "mustard-rt on NonExistentEvent");
-        let result = check_wiring(&claude_dir);
-        assert_eq!(result.status, Status::Fail);
-        assert!(result.details[0].contains("NonExistentEvent"));
-    }
-
-    #[test]
-    fn wiring_broken_run_subcommand_is_fail() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        make_minimal_settings(&claude_dir, "mustard-rt run dead-script");
-        let result = check_wiring(&claude_dir);
-        assert_eq!(result.status, Status::Fail);
-        assert!(result.details[0].contains("dead-script"));
-    }
-
-    #[test]
-    fn wiring_missing_settings_is_warn() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        // No settings.json created.
-        let result = check_wiring(&claude_dir);
-        assert_eq!(result.status, Status::Warn);
-    }
-
-    // --- residue tests ---
-
-    #[test]
-    fn residue_detects_dead_js_reference() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        // Plant a settings.json that references a .js file that doesn't exist.
-        write_file(
-            &claude_dir.join("settings.json"),
-            r#"{ "command": "node .claude/scripts/dead-hook.js" }"#,
-        );
-        let result = check_residue(&claude_dir);
-        assert_eq!(result.status, Status::Warn);
-        let found = result.details.iter().any(|d| d.contains("dead-hook.js"));
-        assert!(found, "expected dead-hook.js hit, got: {:?}", result.details);
-    }
-
-    #[test]
-    fn residue_clean_dir_is_ok() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        write_file(&claude_dir.join("settings.json"), r#"{ "foo": "bar" }"#);
-        let result = check_residue(&claude_dir);
-        assert_eq!(result.status, Status::Ok);
-    }
-
-    /// AC-5 — com sobra candidata, o `--residue` relata o tamanho dela e o da
-    /// compilação compartilhada.
-    #[test]
-    fn doctor_residue_reports_scratch_leftovers() {
-        use crate::commands::maint::scratch_gc::{backdate_tree, human_bytes, AgeClock, ScratchRoots};
-
-        let base = tempdir().unwrap();
-        let temp_root = base.path().join("tmp");
-        let old = temp_root.join("tmp.old");
-        std::fs::create_dir_all(old.join("apps").join("rt")).unwrap();
-        write_file(&old.join("Cargo.toml"), "[workspace]\n");
-        std::fs::write(old.join("apps").join("rt").join("big.bin"), vec![0u8; 3 * 1024]).unwrap();
-        // A árvore inteira envelhecida pelo mtime, o relógio das fixtures.
-        backdate_tree(&old, 24);
-        let candidate_bytes = std::fs::metadata(old.join("Cargo.toml")).unwrap().len() + 3 * 1024;
-
-        let shared = base.path().join("cache").join("scratch-target");
-        std::fs::create_dir_all(shared.join("debug")).unwrap();
-        std::fs::write(shared.join("debug").join("lib.rlib"), vec![0u8; 2048]).unwrap();
-
-        let roots = ScratchRoots {
-            temp_root,
-            shared_target: Some(shared.clone()),
-            cap_bytes: 1024 * 1024,
-            current_session: "sess-current".to_string(),
-            current_dir: None,
-            home: None,
-            clock: AgeClock::Modified,
-            owner_uid: crate::commands::maint::scratch_gc::current_uid(),
-        };
-        let result = check_scratch_residue(&roots);
-
-        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
-        let text = result.details.join("\n");
-        assert!(
-            text.contains(&format!("1 scratch leftover(s) older than 12h: {}", human_bytes(candidate_bytes))),
-            "{text}"
-        );
-        assert!(
-            text.contains(&format!("shared build {}: {}", shared.display(), human_bytes(2048))),
-            "{text}"
-        );
-        assert!(old.exists(), "the doctor only reads");
-    }
-
-    // --- drift tests ---
-
-    #[test]
-    fn drift_skips_when_templates_not_found() {
-        // Nest the project ≥5 levels deep inside the tempdir so that
-        // `find_templates_dir`'s 5-level upward walk stays WITHIN the
-        // (template-free) tempdir and never reaches ancestors of the system
-        // temp dir. On some CI runners (notably Windows) a `templates/` or
-        // `apps/cli/templates` exists a few levels above `$TMP`, which made the
-        // walk find one and return Ok instead of Skip — green locally, red on CI.
-        let dir = tempdir().unwrap();
-        let nested = dir.path().join("a").join("b").join("c").join("d").join("e").join("f");
-        let claude_dir = nested.join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        // No templates/ anywhere in this subtree.
-        let result = check_drift(&claude_dir);
-        assert_eq!(result.status, Status::Skip);
-    }
-
-    #[test]
-    fn drift_ok_when_hashes_match() {
-        let dir = tempdir().unwrap();
-        let templates_dir = dir.path().join("templates");
-        let claude_dir = dir.path().join(".claude");
-        // Create matching content for one CORE_FOLDER.
-        let folder = "skills";
-        let src_file = templates_dir.join(folder).join("test.md");
-        let dst_file = claude_dir.join(folder).join("test.md");
-        write_file(&src_file, "# hello");
-        write_file(&dst_file, "# hello");
-
-        let result = check_drift(&claude_dir);
-        // Should not be FAIL — either OK or SKIP.
-        assert_ne!(result.status, Status::Fail, "{:?}", result.details);
-    }
-
-    #[test]
-    fn drift_warns_on_hash_mismatch() {
-        let dir = tempdir().unwrap();
-        let templates_dir = dir.path().join("templates");
-        let claude_dir = dir.path().join(".claude");
-        let folder = "skills";
-        let src_file = templates_dir.join(folder).join("test.md");
-        let dst_file = claude_dir.join(folder).join("test.md");
-        write_file(&src_file, "# source version");
-        write_file(&dst_file, "# different installed version");
-
-        let result = check_drift(&claude_dir);
-        // Either WARN (drift detected) or SKIP (templates not reachable via
-        // find_templates_dir — the tempdir has no apps/cli path, so find_templates_dir
-        // should find `templates/` directly).
-        assert!(
-            result.status == Status::Warn || result.status == Status::Skip,
-            "expected WARN or SKIP, got {:?}: {:?}", result.status, result.details
-        );
-    }
-
-    // --- state health tests ---
-
-    #[test]
-    fn state_health_orphan_state_warns() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        let states_dir = claude_dir.join(".pipeline-states");
-        std::fs::create_dir_all(&states_dir).unwrap();
-        // Plant an orphan state file (spec not in spec/ flat dir).
-        write_file(
-            &states_dir.join("orphan.json"),
-            r#"{ "spec": "2026-01-01-nonexistent-spec", "state": "execute" }"#,
-        );
-        // grain.model.json present to isolate the orphan check.
-        write_file(&claude_dir.join("grain.model.json"), "{}");
-
-        let result = check_state_health(&claude_dir);
-        assert_eq!(result.status, Status::Warn);
-        let has_orphan = result.details.iter().any(|d| d.contains("orphan"));
-        assert!(has_orphan, "expected orphan warning, got: {:?}", result.details);
-    }
-
-    #[test]
-    fn state_health_missing_model_warns() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        // No grain.model.json, no .pipeline-states/.
-        let result = check_state_health(&claude_dir);
-        assert_eq!(result.status, Status::Warn);
-        let has_model = result.details.iter().any(|d| d.contains("grain.model.json"));
-        assert!(has_model, "expected model warning, got: {:?}", result.details);
-    }
-
-    #[test]
-    fn state_health_clean_install_is_ok() {
-        let dir = tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        // Model present, no .pipeline-states/ directory.
-        write_file(&claude_dir.join("grain.model.json"), "{}");
-        let result = check_state_health(&claude_dir);
-        assert_eq!(result.status, Status::Ok, "{:?}", result.details);
-    }
-
-    // --- timestamp expiry helper ---
-
-    #[test]
-    fn expired_timestamp_detected() {
-        // A timestamp far in the past is expired.
-        assert!(is_timestamp_expired("2020-01-01T00:00:00Z", u128::MAX, 1));
-    }
-
-    #[test]
-    fn future_timestamp_not_expired() {
-        // now_ms = 0, expiry = 24h — everything is in the future.
-        assert!(!is_timestamp_expired("2999-12-31T23:59:59Z", 0, 86_400_000));
-    }
-
-    #[test]
-    fn empty_timestamp_not_expired() {
-        assert!(!is_timestamp_expired("", u128::MAX, 1));
-    }
-
-    // --- branch-protection tests ---
-
-    /// An empty `git.flow` is what the installer WRITES, so it can never be the
-    /// warning. What warns is the unmeasured probe — no remote here, so
-    /// `origin/HEAD` says nothing and protection rests on its literals.
-    #[test]
-    fn branch_protection_warns_only_when_origin_head_is_unreadable() {
-        let dir = tempdir().unwrap();
-        write_file(
-            &dir.path().join("mustard.json"),
-            r#"{"git":{"flow":{},"provider":"github","submodules":false}}"#,
-        );
-        let result = check_branch_protection(dir.path());
-        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
-        assert!(
-            result.details.iter().any(|d| d.contains("origin/HEAD")),
-            "the warning must name what could not be measured, got: {:?}",
-            result.details
-        );
-        assert!(
-            !result.details.iter().any(|d| d.contains("git.flow is empty")),
-            "an empty flow is the installed shape — it is not a finding: {:?}",
-            result.details
-        );
-    }
-
-    /// A declared `git.flow` does not make the check pass either: the reading
-    /// is the same one, and a flow that names `dev` and `main` protects neither
-    /// by declaring them.
-    #[test]
-    fn branch_protection_reports_the_measured_set_not_the_declared_one() {
-        let dir = tempdir().unwrap();
-        write_file(
-            &dir.path().join("mustard.json"),
-            r#"{"git":{"flow":{"*":"dev","dev":"main"},"provider":"github","submodules":false}}"#,
-        );
-        let result = check_branch_protection(dir.path());
-        // No remote in a bare temp dir ⇒ unmeasured ⇒ the same warning as
-        // above. The declaration changed nothing, which IS the assertion.
-        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
-        assert!(
-            result.details.iter().any(|d| d.contains("origin/HEAD")),
-            "declaring a flow does not answer what is protected: {:?}",
-            result.details
-        );
-    }
-
-    #[test]
-    fn branch_protection_missing_mustard_json_skips() {
-        let dir = tempdir().unwrap();
-        let result = check_branch_protection(dir.path());
-        assert_eq!(result.status, Status::Skip, "{:?}", result.details);
-    }
-
-    // --- lsp_check tests ---
-
-    #[test]
-    fn lsp_check_skips_with_no_mapped_stacks() {
-        let dir = tempdir().unwrap();
-        // Empty directory: no manifest files → no mapped stacks → Skip.
-        let result = lsp_check(dir.path());
-        assert_eq!(result.status, Status::Skip, "{:?}", result.details);
     }
 
     #[test]
@@ -2213,5 +428,60 @@ mod tests {
 
         let has_lsp = results.iter().any(|r| r.name == "lsp");
         assert!(has_lsp, "expected a check named 'lsp' in the report");
+    }
+
+    /// Uma conferência de mentira somada à lista chega aos quatro lugares sem
+    /// mexer em mais nada: aos nomes que o `--check` aceita na linha de
+    /// comando, à escolha dele, à mensagem de conferência desconhecida e à
+    /// rodada inteira. E a linha de comando de verdade lê a mesma lista.
+    #[test]
+    fn a_check_added_to_the_list_reaches_the_four_places_with_nothing_else_touched() {
+        const FAKE: &str = "de-mentira";
+        let mut list = CHECKS.to_vec();
+        list.push(Check { runs: Runs::Named(FAKE), check: |_| CheckResult::ok(FAKE) });
+        let dir = tempdir().unwrap();
+        let place = Place { cwd: dir.path().to_path_buf(), claude_dir: dir.path().join(".claude") };
+        let opts = |check: Option<&str>| DoctorOpts {
+            residue: false,
+            check: check.map(str::to_string),
+            format: "text".into(),
+        };
+
+        let accepts = |list: &[Check]| {
+            clap::Command::new("doctor")
+                .arg(clap::Arg::new("check").long("check").value_parser(parser_of(list)))
+                .try_get_matches_from(["doctor", "--check", FAKE])
+                .is_ok()
+        };
+        assert!(accepts(&list), "the command line refuses the check the list has");
+        assert!(!accepts(CHECKS), "the command line takes a check the list does not have");
+
+        let alone = answer(&list, &opts(Some(FAKE)), &place).unwrap();
+        assert_eq!(alone.iter().map(|r| r.name).collect::<Vec<_>>(), [FAKE], "--check {FAKE} runs something else");
+
+        let unknown = answer(&list, &opts(Some("nenhuma")), &place).err().unwrap();
+        assert!(unknown.contains(FAKE), "the unknown-check message does not name {FAKE}: {unknown}");
+        assert!(unknown.contains("claude-md"), "the unknown-check message lost the checks of the list: {unknown}");
+
+        let all = answer(&list, &opts(None), &place).unwrap();
+        let names: Vec<&str> = all.iter().map(|r| r.name).collect();
+        assert_eq!(names.last(), Some(&FAKE), "the full run leaves {FAKE} out: {names:?}");
+        assert_eq!(all.len(), round(CHECKS, false).count() + 1, "the full run changed more than the new check");
+
+        let run = <crate::commands::doctor::cli::DoctorCmd as clap::Subcommand>::augment_subcommands(
+            clap::Command::new("run"),
+        );
+        let doctor = run.find_subcommand("doctor").expect("the doctor is registered");
+        let check = doctor.get_arguments().find(|arg| arg.get_id() == "check").expect("--check is declared");
+        let taken: Vec<String> = check.get_possible_values().iter().map(|v| v.get_name().to_string()).collect();
+        assert_eq!(taken, names_of(CHECKS), "the real --check does not read the list of checks");
+    }
+
+    /// Nenhum arquivo do diagnóstico passa do teto de linhas de código: a porta e
+    /// cada parte da pasta dela, pela medida única do núcleo.
+    #[test]
+    fn no_file_of_the_doctor_goes_over_the_code_line_cap() {
+        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("commands").join("doctor").join("doctor.rs");
+        assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

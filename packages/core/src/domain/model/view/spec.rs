@@ -82,12 +82,11 @@ pub enum Outcome {
     Abandoned,
     /// Replaced by a newer spec that subsumes the same scope. Distinct from
     /// `Cancelled`: the work was redirected, not dropped. Dashboard renders
-    /// this with the orange badge (deep-refactor W4, 2026-05-25).
+    /// this with the orange badge.
     Superseded,
     /// Folded into a larger consolidating spec — the work survives there.
     /// Distinct from `Superseded`: a Superseded spec was replaced; an Absorbed
-    /// spec was merged. Dashboard renders this with the light-grey badge
-    /// (deep-refactor W4, 2026-05-25).
+    /// spec was merged. Dashboard renders this with the light-grey badge.
     Absorbed,
 }
 
@@ -370,7 +369,7 @@ impl SpecView {
 
     /// `true` when the view holds no event evidence — both timestamps absent.
     ///
-    /// W8A-2 (no-sqlite Wave 8): supersedes the dashboard's previous reliance
+    /// Supersedes the dashboard's previous reliance
     /// on `SqliteSpecReader::spec_view` returning `Ok(None)` for an unknown
     /// spec. With the reader gone, callers project unconditionally and use
     /// this predicate to decide whether to surface an empty-state payload.
@@ -549,7 +548,7 @@ mod tests {
 
     #[test]
     fn outcome_and_flags_parse_legacy_forms() {
-        // Wave 4 of deep-refactor (2026-05-25) split `superseded` and
+        // A later change split `superseded` and
         // `absorbed` out of `Cancelled` so the dashboard can render their own
         // badges. Both parse to their dedicated variants now.
         assert_eq!(Outcome::parse("superseded"), Some(Outcome::Superseded));

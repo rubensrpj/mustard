@@ -841,3 +841,115 @@ fn ci_is_read_by_value_and_not_by_presence() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// A versão que a publicação automática solta
+// ---------------------------------------------------------------------------
+
+/// O trecho do `bump-on-main.yml` que calcula a versão que sai, como está no
+/// arquivo, entre as duas marcas.
+fn version_block(workflow: &str) -> String {
+    let lines: Vec<&str> = workflow.lines().collect();
+    let at = |mark: &str| {
+        lines
+            .iter()
+            .position(|line| line.trim() == mark)
+            .unwrap_or_else(|| panic!("{BUMP_WORKFLOW_REL} perdeu a marca `{mark}`"))
+    };
+    let (start, end) = (at("# --- a versão que sai: início ---"), at("# --- a versão que sai: fim ---"));
+    lines[start + 1..end].iter().map(|line| line.trim_start()).collect::<Vec<_>>().join("\n")
+}
+
+/// Um git na pasta `dir`, sem depender da configuração da máquina.
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A versão que o trecho `block` solta num repositório com as tags `tags`,
+/// uma por commit, da mais velha à mais nova, e com o `plugin.json` na versão
+/// `declared` no commit que chega depois delas. `None` quando a máquina não
+/// tem um shell que rode o trecho.
+fn released(root: &Path, block: &str, tags: &[&str], declared: &str) -> Option<String> {
+    let dir = tempfile::tempdir().expect("pasta do repositório");
+    let repo = dir.path();
+    git(repo, &["init", "-q"]);
+    let manifest = repo.join(MANIFEST_REL);
+    std::fs::create_dir_all(manifest.parent().expect("pasta do manifesto")).expect("pasta do manifesto");
+    for tag in tags {
+        std::fs::write(&manifest, format!("{{\n  \"version\": \"{}\"\n}}\n", tag.trim_start_matches('v')))
+            .expect("manifesto");
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", tag]);
+        git(repo, &["tag", "-a", tag, "-m", tag]);
+    }
+    std::fs::write(&manifest, format!("{{\n  \"version\": \"{declared}\"\n}}\n")).expect("manifesto");
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "--allow-empty", "-m", "o merge que chega"]);
+
+    let script = repo.join("versao.sh");
+    std::fs::write(&script, format!("set -euo pipefail\nmanifest={MANIFEST_REL}\n{block}\nprintf '%s' \"$nv\"\n"))
+        .expect("o trecho");
+    let handed_over = script.to_string_lossy().replace('\\', "/");
+    let Some(shell) = shell(&handed_over) else {
+        skip_lock_guard(&format!(
+            "nada nesta máquina roda um shell que leia {handed_over}; o cálculo da versão de \
+             {} não rodou",
+            root.display()
+        ));
+        return None;
+    };
+    let out = Command::new(shell).arg(&handed_over).current_dir(repo).output().expect("o shell roda");
+    assert!(out.status.success(), "o trecho da versão falhou: {}", String::from_utf8_lossy(&out.stderr));
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// A versão que chega à main maior que a última tag sai como está, sem somar
+/// 1; com ela já publicada, o merge seguinte soma 1. A última tag é a mais
+/// próxima do commit, e não a de número maior: este repositório guarda tags
+/// de uma numeração antiga (v3.x), mais velhas que a v0.1.71.
+#[test]
+fn a_version_that_arrives_above_the_last_tag_is_published_as_it_is() {
+    let Some(root) = workspace_root() else {
+        return;
+    };
+    let Some(workflow) = bump_workflow(&root) else {
+        return;
+    };
+    let block = version_block(&workflow);
+    let cases: [(&[&str], &str, &str); 4] = [
+        (&["v3.1.41", "v0.1.71"], "0.2.0", "0.2.0"),
+        (&["v3.1.41", "v0.1.71", "v0.2.0"], "0.2.0", "0.2.1"),
+        (&["v3.1.41", "v0.1.71"], "0.1.71", "0.1.72"),
+        (&[], "0.2.0", "0.2.0"),
+    ];
+    for (tags, declared, expected) in cases {
+        let Some(got) = released(&root, &block, tags, declared) else {
+            return;
+        };
+        assert_eq!(got, expected, "tags {tags:?}, plugin.json em {declared}");
+    }
+}
+
+/// O `plugin.json` que sai anuncia a 0.2.0 ou uma versão depois dela, e a
+/// descrição e as palavras-chave não citam servidor de memória nem painel,
+/// que saíram do instalador.
+#[test]
+fn the_manifest_ships_the_new_version_without_memory_server_or_dashboard() {
+    let Some(manifest) = find_manifest() else {
+        return;
+    };
+    let raw = std::fs::read_to_string(&manifest).expect("o manifesto é lido");
+    let version = json_string_field(&raw, "version").expect("o manifesto tem versão");
+    let parts: Vec<u64> = version.split('.').map(|p| p.parse().expect("número")).collect();
+    assert!(parts >= vec![0, 2, 0], "o plugin.json anuncia {version}, antes da 0.2.0");
+    let lower = raw.to_lowercase();
+    for word in ["memory", "memória", "mcp", "retrieval", "dashboard", "painel", "panel"] {
+        assert!(!lower.contains(word), "o plugin.json ainda cita `{word}`: {raw}");
+    }
+}

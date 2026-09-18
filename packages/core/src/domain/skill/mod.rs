@@ -1,5 +1,4 @@
-//! `skill` — canonical schema for skill frontmatter (Wave 1 of
-//! `2026-05-25-mustard-deep-refactor`).
+//! `skill` — canonical schema for skill frontmatter.
 //!
 //! Owns the [`frontmatter::SkillFrontmatter`] type + parse/validate helpers
 //! consumed by `mustard-rt run skill-resolve`, `mustard-rt run skills validate

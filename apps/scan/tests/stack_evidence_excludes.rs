@@ -66,7 +66,7 @@ fn stack_evidence_excludes_nested_fixture_stack_from_repo_level() {
 
     let v = scan_root(&root, &dir);
 
-    // AC-1 — repo level detects ONLY the real project's stack: the nested
+    // Repo level detects ONLY the real project's stack: the nested
     // fixture's laravel evidence (dep:laravel/framework from its composer
     // manifest, path:routes/web.php, code:Illuminate\...) is discounted
     // because every one of its paths sits under a `tests` segment.

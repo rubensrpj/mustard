@@ -78,13 +78,13 @@ novo_projeto() {
   printf '%s' "$proj"
 }
 
-# One SessionStart, one module. `check <id>` takes the trigger from the input,
-# so the observer sees the event it waits for without every other SessionStart
-# module running alongside it. $2 is the config dir; empty means NO registry.
+# One SessionStart, as the Claude Code sends it: the observer runs beside the
+# start of the session, whose text is thrown away here. $2 is the config dir;
+# empty means NO registry.
 conserta() {
   printf '{"session_id":"ac-statusline","hook_event_name":"SessionStart","cwd":"%s"}' "$1" \
     | ( cd "$1" && CLAUDE_CONFIG_DIR="$2" HOME="$TMP/home" \
-        "$BINARIO" check statusline_heal_observer ) > /dev/null
+        "$BINARIO" on SessionStart ) > /dev/null
 }
 
 exigir_o_plugin() {

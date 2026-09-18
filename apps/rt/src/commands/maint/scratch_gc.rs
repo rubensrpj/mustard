@@ -5,7 +5,7 @@
 //!
 //! Cada experimento de revisor roda numa pasta descartável com uma cópia do
 //! projeto, e cada cópia compila tudo do zero: de 2 a 5 GB de `target/` por
-//! cópia. A trava de comandos (BG01) nega a exclusão recursiva solta, então a
+//! cópia. A trava de comandos barra apagar pasta à força pelo terminal, então a
 //! pasta ficava para sempre. Esta porta é o caminho de limpeza: a exclusão é
 //! feita pelo próprio binário (`std::fs::remove_dir_all`), nunca por comando de
 //! shell, e só depois de conferir que o alvo é mesmo uma pasta descartável.
@@ -32,16 +32,16 @@
 //! `--path` e do `--apply` — passa pelo mesmo portão (`confine`): caminho
 //! resolvido, estritamente dentro do temp resolvido, dono conferido.
 //!
-//! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas
-//! que o `worktree-gc` recolhe pelo dono vivo ou morto, e duas portas
-//! apagando o mesmo alvo com critérios diferentes não se somam. Pelo mesmo
+//! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas no
+//! git, e apagá-las por aqui deixaria o registro apontando para o nada. Pelo
+//! mesmo
 //! motivo, QUALQUER worktree registrada — pasta cujo `.git` é um arquivo, nela
 //! ou numa filha direta — fica de fora e o `--path` a recusa: ela pode ter
 //! trabalho não commitado, e quem a remove é o `git worktree remove`.
 //!
 //! ## Modos
 //!
-//! - sem opção: SÓ LISTA as candidatas (caminho, tamanho, idade); nada é
+//! - sem opção: SÓ LISTA as candidatas (caminho, tamanho, última mudança); nada é
 //!   apagado;
 //! - `--apply`: apaga exatamente as listadas, e esvazia a compilação
 //!   compartilhada quando ela passa do teto;
@@ -49,7 +49,7 @@
 //!   própria pasta recém-criada ao terminar), mas só depois de conferir os
 //!   filtros 1 e 2. Fora do diretório temporário — o repositório, a home — é
 //!   recusado com erro (exit 1) e nada é tocado; um `mustard-removal-*` também
-//!   (é do `worktree-gc`). `--dry-run` não combina com `--apply` nem com
+//!   (é worktree registrada). `--dry-run` não combina com `--apply` nem com
 //!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
 //!
 //! ## Compilação compartilhada
@@ -63,15 +63,15 @@
 //! ## Saída
 //!
 //! JSON pretty, campos em ordem de declaração e listas ordenadas por caminho.
+//! Nada nela depende da hora em que o comando roda: a candidata traz a data da
+//! última mudança (`changed_at`, UTC), não a idade, e duas execuções sobre o
+//! mesmo temp saem iguais byte a byte.
 //! Exit 0 sempre, exceto recusa (exit 1): `--path` recusado, ou — em qualquer
 //! modo, inclusive a lista e o `--apply` — um diretório temporário inseguro
 //! (a raiz do disco, a home, ou uma pasta acima da home).
 
-use crate::shared::context;
-use crate::shared::events::economy;
-use mustard_core::domain::model::event::ActorKind;
+use crate::shared::context::session::session_id;
 use serde::Serialize;
-use serde_json::json;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -99,7 +99,7 @@ const SESSION_ROOT_PREFIX: &str = "claude-";
 /// Pasta de trabalho de uma sessão, dentro de `claude-<uid>/<projeto>/<sessao>/`.
 const SCRATCHPAD_DIR: &str = "scratchpad";
 
-/// Prefixo das worktrees de prova de remoção — dono é o `worktree-gc`.
+/// Prefixo das worktrees de prova de remoção, registradas no git.
 const REMOVAL_WORKTREE_PREFIX: &str = "mustard-removal-";
 
 // ---------------------------------------------------------------------------
@@ -119,7 +119,9 @@ pub struct ScratchGcOpts {
 pub(crate) struct ScratchRecord {
     pub path: String,
     pub size_bytes: u64,
-    pub age_hours: u64,
+    /// A mudança mais recente da árvore, em UTC. Uma data, não uma idade: a
+    /// idade muda a cada hora, e a saída sai igual em toda execução.
+    pub changed_at: String,
     /// O caminho exato a apagar — fora do JSON, para a exclusão nunca
     /// depender de uma conversão com perda de `path`.
     #[serde(skip)]
@@ -183,6 +185,9 @@ pub(crate) struct ScratchRoots {
     /// O uid que tem de ser dono de cada entrada do topo do temp. No Unix,
     /// `None` (ninguém sabe quem roda) deixa nada passar; fora dele é ignorado.
     pub owner_uid: Option<u32>,
+    /// O relógio da varredura: a idade de cada pasta é medida contra ele.
+    /// Explícito para o teste provar que a saída não depende da hora.
+    pub now: SystemTime,
 }
 
 impl ScratchRoots {
@@ -192,11 +197,12 @@ impl ScratchRoots {
             temp_root: std::env::temp_dir(),
             shared_target: shared_target_dir(),
             cap_bytes: cap_bytes_from_env(),
-            current_session: context::session_id(),
+            current_session: session_id(),
             current_dir: std::env::current_dir().ok(),
             home: crate::util::home_dir(),
             clock: AgeClock::Changed,
             owner_uid: current_uid(),
+            now: SystemTime::now(),
         }
     }
 }
@@ -490,6 +496,14 @@ fn measure(root: &Path, clock: AgeClock) -> Measure {
     Measure { bytes, newest }
 }
 
+/// Uma data em UTC, com milissegundos: `2026-09-12T10:00:00.000Z`.
+fn iso_utc(t: SystemTime) -> String {
+    let ms = t
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    mustard_core::time::millis_to_iso(ms)
+}
+
 // ---------------------------------------------------------------------------
 // Varredura (reusada pelo `doctor --residue`)
 // ---------------------------------------------------------------------------
@@ -515,7 +529,7 @@ impl Survey {
 /// candidata: listar a home como sobra é mentira, e medi-la estouraria o
 /// prazo do início da sessão.
 pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
-    let now = SystemTime::now();
+    let now = roots.now;
     let min_age = Duration::from_secs(MIN_AGE_HOURS * 3600);
     let mut candidates = Vec::new();
     let mut kept = Vec::new();
@@ -541,7 +555,9 @@ pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
             continue;
         }
         let measured = measure(&loc.path, roots.clock);
-        let Some(elapsed) = measured.newest.and_then(|t| now.duration_since(t).ok()) else {
+        let Some((newest, elapsed)) =
+            measured.newest.and_then(|t| Some((t, now.duration_since(t).ok()?)))
+        else {
             // Data ilegível ou no futuro: sem medida não há autorização.
             kept.push(KeptRecord { path, reason: "unknown age".into() });
             continue;
@@ -553,7 +569,7 @@ pub(crate) fn survey(roots: &ScratchRoots) -> Survey {
         candidates.push(ScratchRecord {
             path,
             size_bytes: measured.bytes,
-            age_hours: elapsed.as_secs() / 3600,
+            changed_at: iso_utc(newest),
             dir: loc.path,
         });
     }
@@ -631,14 +647,13 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
         }
     }
 
-    if let (Some(shared), Some(dir)) = (report.shared_target.as_mut(), roots.shared_target.as_deref()) {
-        if shared.over_cap {
+    if let (Some(shared), Some(dir)) = (report.shared_target.as_mut(), roots.shared_target.as_deref())
+        && shared.over_cap {
             match empty_dir(dir) {
                 Ok(()) => shared.emptied = true,
                 Err(error) => report.errors.push(ErrorRecord { path: shared.path.clone(), error }),
             }
         }
-    }
 
     (report, false)
 }
@@ -677,7 +692,7 @@ pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf
 ///   temp. Como [`checked_temp_root`] já garantiu que a home não mora dentro
 ///   do temp, nada que passe aqui é a home nem uma pasta acima dela;
 /// - a entrada do topo do temp é do usuário atual ([`owned_by`]);
-/// - não é um `mustard-removal-*` (é do `worktree-gc`);
+/// - não é um `mustard-removal-*` (é worktree registrada no git);
 /// - dentro de `claude-*/`, só vale o que está abaixo de um `scratchpad/`;
 /// - não é nem contém uma worktree registrada no git
 ///   ([`holds_linked_worktree`]): apagá-la perderia o que não foi commitado e
@@ -704,10 +719,10 @@ fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf
     }
     // A mesma exclusão da varredura: `mustard-removal-*` é worktree que o git
     // ainda tem registrada, e apagá-la daqui deixaria o registro apontando
-    // para uma pasta que não existe. Quem a recolhe é o `worktree-gc`.
+    // para uma pasta que não existe.
     if parts[0].to_str().is_some_and(|n| n.starts_with(REMOVAL_WORKTREE_PREFIX)) {
         return Err(format!(
-            "refused: {} is a registered removal worktree; worktree-gc owns it",
+            "refused: {} is a registered removal worktree",
             dir.display()
         ));
     }
@@ -785,7 +800,7 @@ pub(crate) fn human_bytes(n: u64) -> String {
 
 /// Dispatch `mustard-rt run scratch-gc [--apply] [--path <dir>]`.
 pub fn run(opts: ScratchGcOpts) {
-    let started = std::time::Instant::now();
+    let _started = std::time::Instant::now();
     let roots = ScratchRoots::from_env();
     let (report, refused) = match opts.path.as_deref() {
         Some(target) => path_report(target, &roots),
@@ -796,18 +811,10 @@ pub fn run(opts: ScratchGcOpts) {
     println!("{body}");
     if refused {
         for e in &report.errors {
-            eprintln!("scratch-gc: {}", e.error);
+            eprintln!("clean: {}", e.error);
         }
     }
 
-    economy::emit_operation(
-        &context::cwd(),
-        ActorKind::Orchestrator,
-        "scratch-gc",
-        started.elapsed().as_millis() as u64,
-        None,
-        json!({"removed": report.removed.len(), "errors": report.errors.len()}),
-    );
     if refused {
         std::process::exit(1);
     }
@@ -875,6 +882,9 @@ mod tests {
             // As fixtures envelhecem pelo mtime; o ctime tem teste próprio.
             clock: AgeClock::Modified,
             owner_uid: current_uid(),
+            // Um minuto à frente: as pastas que o teste cria depois de montar
+            // as raízes não podem parecer do futuro.
+            now: SystemTime::now() + Duration::from_secs(60),
         }
     }
 
@@ -896,8 +906,8 @@ mod tests {
     }
 
 
-    /// AC-1 — sem opção, a candidata antiga é listada com tamanho e idade, e
-    /// nada é apagado.
+    /// Sem opção, a candidata antiga é listada com tamanho e data da
+    /// última mudança, e nada é apagado.
     #[test]
     fn scratch_gc_dry_run_lists_and_keeps() {
         let base = tempdir().unwrap();
@@ -913,7 +923,9 @@ mod tests {
         let c = &report.candidates[0];
         assert_eq!(c.path, old.display().to_string());
         assert!(c.size_bytes >= 4096, "size reported: {}", c.size_bytes);
-        assert!(c.age_hours >= 20, "age reported: {}", c.age_hours);
+        let changed = mustard_core::time::parse_iso_millis(&c.changed_at).expect("an ISO date");
+        let now_ms = mustard_core::time::now_unix_millis();
+        assert!(now_ms - changed >= 20 * 3600 * 1000, "changed_at reported: {}", c.changed_at);
         assert_eq!(report.candidates_bytes, c.size_bytes);
         assert!(report.removed.is_empty(), "dry-run removes nothing");
         assert!(old.join("Cargo.toml").exists(), "and the folder is intact");
@@ -921,10 +933,32 @@ mod tests {
         let value = serde_json::to_value(&report).unwrap();
         assert!(value["candidates"][0].get("dir").is_none(), "the internal path stays out of the JSON");
         assert!(value["candidates"][0]["size_bytes"].is_u64());
-        assert!(value["candidates"][0]["age_hours"].is_u64());
+        assert!(value["candidates"][0]["changed_at"].is_string());
+        assert!(value["candidates"][0].get("age_hours").is_none(), "no field depends on the clock");
     }
 
-    /// AC-2 — `--apply` apaga só as candidatas antigas; a pasta recente, a da
+    /// Critério da onda de preparo: duas execuções sobre o mesmo temp dão a
+    /// mesma saída, byte a byte, mesmo com horas entre elas. Antes, a idade
+    /// em horas mudava a saída a cada hora.
+    #[test]
+    fn scratch_gc_output_is_the_same_on_every_run() {
+        let base = tempdir().unwrap();
+        let mut roots = fake_roots(base.path());
+        let old = roots.temp_root.join("tmp.old1");
+        project_copy(&old);
+        backdate_tree(&old, 20);
+        let young = roots.temp_root.join("tmp.young");
+        project_copy(&young);
+
+        let first = serde_json::to_string_pretty(&gc(&roots, false).0).unwrap();
+        roots.now += Duration::from_secs(3 * 3600);
+        let second = serde_json::to_string_pretty(&gc(&roots, false).0).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.contains("tmp.old1") && first.contains("tmp.young"), "{first}");
+    }
+
+    /// O `--apply` apaga só as candidatas antigas; a pasta recente, a da
     /// sessão atual e a que não é do Mustard ficam.
     #[test]
     fn scratch_gc_apply_removes_only_old_candidates() {
@@ -998,7 +1032,7 @@ mod tests {
         assert_eq!(reason_of(&running), "current session");
     }
 
-    /// AC-3 — `--path` fora do temp (o repositório, a home) é recusado e nada
+    /// O `--path` fora do temp (o repositório, a home) é recusado e nada
     /// é apagado; dentro do temp, os filtros 1 e 2 continuam valendo.
     #[test]
     fn scratch_gc_path_refuses_outside_temp() {
@@ -1039,11 +1073,11 @@ mod tests {
         assert!(remove_path(&foreign, &roots).is_err());
         assert!(foreign.join("notas.txt").exists());
 
-        // Worktree de prova de remoção: é do `worktree-gc`, mesmo sendo cópia.
+        // Worktree de prova de remoção: registrada no git, mesmo sendo cópia.
         let removal = roots.temp_root.join("mustard-removal-abc");
         project_copy(&removal);
         let err = remove_path(&removal, &roots).unwrap_err();
-        assert!(err.contains("worktree-gc owns it"), "{err}");
+        assert!(err.contains("registered removal worktree"), "{err}");
         assert!(removal.join("Cargo.toml").exists(), "a registered worktree is never removed here");
     }
 
@@ -1063,7 +1097,7 @@ mod tests {
         assert!(!scratch.exists());
     }
 
-    /// AC-4 — acima do teto, a compilação compartilhada é esvaziada no
+    /// Acima do teto, a compilação compartilhada é esvaziada no
     /// `--apply`; abaixo dele, ou sem `--apply`, fica como está.
     #[test]
     fn scratch_gc_empties_shared_target_above_cap() {
@@ -1225,7 +1259,7 @@ mod tests {
         assert!(!owned_by(&meta, None));
     }
 
-    /// AC-9 — uma worktree registrada no git (`.git` ARQUIVO) nunca é tocada:
+    /// Uma worktree registrada no git (`.git` ARQUIVO) nunca é tocada:
     /// nem listada, nem apagada pelo `--apply`, e o `--path` a recusa — seja a
     /// candidata, seja uma filha direta dela, seja no `scratchpad/` de uma
     /// sessão antiga (o caso medido nesta máquina). O clone ao lado, com

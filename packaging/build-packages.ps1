@@ -2,29 +2,31 @@
 # ============================================================================
 # build-packages.ps1 — empacota o Mustard para distribuição.
 #
-# Windows (SEM dashboard): pacote auto-contido de binários pré-compilados, sem
-# precisar do toolchain:
+# Windows: pacote auto-contido de binários pré-compilados, sem precisar do
+# toolchain:
 #   dist/mustard-windows-x64.zip       (binários .exe MSVC, compilados aqui)
 #
-# Linux (COM dashboard — instalação completa): um único pacote Debian que traz
-# os binários do CLI E o servidor do Mustard Dashboard, compilados num Docker
+# Linux: um único pacote Debian com os binários do CLI, compilados num Docker
 # Ubuntu 22.04 (glibc 2.35 -> roda em Ubuntu 22.04+):
 #   dist/mustard_<versao>_amd64.deb    + install.sh (apt) + TUTORIAL-LINUX.md
 #
-# O pacote Windows contém: bin/ (scan, mustard-rt, mustard-mcp, mustard, rtk),
-# templates/, install.ps1 e README.txt — the NSIS installer that also carries
-# the dashboard is built by the release workflow (packaging/windows/mustard.nsi),
-# not here. O .deb Linux instala tudo via `apt` — ver packaging/linux/Dockerfile
-# + packaging/linux/build-deb.sh.
+# O pacote Windows contém: bin/ (scan, mustard-rt, mustard, rtk), templates/,
+# install.ps1 e README.txt — the NSIS installer is built by the release workflow
+# (packaging/windows/mustard.nsi), not here. O .deb Linux instala tudo via `apt`
+# — ver packaging/linux/Dockerfile + packaging/linux/build-deb.sh.
+#
+# O rtk entra em todos os pacotes na versão fixa do checksums.txt da raiz, e o
+# arquivo baixado só entra se a soma dele bater com a linha de lá.
 #
 # Uso:
 #   .\packaging\build-packages.ps1                 # windows + linux
 #   .\packaging\build-packages.ps1 -Targets windows
 #   .\packaging\build-packages.ps1 -Targets linux
+#   .\packaging\build-packages.ps1 -Targets rtk     # só o rtk.exe conferido, em dist\_rtk
 # ============================================================================
 [CmdletBinding()]
 param(
-    [ValidateSet('windows', 'linux', 'both')][string]$Targets = 'both'
+    [ValidateSet('windows', 'linux', 'both', 'rtk')][string]$Targets = 'both'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -34,23 +36,57 @@ $Installer    = Join-Path $PkgDir 'installer'
 $Dist         = Join-Path $Root 'dist'
 $Stage        = Join-Path $Dist '_stage'
 $TemplatesSrc = Join-Path $Root 'apps\cli\templates'
-$Bins         = @('scan', 'mustard-rt', 'mustard-mcp', 'mustard')
+$Bins         = @('scan', 'mustard-rt', 'mustard')
 
 function New-CleanDir([string]$p) {
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
     New-Item -ItemType Directory -Force -Path $p | Out-Null
 }
 
+# O rtk.exe da release fixa do checksums.txt, conferido pela soma. Devolve o
+# caminho dele; qualquer falha (sem a versão, sem a soma, soma diferente, pacote
+# sem o binário) para o script.
+function Get-PinnedRtk {
+    $sums = Join-Path $Root 'checksums.txt'
+    if (-not (Test-Path $sums)) { throw "checksums.txt não encontrado em $Root." }
+    $lines = Get-Content $sums
+    $versionLine = $lines | Select-String -Pattern '^# rtk v([0-9][0-9.]*)' | Select-Object -First 1
+    if (-not $versionLine) { throw "o checksums.txt não diz a versão do rtk." }
+    $version = $versionLine.Matches[0].Groups[1].Value
+    $asset = 'rtk-x86_64-pc-windows-msvc.zip'
+    $sumLine = $lines | Where-Object { $_ -match ('^[0-9a-f]{64}  ' + [regex]::Escape($asset) + '$') } | Select-Object -First 1
+    if (-not $sumLine) { throw "o checksums.txt não traz a soma de $asset." }
+    $expected = ($sumLine -split '\s+')[0]
+    $dir = Join-Path $Dist '_rtk'
+    New-CleanDir $dir
+    $zip = Join-Path $dir $asset
+    Invoke-WebRequest -Uri "https://github.com/rtk-ai/rtk/releases/download/v$version/$asset" -OutFile $zip
+    $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { throw "o rtk baixado não confere com o checksums.txt (soma $actual)." }
+    Expand-Archive -Path $zip -DestinationPath $dir -Force
+    $exe = Join-Path $dir 'rtk.exe'
+    if (-not (Test-Path $exe)) { throw "o pacote do rtk não trouxe o rtk.exe." }
+    Write-Host "  rtk v$version conferido: $exe"
+    return $exe
+}
+
+New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+
+# ------------------------------------------------------------------- rtk ----
+if ($Targets -eq 'rtk') {
+    Get-PinnedRtk | Out-Null
+    return
+}
+
 if (-not (Test-Path $TemplatesSrc)) { throw "templates payload não encontrado em $TemplatesSrc — rode da raiz do repo." }
 if (-not (Test-Path $Installer))    { throw "instaladores não encontrados em $Installer." }
-New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 # ---------------------------------------------------------------- Windows ----
 if ($Targets -in 'windows', 'both') {
-    Write-Host "==> [windows] cargo build --release (4 binários)"
+    Write-Host "==> [windows] cargo build --release (3 binários)"
     Push-Location $Root
     try {
-        cargo build --release --bin scan --bin mustard-rt --bin mustard-mcp --bin mustard
+        cargo build --release --bin scan --bin mustard-rt --bin mustard
         if ($LASTEXITCODE -ne 0) { throw "cargo build (windows) falhou (exit $LASTEXITCODE)." }
     } finally { Pop-Location }
 
@@ -61,14 +97,9 @@ if ($Targets -in 'windows', 'both') {
         if (-not (Test-Path $src)) { throw "binário Windows ausente: $src" }
         Copy-Item $src (Join-Path $pkg 'bin') -Force
     }
-    # rtk empacotado (best-effort, a partir do que estiver no PATH desta máquina)
-    $rtk = (Get-Command rtk -ErrorAction SilentlyContinue).Source
-    if ($rtk) {
-        Copy-Item $rtk (Join-Path $pkg 'bin\rtk.exe') -Force
-        Write-Host "  rtk empacotado: $rtk"
-    } else {
-        Write-Warning "  rtk não está no PATH — pacote Windows vai sem rtk (o instalador instrui)."
-    }
+    # rtk empacotado na versão fixa, conferida; sem ele o pacote não sai.
+    $rtk = Get-PinnedRtk
+    Copy-Item $rtk (Join-Path $pkg 'bin\rtk.exe') -Force
     Copy-Item $TemplatesSrc (Join-Path $pkg 'templates') -Recurse -Force
     Copy-Item (Join-Path $Installer 'install.ps1') $pkg -Force
     Copy-Item (Join-Path $Installer 'README.txt')  $pkg -Force
@@ -117,23 +148,22 @@ if ($Targets -in 'linux', 'both') {
         Remove-Item $pinDest -Force -ErrorAction SilentlyContinue
     }
 
-    # Volumes nomeados cacheiam registry/target/pnpm entre execuções (re-empacotar
+    # Volumes nomeados cacheiam registry/target entre execuções (re-empacotar
     # fica rápido). O volume do target do aplicativo de mesa saiu junto com ele — há um único
     # target agora. Limpe com:
     #   docker volume rm mustard-deb-cargo-registry mustard-deb-cargo-git `
-    #     mustard-deb-cli-target mustard-deb-pnpm
+    #     mustard-deb-cli-target
     #
     # MUSTARD_RELEASE_VERSION travels INTO the container: build-deb.sh names the
     # package with it and cargo compiles it into the binaries. Without the -e the
     # container would only see the workspace version, and a release built from a
     # tag would ship binaries stamped with whatever Cargo.toml happened to say.
-    Write-Host "==> [linux] docker run — compila CLI + dashboard e monta o .deb (pode levar vários minutos)"
+    Write-Host "==> [linux] docker run — compila o CLI e monta o .deb (pode levar vários minutos)"
     docker run --rm `
         -e "MUSTARD_RELEASE_VERSION=$env:MUSTARD_RELEASE_VERSION" `
         -v "mustard-deb-cargo-registry:/opt/cargo/registry" `
         -v "mustard-deb-cargo-git:/opt/cargo/git" `
         -v "mustard-deb-cli-target:/tmp/cli-target" `
-        -v "mustard-deb-pnpm:/tmp/pnpm-store" `
         -v "${Root}:/work" `
         -v "${Dist}:/dist" `
         -w /work `

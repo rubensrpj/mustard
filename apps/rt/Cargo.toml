@@ -2,19 +2,11 @@
 name = "mustard-rt"
 version.workspace = true
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Mustard enforcement runtime: a single binary that replaces the per-hook `node` processes — a dispatcher running enforcement modules behind the `mustard-core` Check/Observer contract."
 license = "MIT"
 publish = false
 build = "build.rs"
-
-# The `.rs` files under `tests/fixtures/regression-w6/` are DATA — snapshots the
-# `regression_check` tests read as text, never modules of any target. Without
-# this, `cargo shear` (scripts/ac/deps-no-unused.sh) reports them as unlinked
-# source files and advises deleting them. The exclusion is scoped to the fixture
-# tree so a genuinely orphaned module under `src/` is still reported.
-[package.metadata.cargo-shear]
-ignored-paths = ["tests/fixtures/**/*.rs"]
 
 [[bin]]
 name = "mustard-rt"
@@ -44,26 +36,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 
-# The `otel-collector` / `diagnose-otel` ports (Wave 6) need a local OTLP/JSON
-# receiver. `tiny_http` is a minimal blocking HTTP server with no tokio/async
-# runtime; events land in per-spec NDJSON via the W5 router (no SQLite).
-tiny_http = "0.12"
-
-# The `mcp` face moved to the standalone `mustard-mcp` crate so the long-lived
-# MCP server Claude Code spawns holds a different exe than `mustard-rt`. The
-# `mustard-rt mcp` subcommand is kept as a thin compat alias that delegates to
-# `mustard_mcp::run()`; `rmcp` / `tokio` are no longer DIRECT deps of this crate
-# (they arrive transitively via `mustard-mcp`).
-mustard-mcp = { path = "../mcp" }
-
-# `artifact-update` probes external upstreams (crates.io API, skills.directory
-# registry) over HTTP. `ureq` is the workspace's blocking, runtime-free HTTP
-# client — the same one `mustard-cli` uses; no async runtime is pulled in.
+# The pull-request calls against Azure DevOps go over HTTP. `ureq` is the
+# workspace's blocking, runtime-free HTTP client — the same one `mustard-cli`
+# uses; no async runtime is pulled in.
 ureq = { workspace = true }
 
-# `tempfile` is used by the `artifact-update --apply` engine to stage a `git
-# clone` before swapping the vendored tree under `apps/cli/templates/`. Also
-# powers the `bash_guard` parity tests.
+# `tempfile` stages the scratch directories the work-unit and capability
+# commands write into, and powers the parity tests.
 tempfile = { workspace = true }
 
 # `notify` and `sha2` were declared here and imported by nothing. The
@@ -82,7 +61,7 @@ tempfile = { workspace = true }
 regex = "1"
 
 # No `[dev-dependencies]`: the tests use `tempfile`, which is a normal
-# dependency above because `artifact-update --apply` needs it at runtime too.
+# dependency above because the runtime needs it too.
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
 # unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.

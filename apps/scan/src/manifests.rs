@@ -26,6 +26,9 @@ struct ManifestDef {
     /// Precompiled module-path regex (the old `module_pattern`); `None` when the
     /// def declares none.
     module_regex: Option<Regex>,
+    /// Precompiled package-name regex (`package_pattern`); `None` when the def
+    /// declares none.
+    package_regex: Option<Regex>,
 }
 
 struct Registry {
@@ -54,6 +57,8 @@ pub(crate) struct Parsed {
     pub scripts: Vec<String>,
     pub module: Option<String>,
     pub name: String,
+    /// The package's own name, when the manifest declares one.
+    pub package: Option<String>,
 }
 
 /// Parse a manifest's content into kind + dependencies + scripts (+ this unit's
@@ -73,7 +78,8 @@ pub fn parse(rel: &str, filename: &str, content: &str) -> Option<Parsed> {
         _ => Vec::new(),
     };
     let module = def.module_regex.as_ref().and_then(|re| first_line_capture(content, re));
-    Some(Parsed { kind: def.kind.clone(), deps, scripts, module, name: derive_name(rel, &def.name) })
+    let package = def.package_regex.as_ref().and_then(|re| first_line_capture(content, re));
+    Some(Parsed { kind: def.kind.clone(), deps, scripts, module, name: derive_name(rel, &def.name), package })
 }
 
 fn find_def(filename: &str) -> Option<&'static ManifestDef> {
@@ -224,6 +230,7 @@ fn parse_registry(src: &str) -> Registry {
                 _ => None,
             };
             let module_regex = g("module_pattern").and_then(|p| Regex::new(&p).ok());
+            let package_regex = g("package_pattern").and_then(|p| Regex::new(&p).ok());
             manifests.push(ManifestDef {
                 kind: g("kind").unwrap_or_default(),
                 filename: g("filename"),
@@ -234,6 +241,7 @@ fn parse_registry(src: &str) -> Registry {
                 scripts: g("scripts"),
                 dep_regex,
                 module_regex,
+                package_regex,
             });
         }
     }

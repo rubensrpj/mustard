@@ -61,7 +61,7 @@ fn scan_skips_harness_claude_dir() {
 
     let v = scan_root(&root, &dir);
 
-    // AC-1 — Python (present ONLY inside .claude) is absent from the model: the
+    // Python (present ONLY inside .claude) is absent from the model: the
     // walker pruned the whole `.claude` subtree, so no Python file was read.
     let langs = v["languages"].as_array().expect("model carries languages");
     assert!(
@@ -69,7 +69,7 @@ fn scan_skips_harness_claude_dir() {
         "no python leaks from .claude: {langs:?}"
     );
 
-    // AC-2 — `.claude` is reported as a deliberate skip (proof the walker
+    // `.claude` is reported as a deliberate skip (proof the walker
     // recognised and pruned it), not silently dropped.
     let skipped = v["coverage"]["skipped_build_dirs"].as_array().expect("coverage carries skipped_build_dirs");
     assert!(
@@ -77,7 +77,7 @@ fn scan_skips_harness_claude_dir() {
         "`.claude` is recorded among the skipped dirs: {skipped:?}"
     );
 
-    // AC-3 — nothing under `.claude` leaks into the source-side model (no unit
+    // Nothing under `.claude` leaks into the source-side model (no unit
     // dir, no manifest path references the pruned subtree).
     let none_under_claude = |arr: &serde_json::Value, key: &str| {
         arr.as_array()

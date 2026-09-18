@@ -1,10 +1,8 @@
 # Mustard no Ubuntu — tutorial de instalação completa
 
 Este tutorial explica, passo a passo, como instalar o Mustard **completo** num
-Ubuntu: os comandos de linha (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`,
-`rtk`) **e** o **Mustard Dashboard**, que é um **servidor**: ele abre uma porta
-na sua máquina e você vê o painel no navegador. Tudo num único pacote
-`.deb`, instalado com `apt` — você não precisa instalar Rust, Node ou qualquer
+Ubuntu: os comandos de linha (`mustard`, `mustard-rt`, `scan`, `rtk`), num único
+pacote `.deb`, instalado com `apt` — você não precisa instalar Rust, Node ou qualquer
 ferramenta de desenvolvimento. **Nem baixar o pacote à mão**: a instalação cabe
 numa linha (item 2); baixar o `.deb` é a rota alternativa (item 3), para quem
 quer conferir o `sha256` antes.
@@ -12,11 +10,9 @@ quer conferir o `sha256` antes.
 O que será instalado (gerenciado pelo apt):
 
 ```
-/usr/lib/mustard/bin/        binários reais (CLI + mustard-dashboard)
-/usr/lib/mustard/bin/dist/   os arquivos da tela que o servidor serve
+/usr/lib/mustard/bin/        binários reais
 /usr/lib/mustard/templates/  a carga que o `mustard init` copia para os projetos
-/usr/bin/mustard, …          atalhos no PATH (mustard, mustard-rt, …, mustard-dashboard)
-menu de aplicativos           atalho "Mustard Dashboard" (inicia o servidor)
+/usr/bin/mustard, …          atalhos no PATH (mustard, mustard-rt, scan, rtk)
 ```
 
 ---
@@ -30,8 +26,7 @@ menu de aplicativos           atalho "Mustard Dashboard" (inicia o servidor)
 | `sudo` (para o `apt install`) | `sudo -v` |
 
 > Por que Ubuntu 22.04+: é a glibc contra a qual os binários são compilados. Não
-> há mais nenhuma biblioteca gráfica na conta — o dashboard virou um servidor
-> HTTP e a tela quem desenha é o seu navegador.
+> há mais nenhuma biblioteca gráfica na conta.
 
 Se ainda não tiver o Claude Code, instale com:
 
@@ -79,10 +74,7 @@ O instalador chama o `apt`, que:
 
 1. instala os binários do CLI em `/usr/lib/mustard/bin` e os templates em
    `/usr/lib/mustard/templates`, criando os atalhos em `/usr/bin`;
-2. instala o **mustard-dashboard** (o servidor) com os arquivos da tela ao lado
-   dele;
-3. adiciona o atalho "Mustard Dashboard" ao menu de aplicativos;
-4. se você passou um projeto, roda `mustard init` nele (cria a pasta `.claude/`
+2. se você passou um projeto, roda `mustard init` nele (cria a pasta `.claude/`
    e o `mustard.json`).
 
 ---
@@ -130,40 +122,6 @@ rtk --version
 
 Os três devem responder com a versão.
 
-E o **dashboard**: rode no terminal, de dentro da pasta onde ficam seus
-projetos — a varredura começa no diretório de onde o servidor foi iniciado:
-
-```sh
-cd ~/code
-mustard-dashboard
-```
-
-Ele imprime onde está servindo e abre o navegador sozinho quando há sessão
-gráfica:
-
-```
-mustard-dashboard: serving /home/voce/code at http://127.0.0.1:7777/
-```
-
-Sem sessão gráfica (por SSH, num contêiner) ele **não** morre: imprime a URL e
-segue servindo. Ctrl+C para. O atalho **"Mustard Dashboard"** no menu de
-aplicativos faz o mesmo, num terminal, a partir da sua pasta pessoal.
-
-Opções úteis:
-
-| Opção | Para quê |
-|---|---|
-| `--root /outra/pasta` | varre outra pasta em vez do diretório atual |
-| `--port 8080` | outra porta (ou a variável `MUSTARD_DASHBOARD_PORT`). Porta ocupada não é erro: ele usa a próxima livre e imprime qual |
-| `--host 0.0.0.0` | **expõe na rede** — só assim outra máquina alcança o painel |
-| `--no-open` | não abre o navegador |
-
-> ⚠️ Sem `--host`, o painel só responde na própria máquina (`127.0.0.1`). Isso é
-> proposital: ele lê o `.claude/` de **todos** os seus projetos, então expor à
-> rede tem de ser um ato, não um esquecimento. Para alcançar de outro
-> computador (por exemplo por Tailscale), rode
-> `mustard-dashboard --host 0.0.0.0` e acesse `http://<ip-da-maquina>:7777/`.
-
 ---
 
 ## 5. Preparar um projeto (se ainda não preparou)
@@ -175,18 +133,17 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso escreve a pasta `.claude/` (a configuração do projeto) e o `mustard.json` na
-raiz. Só isso: os **hooks** do Mustard **não** vêm daqui — o
-`.claude/settings.json` que o `init` grava não tem nenhum. Eles chegam junto com
-o plugin, que é o passo do item 6, e é por isso que ele não é opcional.
+Isso escreve, escondidos do git do projeto, o `mustard.json` na raiz e a pasta
+`.claude/`: o `.claude/settings.local.json` (com o gancho do rtk e o estilo de
+resposta do idioma do projeto), o mapa do início da sessão e os três agentes do
+Mustard. Os **hooks** do Mustard **não** vêm daqui: chegam junto com o plugin,
+que é o passo do item 6, e é por isso que ele não é opcional.
 
 ---
 
 ## 6. Instalar o plugin dentro do Claude Code
 
-O `.deb` traz **binários e templates**; ele não toca no seu `~/.claude`. Os
-comandos `/mustard:*`, os agentes e o servidor MCP de memória vêm do **plugin do
-Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
+O `.deb` traz **binários e templates**; ele não toca no seu `~/.claude`. Os comandos `/mustard:*`, o estilo de resposta e os hooks vêm do **plugin do Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
 
 Abra o Claude Code no projeto (`claude`) e digite:
 
@@ -200,9 +157,9 @@ O primeiro comando registra o *marketplace* (o repositório do Mustard, que traz
 dele — daí o `@mustard-local`, que é o **nome do marketplace**, não um caminho.
 Recarregue o Claude Code (feche e abra) para os hooks e comandos entrarem.
 
-São quatro portas dentro do Claude Code: `/mustard:git`, `/mustard:pr`,
-`/mustard:spec` e `/mustard:upsert`. Para COMEÇAR um trabalho não há comando —
-descreva o pedido em palavras suas e o roteador escolhe o fluxo sozinho.
+São três comandos dentro do Claude Code: `/mustard:continue`, `/mustard:pr` e
+`/mustard:upsert`. Para COMEÇAR um trabalho não há comando — descreva o pedido
+em palavras suas, e cada passo do fluxo diz qual é o próximo.
 
 ---
 
@@ -211,21 +168,6 @@ descreva o pedido em palavras suas e o roteador escolhe o fluxo sozinho.
 **`mustard: command not found` logo após instalar**
 O `/usr/bin` já está no PATH de qualquer shell, então isso é raro. Se acontecer,
 abra um novo terminal. Confirme a instalação com `dpkg -l mustard`.
-
-**O navegador abre e a página fica em branco / "dashboard assets not found"**
-Falta a pasta da tela ao lado do binário. Confira que ela veio no pacote:
-
-```sh
-ls /usr/lib/mustard/bin/dist/index.html
-```
-
-Se não existir, reinstale o `.deb`. Para apontar outra cópia dos arquivos, use a
-variável `MUSTARD_DASHBOARD_DIST`.
-
-**Nada abre e o terminal diz `no graphical session`**
-Não é erro: por SSH ou em contêiner não há navegador para abrir. O servidor está
-de pé — abra a URL que ele imprimiu. Para alcançá-lo de fora da máquina, veja o
-`--host` do item 4.
 
 **`apt` reclama que o pacote é de terceiro / não confiável**
 É um `.deb` local (não vem de um repositório assinado) — isso é esperado. O

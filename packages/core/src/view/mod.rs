@@ -1,2 +1,2 @@
-pub mod projection;
+pub mod document;
 pub mod summary;

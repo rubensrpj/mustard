@@ -39,18 +39,6 @@ pub(crate) struct Levels<N> {
     pub cycle: Vec<N>,
 }
 
-impl<N: Ord + Clone> Levels<N> {
-    /// The levels as rounds: `rounds()[0]` holds every node at level 0, and so
-    /// on. Nodes within a round have no dependency between them.
-    pub fn rounds(&self) -> Vec<Vec<N>> {
-        let mut by_level: BTreeMap<u32, Vec<N>> = BTreeMap::new();
-        for (node, &lvl) in &self.level {
-            by_level.entry(lvl).or_default().push(node.clone());
-        }
-        by_level.into_values().collect()
-    }
-}
-
 /// Assign a topological level to every node of `deps`, and name the nodes on a
 /// dependency loop. An edge to a node the graph does not contain is ignored —
 /// an out-of-graph reference is not a contradiction.
@@ -166,13 +154,14 @@ mod tests {
         assert_eq!(l.level[&1], 0);
         assert_eq!(l.level[&2], 1);
         assert_eq!(l.level[&3], 2);
-        assert_eq!(l.rounds(), vec![vec![1], vec![2], vec![3]]);
     }
 
     #[test]
     fn independent_nodes_share_a_round() {
         let l = assign_levels(&graph(&[(1, &[]), (2, &[1]), (3, &[1])]));
-        assert_eq!(l.rounds(), vec![vec![1], vec![2, 3]]);
+        assert_eq!(l.level[&1], 0);
+        assert_eq!(l.level[&2], 1);
+        assert_eq!(l.level[&3], 1);
     }
 
     #[test]
@@ -221,6 +210,5 @@ mod tests {
         let l = assign_levels(&graph(&[]));
         assert!(l.level.is_empty());
         assert!(l.cycle.is_empty());
-        assert!(l.rounds().is_empty());
     }
 }

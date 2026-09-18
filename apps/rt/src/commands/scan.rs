@@ -7,7 +7,8 @@
 //! The model lands at `<root>/.claude/grain.model.json` (the durable product,
 //! re-run when the codebase changes). Downstream commands consume it through the
 //! [`mustard_core::Scan`] client (`digest --query`, `spec`), never by reading
-//! source. No skills, agents, or `.claude/` subproject artifacts are produced.
+//! source. No skills or agents are produced; with `--full`, the one file
+//! written per subproject is its `.claude/scan-map.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -18,11 +19,6 @@ use serde_json::{json, Value};
 use super::scan_claude;
 
 /// Default model location under the project's `.claude/` directory.
-///
-/// `pub(crate)` so the base gate's automatic refresh
-/// ([`crate::commands::event::base_gate`]) targets the SAME file this door
-/// writes — two spellings of the model path is how a refresh silently mines
-/// into a place no reader consults.
 pub(crate) fn default_model_path(root: &Path) -> PathBuf {
     root.join(".claude").join("grain.model.json")
 }
@@ -30,11 +26,15 @@ pub(crate) fn default_model_path(root: &Path) -> PathBuf {
 /// Run `grain scan <root> --out <model>`; print a small JSON result. Fail-open:
 /// a spawn/exit error is reported, never panics (matches the other handlers).
 ///
+/// With a model of this project already on disk, only the files that changed
+/// since are read again; the result says which (`read`) and whether every
+/// file was (`full`). Nothing is written to git and nothing runs this on its
+/// own.
+///
 /// When `full` is `true`, (re)generates the mustard-owned
-/// `.claude/scan-map.md` per subproject after the model is written, and keeps
-/// the project's CLAUDE.md footprint minimal (import line + legacy-block
-/// migration + Guards seed + breadcrumb heal — never measured, never
-/// refused). The hard cap guards only the machine map (runaway generator).
+/// `.claude/scan-map.md` per subproject after the model is written; no
+/// `CLAUDE.md` is ever written. The hard cap guards the map against a runaway
+/// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let model_path = out.map_or_else(|| default_model_path(root), Path::to_path_buf);
 
@@ -67,14 +67,20 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let scan_result = Scan::locate().scan(root, &model_path);
 
     let mut result: Value = match &scan_result {
-        Ok(()) => json!({ "ok": true, "model": model_path.to_string_lossy() }),
+        Ok(report) => json!({
+            "ok": true,
+            "model": model_path.to_string_lossy(),
+            "full": report.full,
+            "read": report.read,
+            "files": report.files,
+        }),
         Err(err) => {
             eprintln!("scan: grain failed: {err}");
             json!({ "ok": false, "error": err.to_string() })
         }
     };
 
-    // Only run the CLAUDE.md pass when grain succeeded (model file is valid).
+    // Only run the map pass when grain succeeded (model file is valid).
     if scan_result.is_ok() {
         let mut projects = read_projects(&model_path);
         // The grain miner is git-blind; stamp the git-boundary FACT onto the
@@ -103,15 +109,6 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
                 result["ok"] = json!(false);
             }
         }
-
-        // Equivalences artifact (additive): project the dictionary the scan
-        // tool wrote NEXT TO the model through the local MT sidecar into
-        // `grain.equivalences.json` — the PT→EN query-expansion table the
-        // `feature` retrieval feeds to `scan rank`. Fail-open by contract: a
-        // missing dictionary/translator degrades to `{ok:false, reason}` in
-        // the summary and never fails the scan.
-        let dict_path = model_path.with_file_name("grain.dictionary.json");
-        result["equivalences"] = super::scan_equivalences::generate_at(&dict_path);
     }
 
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
@@ -126,11 +123,7 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
 /// files. Parsing is deliberately dumb (the `path =` entries, nothing else): a
 /// `.gitmodules` we cannot read yields nothing to complain about, which is the
 /// fail-open default for a repo that has no submodules at all.
-///
-/// `pub(crate)` so the base gate's automatic refresh runs the SAME preflight
-/// before mining — a refresh that skipped it would replace a complete model
-/// with a hollow one precisely where nobody is watching.
-pub(crate) fn hollow_submodules(root: &Path) -> Vec<String> {
+fn hollow_submodules(root: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(root.join(".gitmodules")) else {
         return Vec::new(); // no submodules declared — nothing to check.
     };

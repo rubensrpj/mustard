@@ -3,9 +3,9 @@ rem mustard-boot.cmd — first-run bootstrap for the Mustard plugin binaries
 rem (Windows twin of ./mustard-boot; hooks.json calls the extensionless name
 rem and cmd resolves this file via PATHEXT). Fetches mustard-bins-<v>-windows
 rem from the GitHub Release matching plugin.json's version when mustard-rt.exe
-rem is missing or version-stamped differently, then delegates. Every failure
-rem exits 0: a hook must never wedge the session. A locally built bin/ has no
-rem .version stamp and is never overwritten.
+rem is missing or version-stamped differently, then delegates. No failure path
+rem may wedge the session, and a missing binary is said out loud at :run. A
+rem locally built bin/ has no .version stamp and is never overwritten.
 rem
 rem TRAILING BACKSLASH — the defect this file carried until 0.1.52, and the one
 rem rule to keep in mind when editing it. %~dp0 ALWAYS ends in a backslash, and
@@ -126,7 +126,7 @@ rem and a machine whose bin\ was never populated stays dormant forever with no
 rem line on screen saying why. Nothing here starts a download — there is no URL
 rem to build — but the operator is told, and told WHICH file to look at. Only a
 rem caller that was going to download says anything, so the short-budget path
-rem above stays as quiet as its own paragraph promises.
+rem above stays quiet until :run names the missing binary.
 echo [mustard-boot] no "version" readable in "%MANIFEST%" — mustard hooks stay dormant this session 1>&2
 goto :run
 
@@ -144,4 +144,22 @@ if exist "%RT%" (
   "%RT%" %*
   exit /b 0
 )
-exit /b 0
+
+rem THE BINARY IS MISSING, and that is said out loud, twin of the POSIX tail.
+rem It used to exit 0 in silence, and in the field 790 hook events ran with no
+rem binary and nobody was told. Exit 1 is a non-blocking hook error the harness
+rem shows the user; never 2, the code that would block a tool call or a prompt.
+rem The message follows the project's language: English when mustard.json
+rem names en-US, Portuguese otherwise. chcp 65001 makes cmd read the lines
+rem below as UTF-8, so the accents survive; it runs only on this path. Keep both
+rem texts in step with the POSIX twin.
+set "PROJ=%CLAUDE_PROJECT_DIR%"
+if "%PROJ%"=="" set "PROJ=%CD%"
+chcp 65001 >nul 2>&1
+findstr /l /c:"en-US" "%PROJ%\mustard.json" >nul 2>&1 && goto :missingen
+echo [mustard-boot] o mustard-rt não está em "%DEST%": os ganchos do Mustard não rodam nesta sessão. Para baixá-lo, rode: "%DIR%mustard-boot.cmd" --version 1>&2
+exit /b 1
+
+:missingen
+echo [mustard-boot] mustard-rt is missing from "%DEST%": Mustard hooks do not run in this session. To download it, run: "%DIR%mustard-boot.cmd" --version 1>&2
+exit /b 1

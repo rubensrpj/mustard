@@ -83,14 +83,33 @@ fn tokens(name: &str) -> Vec<String> {
     out
 }
 
+/// Scan the workspace into a model of its own, in a temporary folder: the test
+/// never depends on a model someone left in the checkout, and never skips.
+fn fresh_model(root: &std::path::Path, dir: &std::path::Path) -> PathBuf {
+    let model_path = dir.join("grain.model.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args([
+            "scan",
+            root.to_str().expect("workspace path"),
+            "--out",
+            model_path.to_str().expect("model path"),
+            "--all",
+            "--json",
+        ])
+        .output()
+        .expect("run scan over the workspace");
+    assert!(out.status.success(), "scan failed: {}", String::from_utf8_lossy(&out.stderr));
+    model_path
+}
+
 #[test]
 fn a_module_is_found_by_the_words_it_declares() {
     let root = crate_dir().join("..").join("..");
-    let model_path = root.join(".claude").join("grain.model.json");
-    let Ok(raw) = std::fs::read_to_string(&model_path) else {
-        eprintln!("retrieval_self_recall: no model at {} — skipping", model_path.display());
-        return;
-    };
+    let tmp = std::env::temp_dir().join(format!("scan-self-recall-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+    let model_path = fresh_model(&root, &tmp);
+    let raw = std::fs::read_to_string(&model_path).expect("the scan wrote the model");
     let model: serde_json::Value = serde_json::from_str(&raw).expect("valid model JSON");
     let modules = model["modules"].as_array().expect("model.modules");
 
@@ -178,6 +197,7 @@ fn a_module_is_found_by_the_words_it_declares() {
         }
     }
 
+    let _ = std::fs::remove_dir_all(&tmp);
     assert!(asked >= 10, "too few askable modules to measure: {asked}");
     #[allow(clippy::cast_precision_loss)]
     let (r1, r5) = (top1 as f32 / asked as f32, top5 as f32 / asked as f32);

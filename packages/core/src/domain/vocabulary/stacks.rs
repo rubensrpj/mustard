@@ -124,8 +124,8 @@ impl StackRegistryDoc {
 // Registry
 // ---------------------------------------------------------------------------
 
-/// A loaded stack registry — the validated definition list the wave-2
-/// inference engine will match against. Construct via
+/// A loaded stack registry — the validated definition list the inference
+/// engine matches against. Construct via
 /// [`StackRegistry::builtin`], [`StackRegistry::from_doc`], or
 /// [`StackRegistry::load`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,6 +395,26 @@ fn marker_present(paths: &[String], marker: &str) -> bool {
 // Engine entry points
 // ---------------------------------------------------------------------------
 
+/// The code signatures of the built-in registry found in `content`: every
+/// term that fires, once, in name order. The inference only asks which
+/// signatures fired, so a caller that keeps these per file infers the same
+/// stacks later, from the signatures joined one per line, without opening the
+/// file again.
+#[must_use]
+pub fn code_signals(content: &str) -> Vec<String> {
+    static AUTOMATON: std::sync::OnceLock<Option<KeyedAutomaton<usize>>> = std::sync::OnceLock::new();
+    let automaton = AUTOMATON.get_or_init(|| {
+        let reg = StackRegistry::builtin().ok()?;
+        KeyedAutomaton::from_groups(reg.stacks.iter().enumerate().map(|(idx, def)| (idx, def.code_signatures.clone())))
+            .ok()
+    });
+    let Some(ac) = automaton else {
+        return Vec::new();
+    };
+    let found: std::collections::BTreeSet<String> = ac.scan(content).into_iter().map(|hit| hit.term).collect();
+    found.into_iter().collect()
+}
+
 /// Infer the stacks a project uses from parsed dependency names, project file
 /// paths, and source contents, using the **built-in** registry. Convenience
 /// entry point for callers that do not need a project-local override;
@@ -424,6 +444,22 @@ mod tests {
     // -----------------------------------------------------------------------
     // Built-in registry
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_signatures_found_infer_the_same_stacks_as_the_content() {
+        let reg = StackRegistry::builtin().expect("built-in stack registry parses");
+        let signatures: Vec<String> =
+            reg.stacks().iter().flat_map(|s| s.code_signatures.iter().cloned()).take(6).collect();
+        assert!(!signatures.is_empty(), "the registry declares code signatures");
+        let content = format!("header\n{}\nfooter\n", signatures.join(" then "));
+        let found = code_signals(&content);
+        assert!(!found.is_empty(), "{content}");
+        assert_eq!(
+            infer_stacks(&[], &[], std::slice::from_ref(&content)),
+            infer_stacks(&[], &[], &[found.join("\n")]),
+        );
+        assert!(code_signals("nothing here").is_empty());
+    }
 
     #[test]
     fn stacks_registry_parses() {

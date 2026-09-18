@@ -1,14 +1,12 @@
 pub mod error;
+pub mod git;
 pub mod git_branches;
 pub mod git_exclude;
 pub mod git_provider;
 pub mod harness;
-pub mod hook_resolve;
 pub mod i18n;
-pub mod metrics;
 pub mod process;
 pub mod project_seed;
 pub mod config;
 pub mod seeds;
 pub mod time;
-pub mod dashboard_registry;

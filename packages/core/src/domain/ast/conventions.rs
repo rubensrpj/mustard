@@ -1,12 +1,11 @@
-//! `conventions` — agnostic, structural source-file predicates shared across
-//! the scan engine.
+//! `conventions` — a pergunta estrutural, agnóstica, que o scan faz sobre um
+//! caminho de arquivo: ele é de teste?
 //!
-//! These are pure lexical / path predicates with no notion of any one
-//! programming language, framework, or architecture. Each rule is a general
-//! shape: a path-segment convention, a filename-stem convention, or a
-//! comment-prefix character class. They live here, next to the other
-//! `ast::*` agnostic primitives, so every later phase resolves them at a
-//! single stable public path rather than reimplementing them per call site.
+//! É um predicado puro de caminho, sem nenhuma noção de linguagem, framework
+//! ou arquitetura: uma convenção de segmento de pasta e uma convenção de nome
+//! de arquivo. Mora aqui para que todos os chamadores resolvam a mesma
+//! resposta num caminho público só, em vez de reimplementá-la em cada ponto
+//! de chamada.
 
 /// Path segments that, by widely-shared convention across communities, mark a
 /// directory as holding tests, specs, fixtures, or mocks. Compared
@@ -75,12 +74,6 @@ const TEST_CAMEL_SUFFIXES: &[&str] = &["test", "spec"];
 /// modules ABOUT specifications. Carrying the prefix hid four such production
 /// modules, one of them the largest single file in its subproject.
 const TEST_STEM_PREFIXES: &[&str] = &["test_"];
-
-/// Single-line comment prefixes shared across the common comment styles. A
-/// trimmed line starting with any of these is treated as a comment line. This
-/// is intentionally the same set the scan engine's structural extractor uses,
-/// so the two agree byte-for-byte.
-const COMMENT_PREFIXES: &[&str] = &["//", "#", "--", "/*", "*", "<!--", ";", "%"];
 
 /// Whether a relative path points at a test/spec/fixture/mock file by
 /// convention — agnostic to any programming language or framework.
@@ -181,15 +174,6 @@ fn ends_with_camel_word(stem: &str, stem_orig: &str) -> bool {
     false
 }
 
-/// Whether a line is a single-line comment — agnostic to any programming
-/// language. The line is leading-trimmed, then matched against the shared
-/// [`COMMENT_PREFIXES`] set.
-#[must_use]
-pub fn is_comment(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    COMMENT_PREFIXES.iter().any(|p| trimmed.starts_with(p))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,23 +255,4 @@ mod tests {
         assert!(!is_test_path(r"src\models.rs"));
     }
 
-    #[test]
-    fn comment_prefixes_match_after_trim() {
-        assert!(is_comment("// line"));
-        assert!(is_comment("   # indented"));
-        assert!(is_comment("-- sql"));
-        assert!(is_comment("/* block start"));
-        assert!(is_comment(" * doc continuation"));
-        assert!(is_comment("<!-- html"));
-        assert!(is_comment("; ini"));
-        assert!(is_comment("% tex"));
-    }
-
-    #[test]
-    fn non_comment_lines_rejected() {
-        assert!(!is_comment("let x = 1;"));
-        assert!(!is_comment("struct User {}"));
-        assert!(!is_comment(""));
-        assert!(!is_comment("   "));
-    }
 }

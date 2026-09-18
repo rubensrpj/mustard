@@ -1,3 +1,9 @@
+# O repositório inteiro fica em LF no checkout, em qualquer sistema. O binário
+# lê arquivos do próprio código (textos dos agentes, estilo da página, retratos
+# de teste) e os compara byte a byte: no Windows, a conversão para CRLF mudava
+# o arquivo lido e nunca o gerado, e quatro testes caíam só lá.
+* text=auto eol=lf
+
 # Batch/cmd scripts break under cmd.exe with LF-only line endings (the parser
 # mis-reads labels and eats characters) — force CRLF on every checkout.
 *.cmd text eol=crlf
@@ -6,3 +12,10 @@
 # POSIX shell scripts must stay LF everywhere (CRLF breaks the shebang).
 plugin/bin/mustard-boot text eol=lf
 *.sh text eol=lf
+
+# Arquivo binário nunca é convertido.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

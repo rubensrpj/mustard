@@ -12,7 +12,7 @@
 //!
 //! ## Why this module exists
 //!
-//! Wave 7 of `spec-lifecycle-unification` migrated 166 spec headers from the
+//! A migration moved 166 spec headers from the
 //! legacy `### Status:` + `### Phase:` shape to the new three-line canonical
 //! form. Before this module, ~17 `mustard-rt` subcommands each carried their
 //! *own* inline `### Status:` parser (and several their own header *writers*),
@@ -57,22 +57,12 @@
 use crate::domain::model::view::{Flags, Outcome, SpecState, Stage};
 use std::path::Path;
 
-// Byte-stable spec layout contract — Wave 1, `2026-05-25-mustard-deep-refactor`.
+// Byte-stable spec layout contract.
 // Public API entry point: `validate(&SpecInput)`. Lives in its own submodule so
 // the historical header parser/serializer above stays the single owner of
 // header IO without bloating with the contract surface.
 pub mod contract;
 
-// `## Funções tocadas` canonical-format parser — Wave 0,
-// `2026-05-27-mustard-v4-foundation` (Spec A). Owns parsing, validation, and
-// the fallback resolver consumed by W2 (snapshot) and W4 (gate). Lives here so
-// the spec-document module is the single home of every parser that reads a
-// `spec.md`; the body parser stays free of regression-check concerns. The
-// module identifier is `touched_functions` (EN) to honour
-// [`feedback_rust_identifiers_en_only`]; the section heading the parser
-// matches against stays in PT-BR (`## Funções tocadas`) — that is content,
-// not identifier.
-pub mod touched_functions;
 
 // ---------------------------------------------------------------------------
 // Header-region scoping (tolerant, CRLF-safe)
@@ -259,18 +249,16 @@ fn resolve(status: Option<&str>, phase: Option<&str>) -> Option<SpecState> {
     let phase_stage = phase.and_then(parse_stage_tolerant);
 
     // 0. `queued` sub-plan sentinel: not-yet-started Plan item.
-    if let Some(status) = status {
-        if value_token(status).eq_ignore_ascii_case("queued") {
+    if let Some(status) = status
+        && value_token(status).eq_ignore_ascii_case("queued") {
             return Some(state_or_fallback(Stage::Plan, Outcome::Active, Flags::default()));
         }
-    }
 
     // 1. Terminal status wins outright — only legal at Close.
-    if let Some(status) = status {
-        if let Some(outcome) = terminal_outcome(status) {
+    if let Some(status) = status
+        && let Some(outcome) = terminal_outcome(status) {
             return Some(state_or_fallback(Stage::Close, outcome, Flags::default()));
         }
-    }
 
     // 2. closed-followup: Close + Active + followup_open.
     if let Some(status) = status {

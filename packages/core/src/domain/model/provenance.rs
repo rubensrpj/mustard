@@ -1,22 +1,15 @@
 //! Artifact provenance — the shape of `apps/cli/templates/.artifacts.json`.
 //!
 //! Mustard vendors dozens of artifacts under `templates/` (skills, refs,
-//! commands, hooks) and pins external tools such as RTK. Several of
-//! those have an external upstream that keeps evolving; the manifest records
-//! where each artifact came from, at which version, and (for vendored trees)
-//! a checksum, so a maintainer-side `artifact-update --check` can flag drift
-//! instead of comparing by hand.
+//! commands, hooks) and pins external tools such as RTK. The manifest records
+//! where each artifact came from and at which version.
 //!
 //! The manifest is **maintainer-side only** — it is not a `CORE_FOLDER` and is
-//! never copied into a user installation. The types here are plain `serde`
-//! data with no side effects; [`tree_checksum`] is the one helper that touches
-//! the filesystem, and it is consumed by the `artifact-update` engine.
-
-use std::io;
-use std::path::Path;
+//! never copied into a user installation. What still reads it is the install,
+//! which looks up the pinned RTK revision before offering to install the tool.
+//! The types here are plain `serde` data with no side effects.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// The full managed-artifact manifest (`apps/cli/templates/.artifacts.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,8 +44,8 @@ pub struct ArtifactRecord {
     /// Folder path relative to `apps/cli/templates/` (vendored artifacts only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// SHA-256 of the vendored tree (vendored artifacts only). Computed on
-    /// demand by the `artifact-update` engine via [`tree_checksum`].
+    /// SHA-256 of the vendored tree, as recorded when the tree was last
+    /// vendored (vendored artifacts only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
 }
@@ -107,67 +100,6 @@ pub enum ArtifactSource {
     },
     /// Vendored from an upstream with no machine-checkable provenance.
     Manual,
-}
-
-/// SHA-256 over every file in `dir`, walked recursively.
-///
-/// Paths are sorted before hashing so the digest is stable regardless of
-/// directory-iteration order. Each file contributes its relative path (as
-/// bytes) followed by its contents, so a rename changes the digest. Written
-/// for the `artifact-update` engine to detect drift between a vendored tree
-/// and its upstream.
-///
-/// # Errors
-///
-/// Returns an [`io::Error`] if `dir` cannot be read or a file under it cannot
-/// be opened.
-pub fn tree_checksum(dir: &Path) -> io::Result<String> {
-    let mut files = Vec::new();
-    collect_files(dir, dir, &mut files)?;
-    files.sort();
-
-    let mut hasher = Sha256::new();
-    for (rel, abs) in files {
-        hasher.update(rel.as_bytes());
-        hasher.update([0u8]);
-        let bytes = crate::io::fs::read(&abs).map_err(|e| io::Error::other(e.to_string()))?;
-        hasher.update(bytes);
-    }
-    Ok(hex_encode(&hasher.finalize()))
-}
-
-/// Recursively collect `(relative-path, absolute-path)` pairs for every file
-/// under `dir`. Relative paths use `/` so the digest is platform-stable.
-fn collect_files(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<(String, std::path::PathBuf)>,
-) -> io::Result<()> {
-    let entries = crate::io::fs::read_dir(dir).map_err(|e| io::Error::other(e.to_string()))?;
-    for entry in entries {
-        let path = entry.path;
-        if entry.is_dir {
-            collect_files(root, &path, out)?;
-        } else {
-            let rel = path
-                .strip_prefix(root)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            out.push((rel, path));
-        }
-    }
-    Ok(())
-}
-
-/// Lower-case hex encoding of a byte slice.
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
 }
 
 #[cfg(test)]
@@ -232,22 +164,5 @@ mod tests {
 
         let fp = serde_json::to_value(ArtifactSource::FirstParty).expect("serialize");
         assert_eq!(fp["kind"], "first-party");
-    }
-
-    /// `tree_checksum` is deterministic and path-sensitive.
-    #[test]
-    fn tree_checksum_is_stable_and_path_sensitive() {
-        let dir = tempfile::tempdir().unwrap();
-        crate::io::fs::write_atomic(dir.path().join("a.txt"), b"alpha").unwrap();
-        crate::io::fs::create_dir_all(dir.path().join("sub")).unwrap();
-        crate::io::fs::write_atomic(dir.path().join("sub/b.txt"), b"beta").unwrap();
-
-        let first = tree_checksum(dir.path()).unwrap();
-        let second = tree_checksum(dir.path()).unwrap();
-        assert_eq!(first, second, "checksum must be deterministic");
-        assert_eq!(first.len(), 64, "sha256 hex is 64 chars");
-
-        crate::io::fs::write_atomic(dir.path().join("sub/b.txt"), b"gamma").unwrap();
-        assert_ne!(first, tree_checksum(dir.path()).unwrap(), "content change shifts digest");
     }
 }

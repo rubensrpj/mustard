@@ -6,9 +6,7 @@
 | 🍎 **macOS** 11+ (Intel + Apple Silicon) | **`Mustard-{{VERSION}}-universal.pkg`** | `TUTORIAL-MACOS.md` |
 | 🐧 **Linux** (Ubuntu 22.04+) | nada — instale com o `curl` do resumo abaixo (a rota manual usa **`mustard_{{VERSION}}_amd64.deb`** + `install.sh`) | `TUTORIAL-LINUX.md` |
 
-Cada instalador traz **tudo**: o CLI (`mustard`, `mustard-rt`, `mustard-mcp`, `scan`, `rtk`) **e** o **Mustard Dashboard**. Não precisa instalar Rust nem Node.
-
-O Dashboard é um **servidor**, não mais um aplicativo de janela: rode `mustard-dashboard` na pasta onde ficam seus projetos, e ele serve o painel em `http://127.0.0.1:7777/` abrindo o navegador sozinho quando há tela. Para alcançá-lo de outra máquina (Tailscale, por exemplo), `mustard-dashboard --host 0.0.0.0` — sem essa flag ele só responde localmente, de propósito.
+Cada instalador traz **tudo**: o CLI (`mustard`, `mustard-rt`, `scan`, `rtk`). Não precisa instalar Rust nem Node.
 
 ### Resumo rápido
 - **Windows:** execute o `.exe` → no aviso do SmartScreen, *Mais informações* → *Executar assim mesmo* → abra um terminal **novo**.
@@ -23,7 +21,7 @@ O Dashboard é um **servidor**, não mais um aplicativo de janela: rode `mustard
   ```
   Quem preferir conferir o `sha256` antes: baixe o `.deb` e o `install.sh` dos *Assets* na mesma pasta e rode `chmod +x install.sh && ./install.sh` — os assets chegam sem a permissão de execução (`TUTORIAL-LINUX.md` detalha as duas rotas).
 
-Depois, em qualquer projeto: **`mustard init`** — e, **dentro do Claude Code**, o plugin (é ele que traz os comandos `/mustard:*`, os hooks e o MCP de memória):
+Depois, em qualquer projeto: **`mustard init`** — e, **dentro do Claude Code**, o plugin (é ele que traz os comandos `/mustard:*` e os hooks):
 
 ```
 /plugin marketplace add rubensrpj/mustard

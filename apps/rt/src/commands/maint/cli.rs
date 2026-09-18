@@ -1,8 +1,10 @@
 //! The `run` subcommands for installation maintenance (`maint/`).
 //!
-//! TWO registrations per command, both in this file: the variant in
-//! [`MaintCmd`] AND its arm in [`dispatch`] below. Forgetting the second
-//! still compiles, but the command vanishes from the CLI.
+//! A new command takes its variant in [`MaintCmd`] and its arm in
+//! [`dispatch`] below (the compiler demands the arm), its line in
+//! `tests/fixtures/run-surface.txt`, which `tests/run_command_surface.rs`
+//! compares with the clap tree, and a caller in the product text, which
+//! `tests/template_parity.rs` demands with no exception list.
 //!
 //! [`crate::commands::RunCmd`] hoists this enum with `#[command(flatten)]`, so
 //! every name stays FLAT: `mustard-rt run <name>`, never `run maint <name>`.
@@ -19,51 +21,6 @@ use crate::commands::{maint};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum MaintCmd {
-    /// Check (or apply) freshness of managed artifacts against their upstreams.
-    ///
-    /// Maintainer-side: reads `apps/cli/templates/.artifacts.json` and probes
-    /// each external upstream. Fail-open — network errors degrade an artifact
-    /// to `unknown` and never fail the command.
-    #[command(display_order = 48)]
-    ArtifactUpdate {
-        /// Probe upstreams and emit the JSON freshness report (the default).
-        #[arg(long)]
-        check: bool,
-        /// Pull updates into vendored trees / bump pinned versions.
-        #[arg(long)]
-        apply: bool,
-        /// Manifest path (default `apps/cli/templates/.artifacts.json`).
-        #[arg(long)]
-        manifest: Option<String>,
-    },
-    /// Garbage-collect orphan Claude agent worktrees under
-    /// `<repo>/.claude/worktrees/` — every entry whose name is NOT a work
-    /// unit's `{kind}/…` (nor the older `{base}_…`) — unit worktrees belong to
-    /// `git-settle`. Anything
-    /// still holding uncommitted work is kept whatever its age.
-    ///
-    /// Enumerates the directory, computes each entry's age (via
-    /// `<repo>/.git/worktrees/<name>/HEAD` mtime, falling back to the dir's
-    /// own mtime), and reports/removes entries older than `--age-days N`
-    /// (default 7). Dry-run by default; `--apply` is required to mutate the
-    /// filesystem. Emits `pipeline.economy.operation.invoked` to the harness
-    /// event store.
-    #[command(display_order = 54)]
-    WorktreeGc {
-        /// Repo root override. Defaults to the current working directory.
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        /// Age threshold in whole days. Worktrees older than this are
-        /// eligible for removal.
-        #[arg(long = "age-days", default_value_t = maint::worktree_gc::DEFAULT_AGE_DAYS)]
-        age_days: u32,
-        /// Preview only — no filesystem mutation (the default).
-        #[arg(long, default_value_t = true, conflicts_with = "apply")]
-        dry_run: bool,
-        /// Apply the removal. Required to mutate the filesystem.
-        #[arg(long)]
-        apply: bool,
-    },
     /// Recolhe as cópias descartáveis que os agentes deixam no diretório
     /// temporário (ou no `scratchpad/` de uma sessão do Claude Code): pasta
     /// com cópia deste projeto ou `target/` de compilação, sem mudança há
@@ -74,8 +31,8 @@ pub enum MaintCmd {
     /// 8 GB. `--path <dir>` apaga uma pasta só, sem o filtro de idade, depois
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
-    #[command(name = "scratch-gc")]
-    #[command(display_order = 100)]
+    #[command(name = "clean")]
+    #[command(display_order = 18)]
     ScratchGc {
         /// Só lista, sem apagar nada (o padrão). Não combina com `--apply`
         /// nem com `--path`: pedir para só listar e apontar uma pasta para
@@ -91,97 +48,6 @@ pub enum MaintCmd {
         #[arg(long, conflicts_with = "apply")]
         path: Option<PathBuf>,
     },
-    /// Kill-switch: set `"disableAllHooks": true` in `.claude/settings.json`
-    /// and wipe volatile harness state (`.agent-state/`,
-    /// `.cluster-cache.json`). Everything else in the file —
-    /// `permissions.allow`/`deny`, `statusLine`, `env` — is preserved, and so
-    /// are worktrees: `.claude/worktrees/` holds uncommitted work and is only
-    /// ever removed by [`Self::WorktreeGc`], never by silencing the harness.
-    /// Restore with [`Self::Rehook`].
-    ///
-    /// `--scope this` (default) acts on the current repo's `.claude/` only.
-    /// `--scope monorepo` also sweeps every `apps/*/.claude/` +
-    /// `packages/*/.claude/`. `--scope all` adds the user-global
-    /// `~/.claude/settings.json`, gated by `--confirm` (otherwise reported as
-    /// `state: "skipped"`). Emits a pretty JSON report.
-    #[command(display_order = 55)]
-    Unhook {
-        /// Repo root override. Defaults to the current working directory.
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        /// Scope: `this` (default), `monorepo`, or `all`.
-        #[arg(long, default_value = "this")]
-        scope: String,
-        /// Required for `--scope all` to also touch the user-global
-        /// `~/.claude/settings.json`.
-        #[arg(long)]
-        confirm: bool,
-    },
-    /// Reverse [`Self::Unhook`]: in each `.claude/` in scope, remove
-    /// `"disableAllHooks"` from `settings.json` — or, for a project unhooked
-    /// by an older build, rename the newest `settings.json.disabled*` snapshot
-    /// back. Volatile state directories that `unhook` wiped are left alone —
-    /// the runtime regenerates them on the next run. Emits a pretty JSON report.
-    #[command(display_order = 56)]
-    Rehook {
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        #[arg(long, default_value = "this")]
-        scope: String,
-        #[arg(long)]
-        confirm: bool,
-    },
-    /// Audit (and optionally remove) drift in a project's `.claude/` directory.
-    ///
-    /// Enumerates every direct child of `.claude/`, classifies each against a
-    /// declared consumer list (KEEP / STALE / ORPHAN / LEGACY / CACHE), and
-    /// either reports candidates (default `--dry-run`) or removes the ORPHAN
-    /// / LEGACY ones (`--apply`). Emits byte-stable pretty JSON; fail-open at
-    /// every step — exit code is always 0.
-    #[command(name = "claude-dir-prune")]
-    #[command(display_order = 64)]
-    ClaudeDirPrune {
-        /// Repo root override. Defaults to the current working directory.
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        /// Preview only — emit the report, mutate nothing (the default).
-        #[arg(long, default_value_t = true, conflicts_with = "apply")]
-        dry_run: bool,
-        /// Apply the removals. Required to mutate the filesystem.
-        #[arg(long)]
-        apply: bool,
-        /// Reserved for parity with sibling subcommands — JSON is the only
-        /// format today, but the flag exists so callers can pass it.
-        #[arg(long)]
-        json: bool,
-    },
-    /// W5.T5.6 — Generate `.cursorrules` from the repo's `CLAUDE.md` tree.
-    #[command(name = "adapt-cursor")]
-    #[command(display_order = 70)]
-    AdaptCursor {
-        /// Repo root override.
-        #[arg(long)]
-        repo: Option<PathBuf>,
-        /// Preview only — no filesystem mutation.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// W5.T5.7a — Install dependencies in every detected subproject.
-    #[command(name = "maint-deps")]
-    #[command(display_order = 71)]
-    MaintDeps {
-        /// Preview only — print the resolved install commands without running.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// W5.T5.7b — Run build/type-check validation in every detected subproject.
-    #[command(name = "maint-validate")]
-    #[command(display_order = 72)]
-    MaintValidate {
-        /// Preview only — print the resolved validate commands without running.
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// Install or update Mustard in the current project (the plugin's
     /// bootstrap door).
     ///
@@ -190,41 +56,28 @@ pub enum MaintCmd {
     /// `.claude/settings.json` — plus `.claude/.gitignore` and the
     /// project-root `mustard.json` are yours and are merged, never clobbered:
     /// an existing file is preserved, only what is missing is created or
-    /// backfilled. The three injectable instruction files under
-    /// `.claude/mustard/` — `orchestrator.md`, `dispatch.md` and
-    /// `material.md` — are ALWAYS rewritten: they are the harness's own
-    /// rules, not project configuration, so a copy you edited is replaced and
-    /// listed under `updated`, while one that already matched the shipped
-    /// text comes back under `preserved` because there was nothing left to
-    /// write. The legacy planted-orchestrator footprint is migrated away.
-    /// Emits the `UpsertReport` as deterministic pretty JSON.
-    #[command(display_order = 44)]
-    Upsert {},
+    /// backfilled. Mustard's own texts — the session map
+    /// `.claude/mustard/mapa-inicio-sessao.md` and the three agents under
+    /// `.claude/agents/mustard/` — are ALWAYS rewritten, in the language of
+    /// `language.text`: they are the harness's own text, not project
+    /// configuration, so a copy you edited is replaced and listed under
+    /// `updated`, while one that already matched the shipped text comes back
+    /// under `preserved` because there was nothing left to write. Emits the
+    /// `UpsertReport` as deterministic pretty JSON.
+    ///
+    /// What an older Mustard wrote into files that are not its own — the
+    /// marks in the `CLAUDE.md` files, the seed's lines in the team's
+    /// `.claude/settings.json`, a planted `.claude/CLAUDE.md` — leaves in the
+    /// same call, with no question: the Guards become project-rule lessons
+    /// first, and `cleanup` and `cleaned` say what left. A file without a mark
+    /// is only listed. The commit stays with the person.
+    #[command(display_order = 19)]
+    Upsert,
 }
 
 /// Dispatch one `maint`-family `run` subcommand.
 pub fn dispatch(cmd: MaintCmd) {
     match cmd {
-        MaintCmd::ArtifactUpdate {
-            check,
-            apply,
-            manifest,
-        } => maint::artifact_update::run(check, apply, manifest.as_deref()),
-        MaintCmd::WorktreeGc {
-            repo,
-            age_days,
-            dry_run,
-            apply,
-        } => {
-            // `dry_run` defaults to `true`; clap's `conflicts_with` blocks
-            // passing both. `--apply` is the authoritative mutator flag.
-            let _ = dry_run;
-            maint::worktree_gc::run(maint::worktree_gc::WorktreeGcOpts {
-                repo,
-                age_days,
-                apply,
-            });
-        }
         MaintCmd::ScratchGc { dry_run, apply, path } => {
             // `dry_run` vale `true` por padrão e o `conflicts_with_all` recusa
             // `--dry-run` junto de `--apply` OU de `--path`: quando um dos dois
@@ -233,38 +86,7 @@ pub fn dispatch(cmd: MaintCmd) {
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
-        MaintCmd::Unhook { repo, scope, confirm } => {
-            maint::unhook::run(maint::unhook::UnhookOpts { repo, scope, confirm });
-        }
-        MaintCmd::Rehook { repo, scope, confirm } => {
-            maint::rehook::run(maint::rehook::RehookOpts { repo, scope, confirm });
-        }
-        MaintCmd::ClaudeDirPrune {
-            repo,
-            dry_run,
-            apply,
-            json,
-        } => {
-            // `dry_run` defaults to `true`; clap's `conflicts_with` blocks
-            // both flags from coexisting. `--apply` is the authoritative
-            // mutator flag.
-            let _ = dry_run;
-            maint::claude_dir_prune::run(maint::claude_dir_prune::ClaudeDirPruneOpts {
-                repo,
-                apply,
-                json,
-            });
-        }
-        MaintCmd::AdaptCursor { repo, dry_run } => {
-            maint::adapt_cursor::run(maint::adapt_cursor::AdaptCursorOpts { repo, dry_run });
-        }
-        MaintCmd::MaintDeps { dry_run } => {
-            maint::maint_deps::run(maint::maint_deps::MaintDepsOpts { dry_run });
-        }
-        MaintCmd::MaintValidate { dry_run } => {
-            maint::maint_validate::run(maint::maint_validate::MaintValidateOpts { dry_run });
-        }
-        MaintCmd::Upsert {} => maint::upsert::run(),
+        MaintCmd::Upsert => maint::upsert::run(),
     }
 }
 
@@ -287,7 +109,7 @@ mod tests {
     #[test]
     fn scratch_gc_dry_run_conflicts_with_path_and_apply() {
         let parse = |args: &[&str]| {
-            let mut argv = vec!["probe", "scratch-gc"];
+            let mut argv = vec!["probe", "clean"];
             argv.extend_from_slice(args);
             Probe::try_parse_from(argv)
         };
@@ -303,5 +125,13 @@ mod tests {
         assert!(parse(&["--apply"]).is_ok());
         assert!(parse(&["--dry-run"]).is_ok());
         assert!(parse(&[]).is_ok());
+    }
+
+    /// A limpeza das sobras não pede código: o `upsert` não aceita mais o
+    /// `--confirm`.
+    #[test]
+    fn upsert_takes_no_confirm_code() {
+        assert!(Probe::try_parse_from(["probe", "upsert"]).is_ok());
+        assert!(Probe::try_parse_from(["probe", "upsert", "--confirm", "abcd1234"]).is_err());
     }
 }

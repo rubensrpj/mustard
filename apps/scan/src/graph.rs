@@ -7,7 +7,7 @@
 //! dependency order the code itself defines?
 //!
 //! Layering is derived, not named: condense cycles into a DAG, then take each
-//! module's longest dependency chain as its depth (L0 = most depended-upon /
+//! module's longest dependency chain as its depth (`L0` = most depended-upon /
 //! innermost). The only direction-violation topology can prove without a
 //! hardcoded layer vocabulary is a dependency cycle, so that is what we count.
 //!
@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// monorepo. Bounded: ~a few KB of model.
 const TOP_DEGREE_CAP: usize = 64;
 
-/// Longest dependency chain below an SCC = its emergent depth (L0 = innermost).
+/// Longest dependency chain below an SCC = its emergent depth (`L0` = innermost).
 fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> usize {
     if let Some(d) = memo[c] {
         return d;
@@ -71,7 +71,7 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 /// personalized-PageRank ranker (`pagerank`) consume, so the two can never see
 /// a different graph. Output sorted → byte-stable. Nothing switches on a
 /// language name.
-pub fn resolve_edges(modules: &[Module], go_module: &Option<String>) -> Vec<(usize, usize, u64)> {
+pub fn resolve_edges(modules: &[Module], go_module: &Option<String>, packages: &[(String, String)]) -> Vec<(usize, usize, u64)> {
     let mut pos: HashMap<&str, usize> = HashMap::with_capacity(modules.len());
     for (i, m) in modules.iter().enumerate() {
         pos.insert(m.path.as_str(), i);
@@ -97,7 +97,9 @@ pub fn resolve_edges(modules: &[Module], go_module: &Option<String>) -> Vec<(usi
     for (src, m) in modules.iter().enumerate() {
         let root_aliases = crate::extract::root_aliases(&m.language);
         for imp in &m.imports {
-            let targets = resolve(imp, &m.path, root_aliases, &ns_index, &stem_index, &dir_index, &module_paths, go_module);
+            let targets = resolve(
+                imp, &m.path, root_aliases, &ns_index, &stem_index, &dir_index, &module_paths, go_module, packages,
+            );
             let w = (1024 / targets.len().max(1) as u64).max(1);
             for t in targets {
                 if let Some(&dst) = pos.get(t.as_str())
@@ -121,7 +123,7 @@ pub type GraphBuild = (
     HashMap<String, usize>,
 );
 
-pub fn build(modules: &[Module], go_module: &Option<String>) -> GraphBuild {
+pub fn build(modules: &[Module], go_module: &Option<String>, packages: &[(String, String)]) -> GraphBuild {
     let mut g: DiGraph<String, ()> = DiGraph::new();
     for m in modules {
         g.add_node(m.path.clone());
@@ -132,7 +134,7 @@ pub fn build(modules: &[Module], go_module: &Option<String>) -> GraphBuild {
     // `NodeIndex::new(i)`. The published degree is specificity-weighted (see the
     // resolver): a bucket-broadcast target keeps its 1/N share instead of a
     // minted full count, so real hubs rank above diffuse glue.
-    let resolved = resolve_edges(modules, go_module);
+    let resolved = resolve_edges(modules, go_module, packages);
     let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
     for &(a, b, w) in &resolved {
         edge_w.insert((NodeIndex::new(a), NodeIndex::new(b)), w);
@@ -270,6 +272,7 @@ fn resolve(
     dir_index: &HashMap<String, Vec<String>>,
     module_paths: &HashSet<&str>,
     go_module: &Option<String>,
+    packages: &[(String, String)],
 ) -> Vec<String> {
     // Try every resolution shape; whichever applies wins. No language switch.
     // Lookups run on the canonical segment form so no shape ever cares which
@@ -346,7 +349,52 @@ fn resolve(
                 }
             }
         }
+    // 5) Workspace package path: the first segment names a package the project
+    //    itself declares (its manifest's own name, `-` read as `_`). Drop it
+    //    and probe the tail (and the tail minus its last segment, which may
+    //    name an item) under that package's directory, the shallowest
+    //    directory first. Any other first segment stays an external package.
+    if let Some((first, tail)) = canon.split_once('/') {
+        let folded = fold_package(first);
+        for (_, dir) in packages.iter().filter(|(name, _)| *name == folded) {
+            let inside = |d: &String| dir.is_empty() || d == dir || d.starts_with(&format!("{dir}/"));
+            let mut bases: Vec<&String> = dir_index.keys().filter(|d| inside(d)).collect();
+            bases.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()).then_with(|| a.cmp(b)));
+            let mut tails = vec![tail.to_string()];
+            if let Some((head, _)) = tail.rsplit_once('/') {
+                tails.push(head.to_string());
+            }
+            for t in &tails {
+                for base in &bases {
+                    let cand = if base.is_empty() { t.clone() } else { format!("{base}/{t}") };
+                    let hits = resolve_path_candidate(&cand, stem_index, dir_index, module_paths);
+                    if !hits.is_empty() {
+                        return hits;
+                    }
+                }
+            }
+        }
+    }
     Vec::new()
+}
+
+/// A package name as imports spell it: lowercase, with `-` read as `_`.
+fn fold_package(name: &str) -> String {
+    name.trim().to_ascii_lowercase().replace('-', "_")
+}
+
+/// The packages the project declares, as `(folded name, manifest directory)`,
+/// in name order — what resolution shape 5 matches an import's first segment
+/// against.
+pub fn packages(manifests: &[crate::model::Manifest]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = manifests
+        .iter()
+        .filter_map(|m| m.package.as_deref().map(|p| (fold_package(p), parent_dir(&m.path))))
+        .filter(|(name, _)| !name.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn resolve_path_candidate(

@@ -18,6 +18,9 @@ skip_dirs = [".git", ".claude", "node_modules", "target", "bin", "obj", "dist", 
 #   scripts         (json) object path whose entries are build/codegen scripts
 #   element / attr  (xml) element name / attribute holding the dependency
 #   module_pattern  (gomod) regex capturing this unit's own module path
+#   package_pattern regex capturing the package's own name, the first line that
+#                   matches; an import whose first segment is that name (with
+#                   `-` read as `_`) resolves inside this package's directory
 #   dep_pattern     (gomod) regex capturing each dependency
 
 [[manifest]]
@@ -25,6 +28,7 @@ kind = "npm"
 filename = "package.json"
 format = "json"
 name = "dir"
+package_pattern = '^\s*"name"\s*:\s*"([^"]+)"'
 deps = ["dependencies", "devDependencies", "peerDependencies"]
 scripts = "scripts"
 
@@ -71,4 +75,5 @@ kind = "cargo"
 filename = "Cargo.toml"
 format = "toml-sections"
 name = "dir"
+package_pattern = '^\s*name\s*=\s*"([^"]+)"'
 deps = ["dependencies", "dev-dependencies", "build-dependencies"]

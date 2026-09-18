@@ -63,7 +63,7 @@ const WRITER_PATHS: &[&str] = &[
     "spec/demo/qa-report.html",
     // Sanctioned scratch evidence: the write gate lets a diagnosis land here on
     // a protected base, so it has to be ignored by construction.
-    // apps/rt/src/hooks/write/work_branch_gate.rs (`.claude/scratch/` carve-out)
+    // apps/rt/src/shared/paths.rs (`.claude/scratch/` carve-out)
     "scratch/probe.sh",
     // Compaction memory, pruned after 24h by the session cleanup observer.
     // apps/rt/src/hooks/session/session_cleanup_observer.rs:183

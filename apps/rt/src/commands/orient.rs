@@ -146,7 +146,8 @@ pub fn compute_orientation(root: &Path) -> Orientation {
             role,
         })
         .collect();
-    // Byte-stable order: by layer (L0→L1→L2), then biggest first, then name.
+    // Byte-stable order: by layer (`L0`, then `L1`, then `L2`), then biggest
+    // first, then name.
     terrain.sort_by(|a, b| {
         a.role
             .cmp(&b.role)
@@ -164,12 +165,12 @@ pub fn compute_orientation(root: &Path) -> Orientation {
 /// Render the terrain block (header + one line per subproject), or `None`
 /// when there is no terrain (fail-open / empty model).
 ///
-/// Language follows `mustard.json#lang` (`lang`): the terrain is injected as
-/// orientation and displayed to the developer, so it is user-facing text
-/// routed through the i18n catalogue, not an internal index (finding #1 of the
-/// 2026-07 SOLID audit). A project with no declared locale defaults to `pt-BR`
-/// via [`mustard_core::ProjectConfig::i18n`], so existing installs are
-/// unchanged. Output stays deterministic and byte-stable for a given locale.
+/// Language follows the project's text language (`language.text` in
+/// `mustard.json`): the terrain is injected as orientation and displayed to the
+/// developer, so it is user-facing text routed through the i18n catalogue, not
+/// an internal index. A project with no declared language gets `pt-BR`
+/// ([`mustard_core::Language::text_or_default`]). Output stays deterministic
+/// and byte-stable for a given locale.
 /// How many subproject rows the injected census may carry.
 ///
 /// **The census is the one part of a hook's payload that grows without a bound,
@@ -224,20 +225,11 @@ pub fn render_terrain(o: &Orientation, lang: SupportedLocale) -> Option<String> 
 // Command entry — `mustard-rt run orient`.
 // ===========================================================================
 
-/// `run orient`: print the terrain. Empty (missing grain model) prints
-/// nothing and exits 0 — fail-open, byte-stable.
-pub fn run(root: &Path) {
-    let orientation = compute_orientation(root);
-    let lang = crate::shared::context::project_config_cached(root).i18n().lang;
-    if let Some(t) = render_terrain(&orientation, lang) {
-        println!("{t}");
-    }
-}
 
 #[cfg(test)]
 mod tests {
 
-    /// AC-2 — the SessionStart payload stays IN FORCE for a monorepo-sized
+    /// The SessionStart payload stays IN FORCE for a monorepo-sized
     /// census.
     ///
     /// The hook folds the census, every injectable declared on that event and
@@ -282,7 +274,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// A compact, fully-controlled grain model: two architectural subprojects
-    /// (one L1 `rt`, one L0 `web`) plus a nested unit and a fixture the skeleton
+    /// (`rt` on layer `L1`, `web` on `L0`) plus a nested unit and a fixture the skeleton
     /// join must drop.
     const FIXTURE: &str = r#"{
       "projects": [
@@ -376,7 +368,7 @@ mod tests {
 
     #[test]
     fn terrain_follows_declared_locale_en() {
-        // finding #1 (SOLID audit): an `en-US` project gets an English terrain
+        // An `en-US` project gets an English terrain
         // banner + `files` suffix; the pt-BR default is asserted above.
         let (_d, root) = seed(FIXTURE);
         let o = compute_orientation(&root);

@@ -3,195 +3,146 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! A gate that declines without saying why costs a whole run to diagnose.
+//! A testemunha da aprovação diz por que nada foi gravado.
 //!
-//! The approval recorder mints `<spec>/.approved-by-user` only when a selected
-//! option label carries an approval stem (`approv` / `aprov`). A question whose
-//! options read "Sim, pode ir" / "Go ahead" therefore recorded nothing — and
-//! said nothing. The author of the question could not learn that the condition
-//! existed: it was documented only in the recorder's own source, and the run
-//! died later at `approve-spec`, which names the MISSING MARKER but not the
-//! reason it is missing.
+//! A testemunha grava o estado aprovado só quando o usuário escolhe uma das
+//! opções oferecidas que começa por "Aprovar" ("Approve"). Uma opção como
+//! "Sim, pode ir" não aprova, e uma resposta digitada, que não é nenhuma das
+//! opções, também não. Nos dois casos, quem fez a pergunta precisa saber o
+//! motivo na hora, e o texto de um gancho no stderr não chega ao assistente:
+//! a testemunha responde no contexto do `PostToolUse`.
 //!
-//! This drives `mustard-rt on PostToolUse` as a subprocess (the same end-to-end
-//! shape as `plan_approval_marker.rs`, since `hooks` is private to the lib) and
-//! asserts the decline is now explained on stderr, while still recording
-//! nothing.
+//! Roda `mustard-rt on PostToolUse` como processo, porque os ganchos são
+//! privados da biblioteca, e confere o `state` da spec no `spec.ndjson`.
 //!
-//! A SECOND decline joined it: an answer typed as free text (the harness's
-//! `Other` row / notes field) rather than selected from the offered options is
-//! not an approval whatever words it contains, and its remedy differs — select
-//! the option instead of typing it — so it gets its own explanation. Both
-//! declines record nothing; the one thing the recorder ACCEPTS, a genuine
-//! selection of an approval-stemmed option, is unchanged.
-//!
-//! Lives in `tests/` rather than in-file because the acceptance criterion runs
-//! `cargo test -p mustard-rt approval_refusal_names_the_unmet_condition --
-//! --exact`, and libtest matches `--exact` against the FULL test path — which
-//! equals the bare function name only at the root of an integration-test binary.
+//! Mora em `tests/` porque o critério roda `cargo test -p mustard-rt
+//! approval_refusal_names_the_unmet_condition -- --exact`, e o `--exact` só
+//! casa o nome da função na raiz de um binário de teste de integração.
 
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Drive `mustard-rt on PostToolUse` with an `AskUserQuestion` answer rooted at
-/// `cwd`, returning the captured stderr. `offered` are the option labels the
-/// question put on the menu (`tool_input`, authored by the model); `answers` is
-/// what came back. The recorder requires the answer to be exactly one of the
-/// offered labels, so the two are supplied separately — as the harness does.
-/// Asserts the clean (exit 0) fail-open dispatch every hook face owes the
-/// session.
-fn answer_and_capture_stderr(
-    cwd: &Path,
-    session: &str,
-    offered: &[&str],
-    answers: serde_json::Value,
-) -> String {
+use mustard_core::io::spec_events as store;
+use serde_json::{json, Value};
+
+const QUESTION: &str = "Aprovar esta spec?";
+
+/// Responde a pergunta com as opções `offered` e a resposta `answers`, na
+/// pasta `cwd`, e devolve o que a testemunha disse ao assistente, ou vazio.
+fn answer(cwd: &Path, session: &str, offered: &[&str], answers: Value) -> String {
     let bin = env!("CARGO_BIN_EXE_mustard-rt");
-    let options: Vec<serde_json::Value> = offered
-        .iter()
-        .map(|l| serde_json::json!({ "label": l }))
-        .collect();
-    let input = serde_json::json!({
+    let options: Vec<Value> = offered.iter().map(|l| json!({ "label": l })).collect();
+    let input = json!({
         "hook_event_name": "PostToolUse",
         "tool_name": "AskUserQuestion",
-        "tool_input": {
-            "questions": [{ "question": "Approve the plan?", "options": options }]
-        },
+        "tool_input": { "questions": [{ "question": QUESTION, "options": options }] },
         "tool_response": { "questions": [], "answers": answers },
         "session_id": session,
         "cwd": cwd.to_str().unwrap()
     });
     let mut child = Command::new(bin)
         .args(["on", "PostToolUse"])
+        .current_dir(cwd)
+        .env("CLAUDE_PROJECT_DIR", cwd)
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .env_remove("MUSTARD_SESSION_ID")
+        .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .expect("spawn mustard-rt");
-    if let Some(stdin) = child.stdin.take() {
-        let mut stdin = stdin;
+    if let Some(mut stdin) = child.stdin.take() {
         let _ = write!(stdin, "{input}");
     }
     let out = child.wait_with_output().expect("wait");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "mustard-rt PostToolUse must exit 0 (fail-open)"
-    );
-    String::from_utf8_lossy(&out.stderr).into_owned()
+    assert_eq!(out.status.code(), Some(0), "mustard-rt PostToolUse must exit 0 (fail-open)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str::<Value>(stdout.trim())
+        .ok()
+        .and_then(|v| v["hookSpecificOutput"]["additionalContext"].as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
-/// Seed a Full spec in PLAN (the exact window where an approval is pending) and
-/// bind the session to it, so the recorder's facts 1 and 2 both hold.
-fn seed_full_plan_spec(project: &Path, session: &str, spec: &str) {
-    let spec_dir = project.join(".claude").join("spec").join(spec);
-    fs::create_dir_all(&spec_dir).unwrap();
-    fs::write(
-        spec_dir.join("meta.json"),
-        r#"{"scope":"full (wave plan)","stage":"Plan","outcome":"Active"}"#,
-    )
-    .unwrap();
+/// Uma spec `epic` na fase de plano, ligada à sessão, num projeto em pt-BR.
+fn spec_in_plan(project: &Path, session: &str) {
+    fs::write(project.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+    let path = store::spec_file(project, "epic").unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let plan = json!({ "phase": "plan" });
+    store::write(&path, "state", plan.as_object().cloned().unwrap(), &[]).unwrap();
     let session_dir = project.join(".claude").join(".session").join(session);
     fs::create_dir_all(&session_dir).unwrap();
-    fs::write(session_dir.join("active-spec"), spec).unwrap();
+    fs::write(session_dir.join("active-spec"), "epic").unwrap();
 }
 
-fn marker(project: &Path, spec: &str) -> std::path::PathBuf {
-    project
-        .join(".claude")
-        .join("spec")
-        .join(spec)
-        .join(".approved-by-user")
+/// A fase atual da spec `epic`, lida do último `state` do arquivo.
+fn phase(project: &Path) -> String {
+    let body = fs::read_to_string(store::spec_file(project, "epic").unwrap()).unwrap();
+    body.lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["type"] == "state")
+        .and_then(|v| v["phase"].as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 #[test]
 fn approval_refusal_names_the_unmet_condition() {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path();
-    seed_full_plan_spec(project, "s-decline", "epic");
+    spec_in_plan(project, "s-decline");
 
-    // A genuine SELECTION of an offered option, in words the stem matcher does
-    // not recognise.
-    let stderr = answer_and_capture_stderr(
+    // Uma escolha de verdade, com palavras que não começam por "Aprovar".
+    let said = answer(
         project,
         "s-decline",
         &["Sim, pode ir", "Não, revisar"],
-        serde_json::json!({ "Approve the plan?": "Sim, pode ir" }),
+        json!({ QUESTION: "Sim, pode ir" }),
     );
 
-    // 1. The condition is NAMED — which spec, which label, which stems.
-    assert!(
-        stderr.contains("epic"),
-        "the refusal must name the spec awaiting approval:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("Sim, pode ir"),
-        "the refusal must quote the label that failed the condition:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("approv") && stderr.contains("aprov"),
-        "the refusal must name the stems that would satisfy it:\n{stderr}"
-    );
-
-    // 2. And the gate is unchanged: an unrecognised answer still records nothing.
-    assert!(
-        !marker(project, "epic").exists(),
-        "explaining the refusal must not weaken it — no marker may be minted"
-    );
+    assert!(said.contains("epic"), "names the spec awaiting approval:\n{said}");
+    assert!(said.contains("Sim, pode ir"), "quotes the option that failed:\n{said}");
+    assert!(said.contains("\"Aprovar\""), "names the word that would approve:\n{said}");
+    assert_eq!(phase(project), "plan", "explaining the decline records nothing");
 }
 
 #[test]
-fn a_recognised_approval_mints_the_marker_and_explains_nothing() {
+fn a_recognised_approval_records_the_state_and_suggests_clear() {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path();
-    seed_full_plan_spec(project, "s-ok", "epic");
+    spec_in_plan(project, "s-ok");
 
-    let stderr = answer_and_capture_stderr(
-        project,
-        "s-ok",
-        &["Aprovar e implementar agora", "Rejeitar"],
-        serde_json::json!({ "Approve the plan?": "Aprovar e implementar agora" }),
-    );
+    let said = answer(project, "s-ok", &["Aprovar", "Ajustar"], json!({ QUESTION: "Aprovar" }));
 
-    assert!(
-        marker(project, "epic").exists(),
-        "a recognised approval must still mint the marker"
-    );
-    assert!(
-        !stderr.contains("[approval]"),
-        "nothing was declined, so nothing should be explained:\n{stderr}"
-    );
+    assert_eq!(phase(project), "approved", "a recognised approval records the state");
+    assert!(said.contains("/clear"), "the witness suggests clearing the window:\n{said}");
+    assert!(!said.contains("nada foi gravado"), "nothing was declined:\n{said}");
 }
 
-/// The forged approval, end to end: the user typed their own words instead of
-/// picking an option (the harness's `Other` row / notes field), and the text
-/// happens to contain an approval word. Nothing is minted, and the operator is
-/// told the ONE thing that would have worked — selecting the option.
+/// A resposta digitada em vez de escolhida, com uma palavra de aprovação no
+/// meio, não aprova, e quem perguntou fica sabendo que é preciso escolher a
+/// opção.
 #[test]
-fn free_text_is_declined_and_told_to_select_instead() {
+fn free_text_is_declined_and_told_to_pick_instead() {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path();
-    seed_full_plan_spec(project, "s-typed", "epic");
+    spec_in_plan(project, "s-typed");
 
-    let stderr = answer_and_capture_stderr(
+    let said = answer(
         project,
         "s-typed",
-        &["Aprovar e implementar agora", "Rejeitar"],
-        serde_json::json!({
-            "Approve the plan?":
-                "the run died at approve-spec because nobody could approve the plan"
-        }),
+        &["Aprovar", "Ajustar"],
+        json!({ QUESTION: "o relato diz que ninguém conseguia aprovar a spec" }),
     );
 
+    assert_eq!(phase(project), "plan", "free text never approves:\n{said}");
     assert!(
-        !marker(project, "epic").exists(),
-        "free text carrying an approval word must never mint the marker:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("free text") && stderr.contains("SELECTING"),
-        "the operator must be told to select the option instead of typing:\n{stderr}"
+        said.contains("Texto livre nunca aprova") && said.contains("escolhendo a opção"),
+        "the operator is told to pick the option instead of typing:\n{said}"
     );
 }
 
@@ -199,15 +150,11 @@ fn free_text_is_declined_and_told_to_select_instead() {
 fn a_dismissed_dialog_explains_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path();
-    seed_full_plan_spec(project, "s-cancel", "epic");
+    spec_in_plan(project, "s-cancel");
 
-    // An empty answer map is a cancelled dialog: no question was answered, so
-    // no condition was failed and there is nothing to tell the author.
-    let stderr = answer_and_capture_stderr(project, "s-cancel", &["Aprovar"], serde_json::json!({}));
+    // Uma pergunta cancelada não respondeu nada, e não há o que explicar.
+    let said = answer(project, "s-cancel", &["Aprovar"], json!({}));
 
-    assert!(
-        !stderr.contains("[approval]"),
-        "a dismissed dialog must not be reported as a failed condition:\n{stderr}"
-    );
-    assert!(!marker(project, "epic").exists());
+    assert!(said.is_empty(), "a dismissed dialog is not a failed condition:\n{said}");
+    assert_eq!(phase(project), "plan");
 }

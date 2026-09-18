@@ -32,11 +32,10 @@ fn map_io(path: &Path, err: std::io::Error) -> Error {
 /// Ensure the parent directory of `path` exists, creating it recursively. A
 /// no-op when `path` has no parent or the directory already exists.
 fn ensure_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty() && !parent.exists() {
             fs::create_dir_all(parent)?;
         }
-    }
     Ok(())
 }
 

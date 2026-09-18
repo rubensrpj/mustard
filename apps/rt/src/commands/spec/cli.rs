@@ -1,8 +1,10 @@
 //! The `run` subcommands for the spec lifecycle (`spec/`).
 //!
-//! TWO registrations per command, both in this file: the variant in
-//! [`SpecCmd`] AND its arm in [`dispatch`] below. Forgetting the second
-//! still compiles, but the command vanishes from the CLI.
+//! A new command takes its variant in [`SpecCmd`] and its arm in
+//! [`dispatch`] below (the compiler demands the arm), its line in
+//! `tests/fixtures/run-surface.txt`, which `tests/run_command_surface.rs`
+//! compares with the clap tree, and a caller in the product text, which
+//! `tests/template_parity.rs` demands with no exception list.
 //!
 //! [`crate::commands::RunCmd`] hoists this enum with `#[command(flatten)]`, so
 //! every name stays FLAT: `mustard-rt run <name>`, never `run spec <name>`.
@@ -19,723 +21,68 @@ use crate::commands::{spec};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum SpecCmd {
-    /// Finalize a pipeline spec — single-stage close straight to `completed`.
-    #[command(display_order = 12)]
-    CompleteSpec {
-        /// Spec name (required unless `--archive-stale`/`--archive-followups`).
+    /// Gera uma página no layout do Mustard, pelo motor de página, com as
+    /// fontes do Google Fonts.
+    ///
+    /// Com `--body` e `--out`, gera uma página avulsa (análise, relatório,
+    /// plano) a partir de um arquivo markdown: escreve-se markdown, nunca
+    /// HTML. Sem `--title`, o título é a primeira linha `# Título`. Com
+    /// `--spec`, refaz o `spec.md` e o `spec.html` da spec a partir do
+    /// `spec.ndjson`; com `--spec` e `--owners`, grava a lista dos itens sem
+    /// dono, com a proposta de dono de cada um, para conferir antes de gravar.
+    /// Devolve `{ok, path}`, `{ok, spec, md, html}` ou
+    /// `{ok, spec, html, unowned, proposed, given, left, items}`.
+    #[command(name = "page")]
+    #[command(display_order = 17)]
+    Page {
+        /// A spec cuja página e cujo `.md` são refeitos.
+        #[arg(long, conflicts_with_all = ["body", "out", "title", "subtitle", "kind"])]
         spec: Option<String>,
-        /// Idempotent alias of the single complete: re-emit `completed` + meta
-        /// sync and drop any legacy state file. No filesystem move.
+        /// O arquivo markdown da página avulsa.
         #[arg(long)]
-        archive: bool,
-        /// No-op (retained for compatibility): the single-stage close no longer
-        /// produces `closed-followup` specs, so there is nothing to sweep.
-        #[arg(long = "archive-stale")]
-        archive_stale: bool,
-        /// No-op (retained for compatibility): see `--archive-stale`.
-        #[arg(long = "archive-followups")]
-        archive_followups: bool,
-    },
-    /// UNION of sub-specs linked to `--parent` via `spec.link` events AND via
-    /// filesystem `### Parent:` headers. Used by the dashboard "Sub-specs"
-    /// tab so sub-specs created on a teammate's machine (header present but
-    /// no `spec.link` event in this developer's SQLite) still surface.
-    /// Emits JSON `Vec<ChildEntry>` with a `source: event|header|both` tag
-    /// per row. Fail-open: any error degrades to `[]`.
-    #[command(display_order = 14)]
-    SpecChildren {
-        /// Parent (epic) spec slug whose children to enumerate.
+        body: Option<PathBuf>,
+        /// Onde gravar a página avulsa; pastas ausentes são criadas.
         #[arg(long)]
-        parent: Option<String>,
-    },
-    /// Project a parent spec's waves + acceptance criteria + sub-specs into a
-    /// single JSON document. Consumed by the dashboard's `spec_children_tree`
-    /// command (Wave 3 of `spec-lifecycle-unification`). Fail-open: a missing
-    /// spec or store degrades to empty arrays.
-    #[command(display_order = 15)]
-    SpecChildrenTree {
-        /// Parent spec slug under `.claude/spec/` (flat layout).
+        out: Option<PathBuf>,
+        /// O título, no `<title>` e no `<h1>`; sem ele, a primeira linha
+        /// `# Título` do markdown.
         #[arg(long)]
-        spec: Option<String>,
-    },
-    /// Suggest wave decomposition by file/entity count.
-    ///
-    /// With `--from-spec <path>`, computes `fileCount` / `layerCount` /
-    /// `newEntityCount` deterministically in Rust from the spec's `## Files`
-    /// section + a diff against the repo model's entity names (no LLM). Without
-    /// it, reads a pre-computed signals JSON from stdin (legacy / override).
-    #[command(display_order = 21)]
-    ScopeDecompose {
-        /// Compute the signals deterministically from this spec file instead of
-        /// reading them from stdin.
-        #[arg(long = "from-spec", alias = "spec")]
-        from_spec: Option<String>,
-    },
-    /// Classify a spec's scope (light / extended-light / full) deterministically.
-    ///
-    /// Reuses the same structural signals as `scope-decompose --from-spec`
-    /// (fileCount / layerCount / newEntityCount), plus `--slice-match-count`
-    /// from the `feature` digest's `sliceMatchCount`, and encodes the `/feature`
-    /// SKILL's prose thresholds in code. Fail-open: an unreadable spec yields
-    /// `{"scope":"full",...}` (the conservative default).
-    #[command(display_order = 22)]
-    ScopeClassify {
-        /// Compute the signals deterministically from this spec file.
-        #[arg(long = "from-spec", alias = "spec")]
-        from_spec: String,
-        /// Count of matched recurring slices from the `feature` digest's
-        /// `sliceMatchCount` — vocabulary-overlap precedent: >=2 counts toward
-        /// full only alongside layer spread (layerCount >= 2); alone it is
-        /// precedent evidence for the extended-light band. Defaults to 0.
-        #[arg(long = "slice-match-count", default_value_t = 0)]
-        slice_match_count: i64,
-    },
-    /// Fused pre-PLAN decision: `scope-classify` + `scope-decompose` from ONE
-    /// signal computation (one spec read, one `scan facts` spawn, one turn).
-    /// Returns `{scope, decompose, reason, waves, signals, filesSectionEmpty?}`
-    /// — the union the `/feature` PLAN step needs to route, pick 1-vs-N, and
-    /// seed `spec-draft --waves`. Replaces calling the two commands in sequence.
-    #[command(display_order = 23)]
-    PlanPrepare {
-        /// Compute the signals deterministically from this spec file.
-        #[arg(long = "from-spec", alias = "spec")]
-        from_spec: String,
-        /// `sliceMatchCount` from the `feature` digest (same meaning as
-        /// `scope-classify`). Defaults to 0.
-        #[arg(long = "slice-match-count", default_value_t = 0)]
-        slice_match_count: i64,
-    },
-    /// Rematerialise the denormalised `specs` + `metrics_projection` tables
-    /// from the event stream. Closes the gap the eliminate-bun migration
-    /// opened: pre-2026-05-20 nothing populated those tables since the JS
-    /// harness writer was removed, which is why every dashboard spec card
-    /// fell back to `"unknown"`.
-    #[command(display_order = 29)]
-    RebuildSpecs,
-    /// Discover active specs from the filesystem (Outcome=Active, Stage=Plan|Execute).
-    ///
-    /// Replaces the LLM-side glob/grep loop in `/mustard:spec`: reads
-    /// `.claude/spec/*/spec.md` directly, filters headers, counts wave
-    /// progress, extracts a one-line resumo.
-    /// Output is either a markdown table (default) or a JSON document.
-    #[command(display_order = 49)]
-    ActiveSpecs {
-        /// Output format: `table` (default) or `json`.
-        #[arg(long, default_value = "table")]
-        format: String,
-        /// Project root directory (default: current working directory).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Draft a new spec layout (`spec.md` + `meta.json`) conforming to
-    /// `mustard_core::domain::spec::contract`. Replaces the literal ~80-line
-    /// template block inside the `/mustard:feature` SKILL.md.
-    ///
-    /// `spec-draft` materialises ONLY the top-level `spec.md` + `meta.json`
-    /// (recording `scope`/`totalWaves`/`isWavePlan`); full-scope wave dirs are
-    /// materialised by `wave-scaffold`. `--lang` accepts BCP-47 only (`pt-BR` /
-    /// `en-US`); short codes are rejected. `--signals` is a free-form
-    /// comma-separated list embedded in `spec.md` as a comment.
-    #[command(display_order = 57)]
-    SpecDraft {
-        /// Free-text intent — the spec TITLE, and the last-resort slug seed.
-        #[arg(long)]
-        intent: String,
-        /// The unit's canonical name, as minted by the base gate
-        /// (`emit-pipeline --kind pipeline.kind` reports it as `spec`). Used
-        /// VERBATIM — the draft consumes the name the unit already carries
-        /// instead of deriving a second one from `--intent`. Omitted: the slug
-        /// half of the unit's work branch — the one this call cuts, else the
-        /// one already checked out — and only then the intent.
-        #[arg(long)]
-        slug: Option<String>,
-        /// `light` (single-shot) or `full` (wave plan).
-        #[arg(long, default_value = "full")]
-        scope: String,
-        /// BCP-47 narrative locale (`pt-BR` / `en-US`).
-        #[arg(long, default_value = "pt-BR")]
-        lang: String,
-        /// Optional comma-separated signal list (`layers,files,registry`).
-        #[arg(long)]
-        signals: Option<String>,
-        /// Output directory (default `.claude/spec/{slug}/`).
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Path to the conversation-material JSON: `{ "definitions": [{term,
-        /// meaning}], "decisions": [{decision, reason}], "findings":
-        /// [{statement, file, line?}] }`. Each kind lands in a section of its
-        /// own. A FILE, not a flag value — the payload carries newlines,
-        /// quotes and non-ASCII that a shell argument would mangle. Omitted
-        /// (or carrying nothing): the draft is byte-identical to today's.
-        #[arg(long)]
-        material: Option<PathBuf>,
-        /// Refresh ONLY the `## Definitions` / `## Decisions` / `## Evidence`
-        /// sections of a spec that already exists; every other byte of
-        /// `spec.md` is left alone. Needs `--slug` and `--material`, and never
-        /// creates a spec.
-        ///
-        /// This is the frequent move: one decision settled, one
-        /// `material-add`, and the spec has to carry it. The alternative was a
-        /// full `--force` re-draft of the whole body for each one.
-        #[arg(long = "material-only")]
-        material_only: bool,
-        /// Why this draft carries no conversation material. REQUIRED when
-        /// `--material` is absent or carries nothing: an empty channel has to
-        /// be a stated choice, not an omission that looks like success. One
-        /// sentence; it is recorded in the report as `noMaterialReason`.
-        #[arg(long)]
-        no_material_reason: Option<String>,
-        /// Waves recorded in `meta.json#totalWaves` under Full scope (default 1).
-        /// Without `--plan` the wave dirs themselves are materialised later, by
-        /// `plan-materialize`.
-        #[arg(long, default_value_t = 1)]
-        waves: u32,
-        /// Path to the plan JSON. FUSES the draft with the PLAN-phase
-        /// materialisation: this one call also runs the wave-scaffold renderer,
-        /// analyze-validation, the dependency DAG and the NEGATIVE PROOF, so
-        /// `wave-plan.md` and every wave dir land in the same pass. The plan's
-        /// `acceptance` lines become the spec's acceptance criteria. A refusal
-        /// exits 2 and leaves no layout behind. Omitted: unchanged behaviour —
-        /// `plan-materialize` remains the re-materialisation door.
-        #[arg(long)]
-        plan: Option<PathBuf>,
-        /// Overwrite an existing output directory.
-        #[arg(long)]
-        force: bool,
-        /// Comma-separated repo-vocabulary terms for the internal Context
-        /// enrichment query — pass the terms that produced a strong digest
-        /// report during ANALYZE. Omitted: the raw intent is tokenised (a
-        /// translated intent then repeats the weak query and the enrichment
-        /// withholds itself).
-        #[arg(long = "query-terms")]
-        query_terms: Option<String>,
-        /// Honour the requested `--scope full` even when the deterministic
-        /// routing gate would auto-rebaixar it to light/extended-light. The
-        /// override is recorded (a `pipeline.scope.override` event) so it is
-        /// auditable, never silent.
-        #[arg(long = "force-scope")]
-        force_scope: bool,
-    },
-    /// Compile the deterministic spec draft for one entity via `grain spec` and
-    /// print the resulting Markdown verbatim to stdout. Thin passthrough to
-    /// `mustard_core::domain::scan::Scan::spec`. Invoke as
-    /// `mustard-rt run scan spec --entity <Name>`.
-    #[command(name = "scan-spec")]
-    #[command(display_order = 58)]
-    ScanSpec {
-        /// Entity/unit to create (substitutes `<Name>` in the grain recipe).
-        #[arg(long)]
-        entity: String,
-        /// Existing sibling to mirror; omit for auto-pick.
-        #[arg(long)]
-        like: Option<String>,
-        /// Extra operations beyond the base vertical (comma-separated, e.g. `approve,cancel`).
-        #[arg(long, value_delimiter = ',')]
-        ops: Vec<String>,
-        /// Cross-cutting invariants the unit must obey (repeatable).
-        #[arg(long)]
-        invariant: Vec<String>,
-        /// Workspace root (must contain `.claude/grain.model.json`).
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Emit the deterministic spec-approval event sequence (replaces the
-    /// hand-assembled `emit-pipeline` steps of the legacy approve flow —
-    /// now `plugin/refs/spec/resume-loop.md § A`).
-    ///
-    /// Emits, in order: `pipeline.stage {stage:"Plan"}` → `pipeline.status
-    /// {from:"draft",to:"approved"}`, and — only with `--resume` — a trailing
-    /// `pipeline.stage {stage:"Execute"}` (the `r`-suffix inline-resume case).
-    /// With `--wave-plan`, the stage payloads carry `wave:1` so the wave-1
-    /// `meta.json` sidecar is patched for dispatch. Reuses the canonical
-    /// `emit-pipeline` internals (no subprocess). Prints a JSON report; exit 0.
-    #[command(name = "approve-spec")]
-    #[command(display_order = 67)]
-    ApproveSpec {
-        /// Spec slug under `.claude/spec/` to approve.
-        #[arg(long)]
-        spec: String,
-        /// The spec is a wave plan — patch the wave-1 `meta.json` for dispatch.
-        #[arg(long = "wave-plan")]
-        wave_plan: bool,
-        /// Inline-resume: also emit `pipeline.stage Execute` (the `r`-suffix
-        /// branch). Without it, the flow stops at `approved` for a fresh session.
-        #[arg(long)]
-        resume: bool,
-    },
-    /// W5.T5.3 — Create a sub-spec linked to a parent spec for a tactical fix.
-    #[command(name = "tactical-fix-create")]
-    #[command(display_order = 68)]
-    TacticalFixCreate {
-        /// Parent spec slug (already created in `.claude/spec/`).
-        #[arg(long)]
-        parent: String,
-        /// Free-text description of the fix (becomes the title + slug seed).
-        #[arg(long)]
-        description: String,
-        /// Scope flag: `touch` / `light` (default) / `full`.
-        #[arg(long, default_value = "light")]
-        scope: String,
-    },
-    /// F4-c item 4 — Propose (do NOT create) tactical fixes from structured
-    /// `tactical_fix_candidates[]` in a spec's `review.result` / `qa.result`
-    /// events. Emits one `tactical_fix.proposed` event per new candidate;
-    /// never scaffolds a sub-spec (decision 6 — "não auto-aprovar").
-    #[command(name = "tactical-fix-detect")]
-    #[command(display_order = 69)]
-    TacticalFixDetect {
-        /// Spec whose review/qa events are scanned for candidates.
-        #[arg(long)]
-        spec: Option<String>,
-    },
-    /// Record a DELIBERATE mid-pipeline change request in the active spec's
-    /// change log, carrying the INSTRUCTION the conversation produced.
-    ///
-    /// The `UserPromptSubmit` observer captures the sentence the user typed —
-    /// blind by construction, since it cannot know what the sentence means. This
-    /// is the orchestrator's record beside it: it lands in the same two files
-    /// (`change-log.md` + `change-requests.ndjson`), in the shape the per-wave
-    /// renderer reads, so the instruction reaches the next dispatched agent
-    /// without anyone hand-formatting a bullet. A blank instruction is refused
-    /// and nothing is written.
-    #[command(name = "change-request")]
-    #[command(display_order = 80)]
-    ChangeRequest {
-        /// Spec slug under `.claude/spec/`. Omitted: the session→spec marker,
-        /// then the active-spec fallback.
-        #[arg(long)]
-        spec: Option<String>,
-        /// What the orchestrator instructs, in full.
-        #[arg(long)]
-        instruction: String,
-    },
-    /// Record ONE piece of conversation material, at the moment it is settled.
-    ///
-    /// `spec-draft --material <FILE>` reads a finished document, and nothing
-    /// wrote one: the model was expected to assemble the whole thing by hand at
-    /// draft time, from memory of a conversation that may already have been
-    /// compacted away. Measured 2026-08-26: two units shipped across two days
-    /// and NEITHER carried a material file.
-    ///
-    /// A decision the conversation settles is written down WHEN it is settled —
-    /// the only moment its reason is still known.
-    #[command(name = "material-add")]
-    #[command(display_order = 97)]
-    MaterialAdd {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// Which channel: `definition`, `decision`, `finding`, `risk`,
-        /// `clarification` or `summary`.
-        #[arg(long)]
-        kind: String,
-        /// The first half: the term, the decision, or the statement.
-        ///
-        /// `allow_hyphen_values` because this is PROSE, and prose about a
-        /// command-line tool starts with `--` all the time. Without it the
-        /// parser reads `--subject "--spec com barra cai em for_spec"` as an
-        /// unknown FLAG and refuses the call — measured while recording this
-        /// unit's own material. A channel that refuses to carry a sentence
-        /// about a flag is a channel that loses exactly the findings a
-        /// command-line tool produces.
-        #[arg(long, allow_hyphen_values = true)]
-        subject: String,
-        /// The half that makes it usable: what the term MEANS here, WHY the
-        /// decision was taken, or the FILE a finding was checked against.
-        /// Refused when blank — a decision without its reason is the one thing
-        /// a later reader cannot use.
-        ///
-        /// Same `allow_hyphen_values` reasoning as `--subject`: a reason is
-        /// prose too, and it names flags.
-        ///
-        /// Opcional no parser porque o `summary` é um texto só e não tem
-        /// segunda metade; a exigência dos outros tipos continua no
-        /// `material-add`, que recusa com `incomplete_entry` e diz o que falta.
-        #[arg(long, default_value = "", allow_hyphen_values = true)]
-        detail: String,
-        /// A finding's line number, when the claim is line-precise.
-        ///
-        /// `u32`, the width `spec-draft --material` reads. A wider one here
-        /// would let the door accept a value the draft refuses.
-        #[arg(long)]
-        line: Option<u32>,
-        /// O peso de um `risk`: `alta`, `media` ou `baixa`. Obrigatório para
-        /// risco; ignorado pelos outros tipos.
-        #[arg(long)]
-        severity: Option<String>,
-    },
-    /// Deliberately change ONE acceptance criterion after the spec artefacts are
-    /// frozen, and prove the replacement still knows how to fail.
-    ///
-    /// The replacement command is run through the SAME negative-test engine
-    /// (`ac-negative-check`) and REFUSED unless it comes back red: a replacement
-    /// that already passes proves exactly as little as the criterion it would
-    /// replace. On acceptance the criterion is rewritten in EVERY artefact under
-    /// the spec directory that carries its id — the root `spec.md`,
-    /// `wave-plan.md` and each `wave-*/spec.md` — because the scaffold is frozen
-    /// after approval and a root-only amendment leaves the dispatched agent
-    /// reading the superseded command. The supersession is appended to the proof
-    /// ledger's `amendments` array with the stated reason.
-    ///
-    /// Named `ac-amend`, never a bare `amend`: `amend-finalize` already means
-    /// the unrelated session-end amendment window.
-    #[command(name = "ac-amend")]
-    #[command(display_order = 82)]
-    AcAmend {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// The criterion to amend (`AC-2`, `AC-W4-1`, …).
-        #[arg(long)]
-        ac: String,
-        /// The replacement command.
-        #[arg(long)]
-        command: String,
-        /// The replacement `Expect:` evidence regex. Omitted: the criterion
-        /// keeps the regex it already carries.
-        #[arg(long)]
-        expect: Option<String>,
-        /// The replacement statement. Omitted: the statement is left alone.
-        #[arg(long)]
-        statement: Option<String>,
-        /// Why the criterion is being changed. A blank reason is refused.
-        #[arg(long)]
-        reason: String,
-        /// The replacement's `Control:` — a command that must come back GREEN
-        /// against the tree as it is.
-        ///
-        /// OPTIONAL, and worth declaring when the replacement command is a
-        /// FILTERED TEST RUNNER (`cargo test -p x my_new_case`, `pytest -k
-        /// novo`, …): a runner exits 0 when its filter selects nothing, so
-        /// without a control the replacement's red can be an empty selection
-        /// rather than the missing behaviour. Omitted, the criterion keeps the
-        /// control its line already carries (a drafter placeholder is not
-        /// one), or is proven the ordinary way with the record saying
-        /// `control: not-declared` — a WARN at drafting, never a refusal.
-        #[arg(long)]
-        control: Option<String>,
-        /// Take the proof against ANOTHER checkout — one that does not carry
-        /// the work yet — instead of this tree.
-        ///
-        /// The negative proof asks whether a criterion can FAIL, which is only
-        /// answerable where the behaviour is absent. A criterion corrected
-        /// after the code landed comes back green here, and green proves
-        /// nothing. Point this at a worktree of the base commit
-        /// (`git worktree add --detach <dir> <base>`); the spec is still read
-        /// and rewritten HERE, and the ledger records the commit the red was
-        /// taken on.
-        #[arg(long = "proof-tree")]
-        proof_tree: Option<PathBuf>,
-    },
-    /// ADD an acceptance criterion the spec does not yet carry, after the
-    /// artefacts are frozen, taking the SAME negative proof a planned one takes.
-    ///
-    /// A door of its own, never a flag on `ac-amend`: an amendment supersedes a
-    /// predecessor and an added id has no predecessor, so folding the two would
-    /// blur the rule that makes amend trustworthy. The command is run through
-    /// `ac-negative-check` and REFUSED unless it comes back red — a criterion
-    /// that already passes would join the spec verifying nothing. On acceptance
-    /// it is written into the root `spec.md` and `wave-plan.md` (the union QA
-    /// executes), directly ABOVE the trailing build-green criterion so the
-    /// positional exemption does not move onto it, and the addition is appended
-    /// to the proof ledger's `additions`. A wave spec carries no criterion
-    /// text — `--wave N` names the wave that will be judged by the new id.
-    #[command(name = "ac-add")]
-    #[command(display_order = 83)]
-    AcAdd {
-        /// Spec slug under `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// The criterion id to introduce (`AC-9`, `AC-W4-3`, …). An id the spec
-        /// already carries is refused — that is an amendment.
-        #[arg(long)]
-        ac: String,
-        /// The EARS statement the criterion asserts. A blank statement is
-        /// refused.
-        #[arg(long)]
-        statement: String,
-        /// The command that asserts the new behaviour.
-        #[arg(long)]
-        command: String,
-        /// The `Expect:` evidence regex, when the criterion carries one.
-        #[arg(long)]
-        expect: Option<String>,
-        /// Why the criterion is being added. A blank reason is refused.
-        #[arg(long)]
-        reason: String,
-        /// The criterion's `Control:` — a command that must come back GREEN
-        /// against the tree as it is.
-        ///
-        /// OPTIONAL, and worth declaring when the criterion's command is a
-        /// FILTERED TEST RUNNER (`cargo test -p x my_new_case`, `pytest -k
-        /// novo`, …): a runner exits 0 when its filter selects nothing, so
-        /// without a control the criterion's red can be an empty selection
-        /// rather than the missing behaviour. Omitted, the record says
-        /// `control: not-declared` — a WARN at drafting, never a refusal.
-        #[arg(long)]
-        control: Option<String>,
-        /// Take the proof against ANOTHER checkout — one that does not carry
-        /// the work yet — instead of this tree.
-        ///
-        /// The negative proof asks whether a criterion can FAIL, which is only
-        /// answerable where the behaviour is absent. A criterion added to cover
-        /// work that ALREADY LANDED comes back green here, and green proves
-        /// nothing. Point this at a worktree of the base commit
-        /// (`git worktree add --detach <dir> <base>`); the spec is still read
-        /// and rewritten HERE, and the ledger records the commit the red was
-        /// taken on.
-        #[arg(long)]
-        proof_tree: Option<std::path::PathBuf>,
-    },
-    /// Declare the DESTINATION of one collected finding, and why it went there.
-    ///
-    /// The seeding half (`finding-collect`) decides nothing: it reads the
-    /// reviewer's `review/findings*.md` and the `removal` column of
-    /// `ac-proof.json` and records what was found. This is the other half — the
-    /// only writer of a finding's destination, mirroring `mark-checklist-item
-    /// --drop --reason`. A destination with no stated reason is REFUSED (exit
-    /// 2): it would leave the finding in exactly the silence it started in, and
-    /// the close gate would keep reading it as open.
-    ///
-    /// Terminal: a finding already carrying a destination answers
-    /// `already-routed` when the same decision is restated, and refuses a
-    /// different one rather than overwriting a decision in silence.
-    #[command(name = "mark-finding")]
-    #[command(display_order = 92)]
-    MarkFinding {
-        /// Spec slug under `.claude/spec/`, or a path to the spec markdown or
-        /// its directory.
-        #[arg(long, alias = "from-spec")]
-        spec: Option<String>,
-        /// The finding's id, as `finding-collect` reported it (`F-findings…`
-        /// for a reviewer file, the criterion id for a ledger column).
-        #[arg(long)]
-        id: Option<String>,
-        /// Where the finding went: `criterion` | `change-request` | `queued` |
-        /// `dropped`.
-        #[arg(long)]
-        to: Option<String>,
-        /// Why it went there. Mandatory — a blank reason is refused.
-        #[arg(long)]
-        reason: Option<String>,
-    },
-    /// Monta o resumo legível da spec em `.claude/spec/<slug>/resumo.html`, no
-    /// layout padrão do Mustard: resumo da conversa, onde estamos, o que foi
-    /// esclarecido, decisões, riscos, a spec, critérios com o estado da prova,
-    /// ondas com as skills prescritas, evidências, pendências abertas e o
-    /// próximo passo.
-    ///
-    /// Vem ANTES de qualquer pergunta de aprovação: o usuário recusou aprovar
-    /// uma spec que só conseguia ler no terminal. Devolve `{ok, path, url,
-    /// hash, changed, publishedUrl}` — `url` é o `file://` que o usuário clica,
-    /// `changed` diz se a página mudou desde a última geração (só então ela é
-    /// regravada) e `publishedUrl` é o endereço publicado gravado, ou `null`.
-    #[command(name = "spec-doc")]
-    #[command(display_order = 99)]
-    SpecDoc {
-        /// Slug da spec em `.claude/spec/`.
-        #[arg(long)]
-        spec: String,
-        /// O endereço em que a página foi publicada no claude.ai. Fica gravado
-        /// em `.claude/spec/<slug>/published-url` antes de a página ser
-        /// montada; a retomada e o gancho de fim de resposta o leem de lá.
-        /// Recusado quando não é um link `http(s)://`.
-        #[arg(long = "published-url")]
-        published_url: Option<String>,
-    },
-    /// Embrulha um corpo HTML no layout padrão do Mustard e grava a página em
-    /// `--out`.
-    ///
-    /// Todo HTML mostrado ao usuário (plano, relatório, resumo, spec) passa
-    /// por aqui, nunca por um visual próprio: o corpo é só o fragmento que vai
-    /// dentro de `<main>`; cabeçalho, fontes e cores vêm do layout. Devolve
-    /// `{ok, path}`; título vazio ou corpo ilegível são recusados sem gravar.
-    #[command(name = "doc-page")]
-    #[command(display_order = 101)]
-    DocPage {
-        /// O título da página, no `<title>` e no `<h1>`. Recusado quando vazio.
-        #[arg(long)]
-        title: String,
-        /// O arquivo com o fragmento HTML que vai dentro de `<main>`.
-        #[arg(long)]
-        body: PathBuf,
-        /// Uma linha solta sob o título, na faixa `.meta`.
+        title: Option<String>,
+        /// Uma linha solta sob o título, na faixa do cabeçalho.
         #[arg(long)]
         subtitle: Option<String>,
         /// O que vem depois de `Mustard · ` na faixa do cabeçalho.
         #[arg(long)]
         kind: Option<String>,
-        /// Idioma BCP-47 do atributo `lang` (sem ele, `en`).
-        #[arg(long)]
-        lang: Option<String>,
-        /// Onde gravar a página; diretórios ausentes são criados.
-        #[arg(long)]
-        out: PathBuf,
+        /// Com `--spec`, grava a lista dos itens combinados sem dono
+        /// (`owners.html`) no lugar da página da spec. O arquivo, quando vem,
+        /// é uma lista de linhas `{code, waves | applies_to, why}` com o dono
+        /// que o orquestrador dá aos itens.
+        #[arg(long, requires = "spec", value_name = "DONOS_JSON")]
+        // O jeito do clap de dizer "opção com valor opcional": ausente,
+        // sozinha ou com o arquivo.
+        #[allow(clippy::option_option)]
+        owners: Option<Option<PathBuf>>,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
     },
 }
 
 /// Dispatch one `spec`-family `run` subcommand.
 pub fn dispatch(cmd: SpecCmd) {
     match cmd {
-        SpecCmd::CompleteSpec {
-            spec,
-            archive,
-            archive_stale,
-            archive_followups,
-        } => spec::complete_spec::run(spec.as_deref(), archive, archive_stale, archive_followups),
-        SpecCmd::SpecChildren { parent } => spec::spec_children::run(parent.as_deref()),
-        SpecCmd::SpecChildrenTree { spec } => spec::spec_children_tree::run(spec.as_deref()),
-        SpecCmd::ScopeDecompose { from_spec } => spec::scope_decompose::run(from_spec.as_deref()),
-        SpecCmd::ScopeClassify {
-            from_spec,
-            slice_match_count,
-        } => spec::scope_decompose::run_classify(&from_spec, slice_match_count),
-        SpecCmd::PlanPrepare {
-            from_spec,
-            slice_match_count,
-        } => spec::scope_decompose::run_prepare(&from_spec, slice_match_count),
-        SpecCmd::RebuildSpecs => spec::rebuild_specs::run(),
-        SpecCmd::ActiveSpecs { format, root } => {
-            spec::active_specs::run(spec::active_specs::ActiveSpecsOpts { format, root });
-        }
-        SpecCmd::SpecDraft {
-            intent,
-            slug,
-            scope,
-            lang,
-            signals,
-            output,
-            material,
-            material_only,
-            no_material_reason,
-            waves,
-            plan,
-            force,
-            query_terms,
-            force_scope,
-        } => {
-            spec::spec_draft::run(spec::spec_draft::SpecDraftOpts {
-                intent,
-                slug,
-                scope,
-                lang,
-                signals,
-                output,
-                material,
-                material_only,
-                no_material_reason,
-                waves,
-                plan,
-                force,
-                query_terms,
-                force_scope,
-            });
-        }
-        SpecCmd::ScanSpec { entity, like, ops, invariant, root } => {
-            spec::scan_spec::run(spec::scan_spec::ScanSpecOpts {
-                entity,
-                like,
-                ops,
-                invariants: invariant,
+        SpecCmd::Page { spec: slug, body, out, title, subtitle, kind, owners, root } => {
+            spec::page::run(&spec::page::PageOpts {
                 root,
-            });
-        }
-        SpecCmd::ApproveSpec { spec, wave_plan, resume } => {
-            spec::approve_spec::run(spec::approve_spec::ApproveSpecOpts {
-                spec,
-                wave_plan,
-                resume,
-            });
-        }
-        SpecCmd::TacticalFixCreate { parent, description, scope } => {
-            spec::tactical_fix_create::run(spec::tactical_fix_create::TacticalFixOpts {
-                parent,
-                description,
-                scope,
-            });
-        }
-        SpecCmd::TacticalFixDetect { spec } => {
-            spec::tactical_fix_detect::run(spec.as_deref());
-        }
-        SpecCmd::ChangeRequest { spec: slug, instruction } => {
-            spec::change_request::run(spec::change_request::ChangeRequestOpts {
                 spec: slug,
-                instruction,
-            });
-        }
-        SpecCmd::MaterialAdd { spec: slug, kind, subject, detail, line, severity } => {
-            spec::material_add::run(&spec::material_add::MaterialAddOpts {
-                spec: slug,
-                kind,
-                subject,
-                detail,
-                line,
-                severity,
-                // As notas vêm só do observador de `AskUserQuestion`.
-                notes: None,
-            });
-        }
-        SpecCmd::AcAmend {
-            spec: slug,
-            ac,
-            command,
-            expect,
-            statement,
-            reason,
-            control,
-            proof_tree,
-        } => {
-            spec::ac_amend::run(spec::ac_amend::AcAmendOpts {
-                spec: slug,
-                ac,
-                command,
-                expect,
-                statement,
-                reason,
-                control,
-                proof_tree,
-            });
-        }
-        SpecCmd::AcAdd {
-            spec: slug,
-            ac,
-            statement,
-            command,
-            expect,
-            reason,
-            control,
-            proof_tree,
-        } => {
-            spec::ac_add::run(spec::ac_add::AcAddOpts {
-                spec: slug,
-                ac,
-                statement,
-                command,
-                expect,
-                reason,
-                control,
-                proof_tree,
-            });
-        }
-        SpecCmd::MarkFinding { spec: slug, id, to, reason } => {
-            spec::mark_finding::run(
-                slug.as_deref(),
-                id.as_deref(),
-                to.as_deref(),
-                reason.as_deref(),
-            );
-        }
-        SpecCmd::SpecDoc { spec: slug, published_url } => {
-            spec::spec_doc::run(&spec::spec_doc::SpecDocOpts { spec: slug, published_url });
-        }
-        SpecCmd::DocPage { title, body, subtitle, kind, lang, out } => {
-            spec::doc_page::run(&spec::doc_page::DocPageOpts {
-                title,
                 body,
+                out,
+                title,
                 subtitle,
                 kind,
-                lang,
-                out,
+                owners: owners.is_some(),
+                given: owners.flatten(),
             });
         }
     }
@@ -754,32 +101,20 @@ mod tests {
         cmd: SpecCmd,
     }
 
-    /// `material-add` carries PROSE, and prose about a command-line tool starts
-    /// with `--` all the time.
-    ///
-    /// Without `allow_hyphen_values` the parser read the VALUE as an unknown
-    /// flag and refused the whole call — measured while recording this unit's
-    /// own material, on the sentence "`--spec` com barra cai em `for_spec`". A
-    /// channel that cannot carry a sentence about a flag loses exactly the
-    /// findings a command-line tool produces.
+    /// `--owners` vem sozinho ou com o arquivo de donos, e só junto de
+    /// `--spec`.
     #[test]
-    fn material_add_accepts_a_subject_that_opens_with_two_hyphens() {
-        let parsed = Probe::try_parse_from([
-            "probe",
-            "material-add",
-            "--spec",
-            "a-unit",
-            "--kind",
-            "finding",
-            "--subject",
-            "--spec com barra cai em for_spec",
-            "--detail",
-            "--detail tambem e prosa",
-        ]);
-        let Ok(Probe { cmd: SpecCmd::MaterialAdd { subject, detail, .. } }) = parsed else {
-            panic!("the call must parse: {:?}", parsed.err().map(|e| e.to_string()));
+    fn owners_comes_alone_or_with_the_file_and_only_with_a_spec() {
+        let owners = |args: &[&str]| match Probe::try_parse_from(args).map(|probe| probe.cmd) {
+            Ok(SpecCmd::Page { owners, .. }) => Ok(owners),
+            Err(e) => Err(e.kind()),
         };
-        assert_eq!(subject, "--spec com barra cai em for_spec");
-        assert_eq!(detail, "--detail tambem e prosa");
+        assert_eq!(owners(&["t", "page", "--spec", "x", "--owners"]), Ok(Some(None)));
+        assert_eq!(
+            owners(&["t", "page", "--spec", "x", "--owners", "donos.json"]),
+            Ok(Some(Some("donos.json".into())))
+        );
+        assert_eq!(owners(&["t", "page", "--spec", "x"]), Ok(None));
+        assert_eq!(owners(&["t", "page", "--owners"]), Err(clap::error::ErrorKind::MissingRequiredArgument));
     }
 }

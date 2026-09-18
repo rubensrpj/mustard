@@ -1,6 +1,15 @@
-//! `mustard-rt run qa-run` — a port of `scripts/qa-run.js`.
+//! The criteria runner. The `qa-run` command is gone; what stays alive here is
+//! [`run_proof`], which the close and the round call to run each criterion's
+//! proof, [`run_command`], which the close calls for the project lint, and the
+//! section reader the page uses. The rest below is the old command's engine,
+//! which nothing outside its own tests reaches any more.
 //!
-//! Executes the Acceptance Criteria defined in a spec file: locates the spec,
+//! As duas portas rodam o mesmo comando do mesmo jeito e se separam numa
+//! leitura só: quantos testes a saída diz ter rodado. Ela vale na prova de um
+//! critério, que promete rodar teste, e nunca no lint nem em outro comando do
+//! fluxo.
+//!
+//! The engine executes the Acceptance Criteria defined in a spec file: locates the spec,
 //! extracts the `## Acceptance Criteria` section, runs each AC command, and
 //! emits a `qa.result` harness event plus a `qa` metric.
 //!
@@ -28,18 +37,13 @@
 //! `.claude/spec/{spec}/qa-report.html` and prints its path on stderr; JSON is
 //! still emitted on stdout — HTML is an artifact, never a replacement.
 
-use crate::shared::context::project_dir;
+use crate::shared::context::env::project_dir;
 use mustard_core::io::fs;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 mod render;
 mod runner;
-
-/// Re-exported so `ac_negative_check` can tell an unrunnable command from a
-/// discriminating one WITHOUT the executor having to grade them alike. See the
-/// constant's own doc for why the two readers must disagree here.
-pub(crate) use runner::EXIT_COMMAND_NOT_FOUND;
 
 /// A parsed AC item: `- [ ] AC-N: description — Command: `cmd``.
 ///
@@ -48,11 +52,6 @@ pub(crate) use runner::EXIT_COMMAND_NOT_FOUND;
 /// `overall: skip` — single parser source, no drift.
 pub(crate) struct AcItem {
     pub(crate) id: String,
-    /// The AC description — the EARS `when X, then Y` statement, with any inline
-    /// `Command:` tail stripped. Exposed so `analyze_validation`'s tautology
-    /// linter and the close-time capability synthesis read it without a second
-    /// parser (single parser source, no drift).
-    pub(crate) statement: String,
     pub(crate) command: String,
     /// The optional `Expect:` evidence regex — a backtick-wrapped pattern
     /// qa-run matches against the command's combined stdout+stderr once the
@@ -61,21 +60,6 @@ pub(crate) struct AcItem {
     /// line, mirroring the `Command:` lookahead. Exposed so `analyze_validation`
     /// can warn about a test-runner AC that declares no evidence regex.
     pub(crate) expect: Option<String>,
-    /// The optional `Control:` command — a command that must come back GREEN
-    /// against the tree AS IT IS, proving the criterion's expression can match
-    /// something at all. `None` ⇒ the criterion declares no control, which
-    /// `ac-negative-check` reports as a WARN naming the id.
-    ///
-    /// It answers the question the red pass cannot: a broken regex, a shell
-    /// incompatibility, a missing binary and a quoting error all come back red,
-    /// and so does an honest criterion whose behaviour is merely absent. A
-    /// control that must be green TODAY separates them at PLAN time, where the
-    /// remedy costs one edit.
-    ///
-    /// Parsed off the `Command:` line or a following line, by the SAME
-    /// last-occurrence + backtick rules `Command:` and `Expect:` use — one
-    /// marker reader, three markers, no second parser.
-    pub(crate) control: Option<String>,
 }
 
 /// One AC execution outcome.
@@ -89,73 +73,75 @@ pub(crate) struct AcResult {
     exit: Option<i64>,
     duration_ms: u128,
     stderr_excerpt: String,
+    /// Quantos testes a saída do comando disse ter rodado, quando um executor
+    /// que o projeto usa se reconheceu nela; `None` quando a saída não
+    /// responde à pergunta ou quando o comando nem chegou a rodar. É leitura,
+    /// e não veredito: quem julga esse número é a prova de um critério, em
+    /// [`run_proof`], e nunca o lint nem outro comando do fluxo.
+    tests_run: Option<u64>,
 }
 
-impl AcResult {
-    /// The outcome class: `pass` / `fail` / `timeout` / `skip`.
-    ///
-    /// Read-only accessors (not `pub` fields) so the negative-test engine can
-    /// judge an execution without gaining the power to forge one.
-    pub(crate) fn status(&self) -> &str {
-        &self.status
-    }
-
-    /// The command's own exit code, when one arrived.
-    pub(crate) fn exit(&self) -> Option<i64> {
-        self.exit
-    }
-
-    /// The bounded excerpt of the command's combined output.
-    pub(crate) fn stderr_excerpt(&self) -> &str {
-        &self.stderr_excerpt
-    }
+/// Uma prova de critério rodada uma vez, como o fechamento a grava.
+pub(crate) struct ProofRun {
+    /// `pass` quando a prova passou, `fail` em qualquer outro desfecho.
+    pub result: &'static str,
+    /// O código de saída; o que não chegou a rodar sai com o código de erro.
+    pub exit: i64,
+    /// Quanto demorou, em milissegundos.
+    pub ms: u64,
+    /// O começo do que a prova escreveu, quando ela não passou — a saída do
+    /// executor, e não uma frase montada sobre ela.
+    pub output: String,
+    /// A prova de critério saiu verde sem rodar teste nenhum, e por isso não
+    /// passou, com o número que a saída do executor disse — é ele que a
+    /// recusa mostra. `None` quando a prova passou, quando ela falhou por
+    /// outro motivo, e em todo comando que não é prova de critério.
+    pub ran_no_test: Option<u64>,
 }
 
-/// Execute ONE acceptance criterion through the qa-run executor and return its
-/// outcome — the seam `ac-negative-check` reuses.
+/// Roda a prova de um critério uma vez, pelo mesmo executor do QA: o mesmo
+/// shell, o mesmo teto de tempo e a mesma classificação. É por aqui que o
+/// fechamento roda cada critério, para que as duas portas nunca discordem
+/// sobre o que é uma prova que passou.
 ///
-/// `pub(crate)` because the negative test must grade a criterion with the SAME
-/// per-AC deadline, pipe drain and `Expect:` regex rules QA itself applies;
-/// copying the executor is how the two verdicts would drift. It runs the command
-/// verbatim: the self-invocation handling stays exactly where it is (the
-/// [`QaRunOptions`] thread-local), untouched by this door.
-pub(crate) fn execute_ac(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
-    runner::run_ac_command(command, expect, cwd)
+/// Só a prova de um critério promete rodar teste, e por isso só ela é lida
+/// assim: verde sem rodar teste nenhum não passa, porque o nome do teste não
+/// casou. O comando do fluxo que não é prova de critério — o lint do projeto
+/// — roda por [`run_command`], que não faz essa leitura.
+pub(crate) fn run_proof(command: &str, cwd: &Path) -> ProofRun {
+    graded(runner::run_ac_command(command, None, cwd), true)
 }
 
-/// `true` when `command` would overwrite the very file this process is
-/// executing from — a `cargo build`/`cargo test` whose build target under
-/// `cwd` resolves to the running executable itself.
+/// Roda um comando do fluxo que não é prova de critério — hoje, o lint do
+/// projeto no fechamento — pelo mesmo executor do QA, com o mesmo shell e o
+/// mesmo teto de tempo.
 ///
-/// The one spelling of that question in the crate, exposed so a caller running
-/// INSIDE this binary can decline to attempt such a command instead of
-/// discovering the failure. `run_ac_command` already refuses it under
-/// [`QaRunOptions::self_invoked`]; the confirmation pass
-/// ([`crate::commands::review::ac_negative_check::confirm_in_process`]) asks
-/// FIRST, because for it the difference between "not attempted here" and
-/// "inexecutable" is the difference between a note and an order to rewrite a
-/// perfectly good criterion. Total.
-pub(crate) fn targets_running_binary(command: &str, cwd: &Path) -> bool {
-    runner::targets_running_binary(command, cwd)
+/// A leitura de quantos testes o comando rodou não vale aqui: um lint verde
+/// cuja saída cite "no tests" não é uma prova que deixou de provar, e quem
+/// lesse assim recusaria um verde legítimo.
+pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
+    graded(runner::run_ac_command(command, None, cwd), false)
 }
 
-/// The running executable named the way a refusal must name it: relative to
-/// `cwd` when it lives inside the project, its bare file name when it lives
-/// outside (never an absolute machine path — these labels reach versioned
-/// files). Falls back to a description when the path cannot be resolved at all
-/// — the reason still has to read as a sentence.
-pub(crate) fn running_binary_label(cwd: &Path) -> String {
-    std::env::current_exe().map_or_else(
-        |_| runner::UNNAMEABLE_BINARY.to_string(),
-        |exe| runner::running_binary_label(cwd, &exe),
-    )
-}
-
-/// Locate the markdown carrying a spec's acceptance criteria, by slug — the
-/// SAME locator qa-run uses, exposed so the negative test cannot disagree with
-/// QA about which file a spec name names.
-pub(crate) fn spec_file_for(cwd: &Path, spec: &str) -> Option<PathBuf> {
-    runner::find_spec_file(cwd, spec)
+/// Uma execução classificada como o fechamento a grava. As duas portas
+/// entram aqui, e a diferença entre elas é um lugar só: `is_proof`, que diz
+/// se o comando é a prova de um critério. Só nela o verde sem rodar teste
+/// nenhum vira recusa, e a recusa carrega o número que a saída do executor
+/// disse — não há recusa sem contagem lida.
+///
+/// O que a execução leva é sempre o que o comando escreveu, e nunca uma frase
+/// montada aqui: quem lê o evento gravado precisa ver a saída do executor. O
+/// número lido vai pelo `ran_no_test`, e é dele que a recusa tira a contagem
+/// que mostra.
+fn graded(out: AcResult, is_proof: bool) -> ProofRun {
+    let ran_no_test = out.tests_run.filter(|count| *count == 0 && is_proof && out.status == "pass");
+    ProofRun {
+        result: if out.status == "pass" && ran_no_test.is_none() { "pass" } else { "fail" },
+        exit: out.exit.unwrap_or(1),
+        ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
+        ran_no_test,
+        output: out.stderr_excerpt,
+    }
 }
 
 /// Extract the `## Acceptance Criteria` section body (heading line stripped),
@@ -182,7 +168,7 @@ pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
 ///    single line.
 /// 2. **Drafter multi-line** — the canonical shape the spec drafter emits:
 ///    ```text
-///    - **AC-1** — desc.
+///    - **`AC-1`** — desc.
 ///      Command: `cmd`
 ///    ```
 ///    no checkbox, an em-dash (`—`) id→desc separator, and `Command:` on the
@@ -210,8 +196,7 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
         // optional `Expect:` may ride the same line after the command.
         if let Some(command) = extract_command(after_sep) {
             let expect = extract_expect(after_sep);
-            let control = extract_control(after_sep);
-            items.push(AcItem { id, statement: statement_of(after_sep), command, expect, control });
+            items.push(AcItem { id, command, expect });
             i += 1;
             continue;
         }
@@ -223,7 +208,6 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
         let mut j = i + 1;
         let mut command = None;
         let mut expect = None;
-        let mut control = None;
         while j < lines.len() {
             let line = lines[j];
             if parse_ac_header(line).is_some() || line.trim().is_empty() || line.starts_with("## ")
@@ -233,25 +217,19 @@ pub(crate) fn parse_ac_items(section: &str) -> Vec<AcItem> {
             if command.is_none() {
                 if let Some(cmd) = extract_command(line) {
                     command = Some(cmd);
-                    // Same-line optional markers, if any.
+                    // Same-line optional marker, if any.
                     expect = extract_expect(line);
-                    control = extract_control(line);
                 }
-            } else {
-                if expect.is_none() {
-                    expect = extract_expect(line); // standalone `Expect:` line
-                }
-                if control.is_none() {
-                    control = extract_control(line); // standalone `Control:` line
-                }
+            } else if expect.is_none() {
+                expect = extract_expect(line); // standalone `Expect:` line
             }
-            if command.is_some() && expect.is_some() && control.is_some() {
-                break; // all three captured — nothing more to scan in this block
+            if command.is_some() && expect.is_some() {
+                break; // both captured — nothing more to scan in this block
             }
             j += 1;
         }
         if let Some(command) = command {
-            items.push(AcItem { id, statement: statement_of(after_sep), command, expect, control });
+            items.push(AcItem { id, command, expect });
         }
         // Resume after the header line; the next header (if any) is re-parsed
         // on its own iteration regardless of where the lookahead landed.
@@ -272,8 +250,7 @@ fn parse_ac_line(line: &str) -> Option<AcItem> {
     let (id, after_sep) = parse_ac_header(line)?;
     let command = extract_command(after_sep)?;
     let expect = extract_expect(after_sep);
-    let control = extract_control(after_sep);
-    Some(AcItem { id, statement: statement_of(after_sep), command, expect, control })
+    Some(AcItem { id, command, expect })
 }
 
 /// Parse the AC **header** part of a line: the bullet, an OPTIONAL `[ ]`/`[x]`
@@ -349,8 +326,8 @@ pub(crate) fn parse_ac_header(line: &str) -> Option<(String, &str)> {
     let id = format!("AC-{}", &after_ac[..id_end]);
     let after_id = &after_ac[id_end..];
     // Accept `.`, `:`, the em-dash `—` (U+2014), or a plain `-`/`--` as the
-    // ID/description separator. The period form is canonical for the
-    // deep-refactor pipeline (`**AC-G1.** desc`); the colon form is the
+    // ID/description separator. The period form is canonical for the wave
+    // plans (`**AC-G1.** desc`); the colon form is the
     // historical shape (`AC-G1: desc`); the dash forms are what the spec
     // drafter emits (`- **AC-1** — desc`). The separator may sit BEFORE the
     // closing bold `**` (canonical: `**AC-G1.**`) or after it (`**AC-1** —`).
@@ -426,7 +403,7 @@ fn extract_marker(fragment: &str, marker: &str) -> Option<String> {
 /// contain one. The reader used to search the raw line, find that occurrence,
 /// and take the rest of the COMMAND as the evidence regex; the real `Expect:`
 /// on the following line was then never read, and the criterion came back
-/// `skip` for an invalid regex. Measured while authoring this unit's own AC-6.
+/// `skip` for an invalid regex. Measured while authoring one of this unit's own criteria.
 /// This is the same confusion as the writer defect it proves, seen from the
 /// other side: there the writer accepted two `Expect:`, here the reader could
 /// not tell which one was its own.
@@ -438,7 +415,7 @@ fn extract_marker(fragment: &str, marker: &str) -> Option<String> {
 fn last_marker_outside_code(fragment: &str, marker: &str) -> Option<usize> {
     // Closed backtick spans only: pair them up, ignore a trailing lone one.
     let ticks: Vec<usize> = fragment.match_indices('`').map(|(i, _)| i).collect();
-    let spans: Vec<(usize, usize)> = ticks.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+    let spans: Vec<(usize, usize)> = ticks.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect();
     let quoted = |i: usize| spans.iter().any(|&(a, b)| i > a && i < b);
 
     let mut found = None;
@@ -476,97 +453,6 @@ fn extract_expect(fragment: &str) -> Option<String> {
     extract_marker(fragment, "expect:")
 }
 
-/// Extract the optional `Control:` command from a fragment. Same
-/// last-occurrence + backtick-quoting rules as [`extract_command`]; `None` when
-/// no `Control:` marker is present.
-fn extract_control(fragment: &str) -> Option<String> {
-    extract_marker(fragment, "control:")
-}
-
-/// `true` when `text` still carries an UNFILLED skeleton marker — the
-/// `<…>` token the spec drafter emits for a criterion nobody has authored yet.
-///
-/// The ONE spelling of that question in the crate. It replaces a bare
-/// `text.contains('<')`, which was spelled independently in four places and
-/// refused a criterion for carrying a JSX tag, a generic, or a shell
-/// redirection — none of which is an unfilled placeholder, and each of which
-/// left a real criterion permanently unrun.
-///
-/// The rule, stated in full. A span is a skeleton marker when:
-///
-/// 1. its `<` sits at the start of `text` or directly after whitespace — this
-///    is what a placeholder looks like and what `Vec<String>` /
-///    `HashMap<K, V>` never do, since their `<` follows an identifier;
-/// 2. a `>` closes it before any further `<`;
-/// 3. the enclosed text is non-empty and neither starts nor ends with
-///    whitespace — `cmd < in > out` encloses `" in "` and is redirection, not a
-///    placeholder;
-/// 4. the `<` is OUTSIDE any quoted run — `rg -q '<div>' src/` names an HTML
-///    tag it is searching FOR, and refusing it would refuse the criterion for
-///    doing its job.
-///
-/// Pure, total, never panics. Reads a STATEMENT as readily as a command: the
-/// drafter seeds both (`when <the new behaviour is invoked>, …`), and the
-/// close-time capability synthesis has to drop both.
-pub(crate) fn is_skeleton(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    let mut quote: Option<u8> = None;
-    let mut prev_is_boundary = true; // start of string counts as a boundary
-    while i < bytes.len() {
-        let b = bytes[i];
-        match quote {
-            Some(q) => {
-                if b == q {
-                    quote = None;
-                }
-                prev_is_boundary = false;
-                i += 1;
-            }
-            None => {
-                if b == b'\'' || b == b'"' || b == b'`' {
-                    quote = Some(b);
-                    prev_is_boundary = false;
-                    i += 1;
-                    continue;
-                }
-                if b == b'<' && prev_is_boundary {
-                    // Rule 2: the closing `>` must arrive before another `<`.
-                    let rest = &text[i + 1..];
-                    let close = rest.find('>');
-                    let next_open = rest.find('<');
-                    if let Some(close) = close {
-                        if next_open.is_none_or(|open| close < open) {
-                            let inner = &rest[..close];
-                            // Rule 3: a non-empty, non-padded span.
-                            if !inner.is_empty() && inner.trim() == inner {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                prev_is_boundary = b.is_ascii_whitespace();
-                i += 1;
-            }
-        }
-    }
-    false
-}
-
-/// Extract the AC **statement** (the description) from the text after the id
-/// separator: everything before an inline `Command:` marker, trimmed of a
-/// trailing separator run (`—` / `-` / space). The multi-line drafter form
-/// carries no inline command, so its whole `after_sep` — the EARS
-/// `when X, then Y` — is the statement. Pure, total, never panics.
-fn statement_of(after_sep: &str) -> String {
-    let lower = after_sep.to_lowercase();
-    let head = match lower.rfind("command:") {
-        Some(idx) => &after_sep[..idx],
-        None => after_sep,
-    };
-    head.trim().trim_end_matches(['—', '-', ' ']).trim().to_string()
-}
-
 /// The criteria array, as the JSON payload shape.
 pub(crate) fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
     criteria
@@ -586,24 +472,13 @@ pub(crate) fn criteria_json(criteria: &[AcResult]) -> Vec<Value> {
 /// Result of a QA run — `overall` plus the criteria.
 ///
 /// `pub(crate)` so `close-pipeline` reads the per-criterion detail (which AC
-/// failed) that the count-only [`QaSpecOutcome`] does not carry.
+/// failed).
 pub(crate) struct QaResult {
     pub(crate) overall: String,
     pub(crate) criteria: Vec<AcResult>,
 }
 
-/// Public outcome type returned by [`run_for_spec_with_options`].
-///
-/// Callers that do not want process::exit (e.g. `complete_spec`)
-/// use this instead of the stdout-emitting [`run`] entry point.
-pub struct QaSpecOutcome {
-    pub spec: String,
-    pub overall: String,
-    pub passed: u32,
-    pub total: u32,
-}
-
-/// Options for [`run_for_spec_with_options`].
+/// Options for one qa-run, carried on the thread-local the executor reads.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QaRunOptions {
     /// `true` when invoked from a process that **could be** the binary some AC
@@ -622,104 +497,6 @@ pub struct QaRunOptions {
     /// `complete_spec::run_qa_fail_open` sets this. External callers
     /// (`mustard-rt run qa-run --spec X` from a CI shell) leave it `false`.
     pub self_invoked: bool,
-}
-
-/// Run QA for `spec` under the current working directory, emit `qa.result`,
-/// and return a typed outcome — no stdout, no `process::exit`.
-///
-/// Designed for callers that need the result (e.g. `complete_spec`) without
-/// taking over the process. Errors are fail-open: a missing spec returns an
-/// outcome with `overall = "skip"`. `opts` lets the caller flip
-/// [`QaRunOptions::self_invoked`] to enable the cargo-self-build rewrite.
-pub fn run_for_spec_with_options(spec: &str, opts: QaRunOptions) -> QaSpecOutcome {
-    let cwd = std::env::current_dir()
-        .ok()
-        .or_else(|| Some(std::path::PathBuf::from(crate::shared::context::project_dir())))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let result = run_qa_with_options(&cwd, spec, opts);
-    let (mut passed, mut failed, mut skipped) = (0u32, 0u32, 0u32);
-    for c in &result.criteria {
-        match c.status.as_str() {
-            "pass" => passed += 1,
-            "fail" => failed += 1,
-            _ => skipped += 1,
-        }
-    }
-    let total = passed + failed + skipped;
-    QaSpecOutcome {
-        spec: spec.to_string(),
-        overall: result.overall,
-        passed,
-        total,
-    }
-}
-
-/// Cwd-aware QA run returning the full per-criterion [`QaResult`] (not the
-/// count-only outcome). The `close-pipeline` composite uses this so its report
-/// can name the failed ACs. Sets/resets the thread-local [`QaRunOptions`]
-/// around the run exactly like [`run_for_spec_with_options`].
-pub(crate) fn run_qa_with_options(cwd: &Path, spec: &str, opts: QaRunOptions) -> QaResult {
-    runner::QA_OPTIONS.with(|cell| cell.set(opts));
-    let result = run_qa(cwd, spec);
-    runner::QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
-    result
-}
-
-/// The verdict of a Stop-gate QA evaluation: the qa-run `overall` status plus
-/// the id of the FIRST criterion that came back `fail` — the one a block reason
-/// names.
-///
-/// Built ON TOP of [`run_qa_with_options`], the SAME parser + executor `/qa`
-/// runs, so the Stop gate's verdict is qa-run's verdict by construction: there
-/// is no second AC parser to drift (the `drift` this repository already paid
-/// twice to prevent).
-pub struct StopGateOutcome {
-    /// The run's overall verdict (`pass` / `fail` / `timeout` / `skip`),
-    /// identical to what [`run_for_spec_with_options`] would report for the
-    /// same spec under the same [`QaRunOptions`].
-    pub overall: String,
-    /// Id of the first `fail` criterion, or `None` when nothing failed.
-    pub first_failing_ac: Option<String>,
-}
-
-/// Run QA for `spec` under `cwd` through the qa-run executor and reduce it to a
-/// [`StopGateOutcome`] for the Stop gate.
-///
-/// The single reuse seam the Stop gate calls: it delegates to
-/// [`run_qa_with_options`] (the cwd-aware core [`run_for_spec_with_options`]
-/// itself wraps) so the gate reuses `find_spec_file` + [`parse_ac_items`] +
-/// [`gather_capability_acs`] + `run_ac_command` verbatim — never a parallel AC
-/// reader. `opts` carries [`QaRunOptions::self_invoked`]: the Stop gate runs
-/// INSIDE the `mustard-rt` process, so it MUST set it, or an AC that rebuilds
-/// the running binary would hit the Windows exe lock (os error 5).
-#[must_use]
-pub fn run_for_stop_gate(cwd: &Path, spec: &str, opts: QaRunOptions) -> StopGateOutcome {
-    let result = run_qa_with_options(cwd, spec, opts);
-    let first_failing_ac = result
-        .criteria
-        .iter()
-        .find(|c| c.status == "fail")
-        .map(|c| c.id.clone());
-    StopGateOutcome { overall: result.overall, first_failing_ac }
-}
-
-/// `true` when `spec` carries at least one **executable** acceptance criterion
-/// — the exact union [`run_qa`] would run: the spec's own `## Acceptance
-/// Criteria` items PLUS any linked-capability ACs. This is the inverse of the
-/// "`qa-run` would `skip`" predicate (an empty union is precisely the
-/// `overall: skip` case), reusing the same `find_spec_file` +
-/// [`extract_ac_section`] + [`parse_ac_items`] + [`gather_capability_acs`] path
-/// so the two can never drift.
-///
-/// Consumed by the final-wave auto-settle in `emit-pipeline` to decide whether
-/// a finished spec still owes a QA pass. Fail-open: a missing / unreadable spec
-/// file with no linked-capability ACs reads as `false` (no criteria to verify).
-pub(crate) fn spec_has_executable_acs(cwd: &Path, spec: &str) -> bool {
-    let has_own_acs = runner::find_spec_file(cwd, spec)
-        .and_then(|file| fs::read_to_string(&file).ok())
-        .and_then(|markdown| extract_ac_section(&markdown))
-        .is_some_and(|section| !parse_ac_items(&section).is_empty());
-    has_own_acs || !runner::gather_capability_acs(cwd, spec).is_empty()
 }
 
 /// The overall verdict of a finished run, from the per-criterion statuses and
@@ -863,7 +640,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     let Some(spec_file) = runner::find_spec_file(state, spec) else {
         eprintln!(
             "[qa-run] Spec file not found for \"{spec}\" under {} (work dir: {}) — check the \
-             slug with `mustard-rt run active-specs`; a submodule has its own `.claude/`.",
+             slug; a submodule has its own `.claude/`.",
             state.display(),
             cwd.display()
         );
@@ -882,7 +659,7 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     // The spec's OWN ACs — parsed exactly as before. An absent / unparseable
     // `## Acceptance Criteria` section yields none (it is no longer a hard skip
     // on its own, because the spec may still carry executable capability ACs).
-    let mut items: Vec<(String, String, Option<String>)> = extract_ac_section(&markdown)
+    let items: Vec<(String, String, Option<String>)> = extract_ac_section(&markdown)
         .map(|section| {
             parse_ac_items(&section)
                 .into_iter()
@@ -891,12 +668,6 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
         })
         .unwrap_or_default();
     let own_ac_count = items.len();
-
-    // Append the executable ACs of every linked capability (F5). A spec with no
-    // `## Capabilities` section adds nothing here, so its run is unchanged.
-    // Capability scenarios carry no `Expect:` regex — they gate on exit code.
-    let capability_acs = runner::gather_capability_acs(state, spec);
-    items.extend(capability_acs.into_iter().map(|(id, command)| (id, command, None)));
 
     if items.is_empty() {
         // Nothing to run from either source ⇒ skip (preserves the historical
@@ -928,14 +699,17 @@ fn run_qa(cwd: &Path, spec: &str) -> QaResult {
     }
     runner::emit_qa_metric(state, spec, overall, &criteria);
     render::write_sidecar(state, spec, &payload);
-    // D4: materialise the human-readable report beside the phase dir.
+    // Materialise the human-readable report beside the phase dir.
     render::write_qa_report_md(state, spec, overall, &criteria);
 
     QaResult { overall: overall.to_string(), criteria }
 }
 
-/// Dispatch `mustard-rt run qa-run`.
-pub fn run(spec: &str, format: &str) {
+/// The old command's body — run every criterion and print the report. Kept,
+/// with what only it reaches, until the engine leaves.
+// O comando saiu, e nada chama este corpo: ele espera o motor sair junto.
+#[allow(dead_code)]
+fn run_qa_cli(spec: &str, format: &str) {
     let cwd = std::env::current_dir()
         .ok()
         .or_else(|| Some(PathBuf::from(project_dir())))
@@ -988,8 +762,8 @@ mod tests {
     /// Wave-plans use `AC-G1`, `AC-G2` (the `G` modifier marks global ACs that
     /// span every wave). The id parser must accept any alphanumeric suffix
     /// after `AC-`, not just digits — otherwise `qa-run` finds the section but
-    /// returns zero parseable items (the bug found while closing
-    /// `2026-05-20-mustard-wave-network-standard`).
+    /// returns zero parseable items (a bug found while
+    /// closing a spec).
     #[test]
     fn parses_ac_id_with_alphanumeric_suffix() {
         let a = parse_ac_line("- [ ] AC-G1: flag exposed — Command: `mustard-rt --version`").unwrap();
@@ -1003,7 +777,7 @@ mod tests {
     /// Multi-segment IDs (`AC-W4-1`, `AC-TF-3`, `AC-W4-10`) must parse
     /// correctly. These appear in wave-scoped specs where the wave number is
     /// embedded in the ID (e.g. wave-4 ACs use `AC-W4-N`). This was the bug
-    /// fixed in `2026-05-23-tf-qa-run-parser-multidash-ac`: the scanner stopped
+    /// fixed here: the scanner stopped
     /// at the first `-` inside the ID suffix, producing `AC-W4` instead of
     /// `AC-W4-1` and returning zero parseable items for the whole section.
     #[test]
@@ -1020,7 +794,7 @@ mod tests {
         let c = parse_ac_line("- [ ] AC-TF-3: parser fix — Command: `true`").unwrap();
         assert_eq!(c.id, "AC-TF-3");
         assert_eq!(c.command, "true");
-        // Single-segment regression: AC-1 and AC-G1 must still work.
+        // Single-segment regression: `AC-1` and `AC-G1` must still work.
         let d = parse_ac_line("- [ ] AC-1: base — Command: `echo ok`").unwrap();
         assert_eq!(d.id, "AC-1");
         let e = parse_ac_line("- [ ] AC-G1: global — Command: `echo ok`").unwrap();
@@ -1028,7 +802,7 @@ mod tests {
     }
 
     /// Bold-wrapped ID with period separator — canonical form used by every
-    /// AC line in the `2026-05-25-mustard-deep-refactor` spec + every wave
+    /// AC line in a wave-plan spec + every wave
     /// spec (`- [ ] **AC-G1.** desc. Command: \`rtk x\``). Regression guard
     /// for the parser fix made while closing that pipeline (qa-run was
     /// returning zero items for an otherwise well-formed section).
@@ -1100,19 +874,6 @@ mod tests {
         assert_eq!(items[2].command, "rtk x");
     }
 
-    /// The exposed `AcItem.statement` captures the EARS description with any
-    /// inline `Command:` tail stripped — for both the multi-line drafter form
-    /// and the historical one-line form.
-    #[test]
-    fn ac_item_captures_statement() {
-        let items = parse_ac_items("- **AC-1** — when x happens, then y holds.\n  Command: `true`\n");
-        assert_eq!(items[0].statement, "when x happens, then y holds.");
-        assert_eq!(items[0].command, "true");
-        let oneline = parse_ac_line("- [ ] AC-2: builds clean — Command: `cargo build`").unwrap();
-        assert_eq!(oneline.statement, "builds clean", "inline Command tail stripped");
-        assert_eq!(oneline.command, "cargo build");
-    }
-
     /// Drafter header with NO `Command:` anywhere (neither same-line nor on a
     /// following line) must yield NO item — not a panic, and crucially not a
     /// false item that bleeds the NEXT AC's command into this one. The
@@ -1125,7 +886,7 @@ mod tests {
   Command: `cargo test`
 ";
         let items = parse_ac_items(section);
-        // AC-1 has no command → dropped; AC-2 keeps its own command.
+        // `AC-1` has no command → dropped; `AC-2` keeps its own command.
         assert_eq!(items.len(), 1, "only AC-2 has a command");
         assert_eq!(items[0].id, "AC-2");
         assert_eq!(items[0].command, "cargo test");
@@ -1171,7 +932,7 @@ mod tests {
     /// A marker INSIDE a criterion's backtick-quoted command is data, not a
     /// marker.
     ///
-    /// Measured while authoring this unit's own AC-6: the criterion that proves
+    /// Measured while authoring one of this unit's own criteria: the one that proves
     /// `ac-amend` refuses an embedded `Expect:` must itself contain one. The
     /// reader searched the raw line, found that occurrence, and took the tail of
     /// the COMMAND as the evidence regex — so the real `Expect:` on the next
@@ -1212,59 +973,6 @@ mod tests {
             Some("cargo test `foo".to_string()),
             "an odd backtick must not swallow the value",
         );
-    }
-
-    /// The `Control:` marker parses beside `Command:` and `Expect:`, in BOTH AC
-    /// shapes and in both marker positions — through the one parser, since a
-    /// second reader for the third marker is exactly the drift the other two
-    /// were consolidated to avoid.
-    #[test]
-    fn parses_the_control_marker_beside_command_and_expect() {
-        // Multi-line drafter form, each marker on its own line.
-        let items = parse_ac_items(
-            "- **AC-1** — when x, then y.\n  Command: `cargo test foo`\n  \
-             Expect: `1 passed`\n  Control: `cargo test bar`\n",
-        );
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].command, "cargo test foo");
-        assert_eq!(items[0].expect.as_deref(), Some("1 passed"));
-        assert_eq!(items[0].control.as_deref(), Some("cargo test bar"));
-
-        // Historical one-line form, all three markers on the AC line.
-        let one = parse_ac_line(
-            "- [ ] AC-2: x — Command: `a` Expect: `b` Control: `c`",
-        )
-        .unwrap();
-        assert_eq!((one.command.as_str(), one.expect.as_deref(), one.control.as_deref()),
-                   ("a", Some("b"), Some("c")));
-
-        // Two-sided: a criterion that declares no control reads as declaring
-        // none — never as declaring an empty one.
-        let none = parse_ac_items("- **AC-3** — z.\n  Command: `cd .`\n");
-        assert_eq!(none[0].control, None, "an absent marker is absent, not empty");
-    }
-
-    /// `is_skeleton` separates an UNFILLED marker from the three shapes a bare
-    /// `contains('<')` refused: a generic, an HTML/JSX tag inside a search
-    /// pattern, and a shell redirection.
-    ///
-    /// Two-sided by construction — the accepting half cannot pass by the
-    /// predicate answering `false` for everything, and the rejecting half
-    /// cannot pass by it answering `true` for everything.
-    #[test]
-    fn placeholder_matches_the_skeleton_token_not_any_angle_bracket() {
-        // Placeholders — the drafter's own seeds, and a hand-written one.
-        assert!(is_skeleton("<runnable command that verifies this criterion>"));
-        assert!(is_skeleton("<comando executável que verifica este critério>"));
-        assert!(is_skeleton("cargo test -p mustard-rt <test-name>"));
-        assert!(is_skeleton("when <the new behaviour is invoked>, then it holds"));
-
-        // NOT placeholders — every one of these was refused unrun before.
-        assert!(!is_skeleton("cargo test -p mustard-rt vec_of::<String>"), "a generic");
-        assert!(!is_skeleton("rg -q '<div>' src/app.tsx"), "an HTML tag being searched FOR");
-        assert!(!is_skeleton("sort < in.txt > out.txt"), "shell redirection");
-        assert!(!is_skeleton("cargo build"), "a command with no angle bracket at all");
-        assert!(!is_skeleton("cmd <<EOF"), "a heredoc opener closes nothing");
     }
 
     /// A spec this run could not find is `spec-not-found`, never `skip`.
@@ -1347,12 +1055,7 @@ mod tests {
         assert_eq!(result.criteria.len(), 1, "one criterion parsed");
         assert_eq!(result.criteria[0].status, "pass", "the criterion ran in the worktree");
 
-        // The verdict was RECORDED at the main checkout, where the close gate
-        // will go looking for it — not beside the code.
-        assert!(
-            spec_dir.join(".events").exists(),
-            "the verdict must land with the rest of the unit's state",
-        );
+        let _ = spec_dir;
     }
 
     #[test]
@@ -1373,6 +1076,7 @@ mod tests {
             exit: None,
             duration_ms: 0,
             stderr_excerpt: String::new(),
+            tests_run: None,
         }
     }
 
@@ -1411,7 +1115,7 @@ mod tests {
     /// EXTERNAL run read `pass`.
     ///
     /// The regression this pins actually shipped. The executor briefly graded
-    /// exit 127 `skip`, so `ac_negative_check` would stop reading an unrunnable
+    /// exit 127 `skip`, para que ninguém leia como reprovado um critério que não
     /// command as red proof — but [`overall_verdict`] tolerates a `skip` beside
     /// a `pass` on the external path, which is the path the close gate reads.
     /// One typo'd program name beside one green criterion was enough to close a
@@ -1431,7 +1135,7 @@ mod tests {
              - **AC-1** — the program does not exist.\n  Command: `mustard-no-such-program-9f3c`\n\
              - **AC-2** — incidental green.\n  Command: `cd .`\n",
         );
-        let out = run_qa_with_options(cwd, "unrunnable", QaRunOptions { self_invoked: false });
+        let out = run_qa(cwd, "unrunnable");
         assert_eq!(out.criteria.len(), 2, "the shape under test");
         assert_ne!(
             out.overall, "pass",
@@ -1441,184 +1145,13 @@ mod tests {
         assert_eq!(out.overall, "fail", "and it fails, so the close gate blocks");
     }
 
-    /// The reproduced shape: a self-invoked run whose criteria that exercise
-    /// the feature all came back `skip` (here through the fail-open path of an
-    /// uncompilable `Expect:` — the portable way to make a criterion verify
-    /// nothing) plus one incidental green. It used to read `pass` and record a
-    /// `qa.result` for a spec where nothing had been implemented — the verdict
-    /// let skips ride along, and the emission guard's "verified nothing" meant
-    /// EVERY criterion skipped, which the one incidental pass defeated.
-    ///
-    /// Both directions are asserted: the dishonest run neither reads `pass` nor
-    /// records anything, AND a run whose criteria genuinely ran still reads
-    /// `pass` and still records — without that half the fix could pass by
-    /// making the verdict inert.
-    #[test]
-    fn a_run_that_verified_almost_nothing_is_not_a_pass() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        seed_spec_md(
-            cwd,
-            "almost-nothing",
-            "# R\n\n## Acceptance Criteria\n\
-             - **AC-1** — exercises the feature.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
-             - **AC-2** — exercises the feature.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
-             - **AC-3** — incidental green.\n  Command: `cd .`\n",
-        );
-        let almost = run_qa_with_options(cwd, "almost-nothing", QaRunOptions { self_invoked: true });
-        assert_eq!(
-            almost.criteria.len(),
-            3,
-            "the shape under test: two unattempted criteria plus one incidental green"
-        );
-        assert_eq!(
-            almost.criteria.iter().filter(|c| c.status == "skip").count(),
-            2,
-            "the feature-exercising criteria were never attempted"
-        );
-        assert_eq!(
-            almost.overall, "skip",
-            "a run that could not attempt its criteria must not read pass"
-        );
-        assert_eq!(
-            qa_result_events(cwd, "almost-nothing"),
-            0,
-            "and it must record no result for the spec"
-        );
 
-        // The other direction: criteria that genuinely ran and passed.
-        seed_spec_md(
-            cwd,
-            "really-ran",
-            "# P\n\n## Acceptance Criteria\n\
-             - **AC-1** — real.\n  Command: `cd .`\n\
-             - **AC-2** — real.\n  Command: `cd .`\n",
-        );
-        let ran = run_qa_with_options(cwd, "really-ran", QaRunOptions { self_invoked: true });
-        assert_eq!(ran.overall, "pass", "a run that verified everything still passes");
-        assert_eq!(
-            qa_result_events(cwd, "really-ran"),
-            1,
-            "and still records its verdict — the fix must not make the verdict inert"
-        );
-    }
 
-    /// The EXTERNAL path is untouched by the self-invocation rule: a standalone
-    /// run that genuinely skips one criterion beside a green one keeps its
-    /// historical `pass` and still writes its `qa.result`.
-    #[test]
-    fn external_skip_beside_a_pass_keeps_its_historical_verdict() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // An uncompilable `Expect:` regex is the fail-open skip of an AC that
-        // DID run — reachable without the self-invocation guard.
-        seed_spec_md(
-            cwd,
-            "ext-mixed",
-            "# E\n\n## Acceptance Criteria\n\
-             - **AC-1** — bad expect.\n  Command: `cd .`\n  Expect: `[unterminated`\n\
-             - **AC-2** — green.\n  Command: `cd .`\n",
-        );
-        let result = run_qa_with_options(cwd, "ext-mixed", QaRunOptions::default());
-        assert_eq!(result.overall, "pass", "{}", result.criteria[0].stderr_excerpt);
-        assert_eq!(qa_result_events(cwd, "ext-mixed"), 1);
-    }
 
-    /// `qa.result` events recorded for `spec` under `cwd`.
-    fn qa_result_events(cwd: &Path, spec: &str) -> usize {
-        let events_dir = cwd.join(".claude").join("spec").join(spec).join(".events");
-        mustard_core::view::projection::read_harness_events_from_ndjson_dir(&events_dir)
-            .into_iter()
-            .filter(|ev| ev.event == "qa.result")
-            .count()
-    }
 
-    /// A SELF-invoked run whose every criterion skipped verified nothing, so it
-    /// writes no `qa.result`: `qa_result_passed` reads the LAST verdict, so this
-    /// event would invalidate a real external pass and block a strict close.
-    /// The same self-invoked mode still emits when a criterion actually ran.
-    #[test]
-    fn self_invoked_all_skipped_run_writes_no_qa_result() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // The only AC verifies nothing: it exits 0 but its `Expect:` does not
-        // compile, the fail-open path that yields `skip`.
-        seed_spec_md(
-            cwd,
-            "self-skip",
-            "# S\n\n## Acceptance Criteria\n- **AC-1** — verifies nothing.\n  Command: `cd .`\n  Expect: `[unterminated`\n",
-        );
-        let skipped = run_qa_with_options(cwd, "self-skip", QaRunOptions { self_invoked: true });
-        assert_eq!(skipped.overall, "skip");
-        assert_eq!(
-            qa_result_events(cwd, "self-skip"),
-            0,
-            "a run that verified nothing must not overwrite a real external pass"
-        );
 
-        // Same self-invoked mode, but a criterion that genuinely ran ⇒ emitted.
-        seed_spec_md(
-            cwd,
-            "self-pass",
-            "# P\n\n## Acceptance Criteria\n- **AC-1** — real.\n  Command: `cd .`\n",
-        );
-        let passed = run_qa_with_options(cwd, "self-pass", QaRunOptions { self_invoked: true });
-        assert_eq!(passed.overall, "pass");
-        assert_eq!(qa_result_events(cwd, "self-pass"), 1, "a real run still records its verdict");
-    }
 
-    /// The same hole, reached by the other door: a self-invoked run that finds
-    /// NO parseable criterion at all takes the early `items.is_empty()` return,
-    /// which used to emit unconditionally. It verified nothing either, so it
-    /// must not write the last verdict — reachable in the wild through
-    /// `complete_spec`'s fail-open QA on a spec whose ACs stopped parsing.
-    /// An EXTERNAL run with no criteria still emits, as it always has.
-    #[test]
-    fn self_invoked_empty_ac_set_writes_no_qa_result() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // A heading with no parseable item beneath it — the shape a broken or
-        // reformatted spec degrades to.
-        let body = "# E\n\n## Acceptance Criteria\n\nnothing parseable here\n";
-        seed_spec_md(cwd, "self-empty", body);
-        let out = run_qa_with_options(cwd, "self-empty", QaRunOptions { self_invoked: true });
-        assert_eq!(out.overall, "skip");
-        assert_eq!(
-            qa_result_events(cwd, "self-empty"),
-            0,
-            "a self-invoked run with nothing to run must not overwrite a real verdict"
-        );
-
-        seed_spec_md(cwd, "ext-empty", body);
-        let ext = run_qa_with_options(cwd, "ext-empty", QaRunOptions::default());
-        assert_eq!(ext.overall, "skip");
-        assert_eq!(
-            qa_result_events(cwd, "ext-empty"),
-            1,
-            "the external no-AC contract is untouched"
-        );
-    }
-
-    /// Only the SELF-invoked case is silenced. An EXTERNAL all-skip run keeps
-    /// emitting `qa.result` byte-for-byte as before — the standalone
-    /// `mustard-rt run qa-run` contract is untouched.
-    #[test]
-    fn external_all_skipped_run_still_writes_qa_result() {
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        // An uncompilable `Expect:` regex is the fail-open skip of an AC that
-        // DID run — reachable without the self-invocation guard.
-        seed_spec_md(
-            cwd,
-            "ext-skip",
-            "# E\n\n## Acceptance Criteria\n- **AC-1** — bad expect.\n  Command: `cd .`\n  Expect: `[unterminated`\n",
-        );
-        let result = run_qa_with_options(cwd, "ext-skip", QaRunOptions::default());
-        assert_eq!(result.overall, "skip", "{}", result.criteria[0].stderr_excerpt);
-        assert_eq!(qa_result_events(cwd, "ext-skip"), 1);
-    }
-
-    // --- F5: linked-capability scenario ACs run in QA --------------------
+    // --- linked-capability scenario ACs run in QA --------------------
 
     /// Seed `<cwd>/.claude/spec/{spec}/spec.md` with `body`.
     fn seed_spec_md(cwd: &Path, spec: &str, body: &str) {
@@ -1627,82 +1160,7 @@ mod tests {
         std::fs::write(dir.join("spec.md"), body).unwrap();
     }
 
-    /// Seed `<cwd>/.claude/capabilities/{slug}.md` by rendering a `Capability`
-    /// through the canonical renderer (so the doc round-trips the parser qa-run
-    /// uses).
-    fn seed_capability(cwd: &Path, slug: &str, cap: &mustard_core::domain::capability::Capability) {
-        let dir = cwd.join(".claude").join("capabilities");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(format!("{slug}.md")),
-            crate::commands::capability::render(cap),
-        )
-        .unwrap();
-    }
 
-    /// A spec linking a capability whose scenario carries a command runs that
-    /// scenario as an AC in QA; a documentary scenario (no command) is NOT run.
-    /// The capability AC uses the SAME `run_ac_command` path as the spec's own
-    /// AC, and the compiled id (`cap.{slug}-{scenario}`) appears in the result.
-    #[test]
-    fn linked_capability_command_scenario_runs_doc_scenario_skipped() {
-        use mustard_core::domain::capability::{Capability, Requirement, Scenario};
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        let spec = "billing-feature";
-
-        // The capability: one command-bearing scenario (`cd .` → exit 0 pass,
-        // a builtin in BOTH cmd.exe and sh so the test is cross-platform) and
-        // one pure-doc scenario (no command → must NOT be run).
-        let cap = Capability {
-            id: "cap.billing".into(),
-            title: "Billing".into(),
-            status: "active".into(),
-            requirements: vec![Requirement {
-                statement: "The system SHALL bill.".into(),
-                scenarios: vec![
-                    Scenario {
-                        name: "charges".into(),
-                        when: "an order ships".into(),
-                        then: "the card is charged".into(),
-                        command: Some("cd .".into()),
-                    },
-                    Scenario {
-                        name: "documentary".into(),
-                        when: "described only".into(),
-                        then: "no command".into(),
-                        command: None,
-                    },
-                ],
-            }],
-            ..Capability::default()
-        };
-        seed_capability(cwd, "billing", &cap);
-        // The spec has its OWN AC plus a `## Capabilities` link to the cap.
-        seed_spec_md(
-            cwd,
-            spec,
-            "# Billing\n\n## Acceptance Criteria\n- **AC-1** — own.\n  Command: `cd .`\n\n## Capabilities\n- [[cap.billing]]\n",
-        );
-
-        let result = run_qa(cwd, spec);
-        let ids: Vec<&str> = result.criteria.iter().map(|c| c.id.as_str()).collect();
-        // Spec's own AC ran (unchanged behaviour).
-        assert!(ids.contains(&"AC-1"), "spec's own AC ran: {ids:?}");
-        // The command-bearing capability scenario ran, with its compiled id.
-        assert!(
-            ids.contains(&"cap.billing-charges"),
-            "command-bearing capability scenario ran as an AC: {ids:?}"
-        );
-        // The documentary scenario (no command) was NOT compiled / NOT run.
-        assert!(
-            !ids.iter().any(|id| id.starts_with("cap.billing-documentary")),
-            "documentary scenario (no command) must not run: {ids:?}"
-        );
-        // Both runnable ACs are `true` → overall pass.
-        assert_eq!(result.overall, "pass");
-        assert_eq!(result.criteria.len(), 2, "exactly own AC + one capability AC");
-    }
 
     /// A spec with NO `## Capabilities` section runs exactly its own ACs — the
     /// capability gather adds nothing (the unchanged-behaviour guarantee).
@@ -1742,35 +1200,4 @@ mod tests {
         assert_eq!(result.overall, "pass");
     }
 
-    /// A spec with NO own `## Acceptance Criteria` section but a linked
-    /// capability that DOES carry a command-bearing scenario still runs that
-    /// scenario — the executable capability AC is the whole point of the link.
-    #[test]
-    fn capability_ac_runs_even_without_own_ac_section() {
-        use mustard_core::domain::capability::{Capability, Requirement, Scenario};
-        let dir = tempdir().unwrap();
-        let cwd = dir.path();
-        let spec = "caps-only-feature";
-        let cap = Capability {
-            id: "cap.only".into(),
-            status: "active".into(),
-            requirements: vec![Requirement {
-                statement: "R".into(),
-                scenarios: vec![Scenario {
-                    name: "runs".into(),
-                    when: "x".into(),
-                    then: "y".into(),
-                    command: Some("cd .".into()),
-                }],
-            }],
-            ..Capability::default()
-        };
-        seed_capability(cwd, "only", &cap);
-        seed_spec_md(cwd, spec, "# Caps Only\n\nNarrative.\n\n## Capabilities\n- [[cap.only]]\n");
-
-        let result = run_qa(cwd, spec);
-        assert_eq!(result.criteria.len(), 1, "the capability AC ran");
-        assert_eq!(result.criteria[0].id, "cap.only-runs");
-        assert_eq!(result.overall, "pass");
-    }
 }

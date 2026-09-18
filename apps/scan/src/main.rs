@@ -2,12 +2,11 @@
 //! rich, language-agnostic model. Framework- and language-agnostic.
 //!
 //! Pipeline: ingest -> extract -> graph -> mine -> condense. Fully deterministic
-//! and blind to any framework/language. `scan` writes the model; `spec` compiles
-//! a per-task implementation draft from it.
+//! and blind to any framework/language. `scan` writes the model; the other
+//! subcommands only project it.
 
 mod classify;
 mod condense;
-mod dictionary;
 mod digest;
 mod facts;
 mod extract;
@@ -17,15 +16,15 @@ mod manifests;
 mod matching;
 mod mine;
 mod model;
-mod pagerank;
 mod rank;
-mod spec;
+mod refresh;
 mod stemmers;
+mod testmap;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -38,14 +37,23 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Analyze a project and write the intermediate model as JSON (the product).
+    ///
+    /// When `--out` already holds a model of this project, only the files that
+    /// changed since that pass are read again (see `refresh`).
     Scan {
         path: PathBuf,
         #[arg(long, default_value = "grain.model.json")]
         out: PathBuf,
+        /// Read every file, ignoring the previous model.
+        #[arg(long)]
+        all: bool,
+        /// Print one JSON line (what was read) instead of the text summary.
+        #[arg(long)]
+        json: bool,
     },
-    /// Emit a small, AI-sized capability DIGEST of the model (slices, roles,
-    /// contracts, hubs, projects + a domain-term index) — the searchable surface
-    /// a decomposition/feature step queries instead of reading source.
+    /// Emit a small, AI-sized capability DIGEST of the model (contracts, hubs,
+    /// projects + a domain-term index) — the searchable surface a
+    /// decomposition/feature step queries instead of reading source.
     ///
     /// With `--query`, returns only the slice of the digest matching the terms
     /// (a few KB instead of the whole catalog) — the cheap per-interaction lookup
@@ -68,123 +76,27 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Compile a self-contained, deterministic implementation SPEC (draft) for an
-    /// entity from the model. `path` is a project dir to scan, or a model.json.
-    Spec {
-        path: PathBuf,
-        /// Entity to create (substitutes <Name> in the recipe).
-        #[arg(long)]
-        entity: String,
-        /// Existing entity to mirror — its slice and its real files (e.g. a new
-        /// entity modeled on an existing one of the same shape).
-        #[arg(long, default_value = "")]
-        like: String,
-        /// Comma-separated operations beyond the base CRUD (e.g. "approve").
-        #[arg(long, default_value = "create")]
-        ops: String,
-        /// Comma-separated cross-cutting invariants the unit must obey (e.g. an
-        /// injected contract like "ICurrentTenant"). Surfaced as a must-obey
-        /// section anchored on the real defining + consumer files (by graph
-        /// fan-in + name), so the AI mirrors the mechanism instead of inventing it.
-        #[arg(long, default_value = "")]
-        invariant: String,
-        /// Write the spec to a file instead of stdout.
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-    /// Rank the model's files for a raw (e.g. Portuguese) request via personalized
-    /// PageRank over the dependency graph, SEEDED by the distinctive-vocabulary
-    /// dictionary — the localization layer over the dictionary's PT→term bridge.
-    /// `path` is a project dir to scan, or a grain.model.json; `--dict` is the
-    /// `grain.dictionary.json` sidecar. Emits byte-stable JSON `{query,
-    /// matched_terms, files:[{file, score_x1024}]}`; an empty `files` means
-    /// nothing bridged. Deterministic, no LLM.
-    Rank {
-        path: PathBuf,
-        /// The `grain.dictionary.json` sidecar (the seed vocabulary).
-        #[arg(long)]
-        dict: PathBuf,
-        /// Comma/space-separated request terms (the raw intent), e.g. a PT prompt.
-        #[arg(long, default_value = "")]
-        query: String,
-        /// Edge orientation: `forward` | `reverse` | `undirected` (default —
-        /// the graph splits by language, so domain-locality is undirected).
-        #[arg(long, default_value = "undirected")]
-        direction: String,
-        /// Damping ×1024 (default ≈ 0.60 → 614: a strong topic bias keeps mass
-        /// near the seeds; classic PageRank ≈ 0.85 → 870).
-        #[arg(long, default_value_t = 614)]
-        damping: u64,
-        /// Fixed power-iteration count (byte-stable — never a float convergence test).
-        #[arg(long, default_value_t = 50)]
-        iters: usize,
-        /// Seed weighting: `specificity` (default) | `idf` | `balanced` | `uniform`.
-        #[arg(long, default_value = "specificity")]
-        seed_weight: String,
-        /// Rank the personalization vector alone (ablation: no graph walk).
-        #[arg(long)]
-        no_propagate: bool,
-        /// Hub penalty ×1024 against a file's dictionary-anchor promiscuity
-        /// (cross-cutting comment-dense files); 0 = off (default).
-        #[arg(long, default_value_t = 0)]
-        hub_penalty: u64,
-        /// Fan-in penalty ×1024 against a file's global import fan-in (deep
-        /// shared sinks a walk piles onto); default 1.0 → 1024, `0` = off.
-        #[arg(long, default_value_t = 1024)]
-        fanin_penalty: u64,
-        /// Disable the ungated direct-identifier seeding (Wave-2b fix): when set,
-        /// only dictionary-matched terms seed (the pre-fix, dict-gated behavior).
-        #[arg(long)]
-        no_direct_seed: bool,
-        /// Multiplier ×1024 on the absolute direct identifier-match score (the
-        /// fan-in-exempt floor); calibrated so a strong match competes with the
-        /// top propagated mass. `0` = no floor (walk only).
-        #[arg(long, default_value_t = 100_000)]
-        direct_base: u64,
-        /// How many ranked files to emit.
-        #[arg(long, default_value_t = 10)]
-        top: usize,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
     /// One-shot research bundle for the `feature` flow: parse the model ONCE and
-    /// return the per-query digest, the full domain-term index (the non-strong
-    /// vocabulary menu) and the personalized-PageRank pool — the three
-    /// projections `feature` used to fetch with three separate spawns, each
-    /// re-parsing the model. `--query` carries the digest terms, `--rank-query`
-    /// the expanded rank query, `--dict` the dictionary sidecar (rank is SKIPPED
-    /// when the dict is absent, matching the fail-open gate the caller applies —
-    /// an absent dict must yield an empty rank, never a direct-seeded one).
-    /// Byte-stable JSON `{digest, terms, rank}`; `rank` is the pool at `--top`.
+    /// return the per-query digest and the full domain-term index (the
+    /// non-strong vocabulary menu) — the two projections `feature` used to fetch
+    /// with separate spawns, each re-parsing the model. `--query` carries the
+    /// digest terms. Byte-stable JSON `{digest, terms}`.
     FeatureBundle {
         path: PathBuf,
         /// Comma/space-separated digest query terms (the `digest --query` input).
         #[arg(long, default_value = "")]
         query: String,
-        /// The `grain.dictionary.json` sidecar; rank is skipped when it is absent.
-        #[arg(long)]
-        dict: PathBuf,
-        /// The expanded rank query (raw intent + equivalence tokens) for PageRank.
-        #[arg(long, default_value = "")]
-        rank_query: String,
-        /// Rank pool depth; the caller derives the top-10 insumos list from this.
-        #[arg(long, default_value_t = 25)]
-        top: usize,
-        /// Direct identifier-match floor multiplier (the `rank` --direct-base).
-        #[arg(long, default_value_t = 100_000)]
-        direct_base: u64,
         #[arg(long)]
         out: Option<PathBuf>,
     },
 }
 
-/// The `feature-bundle` output — the three projections `feature` consumes,
+/// The `feature-bundle` output — the two projections `feature` consumes,
 /// serialized together from ONE model parse (borrowed, so nothing is cloned).
 #[derive(serde::Serialize)]
 struct FeatureBundleOut<'a> {
     digest: &'a digest::QueryResult,
     terms: &'a [digest::TermD],
-    rank: &'a [pagerank::ScoredFile],
 }
 
 /// Load a model: scan a project directory, or read a prebuilt grain.model.json.
@@ -192,31 +104,45 @@ fn load_model(path: &Path) -> Result<ProjectModel> {
     if path.extension().and_then(|e| e.to_str()) == Some("json") {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     } else {
-        // Projections (digest/facts/spec) want only the model; the
-        // dictionary sidecar is a scan-write concern, discarded here — so the
-        // EN normalization (a sidecar spawn) is skipped too.
-        Ok(analyze(path)?.0)
+        // As projeções (digest/facts) querem só o modelo.
+        Ok(analyze(path, None)?.model)
     }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Scan { path, out } => {
-            let (model, dictionary) = analyze(&path)?;
-            print_summary(&model);
-            std::fs::write(&out, serde_json::to_string_pretty(&model)?)?;
-            println!("\nModel written to {}", out.display());
-            // The distinctive-vocabulary sidecar lands NEXT TO the model
-            // (`grain.dictionary.json` beside `grain.model.json`), so `/scan`
-            // (rt → grain --out .claude/grain.model.json) produces both.
-            let dict_out = out.with_file_name("grain.dictionary.json");
-            std::fs::write(&dict_out, serde_json::to_string_pretty(&dictionary)?)?;
-            println!("Dictionary written to {} ({} terms)", dict_out.display(), dictionary.terms.len());
-            if dictionary.non_english_comments > 0 {
+        Command::Scan { path, out, all, json } => {
+            let previous: Option<ProjectModel> = if all {
+                None
+            } else {
+                std::fs::read_to_string(&out).ok().and_then(|text| serde_json::from_str(&text).ok())
+            };
+            let analysis = analyze(&path, previous.as_ref())?;
+            let model_json = serde_json::to_string_pretty(&analysis.model)?;
+            // Nothing changed → the file is left alone (same bytes, same date).
+            if std::fs::read_to_string(&out).ok().as_deref() != Some(model_json.as_str()) {
+                if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(&out, &model_json)?;
+            }
+            if json {
+                let report = serde_json::json!({
+                    "ok": true,
+                    "full": analysis.full,
+                    "read": analysis.read,
+                    "files": analysis.model.modules.len(),
+                    "head": analysis.model.state.head,
+                });
+                println!("{report}");
+            } else {
+                print_summary(&analysis.model);
+                println!("\nModel written to {}", out.display());
                 println!(
-                    "  {} non-English comment(s) detected — code smell to fix; raw tokens kept (they are the query-bridge keys)",
-                    dictionary.non_english_comments
+                    "Read {} file(s){}",
+                    analysis.read.len(),
+                    if analysis.full { " (every file)" } else { " (only what changed)" }
                 );
             }
         }
@@ -247,74 +173,14 @@ fn main() -> Result<()> {
                 None => println!("{json}"),
             }
         }
-        Command::Spec { path, entity, like, ops, invariant, out } => {
-            let model = load_model(&path)?;
-            let ops_vec: Vec<String> = ops.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let inv_vec: Vec<String> = invariant.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let spec_md = spec::compile(&model, &entity, &like, &ops_vec, &inv_vec);
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &spec_md)?;
-                    println!("spec written to {}", p.display());
-                }
-                None => println!("{spec_md}"),
-            }
-        }
-        Command::Rank { path, dict, query, direction, damping, iters, seed_weight, no_propagate, hub_penalty, fanin_penalty, no_direct_seed, direct_base, top, out } => {
-            let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-            let cfg = pagerank::RankConfig {
-                direction: pagerank::Direction::parse(&direction),
-                damping_x1024: damping,
-                iterations: iters,
-                top,
-                seed_weight: pagerank::SeedWeight::parse(&seed_weight),
-                propagate: !no_propagate,
-                hub_penalty_x1024: hub_penalty,
-                fanin_penalty_x1024: fanin_penalty,
-                direct_seed: !no_direct_seed,
-                direct_base_x1024: direct_base,
-            };
-            // Fail-open: a degraded/unreadable model or
-            // dictionary yields an empty ranked list, never a hard error.
-            let dictionary: dictionary::Dictionary =
-                std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-            let result = match load_model(&path) {
-                Ok(model) => pagerank::rank(&model, &dictionary, &terms, &cfg),
-                Err(_) => pagerank::rank(&ProjectModel::default(), &dictionary, &terms, &cfg),
-            };
-            let json = serde_json::to_string_pretty(&result)?;
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &json)?;
-                    println!("rank written to {} ({} bytes)", p.display(), json.len());
-                }
-                None => println!("{json}"),
-            }
-        }
-        Command::FeatureBundle { path, query, dict, rank_query, top, direct_base, out } => {
+        Command::FeatureBundle { path, query, out } => {
             let model = load_model(&path)?;
             let terms: Vec<String> = query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let digest = digest::query(&model, &terms);
             // The full domain-term index (the non-strong vocabulary menu) from the
             // SAME parsed model — so `feature` never spawns a second `digest`.
             let full = digest::build(&model);
-            // Rank pool: SKIPPED when the dictionary is absent (the fail-open gate
-            // the caller applies — an absent dict must yield an empty rank, never a
-            // direct-seeded one). Present -> personalized PageRank at `top` depth
-            // with the SAME config `rank` uses (only top + direct_base overridden),
-            // so the pool, and its top-10 prefix (the insumos list), is byte-
-            // identical to the two `rank` spawns it replaces.
-            let rank: Vec<pagerank::ScoredFile> = if dict.is_file() {
-                let dictionary: dictionary::Dictionary =
-                    std::fs::read_to_string(&dict).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-                let rank_terms: Vec<String> =
-                    rank_query.split([',', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                let cfg = pagerank::RankConfig { top, direct_base_x1024: direct_base, ..Default::default() };
-                pagerank::rank(&model, &dictionary, &rank_terms, &cfg).files
-            } else {
-                Vec::new()
-            };
-            let bundle = FeatureBundleOut { digest: &digest, terms: &full.terms, rank: &rank };
+            let bundle = FeatureBundleOut { digest: &digest, terms: &full.terms };
             let json = serde_json::to_string_pretty(&bundle)?;
             match out {
                 Some(p) => {
@@ -328,76 +194,181 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Deterministic stages: produce the project model AND the distinctive-
-/// vocabulary dictionary sidecar (no synthesis, no AI). The dictionary is
-/// returned alongside the model because it is mined from the in-memory
-/// `content` (comments), which only exists during the scan — see [`dictionary`].
-fn analyze(root: &Path) -> Result<(ProjectModel, dictionary::Dictionary)> {
-    let ing = ingest::ingest(root)?;
+/// What one pass produced.
+struct Analysis {
+    model: ProjectModel,
+    /// The files whose content this pass read, sorted.
+    read: Vec<String>,
+    /// Every file was read (no usable previous model).
+    full: bool,
+}
+
+/// The code-signature evidence of some modules, as the stack inference takes
+/// it: one text with every signature they carry, one per line. The inference
+/// only asks which signatures fired, so this gives the same stacks the file
+/// contents gave, without opening the files again.
+fn code_evidence<'a>(modules: impl Iterator<Item = &'a Module>) -> Vec<String> {
+    let signals: BTreeSet<&str> = modules.flat_map(|m| m.signals.iter().map(String::as_str)).collect();
+    if signals.is_empty() {
+        Vec::new()
+    } else {
+        vec![signals.into_iter().collect::<Vec<_>>().join("\n")]
+    }
+}
+
+/// Deterministic stages (no synthesis, no AI): produce the project model, and
+/// the dictionary sidecar when every file was read. With a `previous` model of
+/// the same project, only the files that changed since are read (see
+/// [`refresh`]); everything else is taken from it, and the result is the same
+/// model a pass reading every file would give.
+fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
+    use mustard_core::domain::project_map::History;
+    use mustard_core::domain::vocabulary::stacks::{code_signals, infer_stacks};
+
+    let plan = refresh::plan(root, previous);
+    let reuse = match (&plan, previous) {
+        (refresh::Plan::Only(changed), Some(prev)) => Some(ingest::Reuse::new(changed, prev)),
+        _ => None,
+    };
+    let full = reuse.is_none();
+    let ing = ingest::ingest(root, reuse.as_ref())?;
     let analyzers = extract::registry();
     // Repo classification overrides (.gitattributes / .editorconfig) — loaded
     // once; they beat the marker catalog in both directions.
     let overrides = classify::Overrides::load(&ing.root);
 
-    let mut modules: Vec<Module> = Vec::new();
-    let mut content: HashMap<String, String> = HashMap::new();
-
-    for sf in &ing.source_files {
-        let extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
-        // Machine-written class (generated/vendored/lockfile/minified) —
-        // additive provenance on the module. The model keeps the module fully
-        // visible to the miner; only the digest projection demotes by class.
-        let (file_class, marker) =
-            classify::classify(&sf.rel_path, &sf.content, &overrides).map(|c| (c.class, c.marker)).unwrap_or_default();
-        content.insert(sf.rel_path.clone(), sf.content.clone());
-        modules.push(Module {
-            path: sf.rel_path.clone(),
-            language: sf.language.clone(),
-            loc: sf.loc,
-            imports: extracted.imports,
-            namespaces: extracted.namespaces,
-            declarations: extracted.declarations,
-            file_class,
-            marker,
-            fan_in: 0, // filled below, once the import graph is resolved
-        });
+    let mut modules: Vec<Module> = Vec::with_capacity(ing.files.len());
+    for walked in ing.files {
+        match walked {
+            ingest::Walked::Kept(mut kept) => {
+                // Recomputed below from the whole set of modules.
+                kept.fan_in = 0;
+                kept.deps.clear();
+                kept.tests.clear();
+                modules.push(*kept);
+            }
+            ingest::Walked::Fresh(sf) => {
+                let extracted =
+                    analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
+                // Machine-written class (generated/vendored/lockfile/minified) —
+                // additive provenance on the module. The model keeps the module
+                // fully visible to the miner; only the digest projection demotes
+                // by class.
+                let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
+                    .map(|c| (c.class, c.marker))
+                    .unwrap_or_default();
+                let module = Module {
+                    path: sf.rel_path.clone(),
+                    language: sf.language,
+                    loc: sf.loc,
+                    imports: extracted.imports,
+                    namespaces: extracted.namespaces,
+                    declarations: extracted.declarations,
+                    file_class,
+                    marker,
+                    fan_in: 0, // filled below, once the import graph is resolved
+                    deps: Vec::new(),
+                    tests: Vec::new(),
+                    has_tests: testmap::has_inline_tests(&sf.content),
+                    signals: code_signals(&sf.content),
+                };
+                modules.push(module);
+            }
+        }
     }
 
-    let (graph_stats, degrees, depth_by_path) = graph::build(&modules, &ing.go_module);
+    let packages = graph::packages(&ing.manifests);
+    let (graph_stats, degrees, depth_by_path) = graph::build(&modules, &ing.go_module, &packages);
     // Persist each module's fan-in (graph::build already computed the full
     // degree map) — additive on the model, so digest projections rank anchors
     // without re-deriving the graph.
     for m in &mut modules {
         m.fan_in = degrees.get(&m.path).map_or(0, |d| d.0);
     }
-    let mined = mine::mine(&modules, &degrees, &content);
-    // Distinctive-vocabulary dictionary: a stage right after mining, over the
-    // same `modules` + in-memory `content` (the only place comments survive),
-    // reusing the mined role affixes to demote structural glue.
-    let dictionary = dictionary::build(&modules, &content, &mined.roles);
+    // The project files each module imports, from the same resolved edges the
+    // graph counts — the answer to "who imports this file", read backwards.
+    // Every resolved edge counts, a namespace import spread over several files
+    // included: it is still an import of each of them.
+    let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
+    for (from, to, _) in graph::resolve_edges(&modules, &ing.go_module, &packages) {
+        deps[from].insert(to);
+    }
+    let paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
+    for (m, targets) in modules.iter_mut().zip(deps) {
+        let mut named: Vec<String> = targets.into_iter().map(|i| paths[i].clone()).collect();
+        named.sort();
+        m.deps = named;
+    }
+    let mined = mine::mine(&modules);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
-    let mut projects = build_projects(&ing.manifests, &modules);
-    infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &ing.source_files);
+    // The git history: only the commits since the previous pass, when that
+    // pass read this same project.
+    let root_text = ing.root.to_string_lossy().to_string();
+    let same = previous.filter(|p| p.root == root_text);
+    let head = refresh::head(&ing.root);
+    let history = match &head {
+        Some(now) => refresh::history(
+            &ing.root,
+            same.map(|p| &p.history),
+            same.map_or("", |p| p.state.head.as_str()),
+            now,
+        ),
+        None => History::default(),
+    };
+    testmap::assign(&mut modules, &history);
 
-    Ok((
-        ProjectModel {
-            root: ing.root.to_string_lossy().to_string(),
+    // Stack inference: the three evidence classes — parsed dependency names,
+    // file paths and the code signatures found in the sources. Which stacks
+    // exist and what identifies them is DATA in mustard-core's registry.
+    // Evidence under a conventional test/fixture tree is discounted from all
+    // three: a committed fixture of another stack describes what the project
+    // tests, not what it is.
+    let evidence_deps: Vec<String> = ing
+        .manifests
+        .iter()
+        .filter(|m| !ingest::under_test_dir(&m.path))
+        .flat_map(|m| m.dependencies.iter().cloned())
+        .collect();
+    let evidence_paths: Vec<String> =
+        ing.walk_paths.iter().filter(|p| !ingest::under_test_dir(p)).cloned().collect();
+    let evidence_code = code_evidence(modules.iter().filter(|m| !ingest::under_test_dir(&m.path)));
+    let detected_stacks = infer_stacks(&evidence_deps, &evidence_paths, &evidence_code);
+
+    let mut projects = build_projects(&ing.manifests, &modules);
+    infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &modules);
+
+    // What the next pass needs to read only what changed: this commit and the
+    // files not committed now (the ones the walk visits).
+    let walked: HashSet<&str> = ing.walk_paths.iter().map(String::as_str).collect();
+    let dirty: Vec<String> =
+        refresh::dirty(&ing.root).unwrap_or_default().into_iter().filter(|p| walked.contains(p.as_str())).collect();
+    let state = model::ScanState {
+        format: refresh::FORMAT.to_string(),
+        head: head.unwrap_or_default(),
+        dirty,
+        non_utf8: ing.non_utf8,
+    };
+
+    Ok(Analysis {
+        model: ProjectModel {
+            root: root_text,
             languages: ing.languages,
             manifests: ing.manifests,
             frameworks: ing.frameworks,
-            detected_stacks: ing.detected_stacks,
+            detected_stacks,
             skeleton,
             modules,
             graph: graph_stats,
-            roles: mined.roles,
-            conventions: mined.conventions,
             coverage: ing.coverage,
             projects,
             shared_contracts: mined.shared_contracts,
+            state,
+            history,
         },
-        dictionary,
-    ))
+        read: ing.read,
+        full,
+    })
 }
 
 /// Map each project (one per manifest) to its directory and count the source
@@ -464,7 +435,7 @@ fn infer_unit_stacks(
     projects: &mut [model::ProjectUnit],
     manifests: &[model::Manifest],
     walk_paths: &[String],
-    source_files: &[ingest::SourceFile],
+    modules: &[Module],
 ) {
     use mustard_core::domain::vocabulary::stacks::infer_stacks;
     // Immutable snapshot for the longest-prefix ownership test while mutating.
@@ -486,11 +457,9 @@ fn infer_unit_stacks(
             .filter(|p| facts::dir_contains(&project.dir, p) && !ingest::under_test_dir(p))
             .cloned()
             .collect();
-        let contents: Vec<String> = source_files
-            .iter()
-            .filter(|s| facts::dir_contains(&project.dir, &s.rel_path) && !ingest::under_test_dir(&s.rel_path))
-            .map(|s| s.content.clone())
-            .collect();
+        let contents = code_evidence(
+            modules.iter().filter(|m| facts::dir_contains(&project.dir, &m.path) && !ingest::under_test_dir(&m.path)),
+        );
         project.detected_stacks = infer_stacks(&deps, &paths, &contents);
     }
 }
@@ -538,12 +507,6 @@ fn print_summary(model: &ProjectModel) {
         println!("projects: {}", ps.join("; "));
     }
     println!("graph: {} modules, {} edges, cyclic={}", model.graph.nodes, model.graph.edges, model.graph.cyclic);
-    println!("roles discovered: {}", model.roles.iter().map(|r| format!("{}({})", r.affix, r.count)).collect::<Vec<_>>().join(", "));
-    println!("mined conventions:");
-    for c in &model.conventions {
-        let tag = if c.is_slice { "slice " } else { "single" };
-        println!("  - [{tag}] {} (recurs {}x, conf {:.2})", c.name, c.recurrence, c.confidence);
-    }
 
     let cov = &model.coverage;
     println!("\n== coverage (what was read) ==");

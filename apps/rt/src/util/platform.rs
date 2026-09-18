@@ -64,7 +64,7 @@ pub(crate) fn posix_shell() -> Option<&'static PathBuf> {
 /// POSIX-style `rg 'token' path` searches for a literal `'token'` — it matches
 /// nothing in any tree state, exits 1 with an empty stderr, and is
 /// indistinguishable from an honest no-match. That is what let
-/// [`crate::commands::review::ac_negative_check`] stamp unrunnable criteria
+/// o fechamento marca critério que não roda
 /// `proven: red`, since exit≠0 is the whole of its red rule.
 ///
 /// The residual under the POSIX shell is backslash paths: `apps\rt\x.rs`

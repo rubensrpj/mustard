@@ -2,7 +2,7 @@
 name = "mustard-core"
 version.workspace = true
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Shared foundation crate for the Mustard hook/script/CLI Rust migration: event model, hook contract, and pipeline-state types."
 license = "MIT"
 publish = false
@@ -11,25 +11,13 @@ publish = false
 # table (root Cargo.toml); each crate references them with `{ workspace = true }`.
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
-# SHA-256 for `model::provenance::tree_checksum` — the artifact-update engine
-# fingerprints vendored template trees. Pulled through the workspace table
-# (centralised in the root Cargo.toml); shared with `mustard-rt`.
-sha2 = { workspace = true }
-# Data-parallelism for `atomic_md::store::scan_dir` when >50 files. Optional
-# feature so consumers that do not need parallel scan pay no compile cost.
-rayon = { workspace = true, optional = true }
-# BPE tokenizer used by `economy::estimator` to approximate Anthropic Claude
-# token counts via cl100k_base — accuracy is ±5%, never bit-exact. Pulled
-# through the workspace table; see the rationale in the root Cargo.toml.
-tiktoken-rs = { workspace = true }
 # Multi-pattern string matching for `vocabulary::VocabularyMatcher`. The
 # automaton matches all needles in a single linear pass over the haystack
 # (O(n + m)), which is roughly an order of magnitude faster than running 100
 # independent `str::contains` calls or compiling a regex alternation. Pinned
-# to 1.1; the 1.x line has been API-stable since 2023 and the dep already
-# appears in the lock file transitively (via `tiktoken-rs`).
+# to 1.1; the 1.x line has been API-stable since 2023.
 aho-corasick = "1.1"
 # TOML deserializer for `.claude/vocab/regression.toml` — the runtime-editable
 # vocabulary file consumed by `VocabLayer::parse_from_toml`. The 1.x line is
@@ -37,40 +25,21 @@ aho-corasick = "1.1"
 # `toml::from_str` (deserialize), which is unchanged across the 0.8 -> 1.0
 # transition. The dep is crate-local because `vocabulary` is the only consumer.
 toml = "1"
-# Tree-sitter: agnostic AST extraction. Two-tier grammar acquisition
-# (functional refactor 2026-05): (1) common grammars compiled IN-CRATE below
-# (offline, no `cc`); (2) the textual floor (Aho-Corasick) when no grammar is
-# available — so the layer stays agnostic without ever failing on an unknown
-# stack. `tree-sitter-loader` still
-# discovers user-installed grammars from `~/.config/tree-sitter/` for
-# extensibility. Pinning a closed in-crate set is NOT an agnostic violation:
-# it is a precision optimisation; the textual floor remains the universal path.
-tree-sitter = "0.26"
-tree-sitter-loader = "0.26"
-# Common grammars compiled in-crate (resolved via `LANGUAGE.into()`), pinned to
-# versions whose ABI is <= tree-sitter 0.26. Languages outside this set fall to
-# WASM-on-demand or the textual floor.
-tree-sitter-rust = "0.24.2"
-tree-sitter-typescript = "0.23.2"
-tree-sitter-python = "0.25.0"
-tree-sitter-go = "0.25.0"
-tree-sitter-java = "0.23.5"
-tree-sitter-c-sharp = "0.23.5"
-# Moved 0.3 -> 0.6: the crate's only normal dep is still `tree-sitter-language
-# ^0.1`, so the ABI constraint above is untouched, but its dev-dep moved from
-# tree-sitter ^0.25.8 to ^0.26.11 — the 0.6 line is the first that is tested
-# against the same core this workspace runs. The dart `.scm` queries were
-# re-verified against 0.6 node types (`apps/scan/tests/dart_mining_e2e.rs`).
-tree-sitter-dart-orchard = "0.6"
-# Line-based textual diff for `regression_check` — used as fallback when no
-# tree-sitter grammar is installed for the file's language. The 3.x line keeps
-# the same `TextDiff::from_lines` / `iter_all_changes` / `ChangeTag` surface
-# this crate relies on. Spec A Wave 2 pins this major explicitly.
-similar = "3"
+# The Portuguese stemmer behind the `search` field of the spec event file
+# (`domain::spec_events`). Version lives in the workspace table.
+rust-stemmers = { workspace = true }
+# Local date and time with the offset (`2026-09-11T21:03:12-03:00`) for the
+# `at` field of each spec event: the person removes "the messages from 21:03 to
+# 21:10" in the clock they read, never in UTC.
+chrono = { workspace = true }
 [dev-dependencies]
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.
 tempfile = { workspace = true }
+# The YAML reader of `tests/workflows.rs`, which checks what the verification
+# and the release workflows promise. Pure Rust, YAML 1.2 (so `on:` stays a
+# key), test-only; the encoding feature is off because the workflows are UTF-8.
+yaml-rust2 = { version = "0.13", default-features = false }
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,
 # unsafe_code = forbid). See the root Cargo.toml `[workspace.lints]`.

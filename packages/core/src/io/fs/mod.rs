@@ -1,8 +1,9 @@
 //! `fs` — the single canonical seam for **all filesystem access** in the
 //! Mustard monorepo.
 //!
-//! Every `std::fs` call in `mustard-core` routes through this module (the lone
-//! exception is [`real`], which *is* the `std::fs` implementation), and the
+//! Every `std::fs` call in `mustard-core` routes through this module (the
+//! exceptions are [`real`], which *is* the `std::fs` implementation, and
+//! [`lock`], the file locks only a real disk has), and the
 //! sibling crates (`mustard-rt`, `mustard-cli`, the dashboard backend) migrate
 //! onto it in later passes. Concentrating the I/O here buys three things at
 //! once:
@@ -41,6 +42,7 @@
 //!   convenience, UTF-8 strings). CRLF / UTF-8 normalisation belongs to the
 //!   string-handling caller, not to `fs`.
 
+pub mod lock;
 pub mod real;
 
 use crate::platform::error::Result;
@@ -347,4 +349,38 @@ pub fn remove_dir(path: impl AsRef<Path>) -> Result<()> {
 /// [`Error::Io`](crate::platform::error::Error::Io).
 pub fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf> {
     DEFAULT.canonicalize(path.as_ref())
+}
+
+/// Os arquivos de um módulo dividido em partes que passam do teto de linhas
+/// de código ([`crate::domain::text::CODE_LINE_CAP`]), com a medida de cada
+/// um. O módulo é a porta `gate` (`round.rs`) e cada `.rs` da pasta de mesmo
+/// nome ao lado dela (`round/`).
+///
+/// # Errors
+///
+/// A mensagem que diz o que não foi lido: a porta, a pasta das partes ou uma
+/// parte. Um módulo sem partes não é o que a medida espera, e também recusa.
+pub fn files_over_code_line_cap(gate: &Path) -> std::result::Result<Vec<(PathBuf, usize)>, String> {
+    use crate::domain::text::{code_lines, CODE_LINE_CAP};
+    let folder = gate.with_extension("");
+    let mut files: Vec<PathBuf> = read_dir(&folder)
+        .map_err(|e| format!("as partes de {} não foram achadas em {}: {e}", gate.display(), folder.display()))?
+        .into_iter()
+        .map(|entry| entry.path)
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    if files.is_empty() {
+        return Err(format!("{} não tem parte nenhuma", folder.display()));
+    }
+    files.sort();
+    files.insert(0, gate.to_path_buf());
+    let mut over = Vec::new();
+    for file in files {
+        let source = read_to_string(&file).map_err(|e| format!("{} não foi lido: {e}", file.display()))?;
+        let lines = code_lines(&source);
+        if lines > CODE_LINE_CAP {
+            over.push((file, lines));
+        }
+    }
+    Ok(over)
 }

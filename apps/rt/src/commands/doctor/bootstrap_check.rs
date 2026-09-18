@@ -28,7 +28,7 @@
 //!    shell the harness runs commands in? (`toolchain-unreachable`)
 //!
 //! Question 4 looks unrelated and is the same failure in a different coat: when
-//! `cargo` is not on `PATH`, `ac-negative-check` and `qa-run` run the criterion,
+//! `cargo` is not on `PATH`, o fechamento roda o critério,
 //! collect exit 127 (`command not found`) and record every cargo-backed
 //! criterion `unproven`. A reader sees a red criterion and hunts the code. The
 //! ledger's own `reason` says the command could not be attempted, but nobody
@@ -302,8 +302,8 @@ pub fn run(project_dir: &Path) -> BootstrapReport {
     // when it STARTED. A mid-session auto-update leaves the two disagreeing,
     // and only a restart reconciles it — which is a different remedy from
     // everything above, so it must be a different finding.
-    if let Some(installed) = installed_version.as_deref() {
-        if installed != running_version {
+    if let Some(installed) = installed_version.as_deref()
+        && installed != running_version {
             findings.push(BootstrapFinding {
                 kind: "session-stale",
                 detail: format!(
@@ -313,7 +313,6 @@ pub fn run(project_dir: &Path) -> BootstrapReport {
                 remedy: "restart the session to load the installed version".to_string(),
             });
         }
-    }
 
     // Toolchain reachability — the criteria the harness will run are only as
     // honest as the shell it runs them in.

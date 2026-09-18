@@ -35,12 +35,13 @@
 //! 4. **Only then prune, and only if the base ADVANCED**: the advance is what
 //!    puts the merged work into the local tree, so it is the ONE authorisation
 //!    for the three irreversible steps. A base left behind answers
-//!    `{ok:false, reason:"base-behind"}` with a `nextAction` and prunes NOTHING —
+//!    `{ok:false, reason:"base-behind"}` and prunes NOTHING —
 //!    worktree, local branch and remote branch all survive, so the failing path's
 //!    worst outcome is "I did not advance, your unit is still here". Authorised,
 //!    the unit's worktree is removed and its local branch deleted (`-D` — merge
-//!    is already proven), then the remote branch deleted best-effort (GitHub
-//!    auto-delete usually got there first) — all three behind the same floor
+//!    is already proven), then the remote branch deleted best-effort — only
+//!    when `git.deleteRemoteBranch` is on in `mustard.json`; without the key
+//!    the server branch is never touched — all three behind the same floor
 //!    guard, because a settle that could not free the LOCAL floor has no business
 //!    killing the server branch. When the process runs INSIDE the unit's worktree
 //!    it cannot remove its own floor: it verifies + updates and answers
@@ -68,32 +69,40 @@
 //! never fail-open (guarding a verdict: missing evidence blocks).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use mustard_core::io::fs::lock::LockedFile;
+use mustard_core::platform::git;
+use mustard_core::ClaudePaths;
 
 use serde_json::{json, Value};
 
-use crate::shared::branch_state::{
-    self, BranchEnumerator, GitReachability, PrEvidence, PrLookup, ProviderPrCli,
-    StateClassifier,
-};
+use crate::shared::branch_state::{self, BranchEnumerator, BranchRefs, PrEvidence, PrQuery};
+
+/// O arquivo da trava do passo do git, na pasta das specs do checkout.
+const GIT_LOCK_FILE: &str = "round-git.lock";
+
+/// Pega a trava do passo do git do checkout `root`, esperando a de outra
+/// rodada ou de outra sessão soltar. É uma trava própria, e não a do arquivo
+/// de eventos da spec: o gancho do commit pode demorar, e a trava da spec
+/// seguraria todo leitor dela enquanto isso.
+///
+/// É uma trava só para todo passo que escreve no git do projeto — o commit da
+/// rodada e o ponteiro dos submódulos —, porque os dois disputam o mesmo
+/// índice. A mesma trava pedida duas vezes pelo mesmo processo esperaria por
+/// si mesma: quem já a tem passa adiante a que tem.
+pub(crate) fn git_step_lock(root: &Path) -> Result<LockedFile, String> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| e.to_string())?;
+    LockedFile::exclusive(&paths.spec_dir().join(GIT_LOCK_FILE)).map_err(|e| e.to_string())
+}
 
 /// Run `git` in `dir`, returning stdout on success.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    git::run(dir, args).out()
 }
 
 /// Run `git` in `dir`, success as a bool.
 pub(crate) fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    git::run(dir, args).ok
 }
 
 /// Resolve the MAIN checkout root from anywhere inside the repo — including
@@ -117,7 +126,7 @@ pub(crate) fn show(path: &Path) -> String {
 /// The immediate SUPERPROJECT of `repo` — `None` outside a submodule. Asked of
 /// git itself, never derived from a filesystem walk, so a `.git` FILE, a linked
 /// worktree or a nested submodule resolve exactly the way git resolves them.
-fn superproject_of(repo: &Path) -> Option<PathBuf> {
+pub(crate) fn superproject_of(repo: &Path) -> Option<PathBuf> {
     let out = git_out(repo, &["rev-parse", "--show-superproject-working-tree"])?;
     let out = out.trim();
     (!out.is_empty()).then(|| PathBuf::from(out))
@@ -180,15 +189,14 @@ pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
     // Emit one entry per block, once its ref line is seen — `branch` for an
     // attached checkout, `detached` for one standing on a bare commit.
     let push = |path: &Option<String>, branch: &str, head: &str, out: &mut Vec<WorktreeEntry>| {
-        if let Some(p) = path {
-            if p.contains("/.claude/worktrees/") {
+        if let Some(p) = path
+            && p.contains("/.claude/worktrees/") {
                 out.push(WorktreeEntry {
                     path: p.clone(),
                     branch: branch.to_string(),
                     head: head.to_string(),
                 });
             }
-        }
     };
     for line in porcelain.lines().chain(std::iter::once("")) {
         if let Some(p) = line.strip_prefix("worktree ") {
@@ -255,6 +263,199 @@ pub(crate) fn parse_submodule_paths(status: &str) -> Vec<String> {
     out
 }
 
+/// Os submódulos com checkout do repositório `root`, pelo caminho relativo a
+/// ele, em ordem. Vazio sem `.gitmodules` e quando o git não responde.
+pub(crate) fn submodules_of(root: &Path) -> Vec<String> {
+    if !root.join(".gitmodules").is_file() {
+        return Vec::new();
+    }
+    git_out(root, &["submodule", "status"]).map(|s| parse_submodule_paths(&s)).unwrap_or_default()
+}
+
+/// O submódulo de `subs` que guarda o arquivo `file`, escrito a partir do
+/// principal, e o caminho do arquivo dentro dele. `None` para o arquivo do
+/// próprio principal.
+pub(crate) fn submodule_holding<'a>(subs: &'a [String], file: &str) -> Option<(&'a str, String)> {
+    subs.iter().find_map(|sub| {
+        let inner = file.strip_prefix(sub.as_str())?.strip_prefix('/')?;
+        (!inner.is_empty()).then(|| (sub.as_str(), inner.to_string()))
+    })
+}
+
+/// A branch local `branch` existe no repositório `repo`.
+pub(crate) fn has_local_branch(repo: &Path, branch: &str) -> bool {
+    git_ok(repo, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")])
+}
+
+/// A base do submódulo `repo`, que é um repositório próprio: a branch
+/// principal que o servidor dele declara e, sem resposta, a branch em que o
+/// checkout dele está, desde que não seja a da unidade `unit`.
+pub(crate) fn submodule_base(repo: &Path, unit: &str) -> Option<String> {
+    mustard_core::default_branch(repo).or_else(|| mustard_core::current_branch(repo).filter(|b| b != unit))
+}
+
+/// A referência de onde uma branch sai da base `base` do repositório `repo`:
+/// a base local e, sem ela, a do `origin`.
+fn base_ref(repo: &Path, base: &str) -> String {
+    if has_local_branch(repo, base) { base.to_string() } else { format!("origin/{base}") }
+}
+
+/// Põe o checkout do submódulo `repo` na branch `unit`, criada na primeira vez
+/// sobre a base dele. A mudança que o checkout tiver vai junto, quando o git
+/// deixa; a recusa volta com o motivo do git.
+pub(crate) fn enter_unit_branch(repo: &Path, unit: &str) -> Result<(), String> {
+    if mustard_core::current_branch(repo).as_deref() == Some(unit) {
+        return Ok(());
+    }
+    if has_local_branch(repo, unit) {
+        return git::run(repo, &["checkout", "-q", unit]).result().map(|_| ());
+    }
+    let Some(base) = submodule_base(repo, unit) else {
+        return Err(format!("submodule-base-unknown: {}", show(repo)));
+    };
+    git::run(repo, &["checkout", "-q", "--no-track", "-b", unit, &base_ref(repo, &base)]).result().map(|_| ())
+}
+
+/// Os submódulos cujo ponteiro a branch `unit` do principal `root` muda desde
+/// a base `base` dele: os repositórios que a spec mexe além do principal. O
+/// ponteiro fica no histórico do principal, e a resposta não depende de a
+/// branch do submódulo ainda existir.
+pub(crate) fn unit_submodules(root: &Path, base: &str, unit: &str) -> Vec<String> {
+    let subs = submodules_of(root);
+    if subs.is_empty() {
+        return subs;
+    }
+    let range = format!("{}...{unit}", base_ref(root, base));
+    let mut args: Vec<&str> = vec!["diff", "--name-only", &range, "--"];
+    args.extend(subs.iter().map(String::as_str));
+    let changed = git_out(root, &args).unwrap_or_default();
+    subs.into_iter().filter(|sub| changed.lines().any(|line| line.trim() == sub)).collect()
+}
+
+/// As referências que ainda carregam a branch `unit` no repositório `dir`: a
+/// local e a do `origin`, cada uma quando existe. A base `base` só nomeia a
+/// unidade, e o commit da ponta não é lido aqui — quem mede a posição é quem
+/// pergunta, logo abaixo.
+fn unit_refs_of(dir: &Path, unit: &str, base: &str) -> BranchRefs {
+    let tracked = git_ok(dir, &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{unit}")]);
+    BranchRefs {
+        branch: unit.to_string(),
+        base: base.to_string(),
+        local: has_local_branch(dir, unit),
+        remotes: if tracked { vec!["origin".to_string()] } else { Vec::new() },
+        tip: String::new(),
+    }
+}
+
+/// Busca a base `base` do submódulo `sub` do principal `root` e confere que a
+/// branch `unit` que ele ainda carrega é a que entrou: cada referência dela
+/// está contida na base agora ou coberta pela cabeça congelada do pull request
+/// que entrou — a mesma medida por referência do ritual de saída, e não a
+/// existência da branch, que não prova nada sobre onde ela está.
+///
+/// `Err` com o motivo quando sobra commit que o merge não levou: mover o
+/// ponteiro e apagar a branch deixaria esse commit sem referência nenhuma, e o
+/// principal ficaria pronto sem ele. Um repositório que já não carrega a
+/// branch não tem o que perder e passa.
+pub(crate) fn submodule_tip_landed(root: &Path, sub: &str, unit: &str, base: &str) -> Result<(), String> {
+    let dir = root.join(sub);
+    git::run(&dir, &["fetch", "-q", "origin", base]).result()?;
+    let refs = unit_refs_of(&dir, unit, base);
+    let names = refs.refnames();
+    if names.is_empty() {
+        return Ok(());
+    }
+    let contained = branch_state::refs_merged_into(&dir, &format!("origin/{base}"));
+    // O provedor só é perguntado quando o git não respondeu sozinho: um portal
+    // que reescreve os commits ao mergear deixa a ponta fora da base embora o
+    // trabalho tenha entrado.
+    let evidence = if names.iter().all(|name| contained.contains(name)) {
+        PrEvidence::unqueried()
+    } else {
+        let provider = crate::shared::pr_provider::provider_in(root, &dir);
+        let token = provider.provider().to_string();
+        PrQuery::Ask(&token).evidence_of(&dir, unit)
+    };
+    let verdicts = branch_state::ref_verdicts(&refs, &contained, &evidence, &dir);
+    if branch_state::all_refs_accounted(&verdicts) {
+        return Ok(());
+    }
+    let left: Vec<&str> =
+        verdicts.iter().filter(|v| !v.accounted()).map(|v| v.refname.as_str()).collect();
+    Err(format!("submodule-ahead: {}", left.join(", ")))
+}
+
+/// A branch `unit` do principal `root` já está no servidor como está aqui: o
+/// envio anterior deu certo, e a conferência seguinte não o refaz.
+fn pushed(root: &Path, unit: &str) -> bool {
+    let here = git_out(root, &["rev-parse", unit]);
+    here.is_some() && here == git_out(root, &["rev-parse", &format!("refs/remotes/origin/{unit}")])
+}
+
+/// Leva ao principal `root` o ponteiro de cada submódulo de `subs`, cujo pull
+/// request entrou, e devolve os que mudaram de ponteiro agora — a lista que o
+/// commit levou, e não a que alguém supôs antes de medir.
+///
+/// O bloco inteiro roda sob a trava do passo do git ([`git_step_lock`]), a
+/// mesma da rodada: ler o ponteiro, pôr o submódulo na base, comitar, enviar e
+/// apagar a branch é um passo só, e duas sessões que conferem ao mesmo tempo
+/// esperam uma pela outra em vez de disputarem o índice do git.
+///
+/// Antes de qualquer movimento, a ponta local de cada submódulo precisa ser a
+/// que entrou ([`submodule_tip_landed`]). Quando não é, nada é tocado: a
+/// recusa volta com o motivo, a branch fica onde está e o principal segue
+/// rascunho.
+///
+/// Depois disso, o submódulo busca a base dele e fica nela, o principal comita
+/// o ponteiro novo na branch `unit` (só onde ele mudou) e envia a branch; só
+/// então a branch `unit` sai de cada submódulo — a do servidor só com
+/// `delete_remote`. Um envio que falhou é refeito na chamada seguinte, porque
+/// a branch do principal ainda não está no servidor como está aqui. `Err` traz
+/// o motivo do git.
+pub(crate) fn bump_pointers(
+    root: &Path,
+    unit: &str,
+    subs: &[String],
+    title: &str,
+    delete_remote: bool,
+) -> Result<Vec<String>, String> {
+    let current = mustard_core::current_branch(root).unwrap_or_default();
+    if current != unit {
+        return Err(format!("not-on-unit-branch: {current}"));
+    }
+    let _held = git_step_lock(root)?;
+    let mut moved: Vec<String> = Vec::new();
+    for sub in subs {
+        let dir = root.join(sub);
+        let base = submodule_base(&dir, unit).ok_or_else(|| format!("submodule-base-unknown: {sub}"))?;
+        submodule_tip_landed(root, sub, unit, &base).map_err(|e| format!("{sub}: {e}"))?;
+        git::run(&dir, &["checkout", "-q", "--detach", &format!("origin/{base}")])
+            .result()
+            .map_err(|e| format!("{sub}: {e}"))?;
+        let recorded = git_out(root, &["rev-parse", &format!("HEAD:{sub}")]).unwrap_or_default();
+        if git_out(&dir, &["rev-parse", "HEAD"]).unwrap_or_default() != recorded {
+            moved.push(sub.clone());
+        }
+    }
+    if !moved.is_empty() {
+        let body = moved.iter().map(|sub| format!("- {sub}")).collect::<Vec<String>>().join("\n");
+        let mut args: Vec<&str> = vec!["commit", "-q", "--only", "-m", title, "-m", &body, "--"];
+        args.extend(moved.iter().map(String::as_str));
+        git::run(root, &args).result().map_err(|e| if e.is_empty() { "commit-failed".to_string() } else { e })?;
+    }
+    if !moved.is_empty() || !pushed(root, unit) {
+        git::run(root, &["push", "-q", "origin", unit]).result().map_err(|e| format!("push: {e}"))?;
+    }
+    for sub in subs {
+        let dir = root.join(sub);
+        let _ = git_ok(&dir, &["branch", "-D", unit]);
+        if delete_remote {
+            let _ = git_ok(&dir, &["push", "-q", "origin", "--delete", unit]);
+        }
+    }
+    Ok(moved)
+}
+
 /// What `repo` still holds of the unit — `None` when it carries no trace of it
 /// (a repository the unit never touched is not part of the unit's report).
 /// Purely observational: every command here reads, none writes.
@@ -275,7 +476,7 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
             .collect()
     };
 
-    let head = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let head = mustard_core::current_branch(repo).unwrap_or_default();
     let on_unit_branch = same_unit(&head);
     let mut branches: Vec<String> =
         refs_of("refs/heads").into_iter().filter(|b| same_unit(b)).collect();
@@ -359,27 +560,27 @@ fn repo_settlement(repo: &Path, label: &str, unit_branch: &str) -> Option<Value>
 /// authorise a prune on its own.
 ///
 /// This is the 100% gate — no evidence means NOT merged (conservative, never
-/// fail-open).
+/// fail-open). `query` diz se o provedor é perguntado quando o git não prova
+/// sozinho; sem ele, só vale o que o git prova.
 fn is_merged(
     main: &Path,
     branch: &str,
     base: &str,
-    provider: &str,
+    query: PrQuery<'_>,
     flow: &crate::shared::work_kind::BaseFlow,
 ) -> bool {
-    let git_read = |args: &[&str]| git_out(main, args);
     // The sweep enumerates every unit of the project; the `find` below is what
     // narrows it to this one. Restricting the sweep to `base` was a second,
     // redundant filter — and one that could not survive a name that no longer
     // carries its base, since the unit is recognised by the flow now.
-    let swept = BranchEnumerator::sweep(&git_read, flow);
+    let swept = BranchEnumerator::sweep(main, flow);
     let Some(unit) = swept.units().iter().find(|u| u.branch == branch) else {
         // No ref carries it: nothing to prove and nothing to prune.
         return false;
     };
     // Against the SERVER's base — settle has just fetched it, and a local base
     // that lags would call an unintegrated ref settled.
-    let contained = branch_state::refs_merged_into(&git_read, &format!("origin/{base}"));
+    let contained = branch_state::refs_merged_into(main, &format!("origin/{base}"));
     // The provider is asked ONLY when git did not already answer: a repository
     // whose refs all sit on the base must not pay a network round-trip per unit
     // to be told what `for-each-ref` just proved. (`also_mergeable` asks this
@@ -387,10 +588,9 @@ fn is_merged(
     let evidence = if unit.refnames().iter().all(|r| contained.contains(r)) {
         PrEvidence::unqueried()
     } else {
-        ProviderPrCli::new(main, provider).evidence_of(branch)
+        query.evidence_of(main, branch)
     };
-    let reach = GitReachability::new(&git_read);
-    let verdicts = branch_state::ref_verdicts(unit, &contained, &evidence, &reach);
+    let verdicts = branch_state::ref_verdicts(unit, &contained, &evidence, main);
     branch_state::all_refs_accounted(&verdicts)
 }
 
@@ -412,7 +612,7 @@ fn is_merged(
 /// The `dirty-tree` diagnosis survives the removal — it is now MEASURED after
 /// the refusal instead of standing in for the attempt.
 fn update_bases(main: &Path, bases: &[String]) -> (Value, Vec<Value>) {
-    let current = git_out(main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let current = mustard_core::current_branch(main).unwrap_or_default();
     let current_report = if bases.iter().any(|b| b == &current) {
         if git_ok(main, &["merge", "--ff-only", &format!("origin/{current}")]) {
             json!({ "branch": current, "updated": true })
@@ -483,6 +683,11 @@ fn sync_submodule_pointers(main: &Path, submodules: &[String]) -> Vec<Value> {
     submodules
         .iter()
         .map(|rel| {
+            // A leitura crua, e não a da biblioteca, porque aqui a resposta tem
+            // TRÊS casos e não dois: quem não respondeu, quem está destacado
+            // (`HEAD`) e quem está numa branch. A leitura compartilhada junta
+            // os dois primeiros num `None`, e juntá-los aqui mandaria um
+            // `submodule update` para um repositório que ninguém conseguiu ler.
             let Some(head) = git_out(&main.join(rel), &["rev-parse", "--abbrev-ref", "HEAD"])
             else {
                 // Unreadable is not detached: leave it alone and say so.
@@ -617,6 +822,22 @@ fn sole_branch_containing(
 }
 
 pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
+    settle(start, unit, true)
+}
+
+/// [`settle_at`] da unidade `unit`, com o provedor perguntado só por ela: as
+/// outras unidades de `alsoMergeable` ficam com o que o git prova.
+///
+/// É a arrumação do merge feito por outra pessoa, que roda no início da
+/// sessão: lá, uma pergunta ao provedor por branch de colega passa do prazo, e
+/// o texto inteiro do início da sessão se perde junto.
+pub(crate) fn settle_unit_at(start: &Path, unit: &str) -> Value {
+    settle(start, Some(unit), false)
+}
+
+/// O ritual de saída; `ask_about_others` diz se o provedor é perguntado pelas
+/// outras unidades que o git não prova mergeadas.
+fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     let Some(main) = main_checkout_root(start) else {
         // Echo the path that failed: the field incident behind this message was
         // a `--root` that did not exist, and a bare "not-a-git-repo" let the
@@ -642,7 +863,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
 
     // The user's contract: bare settle NEVER runs from a base — it is the
     // unit's exit ritual. `--unit` is the finish step, allowed anywhere.
-    let inv_branch = git_out(start, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let inv_branch = mustard_core::current_branch(start).unwrap_or_default();
     let unit_branch = match unit {
         Some(u) => u.trim().to_string(),
         None => {
@@ -726,11 +947,10 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     //
     // Only an UNAMBIGUOUS answer counts: several containing branches, or none,
     // leave the question genuinely open and the refusal below stands.
-    if answer.is_unit() && answer.known().is_none() {
-        if let Some(measured) = sole_branch_containing(&main, &unit_branch, &flow) {
+    if answer.is_unit() && answer.known().is_none()
+        && let Some(measured) = sole_branch_containing(&main, &unit_branch, &flow) {
             answer = crate::shared::work_kind::UnitBase::Known(measured);
         }
-    }
     if answer.is_unit() && answer.known().is_none() {
         return json!({
             "ok": false,
@@ -748,9 +968,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "fetched": fetched,
             "hint": if fetched {
                 "unidade sem base registrada, e o trabalho não está contido em exatamente uma \
-                 base — nem o registro do corte nem a medição responderam. Reabra com \
-                 `mustard-rt run work-unit-open --branch <unit> --base <uma delas>` e repita — o \
-                 ritual de saída não escolhe por você"
+                 base — nem o registro do corte nem a medição responderam. O ritual de saída \
+                 não escolhe por você"
             } else {
                 "não foi possível buscar do remoto, então a medição não rodou: as referências \
                  locais podem estar atrasadas em relação a um merge recém-feito. Reconecte e \
@@ -789,7 +1008,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
 
 
     // THE gate: 100% merged or nothing happens.
-    if !is_merged(&main, &unit_branch, &base, &provider, &flow) {
+    if !is_merged(&main, &unit_branch, &base, PrQuery::Ask(&provider), &flow) {
         return json!({
             "ok": false,
             "reason": "not-merged",
@@ -811,16 +1030,14 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         .map(|s| parse_worktrees(&s))
         .unwrap_or_default();
     let unit_entry = entries.iter().find(|e| e.branch == unit_branch);
-    let main_head = git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let main_head = mustard_core::current_branch(&main).unwrap_or_default();
     let in_place = unit_entry.is_none() && main_head == unit_branch;
     let in_place_exited = in_place && git_ok(&main, &["checkout", &base]);
 
     // The submodule table, read ONCE and used twice below: the pointer sync
     // touches only the DETACHED ones, and the per-repo report asks each one what
     // it still carries of the unit.
-    let submodules = git_out(&main, &["submodule", "status"])
-        .map(|s| parse_submodule_paths(&s))
-        .unwrap_or_default();
+    let submodules = submodules_of(&main);
 
     // Merged confirmed → bring every local base up to date, then re-seat the
     // submodules the advance just left behind (detached ones only).
@@ -894,8 +1111,12 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
                 None => (false, true), // never removed by us, but already free to delete
             };
             let branch_deleted = floor_clear && git_ok(&main, &["branch", "-D", &unit_branch]);
-            let remote_deleted =
-                floor_clear && git_ok(&main, &["push", "origin", "--delete", &unit_branch]);
+            // The server branch goes only where the project turned
+            // `git.deleteRemoteBranch` on; without the key the delete is never
+            // even issued.
+            let remote_deleted = floor_clear
+                && cfg.git.delete_remote_branch
+                && git_ok(&main, &["push", "origin", "--delete", &unit_branch]);
             // Floor clear → unit fully off the local stage: "settled". A floor
             // this pass could not free → "partial", and nothing was deleted on
             // either side; the per-field booleans tell the true story.
@@ -930,7 +1151,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             // than assumed, and nothing is ever forced.
             let _ = git_ok(&main, &["checkout", &unit_branch]);
         }
-        git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default() == unit_branch
+        mustard_core::current_branch(&main).unwrap_or_default() == unit_branch
     };
 
     // One entry per repository the unit lives in. Settle still ACTS only on the
@@ -956,11 +1177,10 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // its own children would answer `complete: true` there while the parent
     // still holds the unit. That is the same half-settled "done" this command
     // was changed to stop printing, reached from the other end.
-    if let Some(parent) = superproject.as_deref() {
-        if let Some(entry) = repo_settlement(parent, "..", &unit_branch) {
+    if let Some(parent) = superproject.as_deref()
+        && let Some(entry) = repo_settlement(parent, "..", &unit_branch) {
             repos.push(entry);
         }
-    }
     let complete = repos.iter().all(|r| r["settled"] == json!(true));
 
     // Other merged units — informative only (settle acts on ONE unit; the user
@@ -972,9 +1192,9 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
     // merged units answered `[]`. The enumerator sees local and remote refs
     // alike, so an in-place unit and one that lives only on the server are both
     // reported.
-    let git_read = |args: &[&str]| git_out(&main, args);
-    let enumerated = BranchEnumerator::sweep(&git_read, &flow);
-    let ahead = branch_state::refs_ahead_of_base(&git_read, enumerated.units(), &flow);
+    let enumerated = BranchEnumerator::sweep(&main, &flow);
+    let ahead = branch_state::refs_ahead_of_base(&main, enumerated.units(), &flow);
+    let others = if ask_about_others { PrQuery::Ask(&provider) } else { PrQuery::Skip };
     let also_mergeable: Vec<String> = enumerated
         .units()
         .iter()
@@ -984,7 +1204,7 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         // cannot see that difference. Listing it here would tell the user their
         // live work is ready to be pruned.
         .filter(|u| ahead.contains(&u.branch))
-        .filter(|u| is_merged(&main, &u.branch, &u.base, &provider, &flow))
+        .filter(|u| is_merged(&main, &u.branch, &u.base, others, &flow))
         .map(|u| u.branch.clone())
         .collect();
 
@@ -1034,14 +1254,14 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
             "advanced": false,
             "reason": if named.is_null() { json!("unreported") } else { named },
         });
-        // **`clearFirst` before `nextAction`, and the order is the whole point.**
-        // `nextAction` is the RERUN, correct only once the obstacle is gone;
-        // read alone it is a command that reproduces its own output forever, and
-        // in the field (2026-08-28) it did exactly that — the operator ran it
-        // twice and got byte-identical JSON, with the real move
-        // (`git rebase origin/<base>`) named nowhere. This project's rule is
-        // that every refusal names the command that resolves it, and a refusal
-        // whose only command is itself does not.
+        // **`clearFirst` names the move that clears the obstacle.** The rerun
+        // alone reproduces its own output forever, and in the field
+        // (2026-08-28) it did exactly that — the operator ran it twice and got
+        // byte-identical JSON, with the real move (`git rebase origin/<base>`)
+        // named nowhere. This project's rule is that every refusal names the
+        // command that resolves it. The rerun itself is no longer named: the
+        // command that pruned by hand left the binary, and a next step pointing
+        // at it would send the reader to a command that does not exist.
         //
         // Named per `baseAdvance.reason`, never generically: an unrecognised
         // reason gets NO invented command, because a wrong paste on an
@@ -1049,85 +1269,8 @@ pub(crate) fn settle_at(start: &Path, unit: Option<&str>) -> Value {
         if let Some(fix) = clear_first_for(&base, &report["baseAdvance"]["reason"]) {
             report["clearFirst"] = json!(fix);
         }
-        report["nextAction"] = json!(format!("mustard-rt run git-settle --unit {unit_branch}"));
     }
     report
-}
-
-/// The READING pass — every work branch of every repo of the project, each with
-/// the ONE state it is in. Acts on nothing, by construction: it holds no
-/// deleting step, and what it hands the printer is a list of plain state values
-/// (`shared::branch_state::BranchState`) that carry no handle to a repository.
-///
-/// Per repository, like `repos` in [`settle_at`]: the acting side of this
-/// command is per-repo, so the reading side has to be too — a monorepo answer
-/// that folded the submodules into the parent would hide exactly the branches
-/// the exit ritual keeps having to be told about.
-pub(crate) fn report_at(start: &Path) -> Value {
-    let Some(main) = main_checkout_root(start) else {
-        return json!({
-            "ok": false,
-            "reason": "not-a-git-repo",
-            "path": show(start),
-            "exists": start.exists(),
-            "hint": "git não resolveu repositório nesse caminho — confira o --root",
-        });
-    };
-    let (cfg_root, _superproject) = config_root(&main);
-    let cfg = mustard_core::ProjectConfig::load(&cfg_root);
-    let flow = crate::shared::work_kind::BaseFlow::of_at(&cfg.git, &cfg_root);
-    let bases: Vec<String> = flow.bases().to_vec();
-    let provider = mustard_core::resolve_provider(&cfg_root, &cfg.git.provider);
-
-    let mut repos = vec![repo_inventory(&main, ".", &flow, &provider)];
-    let submodules = git_out(&main, &["submodule", "status"])
-        .map(|s| parse_submodule_paths(&s))
-        .unwrap_or_default();
-    for rel in submodules {
-        repos.push(repo_inventory(&main.join(&rel), &rel, &flow, &provider));
-    }
-    json!({ "ok": true, "bases": bases, "repos": repos })
-}
-
-/// One repository's inventory: sweep its refs, measure ancestry locally, then
-/// let the PR port confirm. The provider is whatever `mustard.json` declares —
-/// this command names no CLI of its own.
-///
-/// Asked through the enumerator's FALLIBLE face, because this is a REPORTING
-/// consumer: a sweep git never answered, printed as an empty inventory, is the
-/// same lie as an unmeasured PR printed as "no PR" — and refusing that lie is
-/// why this module exists. A repository whose refs would not read says so.
-fn repo_inventory(
-    repo: &Path,
-    label: &str,
-    flow: &crate::shared::work_kind::BaseFlow,
-    provider: &str,
-) -> Value {
-    let git_read = |args: &[&str]| git_out(repo, args);
-    let Some(units) = BranchEnumerator::try_sweep(&git_read, flow) else {
-        return json!({
-            "repo": label,
-            "ok": false,
-            "reason": "refs-unreadable",
-            "units": [],
-            "awaitingPrune": [],
-        });
-    };
-    let (merged, measured) = branch_state::try_merged_refs(&git_read, flow);
-    let ahead = branch_state::refs_ahead_of_base(&git_read, units.units(), flow);
-    let lookup = ProviderPrCli::new(repo, provider);
-    let reach = GitReachability::new(&git_read);
-    let states = StateClassifier::new(&lookup, &reach)
-        .measured(measured)
-        .classify(units.units(), &merged, &ahead);
-    branch_state::report_value(label, &states)
-}
-
-/// Run `git-settle` from `root` and print the JSON report. `report` selects the
-/// reading pass, which settles nothing.
-pub fn run(root: &Path, unit: Option<&str>, report: bool) {
-    let result = if report { report_at(root) } else { settle_at(root, unit) };
-    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 
 #[cfg(test)]
@@ -1136,8 +1279,8 @@ mod tests {
     use tempfile::tempdir;
 
     fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(dir).output().expect("spawn git");
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = git::run(dir, args);
+        assert!(out.ok, "git {args:?} failed: {}", out.stderr);
     }
 
     /// A unit whose base nothing RECORDED is still settled when git can prove
@@ -1379,7 +1522,7 @@ mod tests {
         git(&wt2, &["commit", "-m", "open work"]);
     }
 
-    /// AC-1 — the fixture a test receives was CLONED, not rebuilt.
+    /// The fixture a test receives was CLONED, not rebuilt.
     ///
     /// The proof is the template's own marker: `build_fixture` runs once per
     /// process, so a file written into the template AFTER the first clone is
@@ -1402,7 +1545,7 @@ mod tests {
         );
     }
 
-    /// AC-2 — a clone resolves its remote and its worktrees INSIDE itself.
+    /// A clone resolves its remote and its worktrees INSIDE itself.
     ///
     /// The defect this exists to prevent: git records both as ABSOLUTE paths, so
     /// a raw copy keeps pointing at the template. Tests in parallel would then
@@ -1567,7 +1710,46 @@ mod tests {
         assert_eq!(local, remote, "base fast-forwarded");
     }
 
-    /// AC-3 — an exit that could NOT free the local floor (here a LOCKED worktree,
+    /// Turns on, in the fixture's `mustard.json`, the deletion of the unit's
+    /// branch on the server.
+    fn delete_remote_branch_on(main: &Path) {
+        std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev"},"deleteRemoteBranch":true}}"#)
+            .expect("cfg");
+    }
+
+    /// The unit's branch on the server stays unless the project turned its
+    /// deletion on in `mustard.json`.
+    ///
+    /// Many teams may not delete a branch on the server: the merge is done by
+    /// another area and the branch is theirs. A settle without the key prunes
+    /// the worktree and the local branch and never issues the delete on the
+    /// server; the same settle with the key on removes the server branch too.
+    #[test]
+    fn the_server_branch_goes_only_with_the_key_on() {
+        let (_dir, main) = fixture();
+        git(&main, &["push", "origin", "dev_done"]);
+        let v = settle_at(&main, Some("dev_done"));
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
+        assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
+        assert!(
+            !git_out(&main, &["ls-remote", "--heads", "origin", "dev_done"]).unwrap_or_default().is_empty(),
+            "without the key the server branch survives: {v}",
+        );
+
+        let (_dir2, main2) = fixture();
+        git(&main2, &["push", "origin", "dev_done"]);
+        delete_remote_branch_on(&main2);
+        let v = settle_at(&main2, Some("dev_done"));
+        assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
+        assert_eq!(v["unit"]["remoteDeleted"], json!(true), "{v}");
+        assert!(
+            git_out(&main2, &["ls-remote", "--heads", "origin", "dev_done"]).unwrap_or_default().is_empty(),
+            "with the key on the server branch is deleted: {v}",
+        );
+    }
+
+    /// An exit that could NOT free the local floor (here a LOCKED worktree,
     /// a stand-in for the OS still holding the folder open) leaves the REMOTE
     /// branch alone too.
     ///
@@ -1582,6 +1764,7 @@ mod tests {
     #[test]
     fn a_blocked_exit_leaves_the_remote_branch_alone() {
         let (_dir, main) = fixture();
+        delete_remote_branch_on(&main);
         git(&main, &["push", "origin", "dev_done"]);
         let wt = main.join(".claude").join("worktrees").join("dev_done");
         git(&main, &["worktree", "lock", wt.to_string_lossy().as_ref()]);
@@ -1651,7 +1834,7 @@ mod tests {
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(true), "{v}");
         assert_eq!(
-            git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main).as_deref(),
             Some("dev"),
             "main checkout handed back to the base"
         );
@@ -1666,7 +1849,7 @@ mod tests {
         assert_eq!(local, remote, "base fast-forwarded to origin");
     }
 
-    /// AC-3 — an IN-PLACE merged unit (cut on the main checkout, no worktree —
+    /// An IN-PLACE merged unit (cut on the main checkout, no worktree —
     /// the default shape the work-branch gate produces) must appear among the
     /// units still awaiting a prune.
     ///
@@ -1704,59 +1887,14 @@ mod tests {
         );
     }
 
-    /// The READING face at the COMMAND level: what `--report` actually prints.
+    /// The module's prose may not assert a merge method nobody measured.
     ///
-    /// The other tests of this ritual classify through the shared module; this
-    /// one goes through `report_at`, because that is the face the field
-    /// measurement read — and what it read of a branch cut seconds earlier was
-    /// `awaiting-prune-local`, the unit the user was editing announced as
-    /// delivered. Both halves, so the assertions can fail: a unit that really
-    /// landed is in the same report, listed.
-    #[test]
-    fn report_lists_delivered_units_and_never_a_freshly_cut_one() {
-        let (_dir, main) = fixture();
-        // A unit that really landed: commits of its own, merged into the base,
-        // branch alive on both sides.
-        git(&main, &["checkout", "-b", "dev_landed"]);
-        std::fs::write(main.join("landed.txt"), "l").expect("file");
-        git(&main, &["add", "-A"]);
-        git(&main, &["commit", "-m", "landed work"]);
-        git(&main, &["push", "origin", "dev_landed"]);
-        git(&main, &["checkout", "dev"]);
-        git(&main, &["merge", "--no-ff", "dev_landed", "-m", "merge dev_landed"]);
-        // And a unit shaped the way the work-branch gate opens every one: a
-        // branch at the base's tip with nothing committed on it yet.
-        git(&main, &["branch", "dev_justcut"]);
-
-        let v = report_at(&main);
-        let repo = &v["repos"][0];
-        assert_eq!(repo["ok"], json!(true), "the refs WERE read — an empty list would mean empty");
-        assert_eq!(repo["awaitingPrune"], json!(["dev_landed"]), "{v}");
-
-        let row = |branch: &str| -> Value {
-            repo["units"]
-                .as_array()
-                .expect("units")
-                .iter()
-                .find(|u| u["branch"] == json!(branch))
-                .cloned()
-                .expect("the report must carry a row per swept unit")
-        };
-        let cut = row("dev_justcut");
-        assert_eq!(cut["ancestry"], json!(true), "a fresh cut IS reachable from its base");
-        assert_eq!(cut["ahead"], json!(false), "…and carries no commit of its own");
-        assert_ne!(cut["state"], json!("awaiting-prune-local"), "cutting is not delivering: {cut}");
-        assert_eq!(row("dev_landed")["state"], json!("awaiting-prune"));
-    }
-
-    /// AC-9 — the module's prose may not assert a merge method nobody measured.
-    ///
-    /// Both halves, so the assertion can fail: the doc no longer claims THIS
-    /// repository squash-merges (measured false — the merges carry two parents
-    /// each and `--merged` recognises every branch), while the provider fallback
-    /// it justified is still in the code. Removing an unmeasured sentence must
-    /// not quietly remove the mechanism: a portal that squashes is real, and the
-    /// fallback is what covers it.
+    /// The doc no longer claims THIS repository squash-merges (measured false —
+    /// the merges carry two parents each and `--merged` recognises every
+    /// branch). The provider fallback that covers a portal which squashes is
+    /// proven by behaviour, not by reading this file: the session-start
+    /// integration test squashes a pull request on a real remote, and the
+    /// branch leaves only when the provider's list says it merged.
     #[test]
     fn settle_doc_states_no_unmeasured_merge_method() {
         let src = include_str!("git_settle.rs");
@@ -1794,16 +1932,6 @@ mod tests {
             );
         }
 
-        // The mechanism survives the sentence: the merge gate still asks the
-        // provider when containment says no. It asks through the ONE adapter,
-        // which is why the argv itself is no longer spelled here — both halves,
-        // so the assertion can fail if the mechanism is dropped rather than
-        // moved.
-        assert!(
-            src.contains("ProviderPrCli::new(main, provider).evidence_of(branch)"),
-            "the merge gate must still consult the provider — a portal that rewrites the commits \
-             when it merges is real",
-        );
         // Needle assembled at runtime so writing the test does not plant the
         // spelling in the file under assertion.
         let spawn_cli = ["Command::new(\"", "gh\")"].concat();
@@ -2090,6 +2218,51 @@ mod tests {
         );
     }
 
+    /// Uma unidade sem base gravada e que nenhuma base contém recusa como base
+    /// ambígua, com as candidatas, e a recusa não manda reabrir a unidade pelo
+    /// comando que saiu do binário.
+    #[test]
+    fn an_ambiguous_base_refusal_names_no_cut_command() {
+        let dir = tempdir().expect("tempdir");
+        let bare = dir.path().join("origin.git");
+        let main = dir.path().join("repo");
+        for p in [&bare, &main] {
+            std::fs::create_dir_all(p).expect("mkdir");
+        }
+        git(&bare, &["init", "--bare", "."]);
+        git(&main, &["init", "."]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["checkout", "-b", "dev"]);
+        std::fs::write(main.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+            .expect("cfg");
+        std::fs::write(main.join(".gitignore"), ".claude/\n").expect("ignore");
+        std::fs::write(main.join("a.txt"), "a").expect("seed");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "seed"]);
+        git(&main, &["remote", "add", "origin", bare.to_string_lossy().as_ref()]);
+        git(&main, &["push", "-u", "origin", "dev"]);
+        git(&main, &["branch", "main"]);
+        git(&main, &["push", "-u", "origin", "main"]);
+
+        // A unidade: registro na spec, nenhuma base gravada e trabalho que
+        // nenhuma das duas bases recebeu.
+        git(&main, &["checkout", "-b", "fix/orphan"]);
+        std::fs::create_dir_all(main.join(".claude").join("spec").join("orphan"))
+            .expect("unit record");
+        std::fs::write(main.join("b.txt"), "b").expect("work");
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-m", "the work"]);
+        git(&main, &["push", "-u", "origin", "fix/orphan"]);
+        git(&main, &["checkout", "dev"]);
+
+        let v = settle_at(&main, Some("fix/orphan"));
+        assert_eq!(v["ok"], json!(false), "{v}");
+        assert_eq!(v["reason"], json!("ambiguous-base"), "{v}");
+        assert!(v["hint"].as_str().is_some_and(|h| !h.is_empty()), "the refusal still explains itself: {v}");
+        assert!(!v.to_string().contains("work-unit-open"), "the refusal names no cut command: {v}");
+    }
+
     #[test]
     fn settle_refuses_when_a_ref_moved_after_merge() {
         let (_dir, main) = fixture();
@@ -2108,8 +2281,7 @@ mod tests {
         git(&main, &["fetch", "origin"]);
         git(&main, &["worktree", "remove", side.to_string_lossy().as_ref()]);
 
-        let git_read = |args: &[&str]| git_out(&main, args);
-        let contained = branch_state::refs_merged_into(&git_read, "origin/dev");
+        let contained = branch_state::refs_merged_into(&main, "origin/dev");
         assert!(
             contained.contains("refs/heads/dev_done"),
             "the local head really landed — a name-keyed set would have stopped here: {contained:?}",
@@ -2180,7 +2352,7 @@ mod tests {
             "{v}",
         );
         assert_eq!(
-            git_out(&main.join("sub"), &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main.join("sub")).as_deref(),
             Some("dev_done"),
             "a submodule on a branch is never yanked into detached HEAD",
         );
@@ -2197,6 +2369,11 @@ mod tests {
         let pointer_before = git_out(&main3, &["rev-parse", "HEAD:sub"]).expect("gitlink");
         assert_ne!(parked, pointer_before, "the fixture must park the submodule OFF the pointer");
         git(&sub3, &["checkout", "--detach", &parked]);
+        // A leitura crua, pelo mesmo motivo que `sync_submodule_pointers` usa
+        // ela: só o `HEAD` literal separa "destacado" de "não consegui ler", e
+        // é justamente o destacado que este preparo precisa provar. A leitura
+        // compartilhada devolve ausência nos dois casos, e uma asserção que
+        // aceitasse ausência passaria também com um submódulo ilegível.
         assert_eq!(
             git_out(&sub3, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
             Some("HEAD"),
@@ -2237,7 +2414,7 @@ mod tests {
             .expect("blocking dirt");
     }
 
-    /// AC-1 — a base that did not advance prunes NOTHING, and says so before the
+    /// A base that did not advance prunes NOTHING, and says so before the
     /// fact rather than after it.
     ///
     /// The 2026-08-11 field incident ran the whole prune, then reported
@@ -2251,6 +2428,7 @@ mod tests {
     #[test]
     fn prune_waits_for_the_base_to_advance() {
         let (_dir, main) = fixture();
+        delete_remote_branch_on(&main);
         git(&main, &["push", "origin", "dev_done"]);
         let wt = main.join(".claude").join("worktrees").join("dev_done");
         block_the_advance(&main);
@@ -2264,9 +2442,10 @@ mod tests {
         assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
         assert_eq!(
             v["nextAction"],
-            json!("mustard-rt run git-settle --unit dev_done"),
-            "the refusal names the command that finishes the ritual: {v}",
+            json!(null),
+            "the refusal names no next step pointing at the command that left: {v}",
         );
+        assert!(!v.to_string().contains("git-settle"), "nothing in the report names the cut command: {v}");
 
         // The EFFECT, not the report: all three refs of the unit are still there.
         assert!(wt.exists(), "the worktree survives: {v}");
@@ -2284,6 +2463,7 @@ mod tests {
         // The other half: nothing about the UNIT changed, only the obstacle.
         let (_dir2, main2) = fixture();
         git(&main2, &["push", "origin", "dev_done"]);
+        delete_remote_branch_on(&main2);
         let v = settle_at(&main2, Some("dev_done"));
         assert_eq!(v["ok"], json!(true), "{v}");
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
@@ -2323,12 +2503,13 @@ mod tests {
         );
     }
 
-    /// The `base-behind` refusal names the REBASE, not itself.
+    /// The `base-behind` refusal names the REBASE, not a rerun.
     ///
-    /// `nextAction` is the rerun, correct only once the obstacle is gone. Read
-    /// alone it reproduces its own output forever — measured in the field on
-    /// 2026-08-28, where the operator ran it twice and got byte-identical JSON
-    /// while the real move was named nowhere.
+    /// A rerun read alone reproduces its own output forever — measured in the
+    /// field on 2026-08-28, where the operator ran it twice and got
+    /// byte-identical JSON while the real move was named nowhere. And the
+    /// command that reran the prune by hand left the binary, so no field of the
+    /// report may name it.
     #[test]
     fn base_behind_names_the_rebase_not_itself() {
         let (_dir, main) = fixture();
@@ -2345,13 +2526,13 @@ mod tests {
         let clear = v["clearFirst"].as_str().unwrap_or_default();
         assert!(clear.contains("rebase"), "the refusal names the rebase: {v}");
         assert!(
-            !clear.contains("git-settle"),
-            "and the move is NOT the rerun — that is the loop this exists to end: {v}",
+            !v.to_string().contains("git-settle"),
+            "and the move is NOT the rerun of the command that left: {v}",
         );
-        assert_ne!(v["clearFirst"], v["nextAction"], "two different steps, in order: {v}");
+        assert_eq!(v["nextAction"], json!(null), "no next step names the cut command: {v}");
     }
 
-    /// AC-2 — the prune is authorised by the BASE ADVANCE, never by the unit's
+    /// The prune is authorised by the BASE ADVANCE, never by the unit's
     /// own commit being reachable from the base.
     ///
     /// The distinction is not academic. A portal that squashes rewrites the
@@ -2431,7 +2612,7 @@ mod tests {
         );
     }
 
-    /// AC-4 — a tree dirty ONLY in paths the advance does not carry still
+    /// A tree dirty ONLY in paths the advance does not carry still
     /// fast-forwards.
     ///
     /// This is the case the removed pre-check refused and git never did. Measured
@@ -2472,7 +2653,7 @@ mod tests {
         );
     }
 
-    /// AC-5 — a refused advance names the obstacle git actually hit: `dirty-tree`
+    /// A refused advance names the obstacle git actually hit: `dirty-tree`
     /// only where a fast-forward was possible and the tree stopped it,
     /// `non-ff-or-no-remote` where the histories have parted.
     ///
@@ -2617,7 +2798,7 @@ mod tests {
         assert_eq!(v["repos"], json!([{ "repo": ".", "branch": "dev_done", "settled": true }]), "{v}");
     }
 
-    /// AC-11 — a base that already HOLDS origin's tip authorises the prune, even
+    /// A base that already HOLDS origin's tip authorises the prune, even
     /// though the operation that would advance it refuses.
     ///
     /// `fetch origin <base>:<base>` rewinds nothing, so it rejects a base that is
@@ -2705,7 +2886,7 @@ mod tests {
         git(main, &["checkout", "dev_inplace"]);
     }
 
-    /// AC-14 — an in-place prune the base did not authorise puts the checkout
+    /// An in-place prune the base did not authorise puts the checkout
     /// back on the unit branch, and says so.
     ///
     /// The exit half of the ritual runs FIRST (settle checks out the base so the
@@ -2748,7 +2929,7 @@ mod tests {
         // The EFFECT the field cares about: the operator is back where the work
         // is, and the work is back in the tree.
         assert_eq!(
-            git_out(&main, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main).as_deref(),
             Some("dev_inplace"),
             "the checkout returned to the unit branch: {v}",
         );
@@ -2779,7 +2960,7 @@ mod tests {
             "a pruned unit has no branch to return to: {v}",
         );
         assert_eq!(
-            git_out(&main2, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main2).as_deref(),
             Some("dev"),
             "…and the checkout stays on the base it just advanced: {v}",
         );
@@ -2813,7 +2994,7 @@ mod tests {
             "nobody left the unit branch, so the report must not claim otherwise: {v}",
         );
         assert_eq!(
-            git_out(&main3, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
+            mustard_core::current_branch(&main3).as_deref(),
             Some("dev_inplace"),
             "…and the fact backs it: {v}",
         );

@@ -1,13 +1,3 @@
-pub mod cli;
+//! O que sobrou do plano de ondas: o grafo que a conferência do plano lê.
 
-pub mod wave_context;
-pub mod wave_tree;
-pub mod wave_dependency;
-pub mod wave_files;
-pub mod wave_size_check;
 pub mod wave_overlap_check;
-pub mod wave_scaffold;
-pub mod wave_collapse;
-pub mod wave_lib;
-pub mod exec_rewave_check;
-pub mod epic_fold;

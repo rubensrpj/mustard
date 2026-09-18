@@ -26,7 +26,7 @@
 //! A branch list goes stale because the repository changes every week. The
 //! provider hardly ever changes — but detection genuinely FAILS on a
 //! self-hosted instance, where the hostname says nothing about the product
-//! (a GitHub Enterprise at `git.suzano.com.br` looks like nothing at all).
+//! (a GitHub Enterprise at `git.contoso.com.br` looks like nothing at all).
 //! A setting that lost to detection would be useless in exactly the case that
 //! justifies its existence.
 //!
@@ -46,7 +46,8 @@
 //! - No `unwrap`/`expect` outside tests; no `println!`.
 
 use std::path::Path;
-use std::process::Command;
+
+use crate::platform::git;
 
 /// What every install assumed before the provider could be detected, and what
 /// an unrecognised remote still answers. Changing this would silently re-route
@@ -108,15 +109,7 @@ pub fn provider_of_url(url: &str) -> Option<&'static str> {
 /// git could not answer or the host is not recognised.
 #[must_use]
 pub fn detect_provider(root: &Path) -> Option<&'static str> {
-    let out = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    provider_of_url(&String::from_utf8_lossy(&out.stdout))
+    provider_of_url(&git::run(root, &["remote", "get-url", "origin"]).out()?)
 }
 
 /// The provider in force for `root`, given whatever `mustard.json` declared.
@@ -137,31 +130,24 @@ mod tests {
     use super::*;
 
     fn repo_with_remote(dir: &Path, url: &str) -> bool {
-        let git = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let git = |args: &[&str]| git::run(dir, args).ok;
         git(&["init", "-q", "."]) && git(&["remote", "add", "origin", url])
     }
 
-    /// AC-1 — the fact comes from the repository, and the case that motivated
+    /// The fact comes from the repository, and the case that motivated
     /// the unit is the one the old three-item menu could not even offer.
     #[test]
     fn the_provider_comes_from_the_remote_url() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        if !repo_with_remote(root, "https://dev.azure.com/suzano/florestal/_git/portal") {
+        if !repo_with_remote(root, "https://dev.azure.com/contoso/vendas/_git/portal") {
             return; // no usable git here — every path degrades to the fallback
         }
         assert_eq!(resolve_provider(root, ""), "azure");
         assert_eq!(detect_provider(root), Some("azure"));
     }
 
-    /// AC-2 — the setting wins, which is the whole reason it survives. A
+    /// The setting wins, which is the whole reason it survives. A
     /// self-hosted instance is unrecognisable by host, so the operator's word
     /// is the only source there is.
     #[test]
@@ -181,7 +167,7 @@ mod tests {
 
         // The case the override exists FOR: a host that names no product.
         let hosted = tempfile::tempdir().unwrap();
-        if repo_with_remote(hosted.path(), "https://git.suzano.com.br/time/repo.git") {
+        if repo_with_remote(hosted.path(), "https://git.contoso.com.br/time/repo.git") {
             assert_eq!(detect_provider(hosted.path()), None, "an unknown host answers nothing");
             assert_eq!(
                 resolve_provider(hosted.path(), ""),
@@ -203,7 +189,7 @@ mod tests {
             ("git@bitbucket.org:team/repo.git", Some("bitbucket")),
             ("git@gitlab.com:team/repo.git", Some("gitlab")),
             ("https://org.visualstudio.com/proj/_git/repo", Some("azure")),
-            ("https://git.suzano.com.br/time/repo.git", None),
+            ("https://git.contoso.com.br/time/repo.git", None),
             ("/caminho/local/sem/remoto", None),
             ("", None),
         ] {
