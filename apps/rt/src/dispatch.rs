@@ -17,8 +17,10 @@
 //! O gancho só grava quando age, e quem grava é o despachante: um gancho que
 //! barra ou avisa vira um evento `hook`, e um que coloca texto vira um evento
 //! `injection`, com o tamanho. O que deixou passar não grava nada. No fim da
-//! resposta que não foi barrada, a resposta do assistente vai para a
-//! conversa. Tudo na spec atual; sem ela, nada é gravado.
+//! resposta, a resposta do assistente vai para a conversa, também a que a
+//! conferência do fim da resposta barrou: ela já apareceu na tela, e o
+//! complemento que o bloqueio pede vem depois dela, na próxima. Tudo na spec
+//! atual; sem ela, nada é gravado.
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +51,9 @@ pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
     for module in registry.applicable(trigger, tool) {
         run_module(module, input, &ctx, &root, &mut outcome);
     }
-    if trigger == Trigger::Stop && !outcome.is_blocking() && !input.is_subagent() {
+    // A resposta barrada também é gravada, antes do complemento que o
+    // bloqueio pede: o usuário a leu na tela.
+    if trigger == Trigger::Stop && !input.is_subagent() {
         let _ = record_response(&root, input.session_id.as_deref(), input.last_assistant_message().unwrap_or_default());
     }
     outcome
@@ -313,7 +317,7 @@ mod tests {
     }
 
     /// No fim de uma resposta que passa, a resposta vai para a conversa,
-    /// ligada à última mensagem; a que foi barrada, não.
+    /// ligada à última mensagem.
     #[test]
     fn the_end_of_an_answer_records_the_response() {
         let dir = project_on("resposta");
@@ -334,5 +338,52 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].str_field("text"), Some("Pronto."));
         assert_eq!(responses[0].int("reply_to"), Some(asked));
+    }
+
+    /// O caminho de verdade: a spec nasce, o assistente fecha o turno pelo
+    /// gancho do fim da resposta sugerindo o objetivo numa resposta que a
+    /// conferência de escrita barra (uma frase de mais de 25 palavras, num
+    /// projeto com `mustard.json`), o complemento chega com
+    /// `stop_hook_active`, e o usuário responde "pode usar essa" pelo gancho
+    /// da mensagem. A resposta barrada fica gravada inteira, antes do
+    /// complemento, e as duas antes do sim.
+    #[test]
+    fn the_barred_answer_is_recorded_before_its_complement() {
+        let dir = project_on("barrada");
+        let root = dir.path();
+        let hook_call = |event: &str, raw: Value| HookInput {
+            hook_event_name: Some(event.to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw,
+            ..HookInput::default()
+        };
+        let suggestion = "Um sim aprova o objetivo sugerido.";
+        let barred = format!(
+            "A spec nasceu. Sugiro: \"{suggestion}\" Depois de ler todos os arquivos do projeto e \
+             conferir cada teste que ainda falhava na máquina do usuário, eu ajustei a leitura do \
+             idioma e a contagem das linhas para que a resposta final saia bem curta e clara."
+        );
+        let first = run_event(Some(Trigger::Stop), &hook_call("Stop", json!({ "last_assistant_message": barred })));
+        assert!(first.is_blocking(), "the writing check bars the long sentence: {first:?}");
+        let complement = "Resumo: ajustei a leitura do idioma.";
+        let retry = json!({ "last_assistant_message": complement, "stop_hook_active": true });
+        let second = run_event(Some(Trigger::Stop), &hook_call("Stop", retry));
+        assert!(!second.is_blocking(), "{second:?}");
+        let yes = hook_call("UserPromptSubmit", json!({ "prompt": "pode usar essa" }));
+        assert!(!run_event(Some(Trigger::UserPromptSubmit), &yes).is_blocking());
+
+        let log = DiskSpecState::new(root).log("barrada").expect("log");
+        let talk: Vec<(&str, Option<&str>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| matches!(e.event_type.as_str(), "message" | "response"))
+            .map(|e| (e.event_type.as_str(), e.str_field("text")))
+            .collect();
+        assert_eq!(
+            talk,
+            [("response", Some(barred.as_str())), ("response", Some(complement)), ("message", Some("pode usar essa"))],
+            "the barred answer comes whole, before the complement"
+        );
     }
 }

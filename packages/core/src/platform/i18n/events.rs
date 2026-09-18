@@ -31,10 +31,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec file has no {type} event type. Nothing was written. Accepted types: {types}."
         }
         ("spec_events.missing_field", Locale::PtBr) => {
-            "O evento {type} precisa do campo {field}, que faltou ou veio vazio. Nada foi gravado."
+            "Campos obrigatórios do evento {type} que faltaram ou vieram vazios: {field}. Nada foi \
+             gravado."
         }
         ("spec_events.missing_field", Locale::EnUs) => {
-            "The {type} event needs the {field} field, which is missing or empty. Nothing was \
+            "Required fields of the {type} event that are missing or empty: {field}. Nothing was \
              written."
         }
         ("spec_events.invalid_value", Locale::PtBr) => {
@@ -502,7 +503,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             69,
-            0x29c1_ac60_3f85_21ec,
+            0x88a8_1da5_f6b1_b04a,
         );
     }
 

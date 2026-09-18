@@ -112,7 +112,8 @@
 //! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
 //! tem ponto, os pontos que faltam gravar; em `point`, o próximo ponto
 //! aberto, o mesmo enquanto ele não fecha; em `review`, o bloco cujo último ponto a gravação fechou, com a
-//! pergunta da revisão e as opções, a de um revisor de fora no último bloco;
+//! pergunta da revisão e as opções; no último bloco, `next` manda rodar o
+//! revisor de fora antes do fim, enquanto nenhum ponto veio dele;
 //! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
 //! `remove` dele é recusado. A passagem do levantamento para o plano, e a
@@ -557,7 +558,8 @@ impl RecordCheck {
 /// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
 /// a pergunta e as opções, "Seguir" por último; em `unrouted`, as mensagens
 /// do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
-/// dois, na ordem. `None` quando não há passo.
+/// dois, na ordem; no fim do levantamento, entre a revisão e o fim, a ordem
+/// de rodar o revisor de fora. `None` quando não há passo.
 fn survey_report(
     root: &Path,
     spec: &str,
@@ -575,14 +577,9 @@ fn survey_report(
     let mut next: Vec<String> = Vec::new();
     for step in steps {
         match step {
-            SurveyStep::ReviewBlock { block, closed, records, outside_review } => {
+            SurveyStep::ReviewBlock { block, closed, records } => {
                 let go_on = translate("survey.continue_option", lang);
                 next.push(translate("survey.review_step", lang).replace("{block}", &block).replace("{continue}", go_on));
-                let mut options = Vec::new();
-                if outside_review {
-                    options.push(translate("survey.outside_review_question", lang));
-                }
-                options.push(go_on);
                 out.insert(
                     "review".to_string(),
                     json!({
@@ -590,9 +587,12 @@ fn survey_report(
                         "points": closed.iter().map(code_of).collect::<Vec<_>>(),
                         "records": records.iter().map(code_of).collect::<Vec<_>>(),
                         "question": translate("survey.review_question", lang),
-                        "options": options,
+                        "options": [go_on],
                     }),
                 );
+            }
+            SurveyStep::OutsideReview => {
+                next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
             }
             SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
                 next.push(translate("survey.present_all", lang).to_string());
@@ -2390,18 +2390,15 @@ mod tests {
         assert!(next.starts_with("O bloco defect fechou.") && next.contains(&points[4].code), "{next}");
     }
 
-    /// No último bloco, a revisão oferece o revisor de fora, antes de
-    /// "Seguir", nos dois idiomas, e o fim do levantamento vem junto.
+    /// No fim do levantamento, o próximo passo manda rodar o revisor de fora,
+    /// entre a revisão do último bloco e o fim, nos dois idiomas; a revisão
+    /// fica só com "Seguir", sem oferecê-lo como opção. Fechar o penúltimo
+    /// ponto, com um ainda aberto, não manda rodá-lo.
     #[test]
-    fn the_last_block_review_offers_the_outside_reviewer() {
-        for (config, outside, go_on, done) in [
-            (None, "Quer que um revisor de fora confira o levantamento inteiro?", "Seguir", "O levantamento não tem ponto aberto."),
-            (
-                Some(r#"{"language":{"text":"en-US"}}"#),
-                "Would you like an outside reviewer to check the whole survey?",
-                "Continue",
-                "The survey has no open point.",
-            ),
+    fn the_end_of_the_survey_orders_the_outside_reviewer() {
+        for (config, lang, go_on, run) in [
+            (None, Locale::PtBr, "Seguir", "rode o revisor de fora"),
+            (Some(r#"{"language":{"text":"en-US"}}"#), Locale::EnUs, "Continue", "run the outside reviewer"),
         ] {
             let dir = tempdir().unwrap();
             let root = dir.path();
@@ -2409,22 +2406,30 @@ mod tests {
             if let Some(config) = config {
                 std::fs::write(root.join("mustard.json"), config).unwrap();
             }
-            let mut last = Value::Null;
-            for point in &points {
-                last = settle(root, point, said);
+            let outside = translate("survey.outside_review_step", lang).replace("{spec}", "teste");
+            assert!(outside.contains(run) && outside.contains("`mustard-review`") && outside.contains("teste"), "{outside}");
+            let (last_one, before) = points.split_last().unwrap();
+            let mut report = Value::Null;
+            for point in before {
+                report = settle(root, point, said);
             }
+            assert!(!report["next"].as_str().unwrap().contains(run), "one point still open: {report}");
+            let last = settle(root, last_one, said);
             assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-            assert_eq!(last["review"]["options"], json!([outside, go_on]), "{last}");
+            assert_eq!(last["review"]["options"], json!([go_on]), "the reviewer is not an option: {last}");
             assert!(last.get("point").is_none(), "{last}");
-            assert!(last["next"].as_str().unwrap().contains(done), "{last}");
+            let review = translate("survey.review_step", lang).replace("{block}", "proof").replace("{continue}", go_on);
+            let done = translate("survey.done", lang);
+            assert_eq!(last["next"], json!(format!("{review} {outside} {done}")), "review, reviewer, then the end");
             assert!(last["unrouted"].is_array(), "{last}");
         }
     }
 
-    /// O revisor de fora é oferecido uma vez: fechado o último ponto que veio
-    /// dele, a revisão do bloco dele fica só com "Seguir", e o fim vem junto.
+    /// O revisor de fora é mandado rodar uma vez: fechado o último ponto que
+    /// veio dele, a revisão do bloco dele fica só com "Seguir", o fim vem
+    /// junto, e o passo não manda rodá-lo de novo.
     #[test]
-    fn closing_the_outside_reviewers_last_point_does_not_offer_the_reviewer_again() {
+    fn closing_the_outside_reviewers_last_point_does_not_order_the_reviewer_again() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, points) = listed(root, &["fix"], false);
@@ -2432,8 +2437,9 @@ mod tests {
         for point in &points {
             last = settle(root, point, said);
         }
-        let outside = "Quer que um revisor de fora confira o levantamento inteiro?";
-        assert_eq!(last["review"]["options"], json!([outside, "Seguir"]), "{last}");
+        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
+        assert!(last["next"].as_str().unwrap().contains(&outside), "{last}");
+        assert_eq!(last["review"]["options"], json!(["Seguir"]), "{last}");
         let gap = "O merge pela interface web";
         let found = json!({"block": "outside_review", "gap": gap, "from": "outside_review", "status": "open",
             "origin": said, "facts": [{"text": "O revisor achou.", "source": format!("mensagem {said}")}]});
@@ -2447,7 +2453,10 @@ mod tests {
         };
         let closed = settle(root, &reviewer, said);
         assert_eq!(closed["review"]["block"], json!("outside_review"), "{closed}");
-        assert_eq!(closed["review"]["options"], json!(["Seguir"]), "offered once: {closed}");
+        assert_eq!(closed["review"]["options"], json!(["Seguir"]), "{closed}");
+        let next = closed["next"].as_str().unwrap();
+        assert!(!next.contains(&outside), "ordered once: {closed}");
+        assert!(next.ends_with(translate("survey.done", Locale::PtBr)), "{closed}");
         assert!(closed["unrouted"].is_array(), "{closed}");
     }
 
@@ -2668,8 +2677,8 @@ mod tests {
 
     /// Uma lacuna que ficou sem ponto é pedida pela gravação seguinte, com o
     /// item a copiar, no lugar do próximo ponto; fechar os outros pontos não
-    /// traz o fim nem oferece o revisor de fora. Gravado o ponto que faltava,
-    /// ele é o próximo.
+    /// traz o fim nem manda rodar o revisor de fora. Gravado o ponto que
+    /// faltava, ele é o próximo.
     #[test]
     fn a_gap_left_without_a_point_is_asked_again_by_the_next_write() {
         let dir = tempdir().unwrap();
@@ -2710,7 +2719,8 @@ mod tests {
             asks_again(&last);
         }
         assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-        assert_eq!(last["review"]["options"], json!(["Seguir"]), "the survey is not over: {last}");
+        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
+        assert!(!last["next"].as_str().unwrap().contains(&outside), "the survey is not over: {last}");
         let recorded = write(root, "point", &point_of(forgotten).to_string());
         assert_eq!(recorded["point"]["id"], recorded["id"], "the forgotten point is the next one: {recorded}");
     }

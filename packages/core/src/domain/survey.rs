@@ -24,7 +24,8 @@
 //!
 //! Depois de cada gravação, [`next_step`] diz o passo seguinte: gravar os
 //! pontos das lacunas que ainda não têm, o próximo ponto aberto, a revisão do
-//! bloco cujo último ponto fechou e, sem ponto aberto, o fim, com as
+//! bloco cujo último ponto fechou, o revisor de fora quando o levantamento
+//! acaba sem que ele tenha rodado e, sem ponto aberto, o fim, com as
 //! mensagens do usuário sem destino. [`leave_survey`] diz
 //! se a spec pode passar para o plano.
 //!
@@ -546,10 +547,12 @@ pub enum SurveyStep<'a> {
     Point(&'a SpecEvent),
     /// A gravação fechou o último ponto aberto do bloco `block`: a revisão
     /// dele, com os pontos do bloco (`closed`) e os registros que os
-    /// fechamentos apontam em `result` (`records`). Sem ponto aberto em bloco
-    /// nenhum, a revisão oferece o revisor de fora (`outside_review`), uma vez:
-    /// com algum ponto vindo dele, não oferece de novo.
-    ReviewBlock { block: String, closed: Vec<u64>, records: Vec<u64>, outside_review: bool },
+    /// fechamentos apontam em `result` (`records`).
+    ReviewBlock { block: String, closed: Vec<u64>, records: Vec<u64> },
+    /// A revisão do último bloco fechou o levantamento, e nenhum ponto veio
+    /// ainda do revisor de fora: o passo seguinte é rodá-lo, antes do fim.
+    /// Com algum ponto vindo dele, o passo não volta.
+    OutsideReview,
     /// Não sobra ponto aberto: as mensagens do usuário que nenhum registro
     /// aponta.
     Done { unrouted: Vec<&'a SpecEvent> },
@@ -561,8 +564,9 @@ pub enum SurveyStep<'a> {
 /// - nenhum fora do levantamento e do plano, e numa spec sem nenhum ponto e
 ///   sem lacuna por gravar (as specs antigas);
 /// - a revisão do bloco, quando a gravação fechou o último ponto aberto de um
-///   bloco que não é o do levantamento condensado; o revisor de fora só é
-///   oferecido quando o levantamento acabou e nenhum ponto veio dele ainda;
+///   bloco que não é o do levantamento condensado;
+/// - depois dela, rodar o revisor de fora, quando o levantamento acabou e
+///   nenhum ponto veio dele ainda;
 /// - depois dela, ou sozinho: enquanto alguma lacuna do tipo de trabalho não
 ///   tem ponto (a lista do `grill` ainda sendo gravada, ou um ponto
 ///   esquecido), gravar os pontos que faltam; senão, o próximo ponto aberto,
@@ -590,8 +594,10 @@ pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>
     let mut steps = Vec::new();
     if let Some(block) = emptied.into_iter().next() {
         let (closed, records) = block_review(after, &block);
-        let over = now.is_empty() && unrecorded.is_empty();
-        steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review: over && !outside_reviewed(after) });
+        steps.push(SurveyStep::ReviewBlock { block, closed, records });
+        if now.is_empty() && unrecorded.is_empty() && !outside_reviewed(after) {
+            steps.push(SurveyStep::OutsideReview);
+        }
     }
     if !unrecorded.is_empty() {
         steps.push(SurveyStep::Record(unrecorded));
@@ -622,7 +628,7 @@ fn block_review(log: &SpecLog, block: &str) -> (Vec<u64>, Vec<u64>) {
 }
 
 /// Algum ponto veio do revisor de fora, pela leitura dos pares: ele já
-/// conferiu o levantamento, e a revisão do último bloco não o oferece de
+/// conferiu o levantamento, e o fim do levantamento não manda rodá-lo de
 /// novo.
 fn outside_reviewed(log: &SpecLog) -> bool {
     points(log).iter().any(|p| p.from() == Some(FROM_OUTSIDE_REVIEW))
@@ -1439,7 +1445,7 @@ mod tests {
 
     /// O passo depois de cada gravação segue os pontos abertos: fechar o
     /// último ponto de um bloco traz a revisão dele e o próximo ponto;
-    /// fechar o último de todos traz a revisão com o revisor de fora e o fim.
+    /// fechar o último de todos traz a revisão, o revisor de fora e o fim.
     /// Depois da aprovação, nenhum passo.
     #[test]
     fn the_step_after_each_write_follows_the_open_points() {
@@ -1460,7 +1466,7 @@ mod tests {
         let after = log_of(&lines);
         let steps = next_step(&before, &after);
         assert!(
-            matches!(&steps[..], [SurveyStep::ReviewBlock { block, closed, records, outside_review: false }, SurveyStep::Point(p)]
+            matches!(&steps[..], [SurveyStep::ReviewBlock { block, closed, records }, SurveyStep::Point(p)]
                 if block.as_str() == "rules" && closed == &[3] && records == &[2] && p.id == 4),
             "{steps:?}"
         );
@@ -1470,7 +1476,7 @@ mod tests {
         let after = log_of(&lines);
         let steps = next_step(&before, &after);
         assert!(
-            matches!(&steps[..], [SurveyStep::ReviewBlock { block, outside_review: true, .. }, SurveyStep::Done { unrouted }]
+            matches!(&steps[..], [SurveyStep::ReviewBlock { block, .. }, SurveyStep::OutsideReview, SurveyStep::Done { unrouted }]
                 if block.as_str() == "proof" && unrouted.is_empty()),
             "{steps:?}"
         );
@@ -1479,5 +1485,57 @@ mod tests {
         let before = log_of(&lines);
         lines.push(ev(9, "message", json!({"author": "user", "text": "Mais uma."})));
         assert!(next_step(&before, &log_of(&lines)).is_empty(), "no step after the approval");
+    }
+
+    /// O revisor de fora é um passo do fim do levantamento, e não uma opção
+    /// da revisão: com um ponto aberto ainda, fechar o bloco dele traz só a
+    /// revisão e o ponto; fechar o último ponto traz a revisão, o revisor de
+    /// fora e o fim, nessa ordem; com uma lacuna ainda sem ponto, o
+    /// levantamento não acabou e o passo não vem. Depois que um ponto veio do
+    /// revisor de fora, fechar o último de novo traz a revisão e o fim, sem
+    /// mandar rodá-lo outra vez.
+    #[test]
+    fn the_end_of_the_survey_orders_the_outside_reviewer_once() {
+        let mut lines = vec![
+            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
+            ev(2, "message", json!({"author": "user", "text": GOAL})),
+            open_point(3, "rules", "Cada regra"),
+            open_point(4, "proof", "Como provar"),
+        ];
+        // Os passos da última gravação de `lines`, pelo nome.
+        let step_of = |lines: &[String]| -> Vec<&'static str> {
+            let (before, after) = (log_of(&lines[..lines.len() - 1]), log_of(lines));
+            next_step(&before, &after)
+                .iter()
+                .map(|step| match step {
+                    SurveyStep::Record(_) => "Record",
+                    SurveyStep::Point(_) => "Point",
+                    SurveyStep::ReviewBlock { .. } => "ReviewBlock",
+                    SurveyStep::OutsideReview => "OutsideReview",
+                    SurveyStep::Done { .. } => "Done",
+                })
+                .collect()
+        };
+
+        lines.push(closing(5, 3));
+        assert_eq!(step_of(&lines), ["ReviewBlock", "Point"], "one point still open: the survey is not over");
+
+        lines.push(closing(6, 4));
+        assert_eq!(step_of(&lines), ["ReviewBlock", "OutsideReview", "Done"], "the last point closed");
+
+        // Uma lacuna do tipo de trabalho ainda sem ponto: fechar o último
+        // ponto aberto não acaba o levantamento.
+        let mut unrecorded = lines[..4].to_vec();
+        unrecorded.push(ev(7, "work_type", json!({"kinds": ["fix"], "origin": 2})));
+        unrecorded.push(closing(8, 3));
+        unrecorded.push(closing(9, 4));
+        assert_eq!(step_of(&unrecorded), ["ReviewBlock", "Record"], "a gap without a point holds the end");
+
+        lines.push(ev(7, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+            "status": "open", "origin": 2, "facts": [{"text": "f", "source": "mensagem 2"}]})));
+        assert_eq!(step_of(&lines), ["Point"], "the reviewer's point is presented like the others");
+        lines.push(ev(8, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+            "status": "closed", "closes": 7, "result": [2], "origin": 2})));
+        assert_eq!(step_of(&lines), ["ReviewBlock", "Done"], "the reviewer already ran: it is not ordered again");
     }
 }

@@ -101,7 +101,9 @@ pub(crate) fn record_witnessed_message(
 /// A resposta do assistente ao fim do turno, ligada à última mensagem do
 /// usuário. No turno em que a spec nasce ainda não há mensagem do usuário
 /// gravada nela: a resposta vai sem `reply_to`, e o sim à sugestão feita ali
-/// acha a resposta que respondeu.
+/// acha a resposta que respondeu. A resposta que a conferência do fim da
+/// resposta barrou também passa por aqui, e o complemento que o bloqueio
+/// pediu vem depois dela, ligado à mesma mensagem.
 pub(crate) fn record_response(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
