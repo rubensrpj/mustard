@@ -594,7 +594,8 @@ mod tests {
         let example = part("prompt.read")
             .replace("{root}", &format!("--root {} ", shown(root)))
             .replace("{spec}", "teste");
-        assert!(example.contains("`mustard-rt run read <bloco> --root /") && example.contains("--term <código>`"), "{example}");
+        let command = format!("`mustard-rt run read <bloco> --root {} --spec teste --term <código>`", shown(root));
+        assert!(example.contains(&command), "{example}");
         let (wave, review) = (&built[0].text, &built[0].review);
 
         let waves = ["`waves`: MSTD-TASK-0002, MSTD-TASK-0001, MSTD-WAVE-0001"];
