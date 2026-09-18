@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "mustard",
   "displayName": "Mustard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Spec-driven development harness for Claude Code: one flow from survey to pull request, each step answered by a deterministic binary, with a language-agnostic project map.",
   "author": {
     "name": "Rubens Pinheiro",
