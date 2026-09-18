@@ -200,22 +200,27 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
     }
 }
 
-/// O objetivo de uma spec em levantamento é a resposta do usuário, palavra
-/// por palavra. O objetivo é o que [`crate::domain::survey::goal`] acha, a
-/// mesma leitura do índice: o primeiro `context` gravado, na versão vigente.
+/// O objetivo de uma spec em levantamento é a frase do usuário, palavra por
+/// palavra, ou a sugestão que ele aprovou. O objetivo é o que
+/// [`crate::domain::survey::goal`] acha, a mesma leitura do índice: o
+/// primeiro `context` gravado, na versão vigente.
 ///
 /// A regra olha o arquivo antes e depois de uma gravação. Numa spec em
 /// levantamento, toda gravação que troca o objetivo — o primeiro `context`, a
 /// revisão dele com `replaces` e a remoção que passa o lugar para outro
 /// `context` — deixa como objetivo um `context` que aponta em `origin` uma
-/// mensagem do usuário e repete o texto dela. Tirar o objetivo sem outro
-/// `context` deixa a vaga aberta para a próxima resposta. A gravação que não
-/// troca o objetivo passa, e fora do levantamento qualquer `context` passa.
+/// mensagem do usuário e repete o texto dela, ou repete, palavra por palavra,
+/// uma frase da resposta do assistente que essa mensagem respondeu: a última
+/// `response` gravada antes dela, onde o assistente sugeriu o objetivo que o
+/// usuário aprovou com um sim. Tirar o objetivo sem outro `context` deixa a
+/// vaga aberta para a próxima resposta. A gravação que não troca o objetivo
+/// passa, e fora do levantamento qualquer `context` passa.
 ///
 /// # Errors
 ///
 /// [`Refusal::GoalNotVerbatim`] quando o objetivo novo não aponta uma
-/// mensagem do usuário ou não repete o texto dela.
+/// mensagem do usuário, ou não repete nem o texto dela nem uma frase da
+/// resposta que ela respondeu.
 pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     use crate::domain::survey::goal;
     if State::from_log(before).phase != Some("survey") {
@@ -228,17 +233,45 @@ pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Re
         return Ok(());
     }
     let origin = now.int("origin");
-    let answer = origin
+    let said = origin
         .and_then(|id| after.get(id))
-        .filter(|m| m.event_type == "message" && m.str_field("author").map(str::trim) == Some("user"))
-        .and_then(|m| m.str_field("text"))
-        .map(str::trim);
-    if answer.is_some() && answer == now.str_field("text").map(str::trim) {
-        return Ok(());
+        .filter(|m| m.event_type == "message" && m.str_field("author").map(str::trim) == Some("user"));
+    let text = now.str_field("text").map(str::trim).filter(|t| !t.is_empty());
+    if let (Some(said), Some(text)) = (said, text) {
+        if said.str_field("text").map(str::trim) == Some(text) {
+            return Ok(());
+        }
+        let answered = answered_response(after, said.id).and_then(|r| r.str_field("text"));
+        if answered.is_some_and(|reply| holds_word_for_word(reply, text)) {
+            return Ok(());
+        }
     }
     Err(Refusal::GoalNotVerbatim {
         spec: spec.trim().to_string(),
         origin: origin.map_or_else(|| "-".to_string(), |id| id.to_string()),
+    })
+}
+
+/// A resposta do assistente que a mensagem `message` respondeu: a última
+/// `response` visível gravada antes dela.
+fn answered_response(log: &SpecLog, message: u64) -> Option<&SpecEvent> {
+    log.visible().into_iter().rev().find(|e| e.event_type == "response" && e.id < message)
+}
+
+/// `phrase` está em `text` palavra por palavra: as mesmas palavras, na mesma
+/// ordem e com a mesma pontuação, sem começar nem acabar no meio de uma
+/// palavra. Os espaços entre as palavras contam como um só, dos dois lados.
+fn holds_word_for_word(text: &str, phrase: &str) -> bool {
+    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (text, phrase) = (words(text), words(phrase));
+    let (Some(first), Some(last)) = (phrase.chars().next(), phrase.chars().last()) else {
+        return false;
+    };
+    text.match_indices(phrase.as_str()).any(|(at, _)| {
+        let cut_before = text[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() && first.is_alphanumeric());
+        let cut_after =
+            text[at + phrase.len()..].chars().next().is_some_and(|c| c.is_alphanumeric() && last.is_alphanumeric());
+        !cut_before && !cut_after
     })
 }
 

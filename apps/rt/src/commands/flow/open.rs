@@ -1252,16 +1252,29 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert_eq!(mapped["map"], json!({ "full": false, "read": 1 }));
     }
 
-    /// A abertura termina na pergunta do objetivo, no idioma do projeto.
+    /// A abertura termina na pergunta do objetivo, no idioma do projeto, e a
+    /// dica diz que vale a frase do usuário ou a sugestão que ele aprovou.
     #[test]
     fn open_asks_for_the_goal_in_both_languages() {
-        for (config, question) in [(DEV_MAIN, "Qual o objetivo, numa frase?"), (EN, "What is the goal, in one sentence?")] {
+        for (config, question, approved) in [
+            (
+                DEV_MAIN,
+                "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar.",
+                "ou a que você sugeriu e ele aprovou",
+            ),
+            (
+                EN,
+                "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve it.",
+                "or the one you suggested and they approved",
+            ),
+        ] {
             let dir = repo(config);
             let report = open(dir.path(), Some("feature"), Some("x"), Some("dev"));
             assert_eq!(report["step"], json!("ask_goal"), "{report}");
             assert_eq!(report["question"], json!(question));
             let hint = report["hint"].as_str().unwrap();
             assert!(hint.contains("feature/x") && !hint.contains("{spec}"), "{hint}");
+            assert!(hint.contains(approved), "the suggestion the user approved counts too: {hint}");
         }
     }
 

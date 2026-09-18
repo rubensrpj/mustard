@@ -115,14 +115,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
         ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
         ("spec_events.goal_not_verbatim", Locale::PtBr) => {
-            "O primeiro `context` da spec {spec} é o objetivo: a resposta do usuário, palavra por \
-             palavra. Grave em `text` o texto da mensagem dele e, em `origin`, o número dela; {origin} \
-             não é uma mensagem do usuário com esse texto. Nada foi gravado."
+            "O primeiro `context` da spec {spec} é o objetivo: a frase do usuário, palavra por \
+             palavra, ou a sugestão que ele aprovou, palavra por palavra como está na resposta do \
+             assistente que ele respondeu. Grave essa frase em `text` e, em `origin`, o número da \
+             mensagem dele; {origin} não é uma mensagem do usuário com esse texto, nem a que \
+             respondeu uma sugestão com ele. Nada foi gravado."
         }
         ("spec_events.goal_not_verbatim", Locale::EnUs) => {
-            "The first `context` of spec {spec} is the goal: the user's answer, word for word. Put \
-             their message's text in `text` and its number in `origin`; {origin} is not a user \
-             message with that text. Nothing was written."
+            "The first `context` of spec {spec} is the goal: the user's sentence, word for word, or \
+             the suggestion they approved, word for word as it stands in the assistant reply they \
+             answered. Put that sentence in `text` and their message's number in `origin`; {origin} \
+             is not a user message with that text, nor one that answered a suggestion with it. \
+             Nothing was written."
         }
         ("spec_events.survey_open", Locale::PtBr) => {
             "A spec {spec} ainda tem pontos abertos no levantamento ({count}): {points}. Feche cada um, \
@@ -498,7 +502,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             69,
-            0x5f4e_b517_6dce_e2d0,
+            0x29c1_ac60_3f85_21ec,
         );
     }
 

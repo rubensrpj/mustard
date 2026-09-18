@@ -29,17 +29,20 @@
 //! tamanho, a nota de Flesch em português e o idioma.
 //!
 //! - Na primeira resposta que reprova, bloqueia: o assistente recebe os
-//!   defeitos e reescreve. A resposta já apareceu na tela, mas o bloqueio é o
+//!   defeitos e escreve logo abaixo da resposta um complemento curto sobre
+//!   eles, sem reescrevê-la. A resposta já apareceu na tela, e nenhum gancho a
+//!   segura antes; reescrevê-la inteira a mostraria duas vezes. O bloqueio é o
 //!   único caminho que chega ao assistente no mesmo turno.
-//! - Na reescrita (`stop_hook_active`), só avisa o usuário: bloquear de novo
-//!   prenderia o turno num laço.
+//! - O complemento chega com `stop_hook_active` e não é conferido: não barra,
+//!   o que prenderia o turno num laço, nem avisa o usuário.
 //! - Guarda em `.claude/.session/<sid>/clarity.json` as siglas já explicadas
-//!   na sessão, para a próxima medição não cobrar de novo. É a
+//!   na sessão, para a próxima medição não cobrar de novo. O complemento
+//!   também é medido para isso: a sigla que ele explica fica guardada. É a
 //!   única coisa que a medição grava: nenhum arquivo de eventos.
 //!
-//! O bloqueio e o aviso listam no máximo [`MAX_LISTED_DEFECTS`] defeitos, cada
-//! um cortado em [`MAX_DEFECT_CHARS`] caracteres; o resto vira uma contagem.
-//! Falha de disco só cala o registro; o bloqueio ainda sai.
+//! O bloqueio lista no máximo [`MAX_LISTED_DEFECTS`] defeitos, cada um cortado
+//! em [`MAX_DEFECT_CHARS`] caracteres; o resto vira uma contagem. Falha de
+//! disco só cala o registro; o bloqueio ainda sai.
 
 use std::path::{Path, PathBuf};
 
@@ -78,14 +81,12 @@ impl TurnRule for ClarityRule {
         // resolvido (`turn.lang`).
         let expected = mustard_core::ProjectConfig::load(root).language().text;
         let defects = writing_defects(root, turn, expected);
-        if defects.is_empty() {
+        // O complemento (`stop_hook_active`) foi medido só para a memória da
+        // sessão: ele não barra nem avisa.
+        if defects.is_empty() || turn.retry {
             return None;
         }
-        Some(if turn.retry {
-            Finding::Warn(with_head("clarity.note.head", &defects, turn.lang))
-        } else {
-            Finding::Block(with_head("clarity.block.head", &defects, turn.lang))
-        })
+        Some(Finding::Block(with_head(&defects, turn.lang)))
     }
 }
 
@@ -107,16 +108,17 @@ fn writing_defects(root: &Path, turn: &Turn<'_>, expected: Option<Locale>) -> Ve
     report.defects(turn.lang)
 }
 
-/// Quantos defeitos o bloqueio e o aviso listam; o resto vira uma contagem.
+/// Quantos defeitos o bloqueio lista; o resto vira uma contagem.
 const MAX_LISTED_DEFECTS: usize = 5;
 
 /// O tamanho máximo de uma linha de defeito, em caracteres.
 const MAX_DEFECT_CHARS: usize = 160;
 
-/// O cabeçalho do catálogo seguido de um defeito por linha — no máximo
-/// [`MAX_LISTED_DEFECTS`], cada um com até [`MAX_DEFECT_CHARS`] caracteres.
-fn with_head(key: &str, defects: &[String], lang: Locale) -> String {
-    let mut text = mustard_core::translate(key, lang).to_string();
+/// O pedido do complemento, do catálogo, seguido de um defeito por linha — no
+/// máximo [`MAX_LISTED_DEFECTS`], cada um com até [`MAX_DEFECT_CHARS`]
+/// caracteres.
+fn with_head(defects: &[String], lang: Locale) -> String {
+    let mut text = mustard_core::translate("clarity.block.head", lang).to_string();
     for defect in defects.iter().take(MAX_LISTED_DEFECTS) {
         text.push_str("\n- ");
         text.extend(defect.chars().take(MAX_DEFECT_CHARS));
@@ -208,8 +210,8 @@ mod tests {
         }
     }
 
-    /// A reescrita que um bloqueio pediu: o mesmo `Stop` com `stop_hook_active`.
-    fn rewrite(session: &str, message: &str) -> HookInput {
+    /// O complemento que um bloqueio pediu: o `Stop` com `stop_hook_active`.
+    fn complement(session: &str, message: &str) -> HookInput {
         let mut input = stop(session, message);
         input.raw["stop_hook_active"] = json!(true);
         input
@@ -255,27 +257,24 @@ mod tests {
         files
     }
 
-    /// A resposta que reprova é barrada, e o assistente recebe os defeitos no
-    /// próprio bloqueio; a reescrita que ainda reprova só avisa o usuário. Os
-    /// defeitos não andam mais na mensagem seguinte.
+    /// A resposta que reprova é barrada, e o assistente recebe no próprio
+    /// bloqueio o pedido de um complemento sobre os defeitos; o complemento,
+    /// que chega com `stop_hook_active`, não é barrado nem vira aviso, mesmo
+    /// reprovando. Os defeitos não andam na mensagem seguinte.
     #[test]
-    fn a_failing_reply_blocks_and_its_rewrite_only_warns() {
+    fn a_failing_reply_asks_for_a_complement_and_the_complement_is_not_judged() {
         let dir = project();
         let root = dir.path();
         match check(root, &stop("s1", FAILING)) {
-            Verdict::Deny { reason } => {
-                assert!(reason.starts_with("[Mustard] A resposta fugiu da regra de escrita."), "{reason}");
-                assert!(reason.contains("\n- CI sem as palavras por extenso"), "{reason}");
-            }
+            Verdict::Deny { reason } => assert_eq!(
+                reason,
+                "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela \
+                 um complemento curto sobre estes pontos:\n\
+                 - CI é uma sigla sem explicação; diga o nome por extenso"
+            ),
             other => panic!("a failing reply blocks, got {other:?}"),
         }
-        match check(root, &rewrite("s1", FAILING)) {
-            Verdict::Inject { context } => {
-                assert!(context.starts_with("Mustard · clareza: a resposta acima ainda foge"), "{context}");
-                assert!(context.contains("\n- CI sem as palavras por extenso"), "{context}");
-            }
-            other => panic!("the rewrite only warns, got {other:?}"),
-        }
+        assert_eq!(check(root, &complement("s1", FAILING)), Verdict::Allow, "the complement is not judged");
 
         let next = match PromptEntry.evaluate(
             &HookInput {
@@ -297,7 +296,7 @@ mod tests {
     fn a_clear_reply_passes() {
         let dir = project();
         assert_eq!(check(dir.path(), &stop("s1", CLEAR)), Verdict::Allow);
-        assert_eq!(check(dir.path(), &rewrite("s1", CLEAR)), Verdict::Allow);
+        assert_eq!(check(dir.path(), &complement("s1", CLEAR)), Verdict::Allow);
     }
 
     /// Uma resposta em inglês num projeto em português reprova pelo idioma.
@@ -339,15 +338,15 @@ mod tests {
     }
 
     /// A medição não grava arquivo de eventos: depois de um bloqueio e de um
-    /// aviso na mesma sessão, a única coisa debaixo de `.claude/` é a memória
-    /// da sessão. Uma pasta de eventos que já existia fica com os mesmos bytes,
-    /// e nada novo nasce nela.
+    /// complemento na mesma sessão, a única coisa debaixo de `.claude/` é a
+    /// memória da sessão. Uma pasta de eventos que já existia fica com os
+    /// mesmos bytes, e nada novo nasce nela.
     #[test]
     fn the_clarity_check_writes_no_event_file() {
         let dir = project();
         let root = dir.path();
         assert!(matches!(check(root, &stop("s1", FAILING)), Verdict::Deny { .. }));
-        assert!(matches!(check(root, &rewrite("s1", FAILING)), Verdict::Inject { .. }));
+        assert_eq!(check(root, &complement("s1", FAILING)), Verdict::Allow);
         assert_eq!(files_under(&root.join(".claude")), vec![record_file(root, "s1")]);
 
         let dir = project();
@@ -357,7 +356,7 @@ mod tests {
         let bytes = b"{\"event\":\"uma linha que ja estava aqui\"}\n";
         std::fs::write(&old, bytes).unwrap();
         assert!(matches!(check(root, &stop("s1", FAILING)), Verdict::Deny { .. }));
-        assert!(matches!(check(root, &rewrite("s1", FAILING)), Verdict::Inject { .. }));
+        assert_eq!(check(root, &complement("s1", FAILING)), Verdict::Allow);
         assert_eq!(files_under(&root.join(".claude")), vec![old.clone(), record_file(root, "s1")]);
         assert_eq!(std::fs::read(&old).unwrap(), bytes, "the old event file is untouched");
     }
@@ -376,8 +375,8 @@ mod tests {
         }
     }
 
-    /// O bloqueio e o aviso mostram no máximo [`MAX_LISTED_DEFECTS`] defeitos e
-    /// ficam abaixo de 1.500 caracteres, qualquer que seja a resposta.
+    /// O bloqueio mostra no máximo [`MAX_LISTED_DEFECTS`] defeitos e fica
+    /// abaixo de 1.500 caracteres, qualquer que seja a resposta.
     #[test]
     fn clarity_defects_are_capped() {
         let dir = project();
@@ -386,22 +385,17 @@ mod tests {
         // corte de [`MAX_DEFECT_CHARS`], e os que sobram viram uma contagem.
         let long = vec!["palavraextraordinariamentecomprida"; 40].join(" ");
         let reply = format!("{long}.\n").repeat(60);
-        let Verdict::Deny { reason } = check(root, &stop("s1", &reply)) else {
+        let Verdict::Deny { reason: text } = check(root, &stop("s1", &reply)) else {
             panic!("a failing reply blocks");
         };
-        let Verdict::Inject { context: note } = check(root, &rewrite("s1", &reply)) else {
-            panic!("a failing rewrite warns");
-        };
-        for text in [reason.as_str(), note.as_str()] {
-            let listed: Vec<&str> = text.lines().skip(1).collect();
-            let (count, defects) = listed.split_last().unwrap_or_else(|| panic!("{text}"));
-            assert!(count.starts_with("- e mais "), "the rest becomes a count: {text}");
-            assert_eq!(defects.len(), MAX_LISTED_DEFECTS, "{text}");
-            for defect in defects {
-                assert_eq!(defect.chars().count(), "- ".len() + MAX_DEFECT_CHARS, "cut: {defect}");
-            }
-            assert!(text.chars().count() < 1_500, "{} chars: {text}", text.chars().count());
+        let listed: Vec<&str> = text.lines().skip(1).collect();
+        let (count, defects) = listed.split_last().unwrap_or_else(|| panic!("{text}"));
+        assert!(count.starts_with("- e mais "), "the rest becomes a count: {text}");
+        assert_eq!(defects.len(), MAX_LISTED_DEFECTS, "{text}");
+        for defect in defects {
+            assert_eq!(defect.chars().count(), "- ".len() + MAX_DEFECT_CHARS, "cut: {defect}");
         }
+        assert!(text.chars().count() < 1_500, "{} chars: {text}", text.chars().count());
     }
 
     /// A sigla explicada numa resposta não é cobrada na seguinte: o registro
@@ -437,7 +431,19 @@ mod tests {
         let Verdict::Deny { reason } = check(dir.path(), &stop("s1", "O GATE falhou.")) else {
             panic!("an acronym without its full words blocks");
         };
-        assert!(reason.contains("\n- GATE sem as palavras por extenso"), "{reason}");
+        assert!(reason.contains("\n- GATE é uma sigla sem explicação"), "{reason}");
+    }
+
+    /// O complemento não é julgado, mas a sigla que ele explica fica na
+    /// memória da sessão: a resposta seguinte que a usa não é cobrada de novo.
+    #[test]
+    fn what_the_complement_explains_is_remembered() {
+        let dir = project();
+        let root = dir.path();
+        assert!(matches!(check(root, &stop("s1", FAILING)), Verdict::Deny { .. }));
+        let explains = "O CI (integração contínua) roda os testes.";
+        assert_eq!(check(root, &complement("s1", explains)), Verdict::Allow);
+        assert_eq!(check(root, &stop("s1", FAILING)), Verdict::Allow, "CI was explained in the complement");
     }
 
     /// Um registro antigo da sessão, que também guardava termos na lista do

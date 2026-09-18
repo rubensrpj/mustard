@@ -87,10 +87,12 @@
 //! revendo um `state`.
 //!
 //! Numa spec em levantamento, o objetivo, o primeiro `context` como o índice
-//! o lê, é a resposta do usuário palavra por palavra. Toda gravação que troca
-//! o objetivo (o primeiro `context`, a revisão dele e a remoção que passa o
-//! lugar para outro `context`) deixa um objetivo que aponta em `origin` uma
-//! mensagem do usuário e repete o texto dela
+//! o lê, é a frase do usuário palavra por palavra, ou a sugestão que ele
+//! aprovou. Toda gravação que troca o objetivo (o primeiro `context`, a
+//! revisão dele e a remoção que passa o lugar para outro `context`) deixa um
+//! objetivo que aponta em `origin` uma mensagem do usuário e repete o texto
+//! dela, ou repete palavra por palavra uma frase da última resposta do
+//! assistente antes dela, a que o usuário respondeu
 //! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência.
 //!
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
@@ -1958,6 +1960,59 @@ mod tests {
         assert_eq!(lines(root), before, "a refusal writes nothing");
         assert_eq!(context(root, answer, said)["ok"], json!(true));
         assert_eq!(context(root, "Outro contexto, livre.", said)["ok"], json!(true));
+    }
+
+    /// A resposta do assistente, gravada pelo binário como o despachante a
+    /// grava no fim do turno, ligada à mensagem `reply_to`.
+    fn response(root: &std::path::Path, text: &str, reply_to: u64) -> u64 {
+        let reply = json!({ "author": "assistant", "text": text, "reply_to": reply_to });
+        record(root, "teste", "response", reply.as_object().cloned().unwrap(), PhaseWriter::Binary)
+            .expect("the binary records the response")
+            .written
+            .id
+    }
+
+    /// O assistente sugere o objetivo na resposta e o usuário responde "pode
+    /// usar essa": o objetivo gravado é a frase sugerida, com `origin` na
+    /// mensagem do usuário. Vale só a frase que está palavra por palavra na
+    /// última resposta antes da mensagem: a frase só em parte, com palavras
+    /// trocadas ou cortada no meio de uma palavra, a sugestão de uma resposta
+    /// mais antiga, a de uma resposta que veio depois da mensagem e a que
+    /// aponta em `origin` uma resposta do assistente, e não a mensagem do
+    /// usuário, são recusadas, e nada é gravado.
+    #[test]
+    fn a_yes_to_the_suggested_goal_records_the_suggestion_word_for_word() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let asked = message(root, "user", "Quero que o sim baste.");
+        response(root, "Sugiro: \"Travar o envio com pendência aberta.\" Serve?", asked);
+        let other = message(root, "user", "Não, outra.");
+        let suggestion = "Um sim aprova o objetivo sugerido.";
+        response(root, &format!("Então sugiro: \"{suggestion}\" Pode ser?"), other);
+        let yes = message(root, "user", "pode usar essa");
+        let later = response(root, "Gravo: \"Travar tudo, sempre.\"", yes);
+        let before = lines(root);
+        for (goal, origin) in [
+            ("Um sim aprova o objetivo sugerido e a barra fica limpa.", yes),
+            ("Um sim aprova o sugerido objetivo.", yes),
+            ("m sim aprova o objetivo sugerido.", yes),
+            ("Travar o envio com pendência aberta.", yes),
+            ("Travar tudo, sempre.", yes),
+            (suggestion, later),
+        ] {
+            let refused = context(root, goal, origin);
+            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{goal}: {refused}");
+            assert!(refused["hint"].as_str().unwrap().contains("a sugestão que ele aprovou"), "{refused}");
+        }
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+
+        let written = context(root, suggestion, yes);
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let goal = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
+        assert_eq!((goal.str_field("text"), goal.int("origin")), (Some(suggestion), Some(yes)));
+        assert_eq!(index_goal(root).as_deref(), Some(suggestion));
     }
 
     /// O objetivo errado sai com `remove`, e a próxima resposta do usuário

@@ -376,15 +376,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
 
         // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
-        // uma linha curta que o assistente recebe no bloqueio do fim da
-        // resposta, ou que o usuário lê no aviso. Sem parênteses: o tom técnico
-        // os apagaria. `{words}`, `{opening}`, `{acronym}`, `{term}`, `{code}`,
+        // uma linha curta do bloqueio do fim da resposta, que diz o defeito e
+        // o que o complemento explica sobre ele. Sem parênteses: o tom técnico
+        // os apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`,
         // `{lines}`, `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm
         // do chamador.
-        ("clarity.long_sentence", Locale::PtBr) => "frase com {words} palavras: \"{opening}…\"",
-        ("clarity.long_sentence", Locale::EnUs) => "sentence with {words} words: \"{opening}…\"",
-        ("clarity.unexpanded_acronym", Locale::PtBr) => "{acronym} sem as palavras por extenso",
-        ("clarity.unexpanded_acronym", Locale::EnUs) => "{acronym} without its full words",
+        ("clarity.long_sentence", Locale::PtBr) => {
+            "frase com {words} palavras: \"{opening}…\"; diga a mesma ideia em frases curtas"
+        }
+        ("clarity.long_sentence", Locale::EnUs) => {
+            "sentence with {words} words: \"{opening}…\"; say the same idea in short sentences"
+        }
+        ("clarity.unexpanded_acronym", Locale::PtBr) => {
+            "{acronym} é uma sigla sem explicação; diga o nome por extenso"
+        }
+        ("clarity.unexpanded_acronym", Locale::EnUs) => {
+            "{acronym} is an unexplained acronym; spell out its full name"
+        }
         ("clarity.internal_code", Locale::PtBr) => {
             "{code} é um código interno; diga o assunto pelo nome"
         }
@@ -392,38 +400,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("clarity.too_long", Locale::PtBr) => "resposta com {lines} linhas; o limite é {limit}",
         ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines; the limit is {limit}",
         ("clarity.hard_to_read", Locale::PtBr) => {
-            "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}; use \
-             frases e palavras mais curtas"
+            "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}; faça um \
+             resumo curto em palavras simples"
         }
         ("clarity.hard_to_read", Locale::EnUs) => {
             "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}; \
-             use shorter sentences and words"
+             write a short summary in plain words"
         }
         // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
         // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
         ("clarity.wrong_language", Locale::PtBr) => {
-            "resposta em {found}; o idioma do projeto e do usuário é {expected}"
+            "resposta em {found}; o idioma do projeto e do usuário é {expected}; faça um resumo \
+             em {expected}"
         }
         ("clarity.wrong_language", Locale::EnUs) => {
-            "reply in {found}; the language of the project and the user is {expected}"
+            "reply in {found}; the language of the project and the user is {expected}; write a \
+             summary in {expected}"
         }
         // O fim da resposta (`apps/rt/src/hooks/task/end_of_turn_check.rs`):
         // a primeira resposta que reprova é barrada, e o assistente recebe o
-        // bloqueio para reescrever; a reescrita que ainda reprova só gera o
-        // aviso ao usuário. Os defeitos vêm abaixo, um por linha.
+        // pedido de um complemento logo abaixo dela, sem reescrevê-la. O
+        // Claude Code mostra este texto ao usuário com o rótulo de erro do
+        // gancho, e por isso ele é curto e sem cara de erro. Os defeitos vêm
+        // abaixo, um por linha. O complemento não é conferido de novo.
         ("clarity.block.head", Locale::PtBr) => {
-            "[Mustard] A resposta fugiu da regra de escrita. Reescreva-a em linguagem simples, \
-             corrigindo estes pontos:"
+            "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela um \
+             complemento curto sobre estes pontos:"
         }
         ("clarity.block.head", Locale::EnUs) => {
-            "[Mustard] The reply missed the writing rule. Rewrite it in plain language, fixing \
-             these points:"
-        }
-        ("clarity.note.head", Locale::PtBr) => {
-            "Mustard · clareza: a resposta acima ainda foge da regra de escrita:"
-        }
-        ("clarity.note.head", Locale::EnUs) => {
-            "Mustard · clarity: the reply above still misses the writing rule:"
+            "Mustard: complement below. Without rewriting the reply, write a short complement \
+             right below it about these points:"
         }
         // A última linha da lista quando há mais defeitos do que ela mostra.
         ("clarity.more", Locale::PtBr) => "e mais {count}",
@@ -445,8 +451,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            63,
-            0xad6d_1715_8fc6_e019,
+            62,
+            0xb4f5_5154_99d2_bab5,
         );
     }
 
@@ -537,8 +543,9 @@ mod tests {
         }
     }
 
-    /// Os defeitos de clareza, o bloqueio e o aviso do fim da resposta saem do
+    /// Os defeitos de clareza e o bloqueio do fim da resposta saem do
     /// catálogo nos dois idiomas, cada um com as vagas que o medidor preenche.
+    /// O bloqueio abre avisando o complemento, e o aviso da volta saiu.
     #[test]
     fn i18n_translates_clarity_defect_keys() {
         for (key, slots) in [
@@ -549,7 +556,6 @@ mod tests {
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.block.head", &[][..]),
-            ("clarity.note.head", &[][..]),
             ("clarity.more", &["{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
@@ -559,6 +565,11 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+        assert!(translate("clarity.block.head", Locale::PtBr).starts_with("Mustard: complemento abaixo."));
+        assert!(translate("clarity.block.head", Locale::EnUs).starts_with("Mustard: complement below."));
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            assert_eq!(translate("clarity.note.head", lang), "<missing-key>", "the warning after the complement left");
         }
     }
 }
