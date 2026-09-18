@@ -57,9 +57,13 @@ const MAX_LABEL_WORDS: usize = 5;
 /// de hipertexto)" deixaria a frase mais difícil, o contrário do que a regra
 /// pede. A lista é curta de propósito: sigla fora dela precisa das palavras por
 /// extenso na primeira vez.
+///
+/// As unidades de tamanho em maiúsculas (KB, MB, GB, TB) também estão nela:
+/// unidade de medida não é sigla, como o estilo de resposta já diz, e "750 KB"
+/// não pede "quilobyte" por extenso.
 const COMMON_ACRONYMS: &[&str] = &[
-    "API", "CPU", "CSS", "HTML", "HTTP", "HTTPS", "ID", "JSON", "OK", "PDF", "PR", "SQL", "URL",
-    "UTF",
+    "API", "CPU", "CSS", "GB", "HTML", "HTTP", "HTTPS", "ID", "JSON", "KB", "MB", "OK", "PDF", "PR", "SQL",
+    "TB", "URL", "UTF",
 ];
 
 /// Travessão ou hífen colado logo depois do termo: abre um aposto que explica o
@@ -997,6 +1001,31 @@ mod tests {
 
         let common = measure("Abri o PR e os PRs com JSON e HTML.", &[], Some(Locale::PtBr));
         assert!(common.unexpanded_acronyms.is_empty(), "{common:?}");
+    }
+
+    /// Unidade de tamanho em maiúsculas não é sigla: a resposta que cita
+    /// quilobytes, megabytes, gigabytes e terabytes pela abreviação passa sem
+    /// o nome por extenso. Na divisa, uma sigla com a mesma forma que não é
+    /// unidade ("DB", duas letras terminadas em B) continua cobrada, mesmo na
+    /// frase das unidades.
+    #[test]
+    fn clarity_accepts_size_units_and_still_charges_other_acronyms() {
+        for text in [
+            "A página da spec tem 750 KB e não foi publicada.",
+            "O arquivo passou de 16 MB, e a página cortou a conversa.",
+            "O disco tem 2 GB livres e o backup ocupa 1 TB.",
+            "Os anexos somam 300 KBs no total.",
+        ] {
+            let report = measure(text, &[], Some(Locale::PtBr));
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+            assert!(report.passed, "{text}: {report:?}");
+        }
+
+        let mixed = measure("A página tem 750 KB e o DB tem 2 GB.", &[], Some(Locale::PtBr));
+        assert_eq!(mixed.unexpanded_acronyms, vec!["DB"], "{mixed:?}");
+        assert!(!mixed.passed, "{mixed:?}");
+        let other = measure("O CI gerou 16 MB de log.", &[], Some(Locale::PtBr));
+        assert_eq!(other.unexpanded_acronyms, vec!["CI"], "{other:?}");
     }
 
     /// A explicação só conta quando vem logo depois da sigla.
