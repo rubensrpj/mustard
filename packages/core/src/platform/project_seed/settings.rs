@@ -87,6 +87,10 @@ const OUTPUT_STYLE_KEY: &str = "outputStyle";
 /// nome com que o Claude Code o chamava.
 const RETIRED_OUTPUT_STYLE: &str = "mustard-didactic";
 
+/// A variável do `env` que faz o Claude Code repassar os links da barra quando
+/// não reconhece o terminal, como numa conexão remota. O valor mora na semente.
+const FORCE_HYPERLINK_KEY: &str = "FORCE_HYPERLINK";
+
 /// Seed the harness settings from the compiled-in [`SETTINGS_SEED`].
 ///
 /// The destination follows `mode`: `.claude/settings.json` when shared,
@@ -102,8 +106,9 @@ const RETIRED_OUTPUT_STYLE: &str = "mustard-didactic";
 /// [`retire_planted_plugin_enablement`], [`rename_dead_skill_validate_key`],
 /// [`backfill_own_permission_rules`] and [`retire_old_rules`] — and through the
 /// two switches this file holds: in the local layer, the rtk hook follows `rtk`
-/// ([`apply_rtk_hook`]) and the response style follows `text`
-/// ([`apply_output_style`]); and Claude Code's own signature is kept off
+/// ([`apply_rtk_hook`]), the response style follows `text`
+/// ([`apply_output_style`]) and the seed's link variable reaches an `env` that
+/// lacks it ([`backfill_force_hyperlink`]); and Claude Code's own signature is kept off
 /// ([`turn_signature_off`]). These are the only writes that reach INSIDE a key
 /// the merge preserves. Each one is narrow by construction: the top-level merge
 /// refuses to guess what an absent sub-key means, so anything that must reach an
@@ -150,6 +155,7 @@ pub fn seed_settings(
     if mode.is_private() {
         apply_rtk_hook(&mut settings, rtk);
         apply_output_style(&mut settings, text);
+        backfill_force_hyperlink(&mut settings, &seed);
     }
     turn_signature_off(&mut settings);
 
@@ -436,6 +442,25 @@ pub fn apply_output_style(settings: &mut Map<String, Value>, text: Locale) {
     if !chosen_by_person {
         settings.insert(OUTPUT_STYLE_KEY.to_string(), Value::String(output_style_for(text)));
     }
+}
+
+/// Leva ao `env` das configurações locais o valor que a semente dá à variável
+/// dos links ([`FORCE_HYPERLINK_KEY`]), para o Ctrl+clique na barra funcionar
+/// por conexão remota sem a pessoa digitar nada.
+///
+/// A mescla de cima só completa chaves de topo: o projeto já instalado tem
+/// `env` e o guarda inteiro, então a variável que a semente ganhou nunca
+/// chegaria a ele. Esta regra põe só essa variável, e só quando ela falta: o
+/// valor que a pessoa já deu a ela, como `"0"`, fica. Um `env` que não é
+/// objeto também fica como está.
+fn backfill_force_hyperlink(settings: &mut Map<String, Value>, seed: &Map<String, Value>) {
+    let Some(value) = seed.get("env").and_then(|env| env.get(FORCE_HYPERLINK_KEY)) else {
+        return;
+    };
+    let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) else {
+        return;
+    };
+    env.entry(FORCE_HYPERLINK_KEY.to_string()).or_insert_with(|| value.clone());
 }
 
 /// Keep the signature Claude Code adds to commits and pull requests off: both
@@ -1095,6 +1120,54 @@ mod tests {
             for client in ["Suzano", "suzano"] {
                 assert!(!body.contains(client), "the {text} style names a real client as an example");
             }
+        }
+    }
+
+    // --- a variável dos links da barra ------------------------------------------
+
+    /// O `env` das configurações locais depois do upsert do projeto em `root`,
+    /// o caminho que o `mustard init` percorre.
+    fn env_after_upsert(root: &Path) -> Map<String, Value> {
+        upsert_project(root, None, InstallMode::Private).unwrap();
+        local_settings(root)["env"].as_object().cloned().expect("env is an object")
+    }
+
+    /// O upsert grava `FORCE_HYPERLINK=1` no `env` das configurações locais: no
+    /// projeto novo, e no já instalado, cujo `env` a mescla de cima guarda
+    /// inteiro. O resto do `env` da pessoa fica como estava.
+    #[test]
+    fn the_upsert_writes_the_link_variable_into_the_local_env() {
+        let fresh = tempdir().unwrap();
+        let env = env_after_upsert(fresh.path());
+        assert_eq!(env.get(FORCE_HYPERLINK_KEY), Some(&json!("1")), "a fresh install: {env:?}");
+
+        let installed = tempdir().unwrap();
+        let claude = installed.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        std_fs::write(
+            claude.join("settings.local.json"),
+            r#"{"env":{"MUSTARD_SPEC_SIZE_MODE":"strict","MY_OWN":"1"}}"#,
+        )
+        .unwrap();
+        let env = env_after_upsert(installed.path());
+        assert_eq!(env.get(FORCE_HYPERLINK_KEY), Some(&json!("1")), "an installed project: {env:?}");
+        assert_eq!(env["MUSTARD_SPEC_SIZE_MODE"], json!("strict"), "the person's value stays");
+        assert_eq!(env["MY_OWN"], json!("1"));
+        assert_eq!(env.len(), 3, "only the link variable arrives: {env:?}");
+    }
+
+    /// A variável que a pessoa já tinha, como `"0"`, não é trocada por `"1"`,
+    /// nem na primeira volta nem na seguinte.
+    #[test]
+    fn the_upsert_keeps_the_link_variable_the_person_chose() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        std_fs::write(claude.join("settings.local.json"), r#"{"env":{"FORCE_HYPERLINK":"0"}}"#).unwrap();
+
+        for round in ["first", "second"] {
+            let env = env_after_upsert(dir.path());
+            assert_eq!(env.get(FORCE_HYPERLINK_KEY), Some(&json!("0")), "the {round} install: {env:?}");
         }
     }
 }
