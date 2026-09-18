@@ -1210,8 +1210,10 @@ mod tests {
     /// veio depois dela, não só na última. A volta começa depois da mensagem
     /// anterior do usuário: a primeira resposta dela vale, e a última resposta
     /// antes daquela mensagem, de uma volta mais antiga, já não; nem a
-    /// resposta que veio depois do sim. Sem mensagem anterior, a volta começa
-    /// no começo da spec.
+    /// resposta que veio depois do sim. Com três mensagens, a terceira não
+    /// acha a sugestão da volta do sim, duas voltas atrás: a volta começa na
+    /// mensagem logo anterior, e não na primeira. Sem mensagem anterior, a
+    /// volta começa no começo da spec.
     #[test]
     fn the_yes_finds_the_suggestion_in_every_answer_of_its_turn_and_no_older_one() {
         let lines = surveyed_with(&[
@@ -1221,13 +1223,19 @@ mod tests {
             answer("Resumo: a sugestão está acima."),
             user("pode usar essa"),
             answer("Gravo: \"Travar tudo, sempre.\""),
+            user("grave"),
         ]);
-        let yes = 6;
+        let (yes, third) = (6, 8);
         assert_eq!(goal_with(&lines, "Um sim aprova o objetivo sugerido.", yes), Ok(()), "the barred answer");
         assert_eq!(goal_with(&lines, "Resumo: a sugestão está acima.", yes), Ok(()), "the complement");
         for goal in ["Travar o envio com pendência aberta.", "Travar tudo, sempre.", "Um sim aprova o objetivo"] {
             assert!(matches!(goal_with(&lines, goal, yes), Err(Refusal::GoalNotVerbatim { .. })), "{goal}");
         }
+        for goal in ["Um sim aprova o objetivo sugerido.", "Resumo: a sugestão está acima."] {
+            let refused = goal_with(&lines, goal, third);
+            assert!(matches!(refused, Err(Refusal::GoalNotVerbatim { .. })), "two turns back: {goal}");
+        }
+        assert_eq!(goal_with(&lines, "Travar tudo, sempre.", third), Ok(()), "the third message's own turn");
         assert_eq!(goal_with(&lines, "Travar o envio com pendência aberta.", 3), Ok(()), "the opening turn");
     }
 }
