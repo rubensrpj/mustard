@@ -487,6 +487,7 @@ mod tests {
             ("subagent.not_approved", &["{spec}", "{phase}"][..]),
             ("subagent.no_wave", &["{spec}", "{wave}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
+            ("session.project_page", &["{template}", "{capabilities}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),
             ("session.provider_silent", &["{spec}", "{reason}"][..]),
             ("session.submodules", &["{spec}", "{text}"][..]),

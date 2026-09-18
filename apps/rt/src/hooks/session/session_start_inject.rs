@@ -10,8 +10,11 @@
 //!    `mustard.json#inject`, que voltam depois de `/clear` e da compactação.
 //! 3. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
 //!    a mesma linha que o `resume` devolve.
-//! 4. **As pendências** — uma linha só, com a contagem.
-//! 5. **O pull request da spec atual** — com a spec atual em "pull request
+//! 4. **A página do projeto** — num projeto em que ela ainda não foi
+//!    publicada, a ordem de publicar o template dela e gravar o endereço, que
+//!    vira o link da barra de status. Com a página publicada, nada.
+//! 5. **As pendências** — uma linha só, com a contagem.
+//! 6. **O pull request da spec atual** — com a spec atual em "pull request
 //!    aberto", o provedor é perguntado só pelo pull request dela; se ele
 //!    entrou pelas mãos de outra pessoa, o mesmo caminho do merge do Mustard
 //!    roda antes de qualquer aviso (a spec gravada como entregue, a base
@@ -21,11 +24,11 @@
 //!    e a spec mexendo em submódulo, os pull requests dos submódulos são
 //!    conferidos: o que entrou leva o ponteiro ao principal, e o aviso diz
 //!    qual falta ou que o principal ficou pronto.
-//! 6. **As branches mergeadas** — as outras branches cujo trabalho já entrou
+//! 7. **As branches mergeadas** — as outras branches cujo trabalho já entrou
 //!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
 //!    provedor.
-//! 7. **O disco** — as cópias descartáveis antigas acima de 5 GB.
-//! 8. **A versão velha do Mustard** — a gravada no projeto, a do plugin
+//! 8. **O disco** — as cópias descartáveis antigas acima de 5 GB.
+//! 9. **A versão velha do Mustard** — a gravada no projeto, a do plugin
 //!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
 //!
 //! ## Até 3 kB
@@ -33,7 +36,8 @@
 //! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
 //! cedem o lugar um a um, na vez de cada um, com uma linha no stderr dizendo
 //! qual saiu: o terreno primeiro, depois a versão, o disco, as branches
-//! mergeadas e a contagem das pendências, e só então os textos declarados.
+//! mergeadas, a contagem das pendências e a página do projeto, e só então os
+//! textos declarados.
 //! Entre os textos declarados está o mapa do início da sessão, que substitui
 //! as regras antigas: ele é o último a sair. A retomada e o relato do pull
 //! request da spec atual nunca cedem: um diz onde a spec está, o outro conta
@@ -99,8 +103,9 @@ struct Notice {
 /// últimos a ceder.
 const NOTICES: &[Notice] = &[
     Notice { name: "terrain", text: terrain_notice, cedes: Some(0) },
-    Notice { name: "declared", text: declared_notice, cedes: Some(5) },
+    Notice { name: "declared", text: declared_notice, cedes: Some(6) },
     Notice { name: "resume", text: resume_notice, cedes: None },
+    Notice { name: "project_page", text: project_page_notice, cedes: Some(5) },
     Notice { name: "pending", text: pending_notice_of, cedes: Some(4) },
     Notice { name: "landed", text: landed_notice, cedes: None },
     Notice { name: "merged", text: merged_notice, cedes: Some(3) },
@@ -207,6 +212,31 @@ fn declared_notice(probe: &Probe<'_>) -> Option<String> {
 /// A linha de retomada da spec atual.
 fn resume_notice(probe: &Probe<'_>) -> Option<String> {
     crate::commands::flow::resume::current_line(probe.root, probe.session)
+}
+
+/// A página do projeto que ainda não nasceu. Num projeto com o Mustard, com
+/// o template da página do projeto instalado e sem endereço na linha do
+/// projeto do índice das specs, o assistente é mandado publicar o template,
+/// declarando o banco de dados da página, e gravar o endereço. O endereço é
+/// lido pela mesma leitura da barra de status, então o link na barra e o
+/// silêncio aqui andam juntos: gravado o endereço, o aviso não volta.
+///
+/// `None` num projeto sem `mustard.json`, com a página publicada e sem o
+/// template no disco: a instalação antiga ainda não o recebeu, e o aviso da
+/// versão já pede a atualização.
+fn project_page_notice(probe: &Probe<'_>) -> Option<String> {
+    if !mustard_core::ProjectConfig::exists(probe.root) {
+        return None;
+    }
+    let template = mustard_core::platform::project_seed::project_page_template_path();
+    if !probe.root.join(&template).is_file() || mustard_core::io::spec_index::project_page_url(probe.root).is_some() {
+        return None;
+    }
+    Some(
+        translate("session.project_page", probe.lang)
+            .replace("{template}", &template)
+            .replace("{capabilities}", mustard_core::platform::page_templates::PROJECT_CAPABILITIES),
+    )
 }
 
 /// A contagem das pendências abertas.
@@ -486,11 +516,14 @@ mod tests {
     #[test]
     fn the_notices_are_a_typed_list_in_reading_order() {
         let names: Vec<&str> = NOTICES.iter().map(|n| n.name).collect();
-        assert_eq!(names, ["terrain", "declared", "resume", "pending", "landed", "merged", "disk", "version"]);
+        assert_eq!(
+            names,
+            ["terrain", "declared", "resume", "project_page", "pending", "landed", "merged", "disk", "version"]
+        );
         let mut ceding: Vec<(u8, &str)> = NOTICES.iter().filter_map(|n| n.cedes.map(|turn| (turn, n.name))).collect();
         ceding.sort_unstable();
         let order: Vec<&str> = ceding.into_iter().map(|(_, name)| name).collect();
-        assert_eq!(order, ["terrain", "version", "disk", "merged", "pending", "declared"]);
+        assert_eq!(order, ["terrain", "version", "disk", "merged", "pending", "project_page", "declared"]);
         let kept: Vec<&str> = NOTICES.iter().filter(|n| n.cedes.is_none()).map(|n| n.name).collect();
         assert_eq!(kept, ["resume", "landed"]);
     }
@@ -512,11 +545,11 @@ mod tests {
     #[test]
     fn the_landing_report_fits_and_an_oversized_declared_text_goes_last() {
         let resume = (&NOTICES[2], "Retomada: spec uma-spec-de-nome-longo, fase running; último passo: round; próximo: onda 12.".to_string());
-        let pending = (&NOTICES[3], translate("pending.count.many", Locale::PtBr).replace("{count}", "12"));
-        let merged = (&NOTICES[5], translate("session.merged", Locale::PtBr).replace("{count}", "6")
+        let pending = (&NOTICES[4], translate("pending.count.many", Locale::PtBr).replace("{count}", "12"));
+        let merged = (&NOTICES[6], translate("session.merged", Locale::PtBr).replace("{count}", "6")
             .replace("{branches}", "feature/uma, feature/duas, feature/tres, feature/quatro (+2)"));
-        let disk = (&NOTICES[6], translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14"));
-        let version = (&NOTICES[7], translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
+        let disk = (&NOTICES[7], translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14"));
+        let version = (&NOTICES[8], translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
 
         let items: Vec<crate::commands::event::pending::OpenPending> = ["Humanize", "HTML padrão da spec", "Revisor de fora"]
             .iter()
@@ -537,7 +570,7 @@ mod tests {
             (&NOTICES[1], map.clone()),
             resume.clone(),
             pending.clone(),
-            (&NOTICES[4], landed.clone()),
+            (&NOTICES[5], landed.clone()),
         ];
         let kept = within_cap(with_landing);
         assert!(kept.contains(&map) && kept.contains(&landed), "the landing report fits beside the real map: {kept:?}");

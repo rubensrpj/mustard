@@ -34,6 +34,18 @@
 //! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
 //! ```
 //!
+//! A publicação da página do projeto (`publish` com `"page":"project"`) é o
+//! outro tipo que dispensa o `--spec`. A página do projeto nasce na primeira
+//! sessão, quando ainda não há spec em que a publicação caiba: sem `--spec`,
+//! o endereço da publicação que deu certo vai direto para a linha do projeto
+//! do índice das specs, com a trava do índice, e a barra de status passa a
+//! mostrar o link. A publicação que falhou, sem spec, não tem onde ficar e é
+//! recusada pedindo a spec:
+//!
+//! ```text
+//! {"ok": true, "type": "publish", "page": "project", "url": "https://claude.ai/…"}
+//! ```
+//!
 //! O mesmo comando enxuga o banco. A lição que junta outras numa só aponta
 //! todas em `replaces`, e a saída diz quais saíram da leitura; um `--json`
 //! só com `targets` e `reason`, sem `class`, retira as lições apontadas,
@@ -234,6 +246,11 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         return write_lesson(&project, opts.spec.as_deref(), draft);
     }
     let Some(spec) = opts.spec.as_deref() else {
+        // A página do projeto nasce antes de qualquer spec.
+        let page = draft.get("page").and_then(Value::as_str).map(str::trim);
+        if event_type == "publish" && page == Some(spec_index::PROJECT_PAGE) {
+            return record_project_page(&project, &draft);
+        }
         // Sem spec, um tipo que não existe continua recusado pelo nome.
         return refuse(if type_spec(event_type).is_some() {
             Refusal::SpecRequired { event_type: event_type.to_string() }
@@ -854,6 +871,31 @@ pub(crate) fn branch_of_spec(start: &Path, spec: &str) -> Option<String> {
     let config = mustard_core::ProjectConfig::load(start);
     let current = mustard_core::current_branch(start)?;
     (slug_of_work_branch(&current, &config).as_deref() == Some(spec.trim())).then_some(current)
+}
+
+/// Grava o endereço da página do projeto publicada fora de uma spec: na
+/// primeira sessão do projeto ainda não há spec em que a publicação caiba. O
+/// endereço vai para a linha do projeto do índice das specs, pela mesma
+/// gravação da publicação feita numa spec, com a trava do índice presa da
+/// leitura à escrita. Só a publicação que deu certo tem o que gravar: a que
+/// falhou é recusada pedindo a spec, e a que deu certo sem endereço, pelo
+/// campo que falta.
+fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> Value {
+    let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
+    if draft.get("ok").and_then(Value::as_bool) != Some(true) {
+        return refuse(Refusal::SpecRequired { event_type: "publish".to_string() });
+    }
+    let Some(url) = draft.get("url").and_then(Value::as_str).map(str::trim).filter(|url| !url.is_empty()) else {
+        return refuse(Refusal::MissingField { event_type: "publish".to_string(), field: "url".to_string() });
+    };
+    let index = match ClaudePaths::for_project(&project.root) {
+        Ok(paths) => paths.spec_index_path(),
+        Err(e) => return refuse(Refusal::Io { detail: e.to_string() }),
+    };
+    match mustard_core::io::spec_index::set_project_url(&index, url) {
+        Ok(()) => json!({ "ok": true, "type": "publish", "page": spec_index::PROJECT_PAGE, "url": url }),
+        Err(refusal) => refuse(refusal),
+    }
 }
 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
@@ -3416,5 +3458,64 @@ mod tests {
         }
         witness_approves(root);
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
+    }
+
+    /// A publicação da página do projeto sem spec e as gravações de uma spec,
+    /// ao mesmo tempo: a publicação grava sem parar enquanto a spec grava, e
+    /// as duas pegam a trava do índice da leitura à escrita. No fim, o
+    /// endereço gravado por último fica na linha do projeto e a linha da spec
+    /// é a da última gravação dela: nenhuma apaga a outra.
+    #[test]
+    fn the_project_page_address_and_a_spec_write_at_once_both_land_in_the_index() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // Cada regra muda os títulos da linha da spec, então a linha muda a
+        // cada gravação, mesmo dentro do mesmo segundo.
+        let origin = write_to(&root, Some("um"), "message", r#"{"author":"user","text":"combine as regras"}"#);
+        assert_eq!(origin["ok"], json!(true), "{origin}");
+        let start = Arc::new(Barrier::new(2));
+        let done = Arc::new(AtomicBool::new(false));
+        let publisher = {
+            let (root, start, done) = (root.clone(), Arc::clone(&start), Arc::clone(&done));
+            std::thread::spawn(move || {
+                start.wait();
+                let mut last = String::new();
+                for i in 0.. {
+                    if done.load(Ordering::SeqCst) && i > 0 {
+                        break;
+                    }
+                    last = format!("https://claude.ai/p{i}");
+                    let publish = json!({"page": "project", "ok": true, "url": last});
+                    let out = write_to(&root, None, "publish", &publish.to_string());
+                    assert_eq!(out["ok"], json!(true), "{out}");
+                }
+                last
+            })
+        };
+        let writer = {
+            let (root, start, done) = (root.clone(), Arc::clone(&start), Arc::clone(&done));
+            std::thread::spawn(move || {
+                start.wait();
+                for i in 0..15 {
+                    let rule = json!({"text": format!("Regra {i}."), "keys": ["k"], "example": "e", "origin": 1});
+                    let out = write_to(&root, Some("um"), "rule", &rule.to_string());
+                    assert_eq!(out["ok"], json!(true), "{out}");
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        writer.join().unwrap();
+        let last = publisher.join().unwrap();
+
+        let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
+        assert_eq!(spec_index::project_url(&index), Some(last), "{index}");
+        let log = mustard_core::domain::spec_events::parse_log(
+            &std::fs::read_to_string(root.join(".claude/spec/um/spec.ndjson")).unwrap(),
+        );
+        let line = spec_index::spec_line("um", &log).expect("the spec has a line");
+        assert!(index.lines().any(|l| l == line), "the spec line lost its last write: {index}");
     }
 }

@@ -65,7 +65,9 @@ pub enum SpecEventsCmd {
         event_type: String,
         /// The spec whose file receives the event. Required for every type
         /// but `lesson`, which takes it, when given, as the spec the lesson
-        /// was found in.
+        /// was found in, and the project page's `publish`, which without it
+        /// records the address straight on the project line of the spec
+        /// index: the page is born before any spec exists.
         #[arg(long)]
         spec: Option<String>,
         /// The event's own fields as one JSON object, e.g.

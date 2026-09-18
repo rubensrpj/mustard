@@ -1,5 +1,6 @@
 //! The static seeds: Mustard's own texts — the session map under
-//! `.claude/mustard/` and the three agents under `.claude/agents/mustard/` —,
+//! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
+//! and the three agents under `.claude/agents/mustard/` —,
 //! the `.claude/.gitignore` rule list, and the project-root `mustard.json`,
 //! with the migrations that bring an older `inject` list onto the session map.
 
@@ -10,6 +11,7 @@ use crate::domain::config::{Injectable, ProjectConfig, Runtime};
 use crate::io::fs;
 use crate::platform::error::Result;
 use crate::platform::i18n::Locale;
+use crate::platform::page_templates::{project_page_template, spec_page_template};
 use crate::platform::seeds::{agent_texts, session_map, AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME};
 
 use super::SeedOutcome;
@@ -17,21 +19,39 @@ use super::SeedOutcome;
 /// A pasta do mapa do início da sessão, a partir de `.claude/`.
 const SESSION_MAP_DIR: &str = "mustard";
 
+/// A pasta dos templates das páginas, a partir de `.claude/`.
+const PAGES_DIR: &str = "mustard/pages";
+
+/// O nome do template da página de uma spec, em [`PAGES_DIR`].
+const SPEC_PAGE_NAME: &str = "spec.html";
+
+/// O nome do template da página do projeto, em [`PAGES_DIR`].
+const PROJECT_PAGE_NAME: &str = "project.html";
+
 /// A pasta dos agentes do Mustard, a partir de `.claude/`. É uma subpasta
 /// própria dentro de `agents/`, que é uma pasta onde o projeto também escreve:
 /// os agentes do projeto ficam ao lado, e nenhum arquivo deles é tocado.
 const AGENTS_DIR: &str = "agents/mustard";
 
 /// Os textos do Mustard no projeto, a partir de `.claude/`, com o corpo no
-/// idioma `text`: o mapa do início da sessão e os três agentes, nessa ordem.
+/// idioma `text`: o mapa do início da sessão, os dois templates das páginas (a
+/// da spec e a do projeto) e os três agentes, nessa ordem.
 ///
 /// Os dois idiomas são molde do produto; o projeto recebe só o do
 /// `language.text`. O caminho não muda com o idioma, então trocar o idioma e
-/// rodar o instalador de novo troca o texto no mesmo arquivo.
+/// rodar o instalador de novo troca o texto no mesmo arquivo. Cada template
+/// vai com o catálogo já preenchido nesse idioma: é o arquivo que o assistente
+/// publica como está, uma vez só, quando a página nasce.
 #[must_use]
-pub fn harness_texts(text: Locale) -> Vec<(String, &'static str)> {
-    let mut out = vec![(format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text))];
-    out.extend(agent_texts(text).into_iter().map(|(name, body)| (format!("{AGENTS_DIR}/{name}.md"), body)));
+pub fn harness_texts(text: Locale) -> Vec<(String, String)> {
+    let mut out = vec![
+        (format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text).to_string()),
+        (format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"), spec_page_template(text)),
+        (format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"), project_page_template(text)),
+    ];
+    out.extend(
+        agent_texts(text).into_iter().map(|(name, body)| (format!("{AGENTS_DIR}/{name}.md"), body.to_string())),
+    );
     out
 }
 
@@ -39,9 +59,21 @@ pub fn harness_texts(text: Locale) -> Vec<(String, &'static str)> {
 /// grava — os mesmos em qualquer idioma.
 #[must_use]
 pub fn harness_text_paths() -> Vec<String> {
-    let mut out = vec![format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}")];
+    let mut out = vec![
+        format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"),
+        format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"),
+        format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"),
+    ];
     out.extend(AGENT_NAMES.iter().map(|name| format!("{AGENTS_DIR}/{name}.md")));
     out
+}
+
+/// O caminho do template da página do projeto, a partir da raiz do projeto:
+/// é o arquivo que o início da sessão manda publicar quando a página ainda
+/// não existe.
+#[must_use]
+pub fn project_page_template_path() -> String {
+    format!(".claude/{PAGES_DIR}/{PROJECT_PAGE_NAME}")
 }
 
 /// O caminho declarado do mapa do início da sessão, a partir da raiz do
@@ -74,7 +106,7 @@ pub fn seed_harness_texts(claude_dir: &Path, text: Locale) -> Result<Vec<(String
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
-        out.push((rel, seed_static_file(&dest, body, true)?));
+        out.push((rel, seed_static_file(&dest, &body, true)?));
     }
     Ok(out)
 }

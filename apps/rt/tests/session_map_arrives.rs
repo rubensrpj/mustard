@@ -165,11 +165,13 @@ fn an_update_renames_the_session_map_and_its_declaration() {
         let report: Value = serde_json::from_str(rt(&root, &home, &["run", "upsert"], "").trim()).unwrap();
 
         assert_eq!(std::fs::read_to_string(root.join(NEW)).unwrap(), map, "`{spelling}`: the new map");
-        let left: Vec<String> = std::fs::read_dir(root.join(".claude/mustard"))
+        let mut left: Vec<String> = std::fs::read_dir(root.join(".claude/mustard"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(left, ["session-map.md"], "`{spelling}`: the old map is still on disk");
+        left.sort();
+        // Ao lado do mapa, só a pasta dos templates das páginas.
+        assert_eq!(left, ["pages", "session-map.md"], "`{spelling}`: the old map is still on disk");
         let mut expected = config.clone();
         expected["inject"][0]["file"] = json!(NEW);
         let after: Value = serde_json::from_str(&std::fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();

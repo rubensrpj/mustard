@@ -198,6 +198,8 @@ fn shared_install_is_byte_identical_to_today() {
         vec![
             ".claude/settings.json",
             ".claude/mustard/session-map.md",
+            ".claude/mustard/pages/spec.html",
+            ".claude/mustard/pages/project.html",
             ".claude/agents/mustard/wave.md",
             ".claude/agents/mustard/review.md",
             ".claude/agents/mustard/skill.md",
@@ -216,7 +218,7 @@ fn shared_install_is_byte_identical_to_today() {
     );
     assert_eq!(read(&root.join(".claude/settings.json")), Some(expected_settings));
     for (rel, body) in harness_texts(Locale::PtBr) {
-        assert_eq!(read(&root.join(".claude").join(&rel)), Some(body.to_string()), "{rel}");
+        assert_eq!(read(&root.join(".claude").join(&rel)), Some(body), "{rel}");
     }
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));
     assert!(root.join("mustard.json").is_file(), "the project config is written");

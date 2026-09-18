@@ -21,9 +21,10 @@
 //!      statusLine / plansDirectory …), rtk's hook following
 //!      `mustard.json#rtk`, and Claude Code's own signature off; plugin
 //!      enablement is NOT planted (user-scope choice);
-//!    - `mustard/session-map.md` and `agents/mustard/*.md` — the
-//!      session map and the three agents, always rewritten, in the language
-//!      of `language.text`;
+//!    - `mustard/session-map.md`, `mustard/pages/*.html` and
+//!      `agents/mustard/*.md` — the session map, the two page templates and
+//!      the three agents, always rewritten, in the language of
+//!      `language.text`;
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!
 //!    Before those, the single project-root `mustard.json` is written
@@ -171,6 +172,7 @@ pub fn init_with_templates(
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.local.json — reduced seed, rtk's hook per mustard.json#rtk, Claude Code's signature off");
         println!("    mustard/session-map.md — the session map, delivered at session start per mustard.json#inject");
+        println!("    mustard/pages/*.html — the spec page and project page templates, in the project's text language");
         println!("    agents/mustard/*.md — the mustard-wave, mustard-review and mustard-skill agents, in the project's text language");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would list what an older Mustard left in CLAUDE.md files and .claude/settings.json (nothing leaves without a yes)");

@@ -85,6 +85,21 @@ pub fn set_project_url(index_path: &Path, url: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// O endereço da página do projeto, lido da linha do projeto do índice das
+/// specs do checkout principal visto de `start`. É a leitura única de "a
+/// página do projeto já foi publicada": a barra de status mostra o link por
+/// ela, e o início da sessão manda publicar a página quando ela não acha
+/// endereço. Um caractere de controle no endereço quebraria o link da barra,
+/// e aí não há endereço. `None` sem índice, sem linha do projeto ou sem
+/// endereço nela.
+#[must_use]
+pub fn project_page_url(start: &Path) -> Option<String> {
+    let root = crate::io::spec_events::spec_root(start);
+    let index_path = ClaudePaths::for_project(&root).ok()?.spec_index_path();
+    let content = crate::io::fs::read_to_string(&index_path).ok()?;
+    index::project_url(&content).filter(|url| !url.chars().any(char::is_control))
+}
+
 /// Tira do índice do projeto `root` a linha da spec `name`. É o que acontece
 /// com a spec apagada: a arquivada fica com a linha. A linha do projeto e as
 /// das outras specs ficam como estão. Pega a trava do índice, e o arquivo só é

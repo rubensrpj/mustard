@@ -54,7 +54,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 
 | Gancho | Quando | O que faz |
 |---|---|---|
-| `session_start_inject` | início da sessão | Coloca o mapa, a linha de retomada e os avisos, até 3 kB. |
+| `session_start_inject` | início da sessão | Coloca o mapa, a linha de retomada e os avisos, até 3 kB. Num projeto sem a página do projeto publicada, manda publicar o template dela e gravar o endereço. |
 | `statusline_heal_observer` | início da sessão | Conserta a barra de status. |
 | `prompt_entry` | cada mensagem | Coloca a linha curta e grava a mensagem na spec atual. |
 | `write_gate` | antes de escrever | Recusa escrita sem spec aprovada, numa base, em arquivo de segredo e nos `spec.*`. |
@@ -73,7 +73,7 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 | Comando | O que faz |
 |---|---|
 | `read <bloco>` | Devolve um bloco da spec: `state`, `specification`, `agreed`, `waves`, `wave-<n>`, `criteria`, `review`, `progress`, `notes` ou `conversation`. `--term <termo>` filtra pelo termo ou pelo código do item. |
-| `write <tipo>` | Grava um evento: `mustard-rt run write point --spec <spec> --json '{…}'`. Com o tipo `lesson`, grava no banco de lições. |
+| `write <tipo>` | Grava um evento: `mustard-rt run write point --spec <spec> --json '{…}'`. Com o tipo `lesson`, grava no banco de lições. A publicação da página do projeto sem `--spec` grava o endereço direto no índice das specs. |
 | `resume` | A fase, o próximo passo em palavras e o comando que o faz. |
 | `reopen` | `mustard-rt run reopen --reason "<motivo>"` leva a spec de volta ao levantamento. |
 | `discard` | Descarta a spec em duas chamadas: a primeira mostra o que sai e devolve um código; a segunda, com `--confirm <código>`, faz. `--remote` apaga também a branch do servidor; `--delete` apaga a pasta da spec em vez de guardá-la. |
@@ -95,6 +95,8 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 `mustard-rt run upsert` grava, escondidos do git do projeto:
 
 - `.claude/settings.local.json`, `.claude/.gitignore` e `mustard.json`, que são da pessoa: o que existe fica, e só o que falta é acrescentado;
-- o mapa `.claude/mustard/session-map.md` e os três agentes em `.claude/agents/mustard/`, no idioma do `language.text`. Esses são textos do próprio Mustard: toda execução regrava o texto embarcado, então uma cópia editada volta em `updated`, e uma idêntica volta em `preserved`, porque não havia o que escrever.
+- o mapa `.claude/mustard/session-map.md`, os dois templates das páginas em `.claude/mustard/pages/` (`spec.html` e `project.html`) e os três agentes em `.claude/agents/mustard/`, no idioma do `language.text`. Esses são textos do próprio Mustard: toda execução regrava o texto embarcado, então uma cópia editada volta em `updated`, e uma idêntica volta em `preserved`, porque não havia o que escrever.
+
+O `.claude/settings.local.json` recebe as liberações do próprio Mustard, na instalação nova e na atualização: os comandos `mustard-rt run` e a ferramenta `ArtifactData`, que grava no banco de dados das páginas publicadas. As liberações que a pessoa já tem ficam como estão.
 
 Uma instalação antiga que declarava as três partes do roteador (`orchestrator.md`, `dispatch.md` e `material.md`) passa a declarar o mapa no lugar delas, e os três arquivos saem do disco. Uma instalação com o mapa de nome antigo, `mapa-inicio-sessao.md`, passa a declarar o `session-map.md` no `mustard.json`, sem mudar o resto dele, e o arquivo antigo sai do disco. Nada é commitado.
