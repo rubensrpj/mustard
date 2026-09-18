@@ -1071,8 +1071,14 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         let over = vec!["Uma linha curta."; MAX_LINES + 1].join("\n");
         let report = measure(&over, &[], Some(Locale::PtBr));
         assert!(report.too_long && !report.passed);
-        assert_eq!(report.defects(Locale::EnUs), vec!["reply with 16 lines; the limit is 15"]);
-        assert_eq!(report.defects(Locale::PtBr), vec!["resposta com 16 linhas; o limite é 15"]);
+        assert_eq!(
+            report.defects(Locale::EnUs),
+            vec!["reply with 16 lines, and the limit is 15; write a short summary, in a few lines and plain words"]
+        );
+        assert_eq!(
+            report.defects(Locale::PtBr),
+            vec!["resposta com 16 linhas, e o limite é 15; faça um resumo curto, em poucas linhas e palavras simples"]
+        );
 
         let code = format!("Rode isto:\n```text\n{}\n```", vec!["linha"; MAX_LINES].join("\n"));
         let report = measure(&code, &[], Some(Locale::PtBr));

@@ -294,7 +294,7 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 // ---------------------------------------------------------------------------
 
 // Each themes block packs styles in the same order as `SegmentKind`:
-// Module, Git, Context, Duration, Savings, Diff, Mustard, Model, Unit, Inert.
+// Module, Git, Context, Duration, Savings, Mustard, Model, Unit, Inert.
 
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
@@ -315,8 +315,6 @@ pub const DEFAULT: Theme = Theme {
         Style::fg(Color::Ansi(8)),
         // Savings — green
         Style::fg(Color::Ansi(2)),
-        // Diff — gray (the `+N-N` is its own visual indicator; one color is OK)
-        Style::fg(Color::Ansi(8)),
         // Mustard — green: the running version, head of the second row
         Style::fg(Color::Ansi(2)),
         // Model — blue
@@ -358,8 +356,6 @@ pub(crate) const CATPPUCCIN: Theme = Theme {
         Style::pl(Color::Rgb(0xcd, 0xd6, 0xf4), Color::Rgb(0x11, 0x11, 0x1b)),
         // Savings — yellow on crust
         Style::pl(Color::Rgb(0xf9, 0xe2, 0xaf), Color::Rgb(0x18, 0x18, 0x25)),
-        // Diff — peach on crust
-        Style::pl(Color::Rgb(0xfa, 0xb3, 0x87), Color::Rgb(0x18, 0x18, 0x25)),
         // Mustard — green on crust
         Style::pl(Color::Rgb(0xa6, 0xe3, 0xa1), Color::Rgb(0x18, 0x18, 0x25)),
         // Model — base on sapphire (mirrors module cap, balances the line)
@@ -391,8 +387,6 @@ pub(crate) const TOKYO_NIGHT: Theme = Theme {
         Style::pl(Color::Rgb(0xc0, 0xca, 0xf5), Color::Rgb(0x1a, 0x1b, 0x26)),
         // Savings — yellow on bg-storm
         Style::pl(Color::Rgb(0xe0, 0xaf, 0x68), Color::Rgb(0x24, 0x28, 0x3b)),
-        // Diff — magenta on bg-storm
-        Style::pl(Color::Rgb(0xbb, 0x9a, 0xf7), Color::Rgb(0x24, 0x28, 0x3b)),
         // Mustard — green on bg-storm
         Style::pl(Color::Rgb(0x9e, 0xce, 0x6a), Color::Rgb(0x24, 0x28, 0x3b)),
         // Model — bg on magenta (mirrors module cap on the right side)
@@ -423,8 +417,6 @@ pub(crate) const PASTEL_POWERLINE: Theme = Theme {
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xa6, 0xe3, 0xa1)),
         // Savings — crust on pastel teal
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0x94, 0xe2, 0xd5)),
-        // Diff — crust on pastel sapphire
-        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0x74, 0xc7, 0xec)),
         // Mustard — crust on pastel mauve
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xcb, 0xa6, 0xf7)),
         // Model — crust on pastel lavender
@@ -456,8 +448,6 @@ pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
         Style::pl(Color::Rgb(0xeb, 0xdb, 0xb2), Color::Rgb(0x1d, 0x20, 0x21)),
         // Savings — bg on orange
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd6, 0x5d, 0x0e)),
-        // Diff — bg on purple
-        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xb1, 0x62, 0x86)),
         // Mustard — bg on aqua-dim
         Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0x83, 0xa5, 0x98)),
         // Model — bg on red (right-side accent)

@@ -9,11 +9,13 @@
 //! spec (o nome só quando a branch não termina com ele; o link da página dela
 //! fica no nome ou, sem o nome, na fase), a fase e o andamento das ondas como
 //! contagem ("1 de 4 ondas", entregues de total), o uso da conversa num número
-//! só (o já usado, o mesmo da barrinha), o tempo (`5h49m`), as linhas mudadas
-//! e o aviso vermelho de quando o Mustard está desligado; na segunda, a versão
-//! do Mustard (`Mustard 0.2.0`, só num projeto com o Mustard), a economia do
-//! rtk (`rtk poupou 64%`) e o modelo. O custo não aparece: na assinatura ele é
-//! só estimativa. A versão do Claude Code o próprio Claude Code já mostra.
+//! só (o já usado, o mesmo da barrinha), o tempo (`5h49m`) e o aviso vermelho
+//! de quando o Mustard está desligado; na segunda, a versão do Mustard
+//! (`Mustard 0.2.0`, só num projeto com o Mustard), a economia do rtk
+//! (`rtk poupou 64%`) e o modelo. O custo não aparece: na assinatura ele é só
+//! estimativa. A contagem de linhas mudadas (`+156-23`) também não: o exemplo
+//! aprovado da barra não a traz. A versão do Claude Code o próprio Claude Code
+//! já mostra.
 //!
 //! Submodules:
 //! - [`segment`] — pure data ([`segment::Segment`]) and per-kind builders.
@@ -36,8 +38,8 @@ pub(crate) mod theme;
 
 use crate::shared::rtk_gain::{get_rtk_gain, RtkGain};
 use segment::{
-    context_segment, diff_segment, duration_segment, git_segment, inert_segment, model_segment, module_segment,
-    mustard_segment, savings_segment, unit_segment, Segment,
+    context_segment, duration_segment, git_segment, inert_segment, model_segment, module_segment, mustard_segment,
+    savings_segment, unit_segment, Segment,
 };
 use serde_json::Value;
 use std::io::Read;
@@ -73,7 +75,6 @@ fn build_segments(data: &Value, gain: Option<&RtkGain>) -> Vec<Segment> {
     segs.extend(unit_segment(&cwd, branch.as_deref()));
     segs.extend(context_segment(data));
     segs.extend(duration_segment(data));
-    segs.extend(diff_segment(data));
     // Vermelho: o plugin está desligado, e nenhuma trava roda. Sem ele, esse
     // estado parece com um saudável em todo o resto da barra.
     segs.extend(inert_segment(&cwd));
@@ -186,8 +187,11 @@ mod tests {
         let (first, second) = (&lines[0], &lines[1]);
         assert!(first.contains("30%"), "the used share of the conversation goes on the first row: {first}");
         assert!(second.contains("Opus 4.7"), "the model goes on the second: {second}");
-        for gone in ["$0.42", "60k", "2.1.146"] {
-            assert!(!first.contains(gone) && !second.contains(gone), "no cost, token total or Claude Code version ({gone}): {lines:?}");
+        for gone in ["$0.42", "60k", "2.1.146", "+10-2"] {
+            assert!(
+                !first.contains(gone) && !second.contains(gone),
+                "no cost, token total, Claude Code version or changed lines ({gone}): {lines:?}"
+            );
         }
     }
 
@@ -230,16 +234,42 @@ mod tests {
             .unwrap();
     }
 
-    /// A payload like the one of the approved example: 5h49m of session, 24%
-    /// of the conversation used, past 200 thousand tokens and with a cost.
+    /// Os dados que o Claude Code manda à barra numa sessão de verdade, como
+    /// no exemplo aprovado: 5h49m de sessão, 24% da conversa usados, passado
+    /// dos 200 mil tokens, com custo e com 156 linhas acrescentadas e 23
+    /// tiradas no repositório.
     fn example_payload(root: &Path) -> Value {
+        let dir = root.to_string_lossy();
         json!({
-            "workspace": { "current_dir": root.to_string_lossy() },
-            "model": { "display_name": "Opus 5 (1M context)" },
+            "hook_event_name": "Status",
+            "session_id": "0f6c2d9e-5b1a-4c3e-9d7f-2a8b4e6c1d3f",
+            "transcript_path": format!("{dir}/.claude/transcript.jsonl"),
+            "cwd": dir,
+            "model": { "id": "claude-opus-5[1m]", "display_name": "Opus 5 (1M context)" },
+            "workspace": { "current_dir": dir, "project_dir": dir },
             "version": "2.1.267",
+            "output_style": { "name": "default" },
             "exceeds_200k_tokens": true,
-            "cost": { "total_duration_ms": (5 * 3600 + 49 * 60 + 12) * 1000, "total_cost_usd": 12.5 },
-            "context_window": { "remaining_percentage": 76, "total_input_tokens": 230_000, "total_output_tokens": 10_000 }
+            "cost": {
+                "total_cost_usd": 12.5,
+                "total_duration_ms": (5 * 3600 + 49 * 60 + 12) * 1000,
+                "total_api_duration_ms": 2_310_000,
+                "total_lines_added": 156,
+                "total_lines_removed": 23
+            },
+            "context_window": {
+                "total_input_tokens": 230_000,
+                "total_output_tokens": 10_000,
+                "context_window_size": 1_000_000,
+                "used_percentage": 24,
+                "remaining_percentage": 76,
+                "current_usage": {
+                    "input_tokens": 8_500,
+                    "output_tokens": 1_200,
+                    "cache_creation_input_tokens": 5_000,
+                    "cache_read_input_tokens": 215_300
+                }
+            }
         })
     }
 
@@ -255,10 +285,13 @@ mod tests {
     }
 
     /// A barra do exemplo aprovado, na sessão numa branch cujo nome termina
-    /// com o nome da spec: o nome da spec não se repete, a fase sai no idioma
-    /// do projeto e leva o link da página da spec, o uso da conversa é um
-    /// número só (o já usado), o tempo sai em horas e minutos, e não aparecem
-    /// o total de tokens, o aviso de 200 mil nem o custo.
+    /// com o nome da spec, com todos os dados que a sessão real traz: o nome
+    /// da spec não se repete, a fase sai no idioma do projeto e leva o link da
+    /// página da spec, o uso da conversa é um número só (o já usado), o tempo
+    /// sai em horas e minutos, e não aparecem o total de tokens, o aviso de
+    /// 200 mil, o custo nem a contagem de linhas mudadas (+156-23), que a
+    /// sessão traz. A primeira linha tem só projeto, branch, spec, uso da
+    /// conversa e tempo.
     #[test]
     fn statusline_draws_the_approved_example_with_the_project_and_spec_links() {
         let dir = tempfile::tempdir().unwrap();
@@ -275,6 +308,7 @@ mod tests {
         )
         .unwrap();
         let data = example_payload(&root);
+        assert_eq!((data["cost"]["total_lines_added"].as_i64(), data["cost"]["total_lines_removed"].as_i64()), (Some(156), Some(23)));
 
         let segs = build_segments(&data, Some(&GAIN));
         let text = |kind: segment::SegmentKind| {
@@ -283,8 +317,9 @@ mod tests {
         assert_eq!(text(segment::SegmentKind::Module), link(project_url, "portal-florestal-backend"), "the project page link");
         assert_eq!(text(segment::SegmentKind::Unit), format!("\u{25b8} {}", link(spec_url, "levantamento")), "the phase carries the spec link");
 
+        let rows = shown_rows(&data);
         assert_eq!(
-            shown_rows(&data),
+            rows,
             vec![
                 "portal-florestal-backend  \u{2387} feature/pi-kpis-plantio ?1  \u{25b8} levantamento  \
                  \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 24%  5h49m"
@@ -292,6 +327,9 @@ mod tests {
                 format!("Mustard {}  \u{26A1} rtk poupou 64%  Opus 5 (1M context)", mustard_core::harness_version()),
             ],
         );
+        for count in ["+156", "-23"] {
+            assert!(rows.iter().all(|row| !row.contains(count)), "no count of changed lines ({count}): {rows:?}");
+        }
     }
 
     /// Num projeto com o Mustard, a segunda linha começa com "Mustard" e a

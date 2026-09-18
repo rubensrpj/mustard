@@ -28,19 +28,18 @@ pub enum SegmentKind {
     Context = 2,
     Duration = 3,
     Savings = 4,
-    Diff = 5,
     /// A versão do Mustard que roda, no começo da segunda linha. Ocupa a casa
     /// do custo, que saiu da barra.
-    Mustard = 6,
-    Model = 7,
+    Mustard = 5,
+    Model = 6,
     /// A spec desta sessão, a fase dela e o andamento das ondas.
-    Unit = 8,
+    Unit = 7,
     /// The plugin is installed but switched off, so no hook runs.
-    Inert = 9,
+    Inert = 8,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 10;
+pub const SEGMENT_KIND_COUNT: usize = 9;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -220,32 +219,6 @@ pub fn savings_segment(gain: Option<&RtkGain>, lang: SupportedLocale) -> Option<
 #[must_use]
 pub fn mustard_segment() -> Segment {
     Segment::new(SegmentKind::Mustard, format!("Mustard {}", mustard_core::harness_version()))
-}
-
-/// `+N-N`. Returns `None` when both numbers are zero.
-#[must_use]
-pub fn diff_segment(data: &Value) -> Option<Segment> {
-    let la = data
-        .get("cost")
-        .and_then(|c| c.get("total_lines_added"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let lr = data
-        .get("cost")
-        .and_then(|c| c.get("total_lines_removed"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    if la == 0 && lr == 0 {
-        return None;
-    }
-    let mut parts = String::new();
-    if la > 0 {
-        let _ = write!(parts, "+{la}");
-    }
-    if lr > 0 {
-        let _ = write!(parts, "-{lr}");
-    }
-    Some(Segment::new(SegmentKind::Diff, parts))
 }
 
 /// `Opus 4.7` etc. Strips the `Claude ` / `claude-` prefix to keep the line
@@ -670,16 +643,6 @@ mod tests {
     #[test]
     fn duration_segment_none_when_zero() {
         assert!(duration_segment(&json!({ "cost": { "total_duration_ms": 0 } })).is_none());
-    }
-
-    #[test]
-    fn diff_segment_omits_when_both_zero() {
-        assert!(diff_segment(&json!({ "cost": {} })).is_none());
-        let seg = diff_segment(&json!({
-            "cost": { "total_lines_added": 100, "total_lines_removed": 5 }
-        }))
-        .unwrap();
-        assert_eq!(seg.text, "+100-5");
     }
 
     #[test]

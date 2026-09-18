@@ -253,6 +253,49 @@ mod tests {
         assert!(elapsed < Duration::from_secs(STOP_BUDGET_SECS), "{elapsed:?} for two Stops");
     }
 
+    /// A resposta com 16 linhas, uma a mais que o limite de 15, e sem nenhum
+    /// outro defeito é barrada pelo `Stop` de verdade, e o ponto do tamanho
+    /// pede no complemento um resumo curto, em poucas linhas e palavras
+    /// simples, nos dois idiomas. Ele não pede para encurtar nem reescrever a
+    /// resposta, que já apareceu na tela. Com 15 linhas nada é pedido.
+    #[test]
+    fn a_reply_over_fifteen_lines_asks_for_a_short_summary_in_the_complement() {
+        let cases = [
+            (
+                PT_PROJECT,
+                "Uma linha curta.",
+                "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela um \
+                 complemento curto sobre estes pontos:\n\
+                 - resposta com 16 linhas, e o limite é 15; faça um resumo curto, em poucas linhas e \
+                 palavras simples",
+            ),
+            (
+                r#"{"language":{"text":"en-US"}}"#,
+                "The test runs fine.",
+                "Mustard: complement below. Without rewriting the reply, write a short complement \
+                 right below it about these points:\n\
+                 - reply with 16 lines, and the limit is 15; write a short summary, in a few lines \
+                 and plain words",
+            ),
+        ];
+        for (config, line, expected) in cases {
+            let dir = project(config);
+            let root = dir.path();
+            let fits = vec![line; 15].join("\n");
+            assert_eq!(run_stop(root, &stop("s1", &fits, false)), Value::Null, "15 lines ask nothing: {config}");
+
+            let over = vec![line; 16].join("\n");
+            let blocked = run_stop(root, &stop("s1", &over, false));
+            assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+            let reason = blocked["reason"].as_str().unwrap_or_else(|| panic!("{blocked}"));
+            assert_eq!(reason, expected);
+            let point = reason.lines().nth(1).unwrap_or_default().to_lowercase();
+            for asks_to_cut in ["encurt", "reescrev", "corte", "shorten", "rewrite", "cut "] {
+                assert!(!point.contains(asks_to_cut), "the point never asks to shorten the reply: {point}");
+            }
+        }
+    }
+
     /// O `Stop` tem 30 segundos no `hooks.json`, não mais 5.
     #[test]
     fn the_stop_hook_has_thirty_seconds() {

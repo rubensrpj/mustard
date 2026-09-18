@@ -397,8 +397,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "{code} é um código interno; diga o assunto pelo nome"
         }
         ("clarity.internal_code", Locale::EnUs) => "{code} is an internal code; name the subject instead",
-        ("clarity.too_long", Locale::PtBr) => "resposta com {lines} linhas; o limite é {limit}",
-        ("clarity.too_long", Locale::EnUs) => "reply with {lines} lines; the limit is {limit}",
+        // A resposta longa já apareceu na tela: o complemento não a encurta,
+        // traz um resumo curto dela, como o da nota de leitura baixa.
+        ("clarity.too_long", Locale::PtBr) => {
+            "resposta com {lines} linhas, e o limite é {limit}; faça um resumo curto, em poucas \
+             linhas e palavras simples"
+        }
+        ("clarity.too_long", Locale::EnUs) => {
+            "reply with {lines} lines, and the limit is {limit}; write a short summary, in a few \
+             lines and plain words"
+        }
         ("clarity.hard_to_read", Locale::PtBr) => {
             "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}; faça um \
              resumo curto em palavras simples"
@@ -452,7 +460,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             62,
-            0xb4f5_5154_99d2_bab5,
+            0x1b27_b7a8_9c97_49dc,
         );
     }
 
