@@ -1105,23 +1105,34 @@ mod tests {
 
     /// Entre a última publicação e o marco, a conversa segue pelos ganchos e
     /// pelos comandos de verdade: a mensagem do usuário, o texto que os
-    /// ganchos colocam na conversa, a resposta que a conferência de escrita
-    /// barra, o complemento dela, a decisão gravada pelo `run write` e um
-    /// passo do fluxo rodado pelo despacho do `mustard-rt run`. A lista da
-    /// ordem de publicar traz só a mensagem, as duas respostas e a decisão, na
-    /// ordem do arquivo; a marca do gancho que barrou, o texto colocado e a
-    /// chamada do passo ficam fora, embora gravados depois da publicação.
+    /// ganchos colocam na conversa, a escrita que o portão recusa antes da
+    /// aprovação, a resposta, a volta que um bloqueio do fim da resposta pede,
+    /// a decisão gravada pelo `run write` e um passo do fluxo rodado pelo
+    /// despacho do `mustard-rt run`. A lista da ordem de publicar traz só a
+    /// mensagem, as duas respostas e a decisão, na ordem do arquivo; a marca
+    /// do gancho que recusou, o texto colocado e a chamada do passo ficam
+    /// fora, embora gravados depois da publicação.
     #[test]
     fn the_publish_list_carries_only_the_items_with_text() {
+        use mustard_core::domain::model::contract::{HookInput, Trigger};
         let dir = published_project("lista");
         let root = dir.path();
         assert!(!hook_event(root, "UserPromptSubmit", json!({ "prompt": "Grave a decisão da lista." })).is_blocking());
         let log = DiskSpecState::new(root).log("lista").unwrap();
         let said = log.visible().into_iter().filter(|e| e.event_type == "message").map(|e| e.id).next_back().unwrap();
-        let barred = "Gravei a decisão. Depois de ler todos os arquivos do projeto e conferir cada teste que \
-                      ainda falhava na máquina do usuário, eu ajustei a leitura do idioma e a contagem das \
-                      linhas para que a resposta final saia bem curta e clara.";
-        assert!(hook_event(root, "Stop", json!({ "last_assistant_message": barred })).is_blocking());
+        let write = HookInput {
+            hook_event_name: Some("PreToolUse".to_string()),
+            tool_name: Some("Write".to_string()),
+            tool_input: json!({ "file_path": root.join("src/a.rs"), "content": "x" }),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            ..HookInput::default()
+        };
+        assert!(crate::dispatch::run_event(Some(Trigger::PreToolUse), &write).is_blocking(), "not approved yet");
+        let reply = "Gravei a decisão. Depois de ler todos os arquivos do projeto e conferir cada teste que \
+                     ainda falhava na máquina do usuário, eu ajustei a leitura do idioma e a contagem das \
+                     linhas para que a resposta final saia bem curta e clara.";
+        assert!(!hook_event(root, "Stop", json!({ "last_assistant_message": reply })).is_blocking());
         let retry = json!({ "last_assistant_message": "Resumo: gravei a decisão.", "stop_hook_active": true });
         assert!(!hook_event(root, "Stop", retry).is_blocking());
         run_write(root, "lista", "decision", json!({"text": "**A lista leva só o que tem texto.** O resto fica fora.",

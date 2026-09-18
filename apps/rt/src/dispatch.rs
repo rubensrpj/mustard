@@ -342,18 +342,18 @@ mod tests {
 
     /// O caminho de verdade, com três mensagens do usuário: a spec nasce e o
     /// assistente sugere um objetivo; o usuário pede outro; o assistente
-    /// sugere o novo numa resposta que a conferência de escrita barra (uma
-    /// frase de mais de 25 palavras, num projeto com `mustard.json`), o
-    /// complemento chega com `stop_hook_active`, e o usuário responde "pode
-    /// usar essa" pelo gancho da mensagem; o assistente responde de novo e o
-    /// usuário manda a terceira mensagem. A resposta barrada fica gravada
-    /// inteira, antes do complemento, e as duas antes do sim. O `run write`
-    /// do objetivo grava a frase sugerida com `origin` no sim: o sim a acha
-    /// na resposta barrada, e não só no complemento, a última. Fora da volta
-    /// do sim nada vale, e nada é gravado: a sugestão da abertura, anterior à
-    /// mensagem que pediu outra; a frase da resposta que veio depois do sim; e
-    /// a sugestão aprovada, apontada na terceira mensagem, que está duas
-    /// voltas atrás dela.
+    /// sugere o novo numa resposta com uma frase de mais de 25 palavras, que a
+    /// conferência de escrita não barra mais, e a segunda resposta, que um
+    /// bloqueio do fim da resposta pede, chega com `stop_hook_active`; o
+    /// usuário responde "pode usar essa" pelo gancho da mensagem; o assistente
+    /// responde de novo e o usuário manda a terceira mensagem. A primeira
+    /// resposta fica gravada inteira, antes da segunda, e as duas antes do
+    /// sim. O `run write` do objetivo grava a frase sugerida com `origin` no
+    /// sim: o sim a acha na primeira resposta, e não só na segunda, a última.
+    /// Fora da volta do sim nada vale, e nada é gravado: a sugestão da
+    /// abertura, anterior à mensagem que pediu outra; a frase da resposta que
+    /// veio depois do sim; e a sugestão aprovada, apontada na terceira
+    /// mensagem, que está duas voltas atrás dela.
     #[test]
     fn the_barred_answer_is_recorded_before_its_complement() {
         let dir = project_on("barrada");
@@ -382,7 +382,7 @@ mod tests {
              idioma e a contagem das linhas para que a resposta final saia bem curta e clara."
         );
         let first = stop(&barred);
-        assert!(first.is_blocking(), "the writing check bars the long sentence: {first:?}");
+        assert!(!first.is_blocking(), "the writing check no longer bars the long sentence: {first:?}");
         let complement = "Resumo: ajustei a leitura do idioma.";
         let retry = json!({ "last_assistant_message": complement, "stop_hook_active": true });
         let second = run_event(Some(Trigger::Stop), &hook_call("Stop", retry));

@@ -375,12 +375,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `git.flow`. Nothing was cut."
         }
 
-        // Defeitos de clareza de uma resposta (`domain::clarity`) — cada um é
-        // uma linha curta do bloqueio do fim da resposta, que diz o defeito e
-        // o que o complemento explica sobre ele. Sem parênteses: o tom técnico
-        // os apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`,
-        // `{lines}`, `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm
-        // do chamador.
+        // Defeitos de clareza de um texto (`domain::clarity`) — cada um é uma
+        // linha curta que abre com o erro e fecha, depois dos dois-pontos ou
+        // do ponto e vírgula, com o jeito de consertar. A recusa de uma lição
+        // leva a linha inteira; a mensagem seguinte a uma resposta leva só o
+        // erro, o trecho antes da primeira pontuação dessas
+        // (`clarity_check::error_of`). Sem parênteses: o tom técnico os
+        // apagaria. `{words}`, `{opening}`, `{acronym}`, `{code}`, `{lines}`,
+        // `{limit}`, `{score}`, `{min}`, `{found}` e `{expected}` vêm do
+        // chamador.
         ("clarity.long_sentence", Locale::PtBr) => {
             "frase com {words} palavras: \"{opening}…\"; diga a mesma ideia em frases curtas"
         }
@@ -397,11 +400,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "{code} é um código interno; diga o assunto pelo nome"
         }
         ("clarity.internal_code", Locale::EnUs) => "{code} is an internal code; name the subject instead",
-        // A resposta longa já apareceu na tela: o complemento não a encurta,
-        // traz um resumo curto dela, como o da nota de leitura baixa. O JSON,
-        // a tabela ou o documento pedido vai para a página avulsa, e o chat
-        // fica com o resumo. A linha cabe no corte de 160 caracteres do
-        // bloqueio (`clarity_check::MAX_DEFECT_CHARS`), com folga para o número.
+        // O texto longo pede um resumo curto, como o da nota de leitura
+        // baixa, e manda o JSON, a tabela ou o documento pedido para a página
+        // avulsa: o chat fica com o resumo.
         ("clarity.too_long", Locale::PtBr) => {
             "resposta com {lines} linhas, e o limite é {limit}; faça no chat um resumo curto, e \
              JSON, tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`"
@@ -428,21 +429,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "reply in {found}; the language of the project and the user is {expected}; write a \
              summary in {expected}"
         }
-        // O fim da resposta (`apps/rt/src/hooks/task/end_of_turn_check.rs`):
-        // a primeira resposta que reprova é barrada, e o assistente recebe o
-        // pedido de um complemento logo abaixo dela, sem reescrevê-la. O
-        // Claude Code mostra este texto ao usuário com o rótulo de erro do
-        // gancho, e por isso ele é curto e sem cara de erro. Os defeitos vêm
-        // abaixo, um por linha. O complemento não é conferido de novo.
-        ("clarity.block.head", Locale::PtBr) => {
-            "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela um \
-             complemento curto sobre estes pontos:"
-        }
-        ("clarity.block.head", Locale::EnUs) => {
-            "Mustard: complement below. Without rewriting the reply, write a short complement \
-             right below it about these points:"
-        }
-        // A última linha da lista quando há mais defeitos do que ela mostra.
+        // A frase curta que a linha escondida da mensagem seguinte leva
+        // depois de uma resposta com erro de escrita
+        // (`apps/rt/src/hooks/task/clarity_check.rs`), para o assistente
+        // corrigir na resposta seguinte. A resposta não é barrada, e a frase
+        // não aparece na tela. `{errors}` vem do chamador: os erros, separados
+        // por ponto e vírgula.
+        ("clarity.next.head", Locale::PtBr) => "Na última resposta: {errors}.",
+        ("clarity.next.head", Locale::EnUs) => "In the last reply: {errors}.",
+        // O último item da lista quando há mais erros do que ela mostra.
         ("clarity.more", Locale::PtBr) => "e mais {count}",
         ("clarity.more", Locale::EnUs) => "and {count} more",
         _ => return None,
@@ -463,7 +458,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             62,
-            0xb1dc_fa00_7262_8d04,
+            0x4097_d153_44e2_f38a,
         );
     }
 
@@ -554,9 +549,10 @@ mod tests {
         }
     }
 
-    /// Os defeitos de clareza e o bloqueio do fim da resposta saem do
-    /// catálogo nos dois idiomas, cada um com as vagas que o medidor preenche.
-    /// O bloqueio abre avisando o complemento, e o aviso da volta saiu.
+    /// Os defeitos de clareza e a frase da mensagem seguinte saem do catálogo
+    /// nos dois idiomas, cada um com as vagas que o medidor preenche. A frase
+    /// abre dizendo que o erro foi na última resposta. O pedido do complemento
+    /// saiu com o bloqueio da escrita, e o aviso da volta saiu antes dele.
     #[test]
     fn i18n_translates_clarity_defect_keys() {
         for (key, slots) in [
@@ -566,7 +562,7 @@ mod tests {
             ("clarity.too_long", &["{lines}", "{limit}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
-            ("clarity.block.head", &[][..]),
+            ("clarity.next.head", &["{errors}"][..]),
             ("clarity.more", &["{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
@@ -577,9 +573,10 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        assert!(translate("clarity.block.head", Locale::PtBr).starts_with("Mustard: complemento abaixo."));
-        assert!(translate("clarity.block.head", Locale::EnUs).starts_with("Mustard: complement below."));
+        assert_eq!(translate("clarity.next.head", Locale::PtBr), "Na última resposta: {errors}.");
+        assert_eq!(translate("clarity.next.head", Locale::EnUs), "In the last reply: {errors}.");
         for lang in [Locale::PtBr, Locale::EnUs] {
+            assert_eq!(translate("clarity.block.head", lang), "<missing-key>", "the complement request left");
             assert_eq!(translate("clarity.note.head", lang), "<missing-key>", "the warning after the complement left");
         }
     }

@@ -14,11 +14,16 @@
 //!    plano, a volta de um subagente) não é mensagem de ninguém e não é
 //!    gravado.
 //! 3. **A linha curta.** Todo projeto instalado recebe, a cada mensagem, uma
-//!    linha de até 100 caracteres: responder no idioma do usuário, em texto
-//!    simples. A regra de escrita inteira mora no estilo de resposta; a
-//!    linha só lembra, e vai em toda mensagem porque o que ela rege é sempre
-//!    a resposta mais nova. É o único texto que uma mensagem comum coloca na
-//!    conversa: os textos grandes de regras não vão mais a cada mensagem.
+//!    linha escondida de até 100 caracteres, sempre igual: responder no
+//!    idioma do usuário, em texto simples. A regra de escrita inteira mora no
+//!    estilo de resposta; a linha só lembra, e vai em toda mensagem porque o
+//!    que ela rege é sempre a resposta mais nova. É o único texto que uma
+//!    mensagem comum coloca na conversa: os textos grandes de regras não vão
+//!    mais a cada mensagem. A exceção: depois de uma resposta com erro de
+//!    escrita, a linha leva mais uma frase curta com o erro, como "Na última
+//!    resposta: frase com 29 palavras.", uma vez só. Quem acha e guarda o erro
+//!    é a conferência do fim da resposta (`clarity_check`), que não barra a
+//!    resposta: esta frase é o único caminho do erro até o assistente.
 
 use std::path::Path;
 
@@ -27,6 +32,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::ProjectConfig;
 
 use crate::commands::spec_events::conversation::record_message;
+use crate::hooks::task::clarity_check::take_next_note;
 use crate::shared::prompt::is_harness_notice;
 
 /// A entrada da mensagem.
@@ -96,7 +102,15 @@ impl Check for PromptEntry {
         if !is_harness_notice(prompt) {
             let _ = record_message(root, input.session_id.as_deref(), prompt);
         }
-        Ok(message_line(root).map_or(Verdict::Allow, |context| Verdict::Inject { context }))
+        let Some(mut line) = message_line(root) else {
+            return Ok(Verdict::Allow);
+        };
+        // O erro de escrita da última resposta vai uma vez, junto da linha.
+        if let Some(note) = take_next_note(root, input.session_id.as_deref()) {
+            line.push(' ');
+            line.push_str(&note);
+        }
+        Ok(Verdict::Inject { context: line })
     }
 }
 
@@ -312,30 +326,29 @@ mod tests {
         }
     }
 
-    /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
-    /// chaves antigas de idioma não contam como declaração: a linha manda
-    /// responder no idioma de quem escreve, sem nomear idioma, e uma resposta
-    /// em inglês não ganha defeito de idioma. Com pt-BR declarado, o defeito
-    /// continua.
-    #[test]
-    fn undeclared_language_is_never_assumed() {
-        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
-
+    /// O `Stop` da sessão `s1` com uma resposta em inglês, prosa bastante
+    /// para o idioma ser julgado.
+    fn english_stop() -> HookInput {
         let english = "The wave is done and the tests pass.\n\
             The check now compares the language of the reply with the language of the project.\n\
             It counts the common words of each language.\n\
             A short reply is not judged at all.";
-        let stop = HookInput {
+        HookInput {
             hook_event_name: Some("Stop".to_string()),
             session_id: Some("s1".to_string()),
             raw: serde_json::json!({ "last_assistant_message": english }),
             ..HookInput::default()
-        };
-        let context_or_reason = |verdict: Verdict| match verdict {
-            Verdict::Inject { context } => context,
-            Verdict::Deny { reason } => reason,
-            _ => String::new(),
-        };
+        }
+    }
+
+    /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
+    /// chaves antigas de idioma não contam como declaração: a linha manda
+    /// responder no idioma de quem escreve, sem nomear idioma, e uma resposta
+    /// em inglês não ganha erro de idioma na mensagem seguinte. Com pt-BR
+    /// declarado, o erro vai.
+    #[test]
+    fn undeclared_language_is_never_assumed() {
+        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 
         for config in ["{}", r#"{"specLang":"pt-BR","lang":"pt-BR"}"#] {
             let dir = project_with(config);
@@ -346,36 +359,27 @@ mod tests {
                 assert!(!line.contains(named), "{config}: an undeclared language is named ({named}): {line}");
             }
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            let block = context_or_reason(EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap());
-            assert!(!block.contains("resposta em"), "{config}: no language verdict: {block}");
+            assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap(), Verdict::Allow);
+            let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
+            assert!(!next.contains("resposta em"), "{config}: no language verdict: {next}");
         }
 
         let dir = project_with(PT_PROJECT);
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::Stop));
-        let block = context_or_reason(EndOfTurnCheck.evaluate(&stop, &c).unwrap());
-        assert!(block.contains("resposta em en-US; o idioma do projeto e do usuário é pt-BR"), "{block}");
+        assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &c).unwrap(), Verdict::Allow);
+        let on_prompt = Ctx { trigger: Some(Trigger::UserPromptSubmit), ..c };
+        let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &on_prompt).unwrap());
+        assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."));
     }
 
     /// A linha curta e a medição de idioma valem para todo projeto com
     /// `mustard.json`. Com ou sem a antiga chave do tom, a mensagem leva a
-    /// linha do idioma declarado, e uma resposta em inglês num projeto em
-    /// pt-BR é barrada no fim da resposta; a mensagem seguinte não repete o
-    /// defeito. Sem `mustard.json`, nada.
+    /// linha do idioma declarado; uma resposta em inglês num projeto em pt-BR
+    /// não é barrada, e a mensagem seguinte leva o erro, uma vez só. Sem
+    /// `mustard.json`, nada.
     #[test]
     fn the_language_line_reaches_every_mustard_project() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
-
-        let english = "The wave is done and the tests pass.\n\
-            The check now compares the language of the reply with the language of the project.\n\
-            It counts the common words of each language.\n\
-            A short reply is not judged at all.";
-        let defect = "resposta em en-US; o idioma do projeto e do usuário é pt-BR";
-        let stop = HookInput {
-            hook_event_name: Some("Stop".to_string()),
-            session_id: Some("s1".to_string()),
-            raw: serde_json::json!({ "last_assistant_message": english }),
-            ..HookInput::default()
-        };
 
         for config in [PT_PROJECT, r#"{"language":{"text":"pt-BR"},"tone":"technical"}"#] {
             let dir = project_with(config);
@@ -384,20 +388,20 @@ mod tests {
             assert_eq!(context, PT_LINE, "{config}");
 
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            let Verdict::Deny { reason } = EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap() else {
-                panic!("{config}: an English reply in a pt-BR project is blocked");
-            };
-            assert!(reason.contains(defect), "{config}: {reason}");
+            let verdict = EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap();
+            assert_eq!(verdict, Verdict::Allow, "{config}: the writing check never blocks");
 
             let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
-            assert!(!next.contains(defect), "{config}: the defect rode the block, not the next prompt: {next}");
+            assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."), "{config}");
+            let after = context_of(PromptEntry.evaluate(&prompt_input("e depois?"), &c).unwrap());
+            assert_eq!(after, PT_LINE, "{config}: the error goes once");
         }
 
         let (none, c) = ctx();
         let verdict = PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap();
         assert_eq!(verdict, Verdict::Allow, "an uninstalled project gets no line");
         let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
-        assert_eq!(EndOfTurnCheck.evaluate(&stop, &on_stop).unwrap(), Verdict::Allow);
+        assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap(), Verdict::Allow);
         drop(none);
     }
 

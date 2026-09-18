@@ -44,7 +44,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 ## O que chega à janela
 
 - **O mapa do início da sessão** (`.claude/mustard/mapa-inicio-sessao.md`, até 3 kB): o fluxo, quando uma spec abre e onde cada coisa mora. Entra no início da sessão, depois de `/clear` e da compactação.
-- **A linha de cada mensagem** (até 100 caracteres): o idioma do texto e "texto simples".
+- **A linha de cada mensagem** (até 100 caracteres): o idioma do texto e "texto simples". Depois de uma resposta com erro de escrita, ela leva mais uma frase curta com o erro, como "Na última resposta: frase com 29 palavras.", uma vez só.
 - **O estilo de resposta** do plugin, um por idioma (`mustard:mustard-pt-BR`, `mustard:mustard-en-US`), escolhido pelo instalador na chave `outputStyle` do `.claude/settings.local.json`.
 - **Os três agentes**, em `.claude/agents/mustard/`, no idioma do texto: `wave` implementa uma onda, `review` confere uma onda, um levantamento ou o pull request de um colega, e `skill` escreve uma skill a partir dos exemplos que o binário escolhe.
 
@@ -61,7 +61,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 | `command_guard` | antes de um comando | Recusa comando que apaga trabalho. |
 | `subagent_inject` | antes de despachar um agente | Troca o bilhete `MUSTARD-WAVE: <spec> <n>` pelo pedido montado da onda. |
 | `approval_witness` | depois de uma pergunta com opções | Grava o clique em "Aprovar" ou "Aceitar". |
-| `end_of_turn_check` | fim da resposta | Confere a clareza e bloqueia uma vez quando a resposta falha. |
+| `end_of_turn_check` | fim da resposta | Confere a escrita sem barrar: o erro achado vai na linha da mensagem seguinte. Barra só quando a spec fecha ou entra no merge e a resposta não cita uma pendência aberta nascida nela. |
 | `session_cleanup_observer` | fim da sessão | Solta a spec da sessão. |
 
 ---
