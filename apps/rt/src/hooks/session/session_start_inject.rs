@@ -584,12 +584,15 @@ mod tests {
             std::fs::write(root.join("README.md"), "loja\n").unwrap();
             git(root, &["add", "README.md"]);
             git(root, &["commit", "-q", "-m", "seed"]);
+            // Nomes longos, como os de uma obra de verdade: o aviso do merge
+            // nomeia quatro deles, e é ele que leva o todo acima do teto
+            // mesmo com o mapa curto.
             let landed_branches = [
-                "feature/trava-de-pendencias-no-fim-da-resposta",
-                "feature/pagina-do-projeto-com-menu-lateral",
-                "fix/merge-feito-por-outra-pessoa-no-inicio",
-                "feature/uma-entrega-ja-mergeada-pelo-colega",
-                "fix/prova-que-roda-zero-testes-no-fechamento",
+                "feature/trava-de-pendencias-abertas-no-fim-da-resposta-do-assistente-principal",
+                "feature/pagina-do-projeto-com-menu-lateral-busca-e-filtro-por-fase-da-spec",
+                "fix/merge-feito-por-outra-pessoa-no-inicio-da-sessao-seguinte-do-usuario",
+                "feature/uma-entrega-ja-mergeada-pelo-colega-antes-da-revisao-final-do-dono",
+                "fix/prova-que-roda-zero-testes-no-fechamento-da-spec-e-da-revisao-final",
             ];
             for landed in landed_branches {
                 git(root, &["checkout", "-q", "-b", landed]);

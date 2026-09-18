@@ -68,7 +68,9 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         "spec": spec,
         "phase": phase,
         "line": resume_line(&spec, &log, lang),
-        "next": translate(next_key(phase), lang),
+        // A dica do plano manda fazer a pergunta de aprovação com o texto
+        // exato do catálogo, o único que a testemunha da aprovação reconhece.
+        "next": translate(next_key(phase), lang).replace("{question}", translate("approval.question", lang)),
         "command": next_command(phase, &spec, &state),
     });
     if let Some(branch) = state.branch {
@@ -360,6 +362,25 @@ mod tests {
 
         let without_base = State { branch: Some("feature/x".into()), ..State::default() };
         assert_eq!(next_command("closed", "x", &without_base), Value::Null);
+    }
+
+    /// A retomada da spec no plano, a que vale depois de `/clear`, manda fazer
+    /// a pergunta de aprovação com o texto exato que a testemunha da aprovação
+    /// reconhece, "Aprovar esta spec?", e nenhuma vaga fica por preencher.
+    #[test]
+    fn resuming_in_the_plan_phase_asks_the_exact_approval_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), br#"{"language":{"text":"pt-BR"}}"#).unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::shared::spec_state::seed_event(root, "x", "state", json!({"phase": "plan", "author": "binary"}));
+
+        let out = resume(root, "x");
+        assert_eq!(out["phase"], json!("plan"), "{out}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains("com o texto exato \"Aprovar esta spec?\""), "{next}");
+        assert!(next.contains("na ordem de explicar do estilo de resposta"), "{next}");
+        assert!(!next.contains("{question}"), "{next}");
     }
 
     /// Sem spec nenhuma, a retomada recusa dizendo que não há spec atual.

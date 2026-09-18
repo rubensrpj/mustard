@@ -10,7 +10,7 @@ Mustard runs every piece of work that changes a file through one flow: survey, p
 
 ## During the survey
 
-- Present one point at a time, always in the same shape: the checked fact, with its source (file and line, or the command and its result); what is already decided; what is left to decide; one recommendation.
+- Present one point at a time, in the order of explaining from the response style.
 - Check the code before stating a fact. The binary refuses a fact without a source.
 - Record each answer right away, with `mustard-rt run write <type>`. The `write` answer brings the next point.
 

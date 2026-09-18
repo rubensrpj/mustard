@@ -56,14 +56,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              it. Nothing was written."
         }
         ("survey.present_point", Locale::PtBr) => {
-            "Apresente o ponto {code}, e só ele: o fato conferido no código, com a fonte; o que já \
-             está decidido; o que falta decidir; e uma recomendação. Grave cada resposta na hora e \
-             feche o ponto com `closes`: {id}."
+            "Apresente o ponto {code}, e só ele, na ordem de explicar do estilo de resposta. Grave \
+             cada resposta na hora e feche o ponto com `closes`: {id}."
         }
         ("survey.present_point", Locale::EnUs) => {
-            "Present point {code}, and only it: the fact checked in the code, with its source; what \
-             is already decided; what is left to decide; and a recommendation. Record each answer \
-             right away and close the point with `closes`: {id}."
+            "Present point {code}, and only it, in the order of explaining from the response style. \
+             Record each answer right away and close the point with `closes`: {id}."
         }
         ("survey.present_all", Locale::PtBr) => {
             "Pedido pequeno: preencha todas as lacunas de `points` a partir do pedido e do código, \
@@ -112,14 +110,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              and the tasks."
         }
         ("survey.review_step", Locale::PtBr) => {
-            "O bloco {block} fechou. Releia só as decisões dele, aponte o que pode ter ficado de fora \
-             ou se contradiz e faça a pergunta de `question`, com os achados como opções e \
-             \"{continue}\" por último."
+            "O bloco {block} fechou. Releia só as decisões dele e ache o que pode ter ficado de fora \
+             ou se contradiz. Apresente os achados na ordem de explicar do estilo de resposta e faça \
+             a pergunta de `question`, com os achados como opções e \"{continue}\" por último."
         }
         ("survey.review_step", Locale::EnUs) => {
-            "Block {block} is closed. Reread only its decisions, point out what may have been left \
-             out or contradicts itself, and ask the question in `question`, with the findings as \
-             options and \"{continue}\" last."
+            "Block {block} is closed. Reread only its decisions and find what may have been left out \
+             or contradicts itself. Present the findings in the order of explaining from the response \
+             style and ask the question in `question`, with the findings as options and \
+             \"{continue}\" last."
         }
         ("survey.review_question", Locale::PtBr) => "Quer ver mais algum ponto ou aprofundar algum?",
         ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
@@ -199,7 +198,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0xa07e_2005_fa48_9647,
+            0x77e9_fc03_69c4_09ea,
         );
     }
 

@@ -10,7 +10,7 @@ O Mustard conduz todo trabalho que muda arquivo por um fluxo só: levantamento, 
 
 ## No levantamento
 
-- Apresente um ponto por vez, sempre na mesma forma: o fato conferido, com a fonte (arquivo e linha, ou o comando e o resultado); o que já está decidido; o que falta decidir; uma recomendação.
+- Apresente um ponto por vez, na ordem de explicar do estilo de resposta.
 - Confira no código antes de afirmar. O binário recusa fato sem fonte.
 - Grave cada resposta na hora, com `mustard-rt run write <tipo>`. A resposta do `write` traz o próximo ponto.
 

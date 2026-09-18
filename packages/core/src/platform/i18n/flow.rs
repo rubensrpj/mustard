@@ -26,9 +26,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The plan has {count} things to fix before the approval question. Nothing was written."
         }
         ("plan.next", Locale::PtBr) => {
-            "Depois, faça a pergunta de aprovação, com \"Aprovar\" e \"Ajustar\"."
+            "Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
+             texto exato \"{question}\" e as opções \"Aprovar\" e \"Ajustar\": com outro texto, a \
+             aprovação não vale."
         }
-        ("plan.next", Locale::EnUs) => "Then ask the approval question, with \"Approve\" and \"Adjust\".",
+        ("plan.next", Locale::EnUs) => {
+            "Then ask the approval question in the order of explaining from the response style, with \
+             the exact text \"{question}\" and the options \"Approve\" and \"Adjust\": with another \
+             text, the approval does not count."
+        }
         ("plan.copy", Locale::PtBr) => {
             "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
         }
@@ -264,10 +270,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec is in the survey: run the survey and record the answer to each point."
         }
         ("resume.next.plan", Locale::PtBr) => {
-            "O plano está gravado: confira o plano, publique a página da spec e faça a pergunta de aprovação."
+            "O plano está gravado: confira o plano, publique a página da spec e faça a pergunta de \
+             aprovação na ordem de explicar do estilo de resposta, com o texto exato \"{question}\" e \
+             as opções \"Aprovar\" e \"Ajustar\": com outro texto, a aprovação não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
-            "The plan is recorded: check the plan, publish the spec page and ask the approval question."
+            "The plan is recorded: check the plan, publish the spec page and ask the approval \
+             question in the order of explaining from the response style, with the exact text \
+             \"{question}\" and the options \"Approve\" and \"Adjust\": with another text, the \
+             approval does not count."
         }
         ("resume.next.running", Locale::PtBr) => {
             "A spec está aprovada: rode a próxima rodada de ondas."
@@ -843,7 +854,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             113,
-            0x2f9f_b637_e840_cb9a,
+            0xbe11_4c4d_0145_efca,
         );
     }
 
@@ -908,7 +919,7 @@ mod tests {
     fn i18n_translates_wave_prompt_keys() {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
-            ("plan.next", &[][..]),
+            ("plan.next", &["{question}"][..]),
             ("page.publish", &["{milestone}"][..]),
             ("page.purge_pending", &["{codes}"][..]),
             ("page.after_rebuild", &["{milestone}"][..]),
@@ -948,7 +959,7 @@ mod tests {
             ("resume.none", &[][..]),
             ("resume.wave", &["{n}"][..]),
             ("resume.next.survey", &[][..]),
-            ("resume.next.plan", &[][..]),
+            ("resume.next.plan", &["{question}"][..]),
             ("resume.next.running", &[][..]),
             ("resume.next.closed", &[][..]),
             ("resume.next.pr_open", &[][..]),
@@ -1026,6 +1037,82 @@ mod tests {
             assert_ne!(pt, en, "{key} must differ per locale");
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
+        }
+    }
+
+    /// As dicas que mandam perguntar ou responder (a de apresentar um ponto
+    /// do levantamento, a de revisar um bloco, a do plano e a da retomada) e o
+    /// mapa do início da sessão apontam para a ordem de explicar do estilo de
+    /// resposta, sem pedir a forma antiga: o fato com a fonte, o que já está
+    /// decidido, o que falta decidir e uma recomendação. O estilo de cada
+    /// idioma tem essa ordem, os quatro passos em sequência, e deixou de dizer
+    /// que a página é publicada em cada marco. A dica do plano e a da retomada
+    /// trazem o texto exato da pergunta de aprovação, entre aspas, lido da
+    /// chave dela no catálogo: "Aprovar esta spec?" em português e "Approve
+    /// this spec?" em inglês.
+    #[test]
+    fn the_question_hints_follow_the_answer_style() {
+        let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        let cases = [
+            (
+                Locale::PtBr,
+                "Aprovar esta spec?",
+                "na ordem de explicar do estilo de resposta",
+                "## A ordem de explicar",
+                [
+                    "Toda pergunta, toda resposta e todo texto de item gravado na spec",
+                    "1. O que é a coisa e onde ela age.",
+                    "2. Para que ela serve.",
+                    "3. Um exemplo que o próprio usuário viu.",
+                    "4. Só então o problema e a proposta; numa pergunta, por último a pergunta de sim ou não.",
+                ],
+                ["com a fonte", "já está decidido", "falta decidir", "recomendação"],
+                "só é publicada na aprovação",
+            ),
+            (
+                Locale::EnUs,
+                "Approve this spec?",
+                "in the order of explaining from the response style",
+                "## The order of explaining",
+                [
+                    "Every question, every answer and every item text recorded in the spec",
+                    "1. What the thing is and where it acts.",
+                    "2. What it is for.",
+                    "3. An example the user saw for themselves.",
+                    "4. Only then the problem and the proposal; in a question, the yes-or-no question comes last.",
+                ],
+                ["with its source", "already decided", "left to decide", "recommendation"],
+                "published only at approval",
+            ),
+        ];
+        for (lang, question, pointer, section, steps, old_shape, old_example) in cases {
+            let style = std::fs::read_to_string(plugin.join(format!("output-styles/mustard-{lang}.md")))
+                .unwrap_or_else(|e| panic!("the {lang} answer style is unreadable: {e}"));
+            let order = style.find(section).unwrap_or_else(|| panic!("the {lang} style has no {section}"));
+            let mut at = order;
+            for step in steps {
+                let found = style[at..].find(step).unwrap_or_else(|| panic!("{lang}: `{step}` missing or out of order"));
+                at += found + step.len();
+            }
+            assert!(!style.contains(old_example), "the {lang} style still says the page waits for a milestone");
+
+            let hints = ["survey.present_point", "survey.review_step", "plan.next", "resume.next.plan"];
+            let texts = hints.map(|key| (key, translate(key, lang))).into_iter().chain([(
+                "session map",
+                crate::platform::seeds::session_map(lang),
+            )]);
+            for (key, text) in texts {
+                assert!(text.contains(pointer), "{key} in {lang} does not point to the answer style: {text}");
+                for old in old_shape {
+                    assert!(!text.contains(old), "{key} in {lang} still asks for the old shape `{old}`: {text}");
+                }
+            }
+
+            assert_eq!(translate("approval.question", lang), question);
+            for key in ["plan.next", "resume.next.plan"] {
+                let said = translate(key, lang).replace("{question}", translate("approval.question", lang));
+                assert!(said.contains(&format!("\"{question}\"")), "{key} in {lang} lacks the exact question: {said}");
             }
         }
     }

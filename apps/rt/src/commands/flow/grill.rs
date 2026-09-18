@@ -584,6 +584,8 @@ mod tests {
         let hint = next["hint"].as_str().unwrap();
         let code = next["next"]["code"].as_str().unwrap();
         assert!(hint.contains(code) && hint.contains(&next["next"]["id"].to_string()), "{hint}");
+        // O ponto é apresentado na ordem de explicar do estilo de resposta.
+        assert!(hint.contains("na ordem de explicar do estilo de resposta"), "{hint}");
     }
 
     /// Repetir o `grill` com os mesmos tipos não grava nada e devolve o mesmo

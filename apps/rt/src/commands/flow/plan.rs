@@ -375,7 +375,10 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     if let Some(id) = recorded {
         report["id"] = json!(id);
     }
-    spec_events::pages::end_milestone(&mut report, Ok(&pages), "approval", translate("plan.next", lang), lang);
+    // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
+    // só reconhece essa pergunta, e outro texto não aprova nada.
+    let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang));
+    spec_events::pages::end_milestone(&mut report, Ok(&pages), "approval", &ask, lang);
     if report.get("publish").is_some()
         && let Some(command) = fallback_copy(&project.root, &spec, &log, ssh)
     {
@@ -900,7 +903,10 @@ mod tests {
         assert_eq!(report["waves"][0]["wave"], json!(1));
         assert!(report["waves"][0]["lines"].as_u64().unwrap() > 0);
         let next = report["next"].as_str().unwrap_or_default();
-        assert!(next.contains(translate("plan.next", Locale::PtBr)), "{next}");
+        // A pergunta de aprovação sai com o texto exato que a testemunha da
+        // aprovação reconhece, e nenhuma vaga fica por preencher.
+        assert!(next.contains("com o texto exato \"Aprovar esta spec?\""), "{next}");
+        assert!(!next.contains("{question}"), "{next}");
         for page in ["spec", "project"] {
             assert!(next.contains(&format!(r#"'{{"page":"{page}","milestone":"approval","#)), "{page}: {next}");
         }
@@ -1635,7 +1641,8 @@ mod tests {
         assert_eq!(held["withheld"], json!([code]), "{held}");
         let next = held["next"].as_str().unwrap_or_default();
         assert!(next.contains(&code) && next.contains("write purge"), "{next}");
-        assert!(next.contains("write publish") && next.ends_with(translate("plan.next", Locale::PtBr)), "{next}");
+        let ask = translate("plan.next", Locale::PtBr).replace("{question}", "Aprovar esta spec?");
+        assert!(next.contains("write publish") && next.ends_with(&ask), "{next}");
         let warned = held["warnings"].as_array().cloned().unwrap_or_default();
         assert!(warned.iter().any(|w| w["reason"] == json!("page-check")
             && w["hint"].as_str().unwrap_or_default().contains(&code)), "{held}");
