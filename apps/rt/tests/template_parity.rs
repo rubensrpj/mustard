@@ -812,7 +812,10 @@ fn no_printed_text_names_a_command_or_hook_that_left() {
     assert!(texts.len() > 2_000, "the sweep read only {} texts", texts.len());
     // A varredura enxerga o que procura: o catálogo de textos está nela.
     assert!(
-        texts.iter().any(|(origin, text)| origin.ends_with("i18n/flow.rs") && text.contains("mustard-rt run open")),
+        texts.iter().any(|(origin, text)| {
+            // No Windows o caminho vem com a barra invertida.
+            origin.replace('\\', "/").ends_with("i18n/flow.rs") && text.contains("mustard-rt run open")
+        }),
         "the sweep never reads the catalog",
     );
 
