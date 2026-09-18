@@ -262,7 +262,10 @@ pub fn init_with_templates(
 
     // What an older Mustard left in files that are not its own: listed, never
     // taken out from here.
-    seeding::report_cleanup(&mustard_core::platform::project_seed::cleanup::plan(&project_path));
+    seeding::report_cleanup(
+        &mut std::io::stdout(),
+        &mustard_core::platform::project_seed::cleanup::plan(&project_path),
+    );
 
     print_next_steps();
     Ok(InitOutcome::Installed)
