@@ -79,8 +79,10 @@ pub enum FlowCmd {
     /// erro de montagem, que cada pedido cabe no teto de linhas, que os
     /// arquivos e os nomes citados existem, que o arquivo citado está no git e
     /// que ondas da mesma rodada não dividem arquivo; avisa os itens sem
-    /// tarefa; refaz a página e o índice; e responde o próximo passo. Grava a
-    /// fase do plano; a spec que já está nela só tem a página refeita.
+    /// tarefa; refaz o índice, prepara a cópia da spec para o banco de dados
+    /// da página e responde o próximo passo: publicar a página que ainda não
+    /// tem endereço, copiar os lotes e fazer a pergunta de aprovação. Grava a
+    /// fase do plano; a spec que já está nela só tem a cópia preparada.
     #[command(display_order = 2)]
     Plan {
         /// A spec cujo plano é conferido. Sem ela, a spec atual.
@@ -96,7 +98,8 @@ pub enum FlowCmd {
     /// primeira rodada. Com o relatório da rodada anterior, primeiro grava o
     /// que cada onda entregou e o veredito da revisão, formata só os arquivos
     /// da rodada e faz o commit, e só então despacha a rodada seguinte. A
-    /// resposta manda publicar a página da spec e a do projeto.
+    /// resposta manda copiar para o banco de dados das páginas o que entrou na
+    /// spec desde a última cópia.
     #[command(display_order = 3)]
     Round {
         /// A spec cuja rodada corre. Sem ela, a spec atual.
@@ -115,7 +118,8 @@ pub enum FlowCmd {
     /// terminou (nenhuma onda sem commit, nenhuma reprovada e nenhum pedido
     /// do usuário sem onda que o entregue), roda o lint do projeto inteiro e
     /// cada critério uma vez, gravando a execução de cada um, e então grava a
-    /// fase fechada, solta a spec da sessão e refaz a página. A spec de duas
+    /// fase fechada, solta a spec da sessão e prepara a cópia para o banco de
+    /// dados das páginas. A spec de duas
     /// ondas ou mais recebe antes o pedido da revisão final do conjunto, e só
     /// fecha com a linha dela aprovada.
     #[command(display_order = 4)]

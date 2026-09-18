@@ -10,9 +10,9 @@
 //!
 //! A pasta da spec é arquivada por padrão, ao lado das outras, e só é apagada
 //! quando quem chama pede: nada fica pela metade, e nada some sem se pedir.
-//! A spec arquivada continua no índice, com a fase descartada, e por isso na
-//! página do projeto, que o descarte refaz: dá para achar depois o que foi
-//! decidido e por que parou. A apagada sai do índice junto com a pasta.
+//! A spec arquivada continua no índice, com a fase descartada: dá para achar
+//! depois o que foi decidido e por que parou. A apagada sai do índice junto
+//! com a pasta. O descarte não escreve página nenhuma.
 
 use std::path::{Path, PathBuf};
 
@@ -133,9 +133,6 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     if let Some(sid) = session {
         crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
     }
-    // A página do projeto sai do índice, e a linha acabou de mudar.
-    let page = crate::commands::spec_events::pages::refresh_project(&project.root, lang);
-
     let mut out = json!({
         "ok": moved && index_done,
         "spec": spec,
@@ -143,15 +140,6 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
         "phase": phase_written.then(|| json!("discarded")),
         "index": if opts.delete { "dropped" } else { "kept" },
     });
-    match page {
-        Ok((path, warnings)) => {
-            out["page"] = json!(path);
-            if !warnings.is_empty() {
-                out["warnings"] = json!(warnings);
-            }
-        }
-        Err(refusal) => out["warnings"] = json!([refusal.message(lang)]),
-    }
     if let Some(git) = git {
         out["git"] = git;
     }
@@ -265,9 +253,8 @@ mod tests {
     }
 
     /// A primeira chamada só mostra o que vai sair e devolve um código; nada
-    /// sai do disco. A segunda, com o código, arquiva a spec, deixa a linha
-    /// dela no índice com a fase descartada e refaz a página do projeto, que
-    /// continua a listá-la.
+    /// sai do disco. A segunda, com o código, arquiva a spec e deixa a linha
+    /// dela no índice com a fase descartada, sem escrever página.
     #[test]
     fn discarding_takes_two_calls_and_the_first_one_touches_nothing() {
         let dir = tempdir().unwrap();
@@ -298,9 +285,8 @@ mod tests {
         let line = index.lines().find(|l| l.contains("\"name\":\"x\"")).unwrap_or_else(|| panic!("{index}"));
         assert!(line.contains("\"phase\":\"discarded\""), "a linha fica, com a fase descartada: {line}");
         assert_eq!(done["index"], json!("kept"), "{done}");
-        assert_eq!(done["page"], json!(".claude/spec/project.html"), "{done}");
-        let page = std::fs::read_to_string(root.join(".claude/spec/project.html")).unwrap();
-        assert!(page.contains("<code class=\"c\">x</code><span class=\"t\"></span><span class=\"tail\"><span class=\"tag\">descartada</span>"), "{page}");
+        assert!(done.get("page").is_none(), "{done}");
+        assert!(!root.join(".claude/spec/project.html").exists(), "o descarte não escreve a página do projeto");
 
         // O índice refeito do zero não a perde.
         std::fs::remove_file(root.join(".claude/spec/index.ndjson")).unwrap();
@@ -328,8 +314,7 @@ mod tests {
         assert_eq!(done["index"], json!("dropped"), "{done}");
         let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap_or_default();
         assert!(!index.contains("\"name\":\"x\""), "a apagada sai do índice: {index}");
-        let page = std::fs::read_to_string(root.join(".claude/spec/project.html")).unwrap();
-        assert!(!page.contains("<code>x</code>"), "{page}");
+        assert!(!root.join(".claude/spec/project.html").exists(), "o descarte não escreve a página do projeto");
     }
 
     /// A branch do servidor sai só com a opção: sem ela o descarte tira a

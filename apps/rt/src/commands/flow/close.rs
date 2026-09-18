@@ -4,9 +4,9 @@
 //! confere se a obra terminou mesmo, roda o lint do projeto inteiro (o
 //! `lintCommand` do `mustard.json`), roda cada critério uma vez e grava a
 //! execução de cada um, e então fecha — grava a fase `closed`, que arma a
-//! cobrança das pendências pela mesma porta, solta a spec da sessão e refaz a
-//! página. A pasta de uma spec fechada fica com exatamente três arquivos: o
-//! de eventos, o `.md` e a página.
+//! cobrança das pendências pela mesma porta, solta a spec da sessão e prepara
+//! a cópia para o banco de dados da página. A pasta de uma spec fechada fica
+//! com o arquivo de eventos e a pasta da cópia (`copy/`), e nenhuma página.
 //!
 //! **A revisão final do conjunto.** A spec de duas ondas ou mais não fecha
 //! sem ela: com a máquina verde, o fechamento devolve o pedido dessa revisão,
@@ -204,7 +204,9 @@ fn run_close(
     if let Some(sid) = session {
         crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
     }
-    let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang);
+    // O fechamento é um marco: a cópia para o banco da página sai aqui, com a
+    // fase fechada na linha da spec da página do projeto.
+    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, &spec, lang);
 
     // O pull request é o passo seguinte, e a linha dele sai pronta, com a base
     // e a branch tiradas do estado — pela mesma tabela que a retomada usa.
@@ -217,17 +219,13 @@ fn run_close(
         "recorded": recorded,
         "criteria": runs,
     });
-    if let Ok(pages) = &pages {
-        out["md"] = json!(pages.md);
-        out["html"] = json!(pages.html);
-    }
-    // O fechamento é um marco: manda publicar, menos com a página que não pôde
-    // ser refeita, que espera — e o pull request espera a publicação.
+    // O fechamento manda copiar, menos com a cópia que não pôde ser
+    // preparada, que fica para a próxima — e o pull request vem depois.
     let then = match command.as_str() {
         Some(line) => translate("close.next", lang).replace("{command}", line),
         None => translate("resume.next.closed", lang).to_string(),
     };
-    crate::commands::spec_events::pages::end_milestone(&mut out, pages.as_ref(), "close", &then, lang);
+    crate::commands::spec_events::pages::end_milestone(&mut out, prepared.as_ref(), &spec, "close", &then, lang);
     if !command.is_null() {
         out["command"] = command;
     }
@@ -505,7 +503,8 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         names.sort();
-        assert_eq!(names, ["spec.html", "spec.md", "spec.ndjson"], "a pasta fechada tem 3 arquivos");
+        assert_eq!(names, ["copy", "spec.ndjson"], "a pasta fechada tem o arquivo de eventos e a cópia, e nenhuma página");
+        assert!(!root.join(".claude/spec/project.html").exists(), "nem a página do projeto");
     }
 
     /// O fechamento com um `mustard.json` que declara o lint.
@@ -620,11 +619,12 @@ mod tests {
         assert!(finals.iter().all(|e| e.fields.get("criteria").is_none()), "e nenhuma delas confere critério");
     }
 
-    /// A resposta da rodada e a do fechamento mandam publicar a página da
-    /// spec e a do projeto e dizem como gravar as duas publicações, e nenhuma
-    /// delas traz o endereço da página para a conversa. A do plano prova o
-    /// mesmo no teste dela. Um passo comum — o levantamento, a gravação de um
-    /// item, a página refeita a pedido — não manda publicar.
+    /// A resposta da rodada e a do fechamento, numa spec ainda sem páginas
+    /// publicadas, mandam publicar a página da spec e a do projeto, dizem como
+    /// gravar as duas publicações e mandam copiar os lotes, e nenhuma delas
+    /// traz o endereço de uma página para a conversa. A do plano prova o mesmo
+    /// no teste dela. Um passo comum — o levantamento, a gravação de um item,
+    /// a página refeita a pedido — não manda publicar nem copiar.
     #[test]
     fn the_round_and_the_close_order_the_publish_and_never_carry_a_link() {
         let dir = tempdir().unwrap();
@@ -648,6 +648,7 @@ mod tests {
                 let record = format!(r#"'{{"page":"{page}","milestone":"{milestone}","#);
                 assert!(next.contains(&record), "{milestone} says how to record the {page} page: {next}");
             }
+            assert!(next.contains("write copy"), "{milestone}: {next}");
             let shown = report.to_string();
             assert!(!shown.contains("http"), "nenhum endereço na resposta: {shown}");
         }
@@ -683,8 +684,10 @@ mod tests {
         assert_eq!(paged["ok"], json!(true), "{paged}");
         for report in [&grilled, &context, &paged] {
             assert!(report.get("publish").is_none(), "um passo comum não manda publicar: {report}");
+            assert!(report.get("copy").is_none(), "nem copiar: {report}");
             let shown = report.to_string();
             assert!(!shown.contains("write publish"), "um passo comum não manda publicar: {shown}");
+            assert!(!shown.contains("write copy"), "nem copiar: {shown}");
         }
     }
 
@@ -697,8 +700,8 @@ mod tests {
     }
 
     /// Com um item de texto que parece senha, a rodada e o fechamento mandam
-    /// publicar assim mesmo e dizem o código do item a expurgar; o `.html`
-    /// local sai com o trecho trocado por "…" e o resto do item legível.
+    /// publicar e copiar assim mesmo e dizem o código do item a expurgar; o
+    /// item fica fora da cópia.
     #[test]
     fn a_withheld_item_is_named_and_no_longer_holds_the_publish_of_the_round_and_the_close() {
         let dir = tempdir().unwrap();
@@ -722,51 +725,38 @@ mod tests {
             assert!(next.contains("write publish") && next.ends_with(&then), "{milestone}: {next}");
             let warned = report["warnings"].as_array().cloned().unwrap_or_default();
             assert!(warned.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
+            let items = crate::commands::spec_events::pages::copy::sent_items(root, report);
+            assert!(!items.contains(&id_of(&note)), "{milestone}: the item stays out of the copy");
         }
-        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(!html.contains("a1b2c3d4e5f6g7h8i9j0"), "the local page keeps the secret out");
-        assert!(html.contains("GITHUB_TOKEN=…"), "the rest of the item stays readable");
     }
 
-    /// Quando a página da spec ou a do projeto não pode ser refeita, a rodada e
-    /// o fechamento não mandam publicar a que ficou no disco: dizem nos avisos
-    /// qual página falhou e por quê, mandam refazer a página antes de publicar e
-    /// seguem com o próximo passo. Com a página da spec boa e só a do projeto
-    /// impedida, também não mandam.
+    /// Quando a cópia para o banco não pode ser preparada, a rodada e o
+    /// fechamento não mandam publicar nem copiar: dizem nos avisos por quê,
+    /// dizem que a próxima cópia leva os mesmos itens e seguem com o próximo
+    /// passo.
     #[test]
-    fn a_page_that_could_not_be_rebuilt_is_never_ordered_to_be_published() {
-        for (blocked, name) in [("x/spec.html", "page.name.spec"), ("project.html", "page.name.project")] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            ready_to_close(root, "x", &["git --version"]);
-            // Uma pasta no lugar da página impede de gravá-la.
-            let page = root.join(".claude/spec").join(blocked);
-            std::fs::remove_file(&page).unwrap();
-            std::fs::create_dir(&page).unwrap();
+    fn a_copy_that_could_not_be_prepared_is_never_ordered() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        // Um arquivo no lugar da pasta da cópia impede de prepará-la.
+        let folder = root.join(".claude/spec/x/copy");
+        std::fs::remove_dir_all(&folder).unwrap();
+        std::fs::write(&folder, "não é pasta").unwrap();
 
-            let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
-            let closed = close(root, "x");
-            let said = translate("page.not_rebuilt", Locale::PtBr).replace("{page}", translate(name, Locale::PtBr));
-            let failed = translate("page.rebuild_failed", Locale::PtBr)
-                .replace("{page}", translate(name, Locale::PtBr))
-                .replace("{detail}", "");
-            let failed = failed.trim_end_matches('.');
-            for (report, milestone, then) in
-                [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
-            {
-                assert_eq!(report["ok"], json!(true), "{blocked}: {report}");
-                assert!(report.get("publish").is_none(), "{blocked}, {milestone}: {report}");
-                let next = report["next"].as_str().unwrap_or_default();
-                assert!(!next.contains("write publish"), "{blocked}, {milestone}: {next}");
-                assert!(next.starts_with(&said), "{blocked}, {milestone}: {next}");
-                assert!(next.contains("run page --spec") && next.contains(&format!("`{milestone}`")), "{milestone}: {next}");
-                assert!(next.ends_with(&then), "{blocked}, {milestone}: {next}");
-                let warned = report["warnings"].as_array().cloned().unwrap_or_default();
-                assert!(
-                    warned.iter().any(|w| w["hint"].as_str().unwrap_or_default().starts_with(failed)),
-                    "{blocked}, {milestone} names the page that failed: {report}"
-                );
-            }
+        let rounded = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let closed = close(root, "x");
+        let failed = translate("page.copy.failed", Locale::PtBr);
+        for (report, milestone, then) in
+            [(&rounded, "round", then_of(&rounded, "round.close")), (&closed, "close", then_of(&closed, "close.next"))]
+        {
+            assert_eq!(report["ok"], json!(true), "{milestone}: {report}");
+            assert!(report.get("publish").is_none() && report.get("copy").is_none(), "{milestone}: {report}");
+            let next = report["next"].as_str().unwrap_or_default();
+            assert!(!next.contains("write publish") && !next.contains("write copy"), "{milestone}: {next}");
+            assert_eq!(next, format!("{failed} {then}"), "{milestone}");
+            let warned = report["warnings"].as_array().cloned().unwrap_or_default();
+            assert!(warned.iter().any(|w| w["reason"] == json!("io-failed")), "{milestone} says why: {report}");
         }
     }
 

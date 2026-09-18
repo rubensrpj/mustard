@@ -13,10 +13,14 @@
 //! ```
 //!
 //! A linha da spec no índice das specs é refeita a cada gravação, ainda com a
-//! trava do arquivo de eventos presa. A página e o `.md` não: refazer os dois
-//! custa segundos na spec real, e gravar um evento tem de custar o tempo de
-//! escrever uma linha. Eles saem no fim de cada passo do fluxo, no fim de cada
-//! onda — o `entregou`, que passa por aqui — e no comando de página.
+//! trava do arquivo de eventos presa. A gravação não mexe em página nenhuma: a
+//! página publicada lê o banco de dados dela, e a cópia para o banco sai nos
+//! marcos (`super::pages::copy`).
+//!
+//! Um pedido (`request`) muda o plano, e a cópia sai logo depois dele: numa
+//! spec cuja página já foi publicada, a saída traz em `copy` os lotes
+//! preparados e, em `next`, a ordem de copiá-los e de gravar a cópia feita
+//! (`copy`), que diz o número do último item que ela levou.
 //!
 //! Com o tipo `lesson`, a gravação vai para o banco de lições
 //! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
@@ -165,7 +169,6 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use super::pages::SpecPages;
 use crate::shared::spec_state::DiskSpecState;
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
@@ -284,7 +287,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
         .then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim())))
         .flatten();
     match record_in(&project, &opts.root, spec, event_type, draft, None) {
-        Ok(Recorded { written, pages, grew, survey }) => {
+        Ok(Recorded { written, grew, survey }) => {
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -300,14 +303,10 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
             if !written.purged.is_empty() {
                 report["purged"] = json!(written.purged);
             }
-            // Se não deu para gravar a página e o `.md`, ou para refazer a
-            // linha da spec no índice, o evento já está no arquivo: fica o
-            // aviso. O nome citado num fato que o mapa não confirma também
-            // só avisa.
+            // Se não deu para refazer a linha da spec no índice, o evento já
+            // está no arquivo: fica o aviso. O nome citado num fato que o
+            // mapa não confirma também só avisa.
             let mut warnings = Vec::new();
-            if let Some(Err(refusal)) = &pages {
-                warnings.push(refusal.message(lang));
-            }
             if let Some(refusal) = &written.index_warning {
                 warnings.push(spec_index::write_warning(refusal, lang));
             }
@@ -322,11 +321,32 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
                         .replace("{now}", &now.to_string()),
                 );
             }
+            // O pedido muda o plano: a cópia para o banco da página sai logo
+            // depois dele. A que não pôde ser preparada só avisa, e a cópia
+            // seguinte leva os mesmos itens.
+            let mut next = next.map(|key| translate(&key, lang).to_string());
+            if let Some(said) = next.as_mut() {
+                match super::pages::copy::prepare(&project.root, spec, super::pages::copy::Moment::Request, lang) {
+                    Ok(Some(prepared)) => {
+                        report["copy"] = prepared.to_value();
+                        for sentence in prepared.order(spec.trim(), None, lang) {
+                            said.push(' ');
+                            said.push_str(&sentence);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(refusal) => {
+                        warnings.push(refusal.message(lang));
+                        said.push(' ');
+                        said.push_str(translate("page.copy.failed", lang));
+                    }
+                }
+            }
             if !warnings.is_empty() {
                 report["warnings"] = json!(warnings);
             }
-            if let Some(key) = next {
-                report["next"] = json!(translate(&key, lang));
+            if let Some(next) = next {
+                report["next"] = json!(next);
             } else if let Some(survey) = survey {
                 for (key, value) in survey {
                     report[key.as_str()] = value;
@@ -416,13 +436,10 @@ fn point_to_open_pending(start: &Path, draft: &mut Map<String, Value>) -> Result
     }
 }
 
-/// O que uma gravação deixou: o evento e, no fim de uma onda, onde a página e
-/// o `.md` foram refeitos ou por que não foram gravados.
+/// O que uma gravação deixou: o evento, o crescimento das ondas e o passo do
+/// levantamento.
 pub struct Recorded {
     pub(crate) written: store::Written,
-    /// Onde a página e o `.md` foram gravados, ou a recusa da gravação deles.
-    /// Só no `entregou` de uma onda: as outras gravações não os refazem.
-    pub(crate) pages: Option<Result<SpecPages, Refusal>>,
     /// As ondas aprovadas e as de agora, quando a onda gravada fez a spec
     /// passar das ondas que tinha na aprovação que vale.
     pub(crate) grew: Option<(usize, usize)>,
@@ -432,9 +449,8 @@ pub struct Recorded {
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
-/// `run write`: a linha no arquivo de eventos e a linha da spec no índice. A
-/// página e o `.md` só no `entregou` de uma onda. `by` diz quem grava, para a
-/// regra da mudança de fase.
+/// `run write`: a linha no arquivo de eventos e a linha da spec no índice.
+/// `by` diz quem grava, para a regra da mudança de fase.
 ///
 /// # Errors
 ///
@@ -470,17 +486,11 @@ fn record_in(
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
-    // A página e o `.md` saem no fim de cada passo e no fim de cada onda, não
-    // a cada gravação. O fim de uma onda é o `entregou`, e ele passa por
-    // aqui: os dois são refeitos antes de a trava soltar, do que acabou de
-    // ser gravado, e a gravação seguinte, de outra sessão, só entra depois. A
-    // conta das ondas também sai dali, com a trava presa: duas ondas gravadas
-    // ao mesmo tempo nunca avisam a mesma conta.
-    let mut pages = None;
+    // A conta das ondas sai com a trava presa: duas ondas gravadas ao mesmo
+    // tempo nunca avisam a mesma conta.
     let mut grew = None;
     let mut survey = None;
     let wave = event_type == "wave";
-    let ends_a_wave = event_type == "delivered";
     let lang = project.lang;
     let written = store::write_guarded(
         &path,
@@ -500,12 +510,9 @@ fn record_in(
             if wave {
                 grew = waves_grown_by(log, log.max_id());
             }
-            if ends_a_wave {
-                pages = Some(super::pages::rebuild(&project.root, spec, log, project.lang));
-            }
         },
     )?;
-    Ok(Recorded { written, pages, grew, survey })
+    Ok(Recorded { written, grew, survey })
 }
 
 /// A fase que uma gravação de `state` traz e o `state` que ela revê; nos
@@ -1098,8 +1105,8 @@ mod tests {
         assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
     }
 
-    /// Nenhuma gravação refaz a página nem o `.md`: os dois saem no fim do
-    /// passo, pela porta que os refaz. Depois dela, uma decisão revista mostra
+    /// Nenhuma gravação refaz a página nem o `.md`: os dois saem só pelo
+    /// comando de página. Depois dele, uma decisão revista mostra
     /// só a versão nova fora da conversa, onde a antiga aparece marcada como
     /// substituída; um item removido some dos dois e continua no arquivo de
     /// eventos, com o motivo.
@@ -1208,10 +1215,10 @@ mod tests {
         assert!(!spec.join("spec.html").exists(), "no page over an old spec");
     }
 
-    /// Uma spec aberta pelo `open` tem a página e o `.md` refeitos no fim do
-    /// passo, e não a cada gravação, mesmo com um `meta.json` posto ao lado
-    /// por uma porta antiga. A linha da spec no índice continua saindo a cada
-    /// gravação: refazê-la custa uma linha.
+    /// Uma spec aberta pelo `open` tem a página e o `.md` refeitos pelo
+    /// comando de página, e não a cada gravação, mesmo com um `meta.json`
+    /// posto ao lado por uma porta antiga. A linha da spec no índice continua
+    /// saindo a cada gravação: refazê-la custa uma linha.
     #[test]
     fn a_spec_opened_by_open_gets_its_page_at_the_end_of_the_step() {
         let dir = tempdir().unwrap();
@@ -1240,22 +1247,21 @@ mod tests {
         assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("e outro recado"));
     }
 
-    /// O fim de uma onda é o `entregou` dela, e ele refaz a página e o `.md`
-    /// dentro da própria gravação, ainda com a trava do arquivo presa.
+    /// O fim de uma onda é o `entregou` dela, e ele não escreve página nem
+    /// `.md`: a página publicada lê o banco dela, que a rodada manda copiar.
     #[test]
-    fn the_delivered_of_a_wave_rebuilds_the_page_inside_the_write() {
+    fn the_delivered_of_a_wave_writes_no_page() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = root.join(".claude").join("spec").join("teste");
         write(root, "message", r#"{"author":"user","text":"o plano"}"#);
-        assert!(!spec.join("spec.html").exists(), "a mensagem não refez a página");
 
         let delivered = r#"{"wave":1,"text":"A onda 1 ficou pronta.","files":["src/a.rs"]}"#;
         let out = write(root, "delivered", delivered);
         assert_eq!(out["ok"], json!(true), "{out}");
-        let page = std::fs::read_to_string(spec.join("spec.html")).expect("a página sai no fim da onda");
-        assert!(page.contains("A onda 1 ficou pronta."), "{page}");
-        assert!(std::fs::read_to_string(spec.join("spec.md")).unwrap().contains("A onda 1 ficou pronta."));
+        for page in ["spec.html", "spec.md", "copy"] {
+            assert!(!spec.join(page).exists(), "{page}");
+        }
     }
 
     /// O que cada onda entregou, o commit, o clique e a fala digitada do

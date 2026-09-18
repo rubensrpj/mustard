@@ -117,11 +117,12 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
     assert_eq!(ids, (1..=2 * rounds).collect::<Vec<u64>>(), "consecutive, in file order, none repeated");
 }
 
-/// A página e o `.md` do fim de uma onda são refeitos dentro da trava do
+/// A cópia para o banco da página é preparada inteira dentro da trava do
 /// arquivo de eventos: depois de dois fins de onda gravados ao mesmo tempo,
-/// por duas rodadas em dois processos, os dois têm os dois itens.
+/// por duas rodadas em dois processos, a cópia que ficou tem os dois itens, e
+/// cada lote aponta só arquivos que estão lá, sem sobra de outra rodada.
 #[test]
-fn two_processes_closing_a_wave_at_once_leave_both_items_on_the_page_and_the_md() {
+fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let spec = root.join(".claude").join("spec").join("teste");
@@ -169,13 +170,47 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_on_the_page_and_the_md(
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
             assert!(stdout_json(&out).get("warnings").is_none(), "{}", String::from_utf8_lossy(&out.stdout));
         }
+        let copied = copied_items(root, &spec.join("copy"));
+        for text in &texts {
+            assert!(copied.iter().any(|item| item["text"] == json!(text)), "round {round}: the copy lacks {text}");
+        }
         for page in ["spec.md", "spec.html"] {
-            let shown = std::fs::read_to_string(spec.join(page)).expect("the page exists");
-            for text in &texts {
-                assert!(shown.contains(text.as_str()), "round {round}: {page} lacks {text}");
-            }
+            assert!(!spec.join(page).exists(), "round {round}: no {page} is written");
         }
     }
+}
+
+/// Os itens que a cópia em `folder` manda para o banco, lidos como a
+/// ferramenta do banco os lê: de cada lote `spec-<n>.json`, cada escrita da
+/// coleção dos itens pelo arquivo dela. Cada arquivo apontado existe, e cada
+/// arquivo de item da pasta é apontado por um lote: a pasta é de uma cópia só.
+fn copied_items(root: &std::path::Path, folder: &std::path::Path) -> Vec<Value> {
+    let mut batches: Vec<std::path::PathBuf> = std::fs::read_dir(folder)
+        .expect("the copy folder")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("spec-")))
+        .collect();
+    batches.sort();
+    let mut pointed: Vec<std::path::PathBuf> = Vec::new();
+    let mut items = Vec::new();
+    for (n, batch) in batches.iter().enumerate() {
+        let name = batch.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        assert_eq!(name, format!("spec-{}.json", n + 1), "{batches:?}");
+        let writes: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(batch).expect("batch")).expect("json");
+        for write in writes.iter().filter(|w| w["op"] == json!("set")) {
+            let file = root.join(write["file_path"].as_str().expect("file_path"));
+            let body = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            if write["collection"] == json!("items") {
+                items.push(serde_json::from_str::<Value>(&body).expect("item json"));
+            }
+            pointed.push(file);
+        }
+    }
+    for entry in std::fs::read_dir(folder.join("items")).expect("items").flatten() {
+        assert!(pointed.contains(&entry.path()), "{} is left over from another copy", entry.path().display());
+    }
+    items
 }
 
 #[test]

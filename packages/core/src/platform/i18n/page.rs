@@ -1,6 +1,7 @@
 //! As páginas: a da spec e o `.md` dela (blocos, tipos, campos, valores, fases,
 //! autores e o painel de medição), a lista dos itens sem dono, a do projeto, a
-//! publicação nos marcos e as recusas do comando `page`.
+//! cópia para o banco de dados das páginas publicadas e as recusas do comando
+//! `page`.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -15,84 +16,63 @@ pub(super) const PREFIXES: &[&str] = &["page", "project"];
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
-        // A publicação nos marcos, dita pelo plano, pela rodada e pelo
-        // fechamento (`commands/spec_events/pages.rs`).
-        ("page.publish", Locale::PtBr) => {
-            "Publique a página da spec e a do projeto (`.claude/spec/project.html`) e grave as duas \
-             publicações: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
-             e `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
-             cada uma com `\"ok\":false` e `\"reason\"` quando falhar. Não escreva os endereços na \
-             resposta: eles ficam na barra de status."
+        // A cópia para o banco de dados das páginas publicadas, dita pelos
+        // marcos (o plano, a rodada e o fechamento) e pela gravação de um
+        // pedido que muda o plano (`commands/spec_events/pages/copy.rs`).
+        ("page.copy.publish", Locale::PtBr) => {
+            "A {page} ainda não foi publicada: publique o template `{template}` com a ferramenta \
+             `Artifact`, passando em `capabilities` o valor `{capabilities}`, e grave o endereço com \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
+             com `\"ok\":false` e `\"reason\"` quando falhar."
         }
-        ("page.publish", Locale::EnUs) => {
-            "Publish the spec page and the project page (`.claude/spec/project.html`) and record both \
-             publications: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
-             and `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
-             each with `\"ok\":false` and a `\"reason\"` when it fails. Never write the addresses in \
-             the reply: they live in the status line."
+        ("page.copy.publish", Locale::EnUs) => {
+            "The {page} is not published yet: publish the template `{template}` with the `Artifact` \
+             tool, passing `{capabilities}` as `capabilities`, and record the address with \
+             `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
+             with `\"ok\":false` and a `\"reason\"` when it fails."
         }
-        // O que a ordem de publicar diz de cada página já publicada: o que
-        // entrou na spec depois da última publicação dela, e o endereço
-        // gravado, que a ferramenta de publicar exige ler antes.
-        ("page.publish.since", Locale::PtBr) => {
-            "Desde a última publicação da {page}, em {at}, entraram na spec: {items}."
+        ("page.copy.batches", Locale::PtBr) => {
+            "Copie para o banco de dados da {page}, no endereço {url}, os lotes {files}, nessa ordem: \
+             cada arquivo é a lista `writes` de uma chamada da ferramenta `ArtifactData` com `action` \
+             `batch`, e cada documento vai pelo `file_path` dele, sem você ler os itens. Depois grave a \
+             cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`."
         }
-        ("page.publish.since", Locale::EnUs) => {
-            "Since the last publication of the {page}, at {at}, the spec got: {items}."
+        ("page.copy.batches", Locale::EnUs) => {
+            "Copy into the {page}'s database, at {url}, the batches {files}, in this order: each file is \
+             the `writes` list of one `ArtifactData` call with `action` `batch`, and each document goes \
+             by its `file_path`, without reading the items. Then record the copy with \
+             `mustard-rt run write copy --spec {spec} --json '{record}'`."
         }
-        ("page.publish.nothing_since", Locale::PtBr) => {
-            "Nada entrou na spec desde a última publicação da {page}, em {at}."
+        ("page.copy.new_address", Locale::PtBr) => "o endereço que a publicação devolver",
+        ("page.copy.new_address", Locale::EnUs) => "the address the publication returns",
+        ("page.copy.no_links", Locale::PtBr) => {
+            "Não escreva os endereços na resposta: eles ficam na barra de status."
         }
-        ("page.publish.nothing_since", Locale::EnUs) => {
-            "Nothing entered the spec since the last publication of the {page}, at {at}."
+        ("page.copy.no_links", Locale::EnUs) => {
+            "Never write the addresses in the reply: they live in the status line."
         }
-        ("page.publish.same_list", Locale::PtBr) => "Para a {page}, vale a mesma lista.",
-        ("page.publish.same_list", Locale::EnUs) => "The same list holds for the {page}.",
-        ("page.publish.read_first", Locale::PtBr) => {
-            "Se esta conversa ainda não publicou a {page}, leia antes o endereço gravado dela, {url}: \
-             a ferramenta de publicar exige."
+        ("page.copy.failed", Locale::PtBr) => {
+            "A cópia para o banco de dados das páginas não pôde ser preparada, e o motivo está em \
+             `warnings`: não copie nada agora, porque a próxima cópia leva os mesmos itens."
         }
-        ("page.publish.read_first", Locale::EnUs) => {
-            "If this conversation has not published the {page} yet, first read its recorded address, \
-             {url}: the publishing tool requires it."
-        }
-        ("page.publish.check_only", Locale::PtBr) => {
-            "Confira só essa lista e publique, sem ler o `.md` nem o `.html`: o resto já foi publicado."
-        }
-        ("page.publish.check_only", Locale::EnUs) => {
-            "Check only this list and publish, without reading the `.md` or the `.html`: the rest was \
-             already published."
+        ("page.copy.failed", Locale::EnUs) => {
+            "The copy into the pages' database could not be prepared, and the reason is in `warnings`: \
+             copy nothing now, since the next copy carries the same items."
         }
         ("page.purge_pending", Locale::PtBr) => {
-            "Os itens {codes} ainda guardam no arquivo um trecho com cara de segredo, que saiu da \
-             página como \"…\": expurgue cada um com `mustard-rt run write purge --spec <spec> --json \
-             '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
+            "Os itens {codes} guardam no arquivo um trecho com cara de segredo e ficam fora da cópia \
+             para o banco de dados da página até serem expurgados: expurgue cada um com \
+             `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
         }
         ("page.purge_pending", Locale::EnUs) => {
-            "Items {codes} still keep in the file an excerpt that looks like a secret, which left the \
-             page as \"…\": purge each one with `mustard-rt run write purge --spec <spec> --json \
-             '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
+            "Items {codes} keep in the file an excerpt that looks like a secret and stay out of the \
+             copy into the page's database until they are purged: purge each one with \
+             `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
         }
-        ("page.after_rebuild", Locale::PtBr) => {
-            "Refaça a página com `mustard-rt run page --spec <spec>`, publique as duas páginas e \
-             grave cada publicação com o marco `{milestone}`."
-        }
-        ("page.after_rebuild", Locale::EnUs) => {
-            "Rebuild the page with `mustard-rt run page --spec <spec>`, publish both pages and \
-             record each publication with the `{milestone}` milestone."
-        }
-        ("page.not_rebuilt", Locale::PtBr) => {
-            "Não publique as páginas: a {page} não pôde ser refeita, e o motivo está em `warnings`."
-        }
-        ("page.not_rebuilt", Locale::EnUs) => {
-            "Do not publish the pages: the {page} could not be rebuilt, and the reason is in `warnings`."
-        }
-        ("page.rebuild_failed", Locale::PtBr) => "Não consegui refazer a {page}: {detail}.",
-        ("page.rebuild_failed", Locale::EnUs) => "Could not rebuild the {page}: {detail}.",
         ("page.name.spec", Locale::PtBr) => "página da spec",
         ("page.name.spec", Locale::EnUs) => "spec page",
-        ("page.name.project", Locale::PtBr) => "página do projeto (`.claude/spec/project.html`)",
-        ("page.name.project", Locale::EnUs) => "project page (`.claude/spec/project.html`)",
+        ("page.name.project", Locale::PtBr) => "página do projeto",
+        ("page.name.project", Locale::EnUs) => "project page",
 
         // A moldura de toda página: o menu lateral, a busca e os botões de
         // abrir e fechar. `{n}` e `{total}` são preenchidos pelo script da
@@ -304,6 +284,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.type.state", Locale::EnUs) => "state",
         ("page.type.publish", Locale::PtBr) => "publicação",
         ("page.type.publish", Locale::EnUs) => "publish",
+        ("page.type.copy", Locale::PtBr) => "cópia",
+        ("page.type.copy", Locale::EnUs) => "copy",
         ("page.type.work_type", Locale::PtBr) => "tipo de trabalho",
         ("page.type.work_type", Locale::EnUs) => "work type",
         ("page.type.point", Locale::PtBr) => "ponto",
@@ -418,6 +400,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.ok", Locale::EnUs) => "Succeeded",
         ("page.field.url", Locale::PtBr) => "Endereço",
         ("page.field.url", Locale::EnUs) => "Address",
+        ("page.field.last", Locale::PtBr) => "Último item copiado",
+        ("page.field.last", Locale::EnUs) => "Last item copied",
         ("page.field.kinds", Locale::PtBr) => "Tipos",
         ("page.field.kinds", Locale::EnUs) => "Kinds",
         ("page.field.block", Locale::PtBr) => "Grupo de lacunas",
@@ -830,8 +814,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            328,
-            0x109d_123f_4a9c_aa5c,
+            326,
+            0x84cb_4110_dd58_f346,
         );
     }
 }

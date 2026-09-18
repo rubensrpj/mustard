@@ -4,18 +4,15 @@
 //! ou diverge.
 //!
 //! Cada `write` já refaz a linha da spec dele; este é o conserto inteiro, o
-//! que o `doctor` manda rodar quando acusa divergência. Refeito o índice, a
-//! página do projeto, que sai só dele, é refeita também. A saída diz o índice e
-//! a página, relativos ao projeto, quantas specs entraram, quantas linhas
-//! tiveram o `search` recalculado e as pastas que ficaram fora (sem arquivo de
+//! que o `doctor` manda rodar quando acusa divergência. Página nenhuma é
+//! escrita: a página do projeto lê o banco de dados dela. A saída diz o
+//! índice, relativo ao projeto, quantas specs entraram, quantas linhas tiveram
+//! o `search` recalculado e as pastas que ficaram fora (sem arquivo de
 //! eventos):
 //!
 //! ```text
-//! {"ok": true, "index": ".claude/spec/index.ndjson", "page": ".claude/spec/project.html", "specs": 3, "search_updated": 0, "lessons_search_updated": 0, "skipped": []}
+//! {"ok": true, "index": ".claude/spec/index.ndjson", "specs": 3, "search_updated": 0, "lessons_search_updated": 0, "skipped": []}
 //! ```
-//!
-//! A página que não pôde ser gravada não desfaz o índice: sai sem `page`, com
-//! o motivo em `warnings`.
 //!
 //! Recusa só quando a trava ou a escrita falham (`io-failed`), com exit 1.
 
@@ -35,26 +32,14 @@ pub struct IndexOpts {
 pub(crate) fn index_at(opts: &IndexOpts) -> Value {
     let project = super::project(&opts.root);
     match spec_index::rebuild(&project.root) {
-        Ok(rebuilt) => {
-            let mut report = json!({
-                "ok": true,
-                "index": super::pages::relative(&project.root, &rebuilt.index),
-                "specs": rebuilt.specs,
-                "search_updated": rebuilt.search_updated,
-                "lessons_search_updated": rebuilt.lessons_search_updated,
-                "skipped": rebuilt.skipped,
-            });
-            match super::pages::refresh_project(&project.root, project.lang) {
-                Ok((page, warnings)) => {
-                    report["page"] = json!(page);
-                    if !warnings.is_empty() {
-                        report["warnings"] = json!(warnings);
-                    }
-                }
-                Err(refusal) => report["warnings"] = json!([refusal.message(project.lang)]),
-            }
-            report
-        }
+        Ok(rebuilt) => json!({
+            "ok": true,
+            "index": super::pages::relative(&project.root, &rebuilt.index),
+            "specs": rebuilt.specs,
+            "search_updated": rebuilt.search_updated,
+            "lessons_search_updated": rebuilt.lessons_search_updated,
+            "skipped": rebuilt.skipped,
+        }),
         Err(refusal) => super::refused(&refusal, project.lang),
     }
 }
@@ -105,15 +90,13 @@ mod tests {
             json!({
                 "ok": true,
                 "index": ".claude/spec/index.ndjson",
-                "page": ".claude/spec/project.html",
                 "specs": 2,
                 "search_updated": 1,
                 "lessons_search_updated": 0,
                 "skipped": ["velha"],
             })
         );
-        let page = std::fs::read_to_string(root.join(".claude/spec/project.html")).unwrap();
-        assert!(page.contains("<code class=\"c\">outra</code>") && page.contains("<code class=\"c\">teste</code>"), "{page}");
+        assert!(!root.join(".claude/spec/project.html").exists(), "o índice não escreve a página do projeto");
         let again = index_at(&IndexOpts { root: root.to_path_buf() });
         assert_eq!(again["search_updated"], json!(0), "{again}");
     }

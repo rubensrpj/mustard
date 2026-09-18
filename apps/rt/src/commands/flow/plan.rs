@@ -4,11 +4,12 @@
 //! É a porta entre o levantamento e a aprovação. Depois que a especificação,
 //! as ondas e as tarefas estão gravadas, este comando monta o pedido de cada
 //! onda a partir dos eventos — com as lições e as skills —, confere o plano
-//! contra o código real, refaz a página e o índice, grava a fase `plan` pela
-//! mesma porta de gravação de fase das outras, e responde o próximo passo:
-//! publique as duas páginas e faça a pergunta de aprovação. O item que ainda
-//! guarda um trecho com cara de segredo sai dito, para ser expurgado; na
-//! página, o trecho já saiu como "…".
+//! contra o código real, refaz o índice, grava a fase `plan` pela mesma porta
+//! de gravação de fase das outras, prepara a cópia da spec para o banco de
+//! dados da página e responde o próximo passo: publique a página que ainda
+//! não foi publicada, copie os lotes para o banco e faça a pergunta de
+//! aprovação. O item que ainda guarda um trecho com cara de segredo sai dito,
+//! para ser expurgado; ele fica fora da cópia.
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; erro de montagem do plano (ciclo entre ondas, e
@@ -47,10 +48,6 @@
 //! citado existe, o arquivo está no git — rodam aqui, uma vez por plano, e
 //! nunca ao desenhar a página. Rodar o comando de novo não repete a anotação
 //! que já está no arquivo.
-//!
-//! Quando a publicação anterior falhou, a resposta já traz o `scp` pronto
-//! para o usuário copiar a página para a máquina dele: a aprovação não fica
-//! presa a uma dependência de fora.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -269,12 +266,11 @@ impl PlanFinding {
 /// O núcleo testável de [`run`]. A sessão vem do ambiente. Nunca entra em
 /// pânico.
 pub(crate) fn plan_at(opts: &PlanOpts) -> Value {
-    plan_for(opts, session_from_env().as_deref(), std::env::var("SSH_CONNECTION").ok().as_deref())
+    plan_for(opts, session_from_env().as_deref())
 }
 
-/// [`plan_at`] com a sessão e a conexão recebidas, que é como um teste as
-/// escolhe.
-pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>) -> Value {
+/// [`plan_at`] com a sessão recebida, que é como um teste a escolhe.
+pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
     let refuse = |refusal: &Refusal| spec_events::refused(refusal, lang);
@@ -316,18 +312,16 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         .collect();
 
     if !blocking.is_empty() {
-        // A página sai mesmo com o plano travado: é nela que o achado que
-        // segura a pergunta aparece para quem vai corrigi-lo.
-        let pages = match spec_events::pages::refresh(&project.root, &spec, lang) {
-            Ok(pages) => pages,
-            Err(refusal) => return refuse(&refusal),
-        };
+        // O plano travado não é marco: nada vai para o banco da página, e o
+        // item que guarda um trecho com cara de segredo sai dito, para ser
+        // expurgado antes da cópia.
         let mut report = json!({
             "ok": false, "spec": spec, "reason": "plan-not-ready",
             "hint": translate("plan.not_ready", lang).replace("{count}", &blocking.len().to_string()),
             "waves": waves, "blocking": blocking, "warnings": warnings,
         });
-        spec_events::pages::note_checked(&mut report, &pages);
+        let withheld = spec_events::pages::copy::withheld(&log);
+        spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
         return report;
     }
 
@@ -353,18 +347,17 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
         }
     };
 
-    // O passo termina refazendo a página e o `.md`: a gravação de cada evento
-    // já não os refaz, e é por esta página que a spec é aprovada.
-    let pages = match spec_events::pages::refresh(&project.root, &spec, lang) {
-        Ok(pages) => pages,
+    // O passo termina preparando a cópia para o banco da página, que é por
+    // onde a spec é aprovada. A cópia acontece só nos marcos, e a aprovação é
+    // um deles: a resposta manda publicar a página que ainda não tem endereço
+    // e copiar os lotes, e nenhum endereço vai para a resposta ao usuário — o
+    // link mora na barra de status. O item que ainda guarda um trecho com
+    // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
+    // pergunta.
+    let prepared = match spec_events::pages::copy::prepare_milestone(&project.root, &spec, lang) {
+        Ok(prepared) => prepared,
         Err(refusal) => return refuse(&refusal),
     };
-
-    // A publicação acontece só nos marcos, e a aprovação é um deles: a
-    // resposta manda publicar as duas páginas, e nenhum endereço entra na
-    // conversa — o link mora na barra de status. O item que ainda guarda um
-    // trecho com cara de segredo sai dito, para ser expurgado, sem segurar a
-    // publicação nem a pergunta.
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
         "waves": waves, "warnings": warnings,
@@ -375,14 +368,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>, ssh: Option<&str>
     // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
     // só reconhece essa pergunta, e outro texto não aprova nada.
     let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang));
-    spec_events::pages::end_milestone(&mut report, Ok(&pages), "approval", &ask, lang);
-    if report.get("publish").is_some()
-        && let Some(command) = fallback_copy(&project.root, &spec, &log, ssh)
-    {
-        report["copy"] = json!(command);
-        let next = report["next"].as_str().unwrap_or_default().to_string();
-        report["next"] = json!(format!("{next} {}", translate("plan.copy", lang)));
-    }
+    spec_events::pages::end_milestone(&mut report, Ok(&prepared), &spec, "approval", &ask, lang);
     report
 }
 
@@ -761,33 +747,6 @@ fn declared_files(task: &SpecEvent) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// O comando que copia a página para a máquina do usuário, quando a última
-/// publicação falhou. Numa sessão por SSH ele vem pronto, com o endereço do
-/// servidor e o usuário da sessão; fora dela, vem o caminho do arquivo.
-fn fallback_copy(root: &Path, spec: &str, log: &SpecLog, ssh: Option<&str>) -> Option<String> {
-    let failed = log
-        .block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .rfind(|e| {
-            e.event_type == "publish" && e.str_field("page") == Some(mustard_core::domain::spec_index::SPEC_PAGE)
-        })
-        .is_some_and(|e| e.fields.get("ok").and_then(Value::as_bool) == Some(false));
-    if !failed {
-        return None;
-    }
-    let page = mustard_core::ClaudePaths::for_project(root).ok()?.for_spec(spec).ok()?.spec_html_path();
-    let shown = page.to_string_lossy().replace('\\', "/");
-    let server = ssh.and_then(|line| line.split_whitespace().nth(2).map(str::to_string));
-    match server {
-        Some(server) => {
-            let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
-            let who = if user.is_empty() { String::new() } else { format!("{user}@") };
-            Some(format!("scp {who}{server}:{shown} ."))
-        }
-        None => Some(shown),
-    }
-}
-
 fn join(items: impl Iterator<Item = String>) -> String {
     items.collect::<Vec<_>>().join(", ")
 }
@@ -797,6 +756,7 @@ fn join(items: impl Iterator<Item = String>) -> String {
 mod tests {
     use super::*;
     use crate::commands::flow::grill::{grill_for, GrillOpts};
+    use crate::commands::spec_events::pages::copy::{sent, sent_items};
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
     use std::process::Command;
     use tempfile::tempdir;
@@ -870,7 +830,7 @@ mod tests {
     }
 
     fn plan(root: &Path, spec: &str) -> Value {
-        plan_for(&PlanOpts { root: root.to_path_buf(), spec: Some(spec.into()) }, None, None)
+        plan_for(&PlanOpts { root: root.to_path_buf(), spec: Some(spec.into()) }, None)
     }
 
     fn reasons(report: &Value, field: &str) -> Vec<String> {
@@ -884,8 +844,9 @@ mod tests {
     }
 
     /// Um plano são é conferido numa chamada: a spec passa para o plano, a
-    /// página e o `.md` saem refeitos, e a resposta manda publicar a página e
-    /// fazer a pergunta.
+    /// cópia para o banco da página sai preparada, sem página nem `.md`
+    /// escritos, e a resposta manda publicar as duas páginas, copiar os lotes
+    /// e fazer a pergunta.
     #[test]
     fn a_sound_plan_is_checked_in_one_call_and_asks_for_the_page_and_the_question() {
         let dir = tempdir().unwrap();
@@ -907,32 +868,39 @@ mod tests {
         for page in ["spec", "project"] {
             assert!(next.contains(&format!(r#"'{{"page":"{page}","milestone":"approval","#)), "{page}: {next}");
         }
-        assert!(report["copy"].is_null(), "sem publicação falha, nada de copiar: {report}");
-        // A aprovação é um marco: a resposta manda publicar as duas páginas, e
-        // nenhum endereço entra na conversa.
+        assert!(next.contains("write copy") && next.contains("ArtifactData"), "{next}");
+        // A aprovação é um marco: a resposta manda publicar as duas páginas,
+        // que ainda não têm endereço, e copiar a spec inteira para o banco.
         assert_eq!(report["publish"], json!(["spec", "project"]), "{report}");
         assert!(!report.to_string().contains("http"), "{report}");
-        assert!(root.join(".claude/spec/x/spec.html").is_file());
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(!sent_items(root, &report).is_empty(), "{report}");
+        assert_eq!(report["copy"]["spec"]["record"], json!({"page": "spec", "last": log.max_id()}), "{report}");
+        for page in ["spec.html", "spec.md"] {
+            assert!(!root.join(".claude/spec/x").join(page).exists(), "{page}");
+        }
+        assert!(!root.join(".claude/spec/project.html").exists());
 
-        // A linha da spec no índice sai refeita junto com a página.
+        // A linha da spec no índice sai refeita no passo.
         let index = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert!(index.contains("\"phase\":\"plan\""), "{index}");
 
-        // Rodar de novo não grava fase nenhuma, refaz a página e o índice, e
-        // continua respondendo o mesmo.
-        std::fs::remove_file(root.join(".claude/spec/x/spec.html")).unwrap();
+        // Rodar de novo não grava fase nenhuma, refaz o índice e continua
+        // respondendo o mesmo.
         std::fs::remove_file(root.join(".claude/spec/index.ndjson")).unwrap();
         let again = plan(root, "x");
         assert_eq!(again["ok"], json!(true), "{again}");
         assert_eq!(again["from"], json!("plan"));
         assert!(again["id"].is_null(), "{again}");
-        assert!(root.join(".claude/spec/x/spec.html").is_file(), "a página volta");
+        assert_eq!(again["publish"], json!(["spec", "project"]), "{again}");
         let rebuilt = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert_eq!(rebuilt, index, "o índice volta igual");
     }
 
-    /// Cada linha de cada pedido aparece na página da spec, sem exceção, as
-    /// instruções fixas incluídas: é por essa página que a spec é aprovada.
+    /// Cada linha de cada pedido aparece na página da spec que o comando de
+    /// página refaz, sem exceção, as instruções fixas incluídas, e vai inteiro
+    /// para o banco da página publicada no documento das coisas calculadas: é
+    /// por essa página que a spec é aprovada.
     #[test]
     fn every_line_of_every_request_shows_up_on_the_page() {
         let dir = tempdir().unwrap();
@@ -948,10 +916,15 @@ mod tests {
 
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
-        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
         assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
+        let computed = sent(root, &report, "spec").into_iter().find(|w| w["collection"] == json!("computed")).unwrap();
+        for prompt in &built {
+            assert_eq!(computed["body"]["prompts"][prompt.wave.to_string()], json!(prompt.text), "{computed}");
+        }
+        spec_events::pages::refresh(root, "x", Locale::PtBr).expect("o comando de página");
+        let page = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
         // A página mostra o pedido como um arquivo `.md`: cada linha aparece
         // com o texto dela, sem as marcas do markdown.
         let text = page_text(&page);
@@ -1568,6 +1541,7 @@ mod tests {
         assert!(note_labels(root, "x").iter().all(|l| l == label), "{:?}", note_labels(root, "x"));
 
         // No `.md` o código do item fica como está; na página ele vira link.
+        spec_events::pages::refresh(root, "x", Locale::PtBr).expect("o comando de página");
         let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
         for message in &messages {
             assert!(md.contains(message.as_str()), "o `.md` não mostra {message:?}");
@@ -1584,8 +1558,9 @@ mod tests {
         assert_eq!(read_notes(root, "x"), notes, "o mesmo achado não vira anotação duas vezes");
     }
 
-    /// O achado que trava a pergunta também vira anotação, e a página sai
-    /// mesmo com o plano travado: é nela que quem for corrigir o vê.
+    /// O achado que trava a pergunta também vira anotação, que a página
+    /// mostra: é nela que quem for corrigir o vê. O plano travado não é marco
+    /// e não escreve página nem prepara cópia.
     #[test]
     fn a_blocking_finding_is_noted_and_the_page_still_comes_out() {
         let dir = tempdir().unwrap();
@@ -1601,9 +1576,12 @@ mod tests {
         assert!(reasons(&report, "blocking").contains(&"depends-on-missing-wave".to_string()), "{report}");
         let hint = report["blocking"][0]["hint"].as_str().unwrap().to_string();
         assert!(read_notes(root, "x").contains(&hint), "o achado que trava não virou anotação");
+        assert!(report.get("copy").is_none() && report.get("publish").is_none(), "{report}");
+        assert!(!root.join(".claude/spec/x/spec.html").exists(), "o plano travado não escreve página");
+        assert!(!root.join(".claude/spec/x/copy").exists(), "nem prepara cópia");
+        spec_events::pages::refresh(root, "x", Locale::PtBr).expect("o comando de página");
         let md = std::fs::read_to_string(root.join(".claude/spec/x/spec.md")).unwrap();
         assert!(md.contains(hint.as_str()), "o `.md` não mostra o achado que trava");
-        assert!(root.join(".claude/spec/x/spec.html").is_file(), "a página sai com o plano travado");
     }
 
     /// O rótulo de cada anotação vigente que tem um, em ordem de número.
@@ -1626,10 +1604,10 @@ mod tests {
             .collect()
     }
 
-    /// Com um item de texto que parece senha, o plano manda publicar e fazer
-    /// a pergunta de aprovação assim mesmo: o `.html` local sai com o trecho
-    /// trocado por "…" e o resto do item legível, e a resposta diz o código do
-    /// item a expurgar. Expurgado o item, o aviso some.
+    /// Com um item de texto que parece senha, o plano manda publicar, copiar
+    /// e fazer a pergunta de aprovação assim mesmo: o item fica fora da cópia,
+    /// e a resposta diz o código dele, para ser expurgado. Expurgado o item, o
+    /// aviso some e ele vai na cópia, com o trecho oculto.
     #[test]
     fn a_withheld_item_no_longer_holds_the_publish_and_is_named_until_it_is_purged() {
         let dir = tempdir().unwrap();
@@ -1651,43 +1629,21 @@ mod tests {
         let warned = held["warnings"].as_array().cloned().unwrap_or_default();
         assert!(warned.iter().any(|w| w["reason"] == json!("page-check")
             && w["hint"].as_str().unwrap_or_default().contains(&code)), "{held}");
-        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(!html.contains("S3nh4F0rte"), "the local page keeps the secret out");
-        assert!(html.contains("A senha do banco: …"), "the rest of the item stays readable");
+        let note_id = note["id"].as_u64().unwrap_or_default();
+        assert!(!sent_items(root, &held).contains(&note_id), "the item stays out of the copy");
+        let folder = std::fs::read_dir(root.join(".claude/spec/x/copy/items")).unwrap();
+        for file in folder.flatten() {
+            let body = std::fs::read_to_string(file.path()).unwrap();
+            assert!(!body.contains("S3nh4F0rte"), "{}", file.path().display());
+        }
 
         let purged = write(root, Some("x"), "purge", json!({"targets": [code], "reason": "secret"}));
         assert_eq!(purged["ok"], json!(true), "{purged}");
         let free = plan(root, "x");
         assert_eq!(free["publish"], json!(["spec", "project"]), "{free}");
         assert!(free.get("withheld").is_none(), "{free}");
-        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(html.contains("A senha do banco: …"), "the purged item stays on the page");
-    }
-
-    /// Quando a última publicação falhou, a conferência passa e a resposta
-    /// traz o comando pronto: numa sessão por SSH, o `scp` com o endereço do
-    /// servidor; fora dela, o caminho do arquivo.
-    #[test]
-    fn a_failed_publish_hands_the_copy_command_over() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        sound_plan(root, "x", said);
-        let published = write(root, Some("x"), "publish", json!({"page": "spec",
-            "milestone": "approval", "ok": false, "reason": "O claude.ai não respondeu.", "origin": said}));
-        assert_eq!(published["ok"], json!(true), "{published}");
-
-        let opts = PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) };
-        let over_ssh = plan_for(&opts, None, Some("10.0.0.2 51000 10.0.0.9 22"));
-        assert_eq!(over_ssh["ok"], json!(true), "{over_ssh}");
-        let copy = over_ssh["copy"].as_str().unwrap_or_default();
-        assert!(copy.starts_with("scp ") && copy.contains("10.0.0.9:"), "{copy}");
-        assert!(copy.ends_with("spec.html ."), "{copy}");
-        assert!(over_ssh["next"].as_str().unwrap_or_default().contains(translate("plan.copy", Locale::PtBr)));
-
-        let local = plan_for(&opts, None, None);
-        let path = local["copy"].as_str().unwrap_or_default();
-        assert!(path.ends_with("spec.html") && !path.starts_with("scp "), "{path}");
+        let copied = sent(root, &free, "spec").into_iter().find(|w| w["doc_id"] == json!(note_id.to_string())).unwrap();
+        assert_eq!(copied["body"]["text"], json!("A senha do banco: …"), "the purged item goes, with the excerpt hidden");
     }
 
     /// Uma tarefa da onda `wave`, num arquivo novo só dela, com a nota dada

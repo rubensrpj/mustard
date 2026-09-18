@@ -278,9 +278,9 @@ pub(super) fn run_round(
         .collect::<Vec<_>>()
         .join(" ");
 
-    // A página sai no fim do passo, uma vez, e a rodada manda publicá-la,
-    // menos quando ela não pôde ser refeita.
-    let pages = crate::commands::spec_events::pages::refresh(root, &spec, lang);
+    // A cópia para o banco da página sai no fim do passo, uma vez, e a rodada
+    // manda copiá-la, menos quando ela não pôde ser preparada.
+    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, &spec, lang);
 
     // Com o pull request aberto, o corpo dele é refeito aqui: ele é montado do
     // mesmo arquivo de eventos que acabou de mudar, e um corpo que descreve a
@@ -311,14 +311,10 @@ pub(super) fn run_round(
     if let Some(commit) = commit {
         out["commit"] = commit;
     }
-    if let Ok(pages) = &pages {
-        out["md"] = json!(pages.md);
-        out["html"] = json!(pages.html);
-    }
     if !warnings.is_empty() {
         out["warnings"] = json!(warnings);
     }
-    crate::commands::spec_events::pages::end_milestone(&mut out, pages.as_ref(), "round", &then, lang);
+    crate::commands::spec_events::pages::end_milestone(&mut out, prepared.as_ref(), &spec, "round", &then, lang);
     if let Some(command) = command {
         out["command"] = json!(command);
     }

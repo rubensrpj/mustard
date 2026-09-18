@@ -1,5 +1,5 @@
 //! Os tipos de evento da spec: os blocos em que cada tipo cai, a forma de
-//! cada campo e os 33 tipos, com os campos próprios de cada um.
+//! cada campo e os 34 tipos, com os campos próprios de cada um.
 
 use serde_json::Value;
 
@@ -287,7 +287,7 @@ const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 /// uma mora no catálogo, no texto que a recusa da tarefa sem nota mostra.
 const POINTS: &[u64] = &[1, 2, 3, 5, 8, 13];
 
-/// Os 33 tipos. Os campos marcados com `opt` podem faltar; os outros são
+/// Os 34 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
@@ -355,6 +355,17 @@ pub const TYPES: &[TypeSpec] = &[
             opt("url", Kind::Text),
             opt("reason", Kind::Text),
         ],
+    ),
+    // A cópia dos itens para o banco de dados de uma página publicada, gravada
+    // depois que ela foi feita: a da página da spec diz em `last` o número do
+    // último item que ela levou; a da página do projeto diz em `phase` a fase
+    // da linha da spec que ela levou.
+    ty(
+        "copy",
+        "COPY",
+        Block::State,
+        false,
+        &[req("page", Kind::OneOf(PAGES)), opt("last", Kind::Int), opt("phase", Kind::OneOf(PHASES))],
     ),
     // Combinado.
     ty("work_type", "WORK", Block::Agreed, true, &[req("kinds", Kind::ManyOf(WORK_KINDS))]),
@@ -581,10 +592,10 @@ mod tests {
     use crate::domain::spec_events::Refusal;
 
     #[test]
-    fn there_are_thirty_three_types_each_with_one_block() {
-        assert_eq!(TYPES.len(), 33);
+    fn there_are_thirty_four_types_each_with_one_block() {
+        assert_eq!(TYPES.len(), 34);
         let names: BTreeSet<&str> = TYPES.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 33, "a type name repeats");
+        assert_eq!(names.len(), 34, "a type name repeats");
         for block in Block::ALL {
             if block == Block::Metrics {
                 assert!(TYPES.iter().all(|t| t.block != block), "nobody writes to the panel");

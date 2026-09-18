@@ -11,12 +11,11 @@
 //! descartado. O próximo número parte do maior que existe, inclusive depois
 //! de uma edição à mão.
 //!
-//! Quem depende do arquivo como ficou (a página e o `.md` da spec) recebe o
-//! conteúdo recém-gravado ainda com a trava presa: a gravação seguinte só
-//! entra depois, então quem grava por último refaz a página por último. Numa
-//! pasta de spec do projeto, a linha da spec no índice (`io::spec_index`) é
-//! refeita do mesmo jeito, antes da página: todo gravador passa por aqui, então
-//! todo evento gravado atualiza o índice.
+//! Quem depende do arquivo como ficou (a conta das ondas depois da aprovação)
+//! recebe o conteúdo recém-gravado ainda com a trava presa: a gravação
+//! seguinte só entra depois. Numa pasta de spec do projeto, a linha da spec no
+//! índice (`io::spec_index`) é refeita do mesmo jeito: todo gravador passa por
+//! aqui, então todo evento gravado atualiza o índice.
 //!
 //! Num worktree, a spec continua sendo a do checkout principal: o arquivo mora
 //! fora do git, na pasta do Mustard do checkout principal, e sobrevive à troca
@@ -134,9 +133,9 @@ pub fn write_at(
 /// continua gravado, e [`Written::index_warning`] diz por quê.
 ///
 /// `then` roda depois da escrita e antes de a trava soltar, com o conteúdo
-/// que acabou de ser gravado, e não lê o disco: é onde a página e o `.md` são
-/// refeitos, para que duas gravações ao mesmo tempo nunca deixem a página sem
-/// a última. Numa recusa, nem o índice nem `then` são tocados.
+/// que acabou de ser gravado, e não lê o disco: é onde se confere o arquivo
+/// como ele ficou, sem que outra gravação entre no meio. Numa recusa, nem o
+/// índice nem `then` são tocados.
 pub fn write_at_then(
     path: &Path,
     event_type: &str,
@@ -356,10 +355,10 @@ pub fn read(path: &Path) -> Result<Option<SpecLog>, Refusal> {
 }
 
 /// Pega a trava exclusiva do arquivo, lê pelo mesmo manipulador e entrega o
-/// arquivo lido a `f`, soltando a trava só depois. É como a página é refeita
-/// sem gravar evento: nenhuma gravação entra no meio, então a página nunca
-/// fica atrás do arquivo. `Ok(None)` quando a spec ainda não tem arquivo; nada
-/// é criado.
+/// arquivo lido a `f`, soltando a trava só depois. É como a cópia para o
+/// banco da página, e a página do comando de página, saem sem gravar evento:
+/// nenhuma gravação entra no meio, então nenhuma das duas fica atrás do
+/// arquivo. `Ok(None)` quando a spec ainda não tem arquivo; nada é criado.
 pub fn with_locked_log<R>(path: &Path, f: impl FnOnce(&SpecLog) -> R) -> Result<Option<R>, Refusal> {
     let mut file = match LockedFile::existing(path) {
         Ok(file) => file,
@@ -446,7 +445,7 @@ mod tests {
         put(path, &[], "message", &at("09:00"), json!({"author": "user", "text": "o pedido"}));
     }
 
-    /// Uma spec de teste com os 33 tipos, em três ondas, com uma remoção por
+    /// Uma spec de teste com os 34 tipos, em três ondas, com uma remoção por
     /// horário, um expurgo e um limite revisto.
     struct Spec {
         _dir: tempfile::TempDir,
@@ -511,6 +510,7 @@ mod tests {
         add("note", "note", "09:09", json!({"text": "O Clippy foi corrigido.", "keys": ["clippy"], "origin": msg}));
         add("injection", "injection", "09:10", json!({"author": "hook", "hook": "session_start", "chars": 2870, "text": "Spec teste, fase execução."}));
         add("publish", "publish", "09:11", json!({"page": "spec", "milestone": "approval", "ok": true, "url": "https://example.com/p"}));
+        add("copy", "copy", "09:11", json!({"page": "spec", "last": 32}));
         add("call", "call", "09:12", json!({"author": "binary", "command": "round", "ms": 41, "result": "ok"}));
         add("hook", "hook", "09:13", json!({"author": "hook", "hook": "command_guard", "action": "block", "tool": "Bash", "reason": "rm -rf apaga trabalho."}));
         add("response", "response", "09:14", json!({"text": "Tirei a atualização dos projetos da Contoso.", "reply_to": msg}));
@@ -576,10 +576,10 @@ mod tests {
         let log = spec.log();
         let got = |step: Step| ids_of(&log.step(&step));
 
-        assert_eq!(got(Step::Resume), spec.ids(&["state", "publish", "approved"]));
+        assert_eq!(got(Step::Resume), spec.ids(&["state", "publish", "copy", "approved"]));
         assert_eq!(
             got(Step::Close),
-            spec.ids(&["state", "criterion_1", "criterion_2", "criterion_run", "publish", "approved"])
+            spec.ids(&["state", "criterion_1", "criterion_2", "criterion_run", "publish", "copy", "approved"])
         );
         assert_eq!(
             got(Step::Review { wave: 2 }),

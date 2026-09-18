@@ -218,20 +218,10 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         })
         .collect();
     let reminders: usize = list.iter().map(|item| item.reminders.len()).sum();
-    // O passo termina refazendo a página e o `.md`: a gravação de cada evento
-    // já não os refaz. Falhar aqui só avisa, porque o que o passo tinha para
-    // gravar já está gravado. O levantamento não é marco e nunca manda
-    // publicar; o item que ainda guarda um trecho com cara de segredo sai
-    // dito, com o código.
-    let mut warnings: Vec<String> = Vec::new();
-    let mut withheld: Vec<String> = Vec::new();
-    match spec_events::pages::refresh(&project.root, &spec, lang) {
-        Ok(pages) => {
-            warnings.extend(pages.warnings);
-            withheld = pages.withheld;
-        }
-        Err(refusal) => warnings.push(refusal.message(lang)),
-    }
+    // O levantamento não é marco: não escreve página nem manda copiar nada
+    // para o banco dela. O item que ainda guarda um trecho com cara de
+    // segredo sai dito, com o código, para ser expurgado antes da cópia.
+    let withheld = spec_events::pages::copy::withheld(&log);
     let mut report = json!({
         "ok": true,
         "spec": spec,
@@ -256,12 +246,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
                 .replace("{reason}", reason));
         }
     }
-    if !warnings.is_empty() {
-        report["warnings"] = json!(warnings);
-    }
-    if !withheld.is_empty() {
-        report["withheld"] = json!(withheld);
-    }
+    spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
     let open = survey::open_points(&log);
     if to_record > 0 {
         report["hint"] = json!(translate("survey.record_points", lang).replace("{spec}", &spec));
@@ -454,9 +439,8 @@ mod tests {
     }
 
     /// Com um item de texto que parece senha, o levantamento devolve o código
-    /// do item a expurgar, nos avisos e em `withheld`, e não manda publicar,
-    /// porque não é marco; o `.html` local sai com o trecho trocado por "…" e
-    /// o resto do item legível.
+    /// do item a expurgar, nos avisos e em `withheld`, e não manda publicar
+    /// nem copiar, porque não é marco.
     #[test]
     fn the_grill_names_the_withheld_item_and_never_orders_the_publish() {
         let dir = tempdir().unwrap();
@@ -470,28 +454,26 @@ mod tests {
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(report["withheld"], json!([code]), "{report}");
         let warnings = report["warnings"].as_array().cloned().unwrap_or_default();
-        assert!(warnings.iter().any(|w| w.as_str().unwrap_or_default().contains(&code)), "{report}");
+        assert!(warnings.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
         assert!(report.get("publish").is_none() && !report.to_string().contains("write publish"), "{report}");
-        let html = std::fs::read_to_string(root.join(".claude/spec/x/spec.html")).unwrap();
-        assert!(!html.contains("9f8e7d6c5b4a3210"), "the local page keeps the secret out");
-        assert!(html.contains("client_secret=…"), "the rest of the item stays readable");
+        assert!(report.get("copy").is_none() && !report.to_string().contains("write copy"), "{report}");
     }
 
-    /// O `grill` termina refazendo a página e o `.md` da spec: a gravação de
-    /// cada evento já não os refaz.
+    /// O `grill` não escreve página nem prepara cópia: o levantamento não é
+    /// marco.
     #[test]
-    fn the_grill_leaves_the_page_and_the_md_rebuilt() {
+    fn the_grill_writes_no_page() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root, "x");
         let spec = root.join(".claude").join("spec").join("x");
-        assert!(!spec.join("spec.html").exists(), "nenhuma gravação refez a página");
 
         let report = grill(root, "x", Some("fix"), false);
         assert_eq!(report["ok"], json!(true), "{report}");
         assert!(report["warnings"].is_null(), "{report}");
-        assert!(spec.join("spec.html").is_file(), "a página sai no fim do passo");
-        assert!(spec.join("spec.md").is_file(), "e o `.md` também");
+        for written in ["spec.html", "spec.md", "copy"] {
+            assert!(!spec.join(written).exists(), "{written}");
+        }
     }
 
     fn events(root: &Path, spec: &str) -> String {
@@ -946,6 +928,7 @@ mod tests {
         let after = grill(root, "x", Some("fix"), false);
         assert_eq!(after["to_record"], json!(0), "{after}");
         assert!(items(&after).iter().all(|item| item["status"] == json!("closed")), "{after}");
+        spec_events::pages::refresh(root, "x", Locale::PtBr).expect("o comando de página");
         let page = std::fs::read_to_string(root.join(".claude").join("spec").join("x").join("spec.html")).unwrap();
         let panel = translate("page.metrics.points.value", Locale::PtBr)
             .replace("{open}", "0")

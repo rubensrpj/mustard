@@ -35,12 +35,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the exact text \"{question}\" and the options \"Approve\" and \"Adjust\": with another \
              text, the approval does not count."
         }
-        ("plan.copy", Locale::PtBr) => {
-            "A última publicação falhou: mande junto o comando de `copy` para o usuário abrir a página."
-        }
-        ("plan.copy", Locale::EnUs) => {
-            "The last publish failed: send the `copy` command along so the user can open the page."
-        }
         ("plan.wave_loop", Locale::PtBr) => {
             "As ondas {waves} dependem umas das outras em círculo, e nenhuma pode começar. Corte uma \
              das dependências."
@@ -913,8 +907,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            122,
-            0x2825_43a3_f85e_3da4,
+            121,
+            0x9fee_bc17_7435_a69c,
         );
     }
 
@@ -980,12 +974,12 @@ mod tests {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
             ("plan.next", &["{question}"][..]),
-            ("page.publish", &["{milestone}"][..]),
-            ("page.purge_pending", &["{codes}"][..]),
-            ("page.after_rebuild", &["{milestone}"][..]),
-            ("page.not_rebuilt", &["{page}"][..]),
-            ("page.rebuild_failed", &["{page}", "{detail}"][..]),
-            ("plan.copy", &[][..]),
+            ("page.copy.publish", &["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"][..]),
+            ("page.copy.batches", &["{page}", "{url}", "{files}", "{spec}", "{record}"][..]),
+            ("page.copy.new_address", &[][..]),
+            ("page.copy.no_links", &[][..]),
+            ("page.copy.failed", &[][..]),
+            ("page.purge_pending", &["{codes}", "{spec}"][..]),
             ("plan.wave_loop", &["{waves}"][..]),
             ("plan.depends_on_missing", &["{wave}", "{on}"][..]),
             ("plan.task_without_wave", &["{task}", "{wave}"][..]),

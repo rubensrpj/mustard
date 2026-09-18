@@ -459,7 +459,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     names.sort();
-    assert_eq!(names, ["spec.html", "spec.md", "spec.ndjson"], "the spec folder ends with three files");
+    assert_eq!(names, ["copy", "spec.ndjson"], "the spec folder ends with the events and the copy, and no page");
 }
 
 /// A spec do projeto com submódulo, da abertura ao pull request: a onda muda
