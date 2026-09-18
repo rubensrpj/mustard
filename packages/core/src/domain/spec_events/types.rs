@@ -281,9 +281,12 @@ const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
-    // testemunha: a pergunta e a opção que o usuário clicou.
+    // testemunha: a pergunta e a opção que o usuário clicou. A resposta do
+    // assistente aponta a mensagem que respondeu; só a do turno em que a spec
+    // nasce, antes de qualquer mensagem do usuário, vai sem ela
+    // (`spec_state::reply_rule`).
     ty("message", "MSG", Block::Conversation, false, &[TEXT, opt("witness", Kind::Object)]),
-    ty("response", "RESP", Block::Conversation, false, &[TEXT, req("reply_to", Kind::Int)]),
+    ty("response", "RESP", Block::Conversation, false, &[TEXT, opt("reply_to", Kind::Int)]),
     ty(
         "injection",
         "INJ",

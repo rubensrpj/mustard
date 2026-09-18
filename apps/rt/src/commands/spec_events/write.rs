@@ -93,7 +93,10 @@
 //! objetivo que aponta em `origin` uma mensagem do usuário e repete o texto
 //! dela, ou repete palavra por palavra uma frase da última resposta do
 //! assistente antes dela, a que o usuário respondeu
-//! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência.
+//! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência. A
+//! resposta do turno em que a spec nasce conta: ela é gravada sem `reply_to`,
+//! porque ainda não há mensagem do usuário a que responder, e só ela pode
+//! faltar o campo (`mustard_core::domain::spec_state::reply_rule`).
 //!
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
 //! de pontos junto: este comando não o grava, nem o tira ou o revê.
@@ -122,7 +125,8 @@ use mustard_core::domain::lessons::LESSON;
 use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, survey_rule, waves_grown_by, PhaseWriter, SpecState, State,
+    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, waves_grown_by, PhaseWriter, SpecState,
+    State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
@@ -480,8 +484,8 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 }
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
-/// depois dela: a mudança de fase, o objetivo, o levantamento e o dono do
-/// item combinado.
+/// depois dela: a mudança de fase, a mensagem que a resposta responde, o
+/// objetivo, o levantamento e o dono do item combinado.
 fn record_rules(
     spec: &str,
     before: &SpecLog,
@@ -491,6 +495,7 @@ fn record_rules(
     by: Option<PhaseWriter>,
 ) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
+    reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
     survey_rule(spec, before, after)?;
     owner_rule(before, after)
@@ -860,6 +865,8 @@ pub fn run(opts: &WriteOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::run_event;
+    use mustard_core::domain::model::contract::{HookInput, Trigger};
     use mustard_core::platform::git;
     use tempfile::tempdir;
 
@@ -1972,16 +1979,88 @@ mod tests {
             .id
     }
 
-    /// O assistente sugere o objetivo na resposta e o usuário responde "pode
-    /// usar essa": o objetivo gravado é a frase sugerida, com `origin` na
-    /// mensagem do usuário. Vale só a frase que está palavra por palavra na
-    /// última resposta antes da mensagem: a frase só em parte, com palavras
-    /// trocadas ou cortada no meio de uma palavra, a sugestão de uma resposta
-    /// mais antiga, a de uma resposta que veio depois da mensagem e a que
-    /// aponta em `origin` uma resposta do assistente, e não a mensagem do
-    /// usuário, são recusadas, e nada é gravado.
+    /// Uma chamada do Claude Code a um gancho, na sessão `s1`: o evento e os
+    /// campos que ele traz.
+    fn hook_call(root: &std::path::Path, event: &str, raw: Value) -> HookInput {
+        HookInput {
+            hook_event_name: Some(event.to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw,
+            ..HookInput::default()
+        }
+    }
+
+    /// O caminho de verdade, do jeito que a sessão o percorre: a spec nasce,
+    /// o assistente fecha o turno sugerindo o objetivo, e o usuário responde
+    /// "pode usar essa". A resposta do turno em que a spec nasceu entra pelo
+    /// gancho do fim da resposta, sem mensagem a que responder; o sim entra
+    /// pelo gancho da entrada da mensagem; e o `run write` do objetivo grava a
+    /// frase sugerida, com `origin` na mensagem do usuário, que o índice
+    /// mostra. A frase só em parte, com a maiúscula trocada, cortada no fim
+    /// ou no começo de uma palavra, e a de uma resposta que veio depois do
+    /// sim, são recusadas, e nada é gravado.
     #[test]
     fn a_yes_to_the_suggested_goal_records_the_suggestion_word_for_word() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "teste");
+        surveyed(root);
+        let suggestion = "Um sim aprova o objetivo sugerido.";
+        let stop = |text: &str| hook_call(root, "Stop", json!({ "last_assistant_message": text }));
+        let opening = run_event(Some(Trigger::Stop), &stop(&format!("A spec nasceu. Sugiro: \"{suggestion}\" Serve?")));
+        assert!(!opening.is_blocking(), "{opening:?}");
+        let yes_prompt = hook_call(root, "UserPromptSubmit", json!({ "prompt": "pode usar essa" }));
+        assert!(!run_event(Some(Trigger::UserPromptSubmit), &yes_prompt).is_blocking());
+        let later = run_event(Some(Trigger::Stop), &stop("Gravo: \"Travar tudo, sempre.\""));
+        assert!(!later.is_blocking(), "{later:?}");
+
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let talk: Vec<(&str, Option<&str>, Option<u64>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| matches!(e.event_type.as_str(), "message" | "response"))
+            .map(|e| (e.event_type.as_str(), e.str_field("author"), e.int("reply_to")))
+            .collect();
+        let yes = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
+        assert_eq!(
+            talk,
+            [("response", Some("assistant"), None), ("message", Some("user"), None), ("response", Some("assistant"), Some(yes))],
+            "the opening answer is recorded before the yes, without a message to reply to"
+        );
+
+        let before = lines(root);
+        for goal in [
+            "Um sim aprova o objetivo",
+            "o objetivo sugerido.",
+            "um sim aprova o objetivo sugerido.",
+            "Um sim aprova o objetivo suger",
+            "m sim aprova o objetivo sugerido.",
+            "Travar tudo, sempre.",
+        ] {
+            let refused = context(root, goal, yes);
+            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{goal}: {refused}");
+            assert!(refused["hint"].as_str().unwrap().contains("a sugestão que ele aprovou"), "{refused}");
+        }
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+
+        let written = context(root, suggestion, yes);
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let goal = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
+        assert_eq!((goal.str_field("text"), goal.int("origin")), (Some(suggestion), Some(yes)));
+        assert_eq!(index_goal(root).as_deref(), Some(suggestion));
+    }
+
+    /// Com a conversa já andando, vale só a frase que está inteira, palavra
+    /// por palavra, na última resposta antes do sim: a frase com palavras a
+    /// mais ou trocadas, a sugestão de uma resposta mais antiga, a de uma
+    /// resposta que veio depois da mensagem e a que aponta em `origin` uma
+    /// resposta do assistente, e não a mensagem do usuário, são recusadas, e
+    /// nada é gravado; a sugestão da resposta respondida passa.
+    #[test]
+    fn only_the_answered_response_lends_its_suggestion() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root);

@@ -64,7 +64,8 @@ pub enum Refusal {
     DeferredClosedPending { pending: String },
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
     /// aponta uma mensagem do usuário, ou não repete nem o texto dela nem,
-    /// palavra por palavra, a sugestão da resposta que ela respondeu.
+    /// inteira e palavra por palavra, a sugestão da resposta que ela
+    /// respondeu.
     GoalNotVerbatim { spec: String, origin: String },
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.

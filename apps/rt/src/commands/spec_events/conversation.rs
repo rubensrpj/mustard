@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
+use mustard_core::domain::spec_state::{last_user_message, PhaseWriter, SpecState, State};
 use serde_json::{json, Map, Value};
 
 use crate::shared::spec_state::DiskSpecState;
@@ -99,26 +99,20 @@ pub(crate) fn record_witnessed_message(
 }
 
 /// A resposta do assistente ao fim do turno, ligada à última mensagem do
-/// usuário. Sem mensagem gravada antes, não há a que responder, e nada é
-/// gravado.
+/// usuário. No turno em que a spec nasce ainda não há mensagem do usuário
+/// gravada nela: a resposta vai sem `reply_to`, e o sim à sugestão feita ali
+/// acha a resposta que respondeu.
 pub(crate) fn record_response(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
     let spec = conversation_spec(root, session)?;
     let log = DiskSpecState::new(root).log(&spec)?;
-    let asked = log
-        .visible()
-        .into_iter()
-        .rev()
-        .find(|event| event.event_type == "message" && event.str_field("author") == Some("user"))?
-        .id;
-    record_in_spec(
-        root,
-        &spec,
-        "response",
-        draft(json!({ "author": "assistant", "text": text, "reply_to": asked })),
-    )
+    let mut fields = json!({ "author": "assistant", "text": text });
+    if let Some(asked) = last_user_message(&log) {
+        fields["reply_to"] = json!(asked.id);
+    }
+    record_in_spec(root, &spec, "response", draft(fields))
 }
 
 /// Um gancho barrou ou avisou: quem, o quê, em que ferramenta (ou evento) e
@@ -230,17 +224,89 @@ mod tests {
         assert_eq!(injection["chars"], json!(9));
     }
 
-    /// Sem spec atual, ou com a spec já entregue, nada é gravado; e a
-    /// resposta sem mensagem antes também não.
+    /// Sem spec atual nada é gravado, nem a mensagem nem a resposta; e a
+    /// mensagem em branco também não.
     #[test]
     fn nothing_is_recorded_without_a_live_spec() {
         let bare = tempfile::tempdir().expect("temp dir");
         assert_eq!(record_message(bare.path(), None, "oi"), None);
+        assert_eq!(record_response(bare.path(), None, "resposta solta"), None);
         assert!(!bare.path().join(".claude").exists(), "no spec folder is created");
 
         let dir = project_on("sem-pergunta");
-        assert_eq!(record_response(dir.path(), None, "resposta solta"), None);
         assert_eq!(record_message(dir.path(), None, "   "), None);
+    }
+
+    fn event_lines(root: &Path, spec: &str) -> usize {
+        let path = mustard_core::io::spec_events::spec_file(root, spec).expect("spec file");
+        std::fs::read_to_string(path).expect("events").lines().count()
+    }
+
+    /// A resposta gravada por dentro do binário sem `reply_to`, como
+    /// [`record_response`] a grava quando não acha mensagem do usuário.
+    fn loose_response(root: &Path, spec: &str, text: &str) -> Result<u64, mustard_core::domain::spec_events::Refusal> {
+        let fields = draft(json!({ "author": "assistant", "text": text }));
+        super::super::write::record(root, spec, "response", fields, PhaseWriter::Binary).map(|r| r.written.id)
+    }
+
+    /// A resposta do turno em que a spec nasce, antes de qualquer mensagem do
+    /// usuário, é gravada sem `reply_to`; depois da mensagem, a resposta
+    /// aponta a mensagem. A resposta sem `reply_to` numa spec que já tem
+    /// mensagem do usuário é recusada pela falta do campo, e nada é gravado.
+    #[test]
+    fn only_the_answer_before_any_message_goes_without_reply_to() {
+        let dir = project_on("abertura");
+        let root = dir.path();
+        record_response(root, None, "Sugiro um objetivo.").expect("the opening answer is recorded");
+        let asked = record_message(root, None, "pode usar essa").expect("message");
+        record_response(root, None, "Gravei.").expect("response");
+        let responses = events_of(root, "abertura", "response");
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].get("reply_to"), None);
+        assert_eq!(responses[1]["reply_to"], json!(asked));
+
+        let before = event_lines(root, "abertura");
+        let refused = loose_response(root, "abertura", "Solta.").err();
+        let missing = mustard_core::domain::spec_events::Refusal::MissingField {
+            event_type: "response".to_string(),
+            field: "reply_to".to_string(),
+        };
+        assert_eq!(refused, Some(missing));
+        assert_eq!(event_lines(root, "abertura"), before, "a refusal writes nothing");
+    }
+
+    /// A mensagem do usuário e a resposta do fim do turno gravadas ao mesmo
+    /// tempo, pelos dois ganchos: a resposta decide o `reply_to` antes de
+    /// pegar a trava, e a conferência roda com a trava presa, então uma
+    /// resposta sem `reply_to` nunca fica depois de uma mensagem do usuário.
+    #[test]
+    fn a_message_and_the_end_of_an_answer_at_the_same_time() {
+        for round in 0..40 {
+            let dir = project_on("junto");
+            let root = dir.path();
+            let gate = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    gate.wait();
+                    record_message(root, None, "pode usar essa")
+                });
+                scope.spawn(|| {
+                    gate.wait();
+                    record_response(root, None, "Sugiro um objetivo.")
+                });
+            });
+            let log = DiskSpecState::new(root).log("junto").expect("log");
+            let asked = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+            let asked = asked.expect("the message is always recorded");
+            for answer in log.visible().into_iter().filter(|e| e.event_type == "response") {
+                let replied = answer.int("reply_to");
+                assert!(
+                    replied == Some(asked) || (replied.is_none() && answer.id < asked),
+                    "round {round}: response {} with reply_to {replied:?} and the message {asked}",
+                    answer.id
+                );
+            }
+        }
     }
 
     /// A chamada de um passo grava o comando, o resultado e, na recusa, a
