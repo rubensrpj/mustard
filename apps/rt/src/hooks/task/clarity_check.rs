@@ -46,10 +46,13 @@
 //! O bloqueio lista no máximo [`MAX_LISTED_DEFECTS`] defeitos, cada um cortado
 //! em [`MAX_DEFECT_CHARS`] caracteres; o resto vira uma contagem. Falha de
 //! disco só cala o registro; o bloqueio ainda sai.
+//!
+//! A gravação de lição (`run write lesson`) mede o texto da lição pela mesma
+//! medição ([`measure_in_project`]), com o que o projeto declara.
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::clarity::measure;
+use mustard_core::domain::clarity::{measure, ClarityReport};
 use mustard_core::io::fs;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::ClaudePaths;
@@ -78,12 +81,8 @@ impl TurnRule for ClarityRule {
         if !mustard_core::ProjectConfig::exists(root) || turn.message.trim().is_empty() {
             return None;
         }
-        // O idioma que a prosa precisa ter é só o DECLARADO em `language.text`.
-        // O padrão resolvido é pt-BR, e um projeto em inglês que nunca declarou
-        // idioma teria toda resposta apontada. Os defeitos saem no idioma
-        // resolvido (`turn.lang`).
-        let config = mustard_core::ProjectConfig::load(root);
-        let defects = writing_defects(root, turn, config.language().text, &config.acronyms());
+        // Os defeitos saem no idioma resolvido (`turn.lang`).
+        let defects = writing_defects(root, turn);
         // O complemento (`stop_hook_active`) foi medido só para a memória da
         // sessão: ele não barra nem avisa.
         if defects.is_empty() || turn.retry {
@@ -94,20 +93,11 @@ impl TurnRule for ClarityRule {
 }
 
 /// Todas as medições da escrita, com a memória da sessão: o que esta resposta
-/// explicou fica guardado. Sem idioma declarado (`expected` vazio), a medição
-/// do idioma não dá veredito. As siglas do projeto (`project_acronyms`) vão ao
-/// medidor junto das já explicadas na sessão, mas não entram na memória dela:
-/// a sigla que sai do `mustard.json` volta a ser cobrada.
-fn writing_defects(
-    root: &Path,
-    turn: &Turn<'_>,
-    expected: Option<Locale>,
-    project_acronyms: &[String],
-) -> Vec<String> {
+/// explicou fica guardado.
+fn writing_defects(root: &Path, turn: &Turn<'_>) -> Vec<String> {
     let record_path = record_path(root, turn.session);
     let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
-    let known: Vec<String> = record.explained.iter().chain(project_acronyms).cloned().collect();
-    let report = measure(turn.message, &known, expected);
+    let report = measure_in_project(root, turn.message, &record.explained);
     for term in &report.explained {
         if !record.explained.contains(term) {
             record.explained.push(term.clone());
@@ -117,6 +107,20 @@ fn writing_defects(
         write_record(path, &record);
     }
     report.defects(turn.lang)
+}
+
+/// A medição da escrita de `text` com o que o projeto em `root` declara. O
+/// idioma que a prosa precisa ter é só o DECLARADO em `language.text`: o
+/// padrão resolvido é pt-BR, e um projeto em inglês que nunca declarou idioma
+/// teria todo texto apontado. As siglas do projeto (`acronyms` no
+/// `mustard.json`) vão ao medidor junto das `explained`, as já explicadas na
+/// sessão, mas não entram na memória dela: a sigla que sai do `mustard.json`
+/// volta a ser cobrada. A conferência do fim da resposta e a gravação de
+/// lição medem por aqui, e não discordam sobre o mesmo texto.
+pub(crate) fn measure_in_project(root: &Path, text: &str, explained: &[String]) -> ClarityReport {
+    let config = mustard_core::ProjectConfig::load(root);
+    let known: Vec<String> = explained.iter().cloned().chain(config.acronyms()).collect();
+    measure(text, &known, config.language().text)
 }
 
 /// Quantos defeitos o bloqueio lista; o resto vira uma contagem.

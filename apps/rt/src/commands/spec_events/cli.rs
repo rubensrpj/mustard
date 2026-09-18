@@ -50,7 +50,11 @@ pub enum SpecEventsCmd {
     /// like `MSTD-RULE-0002`. With the `lesson` type it writes one lesson to
     /// the lesson bank (`.claude/spec/lessons.ndjson`) instead:
     /// `{"class":"defect","text":"…","keys":["…"],"applies_to":{"subproject":"…"},"found_in":{"spec":"…"}}`;
-    /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`.
+    /// a lesson valid everywhere says `"applies_to":{"files":["**"]}`. A
+    /// lesson is the assistant's summary, written the project's way: its text
+    /// goes through the writing check that ends a response, and a text that
+    /// repeats a lesson already in the bank (spaces, case and accents aside)
+    /// is refused, naming that lesson.
     #[command(display_order = 9, after_help = fields_of_each_type())]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or

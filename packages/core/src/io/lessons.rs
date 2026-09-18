@@ -4,8 +4,11 @@
 //! Só o binário escreve no banco, e do mesmo jeito que no arquivo de eventos
 //! da spec: cada gravação pega a trava do banco, lê o maior número, soma 1 e
 //! acrescenta a linha inteira de uma vez; outra gravação ao mesmo tempo espera
-//! a trava e grava com o número seguinte. Uma lição recusada não toca no
-//! arquivo. A leitura pega a trava compartilhada.
+//! a trava e grava com o número seguinte. A lição que repete o texto de outra
+//! já guardada é conferida com a trava presa, sobre o banco que acabou de ser
+//! lido: duas gravações do mesmo texto ao mesmo tempo deixam uma lição só.
+//! Uma lição recusada não toca no arquivo. A leitura pega a trava
+//! compartilhada.
 //!
 //! As regras da lição moram em `domain::lessons`; aqui ficam o disco, a trava
 //! e o relógio.
@@ -38,7 +41,8 @@ pub fn write(path: &Path, draft: Map<String, Value>, spec: Option<&str>) -> Resu
 ///
 /// Recusa, sem tocar no arquivo: classe desconhecida, campo obrigatório
 /// vazio, lição sem dizer onde vale ou onde nasceu, código mandado por quem
-/// grava e lição substituída que não existe no banco.
+/// grava, lição substituída que não existe no banco e lição com o mesmo texto
+/// de outra já guardada (`domain::lessons::repeated`).
 pub fn write_at(path: &Path, draft: Map<String, Value>, spec: Option<&str>, at: &str) -> Result<WrittenLesson, Refusal> {
     let event = model::normalize(draft, spec);
     model::validate(&event)?;
@@ -192,6 +196,54 @@ mod tests {
             assert!(write_at(&path, obj(draft.clone()), None, &at("11:00")).is_err(), "{draft}");
         }
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// O mesmo texto, com outros espaços, maiúsculas e acentos, não entra de
+    /// novo: a recusa aponta a lição que já existe, e o banco fica com os
+    /// mesmos bytes.
+    #[test]
+    fn a_lesson_repeating_one_in_the_bank_is_refused_and_the_bank_keeps_its_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lessons.ndjson");
+        let first = put(&path, defect("Não apague a pasta de outra sessão.", &["apagar"]));
+        let before = std::fs::read(&path).unwrap();
+        let mut again = defect("NAO apague  a pasta de outra sessao.", &["pasta"]);
+        again["class"] = json!("project_rule");
+        let refusal = write_at(&path, obj(again), None, &at("10:05")).unwrap_err();
+        assert_eq!(refusal, Refusal::LessonRepeated { id: first.id, text: "Não apague a pasta de outra sessão.".into() });
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let other = put(&path, defect("Não apague a pasta de outra sessão sem perguntar.", &["apagar"]));
+        assert_eq!(other.id, first.id + 1, "outro texto entra");
+    }
+
+    /// Duas gravações do mesmo texto ao mesmo tempo: a trava cobre a leitura
+    /// do banco, a comparação e a gravação, então só uma entra e a outra é
+    /// recusada apontando a primeira.
+    #[test]
+    fn two_writes_of_the_same_lesson_at_once_leave_one_lesson() {
+        for _ in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spec").join("lessons.ndjson");
+            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let writers: Vec<_> = (0..2)
+                .map(|_| {
+                    let path = path.clone();
+                    let start = std::sync::Arc::clone(&start);
+                    std::thread::spawn(move || {
+                        start.wait();
+                        write_at(&path, obj(defect("A mesma lição, gravada duas vezes.", &["k"])), None, &at("10:00"))
+                    })
+                })
+                .collect();
+            let results: Vec<Result<WrittenLesson, Refusal>> = writers.into_iter().map(|h| h.join().unwrap()).collect();
+            let written: Vec<u64> = results.iter().filter_map(|r| r.as_ref().ok().map(|w| w.id)).collect();
+            assert_eq!(written, [1], "{results:?}");
+            assert!(
+                results.iter().any(|r| matches!(r, Err(Refusal::LessonRepeated { id: 1, .. }))),
+                "{results:?}"
+            );
+            assert_eq!(read(&path).unwrap().unwrap().events.len(), 1);
+        }
     }
 
     #[test]

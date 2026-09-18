@@ -18,17 +18,27 @@
 //! Duas buscas, só do Rust: por escopo ([`in_scope`]), pelo caminho dos
 //! arquivos, pelo subprojeto e pela skill; e por palavras ([`matching`]), com
 //! o BM25 de `domain::search` sobre o `search`, que devolve as 5 mais fortes.
-//! A mesma busca por palavras limita as regras do projeto que o pedido de uma
-//! onda leva ([`rules_limited`]): uma pasta pode ter centenas delas.
+//! A mesma busca por palavras limita as lições que o pedido de uma onda e o
+//! da revisão levam ([`related_to_tasks`]): de cada classe, só as mais
+//! ligadas às tarefas, porque uma pasta pode ter centenas delas.
 //! Quem mostra uma lição mostra o texto original ([`shown`]), nunca o
 //! `search`.
+//!
+//! Uma lição nunca entra repetida: a que tem o mesmo texto de outra já
+//! guardada, depois de igualar espaços, maiúsculas e acentos
+//! ([`comparable`]), é recusada apontando a que existe ([`repeated`]). A
+//! gravação do assistente e a importação das instruções do projeto passam
+//! pela mesma comparação.
 //!
 //! Função pura: sem disco e sem relógio. A gravação mora em `io::lessons`.
 
 use serde_json::{Map, Value};
 
+use std::collections::BTreeMap;
+
 use crate::domain::config::glob_matches;
 use crate::domain::search::{self, Hit};
+use crate::domain::text::fold;
 use crate::domain::spec_events::{
     check_field, is_empty, opt, req, shown_line, Kind, Refusal, SpecEvent, SpecLog, AUTHORS, BINARY_FIELDS,
     DEFAULT_AUTHOR, PURGED_FIELD, REFUSED_FIELDS,
@@ -167,12 +177,46 @@ fn check_found_in(event: &Map<String, Value>) -> Result<(), Refusal> {
 }
 
 /// Confere a lição contra o banco como está: a lição que ela substitui
-/// (`replaces`) existe.
+/// (`replaces`) existe, e nenhuma outra lição guardada tem o mesmo texto. A
+/// que ela substitui não conta: a versão nova pode só pôr os acentos.
 pub fn check_against(bank: &SpecLog, event: &Map<String, Value>) -> Result<(), Refusal> {
-    match event.get("replaces").and_then(Value::as_u64) {
-        Some(id) if bank.get(id).is_none() => Err(Refusal::UnknownLesson { id }),
-        _ => Ok(()),
+    let replaces = event.get("replaces").and_then(Value::as_u64);
+    if let Some(id) = replaces
+        && bank.get(id).is_none()
+    {
+        return Err(Refusal::UnknownLesson { id });
     }
+    let text = event.get("text").and_then(Value::as_str).unwrap_or_default();
+    match repeated(bank, text, replaces) {
+        Some(same) => Err(Refusal::LessonRepeated {
+            id: same.id,
+            text: same.str_field("text").unwrap_or_default().to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// O texto na forma em que duas lições se comparam: minúsculas, sem acento e
+/// com um espaço só entre as palavras. `"Não  REPITA"` e `"nao repita"` são o
+/// mesmo texto.
+#[must_use]
+pub fn comparable(text: &str) -> String {
+    fold(text).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A lição vigente do banco cujo texto é o mesmo de `text`, pela forma de
+/// [`comparable`], de qualquer classe. `except` é a lição que a nova
+/// substitui, que não conta. Texto vazio não repete nada.
+#[must_use]
+pub fn repeated<'a>(bank: &'a SpecLog, text: &str, except: Option<u64>) -> Option<&'a SpecEvent> {
+    let wanted = comparable(text);
+    if wanted.is_empty() {
+        return None;
+    }
+    bank.visible()
+        .into_iter()
+        .filter(|lesson| Some(lesson.id) != except)
+        .find(|lesson| lesson.str_field("text").is_some_and(|own| comparable(own) == wanted))
 }
 
 /// Onde se procura lição: os arquivos, o subprojeto e a skill de uma onda.
@@ -207,8 +251,7 @@ pub fn defects_in_scope<'a>(bank: &'a SpecLog, scope: &Scope) -> Vec<&'a SpecEve
 pub const DEFECT: &str = "defect";
 
 /// A classe da lição que guarda uma regra do projeto: vale sempre, então
-/// não vira pergunta no levantamento, e o pedido da onda leva só as mais
-/// ligadas à tarefa.
+/// não vira pergunta no levantamento.
 pub const PROJECT_RULE: &str = "project_rule";
 
 /// O "onde vale" de um evento casa com `scope`? A mesma leitura serve à lição
@@ -281,17 +324,22 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
     search::search(lessons.iter().map(|lesson| (lesson.id, lesson.str_field("search").unwrap_or_default())), words)
 }
 
-/// As lições que o pedido de uma onda leva, entre as `found` que valem para
-/// ela: todas as que não são regra do projeto, e das regras do projeto só as
-/// 5 mais ligadas às palavras da tarefa (`words`), pela busca de
-/// [`matching`]. A regra que não tem palavra nenhuma em comum com a tarefa
-/// fica fora. Em ordem de número, como `found` chega.
+/// As lições que o pedido de uma onda e o da revisão levam, entre as `found`
+/// que valem para ela: de cada classe, só as 5 mais ligadas às palavras das
+/// tarefas (`words`), pela busca de [`matching`]. A lição que não tem palavra
+/// nenhuma em comum com as tarefas fica fora, seja qual for a classe. Em
+/// ordem de número.
 #[must_use]
-pub fn rules_limited<'a>(found: Vec<&'a SpecEvent>, words: &str) -> Vec<&'a SpecEvent> {
-    let (rules, mut kept): (Vec<&SpecEvent>, Vec<&SpecEvent>) =
-        found.into_iter().partition(|lesson| lesson.event_type == PROJECT_RULE);
-    let related = matching_among(&rules, words);
-    kept.extend(rules.into_iter().filter(|rule| related.iter().any(|hit| hit.id == rule.id)));
+pub fn related_to_tasks<'a>(found: Vec<&'a SpecEvent>, words: &str) -> Vec<&'a SpecEvent> {
+    let mut by_class: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
+    for lesson in found {
+        by_class.entry(lesson.event_type.as_str()).or_default().push(lesson);
+    }
+    let mut kept: Vec<&SpecEvent> = Vec::new();
+    for lessons in by_class.into_values() {
+        let related = matching_among(&lessons, words);
+        kept.extend(lessons.into_iter().filter(|lesson| related.iter().any(|hit| hit.id == lesson.id)));
+    }
     kept.sort_by_key(|lesson| lesson.id);
     kept
 }
@@ -406,23 +454,66 @@ mod tests {
         assert!(!shown.contains(lesson.str_field("search").unwrap()), "{shown}");
     }
 
-    /// Das regras do projeto ficam só as 5 mais ligadas às palavras, e a que
-    /// não divide palavra nenhuma sai; as outras classes ficam todas, e tudo
-    /// volta em ordem de número.
+    /// De cada classe ficam só as 5 mais ligadas às palavras das tarefas, e a
+    /// lição sem palavra em comum com elas sai, seja qual for a classe; tudo
+    /// volta em ordem de número. Com seis defeitos ligados, o sexto, o mais
+    /// fraco, perde o lugar: cinco é o último número que passa inteiro.
     #[test]
-    fn only_the_five_rules_closest_to_the_words_are_kept_and_every_other_class_stays() {
-        let rule = |id: u64, text: &str| lesson(id, json!({"class": "project_rule", "text": text, "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"source": "CLAUDE.md"}}));
-        let mut content = vec![lesson(1, json!({"class": "environment_trap", "text": "O cargo não está no PATH.", "keys": ["cargo"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}))];
+    fn of_each_class_only_the_five_lessons_closest_to_the_tasks_are_kept() {
+        let of = |id: u64, class: &str, text: &str| lesson(id, json!({"class": class, "text": text, "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"source": "CLAUDE.md"}}));
+        let mut content = vec![of(1, "environment_trap", "O cargo não está no PATH.")];
         for id in 2..=7 {
-            content.push(rule(id, &format!("A fatura soma o total {id}.")));
+            content.push(of(id, "project_rule", &format!("A fatura soma o total {id}.")));
         }
-        content.push(rule(8, "O módulo declara o dono."));
+        content.push(of(8, "project_rule", "O módulo declara o dono."));
+        for id in 9..=13 {
+            content.push(of(id, "defect", &format!("A fatura somou o total errado no relatório {id}.")));
+        }
+        content.push(of(14, "defect", "A fatura antiga ficou de fora."));
+        content.push(of(15, "defect", "Apagar a pasta perde trabalho."));
+        content.push(of(16, "user_preference", "O total da fatura sai em reais."));
         let bank = parse_log(&content.concat());
-        let kept: Vec<u64> = rules_limited(bank.visible(), "Somar o total da fatura").iter().map(|l| l.id).collect();
-        assert_eq!(kept.len(), 6, "{kept:?}");
-        assert_eq!(kept[0], 1, "a armadilha fica: {kept:?}");
+        let kept: Vec<u64> =
+            related_to_tasks(bank.visible(), "Somar o total da fatura no relatório").iter().map(|l| l.id).collect();
+        let rules: Vec<u64> = kept.iter().copied().filter(|id| (2..=8).contains(id)).collect();
+        assert_eq!(rules.len(), 5, "cinco regras: {kept:?}");
         assert!(!kept.contains(&8), "a regra sem palavra em comum sai: {kept:?}");
+        let defects: Vec<u64> = kept.iter().copied().filter(|id| (9..=15).contains(id)).collect();
+        assert_eq!(defects, [9, 10, 11, 12, 13], "os cinco defeitos mais ligados; o sexto e o sem palavra saem: {kept:?}");
+        assert!(!kept.contains(&1), "a armadilha sem palavra em comum sai: {kept:?}");
+        assert!(kept.contains(&16), "a preferência ligada fica: {kept:?}");
         assert!(kept.windows(2).all(|w| w[0] < w[1]), "{kept:?}");
+    }
+
+    /// O mesmo texto, com outros espaços, maiúsculas e acentos, é a mesma
+    /// lição: a nova é recusada apontando a que existe, de qualquer classe. A
+    /// que ela substitui não conta, e a que já foi substituída também não.
+    #[test]
+    fn a_lesson_repeating_the_text_of_one_already_kept_is_refused_naming_it() {
+        let bank = parse_log(
+            &[
+                lesson(1, json!({"class": "defect", "text": "Não apague a pasta.", "keys": ["apagar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
+                lesson(2, json!({"class": "defect", "text": "Rode em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
+                lesson(3, json!({"class": "defect", "text": "Rode tudo em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}, "replaces": 2})),
+            ]
+            .concat(),
+        );
+        let draft = |text: &str, extra: Value| {
+            let mut event = normalize(obj(json!({"class": "project_rule", "text": text, "keys": ["k"], "applies_to": {"subproject": "apps/rt"}, "found_in": {"source": "apps/rt/CLAUDE.md"}})), None);
+            if let Value::Object(more) = extra {
+                event.extend(more);
+            }
+            event
+        };
+        let refusal = check_against(&bank, &draft("  NAO   apague a PASTA. ", json!({}))).unwrap_err();
+        assert_eq!(refusal, Refusal::LessonRepeated { id: 1, text: "Não apague a pasta.".into() });
+        assert_eq!(refusal.reason(), "lesson-repeated");
+        assert!(refusal.message(Locale::PtBr).contains("lição 1"), "{}", refusal.message(Locale::PtBr));
+        assert!(refusal.message(Locale::PtBr).contains("Não apague a pasta."), "{}", refusal.message(Locale::PtBr));
+        assert!(refusal.message(Locale::EnUs).contains("lesson 1"), "{}", refusal.message(Locale::EnUs));
+        assert!(check_against(&bank, &draft("Não apague a pasta errada.", json!({}))).is_ok(), "outro texto entra");
+        assert!(check_against(&bank, &draft("Nao apague a pasta.", json!({"replaces": 1}))).is_ok(), "a versão nova da própria lição entra");
+        assert!(check_against(&bank, &draft("Rode em primeiro plano.", json!({}))).is_ok(), "a lição substituída não conta");
     }
 
     #[test]

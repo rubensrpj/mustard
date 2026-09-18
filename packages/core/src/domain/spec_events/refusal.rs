@@ -1,6 +1,7 @@
 //! As recusas: por que um evento ou uma lição não foi gravado, ou um bloco
 //! não foi lido, com a razão curta e a mensagem exata nos dois idiomas.
 
+use crate::domain::clarity::ClarityReport;
 use crate::domain::survey::GapKey;
 use crate::platform::i18n::{translate, Locale};
 
@@ -39,6 +40,14 @@ pub enum Refusal {
     UnknownLesson { id: u64 },
     /// A lição não diz onde nasceu.
     LessonOriginMissing,
+    /// O texto da lição repete o de outra já guardada no banco, depois de
+    /// igualar espaços, maiúsculas e acentos: `id` e `text` são os dela.
+    LessonRepeated { id: u64, text: String },
+    /// O texto da lição não passou na conferência de escrita do fim da
+    /// resposta: a lição é um resumo do assistente no jeito de escrever do
+    /// projeto. `report` traz os defeitos, ditos no idioma de quem lê; ele
+    /// vai numa caixa para não aumentar toda recusa.
+    LessonUnclear { report: Box<ClarityReport> },
     /// Uma gravação que muda a fase da spec por uma porta que não grava essa
     /// mudança: a regra única da mudança de fase recusou.
     PhaseChangeRefused { spec: String, from: String, to: String },
@@ -139,6 +148,8 @@ impl Refusal {
             Self::SpecRequired { .. } => "spec-required",
             Self::UnknownLesson { .. } => "unknown-lesson",
             Self::LessonOriginMissing => "lesson-origin-missing",
+            Self::LessonRepeated { .. } => "lesson-repeated",
+            Self::LessonUnclear { .. } => "lesson-unclear",
             Self::PhaseChangeRefused { .. } => "phase-change-refused",
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::BinaryOnlyType { .. } => "binary-only-type",
@@ -268,6 +279,13 @@ impl Refusal {
             }
             Self::UnknownLesson { id } => fill("lessons.unknown_lesson", &[("{id}", id.to_string())]),
             Self::LessonOriginMissing => fill("lessons.origin_missing", &[]),
+            Self::LessonRepeated { id, text } => fill(
+                "lessons.repeated",
+                &[("{id}", id.to_string()), ("{text}", opening(text, REPEATED_TEXT_CHARS))],
+            ),
+            Self::LessonUnclear { report } => {
+                fill("lessons.unclear", &[("{defects}", report.defects(lang).join("; "))])
+            }
             Self::PhaseChangeRefused { spec, from, to } => fill(
                 "spec_events.phase_change_refused",
                 &[("{spec}", spec.clone()), ("{from}", from.clone()), ("{to}", to.clone())],
@@ -345,4 +363,19 @@ impl Refusal {
             Self::Io { detail } => fill("spec_events.io_failed", &[("{detail}", detail.clone())]),
         }
     }
+}
+
+/// Quantos caracteres do texto da lição que já existe a recusa de repetição
+/// mostra: o bastante para achar a lição, pouco para não copiá-la inteira.
+const REPEATED_TEXT_CHARS: usize = 160;
+
+/// O começo de `text`, com no máximo `max` caracteres; o corte ganha "…".
+fn opening(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(max).collect();
+    cut.push('…');
+    cut
 }

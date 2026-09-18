@@ -22,7 +22,13 @@
 //! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
 //! `class`, a lição diz onde vale (`applies_to`) e onde nasceu (`found_in`), e
 //! o `--spec`, opcional só aqui, diz a spec em que ela nasceu quando a lição
-//! não diz. A página e o índice não mudam:
+//! não diz. A lição é um resumo do assistente no jeito de escrever do
+//! projeto: o texto passa pela medição da conferência de escrita do fim da
+//! resposta (frase longa, sigla sem explicação, código interno, tamanho,
+//! leitura e idioma), e a lição com defeito é recusada com os defeitos, sem
+//! gravar. A lição cujo texto repete o de outra já guardada, depois de
+//! igualar espaços, maiúsculas e acentos, também é recusada, apontando a que
+//! existe. A página e o índice não mudam:
 //!
 //! ```text
 //! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
@@ -841,9 +847,16 @@ pub(crate) fn branch_of_spec(start: &Path, spec: &str) -> Option<String> {
 }
 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
-/// que spec a lição nasceu.
+/// que spec a lição nasceu. O texto passa antes pela medição da conferência
+/// de escrita do fim da resposta; com defeito, nada é gravado.
 fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String, Value>) -> Value {
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
+    if let Some(text) = draft.get("text").and_then(Value::as_str) {
+        let report = crate::hooks::task::clarity_check::measure_in_project(&project.root, text, &[]);
+        if !report.passed {
+            return refuse(Refusal::LessonUnclear { report: Box::new(report) });
+        }
+    }
     let path = match ClaudePaths::for_project(&project.root) {
         Ok(paths) => paths.lessons_path(),
         Err(e) => return refuse(Refusal::Io { detail: e.to_string() }),
@@ -1650,6 +1663,68 @@ mod tests {
         let refused = write_to(root, None, "lesson", no_origin);
         assert_eq!(refused["reason"], json!("lesson-origin-missing"), "{refused}");
         assert_eq!(std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap().lines().count(), 2);
+    }
+
+    /// Uma lição com o texto `text`, que vale no projeto todo, como o
+    /// assistente a grava pelo `run write lesson`.
+    fn lesson_text(root: &std::path::Path, text: &str) -> Value {
+        let draft = json!({"class": "defect", "text": text, "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
+        write_to(root, None, "lesson", &draft.to_string())
+    }
+
+    /// As linhas do banco de lições; vazio quando ele ainda não existe.
+    fn bank_lines(root: &std::path::Path) -> usize {
+        std::fs::read_to_string(root.join(".claude").join("spec").join("lessons.ndjson"))
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// A lição com frase longa, sigla sem explicação ou código interno é
+    /// recusada pelo comando de gravar com os defeitos da conferência de
+    /// escrita do fim da resposta, e nada é gravado. Na divisa, a frase de 25
+    /// palavras entra e a de 26 não; a sigla que o projeto declara no
+    /// `mustard.json` entra, como na resposta.
+    #[test]
+    fn a_lesson_with_a_long_sentence_an_acronym_or_an_internal_code_is_refused_and_nothing_is_written() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sentence = |n: usize| format!("{}.", vec!["teste"; n].join(" "));
+
+        let long = lesson_text(root, &sentence(26));
+        assert_eq!(long["reason"], json!("lesson-unclear"), "{long}");
+        let hint = long["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("26") && hint.contains("Nada foi gravado"), "{hint}");
+        let acronym = lesson_text(root, "O CI quebra quando a pasta some.");
+        assert_eq!(acronym["reason"], json!("lesson-unclear"), "{acronym}");
+        assert!(acronym["hint"].as_str().unwrap_or_default().contains("CI"), "{acronym}");
+        let code = lesson_text(root, "A regra MSTD-RULE-0005 vale aqui.");
+        assert_eq!(code["reason"], json!("lesson-unclear"), "{code}");
+        assert!(code["hint"].as_str().unwrap_or_default().contains("MSTD-RULE-0005"), "{code}");
+        assert_eq!(bank_lines(root), 0, "nothing was written");
+
+        assert_eq!(lesson_text(root, &sentence(25))["ok"], json!(true), "25 words still pass");
+        std::fs::write(root.join("mustard.json"), r#"{"acronyms":["CI"]}"#).unwrap();
+        assert_eq!(lesson_text(root, "O CI quebra quando a pasta some.")["ok"], json!(true), "the project's acronym passes");
+        assert_eq!(bank_lines(root), 2);
+    }
+
+    /// Pelo comando de gravar, a lição com o mesmo texto de outra já guardada,
+    /// com outros espaços, maiúsculas e acentos, é recusada apontando a que
+    /// existe, e o banco fica como estava; a versão nova da própria lição
+    /// entra.
+    #[test]
+    fn a_lesson_repeating_one_already_kept_is_refused_by_the_write_naming_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(lesson_text(root, "Não apague a pasta de outra sessão.")["id"], json!(1));
+        let before = std::fs::read(root.join(".claude/spec/lessons.ndjson")).unwrap();
+        let again = lesson_text(root, "  nao Apague a pasta   de outra sessao. ");
+        assert_eq!(again["reason"], json!("lesson-repeated"), "{again}");
+        let hint = again["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("lição 1") && hint.contains("Não apague a pasta de outra sessão."), "{hint}");
+        assert_eq!(std::fs::read(root.join(".claude/spec/lessons.ndjson")).unwrap(), before);
+        let draft = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 1});
+        assert_eq!(write_to(root, None, "lesson", &draft.to_string())["id"], json!(2));
     }
 
     /// O `search` é gravado no arquivo de eventos e nunca aparece na página

@@ -481,6 +481,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The lesson must say where it was born, in found_in: `spec`, `branch` and `commit`, \
              or `source` (the file it came from). Nothing was written."
         }
+        ("lessons.repeated", Locale::PtBr) => {
+            "O texto desta lição repete o da lição {id}, já guardada no banco: \"{text}\". Para \
+             mudar a que existe, grave a versão nova com `\"replaces\": {id}`. Nada foi gravado."
+        }
+        ("lessons.repeated", Locale::EnUs) => {
+            "The text of this lesson repeats the one of lesson {id}, already in the bank: \"{text}\". \
+             To change the one that exists, write its new version with `\"replaces\": {id}`. \
+             Nothing was written."
+        }
+        ("lessons.unclear", Locale::PtBr) => {
+            "A lição é um resumo do assistente no jeito de escrever do projeto, e a conferência de \
+             escrita do fim da resposta achou: {defects}. Reescreva o texto e grave de novo. Nada \
+             foi gravado."
+        }
+        ("lessons.unclear", Locale::EnUs) => {
+            "A lesson is the assistant's summary, written the project's way, and the writing check \
+             of the end of a response found: {defects}. Rewrite the text and write it again. \
+             Nothing was written."
+        }
         ("spec_index.no_specs", Locale::PtBr) => {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
         }
@@ -502,8 +521,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            69,
-            0x88a8_1da5_f6b1_b04a,
+            71,
+            0xdcfa_36aa_b2fd_16c1,
         );
     }
 
@@ -600,6 +619,8 @@ mod tests {
             ("spec_events.spec_required", &["{type}"][..]),
             ("lessons.unknown_lesson", &["{id}"][..]),
             ("lessons.origin_missing", &[][..]),
+            ("lessons.repeated", &["{id}", "{text}"][..]),
+            ("lessons.unclear", &["{defects}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
