@@ -39,9 +39,9 @@ pub(crate) fn default_model_path(root: &Path) -> PathBuf {
 /// a spawn/exit error is reported, never panics (matches the other handlers).
 ///
 /// With a model of this project already on disk, only the files that changed
-/// since are read again; the result says which (`read`) and whether every
-/// file was (`full`). Nothing is written to git and nothing runs this on its
-/// own.
+/// since are read again; the result says how many (`read`, a count, never
+/// the list of names) and whether every file was (`full`). Nothing is
+/// written to git and nothing runs this on its own.
 ///
 /// When `full` is `true`, (re)generates the mustard-owned
 /// `.claude/scan-map.md` per subproject after the model is written; no
@@ -95,7 +95,9 @@ pub(crate) fn scan_at(
             "ok": true,
             "model": model_path.to_string_lossy(),
             "full": report.full,
-            "read": report.read,
+            // Só quantos arquivos foram lidos, como a abertura de spec
+            // responde: a lista fica no relatório da ferramenta.
+            "read": report.read.len(),
             "files": report.files,
         }),
         Err(err) => {
@@ -377,6 +379,52 @@ mod tests {
         rule(&bank, "src", "O `main.rs` só chama a biblioteca.", &["main"]);
         let result = scan_at(root, None, false, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
+    }
+
+    /// A ferramenta do scan que grava o mapa dos arquivos do disco e devolve
+    /// o relatório escrito na última linha, no formato que a ferramenta
+    /// instalada imprime.
+    fn mine_reporting(line: String) -> impl FnOnce(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport> {
+        move |root, model| {
+            mine_disk(root, model)?;
+            Ok(serde_json::from_str(&line).expect("o relatório da ferramenta"))
+        }
+    }
+
+    /// O comando de mapeamento lê o projeto e responde. A resposta diz
+    /// quantos arquivos a ferramenta leu desta vez, e nenhum nome deles. Na
+    /// primeira leitura são os dois arquivos do projeto; depois de mudar um,
+    /// só esse é lido de novo, e a resposta diz 1, não os 2 que o mapa tem.
+    /// Com os 1349 arquivos que a leitura da Suzano trouxe, a resposta diz
+    /// 1349 e continua sem a lista.
+    #[test]
+    fn the_scan_answer_carries_only_the_count_of_files_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("src/main.rs"), "fn main() {}\n");
+        write(&root.join("src/lib.rs"), "pub fn a() {}\n");
+        let head = "345b9361a952fba302c9f811626e26bea7fac2f2";
+
+        let whole = format!(r#"{{"ok":true,"full":true,"read":["src/lib.rs","src/main.rs"],"files":2,"head":"{head}"}}"#);
+        let answer = scan_at(root, None, false, mine_reporting(whole));
+        assert_eq!(answer["ok"], json!(true), "{answer}");
+        assert_eq!(answer["full"], json!(true), "{answer}");
+        assert_eq!(answer["read"], json!(2), "{answer}");
+        assert_eq!(answer["files"], json!(2), "{answer}");
+
+        let changed = format!(r#"{{"ok":true,"full":false,"read":["src/lib.rs"],"files":2,"head":"{head}"}}"#);
+        let answer = scan_at(root, None, false, mine_reporting(changed));
+        assert_eq!(answer["full"], json!(false), "{answer}");
+        assert_eq!(answer["read"], json!(1), "{answer}");
+        let text = answer.to_string();
+        assert!(!text.contains("src/lib.rs") && !text.contains("src/main.rs"), "a resposta não leva os nomes: {text}");
+
+        let read: Vec<String> = (0..1349).map(|n| format!("src/modulo_{n}.ts")).collect();
+        let suzano = json!({"ok": true, "full": true, "read": read, "files": 1349, "head": head}).to_string();
+        let answer = scan_at(root, None, false, mine_reporting(suzano));
+        assert_eq!(answer["read"], json!(1349), "{answer}");
+        let text = answer.to_string();
+        assert!(!text.contains("modulo_"), "a resposta não leva os nomes: {text}");
     }
 
     #[test]
