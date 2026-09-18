@@ -47,6 +47,14 @@ impl SpecEvent {
         ints(self.fields.get(field))
     }
 
+    /// Os números que esta versão substitui (`replaces`): um só, no item da
+    /// spec e na versão nova de uma lição, ou vários, na lição que junta
+    /// outras numa só. Vazio quando o evento não substitui nada.
+    #[must_use]
+    pub fn replaced(&self) -> Vec<u64> {
+        self.int("replaces").map_or_else(|| self.ints("replaces"), |old| vec![old])
+    }
+
     /// O bloco do tipo; `None` para um tipo que este binário não conhece.
     #[must_use]
     pub fn block(&self) -> Option<Block> {
@@ -308,7 +316,7 @@ impl SpecLog {
                     hidden.entry(id).or_insert(Hidden::Removed { by: event.id });
                 }
             }
-            if let Some(old) = event.int("replaces") {
+            for old in event.replaced() {
                 hidden.entry(old).or_insert(Hidden::Replaced { by: event.id });
             }
         }
@@ -327,7 +335,7 @@ impl SpecLog {
     #[must_use]
     pub fn current(&self, id: u64) -> Option<&SpecEvent> {
         let replaced_by: BTreeMap<u64, u64> =
-            self.events.iter().filter_map(|e| e.int("replaces").map(|old| (old, e.id))).collect();
+            self.events.iter().flat_map(|e| e.replaced().into_iter().map(move |old| (old, e.id))).collect();
         let mut id = id;
         for _ in 0..=self.events.len() {
             match replaced_by.get(&id) {

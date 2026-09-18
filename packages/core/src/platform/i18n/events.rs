@@ -31,10 +31,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec file has no {type} event type. Nothing was written. Accepted types: {types}."
         }
         ("spec_events.missing_field", Locale::PtBr) => {
-            "O evento {type} precisa do campo {field}, que faltou ou veio vazio. Nada foi gravado."
+            "Campos obrigatórios do evento {type} que faltaram ou vieram vazios: {field}. Nada foi \
+             gravado."
         }
         ("spec_events.missing_field", Locale::EnUs) => {
-            "The {type} event needs the {field} field, which is missing or empty. Nothing was \
+            "Required fields of the {type} event that are missing or empty: {field}. Nothing was \
              written."
         }
         ("spec_events.invalid_value", Locale::PtBr) => {
@@ -115,14 +116,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.waves_grew", Locale::PtBr) => "A spec tinha {approved} ondas aprovadas, agora tem {now}.",
         ("spec_events.waves_grew", Locale::EnUs) => "The spec had {approved} approved waves, now it has {now}.",
         ("spec_events.goal_not_verbatim", Locale::PtBr) => {
-            "O primeiro `context` da spec {spec} é o objetivo: a resposta do usuário, palavra por \
-             palavra. Grave em `text` o texto da mensagem dele e, em `origin`, o número dela; {origin} \
-             não é uma mensagem do usuário com esse texto. Nada foi gravado."
+            "O primeiro `context` da spec {spec} é o objetivo: a frase do usuário, palavra por \
+             palavra, ou a sugestão que ele aprovou, palavra por palavra como está na resposta do \
+             assistente que ele respondeu. Grave essa frase em `text` e, em `origin`, o número da \
+             mensagem dele; {origin} não é uma mensagem do usuário com esse texto, nem a que \
+             respondeu uma sugestão com ele. Nada foi gravado."
         }
         ("spec_events.goal_not_verbatim", Locale::EnUs) => {
-            "The first `context` of spec {spec} is the goal: the user's answer, word for word. Put \
-             their message's text in `text` and its number in `origin`; {origin} is not a user \
-             message with that text. Nothing was written."
+            "The first `context` of spec {spec} is the goal: the user's sentence, word for word, or \
+             the suggestion they approved, word for word as it stands in the assistant reply they \
+             answered. Put that sentence in `text` and their message's number in `origin`; {origin} \
+             is not a user message with that text, nor one that answered a suggestion with it. \
+             Nothing was written."
         }
         ("spec_events.survey_open", Locale::PtBr) => {
             "A spec {spec} ainda tem pontos abertos no levantamento ({count}): {points}. Feche cada um, \
@@ -394,6 +399,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.kind.one_of", Locale::EnUs) => "one of these words: {values}",
         ("spec_events.kind.many_of", Locale::PtBr) => "uma lista só com estas palavras: {values}",
         ("spec_events.kind.many_of", Locale::EnUs) => "a list with only these words: {values}",
+        ("spec_events.kind.one_of_numbers", Locale::PtBr) => "um destes números: {values}",
+        ("spec_events.kind.one_of_numbers", Locale::EnUs) => "one of these numbers: {values}",
         ("spec_events.kind.text_or_object", Locale::PtBr) => "um texto ou um objeto JSON",
         ("spec_events.kind.text_or_object", Locale::EnUs) => "a text or a JSON object",
         ("spec_events.kind.time", Locale::PtBr) => "uma data e hora como 2026-09-11T21:03",
@@ -476,6 +483,48 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The lesson must say where it was born, in found_in: `spec`, `branch` and `commit`, \
              or `source` (the file it came from). Nothing was written."
         }
+        ("lessons.repeated", Locale::PtBr) => {
+            "O texto desta lição repete o da lição {id}, já guardada no banco: \"{text}\". Para \
+             mudar a que existe, grave a versão nova com `\"replaces\": {id}`. Nada foi gravado."
+        }
+        ("lessons.repeated", Locale::EnUs) => {
+            "The text of this lesson repeats the one of lesson {id}, already in the bank: \"{text}\". \
+             To change the one that exists, write its new version with `\"replaces\": {id}`. \
+             Nothing was written."
+        }
+        ("lessons.unclear", Locale::PtBr) => {
+            "A lição é um resumo do assistente no jeito de escrever do projeto, e a conferência de \
+             escrita do fim da resposta achou: {defects}. Reescreva o texto e grave de novo. Nada \
+             foi gravado."
+        }
+        ("lessons.unclear", Locale::EnUs) => {
+            "A lesson is the assistant's summary, written the project's way, and the writing check \
+             of the end of a response found: {defects}. Rewrite the text and write it again. \
+             Nothing was written."
+        }
+        // O que o scan aponta para enxugar o banco de lições (`run scan`).
+        ("lessons.scan_merge", Locale::PtBr) => {
+            "Junte cada grupo de lições parecidas numa lição só, resumida no jeito de escrever do \
+             projeto, gravada com `mustard-rt run write lesson` e com `\"replaces\"` apontando as \
+             lições do grupo: {groups}."
+        }
+        ("lessons.scan_merge", Locale::EnUs) => {
+            "Merge each group of similar lessons into one lesson, summarized the project's way, \
+             written with `mustard-rt run write lesson` and `\"replaces\"` naming the group's \
+             lessons: {groups}."
+        }
+        ("lessons.scan_retire", Locale::PtBr) => {
+            "Retire as lições que já não valem, porque citam um caminho que o projeto já não tem, \
+             com `mustard-rt run write lesson --json '{\"targets\":[…],\"reason\":\"…\"}'`: \
+             {lessons}."
+        }
+        ("lessons.scan_retire", Locale::EnUs) => {
+            "Retire the lessons that no longer hold, because they cite a path the project no \
+             longer has, with `mustard-rt run write lesson --json '{\"targets\":[…],\"reason\":\"…\"}'`: \
+             {lessons}."
+        }
+        ("lessons.scan_untouched", Locale::PtBr) => "O scan não mudou o banco de lições.",
+        ("lessons.scan_untouched", Locale::EnUs) => "The scan did not change the lesson bank.",
         ("spec_index.no_specs", Locale::PtBr) => {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
         }
@@ -497,8 +546,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            69,
-            0x5f4e_b517_6dce_e2d0,
+            75,
+            0x8d16_b266_0821_7123,
         );
     }
 
@@ -567,6 +616,7 @@ mod tests {
             ("spec_events.kind.list", &[][..]),
             ("spec_events.kind.one_of", &["{values}"][..]),
             ("spec_events.kind.many_of", &["{values}"][..]),
+            ("spec_events.kind.one_of_numbers", &["{values}"][..]),
             ("spec_events.kind.text_or_object", &[][..]),
             ("spec_events.kind.time", &[][..]),
             ("spec_events.kind.ref", &[][..]),
@@ -595,6 +645,11 @@ mod tests {
             ("spec_events.spec_required", &["{type}"][..]),
             ("lessons.unknown_lesson", &["{id}"][..]),
             ("lessons.origin_missing", &[][..]),
+            ("lessons.repeated", &["{id}", "{text}"][..]),
+            ("lessons.unclear", &["{defects}"][..]),
+            ("lessons.scan_merge", &["{groups}"][..]),
+            ("lessons.scan_retire", &["{lessons}"][..]),
+            ("lessons.scan_untouched", &[][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

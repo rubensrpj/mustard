@@ -170,6 +170,25 @@ pub(crate) struct WaveGraph {
     pub(crate) parts: BTreeMap<u64, Vec<Vec<String>>>,
     /// Os arquivos que as tarefas de cada onda declaram.
     pub(crate) files: BTreeMap<u64, BTreeSet<String>>,
+    /// As tarefas de cada onda, pelo código, com os arquivos que cada uma
+    /// declara: é deles que saem as partes da onda e as da spec inteira.
+    pub(crate) tasks: BTreeMap<u64, Vec<(String, BTreeSet<String>)>>,
+}
+
+impl WaveGraph {
+    /// As partes independentes da spec inteira, pela mesma conta das partes
+    /// de uma onda: as tarefas de todas as ondas entram juntas, sem separar
+    /// por onda, e duas tarefas ficam na mesma parte quando dividem arquivo,
+    /// estejam na mesma onda ou não. As ondas de `skip` ficam de fora.
+    pub(crate) fn spec_parts(&self, skip: &BTreeSet<u64>) -> Vec<Vec<String>> {
+        let tasks: Vec<(String, BTreeSet<String>)> = self
+            .tasks
+            .iter()
+            .filter(|(n, _)| !skip.contains(n))
+            .flat_map(|(_, tasks)| tasks.iter().cloned())
+            .collect();
+        independent_parts(&tasks)
+    }
 }
 
 /// O grafo das ondas do bloco `waves` de uma spec.
@@ -247,6 +266,7 @@ pub(crate) fn wave_graph(log: &SpecLog) -> WaveGraph {
         collisions: same_level_collisions(&census),
         parts,
         files,
+        tasks: by_task,
     }
 }
 
@@ -365,6 +385,36 @@ mod tests {
         assert!(
             !parts.concat().contains(&"MSTD-TASK-0005".to_string()),
             "a tarefa sem arquivo fica de fora: {parts:?}"
+        );
+    }
+
+    /// As partes da spec inteira saem da mesma conta das partes de uma onda,
+    /// com as tarefas de todas as ondas juntas: a tarefa da onda 2 e a
+    /// primeira da onda 3 tocam arquivos da tarefa da onda 1 e ficam na parte
+    /// dela, e a que só toca `src/c.rs` fica sozinha. A onda deixada de fora
+    /// não liga parte nenhuma.
+    #[test]
+    fn the_parts_of_the_spec_join_tasks_of_different_waves_by_file() {
+        let log = spec_log(&[
+            wave(1, &[]),
+            task(1, &["src/a.rs", "src/b.rs"]),
+            wave(2, &[1]),
+            task(2, &["src/b.rs"]),
+            wave(3, &[2]),
+            task(3, &["src/a.rs"]),
+            task(3, &["src/c.rs"]),
+        ]);
+        let graph = wave_graph(&log);
+        let codes = |list: &[&str]| list.iter().map(|c| format!("MSTD-TASK-000{c}")).collect::<Vec<_>>();
+        assert_eq!(
+            graph.spec_parts(&BTreeSet::new()),
+            vec![codes(&["1", "2", "3"]), codes(&["4"])],
+            "a onda 1 liga as tarefas das ondas 2 e 3"
+        );
+        assert_eq!(
+            graph.spec_parts(&BTreeSet::from([1])),
+            vec![codes(&["2"]), codes(&["3"]), codes(&["4"])],
+            "sem a onda 1, nada liga as outras"
         );
     }
 

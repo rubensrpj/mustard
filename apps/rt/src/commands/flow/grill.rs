@@ -14,9 +14,10 @@
 //! A lista (`mustard_core::domain::survey::build`) junta as lacunas dos
 //! tipos, as lições do banco e as specs anteriores que casam com o objetivo e,
 //! dentro desses pontos, até 3 lembretes: mensagens antigas do usuário que não
-//! viraram registro. O banco, o índice, as specs anteriores e o mapa são os do
-//! checkout principal, também vistos de um worktree. Com `--condensed`, o
-//! pedido que cabe numa frase, todos os pontos vão para um bloco só.
+//! viraram registro. A regra do projeto nunca vira ponto: vale sempre. O
+//! banco, o índice, as specs anteriores e o mapa são os do checkout
+//! principal, também vistos de um worktree. Com `--condensed`, o pedido que
+//! cabe numa frase, todos os pontos vão para um bloco só.
 //!
 //! O `grill` não grava os pontos: quem os grava é o assistente, pelo `write`,
 //! copiando cada item de `points`. O item já gravado traz o número, o código e
@@ -737,6 +738,52 @@ mod tests {
         let search = serde_json::from_str::<Value>(bank.lines().next().unwrap()).unwrap()["search"].as_str().unwrap().to_string();
         assert!(!report.to_string().contains(&search), "the search field never shows: {report}");
         record_list(root, "x", &report);
+    }
+
+    /// Uma pasta com 300 regras do projeto que casam com o objetivo, e um
+    /// defeito que também casa: o levantamento não traz regra nenhuma como
+    /// ponto, e o defeito continua virando ponto, sem perder o lugar para
+    /// elas.
+    #[test]
+    fn hundreds_of_project_rules_never_become_survey_points() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let written = write(
+            root,
+            None,
+            "lesson",
+            json!({"class": "defect", "text": LESSON, "keys": ["merge", "pendência"],
+                   "applies_to": {"files": ["apps/rt/src/**"]}, "found_in": {"spec": "antiga"}}),
+        );
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let path = root.join(".claude").join("spec").join("lessons.ndjson");
+        let mut bank = std::fs::read_to_string(&path).unwrap();
+        for id in 2..=301 {
+            let draft = json!({"class": "project_rule", "keys": ["merge"],
+                "text": format!("Regra {id}: travar o merge enquanto houver pendência aberta na pasta."),
+                "applies_to": {"files": ["apps/rt/src/**"]}, "found_in": {"source": "apps/rt/CLAUDE.md"}});
+            let event = mustard_core::domain::lessons::normalize(draft.as_object().cloned().unwrap_or_default(), None);
+            bank.push_str(&mustard_core::domain::spec_events::render_line(&mustard_core::domain::spec_events::stamp(
+                event,
+                id,
+                None,
+                "2026-09-18T10:00:00-03:00",
+            )));
+            bank.push('\n');
+        }
+        std::fs::write(&path, bank).unwrap();
+        assert_eq!(lessons::read(&path).unwrap().unwrap().visible().len(), 301);
+
+        surveyed(root, "x");
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let from_lessons: Vec<&Value> = items(&report).iter().filter(|item| item["from"] == json!("lesson")).collect();
+        assert!(
+            !from_lessons.iter().any(|item| item.to_string().contains("Regra ")),
+            "nenhuma regra do projeto vira ponto: {from_lessons:?}"
+        );
+        assert_eq!(from_lessons.len(), 1, "{from_lessons:?}");
+        assert_eq!(from_lessons[0]["gap"], json!("Merge com pendência."));
     }
 
     /// A spec anterior que casa vira item da lista, com as regras e as

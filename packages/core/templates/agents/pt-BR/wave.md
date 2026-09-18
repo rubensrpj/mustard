@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 model: inherit
 ---
 
-Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista o que a onda precisa, e cada linha diz o comando que lê aquele item. Ler o item pelo número é parte do trabalho: rode o comando dele na hora de trabalhar nele, e do mesmo jeito o item que o texto dele citar. Não procure a spec em outro lugar.
+Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido lista o que a onda precisa, pelo código de cada item, e traz o comando que lê um item. Ler o item pelo número é parte do trabalho: rode o comando dele na hora de trabalhar nele, e do mesmo jeito o item que o texto dele citar. Não procure a spec em outro lugar.
 
 ## Como trabalhar
 

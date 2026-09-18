@@ -15,9 +15,10 @@
 //! Fica fora da medição do texto tudo o que não é texto corrido: blocos de
 //! código, código inline, URLs, caminhos de arquivo, linhas de tabela e JSON.
 //! Cada linha de texto é medida sozinha: numa resposta de chat a quebra de
-//! linha separa ideias, e um item de lista conta como frase. O tamanho é a
-//! exceção: conta todas as linhas não vazias ([`MAX_LINES`]), porque é o que o
-//! leitor tem de percorrer.
+//! linha separa ideias, e um item de lista conta como frase. O rótulo que abre
+//! a linha ("Fora do escopo:") não soma na frase dele ([`without_label`]). O
+//! tamanho é a exceção: conta todas as linhas não vazias ([`MAX_LINES`]),
+//! porque é o que o leitor tem de percorrer.
 //!
 //! Há ainda a medição do idioma. A resposta sai no idioma do projeto, que é o
 //! do usuário. O idioma da prosa sai de uma contagem de palavras comuns do
@@ -46,14 +47,23 @@ pub const MIN_READING_EASE: i32 = 25;
 /// bastante para o leitor achar a frase, pouco para não repetir a resposta.
 const OPENING_WORDS: usize = 8;
 
+/// Palavras acima das quais o trecho antes dos dois-pontos deixa de ser um
+/// rótulo ("Proposta:", "Fora do escopo:", "O que eu decidi sozinho:") e
+/// passa a ser parte da frase.
+const MAX_LABEL_WORDS: usize = 5;
+
 /// Siglas que dispensam expansão. São o vocabulário da web e do git que quem
 /// usa o Mustard lê todo dia sem pensar; escrever "HTML (linguagem de marcação
 /// de hipertexto)" deixaria a frase mais difícil, o contrário do que a regra
 /// pede. A lista é curta de propósito: sigla fora dela precisa das palavras por
 /// extenso na primeira vez.
+///
+/// As unidades de tamanho em maiúsculas (KB, MB, GB, TB) também estão nela:
+/// unidade de medida não é sigla, como o estilo de resposta já diz, e "750 KB"
+/// não pede "quilobyte" por extenso.
 const COMMON_ACRONYMS: &[&str] = &[
-    "API", "CPU", "CSS", "HTML", "HTTP", "HTTPS", "ID", "JSON", "OK", "PDF", "PR", "SQL", "URL",
-    "UTF",
+    "API", "CPU", "CSS", "GB", "HTML", "HTTP", "HTTPS", "ID", "JSON", "KB", "MB", "OK", "PDF", "PR", "SQL",
+    "TB", "URL", "UTF",
 ];
 
 /// Travessão ou hífen colado logo depois do termo: abre um aposto que explica o
@@ -217,7 +227,7 @@ pub fn measure(text: &str, already_explained: &[String], expected: Option<Locale
     let lines = prose_lines(text);
     let sentences: Vec<&str> = lines.iter().flat_map(|line| split_sentences(line)).collect();
 
-    let long_sentences = long_sentences(&sentences);
+    let long_sentences = long_sentences(&lines);
     let mut explained = Vec::new();
     let unexpanded_acronyms = unexpanded_acronyms(&sentences, already_explained, &mut explained);
     let internal_codes = internal_codes(&sentences);
@@ -401,10 +411,19 @@ fn dominant_language(pt: usize, en: usize) -> Option<Locale> {
     }
 }
 
-/// Frases com mais de [`MAX_SENTENCE_WORDS`] palavras, com o começo de cada uma.
-fn long_sentences(sentences: &[&str]) -> Vec<LongSentence> {
-    sentences
+/// Frases com mais de [`MAX_SENTENCE_WORDS`] palavras, com o começo de cada
+/// uma. A primeira frase de cada linha conta sem o rótulo que a abre
+/// ([`without_label`]).
+fn long_sentences(lines: &[String]) -> Vec<LongSentence> {
+    lines
         .iter()
+        .flat_map(|line| {
+            let mut sentences = split_sentences(line);
+            if let Some(first) = sentences.first_mut() {
+                *first = without_label(first);
+            }
+            sentences
+        })
         .filter_map(|sentence| {
             let words = words(sentence).count();
             (words > MAX_SENTENCE_WORDS).then(|| LongSentence {
@@ -413,6 +432,25 @@ fn long_sentences(sentences: &[&str]) -> Vec<LongSentence> {
             })
         })
         .collect()
+}
+
+/// A frase sem o rótulo que a abre: até [`MAX_LABEL_WORDS`] palavras antes do
+/// primeiro dois-pontos, com espaço ou o fim da frase logo depois dele, com ou
+/// sem a ênfase do markdown ("**Fora do escopo:**", "**Proposta**:"). Sem
+/// rótulo, a frase volta inteira. Hora ("10:30") não é rótulo: o dois-pontos
+/// vem colado no número.
+fn without_label(sentence: &str) -> &str {
+    let Some(colon) = sentence.find(':') else {
+        return sentence;
+    };
+    let label_words = words(&sentence[..colon]).count();
+    let rest = sentence[colon + 1..].trim_start_matches(TERM_CLOSERS);
+    let closes = rest.is_empty() || rest.starts_with(char::is_whitespace);
+    if closes && (1..=MAX_LABEL_WORDS).contains(&label_words) {
+        rest.trim_start()
+    } else {
+        sentence
+    }
 }
 
 /// Siglas sem expansão em nenhum ponto desta resposta nem antes na sessão.
@@ -887,7 +925,10 @@ mod tests {
         assert!(!report.passed);
         assert_eq!(
             report.defects(Locale::PtBr),
-            vec!["frase com 28 palavras: \"Esta frase foi escrita de propósito para passar…\""]
+            vec![
+                "frase com 28 palavras: \"Esta frase foi escrita de propósito para passar…\"; diga a \
+                 mesma ideia em frases curtas"
+            ]
         );
 
         // Exatamente no limite ainda passa; o item de lista é frase própria.
@@ -895,6 +936,46 @@ mod tests {
         let item = format!("- {}", vec!["item"; MAX_SENTENCE_WORDS + 1].join(" "));
         assert!(measure(&at_limit, &[], Some(Locale::PtBr)).passed);
         assert_eq!(measure(&item, &[], Some(Locale::PtBr)).long_sentences[0].words, MAX_SENTENCE_WORDS + 1);
+    }
+
+    /// O rótulo que abre a linha e termina em dois-pontos não soma na frase
+    /// seguinte: uma frase de 25 palavras passa com qualquer rótulo na frente,
+    /// e a de 26 sai com a contagem e o começo dela, sem o rótulo. O rótulo no
+    /// meio da linha, o trecho comprido antes dos dois-pontos e a hora não são
+    /// rótulos, e continuam somando.
+    #[test]
+    fn a_label_that_opens_the_line_does_not_count_in_the_sentence() {
+        let body = "o HTML também traz a tabela das ondas, com a tarefa de cada uma, o \
+                    arquivo que ela muda e o teste que prova tudo.";
+        assert_eq!(words(body).count(), MAX_SENTENCE_WORDS);
+        for label in [
+            "Proposta:",
+            "Fora do escopo:",
+            "**Fora do escopo:**",
+            "**Fora do escopo**:",
+            "- **Fora do escopo:**",
+            "> O que eu decidi sozinho:",
+        ] {
+            let report = measure(&format!("{label} {body}"), &[], Some(Locale::PtBr));
+            assert!(report.long_sentences.is_empty(), "{label}: {report:?}");
+        }
+
+        let longer = body.replacen("traz", "traz hoje", 1);
+        let report = measure(&format!("**Fora do escopo:** {longer}"), &[], Some(Locale::PtBr));
+        assert_eq!(
+            report.long_sentences,
+            vec![LongSentence { words: 26, opening: "o HTML também traz hoje a tabela das".to_string() }]
+        );
+
+        for (text, counted) in [
+            (format!("Uma frase curta. Proposta: {body}"), 26),
+            (format!("O teste que falhou ontem na máquina do usuário: {body}"), 34),
+            (format!("Às 10:30 {body}"), 27),
+        ] {
+            let report = measure(&text, &[], Some(Locale::PtBr));
+            let counts: Vec<usize> = report.long_sentences.iter().map(|sentence| sentence.words).collect();
+            assert_eq!(counts, vec![counted], "{text}");
+        }
     }
 
     /// Sigla sem as palavras por extenso é apontada; com a expansão entre
@@ -905,7 +986,8 @@ mod tests {
         let bare = measure("O CI falhou de novo.", &[], Some(Locale::PtBr));
         assert_eq!(bare.unexpanded_acronyms, vec!["CI"]);
         assert!(!bare.passed);
-        assert_eq!(bare.defects(Locale::PtBr), vec!["CI sem as palavras por extenso"]);
+        assert_eq!(bare.defects(Locale::PtBr), vec!["CI é uma sigla sem explicação; diga o nome por extenso"]);
+        assert_eq!(bare.defects(Locale::EnUs), vec!["CI is an unexplained acronym; spell out its full name"]);
 
         let expanded = measure("O CI (integração contínua) falhou de novo.", &[], Some(Locale::PtBr));
         assert!(expanded.unexpanded_acronyms.is_empty(), "{expanded:?}");
@@ -919,6 +1001,31 @@ mod tests {
 
         let common = measure("Abri o PR e os PRs com JSON e HTML.", &[], Some(Locale::PtBr));
         assert!(common.unexpanded_acronyms.is_empty(), "{common:?}");
+    }
+
+    /// Unidade de tamanho em maiúsculas não é sigla: a resposta que cita
+    /// quilobytes, megabytes, gigabytes e terabytes pela abreviação passa sem
+    /// o nome por extenso. Na divisa, uma sigla com a mesma forma que não é
+    /// unidade ("DB", duas letras terminadas em B) continua cobrada, mesmo na
+    /// frase das unidades.
+    #[test]
+    fn clarity_accepts_size_units_and_still_charges_other_acronyms() {
+        for text in [
+            "A página da spec tem 750 KB e não foi publicada.",
+            "O arquivo passou de 16 MB, e a página cortou a conversa.",
+            "O disco tem 2 GB livres e o backup ocupa 1 TB.",
+            "Os anexos somam 300 KBs no total.",
+        ] {
+            let report = measure(text, &[], Some(Locale::PtBr));
+            assert!(report.unexpanded_acronyms.is_empty(), "{text}: {report:?}");
+            assert!(report.passed, "{text}: {report:?}");
+        }
+
+        let mixed = measure("A página tem 750 KB e o DB tem 2 GB.", &[], Some(Locale::PtBr));
+        assert_eq!(mixed.unexpanded_acronyms, vec!["DB"], "{mixed:?}");
+        assert!(!mixed.passed, "{mixed:?}");
+        let other = measure("O CI gerou 16 MB de log.", &[], Some(Locale::PtBr));
+        assert_eq!(other.unexpanded_acronyms, vec!["CI"], "{other:?}");
     }
 
     /// A explicação só conta quando vem logo depois da sigla.
@@ -993,8 +1100,20 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         let over = vec!["Uma linha curta."; MAX_LINES + 1].join("\n");
         let report = measure(&over, &[], Some(Locale::PtBr));
         assert!(report.too_long && !report.passed);
-        assert_eq!(report.defects(Locale::EnUs), vec!["reply with 16 lines; the limit is 15"]);
-        assert_eq!(report.defects(Locale::PtBr), vec!["resposta com 16 linhas; o limite é 15"]);
+        assert_eq!(
+            report.defects(Locale::EnUs),
+            vec![
+                "reply with 16 lines, and the limit is 15; write a short summary in the chat, and put a \
+                 requested JSON, table or document on its own page: `mustard-rt run page`"
+            ]
+        );
+        assert_eq!(
+            report.defects(Locale::PtBr),
+            vec![
+                "resposta com 16 linhas, e o limite é 15; faça no chat um resumo curto, e JSON, tabela ou \
+                 documento pedido vai para a página avulsa: `mustard-rt run page`"
+            ]
+        );
 
         let code = format!("Rode isto:\n```text\n{}\n```", vec!["linha"; MAX_LINES].join("\n"));
         let report = measure(&code, &[], Some(Locale::PtBr));
@@ -1081,8 +1200,8 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert_eq!(
             defect,
             format!(
-                "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é 25; use \
-                 frases e palavras mais curtas"
+                "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é 25; faça um \
+                 resumo curto em palavras simples"
             )
         );
 
@@ -1161,7 +1280,7 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert!(!wrong.passed);
         assert_eq!(
             wrong.defects(Locale::PtBr),
-            vec!["resposta em en-US; o idioma do projeto e do usuário é pt-BR"]
+            vec!["resposta em en-US; o idioma do projeto e do usuário é pt-BR; faça um resumo em pt-BR"]
         );
 
         let right = measure(ENGLISH_REPLY, &[], Some(Locale::EnUs));

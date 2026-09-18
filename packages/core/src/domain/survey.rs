@@ -6,7 +6,8 @@
 //!   refatoração, juntas sem repetir no pedido misto, cada uma no bloco dela;
 //!   a lacuna que o mapa do projeto já responde vem com o fato e a fonte;
 //! - as lições do banco que casam com o objetivo, pelo BM25 de
-//!   `domain::search`, com o texto original, nunca o `search`;
+//!   `domain::search`, com o texto original, nunca o `search`; a regra do
+//!   projeto fica fora, porque vale sempre e não vira pergunta;
 //! - as specs anteriores que casam com o objetivo, pelo `search` do índice,
 //!   com as regras, as decisões e os erros delas que casam;
 //! - dentro desses pontos, nunca num ponto novo, até 3 lembretes: mensagens do
@@ -546,8 +547,8 @@ pub enum SurveyStep<'a> {
     /// A gravação fechou o último ponto aberto do bloco `block`: a revisão
     /// dele, com os pontos do bloco (`closed`) e os registros que os
     /// fechamentos apontam em `result` (`records`). Sem ponto aberto em bloco
-    /// nenhum, a revisão oferece o revisor de fora (`outside_review`), uma vez:
-    /// com algum ponto vindo dele, não oferece de novo.
+    /// nenhum, a revisão manda rodar o revisor de fora (`outside_review`),
+    /// uma vez: com algum ponto vindo dele, não manda de novo.
     ReviewBlock { block: String, closed: Vec<u64>, records: Vec<u64>, outside_review: bool },
     /// Não sobra ponto aberto: as mensagens do usuário que nenhum registro
     /// aponta.
@@ -561,7 +562,7 @@ pub enum SurveyStep<'a> {
 ///   sem lacuna por gravar (as specs antigas);
 /// - a revisão do bloco, quando a gravação fechou o último ponto aberto de um
 ///   bloco que não é o do levantamento condensado; o revisor de fora só é
-///   oferecido quando o levantamento acabou e nenhum ponto veio dele ainda;
+///   mandado rodar quando o levantamento acabou e nenhum ponto veio dele ainda;
 /// - depois dela, ou sozinho: enquanto alguma lacuna do tipo de trabalho não
 ///   tem ponto (a lista do `grill` ainda sendo gravada, ou um ponto
 ///   esquecido), gravar os pontos que faltam; senão, o próximo ponto aberto,
@@ -621,7 +622,7 @@ fn block_review(log: &SpecLog, block: &str) -> (Vec<u64>, Vec<u64>) {
 }
 
 /// Algum ponto veio do revisor de fora, pela leitura dos pares: ele já
-/// conferiu o levantamento, e a revisão do último bloco não o oferece de
+/// conferiu o levantamento, e a revisão do último bloco não manda rodá-lo de
 /// novo.
 fn outside_reviewed(log: &SpecLog) -> bool {
     points(log).iter().any(|p| p.from() == Some(FROM_OUTSIDE_REVIEW))
@@ -901,12 +902,19 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
 
 /// Um ponto por lição do banco que casa com o objetivo, as mais fortes
 /// primeiro: o título da lição como lacuna e o texto original dela como fato,
-/// com o arquivo e a linha do banco como fonte.
+/// com o arquivo e a linha do banco como fonte. A regra do projeto nunca vira
+/// ponto: ela vale sempre, e perguntar por ela em cada spec não acrescenta
+/// nada. Ela sai antes da busca, para que centenas de regras não tomem o
+/// lugar dos defeitos, das armadilhas e das preferências entre as mais
+/// fortes. As lições são as que a leitura do banco mostra
+/// ([`lessons::kept`]): a linha que retira lições não é lição.
 fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
     let Some(bank) = sources.bank else {
         return Vec::new();
     };
-    lessons::matching(bank, sources.goal)
+    let asked: Vec<&SpecEvent> =
+        lessons::kept(bank).into_iter().filter(|lesson| lesson.event_type != lessons::PROJECT_RULE).collect();
+    lessons::matching_among(&asked, sources.goal)
         .into_iter()
         .filter_map(|hit| {
             let lesson = bank.get(hit.id)?;
@@ -1292,6 +1300,30 @@ mod tests {
         assert!(!shown.contains("search") && !shown.contains("merg pendenc"), "{shown}");
     }
 
+    /// O levantamento lê as lições como a leitura do banco as mostra: a
+    /// linha que retira uma lição não vira ponto, nem quando traz um texto
+    /// que casa com o objetivo, como a que o gravador aceitava antes de
+    /// recusar campo a mais na retirada. A lição retirada também não.
+    #[test]
+    fn a_retirement_line_never_becomes_a_lesson_point() {
+        let retirement = json!({"targets": [2], "reason": "saiu", "text": "O merge com pendência aberta saiu."});
+        let bank = log_of(&[
+            lesson(1, "**Merge com pendência.** O merge não passa com pendência aberta.", &["merge", "pendência"]),
+            lesson(2, "**Pendência no merge.** A pendência aberta segura o merge.", &["merge", "pendência"]),
+            format!("{}\n", render_line(&stamp(lessons::normalize(obj(retirement), None), 3, None, "2026-09-14T09:00:00-03:00"))),
+        ]);
+        let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
+        let lines: Vec<&str> = list
+            .iter()
+            .filter(|p| p.from == "lesson")
+            .flat_map(|p| p.facts.iter().map(|f| f.source.as_str()))
+            .collect();
+        let shown: Vec<String> =
+            lessons::kept(&bank).iter().map(|l| format!(".claude/spec/lessons.ndjson:{}", l.line)).collect();
+        assert_eq!(lines, shown, "{list:?}");
+        assert_eq!(lines, [".claude/spec/lessons.ndjson:1"]);
+    }
+
     /// A spec anterior que casa vira ponto, com as regras e as decisões que
     /// casam como fatos e o comando que as lê como fonte; a spec atual nunca é
     /// a própria spec anterior, e a que divide uma palavra só fica fora.
@@ -1472,5 +1504,56 @@ mod tests {
         let before = log_of(&lines);
         lines.push(ev(9, "message", json!({"author": "user", "text": "Mais uma."})));
         assert!(next_step(&before, &log_of(&lines)).is_empty(), "no step after the approval");
+    }
+
+    /// A revisão do último bloco manda rodar o revisor de fora, pela marca
+    /// `outside_review`: com um ponto aberto ainda, fechar o bloco dele traz
+    /// a revisão sem a marca e o ponto; fechar o último ponto traz a revisão
+    /// com a marca e o fim; com uma lacuna ainda sem ponto, o levantamento
+    /// não acabou e a marca não vem. Depois que um ponto veio do revisor de
+    /// fora, fechar o último de novo traz a revisão sem a marca e o fim.
+    #[test]
+    fn the_end_of_the_survey_orders_the_outside_reviewer_once() {
+        let mut lines = vec![
+            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
+            ev(2, "message", json!({"author": "user", "text": GOAL})),
+            open_point(3, "rules", "Cada regra"),
+            open_point(4, "proof", "Como provar"),
+        ];
+        // Os passos da última gravação de `lines`, pelo nome.
+        let step_of = |lines: &[String]| -> Vec<&'static str> {
+            let (before, after) = (log_of(&lines[..lines.len() - 1]), log_of(lines));
+            next_step(&before, &after)
+                .iter()
+                .map(|step| match step {
+                    SurveyStep::Record(_) => "Record",
+                    SurveyStep::Point(_) => "Point",
+                    SurveyStep::ReviewBlock { outside_review: true, .. } => "ReviewBlock+OutsideReview",
+                    SurveyStep::ReviewBlock { .. } => "ReviewBlock",
+                    SurveyStep::Done { .. } => "Done",
+                })
+                .collect()
+        };
+
+        lines.push(closing(5, 3));
+        assert_eq!(step_of(&lines), ["ReviewBlock", "Point"], "one point still open: the survey is not over");
+
+        lines.push(closing(6, 4));
+        assert_eq!(step_of(&lines), ["ReviewBlock+OutsideReview", "Done"], "the last point closed");
+
+        // Uma lacuna do tipo de trabalho ainda sem ponto: fechar o último
+        // ponto aberto não acaba o levantamento.
+        let mut unrecorded = lines[..4].to_vec();
+        unrecorded.push(ev(7, "work_type", json!({"kinds": ["fix"], "origin": 2})));
+        unrecorded.push(closing(8, 3));
+        unrecorded.push(closing(9, 4));
+        assert_eq!(step_of(&unrecorded), ["ReviewBlock", "Record"], "a gap without a point holds the end");
+
+        lines.push(ev(7, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+            "status": "open", "origin": 2, "facts": [{"text": "f", "source": "mensagem 2"}]})));
+        assert_eq!(step_of(&lines), ["Point"], "the reviewer's point is presented like the others");
+        lines.push(ev(8, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+            "status": "closed", "closes": 7, "result": [2], "origin": 2})));
+        assert_eq!(step_of(&lines), ["ReviewBlock", "Done"], "the reviewer already ran: it is not ordered again");
     }
 }

@@ -528,7 +528,8 @@ mod tests {
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "the replanned fix goes out again: {again}");
         let prompt = again["dispatch"][0]["prompt"].as_str().unwrap_or_default();
-        assert!(prompt.contains(&format!("--term {task_code}`")), "{prompt}");
+        let mut waves_lines = prompt.lines().filter_map(|l| l.strip_prefix("- `waves`: "));
+        assert!(waves_lines.any(|codes| codes.split(", ").any(|code| code == task_code)), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let newest = log.visible().into_iter().rfind(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).unwrap();

@@ -116,6 +116,8 @@ pub enum Kind {
     OneOf(&'static [&'static str]),
     /// Uma lista só com estas palavras.
     ManyOf(&'static [&'static str]),
+    /// Um destes números.
+    OneOfNumbers(&'static [u64]),
     /// Um texto ou um objeto.
     TextOrObject,
     /// Uma data e hora como `2026-09-11T21:03`.
@@ -145,6 +147,7 @@ impl Kind {
             Self::ManyOf(words) => value
                 .as_array()
                 .is_some_and(|a| a.iter().all(|v| v.as_str().is_some_and(|s| words.contains(&s)))),
+            Self::OneOfNumbers(numbers) => value.as_u64().is_some_and(|n| numbers.contains(&n)),
             Self::TextOrObject => value.is_string() || value.is_object(),
             Self::Time => value.as_str().is_some_and(is_time_prefix),
         }
@@ -153,7 +156,7 @@ impl Kind {
     /// A forma em palavras, para a recusa.
     #[must_use]
     pub fn describe(self, lang: Locale) -> String {
-        let (key, words) = match self {
+        let (key, values) = match self {
             Self::Text => ("spec_events.kind.text", None),
             Self::Int => ("spec_events.kind.int", None),
             Self::Bool => ("spec_events.kind.bool", None),
@@ -162,15 +165,19 @@ impl Kind {
             Self::Texts => ("spec_events.kind.texts", None),
             Self::Objects => ("spec_events.kind.objects", None),
             Self::List => ("spec_events.kind.list", None),
-            Self::OneOf(w) => ("spec_events.kind.one_of", Some(w)),
-            Self::ManyOf(w) => ("spec_events.kind.many_of", Some(w)),
+            Self::OneOf(w) => ("spec_events.kind.one_of", Some(w.join(", "))),
+            Self::ManyOf(w) => ("spec_events.kind.many_of", Some(w.join(", "))),
+            Self::OneOfNumbers(n) => (
+                "spec_events.kind.one_of_numbers",
+                Some(n.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")),
+            ),
             Self::TextOrObject => ("spec_events.kind.text_or_object", None),
             Self::Time => ("spec_events.kind.time", None),
             Self::Ref => ("spec_events.kind.ref", None),
             Self::Refs => ("spec_events.kind.refs", None),
         };
         let base = translate(key, lang);
-        words.map_or_else(|| base.to_string(), |w| base.replace("{values}", &w.join(", ")))
+        values.map_or_else(|| base.to_string(), |v| base.replace("{values}", &v))
     }
 }
 
@@ -276,14 +283,20 @@ const ROLES: &[&str] = &["wave", "review", "skill"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
+/// As notas de trabalho de uma tarefa, na escala do Scrum. O exemplo de cada
+/// uma mora no catálogo, no texto que a recusa da tarefa sem nota mostra.
+const POINTS: &[u64] = &[1, 2, 3, 5, 8, 13];
 
 /// Os 33 tipos. Os campos marcados com `opt` podem faltar; os outros são
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
-    // testemunha: a pergunta e a opção que o usuário clicou.
+    // testemunha: a pergunta e a opção que o usuário clicou. A resposta do
+    // assistente aponta a mensagem que respondeu; só a do turno em que a spec
+    // nasce, antes de qualquer mensagem do usuário, vai sem ela
+    // (`spec_state::reply_rule`).
     ty("message", "MSG", Block::Conversation, false, &[TEXT, opt("witness", Kind::Object)]),
-    ty("response", "RESP", Block::Conversation, false, &[TEXT, req("reply_to", Kind::Int)]),
+    ty("response", "RESP", Block::Conversation, false, &[TEXT, opt("reply_to", Kind::Int)]),
     ty(
         "injection",
         "INJ",
@@ -433,6 +446,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("skill", Kind::Text),
             opt("covers", Kind::Ints),
             opt("must_read", Kind::List),
+            // A nota de trabalho, na escala do Scrum. A tarefa sem nota numa
+            // onda que ainda não saiu segura o plano (`flow::plan`).
+            opt("points", Kind::OneOfNumbers(POINTS)),
         ],
     ),
     ty(

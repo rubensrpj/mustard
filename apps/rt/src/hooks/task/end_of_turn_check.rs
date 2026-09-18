@@ -14,19 +14,18 @@
 //! ## Um bloqueio só
 //!
 //! Antes, cada regra era um gancho do `Stop`, e o primeiro bloqueio vencia: o
-//! bloqueio de um engolia o do outro, e o assistente reescrevia sem saber de
+//! bloqueio de um engolia o do outro, e o assistente respondia sem saber de
 //! tudo. Agora todas as regras rodam, e cada achado entra no mesmo texto, na
 //! ordem de [`RULES`].
 //!
 //! ## Cada regra guarda a sua política
 //!
-//! Uma regra devolve [`Finding::Block`] (barra: o texto vai ao assistente, que
-//! reescreve) ou [`Finding::Warn`] (só avisa: o texto vai ao usuário, e a
-//! resposta termina). Na reescrita que um bloqueio pediu, o `Stop` chega com
-//! `stop_hook_active` ([`Turn::retry`]): a clareza passa a só avisar, e as
-//! pendências cobram até o contador delas. Com algum bloqueio, o texto leva
-//! também os avisos; só com avisos, eles saem ao usuário como `systemMessage`
-//! (um `Inject` no `Stop`).
+//! Uma regra só barra ([`Finding::Block`]): o texto vai ao assistente, que
+//! responde no mesmo turno. A volta que um bloqueio pediu chega com
+//! `stop_hook_active` ([`Turn::retry`]), e cada regra decide o que faz com
+//! ela: a clareza não confere o complemento que pediu, e as pendências cobram
+//! até o contador delas. Nenhuma regra fala com o usuário: sem bloqueio, a
+//! resposta termina calada.
 //!
 //! ## Tempo
 //!
@@ -55,7 +54,7 @@ pub struct Turn<'a> {
     pub project_dir: &'a str,
     /// O id da sessão, quando o `Stop` trouxe um.
     pub session: Option<&'a str>,
-    /// `stop_hook_active`: esta resposta é a reescrita que um bloqueio pediu.
+    /// `stop_hook_active`: esta resposta é a volta que um bloqueio pediu.
     pub retry: bool,
     /// O idioma das mensagens do Mustard neste projeto.
     pub lang: Locale,
@@ -64,17 +63,15 @@ pub struct Turn<'a> {
 /// O que uma regra achou na resposta.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
-    /// Barra o fim da resposta: o texto vai ao assistente, que reescreve.
+    /// Barra o fim da resposta: o texto vai ao assistente, que responde no
+    /// mesmo turno.
     Block(String),
-    /// Só avisa: o texto vai ao usuário, e a resposta termina.
-    Warn(String),
 }
 
 impl Finding {
     fn text(&self) -> &str {
-        match self {
-            Self::Block(text) | Self::Warn(text) => text,
-        }
+        let Self::Block(text) = self;
+        text
     }
 }
 
@@ -115,18 +112,13 @@ pub(crate) fn run_rules(rules: &[&dyn TurnRule], input: &HookInput, ctx: &Ctx) -
     verdict(&findings)
 }
 
-/// Um bloqueio só: com algum [`Finding::Block`], o motivo leva todos os
-/// achados, na ordem das regras; só com avisos, eles saem ao usuário.
+/// Um bloqueio só: o motivo leva todos os achados, na ordem das regras.
 fn verdict(findings: &[Finding]) -> Verdict {
     if findings.is_empty() {
         return Verdict::Allow;
     }
-    let text = findings.iter().map(Finding::text).collect::<Vec<_>>().join("\n\n");
-    if findings.iter().any(|finding| matches!(finding, Finding::Block(_))) {
-        Verdict::Deny { reason: text }
-    } else {
-        Verdict::Inject { context: text }
-    }
+    let reason = findings.iter().map(Finding::text).collect::<Vec<_>>().join("\n\n");
+    Verdict::Deny { reason }
 }
 
 #[cfg(test)]
@@ -143,6 +135,10 @@ mod tests {
 
     /// O manifesto de ganchos que o plugin entrega.
     const HOOKS_JSON: &str = include_str!("../../../../../plugin/hooks/hooks.json");
+
+    /// Os estilos de resposta que o plugin entrega, um por idioma.
+    const STYLE_PT: &str = include_str!("../../../../../plugin/output-styles/mustard-pt-BR.md");
+    const STYLE_EN: &str = include_str!("../../../../../plugin/output-styles/mustard-en-US.md");
 
     /// O tempo que o Claude Code dá ao `Stop`, em segundos.
     const STOP_BUDGET_SECS: u64 = 30;
@@ -174,7 +170,7 @@ mod tests {
     }
 
     /// O `Stop` da sessão principal com o texto final do turno; `retry` é o
-    /// `stop_hook_active` da reescrita que um bloqueio pediu.
+    /// `stop_hook_active` da volta que um bloqueio pediu.
     fn stop(session: &str, message: &str, retry: bool) -> HookInput {
         HookInput {
             hook_event_name: Some("Stop".to_string()),
@@ -223,47 +219,90 @@ mod tests {
         dir
     }
 
-    /// A resposta final com um código como "MSTD-RULE-0008" e uma frase de 40
-    /// palavras é barrada uma vez, com os defeitos em português simples; a
-    /// reescrita que chega com `stop_hook_active` e ainda reprova só avisa o
-    /// usuário. Tudo pelo `Stop` de verdade (registro, `fold` e a resposta
-    /// JSON), bem dentro dos 30 segundos que o `hooks.json` dá.
+    /// A resposta final com uma frase de 40 palavras, uma sigla sem explicação
+    /// e um código como "MSTD-RULE-0008" é barrada uma vez, com um texto curto
+    /// que começa por "Mustard: complemento abaixo" e pede só um complemento
+    /// logo abaixo dela, sem reescrevê-la: cada ponto diz o que o complemento
+    /// explica. O complemento chega com `stop_hook_active` e, mesmo reprovando
+    /// de novo, não é barrado nem vira aviso. Tudo pelo `Stop` de verdade
+    /// (registro, `fold` e a resposta JSON), bem dentro dos 30 segundos que o
+    /// `hooks.json` dá.
     #[test]
-    fn a_reply_with_an_internal_code_and_a_long_sentence_blocks_once_then_warns() {
+    fn a_reply_that_misses_the_writing_rule_asks_once_for_a_complement() {
         assert_eq!(FORTY_WORDS.split_whitespace().count(), 40);
         let dir = project(PT_PROJECT);
         let root = dir.path();
-        let reply = format!("A regra MSTD-RULE-0008 ficou pronta.\n{FORTY_WORDS}");
+        let reply = format!("A regra MSTD-RULE-0008 ficou pronta no CI.\n{FORTY_WORDS}");
         let started = Instant::now();
 
         let blocked = run_stop(root, &stop("s1", &reply, false));
         assert_eq!(blocked["decision"], json!("block"), "{blocked}");
         let reason = blocked["reason"].as_str().unwrap_or_else(|| panic!("{blocked}"));
-        assert!(
-            reason.starts_with(
-                "[Mustard] A resposta fugiu da regra de escrita. Reescreva-a em linguagem \
-                 simples, corrigindo estes pontos:"
-            ),
-            "{reason}"
-        );
-        assert!(reason.contains("\n- MSTD-RULE-0008 é um código interno; diga o assunto pelo nome"), "{reason}");
-        assert!(
-            reason.contains("\n- frase com 40 palavras: \"Depois de ler todos os arquivos do projeto…\""),
-            "{reason}"
+        assert_eq!(
+            reason,
+            "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela um \
+             complemento curto sobre estes pontos:\n\
+             - frase com 40 palavras: \"Depois de ler todos os arquivos do projeto…\"; diga a \
+             mesma ideia em frases curtas\n\
+             - CI é uma sigla sem explicação; diga o nome por extenso\n\
+             - MSTD-RULE-0008 é um código interno; diga o assunto pelo nome"
         );
 
-        let warned = run_stop(root, &stop("s1", &reply, true));
-        assert!(warned.get("decision").is_none(), "the rewrite is released: {warned}");
-        let note = warned["systemMessage"].as_str().unwrap_or_else(|| panic!("{warned}"));
-        assert!(
-            note.starts_with("Mustard · clareza: a resposta acima ainda foge da regra de escrita:"),
-            "{note}"
-        );
-        assert!(note.contains("\n- MSTD-RULE-0008 é um código interno"), "{note}");
-        assert!(note.contains("\n- frase com 40 palavras"), "{note}");
+        // O complemento também reprova: frase longa e sigla sem explicação.
+        let complement = format!("O CI roda os testes.\n{FORTY_WORDS}");
+        let complement = run_stop(root, &stop("s1", &complement, true));
+        assert_eq!(complement, Value::Null, "the complement is neither blocked nor warned about");
 
         let elapsed = started.elapsed();
         assert!(elapsed < Duration::from_secs(STOP_BUDGET_SECS), "{elapsed:?} for two Stops");
+    }
+
+    /// A resposta com 16 linhas, uma a mais que o limite de 15, e sem nenhum
+    /// outro defeito é barrada pelo `Stop` de verdade. O ponto do tamanho pede
+    /// no complemento um resumo curto no chat e manda o JSON, a tabela ou o
+    /// documento pedido para a página avulsa, nos dois idiomas. Ele não pede
+    /// para encurtar nem reescrever a resposta, que já apareceu na tela. Com
+    /// 15 linhas nada é pedido: a conta das linhas não mudou. O estilo de
+    /// resposta de cada idioma diz o mesmo da página.
+    #[test]
+    fn a_reply_over_fifteen_lines_asks_for_a_summary_and_sends_the_content_to_the_page() {
+        let cases = [
+            (
+                PT_PROJECT,
+                "Uma linha curta.",
+                "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela um \
+                 complemento curto sobre estes pontos:\n\
+                 - resposta com 16 linhas, e o limite é 15; faça no chat um resumo curto, e JSON, \
+                 tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`",
+            ),
+            (
+                r#"{"language":{"text":"en-US"}}"#,
+                "The test runs fine.",
+                "Mustard: complement below. Without rewriting the reply, write a short complement \
+                 right below it about these points:\n\
+                 - reply with 16 lines, and the limit is 15; write a short summary in the chat, and \
+                 put a requested JSON, table or document on its own page: `mustard-rt run page`",
+            ),
+        ];
+        for style in [STYLE_PT, STYLE_EN] {
+            assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
+        }
+        for (config, line, expected) in cases {
+            let dir = project(config);
+            let root = dir.path();
+            let fits = vec![line; 15].join("\n");
+            assert_eq!(run_stop(root, &stop("s1", &fits, false)), Value::Null, "15 lines ask nothing: {config}");
+
+            let over = vec![line; 16].join("\n");
+            let blocked = run_stop(root, &stop("s1", &over, false));
+            assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+            let reason = blocked["reason"].as_str().unwrap_or_else(|| panic!("{blocked}"));
+            assert_eq!(reason, expected);
+            let point = reason.lines().nth(1).unwrap_or_default().to_lowercase();
+            for asks_to_cut in ["encurt", "reescrev", "corte", "shorten", "rewrite", "cut "] {
+                assert!(!point.contains(asks_to_cut), "the point never asks to shorten the reply: {point}");
+            }
+        }
     }
 
     /// O `Stop` tem 30 segundos no `hooks.json`, não mais 5.
@@ -345,8 +384,8 @@ mod tests {
     }
 
     /// As duas regras dividem um bloqueio só, na ordem de [`RULES`]: as
-    /// pendências e depois a clareza. Na reescrita, a pendência citada libera,
-    /// e a clareza que ainda reprova só avisa.
+    /// pendências e depois a clareza. Na volta, a pendência citada libera, e a
+    /// clareza que ainda reprova não barra nem avisa.
     #[test]
     fn pending_and_clarity_share_one_block() {
         let dir = project_with_open_items(PT_PROJECT);
@@ -360,18 +399,13 @@ mod tests {
             panic!("both rules have something to say");
         };
         let pending = reason.find("[Mustard] A spec trava fechou").unwrap_or_else(|| panic!("{reason}"));
-        let clarity = reason.find("[Mustard] A resposta fugiu").unwrap_or_else(|| panic!("{reason}"));
+        let clarity = reason.find("Mustard: complemento abaixo").unwrap_or_else(|| panic!("{reason}"));
         assert!(pending < clarity, "the rules keep their order: {reason}");
         assert!(reason.contains("Humanize") && reason.contains("- MSTD-RULE-0008 é um código interno"), "{reason}");
 
         let rewrite = "Fechei a unidade MSTD-RULE-0008; seguem o Humanize e o html padrao da spec.";
-        match EndOfTurnCheck.evaluate(&stop("s-both", rewrite, true), &ctx(root)).expect("never errors") {
-            Verdict::Inject { context } => {
-                assert!(context.contains("- MSTD-RULE-0008 é um código interno"), "{context}");
-                assert!(!context.contains("A spec trava fechou"), "the cited items passed: {context}");
-            }
-            other => panic!("the rewrite only warns, got {other:?}"),
-        }
+        let verdict = EndOfTurnCheck.evaluate(&stop("s-both", rewrite, true), &ctx(root)).expect("never errors");
+        assert_eq!(verdict, Verdict::Allow, "the cited items pass, and the complement is not judged");
     }
 
     /// Letra com número fora do formato do Mustard é texto comum: o nome de
