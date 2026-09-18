@@ -1,9 +1,13 @@
 //! Os blocos que saem um grupo por tipo: a especificação e o combinado, na
-//! ordem dos tipos, e os critérios, cada um com o resultado da última
+//! ordem dos tipos, com cada ponto do levantamento já fechado mostrando o
+//! ponto que o fechou, e os critérios, cada um com o resultado da última
 //! execução, e depois as execuções.
+
+use std::collections::BTreeMap;
 
 use super::{group_of, Page};
 use crate::domain::spec_events::{Block, TYPES};
+use crate::domain::survey;
 use crate::view::document::Node;
 
 impl Page<'_> {
@@ -14,10 +18,36 @@ impl Page<'_> {
             .filter(|t| t.block == block)
             .filter_map(|spec| {
                 let title = self.t(&format!("page.group.{}", spec.name)).to_string();
-                self.tallied(format!("{}-{}", block.name(), spec.name), title, &self.of_type(spec.name))
+                let mut node =
+                    self.tallied(format!("{}-{}", block.name(), spec.name), title, &self.of_type(spec.name))?;
+                if spec.name == "point" {
+                    self.link_closings(&mut node);
+                }
+                Some(node)
             })
             .collect();
         self.section(block.name(), self.t(&format!("page.block.{}", block.name())), body)
+    }
+
+    /// O ponto do levantamento que outro fechou mostra o código do ponto que o
+    /// fechou, que a página escreve como link, do mesmo jeito que o critério
+    /// mostra a última execução. Os pares saem da leitura única dos pontos, a
+    /// mesma que conta os abertos e os fechados.
+    fn link_closings(&self, node: &mut Node) {
+        let Node::Group(group) = node else {
+            return;
+        };
+        let closed_by: BTreeMap<String, String> = survey::points(self.log)
+            .into_iter()
+            .filter_map(|point| Some((self.code(point.original()?.id), self.code(point.closing()?.id))))
+            .collect();
+        for child in &mut group.body {
+            if let Node::Item(item) = child
+                && let Some(closing) = closed_by.get(&item.code)
+            {
+                item.fields.push(self.field("page.field.closed_by", closing.clone()));
+            }
+        }
     }
 
     /// Os critérios, cada um com o resultado da última execução, e depois as

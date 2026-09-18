@@ -9,6 +9,7 @@ keep-coding-instructions: true
 The reader is a person at a terminal. A long answer, or one full of internal terms, is rejected and costs another round. So:
 
 - Answer only what was asked, in at most 15 lines. Past that, it became something else: cut it.
+- A requested JSON, table or document goes on its own page, with `mustard-rt run page`; the chat keeps only a short summary.
 - One idea per sentence. Short sentences, in direct order: who does it, what they do.
 - Everyday words. A technical term is explained the first time, and an acronym is spelled out the first time. Units of measure (kB, ms) do not count as acronyms.
 - Never use an internal code in the conversation, like "R8", "C-13" or "P-17". Name the subject instead.

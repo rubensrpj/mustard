@@ -17,8 +17,10 @@
 //! O gancho só grava quando age, e quem grava é o despachante: um gancho que
 //! barra ou avisa vira um evento `hook`, e um que coloca texto vira um evento
 //! `injection`, com o tamanho. O que deixou passar não grava nada. No fim da
-//! resposta que não foi barrada, a resposta do assistente vai para a
-//! conversa. Tudo na spec atual; sem ela, nada é gravado.
+//! resposta, a resposta do assistente vai para a conversa, também a que a
+//! conferência do fim da resposta barrou: ela já apareceu na tela, e o
+//! complemento que o bloqueio pede vem depois dela, na próxima. Tudo na spec
+//! atual; sem ela, nada é gravado.
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +51,9 @@ pub fn run_event(trigger: Option<Trigger>, input: &HookInput) -> Outcome {
     for module in registry.applicable(trigger, tool) {
         run_module(module, input, &ctx, &root, &mut outcome);
     }
-    if trigger == Trigger::Stop && !outcome.is_blocking() && !input.is_subagent() {
+    // A resposta barrada também é gravada, antes do complemento que o
+    // bloqueio pede: o usuário a leu na tela.
+    if trigger == Trigger::Stop && !input.is_subagent() {
         let _ = record_response(&root, input.session_id.as_deref(), input.last_assistant_message().unwrap_or_default());
     }
     outcome
@@ -313,7 +317,7 @@ mod tests {
     }
 
     /// No fim de uma resposta que passa, a resposta vai para a conversa,
-    /// ligada à última mensagem; a que foi barrada, não.
+    /// ligada à última mensagem.
     #[test]
     fn the_end_of_an_answer_records_the_response() {
         let dir = project_on("resposta");
@@ -334,5 +338,107 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].str_field("text"), Some("Pronto."));
         assert_eq!(responses[0].int("reply_to"), Some(asked));
+    }
+
+    /// O caminho de verdade, com três mensagens do usuário: a spec nasce e o
+    /// assistente sugere um objetivo; o usuário pede outro; o assistente
+    /// sugere o novo numa resposta que a conferência de escrita barra (uma
+    /// frase de mais de 25 palavras, num projeto com `mustard.json`), o
+    /// complemento chega com `stop_hook_active`, e o usuário responde "pode
+    /// usar essa" pelo gancho da mensagem; o assistente responde de novo e o
+    /// usuário manda a terceira mensagem. A resposta barrada fica gravada
+    /// inteira, antes do complemento, e as duas antes do sim. O `run write`
+    /// do objetivo grava a frase sugerida com `origin` no sim: o sim a acha
+    /// na resposta barrada, e não só no complemento, a última. Fora da volta
+    /// do sim nada vale, e nada é gravado: a sugestão da abertura, anterior à
+    /// mensagem que pediu outra; a frase da resposta que veio depois do sim; e
+    /// a sugestão aprovada, apontada na terceira mensagem, que está duas
+    /// voltas atrás dela.
+    #[test]
+    fn the_barred_answer_is_recorded_before_its_complement() {
+        let dir = project_on("barrada");
+        let root = dir.path();
+        let hook_call = |event: &str, raw: Value| HookInput {
+            hook_event_name: Some(event.to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw,
+            ..HookInput::default()
+        };
+        let stop = |text: &str| {
+            run_event(Some(Trigger::Stop), &hook_call("Stop", json!({ "last_assistant_message": text })))
+        };
+        let say = |text: &str| {
+            run_event(Some(Trigger::UserPromptSubmit), &hook_call("UserPromptSubmit", json!({ "prompt": text })))
+        };
+        let opening_suggestion = "Travar o envio com pendência aberta.";
+        let opening = format!("A spec nasceu. Sugiro: \"{opening_suggestion}\" Serve?");
+        assert!(!stop(&opening).is_blocking());
+        assert!(!say("Não, outra.").is_blocking());
+        let suggestion = "Um sim aprova o objetivo sugerido.";
+        let barred = format!(
+            "Então sugiro: \"{suggestion}\" Depois de ler todos os arquivos do projeto e \
+             conferir cada teste que ainda falhava na máquina do usuário, eu ajustei a leitura do \
+             idioma e a contagem das linhas para que a resposta final saia bem curta e clara."
+        );
+        let first = stop(&barred);
+        assert!(first.is_blocking(), "the writing check bars the long sentence: {first:?}");
+        let complement = "Resumo: ajustei a leitura do idioma.";
+        let retry = json!({ "last_assistant_message": complement, "stop_hook_active": true });
+        let second = run_event(Some(Trigger::Stop), &hook_call("Stop", retry));
+        assert!(!second.is_blocking(), "{second:?}");
+        assert!(!say("pode usar essa").is_blocking());
+        let after_yes = "Gravo: \"Travar tudo, sempre.\"";
+        assert!(!stop(after_yes).is_blocking());
+        assert!(!say("grave").is_blocking());
+
+        let log = DiskSpecState::new(root).log("barrada").expect("log");
+        let talk: Vec<(&str, Option<&str>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| matches!(e.event_type.as_str(), "message" | "response"))
+            .map(|e| (e.event_type.as_str(), e.str_field("text")))
+            .collect();
+        assert_eq!(
+            talk,
+            [
+                ("response", Some(opening.as_str())),
+                ("message", Some("Não, outra.")),
+                ("response", Some(barred.as_str())),
+                ("response", Some(complement)),
+                ("message", Some("pode usar essa")),
+                ("response", Some(after_yes)),
+                ("message", Some("grave")),
+            ],
+            "the barred answer comes whole, before the complement"
+        );
+        let messages: Vec<u64> =
+            log.visible().into_iter().filter(|e| e.event_type == "message").map(|e| e.id).collect();
+        let (yes, third) = (messages[1], messages[2]);
+
+        let goal = |text: &str, origin: u64| {
+            crate::commands::spec_events::write::write_at(&crate::commands::spec_events::write::WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("barrada".to_string()),
+                event_type: "context".to_string(),
+                json: json!({ "text": text, "origin": origin }).to_string(),
+            })
+        };
+        let spec_file = || std::fs::read_to_string(root.join(".claude/spec/barrada/spec.ndjson")).expect("spec file");
+        let before = spec_file();
+        for (text, origin, why) in [
+            (opening_suggestion, yes, "the opening suggestion, before the message that asked for another"),
+            ("Travar tudo, sempre.", yes, "the answer after the yes"),
+            (suggestion, third, "the approved suggestion, two turns before the third message"),
+        ] {
+            let refused = goal(text, origin);
+            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{why}: {refused}");
+        }
+        assert_eq!(spec_file(), before, "a refusal writes nothing");
+        let written = goal(suggestion, yes);
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let log = DiskSpecState::new(root).log("barrada").expect("log");
+        let recorded = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
+        assert_eq!((recorded.str_field("text"), recorded.int("origin")), (Some(suggestion), Some(yes)));
     }
 }

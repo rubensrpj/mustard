@@ -125,11 +125,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
         ("survey.continue_option", Locale::PtBr) => "Seguir",
         ("survey.continue_option", Locale::EnUs) => "Continue",
-        ("survey.outside_review_question", Locale::PtBr) => {
-            "Quer que um revisor de fora confira o levantamento inteiro?"
+        ("survey.outside_review_step", Locale::PtBr) => {
+            "Depois, antes do fim, rode o revisor de fora: despache ao agente `mustard-review` a \
+             conferência do levantamento inteiro da spec {spec}, que aponta o que ficou de fora ou se \
+             contradiz. Grave cada achado dele como ponto aberto, com `block` e `from` \
+             outside_review, e apresente-o como os outros; sem achado, siga."
         }
-        ("survey.outside_review_question", Locale::EnUs) => {
-            "Would you like an outside reviewer to check the whole survey?"
+        ("survey.outside_review_step", Locale::EnUs) => {
+            "Then, before the end, run the outside reviewer: dispatch to the `mustard-review` agent \
+             the check of the whole survey of spec {spec}, which points out what was left out or \
+             contradicts itself. Record each of its findings as an open point, with `block` and \
+             `from` outside_review, and present it like the others; with no finding, go on."
         }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
@@ -193,7 +199,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0xc2f0_494f_2dcf_3650,
+            0xa07e_2005_fa48_9647,
         );
     }
 
@@ -220,7 +226,7 @@ mod tests {
             ("survey.review_step".into(), &["{block}", "{continue}"][..]),
             ("survey.review_question".into(), &[][..]),
             ("survey.continue_option".into(), &[][..]),
-            ("survey.outside_review_question".into(), &[][..]),
+            ("survey.outside_review_step".into(), &["{spec}"][..]),
             ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
             ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),
         ];

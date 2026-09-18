@@ -160,6 +160,12 @@ mod tests {
 
     /// Uma spec `x` com uma onda de `tasks` tarefas, ainda no levantamento.
     fn planned(root: &Path, tasks: usize) {
+        planned_with(root, tasks, false);
+    }
+
+    /// A spec de [`planned`]; com `skills`, cada tarefa nomeia uma skill
+    /// própria, gravada no disco, e cada uma ocupa uma linha do pedido.
+    fn planned_with(root: &Path, tasks: usize, skills: bool) {
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let said = write(root, "message", json!({"author": "user", "text": "o objetivo"}));
@@ -171,7 +177,14 @@ mod tests {
         write(root, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "A suíte passa.",
             "origin": said}));
         for i in 0..tasks {
-            write(root, "task", json!({"wave": 1, "text": format!("Tarefa {i}."), "origin": said}));
+            let mut task = json!({"wave": 1, "text": format!("Tarefa {i}."), "origin": said});
+            if skills {
+                let dir = root.join(".claude").join("skills").join(format!("s{i}"));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), format!("# s{i}\n")).unwrap();
+                task["skill"] = json!(format!("s{i}"));
+            }
+            write(root, "task", task);
         }
     }
 
@@ -215,7 +228,9 @@ mod tests {
         match dispatch(root, "MUSTARD-WAVE: x 1") {
             Verdict::Rewrite { tool_input } => {
                 assert_eq!(tool_input["prompt"], json!(assembled(root)));
-                assert!(tool_input["prompt"].as_str().unwrap().contains("--term MSTD-TASK-0001"));
+                let prompt = tool_input["prompt"].as_str().unwrap();
+                assert!(prompt.contains("- `waves`: MSTD-WAVE-0001, MSTD-TASK-0001\n"), "{prompt}");
+                assert_eq!(prompt.matches("mustard-rt run read").count(), 1, "{prompt}");
                 assert_eq!(tool_input["subagent_type"], json!("general-purpose"));
                 assert_eq!(tool_input["description"], json!("onda"));
             }
@@ -247,8 +262,10 @@ mod tests {
             assert!(!got.contains(".md") && !got.to_lowercase().contains("leia"), "{got}");
         }
 
+        // Os códigos das tarefas cabem numa linha só: o que passa do teto é
+        // uma parte de uma linha por item, como a das skills.
         let big = tempdir().unwrap();
-        planned(big.path(), mustard_core::domain::wave_prompt::MAX_LINES);
+        planned_with(big.path(), mustard_core::domain::wave_prompt::MAX_LINES, true);
         approve(big.path());
         let long = denied(dispatch(big.path(), "MUSTARD-WAVE: x 1"));
         assert!(long.contains(&mustard_core::domain::wave_prompt::MAX_LINES.to_string()), "{long}");

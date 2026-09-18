@@ -22,10 +22,26 @@
 //! (`.claude/spec/lessons.ndjson`), e não para a spec: a classe vem em
 //! `class`, a lição diz onde vale (`applies_to`) e onde nasceu (`found_in`), e
 //! o `--spec`, opcional só aqui, diz a spec em que ela nasceu quando a lição
-//! não diz. A página e o índice não mudam:
+//! não diz. A lição é um resumo do assistente no jeito de escrever do
+//! projeto: o texto passa pela medição da conferência de escrita do fim da
+//! resposta (frase longa, sigla sem explicação, código interno, tamanho,
+//! leitura e idioma), e a lição com defeito é recusada com os defeitos, sem
+//! gravar. A lição cujo texto repete o de outra já guardada, depois de
+//! igualar espaços, maiúsculas e acentos, também é recusada, apontando a que
+//! existe. A página e o índice não mudam:
 //!
 //! ```text
 //! {"ok": true, "id": 8, "type": "lesson", "class": "defect"}
+//! ```
+//!
+//! O mesmo comando enxuga o banco. A lição que junta outras numa só aponta
+//! todas em `replaces`, e a saída diz quais saíram da leitura; um `--json`
+//! só com `targets` e `reason`, sem `class`, retira as lições apontadas,
+//! como o `remove` tira um item da spec:
+//!
+//! ```text
+//! {"ok": true, "id": 9, "type": "lesson", "class": "defect", "replaced": [3, 5]}
+//! {"ok": true, "id": 10, "type": "lesson", "retired": [4]}
 //! ```
 //!
 //! Uma onda gravada depois da aprovação que leva a spec a ter mais ondas do
@@ -87,11 +103,17 @@
 //! revendo um `state`.
 //!
 //! Numa spec em levantamento, o objetivo, o primeiro `context` como o índice
-//! o lê, é a resposta do usuário palavra por palavra. Toda gravação que troca
-//! o objetivo (o primeiro `context`, a revisão dele e a remoção que passa o
-//! lugar para outro `context`) deixa um objetivo que aponta em `origin` uma
-//! mensagem do usuário e repete o texto dela
-//! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência.
+//! o lê, é a frase do usuário palavra por palavra, ou a sugestão que ele
+//! aprovou. Toda gravação que troca o objetivo (o primeiro `context`, a
+//! revisão dele e a remoção que passa o lugar para outro `context`) deixa um
+//! objetivo que aponta em `origin` uma mensagem do usuário e repete o texto
+//! dela, ou uma frase inteira dela, ou uma frase inteira de uma das respostas
+//! do assistente da volta que o usuário respondeu, a barrada pela
+//! conferência de escrita inclusive
+//! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência. A
+//! resposta do turno em que a spec nasce conta: ela é gravada sem `reply_to`,
+//! porque ainda não há mensagem do usuário a que responder, e só ela pode
+//! faltar o campo (`mustard_core::domain::spec_state::reply_rule`).
 //!
 //! O tipo de trabalho (`work_type`) é gravado pelo `grill`, que monta a lista
 //! de pontos junto: este comando não o grava, nem o tira ou o revê.
@@ -107,7 +129,8 @@
 //! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
 //! tem ponto, os pontos que faltam gravar; em `point`, o próximo ponto
 //! aberto, o mesmo enquanto ele não fecha; em `review`, o bloco cujo último ponto a gravação fechou, com a
-//! pergunta da revisão e as opções, a de um revisor de fora no último bloco;
+//! pergunta da revisão e as opções; no último bloco, `next` manda rodar o
+//! revisor de fora antes do fim, enquanto nenhum ponto veio dele;
 //! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
 //! `remove` dele é recusado. A passagem do levantamento para o plano, e a
@@ -116,11 +139,12 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::lessons::LESSON;
+use mustard_core::domain::lessons::{LESSON, RETIRE};
 use mustard_core::domain::spec_events::{type_spec, Hidden, Refusal, SpecLog, PHASES};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, survey_rule, waves_grown_by, PhaseWriter, SpecState, State,
+    birth_event, goal_rule, phase_write_allowed, reply_rule, survey_rule, waves_grown_by, PhaseWriter, SpecState,
+    State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
@@ -478,8 +502,8 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 }
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
-/// depois dela: a mudança de fase, o objetivo, o levantamento e o dono do
-/// item combinado.
+/// depois dela: a mudança de fase, a mensagem que a resposta responde, o
+/// objetivo, o levantamento e o dono do item combinado.
 fn record_rules(
     spec: &str,
     before: &SpecLog,
@@ -489,6 +513,7 @@ fn record_rules(
     by: Option<PhaseWriter>,
 ) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
+    reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
     survey_rule(spec, before, after)?;
     owner_rule(before, after)
@@ -550,7 +575,8 @@ impl RecordCheck {
 /// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
 /// a pergunta e as opções, "Seguir" por último; em `unrouted`, as mensagens
 /// do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
-/// dois, na ordem. `None` quando não há passo.
+/// dois, na ordem; no fim do levantamento, entre a revisão e o fim, a ordem
+/// de rodar o revisor de fora. `None` quando não há passo.
 fn survey_report(
     root: &Path,
     spec: &str,
@@ -571,11 +597,9 @@ fn survey_report(
             SurveyStep::ReviewBlock { block, closed, records, outside_review } => {
                 let go_on = translate("survey.continue_option", lang);
                 next.push(translate("survey.review_step", lang).replace("{block}", &block).replace("{continue}", go_on));
-                let mut options = Vec::new();
                 if outside_review {
-                    options.push(translate("survey.outside_review_question", lang));
+                    next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
                 }
-                options.push(go_on);
                 out.insert(
                     "review".to_string(),
                     json!({
@@ -583,7 +607,7 @@ fn survey_report(
                         "points": closed.iter().map(code_of).collect::<Vec<_>>(),
                         "records": records.iter().map(code_of).collect::<Vec<_>>(),
                         "question": translate("survey.review_question", lang),
-                        "options": options,
+                        "options": [go_on],
                     }),
                 );
             }
@@ -833,14 +857,27 @@ pub(crate) fn branch_of_spec(start: &Path, spec: &str) -> Option<String> {
 }
 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
-/// que spec a lição nasceu.
+/// que spec a lição nasceu. O texto passa antes pela medição da conferência
+/// de escrita do fim da resposta; com defeito, nada é gravado.
 fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String, Value>) -> Value {
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
+    if let Some(text) = draft.get("text").and_then(Value::as_str) {
+        let report = crate::hooks::task::clarity_check::measure_in_project(&project.root, text, &[]);
+        if !report.passed {
+            return refuse(Refusal::LessonUnclear { report: Box::new(report) });
+        }
+    }
     let path = match ClaudePaths::for_project(&project.root) {
         Ok(paths) => paths.lessons_path(),
         Err(e) => return refuse(Refusal::Io { detail: e.to_string() }),
     };
     match lessons::write(&path, draft, spec) {
+        Ok(written) if written.class == RETIRE => {
+            json!({ "ok": true, "id": written.id, "type": LESSON, "retired": written.hidden })
+        }
+        Ok(written) if !written.hidden.is_empty() => json!({
+            "ok": true, "id": written.id, "type": LESSON, "class": written.class, "replaced": written.hidden,
+        }),
         Ok(written) => json!({ "ok": true, "id": written.id, "type": LESSON, "class": written.class }),
         Err(refusal) => refuse(refusal),
     }
@@ -858,6 +895,8 @@ pub fn run(opts: &WriteOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::run_event;
+    use mustard_core::domain::model::contract::{HookInput, Trigger};
     use mustard_core::platform::git;
     use tempfile::tempdir;
 
@@ -1642,6 +1681,151 @@ mod tests {
         assert_eq!(std::fs::read_to_string(specs.join("lessons.ndjson")).unwrap().lines().count(), 2);
     }
 
+    /// Uma lição com o texto `text`, que vale no projeto todo, como o
+    /// assistente a grava pelo `run write lesson`.
+    fn lesson_text(root: &std::path::Path, text: &str) -> Value {
+        let draft = json!({"class": "defect", "text": text, "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}});
+        write_to(root, None, "lesson", &draft.to_string())
+    }
+
+    /// As linhas do banco de lições; vazio quando ele ainda não existe.
+    fn bank_lines(root: &std::path::Path) -> usize {
+        std::fs::read_to_string(root.join(".claude").join("spec").join("lessons.ndjson"))
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// A lição com frase longa, sigla sem explicação ou código interno é
+    /// recusada pelo comando de gravar com os defeitos da conferência de
+    /// escrita do fim da resposta, e nada é gravado. Na divisa, a frase de 25
+    /// palavras entra e a de 26 não; a sigla que o projeto declara no
+    /// `mustard.json` entra, como na resposta.
+    #[test]
+    fn a_lesson_with_a_long_sentence_an_acronym_or_an_internal_code_is_refused_and_nothing_is_written() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let sentence = |n: usize| format!("{}.", vec!["teste"; n].join(" "));
+
+        let long = lesson_text(root, &sentence(26));
+        assert_eq!(long["reason"], json!("lesson-unclear"), "{long}");
+        let hint = long["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("26") && hint.contains("Nada foi gravado"), "{hint}");
+        let acronym = lesson_text(root, "O CI quebra quando a pasta some.");
+        assert_eq!(acronym["reason"], json!("lesson-unclear"), "{acronym}");
+        assert!(acronym["hint"].as_str().unwrap_or_default().contains("CI"), "{acronym}");
+        let code = lesson_text(root, "A regra MSTD-RULE-0005 vale aqui.");
+        assert_eq!(code["reason"], json!("lesson-unclear"), "{code}");
+        assert!(code["hint"].as_str().unwrap_or_default().contains("MSTD-RULE-0005"), "{code}");
+        assert_eq!(bank_lines(root), 0, "nothing was written");
+
+        assert_eq!(lesson_text(root, &sentence(25))["ok"], json!(true), "25 words still pass");
+        std::fs::write(root.join("mustard.json"), r#"{"acronyms":["CI"]}"#).unwrap();
+        assert_eq!(lesson_text(root, "O CI quebra quando a pasta some.")["ok"], json!(true), "the project's acronym passes");
+        assert_eq!(bank_lines(root), 2);
+    }
+
+    /// Pelo comando de gravar, a lição com o mesmo texto de outra já guardada,
+    /// com outros espaços, maiúsculas e acentos, é recusada apontando a que
+    /// existe, e o banco fica como estava; a versão nova da própria lição
+    /// entra.
+    #[test]
+    fn a_lesson_repeating_one_already_kept_is_refused_by_the_write_naming_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(lesson_text(root, "Não apague a pasta de outra sessão.")["id"], json!(1));
+        let before = std::fs::read(root.join(".claude/spec/lessons.ndjson")).unwrap();
+        let again = lesson_text(root, "  nao Apague a pasta   de outra sessao. ");
+        assert_eq!(again["reason"], json!("lesson-repeated"), "{again}");
+        let hint = again["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("lição 1") && hint.contains("Não apague a pasta de outra sessão."), "{hint}");
+        assert_eq!(std::fs::read(root.join(".claude/spec/lessons.ndjson")).unwrap(), before);
+        let draft = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 1});
+        assert_eq!(write_to(root, None, "lesson", &draft.to_string())["id"], json!(2));
+    }
+
+    /// Pelo comando de gravar lição, duas lições viram uma só, com
+    /// `replaces` apontando as duas, e uma terceira é retirada com o motivo:
+    /// a saída diz quais saíram, e a leitura do banco mostra só a junta. A
+    /// retirada sem motivo é recusada pelo nome, e nada é gravado.
+    #[test]
+    fn merging_and_retiring_lessons_go_through_the_write_command() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(lesson_text(root, "Não apague a pasta de outra sessão.")["id"], json!(1));
+        assert_eq!(lesson_text(root, "Remover a pasta alheia perde trabalho.")["id"], json!(2));
+        assert_eq!(lesson_text(root, "A suíte roda no servidor antigo.")["id"], json!(3));
+
+        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+            "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
+        let out = write_to(root, None, "lesson", &merged.to_string());
+        assert_eq!(out, json!({"ok": true, "id": 4, "type": "lesson", "class": "defect", "replaced": [1, 2]}));
+
+        let lines = bank_lines(root);
+        let no_reason = write_to(root, None, "lesson", r#"{"targets":[3]}"#);
+        assert_eq!(no_reason["reason"], json!("missing-field"), "{no_reason}");
+        assert!(no_reason["hint"].as_str().unwrap_or_default().contains("reason"), "{no_reason}");
+        assert_eq!(bank_lines(root), lines, "a recusa não gravou nada");
+
+        let out = write_to(root, None, "lesson", r#"{"targets":[3],"reason":"o servidor antigo saiu"}"#);
+        assert_eq!(out, json!({"ok": true, "id": 5, "type": "lesson", "retired": [3]}));
+        let again = write_to(root, None, "lesson", r#"{"targets":[3],"reason":"de novo"}"#);
+        assert_eq!(again["reason"], json!("unknown-lesson"), "{again}");
+
+        let bank = lessons::read(&root.join(".claude/spec/lessons.ndjson")).unwrap().unwrap();
+        let kept: Vec<u64> = mustard_core::domain::lessons::kept(&bank).iter().map(|l| l.id).collect();
+        assert_eq!(kept, [4]);
+    }
+
+    /// Pelo comando de gravar lição, a retirada com o filtro por hora, que
+    /// pegaria as quatro lições, ou com uma substituição, que tiraria outra
+    /// sem conferir, é recusada pelo nome do campo, e nada é gravado. Na
+    /// retirada e na junção que entram, a saída diz exatamente as lições que
+    /// saíram da leitura: as que ela mostrava antes e não mostra depois.
+    #[test]
+    fn a_retirement_with_a_filter_or_a_replacement_is_refused_by_the_write_command() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for text in [
+            "Não apague a pasta de outra sessão.",
+            "Remover a pasta alheia perde trabalho.",
+            "A suíte roda no servidor antigo.",
+            "O cargo fica fora do caminho do shell.",
+        ] {
+            assert_eq!(lesson_text(root, text)["ok"], json!(true));
+        }
+        let kept = || -> Vec<u64> {
+            let bank = lessons::read(&root.join(".claude/spec/lessons.ndjson")).unwrap().unwrap();
+            mustard_core::domain::lessons::kept(&bank).iter().map(|l| l.id).collect()
+        };
+        let lines = bank_lines(root);
+        let every_lesson = json!({"type": "defect", "from": "2000-01-01T00:00", "to": "2100-01-01T00:00"});
+        for (extra, value) in [("filter", every_lesson), ("replaces", json!(4))] {
+            let mut draft = json!({"targets": [3], "reason": "o servidor antigo saiu"});
+            draft[extra] = value;
+            let out = write_to(root, None, "lesson", &draft.to_string());
+            assert_eq!(out["reason"], json!("unknown-field"), "{out}");
+            let hint = out["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(extra) && hint.contains("targets, reason, author"), "{out}");
+        }
+        assert_eq!(bank_lines(root), lines, "a recusa não gravou nada");
+        assert_eq!(kept(), [1, 2, 3, 4]);
+
+        let gone = |before: &[u64], after: &[u64]| -> Value {
+            json!(before.iter().filter(|id| !after.contains(id)).collect::<Vec<_>>())
+        };
+        let before = kept();
+        let out = write_to(root, None, "lesson", r#"{"targets":[3],"reason":"o servidor antigo saiu"}"#);
+        assert_eq!(out["retired"], gone(&before, &kept()), "{out}");
+        assert_eq!(out["retired"], json!([3]));
+
+        let before = kept();
+        let merged = json!({"class": "defect", "text": "Nunca apague a pasta de outra sessão.", "keys": ["pasta"],
+            "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": [1, 2]});
+        let out = write_to(root, None, "lesson", &merged.to_string());
+        assert_eq!(out["replaced"], gone(&before, &kept()), "{out}");
+        assert_eq!(kept(), [4, 6]);
+    }
+
     /// O `search` é gravado no arquivo de eventos e nunca aparece na página
     /// nem no `.md`: os dois mostram só o texto original.
     #[test]
@@ -1960,6 +2144,131 @@ mod tests {
         assert_eq!(context(root, "Outro contexto, livre.", said)["ok"], json!(true));
     }
 
+    /// A resposta do assistente, gravada pelo binário como o despachante a
+    /// grava no fim do turno, ligada à mensagem `reply_to`.
+    fn response(root: &std::path::Path, text: &str, reply_to: u64) -> u64 {
+        let reply = json!({ "author": "assistant", "text": text, "reply_to": reply_to });
+        record(root, "teste", "response", reply.as_object().cloned().unwrap(), PhaseWriter::Binary)
+            .expect("the binary records the response")
+            .written
+            .id
+    }
+
+    /// Uma chamada do Claude Code a um gancho, na sessão `s1`: o evento e os
+    /// campos que ele traz.
+    fn hook_call(root: &std::path::Path, event: &str, raw: Value) -> HookInput {
+        HookInput {
+            hook_event_name: Some(event.to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw,
+            ..HookInput::default()
+        }
+    }
+
+    /// O caminho de verdade, do jeito que a sessão o percorre: a spec nasce,
+    /// o assistente fecha o turno sugerindo o objetivo, e o usuário responde
+    /// "pode usar essa". A resposta do turno em que a spec nasceu entra pelo
+    /// gancho do fim da resposta, sem mensagem a que responder; o sim entra
+    /// pelo gancho da entrada da mensagem; e o `run write` do objetivo grava a
+    /// frase sugerida, com `origin` na mensagem do usuário, que o índice
+    /// mostra. A frase só em parte, com a maiúscula trocada, cortada no fim
+    /// ou no começo de uma palavra, e a de uma resposta que veio depois do
+    /// sim, são recusadas, e nada é gravado.
+    #[test]
+    fn a_yes_to_the_suggested_goal_records_the_suggestion_word_for_word() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "teste");
+        surveyed(root);
+        let suggestion = "Um sim aprova o objetivo sugerido.";
+        let stop = |text: &str| hook_call(root, "Stop", json!({ "last_assistant_message": text }));
+        let opening = run_event(Some(Trigger::Stop), &stop(&format!("A spec nasceu. Sugiro: \"{suggestion}\" Serve?")));
+        assert!(!opening.is_blocking(), "{opening:?}");
+        let yes_prompt = hook_call(root, "UserPromptSubmit", json!({ "prompt": "pode usar essa" }));
+        assert!(!run_event(Some(Trigger::UserPromptSubmit), &yes_prompt).is_blocking());
+        let later = run_event(Some(Trigger::Stop), &stop("Gravo: \"Travar tudo, sempre.\""));
+        assert!(!later.is_blocking(), "{later:?}");
+
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let talk: Vec<(&str, Option<&str>, Option<u64>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| matches!(e.event_type.as_str(), "message" | "response"))
+            .map(|e| (e.event_type.as_str(), e.str_field("author"), e.int("reply_to")))
+            .collect();
+        let yes = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
+        assert_eq!(
+            talk,
+            [("response", Some("assistant"), None), ("message", Some("user"), None), ("response", Some("assistant"), Some(yes))],
+            "the opening answer is recorded before the yes, without a message to reply to"
+        );
+
+        let before = lines(root);
+        for goal in [
+            "Um sim aprova o objetivo",
+            "o objetivo sugerido.",
+            "um sim aprova o objetivo sugerido.",
+            "Um sim aprova o objetivo suger",
+            "m sim aprova o objetivo sugerido.",
+            "Travar tudo, sempre.",
+        ] {
+            let refused = context(root, goal, yes);
+            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{goal}: {refused}");
+            assert!(refused["hint"].as_str().unwrap().contains("a sugestão que ele aprovou"), "{refused}");
+        }
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+
+        let written = context(root, suggestion, yes);
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let goal = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
+        assert_eq!((goal.str_field("text"), goal.int("origin")), (Some(suggestion), Some(yes)));
+        assert_eq!(index_goal(root).as_deref(), Some(suggestion));
+    }
+
+    /// Com a conversa já andando, vale só a frase que está inteira, palavra
+    /// por palavra, na última resposta antes do sim: a frase com palavras a
+    /// mais ou trocadas, a sugestão de uma resposta mais antiga, a de uma
+    /// resposta que veio depois da mensagem e a que aponta em `origin` uma
+    /// resposta do assistente, e não a mensagem do usuário, são recusadas, e
+    /// nada é gravado; a sugestão da resposta respondida passa.
+    #[test]
+    fn only_the_answered_response_lends_its_suggestion() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let asked = message(root, "user", "Quero que o sim baste.");
+        response(root, "Sugiro: \"Travar o envio com pendência aberta.\" Serve?", asked);
+        let other = message(root, "user", "Não, outra.");
+        let suggestion = "Um sim aprova o objetivo sugerido.";
+        response(root, &format!("Então sugiro: \"{suggestion}\" Pode ser?"), other);
+        let yes = message(root, "user", "pode usar essa");
+        let later = response(root, "Gravo: \"Travar tudo, sempre.\"", yes);
+        let before = lines(root);
+        for (goal, origin) in [
+            ("Um sim aprova o objetivo sugerido e a barra fica limpa.", yes),
+            ("Um sim aprova o sugerido objetivo.", yes),
+            ("m sim aprova o objetivo sugerido.", yes),
+            ("Travar o envio com pendência aberta.", yes),
+            ("Travar tudo, sempre.", yes),
+            (suggestion, later),
+        ] {
+            let refused = context(root, goal, origin);
+            assert_eq!(refused["reason"], json!("goal-not-verbatim"), "{goal}: {refused}");
+            assert!(refused["hint"].as_str().unwrap().contains("a sugestão que ele aprovou"), "{refused}");
+        }
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+
+        let written = context(root, suggestion, yes);
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let goal = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
+        assert_eq!((goal.str_field("text"), goal.int("origin")), (Some(suggestion), Some(yes)));
+        assert_eq!(index_goal(root).as_deref(), Some(suggestion));
+    }
+
     /// O objetivo errado sai com `remove`, e a próxima resposta do usuário
     /// vira o objetivo, também palavra por palavra.
     #[test]
@@ -2256,18 +2565,15 @@ mod tests {
         assert!(next.starts_with("O bloco defect fechou.") && next.contains(&points[4].code), "{next}");
     }
 
-    /// No último bloco, a revisão oferece o revisor de fora, antes de
-    /// "Seguir", nos dois idiomas, e o fim do levantamento vem junto.
+    /// No fim do levantamento, o próximo passo manda rodar o revisor de fora,
+    /// entre a revisão do último bloco e o fim, nos dois idiomas; a revisão
+    /// fica só com "Seguir", sem oferecê-lo como opção. Fechar o penúltimo
+    /// ponto, com um ainda aberto, não manda rodá-lo.
     #[test]
-    fn the_last_block_review_offers_the_outside_reviewer() {
-        for (config, outside, go_on, done) in [
-            (None, "Quer que um revisor de fora confira o levantamento inteiro?", "Seguir", "O levantamento não tem ponto aberto."),
-            (
-                Some(r#"{"language":{"text":"en-US"}}"#),
-                "Would you like an outside reviewer to check the whole survey?",
-                "Continue",
-                "The survey has no open point.",
-            ),
+    fn the_end_of_the_survey_orders_the_outside_reviewer() {
+        for (config, lang, go_on, run) in [
+            (None, Locale::PtBr, "Seguir", "rode o revisor de fora"),
+            (Some(r#"{"language":{"text":"en-US"}}"#), Locale::EnUs, "Continue", "run the outside reviewer"),
         ] {
             let dir = tempdir().unwrap();
             let root = dir.path();
@@ -2275,22 +2581,30 @@ mod tests {
             if let Some(config) = config {
                 std::fs::write(root.join("mustard.json"), config).unwrap();
             }
-            let mut last = Value::Null;
-            for point in &points {
-                last = settle(root, point, said);
+            let outside = translate("survey.outside_review_step", lang).replace("{spec}", "teste");
+            assert!(outside.contains(run) && outside.contains("`mustard-review`") && outside.contains("teste"), "{outside}");
+            let (last_one, before) = points.split_last().unwrap();
+            let mut report = Value::Null;
+            for point in before {
+                report = settle(root, point, said);
             }
+            assert!(!report["next"].as_str().unwrap().contains(run), "one point still open: {report}");
+            let last = settle(root, last_one, said);
             assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-            assert_eq!(last["review"]["options"], json!([outside, go_on]), "{last}");
+            assert_eq!(last["review"]["options"], json!([go_on]), "the reviewer is not an option: {last}");
             assert!(last.get("point").is_none(), "{last}");
-            assert!(last["next"].as_str().unwrap().contains(done), "{last}");
+            let review = translate("survey.review_step", lang).replace("{block}", "proof").replace("{continue}", go_on);
+            let done = translate("survey.done", lang);
+            assert_eq!(last["next"], json!(format!("{review} {outside} {done}")), "review, reviewer, then the end");
             assert!(last["unrouted"].is_array(), "{last}");
         }
     }
 
-    /// O revisor de fora é oferecido uma vez: fechado o último ponto que veio
-    /// dele, a revisão do bloco dele fica só com "Seguir", e o fim vem junto.
+    /// O revisor de fora é mandado rodar uma vez: fechado o último ponto que
+    /// veio dele, a revisão do bloco dele fica só com "Seguir", o fim vem
+    /// junto, e o passo não manda rodá-lo de novo.
     #[test]
-    fn closing_the_outside_reviewers_last_point_does_not_offer_the_reviewer_again() {
+    fn closing_the_outside_reviewers_last_point_does_not_order_the_reviewer_again() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, points) = listed(root, &["fix"], false);
@@ -2298,8 +2612,9 @@ mod tests {
         for point in &points {
             last = settle(root, point, said);
         }
-        let outside = "Quer que um revisor de fora confira o levantamento inteiro?";
-        assert_eq!(last["review"]["options"], json!([outside, "Seguir"]), "{last}");
+        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
+        assert!(last["next"].as_str().unwrap().contains(&outside), "{last}");
+        assert_eq!(last["review"]["options"], json!(["Seguir"]), "{last}");
         let gap = "O merge pela interface web";
         let found = json!({"block": "outside_review", "gap": gap, "from": "outside_review", "status": "open",
             "origin": said, "facts": [{"text": "O revisor achou.", "source": format!("mensagem {said}")}]});
@@ -2313,7 +2628,10 @@ mod tests {
         };
         let closed = settle(root, &reviewer, said);
         assert_eq!(closed["review"]["block"], json!("outside_review"), "{closed}");
-        assert_eq!(closed["review"]["options"], json!(["Seguir"]), "offered once: {closed}");
+        assert_eq!(closed["review"]["options"], json!(["Seguir"]), "{closed}");
+        let next = closed["next"].as_str().unwrap();
+        assert!(!next.contains(&outside), "ordered once: {closed}");
+        assert!(next.ends_with(translate("survey.done", Locale::PtBr)), "{closed}");
         assert!(closed["unrouted"].is_array(), "{closed}");
     }
 
@@ -2534,8 +2852,8 @@ mod tests {
 
     /// Uma lacuna que ficou sem ponto é pedida pela gravação seguinte, com o
     /// item a copiar, no lugar do próximo ponto; fechar os outros pontos não
-    /// traz o fim nem oferece o revisor de fora. Gravado o ponto que faltava,
-    /// ele é o próximo.
+    /// traz o fim nem manda rodar o revisor de fora. Gravado o ponto que
+    /// faltava, ele é o próximo.
     #[test]
     fn a_gap_left_without_a_point_is_asked_again_by_the_next_write() {
         let dir = tempdir().unwrap();
@@ -2576,7 +2894,8 @@ mod tests {
             asks_again(&last);
         }
         assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-        assert_eq!(last["review"]["options"], json!(["Seguir"]), "the survey is not over: {last}");
+        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
+        assert!(!last["next"].as_str().unwrap().contains(&outside), "the survey is not over: {last}");
         let recorded = write(root, "point", &point_of(forgotten).to_string());
         assert_eq!(recorded["point"]["id"], recorded["id"], "the forgotten point is the next one: {recorded}");
     }

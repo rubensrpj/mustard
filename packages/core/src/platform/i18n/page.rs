@@ -21,15 +21,47 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Publique a página da spec e a do projeto (`.claude/spec/project.html`) e grave as duas \
              publicações: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
              e `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
-             cada uma com `\"ok\":false` e `\"reason\"` quando falhar. Os endereços não vão para a \
-             conversa: ficam na barra de status."
+             cada uma com `\"ok\":false` e `\"reason\"` quando falhar. Não escreva os endereços na \
+             resposta: eles ficam na barra de status."
         }
         ("page.publish", Locale::EnUs) => {
             "Publish the spec page and the project page (`.claude/spec/project.html`) and record both \
              publications: `mustard-rt run write publish --spec <spec> --json '{\"page\":\"spec\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'` \
              and `mustard-rt run write publish --spec <spec> --json '{\"page\":\"project\",\"milestone\":\"{milestone}\",\"ok\":true,\"url\":\"…\"}'`, \
-             each with `\"ok\":false` and a `\"reason\"` when it fails. The addresses never go to \
-             the conversation: they live in the status line."
+             each with `\"ok\":false` and a `\"reason\"` when it fails. Never write the addresses in \
+             the reply: they live in the status line."
+        }
+        // O que a ordem de publicar diz de cada página já publicada: o que
+        // entrou na spec depois da última publicação dela, e o endereço
+        // gravado, que a ferramenta de publicar exige ler antes.
+        ("page.publish.since", Locale::PtBr) => {
+            "Desde a última publicação da {page}, em {at}, entraram na spec: {items}."
+        }
+        ("page.publish.since", Locale::EnUs) => {
+            "Since the last publication of the {page}, at {at}, the spec got: {items}."
+        }
+        ("page.publish.nothing_since", Locale::PtBr) => {
+            "Nada entrou na spec desde a última publicação da {page}, em {at}."
+        }
+        ("page.publish.nothing_since", Locale::EnUs) => {
+            "Nothing entered the spec since the last publication of the {page}, at {at}."
+        }
+        ("page.publish.same_list", Locale::PtBr) => "Para a {page}, vale a mesma lista.",
+        ("page.publish.same_list", Locale::EnUs) => "The same list holds for the {page}.",
+        ("page.publish.read_first", Locale::PtBr) => {
+            "Se esta conversa ainda não publicou a {page}, leia antes o endereço gravado dela, {url}: \
+             a ferramenta de publicar exige."
+        }
+        ("page.publish.read_first", Locale::EnUs) => {
+            "If this conversation has not published the {page} yet, first read its recorded address, \
+             {url}: the publishing tool requires it."
+        }
+        ("page.publish.check_only", Locale::PtBr) => {
+            "Confira só essa lista e publique, sem ler o `.md` nem o `.html`: o resto já foi publicado."
+        }
+        ("page.publish.check_only", Locale::EnUs) => {
+            "Check only this list and publish, without reading the `.md` or the `.html`: the rest was \
+             already published."
         }
         ("page.purge_pending", Locale::PtBr) => {
             "Os itens {codes} ainda guardam no arquivo um trecho com cara de segredo, que saiu da \
@@ -429,6 +461,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.skill", _) => "Skill",
         ("page.field.covers", Locale::PtBr) => "Cobre",
         ("page.field.covers", Locale::EnUs) => "Covers",
+        ("page.field.points", Locale::PtBr) => "Nota",
+        ("page.field.points", Locale::EnUs) => "Points",
         ("page.field.must_read", Locale::PtBr) => "Precisa ler",
         ("page.field.must_read", Locale::EnUs) => "Must read",
         ("page.field.name", Locale::PtBr) => "Nome",
@@ -474,12 +508,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.label", Locale::EnUs) => "Draft label",
         ("page.field.last_run", Locale::PtBr) => "Última execução",
         ("page.field.last_run", Locale::EnUs) => "Last run",
+        ("page.field.closed_by", Locale::PtBr) => "Fechado por",
+        ("page.field.closed_by", Locale::EnUs) => "Closed by",
         ("page.field.wave_state", Locale::PtBr) => "Estado da onda",
         ("page.field.wave_state", Locale::EnUs) => "Wave state",
         ("page.field.wave_commit", Locale::PtBr) => "Commit",
         ("page.field.wave_commit", Locale::EnUs) => "Commit",
         ("page.field.wave_receives", Locale::PtBr) => "Recebe",
         ("page.field.wave_receives", Locale::EnUs) => "Receives",
+        ("page.field.wave_points", Locale::PtBr) => "Soma das notas",
+        ("page.field.wave_points", Locale::EnUs) => "Points total",
 
         ("page.value.warn", Locale::PtBr) => "aviso",
         ("page.value.warn", Locale::EnUs) => "warning",
@@ -772,8 +810,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            313,
-            0xf8b3_9b4b_4baa_0479,
+            321,
+            0x03be_12e4_8634_f440,
         );
     }
 }

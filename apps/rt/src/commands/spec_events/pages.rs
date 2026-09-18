@@ -41,14 +41,26 @@
 //! guarda um trecho com cara de segredo não segura a publicação, e o marco diz
 //! o código dele para ser expurgado; com a página da spec ou a do projeto que
 //! não pôde ser refeita, diz qual falhou e por quê, e não manda publicar.
+//!
+//! Para a página que já foi publicada, a ordem de publicar diz o que entrou na
+//! spec depois da última publicação dela ([`published_pages`]), pela data e
+//! hora gravadas no arquivo de eventos, lidas com o fuso: a conversa confere
+//! só essa lista e publica, sem ler o `.md` nem o `.html`. A lista leva só os
+//! itens que têm texto para ler ([`READABLE_TYPES`]); os registros internos,
+//! como a marca de um gancho, de uma chamada de comando ou de um texto
+//! injetado, ficam fora. E manda ler antes o endereço gravado quando a
+//! conversa ainda não publicou a página, porque a ferramenta de publicar
+//! exige.
 
 pub(crate) mod secret;
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Refusal, SpecLog};
+use mustard_core::domain::spec_events::{type_spec, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_index::{published_to, title_of, PROJECT_PAGE as PROJECT_KEY, SPEC_PAGE as SPEC_KEY};
 use mustard_core::domain::wave_prompt::OwnerLine;
 use mustard_core::io::spec_events as store;
+use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::view::document::{
     conversation_len, cut_oldest_conversation, owners_page, project_document, spec_page, Document, RtkDay,
@@ -88,6 +100,31 @@ pub(crate) struct SpecPages {
     pub trimmed: usize,
     /// O que não impediu a página, mas precisa ser dito.
     pub warnings: Vec<String>,
+    /// Cada página que já foi publicada, com o que entrou na spec depois da
+    /// última publicação dela; a que nunca foi publicada fica de fora.
+    pub published: Vec<Published>,
+}
+
+/// Uma página já publicada: a última publicação dela que deu certo, lida do
+/// arquivo de eventos, e o que entrou na spec depois.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Published {
+    pub page: Page,
+    /// A data e a hora da publicação, como gravadas.
+    pub at: String,
+    /// O endereço gravado na publicação.
+    pub url: String,
+    /// Os itens com texto para ler gravados depois dela, na ordem do arquivo.
+    pub changed: Vec<Changed>,
+}
+
+/// Um item que entrou na spec depois da última publicação de uma página.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Changed {
+    pub code: String,
+    /// O texto curto: o rótulo do item; sem ele, o título ou a primeira frase
+    /// do texto; sem texto, o nome do tipo.
+    pub text: String,
 }
 
 /// A página pronta para publicar e o que a conferência trocou nela.
@@ -236,7 +273,104 @@ fn write_pages(
         warnings: warnings(&checked, lang),
         withheld: checked.withheld,
         trimmed: checked.trimmed,
+        published: published_pages(log, lang),
     })
+}
+
+/// Os tipos que têm texto para ler, os únicos que a lista da ordem de
+/// publicar leva: a conversa, o combinado, a especificação, os critérios, as
+/// ondas com as entregas, a revisão e as anotações. Os outros são registros
+/// internos, que o binário ou um gancho grava sozinho, e ficam fora: a marca
+/// de um gancho (`hook`), o texto que ele colocou (`injection`), a chamada
+/// de um comando (`call`), o pedido montado para um agente (`send`), a troca
+/// de fase (`state`), a publicação (`publish`), a rodada de uma prova
+/// (`criterion_run`) e o commit (`commit`).
+const READABLE_TYPES: &[&str] = &[
+    // A conversa.
+    "message",
+    "response",
+    "remove",
+    "purge",
+    // O combinado.
+    "work_type",
+    "point",
+    "rule",
+    "limit",
+    "contract",
+    "error",
+    "edge_case",
+    "out_of_scope",
+    "decision",
+    // A especificação e os critérios.
+    "context",
+    "concern",
+    "criterion",
+    // As ondas, a revisão e o andamento.
+    "wave",
+    "task",
+    "skill",
+    "delivered",
+    "verdict",
+    "pr_summary",
+    // As anotações.
+    "request",
+    "deferred",
+    "note",
+];
+
+/// Cada página que já foi publicada, a da spec e a do projeto, nessa ordem:
+/// a última publicação dela que deu certo e os itens com texto para ler
+/// gravados depois dela. As publicações ficam fora da lista, como os outros
+/// registros internos: elas dizem onde a página está, não o que mudou nela.
+fn published_pages(log: &SpecLog, lang: Locale) -> Vec<Published> {
+    let visible = log.visible();
+    let codes = log.codes();
+    [Page::Spec, Page::Project]
+        .into_iter()
+        .filter_map(|page| {
+            let (place, last, url) = visible
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| published_to(e, page.key()).map(|url| (i, *e, url)))
+                .next_back()?;
+            let changed = visible
+                .iter()
+                .enumerate()
+                .filter(|(i, e)| {
+                    READABLE_TYPES.contains(&e.event_type.as_str()) && recorded_after(e, *i, last, place)
+                })
+                .map(|(_, e)| Changed {
+                    code: codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()),
+                    text: short_text(e, lang),
+                })
+                .collect();
+            Some(Published { page, at: last.at().to_string(), url: url.to_string(), changed })
+        })
+        .collect()
+}
+
+/// O item `event`, na posição `place` do arquivo, foi gravado depois da
+/// publicação `publication`, na posição `published_place`: pela data e hora
+/// de cada um, lidas com o fuso, como o índice das specs as compara. No
+/// mesmo instante, vale a ordem do arquivo.
+fn recorded_after(event: &SpecEvent, place: usize, publication: &SpecEvent, published_place: usize) -> bool {
+    if later(event.at(), publication.at()) {
+        return true;
+    }
+    !later(publication.at(), event.at()) && place > published_place
+}
+
+/// O texto curto de um item: o rótulo; sem ele, o título ou a primeira frase
+/// do texto; sem texto, o nome do tipo, como a página o diz (o tipo que este
+/// binário não conhece sai com o nome gravado).
+fn short_text(event: &SpecEvent, lang: Locale) -> String {
+    let label = event.str_field("label").map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+    let text = label.or_else(|| title_of(event)).unwrap_or_else(|| match type_spec(&event.event_type) {
+        Some(_) => translate(&format!("page.type.{}", event.event_type), lang).to_string(),
+        None => event.event_type.clone(),
+    });
+    // O ponto final da frase sai: os itens vão separados por ponto e vírgula.
+    text.trim_end_matches('.').to_string()
 }
 
 /// A lista dos itens sem dono gravada, e o que a conferência antes de
@@ -393,12 +527,47 @@ pub(crate) fn end_milestone(
         next.push(' ');
         next.push_str(&translate("page.purge_pending", lang).replace("{codes}", &pages.withheld.join(", ")));
     }
+    for sentence in since_published(&pages.published, lang) {
+        next.push(' ');
+        next.push_str(&sentence);
+    }
     report["next"] = json!(format!("{next} {then}"));
+}
+
+/// O que a ordem de publicar diz de cada página já publicada: o que entrou
+/// na spec depois da última publicação dela, e que é preciso ler antes o
+/// endereço gravado quando a conversa ainda não a publicou; no fim, que a
+/// conversa confere só essa lista. A página do projeto com a mesma lista da
+/// página da spec não a repete. Sem página publicada, não diz nada.
+fn since_published(published: &[Published], lang: Locale) -> Vec<String> {
+    let mut out = Vec::new();
+    for (n, page) in published.iter().enumerate() {
+        let name = page.page.name(lang);
+        let at = page.at.get(..16).unwrap_or(&page.at).replace('T', " ");
+        let repeated = published[..n].iter().any(|before| before.changed == page.changed);
+        let list = if repeated {
+            translate("page.publish.same_list", lang).replace("{page}", name)
+        } else if page.changed.is_empty() {
+            translate("page.publish.nothing_since", lang).replace("{page}", name).replace("{at}", &at)
+        } else {
+            let items: Vec<String> = page.changed.iter().map(|item| format!("{} — {}", item.code, item.text)).collect();
+            translate("page.publish.since", lang)
+                .replace("{page}", name)
+                .replace("{at}", &at)
+                .replace("{items}", &items.join("; "))
+        };
+        out.push(list);
+        out.push(translate("page.publish.read_first", lang).replace("{page}", name).replace("{url}", &page.url));
+    }
+    if !out.is_empty() {
+        out.push(translate("page.publish.check_only", lang).to_string());
+    }
+    out
 }
 
 /// As duas páginas que um marco publica.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Page {
+pub(crate) enum Page {
     Spec,
     Project,
 }
@@ -409,6 +578,14 @@ impl Page {
         match self {
             Self::Spec => translate("page.name.spec", lang),
             Self::Project => translate("page.name.project", lang),
+        }
+    }
+
+    /// O valor do campo `page` da publicação desta página.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Spec => SPEC_KEY,
+            Self::Project => PROJECT_KEY,
         }
     }
 }
@@ -434,6 +611,8 @@ pub(crate) fn relative(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::spec_state::DiskSpecState;
+    use mustard_core::domain::spec_state::SpecState;
     use tempfile::tempdir;
 
     /// Numa spec do formato antigo, o `page --spec` recusa e não toca no
@@ -729,6 +908,316 @@ mod tests {
         assert!(!html.contains("S3nh4F0rte") && !html.contains("0utr4S3nh4"), "a secret reached the page");
         let warning = pages.warnings.iter().find(|w| w.contains("purge")).cloned().unwrap_or_default();
         assert!(warning.contains("MSTD-DEC-0001, MSTD-SEND-0001") && !warning.contains('+'), "{warning}");
+    }
+
+    /// Grava pelo gravador de verdade, com a data e a hora `hms` de 18/09, e
+    /// devolve o número e o código do item.
+    fn put_at(root: &Path, spec: &str, hms: &str, event_type: &str, draft: serde_json::Value) -> (u64, String) {
+        put_when(root, spec, &format!("2026-09-18T{hms}-03:00"), event_type, draft)
+    }
+
+    /// Grava pelo gravador de verdade, com a data, a hora e o fuso `at`, e
+    /// devolve o número e o código do item.
+    fn put_when(root: &Path, spec: &str, at: &str, event_type: &str, draft: serde_json::Value) -> (u64, String) {
+        let path = root.join(".claude").join("spec").join(spec).join("spec.ndjson");
+        let written = store::write_at(&path, event_type, draft.as_object().cloned().unwrap(), &[], at)
+            .unwrap_or_else(|r| panic!("{event_type} was refused: {r:?}"));
+        (written.id, written.code.unwrap_or_default())
+    }
+
+    /// O `next` de um marco, pela mesma porta que o plano, a rodada e o
+    /// fechamento usam: a página refeita e o fim do marco.
+    fn milestone_next(root: &Path, spec: &str, milestone: &str) -> String {
+        let pages = refresh(root, spec, Locale::PtBr);
+        let mut report = json!({ "ok": true });
+        end_milestone(&mut report, pages.as_ref(), milestone, "Depois, siga.", Locale::PtBr);
+        assert_eq!(report["publish"], json!(["spec", "project"]), "{report}");
+        report["next"].as_str().unwrap_or_default().to_string()
+    }
+
+    /// Uma spec já publicada chega a um marco: a ordem de publicar lista, pela
+    /// data e hora, o que entrou na spec depois da última publicação que deu
+    /// certo de cada página, com o código e o texto curto de cada item, diz
+    /// para conferir só isso e manda ler antes o endereço gravado quando a
+    /// conversa ainda não publicou a página. Na divisa: o item de um segundo
+    /// antes e o do mesmo segundo gravado antes da publicação não aparecem; o
+    /// do mesmo segundo gravado depois e o de um segundo depois aparecem. A
+    /// publicação que falhou não muda o começo da lista, e as publicações não
+    /// entram nela.
+    #[test]
+    fn the_publish_order_lists_what_entered_the_spec_since_the_last_publication() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        let spec_url = "https://claude.ai/code/artifact/busca";
+        let project_url = "https://claude.ai/code/artifact/projeto";
+        put_at(root, "busca", "09:00:00", "state", json!({"phase": "survey"}));
+        let (origin, said) =
+            put_at(root, "busca", "09:00:10", "message", json!({"author": "user", "text": "Publique sempre."}));
+        let (_, old) = put_at(root, "busca", "09:00:59", "decision",
+            json!({"text": "Uma decisão antiga, já na página.", "why": "w", "keys": ["antiga"], "origin": origin}));
+        let (_, same_before) = put_at(root, "busca", "09:01:00", "message", json!({"author": "user", "text": "Antes de publicar."}));
+        put_at(root, "busca", "09:01:00", "publish",
+            json!({"page": "spec", "milestone": "approval", "ok": true, "url": spec_url}));
+        put_at(root, "busca", "09:01:00", "publish",
+            json!({"page": "project", "milestone": "approval", "ok": true, "url": project_url}));
+        let (_, same_after) = put_at(root, "busca", "09:01:00", "message", json!({"author": "user", "text": "Mais uma coisa."}));
+        let (_, decision) = put_at(root, "busca", "09:01:01", "decision",
+            json!({"text": "**A ordem diz o que mudou.** O resto já foi publicado.", "why": "w", "keys": ["ordem"],
+                "origin": origin}));
+        let (_, criterion) = put_at(root, "busca", "09:05:00", "criterion",
+            json!({"when": "a spec chega a um marco", "then": "a ordem diz o que mudou", "proof": "cargo test",
+                "label": "a ordem de publicar diz o que mudou", "origin": origin}));
+        put_at(root, "busca", "09:06:00", "publish",
+            json!({"page": "spec", "milestone": "round", "ok": false, "reason": "a ferramenta caiu"}));
+
+        let next = milestone_next(root, "busca", "round");
+        let spec_name = translate("page.name.spec", Locale::PtBr);
+        let project_name = translate("page.name.project", Locale::PtBr);
+        let items = format!(
+            "{same_after} — Mais uma coisa; {decision} — A ordem diz o que mudou; \
+             {criterion} — a ordem de publicar diz o que mudou"
+        );
+        let since = translate("page.publish.since", Locale::PtBr)
+            .replace("{page}", spec_name)
+            .replace("{at}", "2026-09-18 09:01")
+            .replace("{items}", &items);
+        assert!(next.contains(&since), "the spec page list is missing:\n{since}\n{next}");
+        let read_first = |name: &str, url: &str| {
+            translate("page.publish.read_first", Locale::PtBr).replace("{page}", name).replace("{url}", url)
+        };
+        assert!(next.contains(&read_first(spec_name, spec_url)), "{next}");
+        assert!(next.contains(&read_first(project_name, project_url)), "{next}");
+        assert!(
+            next.contains(&translate("page.publish.same_list", Locale::PtBr).replace("{page}", project_name)),
+            "the project page holds the same list, said once: {next}"
+        );
+        assert!(next.contains(translate("page.publish.check_only", Locale::PtBr)), "{next}");
+        assert!(next.contains("write publish") && next.ends_with("Depois, siga."), "{next}");
+        for before in [&said, &old, &same_before] {
+            assert!(!next.contains(before.as_str()), "{before} came before the publication: {next}");
+        }
+        assert!(!next.contains("MSTD-PUB-"), "the publications are not in the list: {next}");
+        assert_eq!(next.matches(&items).count(), 1, "the list is said once: {next}");
+
+        // Publicada de novo, a lista recomeça dali: o que já foi publicado
+        // sai dela.
+        put_at(root, "busca", "09:10:00", "publish",
+            json!({"page": "spec", "milestone": "round", "ok": true, "url": spec_url}));
+        let (_, later) = put_at(root, "busca", "09:10:01", "message", json!({"author": "user", "text": "Depois da rodada."}));
+        let next = milestone_next(root, "busca", "round");
+        let since = translate("page.publish.since", Locale::PtBr)
+            .replace("{page}", spec_name)
+            .replace("{at}", "2026-09-18 09:10")
+            .replace("{items}", &format!("{later} — Depois da rodada"));
+        // A frase termina logo depois da lista: o que já foi publicado na
+        // página da spec saiu dela.
+        assert!(next.contains(&since), "{since}\n{next}");
+        // A página do projeto, publicada às 09:01, segue com a lista dela.
+        let project_since = translate("page.publish.since", Locale::PtBr)
+            .replace("{page}", project_name)
+            .replace("{at}", "2026-09-18 09:01")
+            .replace("{items}", &format!("{items}; {later} — Depois da rodada"));
+        assert!(next.contains(&project_since), "{project_since}\n{next}");
+    }
+
+    /// A página que nunca foi publicada não tem lista nem endereço: a ordem de
+    /// publicar é só a de publicar, e nenhum endereço entra nela.
+    #[test]
+    fn a_page_never_published_gets_no_list_and_no_address() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        put_at(root, "nova", "09:00:00", "state", json!({"phase": "survey"}));
+        put_at(root, "nova", "09:00:10", "message", json!({"author": "user", "text": "Comece."}));
+        put_at(root, "nova", "09:00:20", "publish",
+            json!({"page": "spec", "milestone": "approval", "ok": false, "reason": "a ferramenta caiu"}));
+
+        let next = milestone_next(root, "nova", "approval");
+        let publish = translate("page.publish", Locale::PtBr).replace("{milestone}", "approval");
+        assert_eq!(next, format!("{publish} Depois, siga."));
+        assert!(!next.contains("http"), "{next}");
+    }
+
+    /// Um projeto com a spec `spec` aberta, o checkout na branch dela e as
+    /// duas páginas já publicadas pelo `run write`, como a conversa faz.
+    fn published_project(spec: &str) -> tempfile::TempDir {
+        use crate::commands::spec_events::write::record_open;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, spec);
+        record_open(root, spec, &format!("feature/{spec}"), "dev").unwrap();
+        for page in ["spec", "project"] {
+            run_write(root, spec, "publish", json!({"page": page, "milestone": "approval", "ok": true,
+                "url": format!("https://claude.ai/code/artifact/{page}")}));
+        }
+        dir
+    }
+
+    /// Grava pelo `run write`, o comando que a conversa usa, e devolve o
+    /// número do item.
+    fn run_write(root: &Path, spec: &str, event_type: &str, draft: Value) -> u64 {
+        use crate::commands::spec_events::write::{write_at, WriteOpts};
+        let out = write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some(spec.into()),
+            event_type: event_type.into(),
+            json: draft.to_string(),
+        });
+        assert_eq!(out["ok"], json!(true), "{event_type}: {out}");
+        out["id"].as_u64().unwrap_or_default()
+    }
+
+    /// Um evento do Claude Code, pelo mesmo despachante que o `mustard-rt on`
+    /// usa, na sessão `s1` do projeto em `root`.
+    fn hook_event(root: &Path, event: &str, raw: Value) -> mustard_core::domain::model::contract::Outcome {
+        use mustard_core::domain::model::contract::{HookInput, Trigger};
+        let input = HookInput {
+            hook_event_name: Some(event.to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw,
+            ..HookInput::default()
+        };
+        crate::dispatch::run_event(Trigger::from_event_name(event), &input)
+    }
+
+    /// Um passo do fluxo, rodado pelo mesmo despacho que o `mustard-rt run`
+    /// usa: grava a chamada na spec.
+    fn flow_step(root: &Path, spec: &str) {
+        crate::commands::flow::cli::dispatch(crate::commands::flow::cli::FlowCmd::Resume {
+            spec: Some(spec.to_string()),
+            root: root.to_path_buf(),
+        });
+    }
+
+    /// Os tipos gravados depois das duas publicações, na ordem do arquivo, e
+    /// a hora da publicação da página da spec como a ordem de publicar a diz.
+    fn after_publication(root: &Path, spec: &str) -> (Vec<String>, String) {
+        let log = DiskSpecState::new(root).log(spec).unwrap();
+        let visible = log.visible();
+        let spec_page = visible.iter().rposition(|e| published_to(e, SPEC_KEY).is_some()).unwrap();
+        let at = visible[spec_page].at().get(..16).unwrap_or_default().replace('T', " ");
+        let last = visible.iter().rposition(|e| e.event_type == "publish").unwrap();
+        (visible[last + 1..].iter().map(|e| e.event_type.clone()).collect(), at)
+    }
+
+    /// Entre a última publicação e o marco, a conversa segue pelos ganchos e
+    /// pelos comandos de verdade: a mensagem do usuário, o texto que os
+    /// ganchos colocam na conversa, a resposta que a conferência de escrita
+    /// barra, o complemento dela, a decisão gravada pelo `run write` e um
+    /// passo do fluxo rodado pelo despacho do `mustard-rt run`. A lista da
+    /// ordem de publicar traz só a mensagem, as duas respostas e a decisão, na
+    /// ordem do arquivo; a marca do gancho que barrou, o texto colocado e a
+    /// chamada do passo ficam fora, embora gravados depois da publicação.
+    #[test]
+    fn the_publish_list_carries_only_the_items_with_text() {
+        let dir = published_project("lista");
+        let root = dir.path();
+        assert!(!hook_event(root, "UserPromptSubmit", json!({ "prompt": "Grave a decisão da lista." })).is_blocking());
+        let log = DiskSpecState::new(root).log("lista").unwrap();
+        let said = log.visible().into_iter().filter(|e| e.event_type == "message").map(|e| e.id).next_back().unwrap();
+        let barred = "Gravei a decisão. Depois de ler todos os arquivos do projeto e conferir cada teste que \
+                      ainda falhava na máquina do usuário, eu ajustei a leitura do idioma e a contagem das \
+                      linhas para que a resposta final saia bem curta e clara.";
+        assert!(hook_event(root, "Stop", json!({ "last_assistant_message": barred })).is_blocking());
+        let retry = json!({ "last_assistant_message": "Resumo: gravei a decisão.", "stop_hook_active": true });
+        assert!(!hook_event(root, "Stop", retry).is_blocking());
+        run_write(root, "lista", "decision", json!({"text": "**A lista leva só o que tem texto.** O resto fica fora.",
+            "why": "w", "keys": ["lista"], "origin": said}));
+        flow_step(root, "lista");
+
+        let (types, at) = after_publication(root, "lista");
+        assert_eq!(
+            types,
+            ["message", "injection", "hook", "response", "response", "decision", "call"],
+            "the hooks and the step recorded their marks after the publication"
+        );
+        let next = milestone_next(root, "lista", "round");
+        let items = "MSTD-MSG-0001 — Grave a decisão da lista; MSTD-RESP-0001 — Gravei a decisão; \
+                     MSTD-RESP-0002 — Resumo: gravei a decisão; MSTD-DEC-0001 — A lista leva só o que tem texto";
+        let since = translate("page.publish.since", Locale::PtBr)
+            .replace("{page}", translate("page.name.spec", Locale::PtBr))
+            .replace("{at}", &at)
+            .replace("{items}", items);
+        assert!(next.contains(&since), "only the items with text, in file order:\n{since}\n{next}");
+        for internal in ["MSTD-INJ-", "MSTD-HOOK-", "MSTD-CALL-", "MSTD-STATE-", "MSTD-PUB-"] {
+            assert!(!next.contains(internal), "{internal} is an internal record: {next}");
+        }
+    }
+
+    /// Depois da última publicação só entraram registros internos: o texto
+    /// que os ganchos do início da sessão colocam e a chamada de um passo do
+    /// fluxo. Para a ordem de publicar, nada entrou na spec, e ela diz isso
+    /// com a hora da publicação.
+    #[test]
+    fn only_internal_records_since_the_publication_say_nothing_entered() {
+        let dir = published_project("nada");
+        let root = dir.path();
+        hook_event(root, "SessionStart", json!({ "source": "startup" }));
+        flow_step(root, "nada");
+
+        let (types, at) = after_publication(root, "nada");
+        assert!(types.iter().any(|t| t == "call"), "the step recorded its call: {types:?}");
+        assert!(types.iter().all(|t| ["injection", "hook", "call"].contains(&t.as_str())), "{types:?}");
+        let next = milestone_next(root, "nada", "round");
+        let nothing = translate("page.publish.nothing_since", Locale::PtBr)
+            .replace("{page}", translate("page.name.spec", Locale::PtBr))
+            .replace("{at}", &at);
+        assert!(next.contains(&nothing), "{nothing}\n{next}");
+        assert!(!next.contains("MSTD-"), "no item is listed: {next}");
+    }
+
+    /// Só os tipos que têm texto para ler entram na lista; os outros são os
+    /// registros internos, e um tipo novo não entra na lista sem alguém
+    /// decidir de que lado ele fica.
+    #[test]
+    fn every_type_is_either_readable_or_an_internal_record() {
+        use mustard_core::domain::spec_events::TYPES;
+        for name in READABLE_TYPES {
+            assert!(type_spec(name).is_some(), "{name} is not a type");
+        }
+        let internal: Vec<&str> = TYPES.iter().map(|t| t.name).filter(|n| !READABLE_TYPES.contains(n)).collect();
+        assert_eq!(internal, ["injection", "hook", "call", "state", "publish", "criterion_run", "send", "commit"]);
+    }
+
+    /// A data e a hora são lidas com o fuso, como o índice das specs as
+    /// compara, e não como texto: a publicação às 12:00 de Brasília é 15:00
+    /// em UTC. Na divisa, o item de 14:59:59 UTC não aparece, embora o texto
+    /// "14:59" passe de "12:00"; o do mesmo instante, 15:00:00 UTC, aparece só
+    /// quando foi gravado depois da publicação no arquivo; o de 15:00:01 UTC
+    /// aparece. E o de 11:30 a cinco horas de UTC, que é 16:30 UTC, aparece,
+    /// embora o texto "11:30" fique antes de "12:00".
+    #[test]
+    fn the_publish_list_reads_the_time_with_its_offset() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        let put = |at: &str, event_type: &str, draft: Value| put_when(root, "fuso", at, event_type, draft).1;
+        put("2026-09-18T11:00:00-03:00", "state", json!({"phase": "survey"}));
+        let same_before = put("2026-09-18T15:00:00Z", "message", json!({"author": "user", "text": "Antes, no mesmo instante."}));
+        for page in ["spec", "project"] {
+            put("2026-09-18T12:00:00-03:00", "publish",
+                json!({"page": page, "milestone": "approval", "ok": true, "url": format!("https://claude.ai/code/artifact/{page}")}));
+        }
+        let second_before = put("2026-09-18T14:59:59Z", "message", json!({"author": "user", "text": "Um segundo antes."}));
+        let same_after = put("2026-09-18T15:00:00+00:00", "message", json!({"author": "user", "text": "No mesmo instante."}));
+        let second_after = put("2026-09-18T15:00:01Z", "message", json!({"author": "user", "text": "Um segundo depois."}));
+        let west = put("2026-09-18T11:30:00-05:00", "message", json!({"author": "user", "text": "Em outro fuso, depois."}));
+
+        let next = milestone_next(root, "fuso", "round");
+        let items = format!(
+            "{same_after} — No mesmo instante; {second_after} — Um segundo depois; {west} — Em outro fuso, depois"
+        );
+        let since = translate("page.publish.since", Locale::PtBr)
+            .replace("{page}", translate("page.name.spec", Locale::PtBr))
+            .replace("{at}", "2026-09-18 12:00")
+            .replace("{items}", &items);
+        assert!(next.contains(&since), "{since}\n{next}");
+        for before in [&same_before, &second_before] {
+            assert!(!next.contains(before.as_str()), "{before} came before the publication: {next}");
+        }
     }
 
     /// Uma spec com arquivo de eventos nunca é do formato antigo por um

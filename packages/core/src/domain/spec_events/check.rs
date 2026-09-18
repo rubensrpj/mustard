@@ -51,26 +51,22 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
     if let Some(field) = REFUSED_FIELDS.iter().find(|f| event.contains_key(**f)) {
         return Err(Refusal::BinaryOnlyField { field: (*field).to_string() });
     }
-    check_field(event, spec.name, req("author", Kind::OneOf(AUTHORS)))?;
-    // O `origin` é obrigatório no que o assistente grava a partir da
-    // conversa; o que o binário grava, como os critérios tirados do
-    // `spec.md`, não tem mensagem de onde veio.
-    let by_assistant = event.get("author").and_then(Value::as_str) == Some(DEFAULT_AUTHOR);
-    check_field(
-        event,
-        spec.name,
-        Field { name: "origin", kind: Kind::Int, required: spec.needs_origin && by_assistant },
-    )?;
-    for envelope in [opt("label", Kind::Text), opt("replaces", Kind::Ref)] {
-        check_field(event, spec.name, envelope)?;
+    let fields = checked_fields(event, spec);
+    // Todos os obrigatórios que faltam saem numa recusa só, os do tipo e os de
+    // dentro das listas: quem grava conserta tudo de uma vez, em vez de
+    // descobrir um campo a cada tentativa. Os que só valem numa situação
+    // ficam para depois, porque a situação se lê nos campos do tipo.
+    let mut absent: Vec<String> = fields
+        .iter()
+        .filter(|field| field.required && event.get(field.name).is_none_or(is_empty))
+        .map(|field| field.name.to_string())
+        .collect();
+    absent.extend(nested_absent(event, spec.name));
+    if !absent.is_empty() {
+        return Err(missing(spec.name, &absent.join(", ")));
     }
-    for shared in [opt("text", Kind::Text), opt("keys", Kind::Texts)] {
-        if !spec.fields.iter().any(|f| f.name == shared.name) {
-            check_field(event, spec.name, shared)?;
-        }
-    }
-    for field in spec.fields {
-        check_field(event, spec.name, *field)?;
+    for field in fields {
+        check_field(event, spec.name, field)?;
     }
     // O campo que o tipo não declara é recusado pelo nome: ele entraria
     // calado e ficaria gravado sem ninguém ver, e um nome escrito errado
@@ -82,9 +78,31 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
             accepted: accepted_fields(spec),
         });
     }
-    check_nested(event, spec.name)?;
     check_conditions(event, spec.name)?;
     check_fact_sources(event, spec.name)
+}
+
+/// Os campos que a conferência olha num evento do tipo `spec`, na ordem em
+/// que a recusa os cita: o autor, a origem, o envelope, os comuns que o tipo
+/// não declara de novo e os do tipo.
+fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
+    // O `origin` é obrigatório no que o assistente grava a partir da
+    // conversa; o que o binário grava, como os critérios tirados do
+    // `spec.md`, não tem mensagem de onde veio.
+    let by_assistant = event.get("author").and_then(Value::as_str) == Some(DEFAULT_AUTHOR);
+    let mut fields = vec![
+        req("author", Kind::OneOf(AUTHORS)),
+        Field { name: "origin", kind: Kind::Int, required: spec.needs_origin && by_assistant },
+        opt("label", Kind::Text),
+        opt("replaces", Kind::Ref),
+    ];
+    fields.extend(
+        [opt("text", Kind::Text), opt("keys", Kind::Texts)]
+            .into_iter()
+            .filter(|shared| !spec.fields.iter().any(|f| f.name == shared.name)),
+    );
+    fields.extend(spec.fields.iter().copied());
+    fields
 }
 
 /// Os campos que toda linha pode trazer, fora os do tipo: o envelope, o campo
@@ -144,7 +162,10 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("remove", "filter", &["type", "from", "to"]),
 ];
 
-fn check_nested(event: &Map<String, Value>, event_type: &str) -> Result<(), Refusal> {
+/// Os campos de dentro que faltam, todos, com o caminho de cada um, como
+/// `files[2].path` ou `witness.answer`.
+fn nested_absent(event: &Map<String, Value>, event_type: &str) -> Vec<String> {
+    let mut absent = Vec::new();
     for (owner, field, inner) in NESTED {
         if *owner != event_type {
             continue;
@@ -155,7 +176,7 @@ fn check_nested(event: &Map<String, Value>, event_type: &str) -> Result<(), Refu
                     let Some(obj) = item.as_object() else { continue };
                     for key in *inner {
                         if obj.get(*key).is_none_or(is_empty) {
-                            return Err(missing(event_type, &format!("{field}[{}].{key}", i + 1)));
+                            absent.push(format!("{field}[{}].{key}", i + 1));
                         }
                     }
                 }
@@ -163,14 +184,14 @@ fn check_nested(event: &Map<String, Value>, event_type: &str) -> Result<(), Refu
             Some(Value::Object(obj)) => {
                 for key in *inner {
                     if obj.get(*key).is_none_or(is_empty) {
-                        return Err(missing(event_type, &format!("{field}.{key}")));
+                        absent.push(format!("{field}.{key}"));
                     }
                 }
             }
             _ => {}
         }
     }
-    Ok(())
+    absent
 }
 
 /// Os campos que só são obrigatórios numa situação: a testemunha na
@@ -351,6 +372,37 @@ mod tests {
         assert_eq!(
             checked("note", json!({"text": "t", "keys": [], "origin": 1})).unwrap_err(),
             Refusal::MissingField { event_type: "note".into(), field: "keys".into() }
+        );
+    }
+
+    /// A recusa cita de uma vez todos os campos obrigatórios que faltam, na
+    /// ordem da tabela do tipo, e não só o primeiro. Na divisa: a decisão
+    /// completa passa, sem um campo cita esse um, sem dois cita os dois, nos
+    /// dois idiomas; os de dentro das listas entram na mesma recusa.
+    #[test]
+    fn a_record_missing_several_fields_is_refused_with_all_of_them() {
+        let whole = json!({"text": "Gravar tudo.", "keys": ["gravar"], "why": "pedido", "origin": 3});
+        assert_eq!(checked("decision", whole.clone()), Ok(()));
+
+        let mut one = whole.clone();
+        one["why"] = json!(" ");
+        assert_eq!(
+            checked("decision", one).unwrap_err(),
+            Refusal::MissingField { event_type: "decision".into(), field: "why".into() }
+        );
+
+        let two = json!({"text": "Gravar tudo.", "origin": 3});
+        let refusal = checked("decision", two).unwrap_err();
+        assert_eq!(refusal, Refusal::MissingField { event_type: "decision".into(), field: "keys, why".into() });
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let message = refusal.message(lang);
+            assert!(message.contains("decision") && message.contains("keys, why"), "{message}");
+        }
+
+        let nested = json!({"wave": 1, "origin": 1, "files": [{"new": true}, {"path": "a.rs"}, {}]});
+        assert_eq!(
+            checked("task", nested).unwrap_err(),
+            Refusal::MissingField { event_type: "task".into(), field: "text, files[1].path, files[3].path".into() }
         );
     }
 

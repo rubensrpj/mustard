@@ -36,6 +36,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // das ondas não seguem a ordem, e o da onda que vem fica na retomada.
         ("statusline.wave", Locale::PtBr) => "{delivered} de {total} ondas",
         ("statusline.wave", Locale::EnUs) => "{delivered} of {total} waves",
+        // A economia do rtk, na segunda linha da barra: `{pct}` vem de quem
+        // chama, já arredondado.
+        ("statusline.rtk", Locale::PtBr) => "rtk poupou {pct}%",
+        ("statusline.rtk", Locale::EnUs) => "rtk saved {pct}%",
         ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
         ("statusline.harness.inert", Locale::EnUs) => "harness inert",
         // Dormant is NOT inert: inert means someone switched the plugin off,
@@ -164,8 +168,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            18,
-            0xddf0_793f_e302_2a05,
+            19,
+            0x164b_fe27_2acf_e037,
         );
     }
 

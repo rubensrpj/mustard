@@ -178,27 +178,28 @@ spec: **demo** · fase: **aprovada** · branch: **feature/demo** · sai de: **de
   - Estado da onda: a fazer
   - Recebe: Especificação (2), A onda e as tarefas dela (1), Critérios (1), Regras da execução (1)
 
-**O pedido da onda 1 · 22 linhas, como o agente as recebe**
+**O pedido da onda 1 · 23 linhas, como o agente as recebe**
 
 ```
 # demo — onda 1
 
-**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo binário a partir da spec. Nenhum texto vem copiado: cada linha traz o número do item, o tipo dele e o comando que o lê.
+**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo binário a partir da spec. Nenhum texto vem copiado: cada parte traz só os códigos dos itens, em sequência, numa linha por bloco da spec.
 
 **O que devolver.** A linha `<DELIVERED>` desta onda.
 
+**Como ler.** Leia cada código na ordem com `mustard-rt run read <bloco> --spec demo --term <código>`, trocando `<bloco>` pelo bloco que abre a linha do código.
+
 ## Especificação
 
-- MSTD-CTX-0001 (contexto) — `mustard-rt run read specification --spec demo --term MSTD-CTX-0001`
-- MSTD-CONC-0001 (preocupação) — `mustard-rt run read specification --spec demo --term MSTD-CONC-0001`
+- `specification`: MSTD-CTX-0001, MSTD-CONC-0001
 
 ## A onda e as tarefas dela
 
-- MSTD-WAVE-0001 (onda) — `mustard-rt run read waves --spec demo --term MSTD-WAVE-0001`
+- `waves`: MSTD-WAVE-0001
 
 ## Critérios
 
-- MSTD-CRIT-0001 (critério) — `mustard-rt run read criteria --spec demo --term MSTD-CRIT-0001`
+- `criteria`: MSTD-CRIT-0001
 
 ## Regras da execução
 

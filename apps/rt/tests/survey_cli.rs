@@ -1,7 +1,8 @@
 //! O levantamento de ponta a ponta pelo binário, num projeto com `git.flow` e
 //! um arquivo de código: o `open`, o objetivo, o `grill`, uma resposta e o
 //! fechamento de cada ponto, com o passo que cada `write` devolve, a revisão
-//! de cada bloco e o fim com as mensagens do usuário sem destino. No meio, com
+//! de cada bloco, a ordem de rodar o revisor de fora e o fim com as mensagens
+//! do usuário sem destino. No meio, com
 //! um ponto aberto, a gravação do plano pela porta do binário é recusada com a
 //! lista; com todos fechados, ela passa.
 
@@ -175,9 +176,11 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
                 assert_eq!(closed["review"].get("options").map(|o| o.as_array().map(Vec::len)), block_ends.then_some(Some(1)));
             }
             None => {
-                assert_eq!(
-                    closed["review"]["options"],
-                    json!(["Quer que um revisor de fora confira o levantamento inteiro?", "Seguir"])
+                assert_eq!(closed["review"]["options"], json!(["Seguir"]), "the outside reviewer is not an option");
+                let next = closed["next"].as_str().expect("the next step");
+                assert!(
+                    next.contains("rode o revisor de fora") && next.contains("`mustard-review`") && next.contains(SPEC),
+                    "the end of the survey orders the outside reviewer: {next}"
                 );
                 let unrouted: Vec<u64> =
                     closed["unrouted"].as_array().expect("the end").iter().map(|m| m["id"].as_u64().expect("a number")).collect();

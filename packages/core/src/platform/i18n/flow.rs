@@ -73,6 +73,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} has parts that share no file with each other ({parts}): it goes out split, \
              one wave per part, and the parts run in parallel."
         }
+        ("plan.spec_should_split", Locale::PtBr) => {
+            "A spec tem partes que não dividem arquivo entre si ({parts}): ela pode ser dividida, \
+             uma spec por parte."
+        }
+        ("plan.spec_should_split", Locale::EnUs) => {
+            "The spec has parts that share no file with each other ({parts}): it can be split, one \
+             spec per part."
+        }
         ("plan.file_outside_git", Locale::PtBr) => {
             "A tarefa {task} cita {path}, que o git não guarda: um agente noutra sessão ou noutra \
              máquina não o vê."
@@ -161,6 +169,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.no_suggestion", Locale::PtBr) => "nada — o mapa não achou arquivo para esta tarefa",
         ("plan.no_suggestion", Locale::EnUs) => "nothing — the map found no file for this task",
+        // A nota de trabalho de cada tarefa: a escala e o exemplo de cada nota
+        // moram só aqui, e a recusa da tarefa sem nota os mostra.
+        ("plan.points_scale", Locale::PtBr) => {
+            "A nota vai em `\"points\"`, na escala do Scrum, comparando a tarefa com o exemplo de \
+             cada nota. 1: trocar um texto, uma lista ou um número, como ligar o link clicável na \
+             configuração. 2: mudar uma regra num lugar só, com teste, como aceitar a unidade de \
+             tamanho de arquivo na conferência de escrita. 3: mudar uma regra que passa por vários \
+             arquivos, como o scan apontar as lições parecidas. 5: mexer no caminho que grava ou junta \
+             o trabalho, como o pedido da onda listar só os códigos. 8: mudar uma fase inteira, como a \
+             rodada criar a cópia de cada onda e juntar tudo no commit. 13: tarefa grande e incerta, \
+             que vale quebrar antes de gravar."
+        }
+        ("plan.points_scale", Locale::EnUs) => {
+            "The points go in `\"points\"`, on the Scrum scale, comparing the task with the example of \
+             each value. 1: change a text, a list or a number, like turning on the clickable link in \
+             the settings. 2: change a rule in one place only, with a test, like accepting the file \
+             size unit in the writing check. 3: change a rule that runs through several files, like \
+             the scan pointing out similar lessons. 5: touch the path that writes or merges the work, \
+             like the wave request listing only the codes. 8: change a whole phase, like the round \
+             creating the copy of each wave and merging everything into the commit. 13: a large and \
+             uncertain task, worth breaking up before recording."
+        }
+        ("plan.task_without_points", Locale::PtBr) => {
+            "A tarefa sem nota segura a aprovação: {tasks}. Grave uma versão nova de cada uma, com a \
+             nota dela. {scale}"
+        }
+        ("plan.task_without_points", Locale::EnUs) => {
+            "A task without points holds the approval: {tasks}. Record a new version of each one, \
+             with its points. {scale}"
+        }
+        ("plan.wave_points_over_cap", Locale::PtBr) => {
+            "A onda {wave} soma {points} pontos, acima do teto de {cap}: é trabalho demais para uma \
+             onda só. O aviso não segura a aprovação, e quem aprova decide se a onda segue assim."
+        }
+        ("plan.wave_points_over_cap", Locale::EnUs) => {
+            "Wave {wave} adds up to {points} points, over the cap of {cap}: too much work for a single \
+             wave. The warning does not hold the approval, and whoever approves decides whether the \
+             wave goes on as it is."
+        }
         // O descarte de uma spec (`commands/flow/discard.rs`).
         ("discard.preview", Locale::PtBr) => {
             "Descartar a spec {spec} fecha o pull request dela, apaga a branch {branch} \
@@ -526,17 +573,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              \"{adjusted}\", and, with their yes, call open again with that name. Nothing was \
              created."
         }
-        ("open.ask_goal", Locale::PtBr) => "Qual o objetivo, numa frase?",
-        ("open.ask_goal", Locale::EnUs) => "What is the goal, in one sentence?",
+        ("open.ask_goal", Locale::PtBr) => {
+            "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar. Junto \
+             dele, mande o card, os critérios de aceite e os documentos antigos, se tiver."
+        }
+        ("open.ask_goal", Locale::EnUs) => {
+            "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve \
+             it. Along with it, send the card, the acceptance criteria and the old documents, if you \
+             have them."
+        }
         ("open.next_goal", Locale::PtBr) => {
             "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
-             espere a resposta: ela vira o objetivo da spec, palavra por palavra, gravada como o \
-             primeiro `context`, com `origin` na mensagem dele."
+             espere a resposta. O objetivo da spec é uma frase inteira dele, palavra por palavra, ou \
+             a que você sugeriu e ele aprovou, palavra por palavra como está nas suas respostas a \
+             que ele respondeu; grave-o como o primeiro `context`, com `origin` na mensagem dele. O \
+             card, os critérios de aceite e os documentos antigos que vierem junto vão logo depois, \
+             como `context`, com o mesmo `origin`."
         }
         ("open.next_goal", Locale::EnUs) => {
             "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
-             wait for the answer: it becomes the spec's goal, word for word, recorded as the first \
-             `context`, with `origin` on their message."
+             wait for the answer. The spec's goal is one whole sentence of theirs, word for word, or \
+             the one you suggested and they approved, word for word as it stands in your replies \
+             they answered; record it as the first `context`, with `origin` on their message. The \
+             card, the acceptance criteria and the old documents that come along go right after it, \
+             as `context`, with the same `origin`."
         }
         ("open.no_flow", Locale::PtBr) => {
             "O mustard.json não declara as bases (git.flow): as candidatas são as branches do \
@@ -782,8 +842,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            109,
-            0xb631_3285_abf9_1dd8,
+            113,
+            0x2f9f_b637_e840_cb9a,
         );
     }
 
@@ -860,6 +920,7 @@ mod tests {
             ("plan.task_without_wave", &["{task}", "{wave}"][..]),
             ("plan.shared_file", &["{waves}", "{files}", "{chain}"][..]),
             ("plan.wave_should_split", &["{wave}", "{parts}"][..]),
+            ("plan.spec_should_split", &["{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
             ("plan.item_without_owner", &["{code}"][..]),
@@ -871,6 +932,9 @@ mod tests {
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
             ("plan.skill_to_be_born", &["{task}"][..]),
             ("plan.no_suggestion", &[][..]),
+            ("plan.points_scale", &[][..]),
+            ("plan.task_without_points", &["{tasks}", "{scale}"][..]),
+            ("plan.wave_points_over_cap", &["{wave}", "{points}", "{cap}"][..]),
             ("plan.finding.label", &[][..]),
             ("discard.preview", &["{spec}", "{branch}", "{remote}", "{what}", "{token}"][..]),
             ("discard.archive", &[][..]),
@@ -936,6 +1000,7 @@ mod tests {
             ("prompt.review.fixed", &[][..]),
             ("prompt.final.title", &["{spec}"][..]),
             ("prompt.final.fixed", &[][..]),
+            ("prompt.read", &["{root}", "{spec}"][..]),
             ("prompt.part.waves", &[][..]),
             ("prompt.part.each_delivered", &[][..]),
             ("prompt.part.defects", &[][..]),
@@ -950,7 +1015,6 @@ mod tests {
             ("prompt.skill.read", &[][..]),
             ("prompt.execution.copy", &["{copy}", "{root}"][..]),
             ("prompt.execution.build_dir", &["{dir}"][..]),
-            ("prompt.execution.root", &["{root}"][..]),
             ("prompt.review.copy", &["{copy}", "{root}", "{commit}"][..]),
             ("prompt.review.cleanup", &["{copy}"][..]),
             ("page.wave.prompt", &["{n}"][..]),

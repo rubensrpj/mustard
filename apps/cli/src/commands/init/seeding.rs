@@ -5,10 +5,11 @@
 //! The seeding itself lives in the core (`mustard_core::platform::project_seed`);
 //! this part only guards, locates and narrates.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use mustard_core::platform::project_seed::cleanup::{Action, CleanupPlan};
+use mustard_core::platform::project_seed::cleanup::CleanupPlan;
 use mustard_core::SeedOutcome;
 
 use crate::fs_ops::copy_dir;
@@ -156,28 +157,23 @@ pub(super) fn report_migration(migrated: &[String]) {
     }
 }
 
-/// Print what an older Mustard left in files that are not its own, and how to
-/// take it out. Nothing is taken out here: the plugin's door takes it out.
-pub(super) fn report_cleanup(plan: &CleanupPlan) {
-    if plan.is_empty() {
-        return;
-    }
-    if !plan.files.is_empty() {
-        println!("  an older Mustard left lines in files that are not its own (nothing was removed):");
-        for change in &plan.files {
-            let what = match change.action {
-                Action::Edit => "remove",
-                Action::Delete => "delete",
-            };
-            println!("    {what} {}: {}", change.path, change.removes.join("; "));
-        }
+/// Say, in one line, how many files carry what an older Mustard left and who
+/// takes it out; a file with the traces of an older scan and no mark keeps its
+/// short note. Nothing is taken out here: the plugin's door takes it out.
+///
+/// Writes to `out` (the install passes stdout) so a test reads exactly what
+/// `mustard init` prints. A failed write is dropped: a notice never aborts the
+/// install.
+pub(super) fn report_cleanup(out: &mut impl Write, plan: &CleanupPlan) {
+    // Uma linha só para todos os arquivos com sobras: a lista por arquivo,
+    // com todos os trechos, repetia o mesmo texto e parecia uma lista de erros.
+    let count = plan.files.len();
+    if count > 0 {
+        let (noun, verb) = if count == 1 { ("file", "carries") } else { ("files", "carry") };
+        let _ = writeln!(out, "  {count} {noun} {verb} leftovers of an older Mustard; /mustard:upsert takes them out.");
     }
     for path in &plan.unmarked {
-        println!("  note: {path} carries traces of an older scan without its marks — left for you to decide");
-    }
-    if plan.has_changes() {
-        println!("  /mustard:upsert inside Claude Code takes them out, with no question;");
-        println!("  the Guards that leave become project-rule lessons first, and the commit is yours.");
+        let _ = writeln!(out, "  note: {path} carries traces of an older scan without its marks — left for you to decide");
     }
 }
 
@@ -416,5 +412,72 @@ mod tests {
             fs::canonicalize(found).unwrap(),
             fs::canonicalize(real_bin.join("templates")).unwrap(),
         );
+    }
+
+    /// Grava `body` em `rel` dentro de `root`, com as pastas no caminho.
+    fn write_file(root: &Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    /// Um arquivo de subprojeto que só tem o que um Mustard antigo escreveu:
+    /// o import, o título, a linha de navegação e o bloco das Guards.
+    const OLD_SUBPROJECT_MD: &str = "@.claude/scan-map.md\n\n# Rt\n\n> Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [../../.claude/mustard/orchestrator.md](../../.claude/mustard/orchestrator.md)\n\n## Guards\n\n<!-- mustard:guards -->\n- Never panic in a hook.\n<!-- /mustard:guards -->\n";
+
+    /// O que o `mustard init` imprime sobre as sobras do projeto em `root`: o
+    /// plano de verdade, lido do disco, passado ao mesmo aviso que a instalação
+    /// chama.
+    fn cleanup_notice(root: &Path) -> String {
+        let plan = mustard_core::platform::project_seed::cleanup::plan(root);
+        let mut out = Vec::new();
+        report_cleanup(&mut out, &plan);
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Quando o init acha sobras do Mustard antigo em vários arquivos, o aviso
+    /// é uma linha só, com quantos arquivos têm sobras e que o /mustard:upsert
+    /// as tira: três arquivos viram "3 files", sem o nome de nenhum deles e
+    /// sem os trechos que saem.
+    #[test]
+    fn leftovers_in_several_files_become_one_line_with_the_count() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write_file(root, "CLAUDE.md", "@.claude/scan-map.md\n# Projeto\n\nNossa regra.\n");
+        write_file(root, "apps/rt/CLAUDE.md", OLD_SUBPROJECT_MD);
+        write_file(
+            root,
+            "apps/web/CLAUDE.md",
+            "@.claude/scan-map.md\n\n# Web\n\n> Parent: [../../CLAUDE.md](../../CLAUDE.md) | Orchestrator: [x](x)\n",
+        );
+
+        let plan = mustard_core::platform::project_seed::cleanup::plan(root);
+        assert_eq!(plan.files.len(), 3, "fixture: três arquivos com sobras: {plan:?}");
+        assert!(!plan.lessons.is_empty(), "fixture: a Guard que sai vira lição: {plan:?}");
+
+        assert_eq!(
+            cleanup_notice(root),
+            "  3 files carry leftovers of an older Mustard; /mustard:upsert takes them out.\n",
+        );
+    }
+
+    /// O arquivo sem marca continua com a sua nota curta, depois da linha das
+    /// sobras; um arquivo só fica no singular; e sem sobra nenhuma o init não
+    /// diz nada.
+    #[test]
+    fn an_unmarked_file_keeps_its_short_note_after_the_count() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write_file(root, "apps/rt/CLAUDE.md", OLD_SUBPROJECT_MD);
+        write_file(root, "apps/cli/CLAUDE.md", "# Cli\n\n## Guards\n\n- ours\n");
+
+        assert_eq!(
+            cleanup_notice(root),
+            "  1 file carries leftovers of an older Mustard; /mustard:upsert takes them out.\n  note: apps/cli/CLAUDE.md carries traces of an older scan without its marks — left for you to decide\n",
+        );
+
+        let clean = tempdir().unwrap();
+        write_file(clean.path(), "CLAUDE.md", "# Team notes\n\nNothing else.\n");
+        assert_eq!(cleanup_notice(clean.path()), "");
     }
 }

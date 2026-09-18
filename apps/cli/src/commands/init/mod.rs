@@ -262,7 +262,10 @@ pub fn init_with_templates(
 
     // What an older Mustard left in files that are not its own: listed, never
     // taken out from here.
-    seeding::report_cleanup(&mustard_core::platform::project_seed::cleanup::plan(&project_path));
+    seeding::report_cleanup(
+        &mut std::io::stdout(),
+        &mustard_core::platform::project_seed::cleanup::plan(&project_path),
+    );
 
     print_next_steps();
     Ok(InitOutcome::Installed)
@@ -387,7 +390,7 @@ mod tests {
         assert_eq!(
             settings
                 .get("env")
-                .and_then(|e| e.get("MUSTARD_SPEC_SIZE_MODE"))
+                .and_then(|e| e.get("MUSTARD_BOUNDARY_MODE"))
                 .and_then(|v| v.as_str()),
             Some("warn"),
             "the compiled-in seed's env is laid down verbatim"
