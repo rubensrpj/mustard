@@ -191,8 +191,10 @@ pub fn rebuild(root: &Path) -> Result<Rebuilt, Refusal> {
 }
 
 /// `a` é uma hora depois de `b`. As duas vêm das gravações, com o fuso; a que
-/// não se lê como hora é comparada como texto.
-fn later(a: &str, b: &str) -> bool {
+/// não se lê como hora é comparada como texto. É a mesma leitura da lista da
+/// ordem de publicar, que diz o que entrou na spec depois de uma publicação.
+#[must_use]
+pub fn later(a: &str, b: &str) -> bool {
     match (chrono::DateTime::parse_from_rfc3339(a), chrono::DateTime::parse_from_rfc3339(b)) {
         (Ok(a), Ok(b)) => a > b,
         _ => a > b,
