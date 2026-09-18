@@ -2,16 +2,16 @@
 //! that turn the harness JSON payload into segments. Themes (in `theme.rs`)
 //! own all color/separator decisions; this module only produces *text*.
 //!
-//! The one exception is [`Segment::override_fg`], used by [`cost_segment`]
-//! when the per-segment threshold (green / yellow / red) needs to override
-//! the theme default. Theme renderers honor it.
+//! The one exception is [`Segment::override_fg`], used by [`context_segment`]
+//! when the per-segment threshold (yellow / red) needs to override the theme
+//! default. Theme renderers honor it.
 
 use super::theme::Color;
-use crate::shared::rtk_gain::get_rtk_gain;
+use crate::shared::rtk_gain::RtkGain;
 use crate::shared::spec_state::DiskSpecState;
 use mustard_core::domain::spec_events::{Block, BlockQuery};
 use mustard_core::domain::spec_state::SpecState;
-use mustard_core::ClaudePaths;
+use mustard_core::{ClaudePaths, SupportedLocale};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -29,7 +29,9 @@ pub enum SegmentKind {
     Duration = 3,
     Savings = 4,
     Diff = 5,
-    Cost = 6,
+    /// A versão do Mustard que roda, no começo da segunda linha. Ocupa a casa
+    /// do custo, que saiu da barra.
+    Mustard = 6,
     Model = 7,
     /// A spec desta sessão, a fase dela e o andamento das ondas.
     Unit = 8,
@@ -46,7 +48,7 @@ pub const SEGMENT_KIND_COUNT: usize = 10;
 pub struct Segment {
     pub kind: SegmentKind,
     pub text: String,
-    /// Per-render fg override — used by `cost_segment` and `context_segment`
+    /// Per-render fg override — used by `context_segment` and `inert_segment`
     /// for threshold coloring. **Honored only by flat separators**
     /// (`Pipe` / `Whitespace`). Powerline themes ignore it so the palette
     /// stays harmonic; the override clashing with a fixed bg looks worse than
@@ -95,11 +97,12 @@ fn project_page_url(cwd: &Path) -> Option<String> {
     mustard_core::domain::spec_index::project_url(&content).filter(|url| !url.chars().any(char::is_control))
 }
 
-/// `⎇ branch +N~N?N` or `⎇ branch ✓`. Returns `None` when `cwd` is not a git
-/// repository or the `git` binary is unavailable.
+/// `⎇ branch +N~N?N` or `⎇ branch ✓`. `branch` é a do checkout, lida uma vez
+/// por desenho e dividida com [`unit_segment`]; `None` (fora de um repositório,
+/// sem o `git` ou com a HEAD solta) não desenha nada.
 #[must_use]
-pub fn git_segment(cwd: &Path) -> Option<Segment> {
-    let branch = mustard_core::current_branch(cwd)?;
+pub fn git_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
+    let branch = branch?;
     let porcelain = git(cwd, &["status", "--porcelain"]).unwrap_or_default();
     let (mut staged, mut modified, mut untracked) = (0u32, 0u32, 0u32);
     for line in porcelain.lines() {
@@ -138,54 +141,55 @@ pub fn git_segment(cwd: &Path) -> Option<Segment> {
     ))
 }
 
-/// 10-cell bar + `NN%` + token count (`NNNk`). Returns `None` when the
-/// `context_window.remaining_percentage` field is missing.
+/// `██░░░░░░░░ 24%` — o uso da conversa num número só: o já usado, 100 menos
+/// `context_window.remaining_percentage`, o mesmo que a barrinha de 10 casas
+/// desenha. O total em tokens e o aviso de 200 mil ficam de fora: repetiam o
+/// mesmo dado de outro jeito. `None` sem o campo.
 #[must_use]
 pub fn context_segment(data: &Value) -> Option<Segment> {
-    let ctx = data.get("context_window")?;
-    let rem = ctx.get("remaining_percentage")?.as_f64()?;
-    let pct = rem.round() as i64;
+    let rem = data.get("context_window")?.get("remaining_percentage")?.as_f64()?;
+    let remaining = (rem.round() as i64).clamp(0, 100);
+    let used = 100 - remaining;
     let bar_len = 10i64;
-    let used = (((100 - pct) as f64 / 100.0) * bar_len as f64).round() as i64;
-    let used = used.clamp(0, bar_len);
+    let cells = ((used as f64 / 100.0) * bar_len as f64).round() as i64;
+    let cells = cells.clamp(0, bar_len);
     let bar = format!(
         "{}{}",
-        "\u{2588}".repeat(used as usize),
-        "\u{2591}".repeat((bar_len - used) as usize),
+        "\u{2588}".repeat(cells as usize),
+        "\u{2591}".repeat((bar_len - cells) as usize),
     );
-    let in_tok = ctx
-        .get("total_input_tokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let out_tok = ctx
-        .get("total_output_tokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let total_k = (in_tok + out_tok) / 1000;
-    let exceeds = data.get("exceeds_200k_tokens") == Some(&Value::Bool(true));
-    let warn = if exceeds { " \u{26A0}>200k" } else { "" };
-    let mut s = Segment::new(SegmentKind::Context, format!("{bar} {pct}% {total_k}k{warn}"));
-    // Threshold-driven fg override: red <20% or exceeds 200k, yellow <40%
-    if exceeds || pct < 20 {
+    let mut s = Segment::new(SegmentKind::Context, format!("{bar} {used}%"));
+    // A cor pelo que sobra: vermelho forte abaixo de 20%, vermelho abaixo de
+    // 40%, amarelo abaixo de 60%.
+    if remaining < 20 {
         s.override_fg = Some(Color::Ansi(9)); // bright red
-    } else if pct < 40 {
+    } else if remaining < 40 {
         s.override_fg = Some(Color::Ansi(1)); // red
-    } else if pct < 60 {
+    } else if remaining < 60 {
         s.override_fg = Some(Color::Ansi(3)); // yellow
     }
     Some(s)
 }
 
-/// `Nm Ns` or `Ns`. Returns `None` when duration is zero/missing.
+/// O tempo da sessão: `5h49m` de uma hora em diante, `2m5s` ou `45s` abaixo
+/// dela. A parte zerada da direita some (`5h`, `2m`). `None` com a duração
+/// zerada ou ausente.
 #[must_use]
 pub fn duration_segment(data: &Value) -> Option<Segment> {
     let dur_ms = data.get("cost")?.get("total_duration_ms")?.as_i64()?;
     if dur_ms <= 0 {
         return None;
     }
-    let m = dur_ms / 60_000;
+    let h = dur_ms / 3_600_000;
+    let m = (dur_ms % 3_600_000) / 60_000;
     let s = (dur_ms % 60_000) / 1000;
-    let text = if m > 0 {
+    let text = if h > 0 {
+        if m > 0 {
+            format!("{h}h{m}m")
+        } else {
+            format!("{h}h")
+        }
+    } else if m > 0 {
         if s > 0 {
             format!("{m}m{s}s")
         } else {
@@ -197,19 +201,25 @@ pub fn duration_segment(data: &Value) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Duration, text))
 }
 
-/// `⚡ NN% NNNk saved`. Returns `None` when RTK has nothing to report.
+/// `⚡ rtk poupou 64%` — a economia do rtk, no idioma do projeto. `gain` é a
+/// leitura do `rtk gain`, feita por quem desenha; `None` quando o rtk não tem
+/// nada a dizer.
 #[must_use]
-pub fn savings_segment() -> Option<Segment> {
-    let gain = get_rtk_gain()?;
+pub fn savings_segment(gain: Option<&RtkGain>, lang: SupportedLocale) -> Option<Segment> {
+    let gain = gain?;
     if gain.saved <= 0 && gain.pct <= 0.0 {
         return None;
     }
-    let saved_k = (gain.saved as f64 / 1000.0).round() as i64;
     let pct = gain.pct.round() as i64;
-    Some(Segment::new(
-        SegmentKind::Savings,
-        format!("\u{26A1} {pct}% {saved_k}k saved"),
-    ))
+    let label = mustard_core::translate("statusline.rtk", lang).replace("{pct}", &pct.to_string());
+    Some(Segment::new(SegmentKind::Savings, format!("\u{26A1} {label}")))
+}
+
+/// `Mustard 0.2.0` — a versão do Mustard que roda, no começo da segunda linha.
+/// Quem desenha só a pede num projeto com o Mustard.
+#[must_use]
+pub fn mustard_segment() -> Segment {
+    Segment::new(SegmentKind::Mustard, format!("Mustard {}", mustard_core::harness_version()))
 }
 
 /// `+N-N`. Returns `None` when both numbers are zero.
@@ -238,29 +248,6 @@ pub fn diff_segment(data: &Value) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Diff, parts))
 }
 
-/// `$0.42` etc. Returns `None` when the cost field is missing or zero.
-/// Threshold override on fg: green <$1, yellow <$5, red >=$5.
-#[must_use]
-pub fn cost_segment(data: &Value) -> Option<Segment> {
-    let usd = data
-        .get("cost")
-        .and_then(|c| c.get("total_cost_usd"))
-        .and_then(Value::as_f64)?;
-    if usd <= 0.0 {
-        return None;
-    }
-    let text = format!("${usd:.2}");
-    let mut s = Segment::new(SegmentKind::Cost, text);
-    s.override_fg = Some(if usd >= 5.0 {
-        Color::Ansi(1) // red
-    } else if usd >= 1.0 {
-        Color::Ansi(3) // yellow
-    } else {
-        Color::Ansi(2) // green
-    });
-    Some(s)
-}
-
 /// `Opus 4.7` etc. Strips the `Claude ` / `claude-` prefix to keep the line
 /// tight.
 #[must_use]
@@ -281,40 +268,47 @@ pub fn model_segment(data: &Value) -> Segment {
 /// andamento das ondas.
 ///
 /// Quem reabre o terminal vê onde parou sem digitar nada. A spec vem da escada
-/// única ([`current_spec`]); com a página dela publicada, o nome vira um link
-/// clicável (OSC 8, aceito pela barra do Claude Code). O andamento aparece com
-/// a spec aprovada ou em execução e com ondas no plano, como contagem: quantas
-/// ondas foram entregues e quantas o plano tem. O número de uma onda não
-/// aparece, porque os números não seguem a ordem; o da onda que vem fica na
-/// linha de retomada. `None` fora de um projeto com o Mustard e sem spec
-/// atual.
+/// única ([`current_spec`]). O nome dela só aparece quando `branch` não termina
+/// com ele: na branch da própria spec, o nome já está na barra, e aí sai só a
+/// fase (`▸ levantamento`). A fase sai no idioma do projeto, com as mesmas
+/// chaves das páginas (`page.phase.*`). Com a página da spec publicada, o
+/// link dela (OSC 8, aceito pela barra do Claude Code) fica no nome e, sem o
+/// nome, passa para a fase. Sem fase conhecida, o nome aparece sempre, para o
+/// link não sumir. O andamento aparece com a spec aprovada ou em execução e
+/// com ondas no plano, como contagem: quantas ondas foram entregues e quantas
+/// o plano tem. O número de uma onda não aparece, porque os números não seguem
+/// a ordem; o da onda que vem fica na linha de retomada. `None` fora de um
+/// projeto com o Mustard e sem spec atual.
 ///
 /// [`current_spec`]: crate::shared::context::checkout::current_spec
 #[must_use]
-pub fn unit_segment(cwd: &Path) -> Option<Segment> {
+pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     if !mustard_core::ProjectConfig::exists(cwd) {
         return None;
     }
     let root = cwd.to_string_lossy();
     let slug = crate::shared::context::checkout::current_spec(&root).filter(|s| !s.is_empty())?;
     // Um endereço com caractere de controle (arquivo editado à mão) quebraria
-    // a sequência e sujaria a barra; nesse caso o nome sai sem link.
-    let name = match crate::commands::spec::spec_doc::published_url(cwd, &slug)
-        .filter(|url| !url.chars().any(char::is_control))
-    {
-        Some(url) => hyperlink(&url, &slug),
-        None => slug.clone(),
-    };
-    let mut text = format!("\u{25b8} {name}");
+    // a sequência e sujaria a barra; nesse caso o texto sai sem link.
+    let url = crate::commands::spec::spec_doc::published_url(cwd, &slug)
+        .filter(|url| !url.chars().any(char::is_control));
+    let linked = |label: &str| url.as_deref().map_or_else(|| label.to_string(), |url| hyperlink(url, label));
     // A fase é conveniência, não o ponto: um arquivo de eventos ilegível ainda
     // deixa a spec nomeada.
     let phase = crate::shared::spec_state::lock_state(cwd, &slug).and_then(|state| state.phase);
+    let named = phase.is_none() || !branch.is_some_and(|branch| branch.ends_with(slug.as_str()));
+    let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
+    let mut text = String::from("\u{25b8}");
+    if named {
+        let _ = write!(text, " {}", linked(&slug));
+    }
     if let Some(phase) = phase {
-        let _ = write!(text, " {phase}");
+        let label = mustard_core::translate(&format!("page.phase.{phase}"), lang);
+        let label = if named { label.to_string() } else { linked(label) };
+        let _ = write!(text, " {label}");
         if matches!(phase, "approved" | "running")
             && let Some((delivered, total)) = wave_progress(cwd, &slug)
         {
-            let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
             let progress = mustard_core::translate("statusline.wave", lang)
                 .replace("{delivered}", &delivered.to_string())
                 .replace("{total}", &total.to_string());
@@ -446,12 +440,12 @@ mod tests {
         // invocation, but it means each state below needs its own root: asking
         // about a root before seeding it would cache the empty answer.
         let bare = tempfile::tempdir().unwrap();
-        assert!(unit_segment(bare.path()).is_none(), "not a Mustard project: quiet");
+        assert!(unit_segment(bare.path(), None).is_none(), "not a Mustard project: quiet");
         assert!(inert_segment(bare.path()).is_none());
 
         let idle = tempfile::tempdir().unwrap();
         std::fs::write(idle.path().join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
-        assert!(unit_segment(idle.path()).is_none(), "no active unit must render nothing");
+        assert!(unit_segment(idle.path(), None).is_none(), "no active unit must render nothing");
 
         std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
         // A unit in PLAN, with the checkout on its branch: the current-spec
@@ -465,8 +459,8 @@ mod tests {
         );
         crate::shared::spec_state::stand_on_spec_branch(root, "roteador-didatico");
 
-        let seg = unit_segment(root).expect("an active unit must reach the bar");
-        assert!(seg.text.contains("plan"), "the stage is missing: {}", seg.text);
+        let seg = unit_segment(root, Some("feature/roteador-didatico")).expect("an active unit must reach the bar");
+        assert!(seg.text.contains("plano"), "the stage is missing: {}", seg.text);
     }
 
     /// O texto que o terminal mostra: a sequência OSC 8 sai, o rótulo fica.
@@ -484,26 +478,25 @@ mod tests {
         out
     }
 
-    /// Com o endereço publicado, o nome da spec vira link para a página dela,
-    /// e a fase vem depois, fora do link. O nome aparece também quando o
-    /// checkout está na branch da spec.
-    ///
-    /// Cada estado usa uma raiz própria, com a própria branch.
+    /// Na branch da própria spec (a branch termina com o nome dela), o nome
+    /// não se repete: sai só a fase, no idioma do projeto, e o link da página
+    /// da spec, quando ela tem endereço, vai para a fase.
     #[test]
-    fn statusline_links_the_spec_name_to_its_published_page() {
+    fn statusline_on_the_spec_branch_shows_only_the_phase_and_the_link_moves_to_it() {
         let url = "https://claude.ai/code/artifacts/pagina-ligada";
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0"}"#).unwrap();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
         crate::shared::spec_state::seed_event(root, "pagina-ligada", "state", serde_json::json!({ "phase": "plan" }));
         let git = |args: &[&str]| {
             assert!(git_exec::run(root, args).ok, "git {args:?}");
         };
         git(&["init", "."]);
         git(&["symbolic-ref", "HEAD", "refs/heads/feature/pagina-ligada"]);
+        let branch = Some("feature/pagina-ligada");
 
-        let plain = unit_segment(root).expect("the unit on its own branch reaches the bar");
-        assert_eq!(plain.text, "\u{25b8} pagina-ligada plan", "no address yet: no link");
+        let plain = unit_segment(root, branch).expect("the unit on its own branch reaches the bar");
+        assert_eq!(plain.text, "\u{25b8} plano", "no address yet: the phase alone, in the project language");
 
         crate::shared::spec_state::seed_event(
             root,
@@ -511,9 +504,9 @@ mod tests {
             "publish",
             serde_json::json!({ "page": "spec", "milestone": "round", "ok": true, "url": url }),
         );
-        let linked = unit_segment(root).expect("a published unit reaches the bar");
-        assert_eq!(linked.text, format!("\u{25b8} {} plan", hyperlink(url, "pagina-ligada")), "only the name is the link");
-        assert_eq!(visible(&linked.text), "\u{25b8} pagina-ligada plan", "the link hides nothing and adds nothing");
+        let linked = unit_segment(root, branch).expect("a published unit reaches the bar");
+        assert_eq!(linked.text, format!("\u{25b8} {}", hyperlink(url, "plano")), "the phase carries the spec link");
+        assert_eq!(visible(&linked.text), "\u{25b8} plano", "the link hides nothing and adds nothing");
 
         // Fora da branch de uma spec, nada a aponta como atual: só a variável
         // de ambiente apontaria, e um teste não a muda. Um arquivo que sobrou
@@ -525,7 +518,42 @@ mod tests {
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(states.join("outra-unidade.json"), "{}").unwrap();
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {
-            assert!(unit_segment(away.path()).is_none(), "a leftover state file names no unit");
+            assert!(unit_segment(away.path(), Some("dev")).is_none(), "a leftover state file names no unit");
+        }
+    }
+
+    /// Com a spec aberta numa branch cujo nome não termina com o dela, a barra
+    /// mostra o nome da spec, com o link da página dela, e a fase depois do
+    /// nome, fora do link.
+    ///
+    /// No teste, a escada acha a spec pela branch dela (só a variável de
+    /// ambiente apontaria outra, e um teste não a muda); a branch que a barra
+    /// compara é a que o desenho passa, a mesma do segmento da branch.
+    #[test]
+    fn statusline_on_a_branch_of_another_name_shows_the_linked_spec_name_and_then_the_phase() {
+        let url = "https://claude.ai/code/artifacts/outro-nome";
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
+        crate::shared::spec_state::seed_event(root, "outro-nome", "state", serde_json::json!({ "phase": "survey" }));
+        crate::shared::spec_state::stand_on_spec_branch(root, "outro-nome");
+
+        let plain = unit_segment(root, Some("feature/outro-nome-v2")).expect("the unit reaches the bar");
+        assert_eq!(plain.text, "\u{25b8} outro-nome levantamento", "the name, then the phase");
+
+        crate::shared::spec_state::seed_event(
+            root,
+            "outro-nome",
+            "publish",
+            serde_json::json!({ "page": "spec", "milestone": "round", "ok": true, "url": url }),
+        );
+        for branch in [Some("feature/outro-nome-v2"), Some("dev"), None] {
+            let linked = unit_segment(root, branch).expect("a published unit reaches the bar");
+            assert_eq!(
+                linked.text,
+                format!("\u{25b8} {} levantamento", hyperlink(url, "outro-nome")),
+                "only the name is the link ({branch:?})"
+            );
         }
     }
 
@@ -591,20 +619,26 @@ mod tests {
         assert_eq!(m.kind, SegmentKind::Module);
     }
 
+    /// O uso da conversa é um número só, o já usado, o mesmo que a barrinha
+    /// desenha: sobram 70%, então 30% e três casas cheias; sobram 76%, então
+    /// 24% e duas casas. O total em tokens e o aviso de 200 mil não aparecem.
     #[test]
-    fn context_segment_renders_bar() {
+    fn context_segment_shows_only_the_used_share_like_the_bar() {
         let seg = context_segment(&json!({
+            "exceeds_200k_tokens": true,
             "context_window": {
                 "remaining_percentage": 70,
-                "total_input_tokens": 50000,
-                "total_output_tokens": 10000,
+                "total_input_tokens": 250_000,
+                "total_output_tokens": 10_000,
             }
         }))
         .unwrap();
-        assert!(seg.text.contains("70%"));
-        assert!(seg.text.contains("60k"));
-        // 70% is above all thresholds → no override
+        assert_eq!(seg.text, "\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 30%");
+        // 70% left is above all thresholds → no override, even past 200k.
         assert!(seg.override_fg.is_none());
+
+        let seg = context_segment(&json!({ "context_window": { "remaining_percentage": 76 } })).unwrap();
+        assert_eq!(seg.text, "\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591} 24%");
     }
 
     #[test]
@@ -622,6 +656,17 @@ mod tests {
         assert_eq!(seg.text, "2m5s");
     }
 
+    /// De uma hora em diante, o tempo sai em horas e minutos, sem os
+    /// segundos; abaixo de uma hora, como antes.
+    #[test]
+    fn duration_segment_formats_hours_and_minutes() {
+        let at = |ms: i64| duration_segment(&json!({ "cost": { "total_duration_ms": ms } })).unwrap().text;
+        assert_eq!(at((5 * 3600 + 49 * 60 + 12) * 1000), "5h49m");
+        assert_eq!(at(3_600_000), "1h");
+        assert_eq!(at(3_599_000), "59m59s");
+        assert_eq!(at(45_000), "45s");
+    }
+
     #[test]
     fn duration_segment_none_when_zero() {
         assert!(duration_segment(&json!({ "cost": { "total_duration_ms": 0 } })).is_none());
@@ -635,31 +680,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(seg.text, "+100-5");
-    }
-
-    #[test]
-    fn cost_segment_threshold_green_yellow_red() {
-        let s50c = cost_segment(&json!({ "cost": { "total_cost_usd": 0.50 } })).unwrap();
-        assert_eq!(s50c.text, "$0.50");
-        // green = Ansi(2)
-        assert!(matches!(s50c.override_fg, Some(Color::Ansi(2))));
-
-        let s3 = cost_segment(&json!({ "cost": { "total_cost_usd": 3.00 } })).unwrap();
-        assert_eq!(s3.text, "$3.00");
-        // yellow = Ansi(3)
-        assert!(matches!(s3.override_fg, Some(Color::Ansi(3))));
-
-        let s12 = cost_segment(&json!({ "cost": { "total_cost_usd": 12.5 } })).unwrap();
-        assert_eq!(s12.text, "$12.50");
-        // red = Ansi(1)
-        assert!(matches!(s12.override_fg, Some(Color::Ansi(1))));
-    }
-
-    #[test]
-    fn cost_segment_none_when_missing_or_zero() {
-        assert!(cost_segment(&json!({})).is_none());
-        assert!(cost_segment(&json!({ "cost": {} })).is_none());
-        assert!(cost_segment(&json!({ "cost": { "total_cost_usd": 0.0 } })).is_none());
     }
 
     #[test]

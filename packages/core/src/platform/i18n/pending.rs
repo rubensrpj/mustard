@@ -184,6 +184,7 @@ mod tests {
             ("session.landed.unsettled", &["{branch}", "{reason}"][..]),
             ("session.landed.pending", &["{items}"][..]),
             ("statusline.wave", &["{delivered}", "{total}"][..]),
+            ("statusline.rtk", &["{pct}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
