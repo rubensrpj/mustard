@@ -398,14 +398,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("clarity.internal_code", Locale::EnUs) => "{code} is an internal code; name the subject instead",
         // A resposta longa já apareceu na tela: o complemento não a encurta,
-        // traz um resumo curto dela, como o da nota de leitura baixa.
+        // traz um resumo curto dela, como o da nota de leitura baixa. O JSON,
+        // a tabela ou o documento pedido vai para a página avulsa, e o chat
+        // fica com o resumo. A linha cabe no corte de 160 caracteres do
+        // bloqueio (`clarity_check::MAX_DEFECT_CHARS`), com folga para o número.
         ("clarity.too_long", Locale::PtBr) => {
-            "resposta com {lines} linhas, e o limite é {limit}; faça um resumo curto, em poucas \
-             linhas e palavras simples"
+            "resposta com {lines} linhas, e o limite é {limit}; faça no chat um resumo curto, e \
+             JSON, tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`"
         }
         ("clarity.too_long", Locale::EnUs) => {
-            "reply with {lines} lines, and the limit is {limit}; write a short summary, in a few \
-             lines and plain words"
+            "reply with {lines} lines, and the limit is {limit}; write a short summary in the chat, \
+             and put a requested JSON, table or document on its own page: `mustard-rt run page`"
         }
         ("clarity.hard_to_read", Locale::PtBr) => {
             "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}; faça um \
@@ -460,7 +463,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             62,
-            0x1b27_b7a8_9c97_49dc,
+            0xb1dc_fa00_7262_8d04,
         );
     }
 

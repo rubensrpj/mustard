@@ -136,6 +136,10 @@ mod tests {
     /// O manifesto de ganchos que o plugin entrega.
     const HOOKS_JSON: &str = include_str!("../../../../../plugin/hooks/hooks.json");
 
+    /// Os estilos de resposta que o plugin entrega, um por idioma.
+    const STYLE_PT: &str = include_str!("../../../../../plugin/output-styles/mustard-pt-BR.md");
+    const STYLE_EN: &str = include_str!("../../../../../plugin/output-styles/mustard-en-US.md");
+
     /// O tempo que o Claude Code dá ao `Stop`, em segundos.
     const STOP_BUDGET_SECS: u64 = 30;
 
@@ -254,30 +258,35 @@ mod tests {
     }
 
     /// A resposta com 16 linhas, uma a mais que o limite de 15, e sem nenhum
-    /// outro defeito é barrada pelo `Stop` de verdade, e o ponto do tamanho
-    /// pede no complemento um resumo curto, em poucas linhas e palavras
-    /// simples, nos dois idiomas. Ele não pede para encurtar nem reescrever a
-    /// resposta, que já apareceu na tela. Com 15 linhas nada é pedido.
+    /// outro defeito é barrada pelo `Stop` de verdade. O ponto do tamanho pede
+    /// no complemento um resumo curto no chat e manda o JSON, a tabela ou o
+    /// documento pedido para a página avulsa, nos dois idiomas. Ele não pede
+    /// para encurtar nem reescrever a resposta, que já apareceu na tela. Com
+    /// 15 linhas nada é pedido: a conta das linhas não mudou. O estilo de
+    /// resposta de cada idioma diz o mesmo da página.
     #[test]
-    fn a_reply_over_fifteen_lines_asks_for_a_short_summary_in_the_complement() {
+    fn a_reply_over_fifteen_lines_asks_for_a_summary_and_sends_the_content_to_the_page() {
         let cases = [
             (
                 PT_PROJECT,
                 "Uma linha curta.",
                 "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela um \
                  complemento curto sobre estes pontos:\n\
-                 - resposta com 16 linhas, e o limite é 15; faça um resumo curto, em poucas linhas e \
-                 palavras simples",
+                 - resposta com 16 linhas, e o limite é 15; faça no chat um resumo curto, e JSON, \
+                 tabela ou documento pedido vai para a página avulsa: `mustard-rt run page`",
             ),
             (
                 r#"{"language":{"text":"en-US"}}"#,
                 "The test runs fine.",
                 "Mustard: complement below. Without rewriting the reply, write a short complement \
                  right below it about these points:\n\
-                 - reply with 16 lines, and the limit is 15; write a short summary, in a few lines \
-                 and plain words",
+                 - reply with 16 lines, and the limit is 15; write a short summary in the chat, and \
+                 put a requested JSON, table or document on its own page: `mustard-rt run page`",
             ),
         ];
+        for style in [STYLE_PT, STYLE_EN] {
+            assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
+        }
         for (config, line, expected) in cases {
             let dir = project(config);
             let root = dir.path();

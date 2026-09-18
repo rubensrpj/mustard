@@ -375,6 +375,12 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "LanguageConfig::is_empty")]
     pub language: LanguageConfig,
 
+    /// As siglas do dia a dia do projeto (`["PI", "PCP"]`), que a conferência
+    /// de escrita aceita sem o nome por extenso. Lida só por
+    /// [`ProjectConfig::acronyms`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub acronyms: Vec<String>,
+
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_extensions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -635,6 +641,21 @@ impl ProjectConfig {
             code: non_blank(self.language.code.as_deref()),
         }
     }
+
+    /// As siglas do projeto, sem espaço em volta e em maiúsculas, porque a
+    /// conferência de escrita só reconhece sigla em maiúsculas: um `"pi"`
+    /// escrito no arquivo vale como `PI`. Entradas em branco e repetidas saem.
+    #[must_use]
+    pub fn acronyms(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for raw in &self.acronyms {
+            let acronym = raw.trim().to_ascii_uppercase();
+            if !acronym.is_empty() && !out.contains(&acronym) {
+                out.push(acronym);
+            }
+        }
+        out
+    }
 }
 
 /// Trim a string-ish option, returning `None` when absent or blank.
@@ -829,6 +850,26 @@ mod tests {
             .unwrap();
             assert_eq!(ProjectConfig::load(dir.path()).language().text, None, "{text:?}");
         }
+    }
+
+    /// As siglas do projeto moram na chave `acronyms`: a leitura tira os
+    /// espaços, passa para maiúsculas e deixa de fora o branco e a repetida.
+    /// Sem a chave a lista sai vazia, e a gravação não a escreve.
+    #[test]
+    fn the_project_acronyms_are_read_from_their_key() {
+        let dir = tempdir().unwrap();
+        assert!(ProjectConfig::load(dir.path()).acronyms().is_empty());
+        ProjectConfig::default().write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("acronyms"), "no list, no key: {raw}");
+
+        std::fs::write(dir.path().join("mustard.json"), r#"{"acronyms":[" PI ","pcp","","PI"]}"#).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.acronyms(), ["PI", "PCP"]);
+        assert!(!cfg.extra.contains_key("acronyms"), "the key is part of the schema");
+        cfg.write(dir.path()).unwrap();
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(raw["acronyms"], serde_json::json!([" PI ", "pcp", "", "PI"]), "the file keeps what was written");
     }
 
     /// As chaves antigas de idioma e a do tom não são mais lidas: um projeto

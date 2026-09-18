@@ -1073,11 +1073,17 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert!(report.too_long && !report.passed);
         assert_eq!(
             report.defects(Locale::EnUs),
-            vec!["reply with 16 lines, and the limit is 15; write a short summary, in a few lines and plain words"]
+            vec![
+                "reply with 16 lines, and the limit is 15; write a short summary in the chat, and put a \
+                 requested JSON, table or document on its own page: `mustard-rt run page`"
+            ]
         );
         assert_eq!(
             report.defects(Locale::PtBr),
-            vec!["resposta com 16 linhas, e o limite é 15; faça um resumo curto, em poucas linhas e palavras simples"]
+            vec![
+                "resposta com 16 linhas, e o limite é 15; faça no chat um resumo curto, e JSON, tabela ou \
+                 documento pedido vai para a página avulsa: `mustard-rt run page`"
+            ]
         );
 
         let code = format!("Rode isto:\n```text\n{}\n```", vec!["linha"; MAX_LINES].join("\n"));

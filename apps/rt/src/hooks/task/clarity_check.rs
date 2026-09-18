@@ -39,6 +39,9 @@
 //!   na sessão, para a próxima medição não cobrar de novo. O complemento
 //!   também é medido para isso: a sigla que ele explica fica guardada. É a
 //!   única coisa que a medição grava: nenhum arquivo de eventos.
+//! - As siglas do dia a dia do projeto, listadas em `acronyms` no
+//!   `mustard.json`, vão ao medidor junto das já explicadas na sessão: passam
+//!   sem o nome por extenso, e a sigla fora da lista continua cobrada.
 //!
 //! O bloqueio lista no máximo [`MAX_LISTED_DEFECTS`] defeitos, cada um cortado
 //! em [`MAX_DEFECT_CHARS`] caracteres; o resto vira uma contagem. Falha de
@@ -79,8 +82,8 @@ impl TurnRule for ClarityRule {
         // O padrão resolvido é pt-BR, e um projeto em inglês que nunca declarou
         // idioma teria toda resposta apontada. Os defeitos saem no idioma
         // resolvido (`turn.lang`).
-        let expected = mustard_core::ProjectConfig::load(root).language().text;
-        let defects = writing_defects(root, turn, expected);
+        let config = mustard_core::ProjectConfig::load(root);
+        let defects = writing_defects(root, turn, config.language().text, &config.acronyms());
         // O complemento (`stop_hook_active`) foi medido só para a memória da
         // sessão: ele não barra nem avisa.
         if defects.is_empty() || turn.retry {
@@ -92,11 +95,19 @@ impl TurnRule for ClarityRule {
 
 /// Todas as medições da escrita, com a memória da sessão: o que esta resposta
 /// explicou fica guardado. Sem idioma declarado (`expected` vazio), a medição
-/// do idioma não dá veredito.
-fn writing_defects(root: &Path, turn: &Turn<'_>, expected: Option<Locale>) -> Vec<String> {
+/// do idioma não dá veredito. As siglas do projeto (`project_acronyms`) vão ao
+/// medidor junto das já explicadas na sessão, mas não entram na memória dela:
+/// a sigla que sai do `mustard.json` volta a ser cobrada.
+fn writing_defects(
+    root: &Path,
+    turn: &Turn<'_>,
+    expected: Option<Locale>,
+    project_acronyms: &[String],
+) -> Vec<String> {
     let record_path = record_path(root, turn.session);
     let mut record = record_path.as_deref().map(read_record).unwrap_or_default();
-    let report = measure(turn.message, &record.explained, expected);
+    let known: Vec<String> = record.explained.iter().chain(project_acronyms).cloned().collect();
+    let report = measure(turn.message, &known, expected);
     for term in &report.explained {
         if !record.explained.contains(term) {
             record.explained.push(term.clone());
@@ -444,6 +455,57 @@ mod tests {
         let explains = "O CI (integração contínua) roda os testes.";
         assert_eq!(check(root, &complement("s1", explains)), Verdict::Allow);
         assert_eq!(check(root, &stop("s1", FAILING)), Verdict::Allow, "CI was explained in the complement");
+    }
+
+    /// O `Stop` como o Claude Code o manda ao `mustard-rt on Stop`, com todos
+    /// os campos, pelo despachante inteiro, e a resposta JSON que volta a ele;
+    /// `Value::Null` quando nada barra.
+    fn stop_event(root: &Path, session: &str, message: &str) -> serde_json::Value {
+        let payload = json!({
+            "session_id": session,
+            "transcript_path": root.join(format!("{session}.jsonl")),
+            "cwd": root,
+            "permission_mode": "default",
+            "hook_event_name": "Stop",
+            "stop_hook_active": false,
+            "last_assistant_message": message,
+        });
+        let input: HookInput = serde_json::from_value(payload).expect("a Stop payload");
+        let outcome = crate::dispatch::run_event(Trigger::from_event_name("Stop"), &input);
+        crate::hook_output::hook_specific_output("Stop", &outcome)
+            .map(|out| serde_json::from_str(&out).expect("valid JSON"))
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// As siglas do dia a dia listadas no `mustard.json` passam sem o nome
+    /// por extenso, e a sigla fora da lista continua cobrada, sozinha. Sem a
+    /// lista, a mesma resposta cobra as duas do projeto. A lista não entra na
+    /// memória da sessão. Tudo pelo `Stop` de verdade.
+    #[test]
+    fn the_project_acronyms_pass_and_others_are_still_charged() {
+        let listed = project_with(r#"{"language":{"text":"pt-BR"},"acronyms":["PI","PCP"]}"#);
+        let root = listed.path();
+        assert_eq!(stop_event(root, "s1", "A PI da fábrica mudou, e o PCP já sabe."), serde_json::Value::Null);
+        assert!(!std::fs::read_to_string(record_file(root, "s1")).unwrap_or_default().contains("PI"));
+
+        let blocked = stop_event(root, "s2", "A PI da fábrica mudou, e o PCP e o MRP já sabem.");
+        assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+        assert_eq!(
+            blocked["reason"],
+            json!(
+                "Mustard: complemento abaixo. Sem reescrever a resposta, escreva logo abaixo dela \
+                 um complemento curto sobre estes pontos:\n\
+                 - MRP é uma sigla sem explicação; diga o nome por extenso"
+            )
+        );
+
+        let unlisted = project();
+        let blocked = stop_event(unlisted.path(), "s1", "A PI da fábrica mudou, e o PCP já sabe.");
+        let reason = blocked["reason"].as_str().unwrap_or_else(|| panic!("{blocked}"));
+        assert!(
+            reason.contains("\n- PI é uma sigla sem explicação") && reason.contains("\n- PCP é uma sigla sem explicação"),
+            "{reason}"
+        );
     }
 
     /// Um registro antigo da sessão, que também guardava termos na lista do
