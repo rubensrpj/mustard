@@ -346,7 +346,10 @@ mod tests {
     /// projeto com `mustard.json`), o complemento chega com
     /// `stop_hook_active`, e o usuário responde "pode usar essa" pelo gancho
     /// da mensagem. A resposta barrada fica gravada inteira, antes do
-    /// complemento, e as duas antes do sim.
+    /// complemento, e as duas antes do sim. O `run write` do objetivo grava a
+    /// frase sugerida com `origin` no sim: o sim a acha na resposta barrada,
+    /// e não só no complemento, a última. Apontando uma mensagem da volta
+    /// seguinte, a mesma sugestão é recusada, e nada é gravado.
     #[test]
     fn the_barred_answer_is_recorded_before_its_complement() {
         let dir = project_on("barrada");
@@ -385,5 +388,31 @@ mod tests {
             [("response", Some(barred.as_str())), ("response", Some(complement)), ("message", Some("pode usar essa"))],
             "the barred answer comes whole, before the complement"
         );
+
+        let messages = |log: &mustard_core::domain::spec_events::SpecLog| -> Vec<u64> {
+            log.visible().into_iter().filter(|e| e.event_type == "message").map(|e| e.id).collect()
+        };
+        let yes = messages(&log)[0];
+        let done = run_event(Some(Trigger::Stop), &hook_call("Stop", json!({ "last_assistant_message": "Vou gravar." })));
+        assert!(!done.is_blocking(), "{done:?}");
+        let again = hook_call("UserPromptSubmit", json!({ "prompt": "grave" }));
+        assert!(!run_event(Some(Trigger::UserPromptSubmit), &again).is_blocking());
+        let next_turn = messages(&DiskSpecState::new(root).log("barrada").expect("log"))[1];
+
+        let goal = |origin: u64| {
+            crate::commands::spec_events::write::write_at(&crate::commands::spec_events::write::WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("barrada".to_string()),
+                event_type: "context".to_string(),
+                json: json!({ "text": suggestion, "origin": origin }).to_string(),
+            })
+        };
+        let older = goal(next_turn);
+        assert_eq!(older["reason"], json!("goal-not-verbatim"), "a suggestion from an older turn: {older}");
+        let written = goal(yes);
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let log = DiskSpecState::new(root).log("barrada").expect("log");
+        let recorded = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
+        assert_eq!((recorded.str_field("text"), recorded.int("origin")), (Some(suggestion), Some(yes)));
     }
 }

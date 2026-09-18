@@ -535,22 +535,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              created."
         }
         ("open.ask_goal", Locale::PtBr) => {
-            "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar."
+            "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar. Junto \
+             dele, mande o card, os critérios de aceite e os documentos antigos, se tiver."
         }
         ("open.ask_goal", Locale::EnUs) => {
-            "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve it."
+            "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve \
+             it. Along with it, send the card, the acceptance criteria and the old documents, if you \
+             have them."
         }
         ("open.next_goal", Locale::PtBr) => {
             "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
-             espere a resposta. O objetivo da spec é a frase dele, palavra por palavra, ou a que você \
-             sugeriu e ele aprovou, palavra por palavra como está na sua resposta a que ele \
-             respondeu; grave-o como o primeiro `context`, com `origin` na mensagem dele."
+             espere a resposta. O objetivo da spec é uma frase inteira dele, palavra por palavra, ou \
+             a que você sugeriu e ele aprovou, palavra por palavra como está nas suas respostas a \
+             que ele respondeu; grave-o como o primeiro `context`, com `origin` na mensagem dele. O \
+             card, os critérios de aceite e os documentos antigos que vierem junto vão logo depois, \
+             como `context`, com o mesmo `origin`."
         }
         ("open.next_goal", Locale::EnUs) => {
             "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
-             wait for the answer. The spec's goal is their sentence, word for word, or the one you \
-             suggested and they approved, word for word as it stands in your reply they answered; \
-             record it as the first `context`, with `origin` on their message."
+             wait for the answer. The spec's goal is one whole sentence of theirs, word for word, or \
+             the one you suggested and they approved, word for word as it stands in your replies \
+             they answered; record it as the first `context`, with `origin` on their message. The \
+             card, the acceptance criteria and the old documents that come along go right after it, \
+             as `context`, with the same `origin`."
         }
         ("open.no_flow", Locale::PtBr) => {
             "O mustard.json não declara as bases (git.flow): as candidatas são as branches do \
@@ -797,7 +804,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             110,
-            0x3c32_38ee_d73e_8eef,
+            0x6c4a_ea06_d645_7434,
         );
     }
 

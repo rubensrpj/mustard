@@ -1252,20 +1252,30 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert_eq!(mapped["map"], json!({ "full": false, "read": 1 }));
     }
 
-    /// A abertura termina na pergunta do objetivo, no idioma do projeto, e a
-    /// dica diz que vale a frase do usuário ou a sugestão que ele aprovou.
+    /// A abertura termina na pergunta do objetivo, no idioma do projeto: o
+    /// objetivo numa frase e, junto, o card, os critérios de aceite e os
+    /// documentos antigos. A dica diz que o objetivo é uma frase inteira do
+    /// usuário ou a sugestão que ele aprovou, e que o card, os critérios e os
+    /// documentos vão logo depois dele.
     #[test]
     fn open_asks_for_the_goal_in_both_languages() {
-        for (config, question, approved) in [
+        for (config, question, sentence, approved, along) in [
             (
                 DEV_MAIN,
-                "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar.",
+                "Qual o objetivo, numa frase? Pode ser a sua ou a que eu sugerir, se você aprovar. Junto \
+                 dele, mande o card, os critérios de aceite e os documentos antigos, se tiver.",
+                "uma frase inteira dele, palavra por palavra",
                 "ou a que você sugeriu e ele aprovou",
+                "O card, os critérios de aceite e os documentos antigos que vierem junto vão logo depois",
             ),
             (
                 EN,
-                "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve it.",
+                "What is the goal, in one sentence? It can be yours, or the one I suggest, if you approve \
+                 it. Along with it, send the card, the acceptance criteria and the old documents, if you \
+                 have them.",
+                "one whole sentence of theirs, word for word",
                 "or the one you suggested and they approved",
+                "The card, the acceptance criteria and the old documents that come along go right after it",
             ),
         ] {
             let dir = repo(config);
@@ -1274,8 +1284,66 @@ use crate::shared::context::pending_branch::set_pending_branch;
             assert_eq!(report["question"], json!(question));
             let hint = report["hint"].as_str().unwrap();
             assert!(hint.contains("feature/x") && !hint.contains("{spec}"), "{hint}");
+            assert!(hint.contains(sentence), "the goal is one whole sentence of the user's: {hint}");
             assert!(hint.contains(approved), "the suggestion the user approved counts too: {hint}");
+            assert!(hint.contains(along), "the card comes right after the goal: {hint}");
         }
+    }
+
+    /// O caminho de verdade da abertura: a spec nasce pelo `open`, e o
+    /// usuário responde, pelo gancho da mensagem, com o objetivo na primeira
+    /// frase e, junto, o card, os critérios de aceite e os documentos
+    /// antigos. O `run write` grava como objetivo a primeira frase, com
+    /// `origin` na mensagem, e o card como `context` logo depois; o índice
+    /// mostra a primeira frase. Um pedaço dela, ou a frase com a maiúscula
+    /// trocada, é recusado, e nada é gravado.
+    #[test]
+    fn the_goal_is_the_first_sentence_of_an_answer_that_brings_the_card() {
+        use crate::commands::spec_events::write::write_at;
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        assert_eq!(open(root, Some("feature"), Some("x"), Some("dev"))["step"], json!("ask_goal"));
+        let goal = "Travar o merge enquanto houver pendência aberta.";
+        let card = "Card MUS-12: o merge espera a revisão.\nCritérios de aceite: o merge barrado mostra a \
+                    pendência.\nDocumentos antigos: docs/merge.md.";
+        let prompt = HookInput {
+            hook_event_name: Some("UserPromptSubmit".to_string()),
+            session_id: Some("s1".to_string()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            raw: json!({ "prompt": format!("{goal} {card}") }),
+            ..HookInput::default()
+        };
+        assert!(!crate::dispatch::run_event(Some(Trigger::UserPromptSubmit), &prompt).is_blocking());
+        let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        let said = said.expect("the hook records the user's answer");
+        let context = |text: &str| {
+            write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                event_type: "context".into(),
+                json: json!({ "text": text, "origin": said }).to_string(),
+            })
+        };
+        let events = || std::fs::read_to_string(spec_dir(root, "x").join("spec.ndjson")).unwrap().lines().count();
+        let before = events();
+        for piece in ["Travar o merge", "travar o merge enquanto houver pendência aberta."] {
+            assert_eq!(context(piece)["reason"], json!("goal-not-verbatim"), "{piece}");
+        }
+        assert_eq!(events(), before, "a refusal writes nothing");
+        assert_eq!(context(goal)["ok"], json!(true));
+        assert_eq!(context(card)["ok"], json!(true));
+
+        let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
+        let recorded = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");
+        assert_eq!((recorded.str_field("text"), recorded.int("origin")), (Some(goal), Some(said)));
+        let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
+        let line: Value = index
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| line["name"] == json!("x"))
+            .expect("the spec has its index line");
+        assert_eq!(line["goal"], json!(goal));
     }
 
     /// Sem o tipo, o `open` pergunta por ele, com as sugestões; o tipo que não

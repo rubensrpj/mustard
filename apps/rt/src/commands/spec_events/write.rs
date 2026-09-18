@@ -91,8 +91,9 @@
 //! aprovou. Toda gravação que troca o objetivo (o primeiro `context`, a
 //! revisão dele e a remoção que passa o lugar para outro `context`) deixa um
 //! objetivo que aponta em `origin` uma mensagem do usuário e repete o texto
-//! dela, ou repete palavra por palavra uma frase da última resposta do
-//! assistente antes dela, a que o usuário respondeu
+//! dela, ou uma frase inteira dela, ou uma frase inteira de uma das respostas
+//! do assistente da volta que o usuário respondeu, a barrada pela
+//! conferência de escrita inclusive
 //! (`mustard_core::domain::spec_state::goal_rule`), na mesma conferência. A
 //! resposta do turno em que a spec nasce conta: ela é gravada sem `reply_to`,
 //! porque ainda não há mensagem do usuário a que responder, e só ela pode

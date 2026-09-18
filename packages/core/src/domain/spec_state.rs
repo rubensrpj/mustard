@@ -209,19 +209,21 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
 /// levantamento, toda gravação que troca o objetivo — o primeiro `context`, a
 /// revisão dele com `replaces` e a remoção que passa o lugar para outro
 /// `context` — deixa como objetivo um `context` que aponta em `origin` uma
-/// mensagem do usuário e repete o texto dela, ou repete, inteira e palavra
-/// por palavra, uma frase da resposta do assistente que essa mensagem
-/// respondeu: a última `response` gravada antes dela, onde o assistente
-/// sugeriu o objetivo que o usuário aprovou com um sim. Um pedaço da frase
-/// sugerida não vale ([`holds_whole_phrase`]). Tirar o objetivo sem outro
-/// `context` deixa a vaga aberta para a próxima resposta. A gravação que não
-/// troca o objetivo passa, e fora do levantamento qualquer `context` passa.
+/// mensagem do usuário e repete o texto inteiro dela, ou uma frase dela, ou
+/// uma frase de uma das respostas do assistente que essa mensagem respondeu
+/// ([`answered_responses`]), onde o assistente sugeriu o objetivo que o
+/// usuário aprovou com um sim. A frase vale inteira e palavra por palavra: a
+/// mensagem que traz o objetivo numa frase e o card nas seguintes grava só a
+/// frase do objetivo, e um pedaço da frase, com palavra ou maiúscula trocada,
+/// não vale ([`holds_whole_phrase`]). Tirar o objetivo sem outro `context`
+/// deixa a vaga aberta para a próxima resposta. A gravação que não troca o
+/// objetivo passa, e fora do levantamento qualquer `context` passa.
 ///
 /// # Errors
 ///
 /// [`Refusal::GoalNotVerbatim`] quando o objetivo novo não aponta uma
-/// mensagem do usuário, ou não repete nem o texto dela nem uma frase inteira
-/// da resposta que ela respondeu.
+/// mensagem do usuário, ou não repete nem o texto dela, nem uma frase inteira
+/// dela, nem uma frase inteira das respostas que ela respondeu.
 pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     use crate::domain::survey::goal;
     if State::from_log(before).phase != Some("survey") {
@@ -237,11 +239,15 @@ pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Re
     let said = origin.and_then(|id| after.get(id)).filter(|m| is_user_message(m));
     let text = now.str_field("text").map(str::trim).filter(|t| !t.is_empty());
     if let (Some(said), Some(text)) = (said, text) {
-        if said.str_field("text").map(str::trim) == Some(text) {
+        let message = said.str_field("text").unwrap_or_default();
+        if message.trim() == text || holds_whole_phrase(message, text) {
             return Ok(());
         }
-        let answered = answered_response(after, said.id).and_then(|r| r.str_field("text"));
-        if answered.is_some_and(|reply| holds_whole_phrase(reply, text)) {
+        let suggested = answered_responses(after, said.id)
+            .into_iter()
+            .filter_map(|reply| reply.str_field("text"))
+            .any(|reply| holds_whole_phrase(reply, text));
+        if suggested {
             return Ok(());
         }
     }
@@ -251,11 +257,17 @@ pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Re
     })
 }
 
-/// A resposta do assistente que a mensagem `message` respondeu: a última
-/// `response` visível gravada antes dela. Vale também a do turno em que a
-/// spec nasceu, gravada sem `reply_to` ([`reply_rule`]).
-fn answered_response(log: &SpecLog, message: u64) -> Option<&SpecEvent> {
-    log.visible().into_iter().rev().find(|e| e.event_type == "response" && e.id < message)
+/// As respostas do assistente que a mensagem `message` respondeu: as
+/// `response` visíveis gravadas depois da mensagem do usuário anterior a ela,
+/// ou desde o começo quando não há outra, e antes dela. Quando a conferência
+/// de escrita barra a resposta, a volta tem duas, a barrada e o complemento
+/// que o bloqueio pediu, e a sugestão pode estar em qualquer uma. Vale também
+/// a do turno em que a spec nasceu, gravada sem `reply_to` ([`reply_rule`]).
+/// A resposta de uma volta mais antiga fica de fora.
+fn answered_responses(log: &SpecLog, message: u64) -> Vec<&SpecEvent> {
+    let visible = log.visible();
+    let previous = visible.iter().rev().find(|e| e.id < message && is_user_message(e)).map_or(0, |e| e.id);
+    visible.into_iter().filter(|e| e.event_type == "response" && e.id > previous && e.id < message).collect()
 }
 
 /// O evento é uma mensagem do usuário.
@@ -1136,5 +1148,86 @@ mod tests {
         }
         assert!(!holds_whole_phrase("Acho que um sim aprova o objetivo sugerido.", "um sim aprova o objetivo sugerido."));
         assert!(!holds_whole_phrase("A versão 1.5 sai hoje.", "A versão 1."));
+    }
+
+    /// Uma spec em levantamento com a conversa `talk`, cada evento com o
+    /// número da posição dele mais um, depois do `state` de número 1.
+    fn surveyed_with(talk: &[Value]) -> Vec<Value> {
+        let mut lines = vec![json!({ "v": 1, "id": 1, "type": "state", "phase": "survey" })];
+        for (id, event) in (2_u64..).zip(talk) {
+            let mut event = event.clone();
+            event["v"] = json!(1);
+            event["id"] = json!(id);
+            lines.push(event);
+        }
+        lines
+    }
+
+    fn user(text: &str) -> Value {
+        json!({ "type": "message", "author": "user", "text": text })
+    }
+
+    fn answer(text: &str) -> Value {
+        json!({ "type": "response", "author": "assistant", "text": text })
+    }
+
+    /// A regra do objetivo sobre a conversa `lines` com o objetivo `text`
+    /// gravado a seguir, apontando a mensagem `origin`.
+    fn goal_with(lines: &[Value], text: &str, origin: u64) -> Result<(), Refusal> {
+        let before = log(lines);
+        let mut after = lines.to_vec();
+        after.push(json!({ "v": 1, "id": before.max_id() + 1, "type": "context", "text": text, "origin": origin }));
+        goal_rule("teste", &before, &log(&after))
+    }
+
+    /// O objetivo pode ser a mensagem inteira do usuário ou uma frase inteira
+    /// dela: a mensagem que traz o objetivo na primeira frase e o card, os
+    /// critérios e os documentos antigos nas seguintes grava a primeira
+    /// frase, com o ponto final ou sem ele. Um pedaço da frase, a frase com
+    /// uma palavra ou uma maiúscula trocada, e a frase que passa do ponto
+    /// para a seguinte, são recusados.
+    #[test]
+    fn the_goal_may_be_one_whole_sentence_of_the_users_message() {
+        let message = "Travar o merge com pendência aberta. Card MUS-12: o merge espera a revisão.\n\
+                       Critérios: o merge barrado mostra a pendência. Documentos antigos: docs/merge.md.";
+        let lines = surveyed_with(&[user(message)]);
+        for goal in [message, "Travar o merge com pendência aberta.", "Travar o merge com pendência aberta"] {
+            assert_eq!(goal_with(&lines, goal, 2), Ok(()), "{goal}");
+        }
+        for goal in [
+            "Travar o merge",
+            "Travar o merge com pendência aberta. Card",
+            "travar o merge com pendência aberta.",
+            "Travar o envio com pendência aberta.",
+            "ravar o merge com pendência aberta.",
+        ] {
+            assert!(matches!(goal_with(&lines, goal, 2), Err(Refusal::GoalNotVerbatim { .. })), "{goal}");
+        }
+    }
+
+    /// O sim acha a sugestão em qualquer resposta da volta que ele responde:
+    /// na resposta que a conferência de escrita barrou e no complemento que
+    /// veio depois dela, não só na última. A volta começa depois da mensagem
+    /// anterior do usuário: a primeira resposta dela vale, e a última resposta
+    /// antes daquela mensagem, de uma volta mais antiga, já não; nem a
+    /// resposta que veio depois do sim. Sem mensagem anterior, a volta começa
+    /// no começo da spec.
+    #[test]
+    fn the_yes_finds_the_suggestion_in_every_answer_of_its_turn_and_no_older_one() {
+        let lines = surveyed_with(&[
+            answer("Sugiro: \"Travar o envio com pendência aberta.\" Serve?"),
+            user("Não, outra."),
+            answer("Então sugiro: \"Um sim aprova o objetivo sugerido.\" E uma frase longa que a conferência barra."),
+            answer("Resumo: a sugestão está acima."),
+            user("pode usar essa"),
+            answer("Gravo: \"Travar tudo, sempre.\""),
+        ]);
+        let yes = 6;
+        assert_eq!(goal_with(&lines, "Um sim aprova o objetivo sugerido.", yes), Ok(()), "the barred answer");
+        assert_eq!(goal_with(&lines, "Resumo: a sugestão está acima.", yes), Ok(()), "the complement");
+        for goal in ["Travar o envio com pendência aberta.", "Travar tudo, sempre.", "Um sim aprova o objetivo"] {
+            assert!(matches!(goal_with(&lines, goal, yes), Err(Refusal::GoalNotVerbatim { .. })), "{goal}");
+        }
+        assert_eq!(goal_with(&lines, "Travar o envio com pendência aberta.", 3), Ok(()), "the opening turn");
     }
 }
