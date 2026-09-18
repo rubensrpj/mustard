@@ -57,7 +57,7 @@ pub enum MaintCmd {
     /// project-root `mustard.json` are yours and are merged, never clobbered:
     /// an existing file is preserved, only what is missing is created or
     /// backfilled. Mustard's own texts — the session map
-    /// `.claude/mustard/mapa-inicio-sessao.md` and the three agents under
+    /// `.claude/mustard/session-map.md` and the three agents under
     /// `.claude/agents/mustard/` — are ALWAYS rewritten, in the language of
     /// `language.text`: they are the harness's own text, not project
     /// configuration, so a copy you edited is replaced and listed under

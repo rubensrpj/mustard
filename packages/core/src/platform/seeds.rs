@@ -30,10 +30,12 @@ pub const SETTINGS_SEED: &str = include_str!("../../templates/settings.json");
 /// O nome do mapa do início da sessão, em `.claude/mustard/`. É o único texto
 /// que o início da sessão coloca, e o nome não muda com o idioma: a
 /// declaração do `mustard.json` segue valendo quando o `language.text` muda.
-pub const SESSION_MAP_NAME: &str = "mapa-inicio-sessao.md";
+/// O nome é em inglês, como o dos outros arquivos do Mustard; o nome antigo,
+/// em português, é trocado na atualização (veja `project_seed::files`).
+pub const SESSION_MAP_NAME: &str = "session-map.md";
 
-const SESSION_MAP_PT_BR: &str = include_str!("../../templates/mustard/pt-BR/mapa-inicio-sessao.md");
-const SESSION_MAP_EN_US: &str = include_str!("../../templates/mustard/en-US/mapa-inicio-sessao.md");
+const SESSION_MAP_PT_BR: &str = include_str!("../../templates/mustard/pt-BR/session-map.md");
+const SESSION_MAP_EN_US: &str = include_str!("../../templates/mustard/en-US/session-map.md");
 
 /// O mapa do início da sessão no idioma `text`: o que o Mustard faz, quando
 /// uma spec abre e onde cada coisa mora. Os dois idiomas são molde do

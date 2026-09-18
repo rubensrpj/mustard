@@ -121,3 +121,77 @@ fn an_old_router_install_gets_the_map_after_the_upsert() {
         assert!(!root.join(".claude/mustard").join(name).exists(), "{name} is still on disk");
     }
 }
+
+/// Uma atualização num projeto instalado com o mapa de nome antigo deixa o
+/// mapa com o nome novo: o arquivo `session-map.md` existe, o
+/// `mapa-inicio-sessao.md` sumiu, e o `mustard.json` aponta para o nome novo,
+/// em qualquer grafia com que declarava o antigo, com o resto dele igual. O
+/// início da sessão entrega o mapa pelo caminho novo, o arquivo novo continua
+/// fora do git do projeto, e a atualização seguinte não muda nada.
+///
+/// O projeto de partida é uma instalação de verdade, feita pelo `upsert`, com
+/// o nome do mapa voltado ao antigo no disco, na declaração e na lista do que
+/// o git não vê, como uma versão anterior deixava. A declaração de um arquivo
+/// da pessoa com o mesmo nome em outra pasta é o caso vizinho, e não muda.
+#[test]
+fn an_update_renames_the_session_map_and_its_declaration() {
+    const OLD: &str = ".claude/mustard/mapa-inicio-sessao.md";
+    const NEW: &str = ".claude/mustard/session-map.md";
+    const NEIGHBOUR: &str = "docs/mapa-inicio-sessao.md";
+    for spelling in [
+        OLD,
+        "./.claude/mustard/mapa-inicio-sessao.md",
+        ".claude\\mustard\\mapa-inicio-sessao.md",
+        ".claude/mustard/Mapa-Inicio-Sessao.md",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) = installed(dir.path(), r#"{"version":"1.0.0","buildCommand":"make","customKey":{"kept":true}}"#);
+
+        // A instalação de antes da troca do nome.
+        let map = mustard_core::session_map(Locale::PtBr);
+        std::fs::remove_file(root.join(NEW)).unwrap();
+        std::fs::write(root.join(OLD), map).unwrap();
+        let exclude = root.join(".git/info/exclude");
+        let rules = std::fs::read_to_string(&exclude).unwrap();
+        assert!(rules.contains(NEW), "the install hid the map: {rules}");
+        std::fs::write(&exclude, rules.replace("session-map.md", "mapa-inicio-sessao.md")).unwrap();
+        let mut config: Value = serde_json::from_str(&std::fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
+        config["inject"] = json!([
+            {"on": "sessionStart", "file": spelling, "once": false},
+            {"on": "sessionStart", "file": NEIGHBOUR, "once": true},
+        ]);
+        std::fs::write(root.join("mustard.json"), serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        let report: Value = serde_json::from_str(rt(&root, &home, &["run", "upsert"], "").trim()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join(NEW)).unwrap(), map, "`{spelling}`: the new map");
+        let left: Vec<String> = std::fs::read_dir(root.join(".claude/mustard"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["session-map.md"], "`{spelling}`: the old map is still on disk");
+        let mut expected = config.clone();
+        expected["inject"][0]["file"] = json!(NEW);
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(after, expected, "`{spelling}`: only the old path changes in mustard.json");
+        assert_eq!(
+            report["migrated"],
+            json!(["session map (mapa-inicio-sessao.md → session-map.md)"]),
+            "`{spelling}`: {report}",
+        );
+
+        let context = session_start(&root, &home, "startup");
+        assert!(context.contains(map.trim()), "`{spelling}`: the session start misses the map: {context}");
+        let status = Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&status.stdout), "", "`{spelling}`: the project's git sees the install");
+
+        let bytes = std::fs::read(root.join("mustard.json")).unwrap();
+        let again: Value = serde_json::from_str(rt(&root, &home, &["run", "upsert"], "").trim()).unwrap();
+        assert_eq!(again["migrated"], json!([]), "`{spelling}`: the rename converges");
+        assert_eq!(std::fs::read(root.join("mustard.json")).unwrap(), bytes, "`{spelling}`: a second update rewrote it");
+    }
+}

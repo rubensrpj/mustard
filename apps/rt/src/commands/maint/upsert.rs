@@ -10,12 +10,16 @@
 //! written here. What the OPERATOR owns is merge-only: an existing
 //! `.claude/settings.local.json`, `.claude/.gitignore` or `mustard.json` is
 //! preserved, and only what is missing is created or backfilled. Mustard's
-//! own texts — `.claude/mustard/mapa-inicio-sessao.md` and
+//! own texts — `.claude/mustard/session-map.md` and
 //! `.claude/agents/mustard/{wave,review,skill}.md` — are ALWAYS rewritten, in
 //! the language of `language.text`: they are the harness's own text, not
 //! project configuration, so a copy that diverged is replaced and reported as
 //! `Updated`, while a copy already byte-identical to the shipped text is
 //! reported as `Preserved` because there was nothing left to write.
+//! An older install's map under its former name, `mapa-inicio-sessao.md`,
+//! leaves the disk, and every declaration of it in `mustard.json#inject`, in
+//! any spelling of the old path, is pointed at the new name with the rest of
+//! the file untouched.
 //!
 //! What an older Mustard left in files that are not its own (the marks in the
 //! `CLAUDE.md` files, the seed's lines in the team's `.claude/settings.json`,
