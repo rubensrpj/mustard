@@ -119,6 +119,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.old_version", Locale::PtBr) => "versão antiga",
         ("page.old_version", Locale::EnUs) => "old version",
 
+        // Os templates das páginas (`platform::page_templates`): o que eles
+        // dizem enquanto leem o banco de dados da página, quando o banco
+        // ainda está vazio, o filtro por tipo e o botão de baixar o `.md`.
+        ("page.loading", Locale::PtBr) => "Lendo o banco de dados da página…",
+        ("page.loading", Locale::EnUs) => "Reading the page's database…",
+        ("page.no_data", Locale::PtBr) => {
+            "Ainda não há dados: o Mustard ainda não copiou nada para o banco de dados desta página."
+        }
+        ("page.no_data", Locale::EnUs) => "No data yet: Mustard has not copied anything to this page's database.",
+        ("page.filter.label", Locale::PtBr) => "Filtrar por tipo",
+        ("page.filter.label", Locale::EnUs) => "Filter by type",
+        ("page.filter.all", Locale::PtBr) => "Todos os tipos",
+        ("page.filter.all", Locale::EnUs) => "All types",
+        ("page.download", Locale::PtBr) => "Baixar .md",
+        ("page.download", Locale::EnUs) => "Download .md",
+        ("page.wave.full", Locale::PtBr) => "com o texto de cada item no lugar do código",
+        ("page.wave.full", Locale::EnUs) => "with each item's text in place of its code",
+
         // A página e o `.md` de uma spec (`view::document`): os títulos das
         // seções e dos grupos, os nomes dos tipos, os rótulos dos campos e
         // dos valores.
@@ -810,8 +828,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            321,
-            0x03be_12e4_8634_f440,
+            327,
+            0xd311_adf3_b2d5_2fef,
         );
     }
 }
