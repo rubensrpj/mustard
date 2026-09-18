@@ -10,6 +10,18 @@
 //! principal os arquivos que cada cópia entregou, comita e apaga a cópia — e
 //! só então despacha a rodada seguinte.
 //!
+//! **A análise antes do envio.** Antes de criar a cópia de uma onda pronta,
+//! a rodada olha os itens combinados do projeto todo e os sem dono. Com algum
+//! deles, a onda só sai com a escolha de um agente com o modelo Sonnet: a
+//! resposta traz em `analysis` o pedido pronto dele, com os códigos das
+//! tarefas e dos dois grupos, e a conversa devolve a linha
+//! `<ANALYSIS>{…}</ANALYSIS>` dele no `--report` seguinte, sozinha ou junto das
+//! outras. O envio gravado leva os itens que ficaram e, à parte, no campo
+//! `analysis`, o que saiu e o que entrou, cada um com o motivo. Os itens que
+//! as tarefas da onda fazem vão sempre, sem análise. A mesma onda que sai de
+//! novo sem plano novo usa a escolha do envio anterior, quando ela julgou cada
+//! item de agora. Sem escolha, a onda espera; nada é recusado.
+//!
 //! **O relatório é o que os agentes devolvem, como veio.** A rodada lê, do
 //! texto recebido, cada linha `<DELIVERED>{…}</DELIVERED>` do agente de onda e
 //! cada linha `<VERDICT>{…}</VERDICT>` do revisor, no formato que os textos
@@ -23,7 +35,8 @@
 //! rodada e faz o commit com a mensagem montada do resumo.
 //!
 //! **O que trava.** Uma spec que ainda não foi aprovada; um relatório sem
-//! nenhuma das duas linhas, ou com uma linha sem campo obrigatório; um
+//! nenhuma linha de entrega, de veredito ou de análise, ou com uma linha de
+//! entrega ou de veredito sem campo obrigatório; um
 //! `entregou` acima do teto de caracteres; um arquivo entregue que não está no
 //! disco nem no git, nem no repositório principal nem na cópia; uma mensagem
 //! de commit fora do
@@ -159,6 +172,13 @@ mod tests {
     /// o teste pedir: uma entrada por onda, com os arquivos das tarefas dela e
     /// as ondas de que ela depende.
     pub(super) fn approved(root: &Path, spec: &str, plan: &[(u64, &[&str], &[u64])]) {
+        approved_with(root, spec, plan, |_| {});
+    }
+
+    /// [`approved`] com o que o teste grava antes da aprovação (`before`), que
+    /// recebe o número da mensagem de origem: é antes dela que o levantamento
+    /// grava os itens combinados, inclusive os sem dono.
+    pub(super) fn approved_with(root: &Path, spec: &str, plan: &[(u64, &[&str], &[u64])], before: impl FnOnce(u64)) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for (_, files, _) in plan {
@@ -199,6 +219,7 @@ mod tests {
             write(root, spec, "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
                 "files": declared, "origin": said}));
         }
+        before(said);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
     }
 

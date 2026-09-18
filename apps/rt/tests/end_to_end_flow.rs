@@ -351,6 +351,18 @@ fn plan_files(project: &Project, files: &[&str]) {
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
 }
 
+/// A primeira rodada, com a análise antes do envio: as respostas do
+/// levantamento valem para o projeto todo, então a rodada pede a análise e
+/// não solta a onda; a linha que o agente da análise devolve, sem mudança,
+/// solta a onda. Devolve a resposta da rodada que a soltou.
+fn first_round(project: &Project) -> Value {
+    let asked = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(asked["dispatch"], json!([]), "{asked}");
+    assert_eq!(asked["analysis"][0]["model"], json!("sonnet"), "{asked}");
+    let answer = json!({"wave": 1, "removed": [], "added": []});
+    project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")])
+}
+
 /// O clique em "Aprovar" na pergunta da aprovação, pelo gancho da testemunha.
 fn approve(project: &Project) {
     let question = translate("approval.question", Locale::PtBr);
@@ -383,7 +395,8 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 /// abrir o pull request funcionam em sequência, e a pasta da spec termina com
 /// três arquivos. Cada passo do fluxo é uma chamada só: abrir 1, levantamento
 /// 1 (as respostas gravadas não contam), plano 1, aprovar 0, cada rodada 1,
-/// fechar 1 e pull request 1.
+/// fechar 1 e pull request 1; a análise antes do envio da primeira onda é
+/// uma rodada a mais, a que traz a escolha do agente da análise.
 #[test]
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();
@@ -394,8 +407,9 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     plan(&project);
     approve(&project);
 
-    // Primeira rodada: a onda sai numa cópia separada.
-    let first = project.run(&["round", "--spec", SPEC]);
+    // Primeira rodada: a análise antes do envio, e a onda sai numa cópia
+    // separada.
+    let first = first_round(&project);
     let dispatched = first["dispatch"].as_array().cloned().unwrap_or_default();
     assert_eq!(dispatched.len(), 1, "{first}");
     let log = project.log();
@@ -432,7 +446,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     assert_eq!(state.phase, Some("pr_open"), "{pr}");
 
     let expected: BTreeMap<String, usize> =
-        [("open", 1), ("grill", 1), ("plan", 1), ("round", 2), ("close", 1), ("pr-open", 1)]
+        [("open", 1), ("grill", 1), ("plan", 1), ("round", 3), ("close", 1), ("pr-open", 1)]
             .into_iter()
             .map(|(command, count)| (command.to_string(), count))
             .collect();
@@ -460,7 +474,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     approve(project);
 
     // A cópia da onda traz o submódulo que a onda toca.
-    let first = project.run(&["round", "--spec", SPEC]);
+    let first = first_round(project);
     assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");

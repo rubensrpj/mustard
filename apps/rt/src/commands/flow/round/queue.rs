@@ -1,20 +1,23 @@
-//! A fila da rodada e as ondas em andamento: quais ondas saem agora, a cópia
-//! separada e a pasta de compilação de cada uma, quais estão em andamento,
-//! quais esperam revisão, quais já estão entregues e aprovadas, e o estado de
-//! cada uma que a página mostra.
+//! A fila da rodada e as ondas em andamento: quais ondas saem agora, a
+//! análise do pedido antes do envio, a cópia separada e a pasta de compilação
+//! de cada uma, quais estão em andamento, quais esperam revisão, quais já
+//! estão entregues e aprovadas, e o estado de cada uma que a página mostra.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
-use mustard_core::domain::wave_prompt::WaveCopy;
+use mustard_core::domain::wave_prompt::{
+    candidates, dispatch_items, recorded_choice, write_analysis, Candidates, Choice, Execution, Material, WaveCopy,
+};
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::wave_prompt::{copy_path, recorded_copy, shown};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
+use super::report::{has_agent_lines, tagged};
 use super::stops::waves_replanned;
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
@@ -80,6 +83,195 @@ pub(super) fn next_waves(
         .filter(|n| !stuck.contains_key(n) && !dependencies_of(*n, &depends).iter().any(|d| stuck.contains_key(d)))
         .take(slots)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// A análise do pedido antes do envio
+// ---------------------------------------------------------------------------
+
+/// A linha da análise antes do envio, como o agente com o modelo Sonnet a
+/// devolve.
+const ANALYSIS_LINE: &str = "ANALYSIS";
+
+/// O modelo do agente que faz a análise antes do envio.
+const ANALYSIS_MODEL: &str = "sonnet";
+
+/// O que a linha `ANALYSIS` de uma onda trouxe: cada item que sai e cada item
+/// que entra, como veio (pelo código ou pelo número), com o motivo.
+pub(super) struct AnalysisLine {
+    wave: u64,
+    removed: Vec<(Value, String)>,
+    added: Vec<(Value, String)>,
+}
+
+/// `true` quando o relatório só traz a análise antes do envio: não há entrega
+/// nem veredito a juntar, e a rodada vai direto ao despacho.
+pub(super) fn only_analysis(raw: &str) -> bool {
+    !has_agent_lines(raw) && !tagged(raw, ANALYSIS_LINE).is_empty()
+}
+
+/// As linhas `ANALYSIS` do relatório `raw`. A que não se lê fica de fora com
+/// um aviso, e a onda dela pede a análise de novo: nada é recusado.
+pub(super) fn analysis_lines(raw: Option<&str>, lang: Locale) -> (Vec<AnalysisLine>, Vec<Value>) {
+    let mut lines = Vec::new();
+    let mut warnings = Vec::new();
+    for body in raw.map(|raw| tagged(raw, ANALYSIS_LINE)).unwrap_or_default() {
+        let parsed = serde_json::from_str::<Value>(body).map_err(|e| e.to_string());
+        match parsed.as_ref().ok().and_then(|fields| Some((fields, fields.get("wave")?.as_u64()?))) {
+            Some((fields, wave)) => {
+                let entries = |key: &str| -> Vec<(Value, String)> {
+                    let listed = fields.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+                    listed
+                        .iter()
+                        .map(|entry| {
+                            let why = entry.get("why").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+                            (entry.get("item").cloned().unwrap_or(Value::Null), why.to_string())
+                        })
+                        .collect()
+                };
+                lines.push(AnalysisLine { wave, removed: entries("removed"), added: entries("added") });
+            }
+            None => {
+                let detail = parsed.err().unwrap_or_else(|| body.to_string());
+                let hint = translate("round.analysis_unreadable", lang).replace("{detail}", &detail);
+                warnings.push(json!({ "reason": "analysis-unreadable", "hint": hint }));
+            }
+        }
+    }
+    (lines, warnings)
+}
+
+/// O que a análise antes do envio decidiu para as ondas prontas.
+pub(super) struct Analysed {
+    /// As ondas que saem agora, na ordem da fila.
+    pub go: Vec<u64>,
+    /// A escolha de cada onda que sai com uma.
+    pub choices: BTreeMap<u64, Choice>,
+    /// O pedido de análise de cada onda que espera por ela.
+    pub asked: Vec<Value>,
+    /// Os itens da linha da análise que ficaram como estavam.
+    pub warnings: Vec<Value>,
+}
+
+/// A análise antes do envio de cada onda pronta (`ready`), antes de a cópia
+/// dela ser criada. A onda sem item do projeto todo nem item sem dono a
+/// julgar sai como hoje. A que tem sai com a escolha que a linha `ANALYSIS`
+/// do relatório trouxe (`given`) ou, quando a mesma onda sai de novo sem plano
+/// novo, com a escolha gravada no envio anterior dela, se essa escolha julgou
+/// cada item de agora. Sem escolha, a onda não sai, e a resposta traz o pedido
+/// pronto para o agente com o modelo Sonnet. Nada é recusado.
+pub(super) fn analyse(
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    ready: &[u64],
+    given: &[AnalysisLine],
+    lang: Locale,
+) -> Analysed {
+    let replanned = waves_replanned(log);
+    let codes = log.codes();
+    let mut out = Analysed { go: Vec::new(), choices: BTreeMap::new(), asked: Vec::new(), warnings: Vec::new() };
+    for wave in ready.iter().copied() {
+        let found = candidates(log, wave);
+        if found.is_empty() {
+            out.go.push(wave);
+            continue;
+        }
+        let choice = match given.iter().rfind(|line| line.wave == wave) {
+            Some(line) => Some(chosen(log, &codes, line, &found, lang, &mut out.warnings)),
+            None => recorded_choice(log, wave)
+                .filter(|choice| !replanned.contains(&wave) && choice.covers(&found))
+                .map(|choice| choice.within(&found)),
+        };
+        match choice {
+            Some(choice) => {
+                out.choices.insert(wave, choice);
+                out.go.push(wave);
+            }
+            None => out.asked.push(analysis_request(root, spec, log, &codes, wave, &found, lang)),
+        }
+    }
+    out
+}
+
+/// A escolha que a linha da análise da onda traz, dentro dos grupos de agora
+/// (`found`): sai só o item do projeto todo, entra só o item sem dono, e
+/// cada um com o motivo. O item fora dos grupos, ou sem motivo, fica como
+/// estava, e um aviso diz qual.
+fn chosen(
+    log: &SpecLog,
+    codes: &BTreeMap<u64, String>,
+    line: &AnalysisLine,
+    found: &Candidates,
+    lang: Locale,
+    warnings: &mut Vec<Value>,
+) -> Choice {
+    let find = |group: &[&SpecEvent], item: &Value| -> Option<u64> {
+        let id = match EventRef::from_value(item)? {
+            EventRef::Id(n) => log.current(n)?.id,
+            EventRef::Code(code) => group.iter().find(|e| codes.get(&e.id) == Some(&code))?.id,
+        };
+        group.iter().any(|e| e.id == id).then_some(id)
+    };
+    let mut pick = |group: &[&SpecEvent], entries: &[(Value, String)]| -> Vec<(u64, String)> {
+        let mut out: Vec<(u64, String)> = Vec::new();
+        for (item, why) in entries {
+            match find(group, item).filter(|_| !why.is_empty()) {
+                Some(id) => {
+                    if !out.iter().any(|(had, _)| *had == id) {
+                        out.push((id, why.clone()));
+                    }
+                }
+                None => {
+                    let shown = item.as_str().map_or_else(|| item.to_string(), str::to_string);
+                    let hint = translate("round.analysis_ignored", lang)
+                        .replace("{wave}", &line.wave.to_string())
+                        .replace("{item}", &shown);
+                    warnings.push(json!({ "reason": "analysis-item-ignored", "wave": line.wave, "hint": hint }));
+                }
+            }
+        }
+        out
+    };
+    let removed = pick(&found.project, &line.removed);
+    let added = pick(&found.unowned, &line.added);
+    Choice { judged: found.ids(), removed, added }
+}
+
+/// O pedido da análise da onda `wave`, como a resposta da rodada o traz: os
+/// códigos das tarefas e dos dois grupos, o modelo e o pedido pronto.
+fn analysis_request(
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    codes: &BTreeMap<u64, String>,
+    wave: u64,
+    found: &Candidates,
+    lang: Locale,
+) -> Value {
+    let code = |e: &&SpecEvent| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
+    let block: Vec<&SpecEvent> = log
+        .block(BlockQuery::Wave(wave))
+        .into_iter()
+        .filter(|e| matches!(e.event_type.as_str(), "wave" | "task"))
+        .collect();
+    let tasks: Vec<String> = block.iter().filter(|e| e.event_type == "task").map(code).collect();
+    let material = Material {
+        spec: spec.to_string(),
+        wave,
+        block,
+        execution: Execution { root: shown(root), ..Execution::default() },
+        codes: codes.clone(),
+        ..Material::default()
+    };
+    json!({
+        "wave": wave,
+        "model": ANALYSIS_MODEL,
+        "tasks": tasks,
+        "project": found.project.iter().map(code).collect::<Vec<_>>(),
+        "unowned": found.unowned.iter().map(code).collect::<Vec<_>>(),
+        "prompt": write_analysis(&material, found, lang),
+    })
 }
 
 /// As pastas de compilação fixas do checkout `root`, uma por vaga do limite
@@ -340,12 +532,10 @@ fn waves_awaiting_review(log: &SpecLog) -> Vec<u64> {
         .collect()
 }
 
-/// Os itens que o pedido de uma onda leva: os números de tudo que entrou nele.
-pub(super) fn sent_items(log: &SpecLog, wave: u64) -> Vec<u64> {
-    log.step(&mustard_core::domain::spec_events::Step::Dispatch { wave })
-        .into_iter()
-        .map(|e| e.id)
-        .collect()
+/// Os itens que o pedido de uma onda leva: os números de tudo que entrou
+/// nele, com a escolha da análise antes do envio (`choice`).
+pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> Vec<u64> {
+    dispatch_items(log, wave, choice).into_iter().map(|e| e.id).collect()
 }
 
 /// O estado de cada onda que já saiu, pela mesma leitura que decide o que a
@@ -684,5 +874,177 @@ mod tests {
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 3]);
         let out = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(waves_in(&out, "dispatch"), vec![2], "a entrega basta para quem não depende de todas: {out}");
+    }
+
+    /// A spec aprovada da análise antes do envio: uma onda, com a tarefa que
+    /// faz uma das regras do projeto todo, duas regras do projeto todo que
+    /// ela não faz, dois itens sem dono e uma decisão da onda. Devolve o
+    /// número de cada item, pelo código.
+    fn with_items_to_judge(root: &Path) -> BTreeMap<String, u64> {
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let rule = |text: &str| {
+                id_of(&write(root, "x", "rule", json!({"text": text, "example": "e", "keys": ["k"],
+                    "applies_to": {"files": ["**"]}, "origin": said})))
+            };
+            rule("Vale sempre: a tabela nova tem chave.");
+            rule("Vale sempre: a spec vira um PR só.");
+            let done = rule("Vale sempre: a tabela nova tem índice.");
+            for (text, extra) in [("Sem dono: a tabela nasce vazia.", json!({})), ("Sem dono: o download não muda.", json!({})),
+                ("Da onda um: a coluna é texto.", json!({"waves": [1]}))] {
+                let mut body = json!({"text": text, "keys": ["k"], "why": "w", "origin": said});
+                body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
+                id_of(&write(root, "x", "decision", body));
+            }
+            write(root, "x", "task", json!({"wave": 1, "text": "Criar o índice da tabela.", "files": [{"path": "src/a.rs"}],
+                "covers": [done], "origin": said}));
+        });
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        log.codes().into_iter().map(|(id, code)| (code, id)).collect()
+    }
+
+    /// A linha da análise da onda 1: o que sai e o que entra, com o motivo.
+    fn analysis(removed: Value, added: Value) -> String {
+        line("ANALYSIS", json!({"wave": 1, "removed": removed, "added": added}))
+    }
+
+    /// A rodada que vai soltar uma onda com itens do projeto todo e itens sem
+    /// dono pede a análise antes do envio: nada sai, nenhum envio é gravado e
+    /// nenhuma cópia é criada, e a resposta traz o pedido pronto para o agente
+    /// com o modelo Sonnet, com as tarefas e os dois grupos; sem a escolha,
+    /// pede de novo. Com a linha da análise, a onda sai: o pedido e o envio
+    /// levam o que ficou, sem o que saiu e com o que entrou, e o envio grava à
+    /// parte o que saiu e o que entrou, com o motivo. O item que as tarefas da
+    /// onda fazem vai sempre: a análise nem o recebe, e a linha que tenta
+    /// tirá-lo fica sem efeito, como a que vem sem motivo. O gancho que monta
+    /// o pedido no despacho chega ao mesmo texto. Na divisa do conserto: com
+    /// os mesmos itens a julgar, o conserto sai com a escolha gravada; com uma
+    /// regra nova do projeto todo, a rodada pede a análise de novo.
+    #[test]
+    fn the_round_records_the_analysis_before_sending() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let ids = with_items_to_judge(root);
+        let sends = || {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.visible().into_iter().filter(|e| e.event_type == "send").map(|e| e.fields.clone()).collect::<Vec<_>>()
+        };
+
+        // Sem a escolha, a onda não sai.
+        for _ in 0..2 {
+            let asked = round(root, "x", None);
+            assert_eq!(asked["ok"], json!(true), "{asked}");
+            assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
+            assert!(sends().is_empty(), "no send before the analysis: {asked}");
+            assert!(!copy_path(root, "x", 1, false).exists(), "no copy before the analysis");
+            let request = &asked["analysis"][0];
+            assert_eq!(request["wave"], json!(1), "{asked}");
+            assert_eq!(request["model"], json!("sonnet"), "{asked}");
+            assert_eq!(request["tasks"], json!(["MSTD-TASK-0001", "MSTD-TASK-0002"]), "{asked}");
+            assert_eq!(request["project"], json!(["MSTD-RULE-0001", "MSTD-RULE-0002"]), "the rule the task does is not judged");
+            assert_eq!(request["unowned"], json!(["MSTD-DEC-0001", "MSTD-DEC-0002"]), "{asked}");
+            let prompt = request["prompt"].as_str().unwrap_or_default();
+            for part in ["- `waves`: MSTD-WAVE-0001, MSTD-TASK-0001, MSTD-TASK-0002", "- `agreed`: MSTD-RULE-0001, MSTD-RULE-0002",
+                "- `agreed`: MSTD-DEC-0001, MSTD-DEC-0002", "<ANALYSIS>{\"wave\":1,"] {
+                assert!(prompt.contains(part), "{part}: {prompt}");
+            }
+            let next = translate("round.analysis", Locale::PtBr).replace("{waves}", "1");
+            assert!(asked["next"].as_str().unwrap_or_default().contains(&next), "{asked}");
+        }
+
+        // Com a escolha, a onda sai com ela.
+        let removed = json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega, e não da tabela."},
+            {"item": "MSTD-RULE-0003", "why": "Tentou tirar a que a tarefa faz."}]);
+        let added = json!([{"item": "MSTD-DEC-0001", "why": "A tabela nova nasce vazia."},
+            {"item": "MSTD-DEC-0002", "why": ""}]);
+        let out = round(root, "x", Some(&analysis(removed, added)));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert!(out.get("analysis").is_none(), "{out}");
+        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(prompt.contains("- `agreed`: MSTD-RULE-0001, MSTD-RULE-0003, MSTD-DEC-0001, MSTD-DEC-0003\n"), "{prompt}");
+        let ignored: Vec<&str> = out["warnings"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|w| w["reason"] == json!("analysis-item-ignored"))
+            .filter_map(|w| w["hint"].as_str())
+            .collect();
+        assert_eq!(ignored.len(), 2, "{out}");
+        assert!(ignored[0].contains("MSTD-RULE-0003") && ignored[1].contains("MSTD-DEC-0002"), "{ignored:?}");
+        let sent = sends();
+        assert_eq!(sent.len(), 1, "{out}");
+        assert_eq!(sent[0]["text"], json!(prompt));
+        let kept: Vec<u64> = ["MSTD-RULE-0001", "MSTD-RULE-0003", "MSTD-DEC-0001", "MSTD-DEC-0003"].map(|c| ids[c]).to_vec();
+        let items: Vec<u64> = sent[0]["items"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
+        for code in ["MSTD-RULE-0002", "MSTD-DEC-0002"] {
+            assert!(!items.contains(&ids[code]), "{code} stayed out: {items:?}");
+        }
+        assert!(kept.iter().all(|id| items.contains(id)), "{items:?}");
+        let judged: Vec<u64> = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-DEC-0001", "MSTD-DEC-0002"].map(|c| ids[c]).to_vec();
+        assert_eq!(sent[0]["analysis"], json!({"judged": judged,
+            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Fala da entrega, e não da tabela."}],
+            "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}]}));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let running = waves_in_progress(&log).into_keys().collect();
+        let flight = mustard_core::io::wave_prompt::Flight { running, ..Default::default() };
+        let hooked = mustard_core::io::wave_prompt::prompts(root, "x", &log, Locale::PtBr, &flight);
+        assert_eq!(hooked.iter().find(|p| p.wave == 1).map(|p| p.text.as_str()), Some(prompt.as_str()), "the hook builds the same request");
+
+        // O conserto, com os mesmos itens a julgar, sai com a escolha gravada.
+        round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
+        let fix = round(root, "x", Some(&verdict(1, "rejected", "faltou o índice")));
+        assert_eq!(waves_in(&fix, "dispatch"), vec![1], "{fix}");
+        let sent = sends();
+        assert_eq!(sent.len(), 2, "{fix}");
+        assert_eq!(sent[1]["analysis"], sent[0]["analysis"], "{fix}");
+
+        // Com uma regra nova do projeto todo, o conserto seguinte pede a
+        // análise de novo, e sai com a escolha nova.
+        round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
+        let said = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+            .visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
+        let newer = id_of(&write(root, "x", "rule", json!({"text": "Vale sempre: o nome é curto.", "example": "e",
+            "keys": ["k"], "applies_to": {"files": ["**"]}, "origin": said})));
+        let again = round(root, "x", Some(&verdict(1, "rejected", "faltou o nome")));
+        assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "{again}");
+        assert_eq!(again["analysis"][0]["project"], json!(["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0004"]), "{again}");
+        assert_eq!(sends().len(), 2, "{again}");
+        let out = round(root, "x", Some(&analysis(json!([]), json!([]))));
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let sent = sends();
+        assert!(sent[2]["analysis"]["judged"].as_array().unwrap().contains(&json!(newer)), "{out}");
+        assert_eq!(sent[2]["analysis"]["removed"], json!([]), "{out}");
+    }
+
+    /// Duas rodadas ao mesmo tempo, com a mesma linha da análise. As duas
+    /// chegam ao despacho enquanto outro passo do git segura a trava; solta a
+    /// trava, uma solta a onda com a escolha, e a outra lê a spec depois do
+    /// envio dela e não a solta de novo: a onda tem um envio só, com a escolha.
+    #[test]
+    fn two_rounds_with_the_same_analysis_send_the_wave_once() {
+        use std::time::Duration;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        with_items_to_judge(root);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), Vec::<u64>::new());
+        let report = analysis(json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega."}]), json!([]));
+
+        let outs: Vec<Value> = std::thread::scope(|scope| {
+            let Ok(lock) = super::super::commit::git_lock(root) else { panic!("the git lock") };
+            let rounds = [scope.spawn(|| round(root, "x", Some(&report))), scope.spawn(|| round(root, "x", Some(&report)))];
+            std::thread::sleep(Duration::from_millis(1000));
+            drop(lock);
+            rounds.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        let dispatched: Vec<u64> = outs.iter().flat_map(|out| waves_in(out, "dispatch")).collect();
+        assert_eq!(dispatched, vec![1], "only one round sends the wave out: {outs:?}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
+        assert_eq!(sent.len(), 1, "{outs:?}");
+        assert_eq!(sent[0].fields["analysis"]["removed"][0]["why"], json!("Fala da entrega."), "{outs:?}");
+        for out in &outs {
+            assert!(out.get("analysis").is_none(), "neither round asks again: {out}");
+        }
     }
 }

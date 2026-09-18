@@ -208,8 +208,15 @@ pub(crate) fn take_report(
     Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit })
 }
 
+/// `true` quando o texto traz uma linha de entrega ou de veredito: sem
+/// nenhuma, o relatório que só traz a análise antes do envio não passa pela
+/// junção.
+pub(super) fn has_agent_lines(raw: &str) -> bool {
+    !tagged(raw, DELIVERED_LINE).is_empty() || !tagged(raw, VERDICT_LINE).is_empty()
+}
+
 /// Os trechos entre `<tag>` e `</tag>` de `raw`, na ordem.
-fn tagged<'a>(raw: &'a str, tag: &str) -> Vec<&'a str> {
+pub(super) fn tagged<'a>(raw: &'a str, tag: &str) -> Vec<&'a str> {
     let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
     let mut out = Vec::new();
     let mut rest = raw;

@@ -101,20 +101,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("plan.item_without_task", Locale::EnUs) => {
             "No task says it covers item {code}. If it does not become code, say why."
         }
-        // O dono de cada item combinado: o plano recusa o item sem dono, e o
-        // item novo depois da aprovação nasce com dono.
-        ("plan.item_without_owner", Locale::PtBr) => {
-            "O item {code} não tem dono: nenhuma tarefa de uma onda do plano o cobre, ele não diz as \
-             ondas dele em `waves` e não vale no projeto todo. Cubra-o com a tarefa da onda que o faz, \
-             ou grave uma versão nova dele com `\"waves\":[<ondas>]` ou, quando vale para todas as \
-             ondas, com `\"applies_to\":{\"files\":[\"**\"]}`."
-        }
-        ("plan.item_without_owner", Locale::EnUs) => {
-            "Item {code} has no owner: no task of a planned wave covers it, it names no waves in \
-             `waves` and it does not hold for the whole project. Cover it with the task of the wave \
-             that does it, or record a new version of it with `\"waves\":[<waves>]` or, when it holds \
-             for every wave, with `\"applies_to\":{\"files\":[\"**\"]}`."
-        }
+        // O dono de cada item combinado: o item novo depois da aprovação nasce
+        // com dono.
         ("plan.owner_missing", Locale::PtBr) => {
             "O item novo do tipo {type} não tem dono, e a spec já foi aprovada: todo item combinado tem \
              dono. Diga em `waves` as ondas cujas tarefas o cobrem ou vão cobrir, como `\"waves\":[3]`, \
@@ -548,6 +536,78 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.fix_limit.question", Locale::EnUs) => {
             "Wave {wave} was rejected again after {max} fix rounds. Revise its plan or take it out of the plan?"
         }
+        // A análise do pedido antes do envio: o próximo passo, os avisos e o
+        // pedido pronto para o agente com o modelo Sonnet.
+        ("round.analysis", Locale::PtBr) => {
+            "Antes de soltar as ondas {waves}, a rodada pede a análise do pedido de cada uma. \
+             Despache cada pedido de `analysis` a um agente com o modelo Sonnet (`model: \"sonnet\"`) \
+             e rode a rodada de novo com a linha `<ANALYSIS>{…}</ANALYSIS>` que cada um devolve, \
+             como veio, no mesmo `--report '…'` das outras linhas. Sem essa linha, a onda não sai."
+        }
+        ("round.analysis", Locale::EnUs) => {
+            "Before sending out waves {waves}, the round asks for the analysis of each one's \
+             request. Dispatch each `analysis` request to an agent with the Sonnet model \
+             (`model: \"sonnet\"`) and run the round again with the `<ANALYSIS>{…}</ANALYSIS>` line \
+             each one returns, as it came, in the same `--report '…'` as the other lines. Without \
+             that line, the wave does not go out."
+        }
+        ("round.analysis_ignored", Locale::PtBr) => {
+            "Na análise da onda {wave}, o item {item} ficou como estava: ele não está nos grupos que \
+             a análise julga, ou veio sem motivo."
+        }
+        ("round.analysis_ignored", Locale::EnUs) => {
+            "In the analysis of wave {wave}, item {item} stayed as it was: it is not in the groups \
+             the analysis judges, or it came without a reason."
+        }
+        ("round.analysis_unreadable", Locale::PtBr) => {
+            "Uma linha `<ANALYSIS>` não se leu e ficou de fora ({detail}): a onda dela pede a \
+             análise de novo."
+        }
+        ("round.analysis_unreadable", Locale::EnUs) => {
+            "An `<ANALYSIS>` line could not be read and was left out ({detail}): its wave asks for \
+             the analysis again."
+        }
+        ("round.analysis.title", Locale::PtBr) => "{spec} — análise do pedido da onda {n}",
+        ("round.analysis.title", Locale::EnUs) => "{spec} — analysis of wave {n}'s request",
+        ("round.analysis.fixed", Locale::PtBr) => {
+            "Você analisa o pedido da onda {n} antes de ele sair. O pedido é a lista dos itens da \
+             spec que o agente da onda lê. Os itens que as tarefas da onda fazem vão sempre e não \
+             passam por você. Você julga só dois grupos: os itens do projeto todo, que o pedido \
+             leva, e os itens sem dono, que ele não leva. Leia a onda, cada tarefa e cada item dos \
+             dois grupos pelo código. Tire o item do projeto todo que não ajuda esta onda, como uma \
+             regra da entrega numa onda que só cria uma tabela. Ponha o item sem dono que ajuda \
+             esta onda. Não mude nada no disco e não grave nada na spec."
+        }
+        ("round.analysis.fixed", Locale::EnUs) => {
+            "You analyze wave {n}'s request before it goes out. The request is the list of spec \
+             items the wave agent reads. The items the wave's tasks do always go and do not pass \
+             through you. You judge only two groups: the whole-project items, which the request \
+             carries, and the items without an owner, which it does not. Read the wave, each task \
+             and each item of both groups by code. Take out the whole-project item that does not \
+             help this wave, such as a rule about the delivery in a wave that only creates a table. \
+             Put in the item without an owner that helps this wave. Do not change anything on disk \
+             and do not record anything in the spec."
+        }
+        ("round.analysis.part.wave", Locale::PtBr) => "A onda e as tarefas dela",
+        ("round.analysis.part.wave", Locale::EnUs) => "The wave and its tasks",
+        ("round.analysis.part.project", Locale::PtBr) => "Do projeto todo: ficam, a menos que você tire",
+        ("round.analysis.part.project", Locale::EnUs) => "Whole project: they stay unless you take them out",
+        ("round.analysis.part.unowned", Locale::PtBr) => "Sem dono: ficam fora, a menos que você ponha",
+        ("round.analysis.part.unowned", Locale::EnUs) => "Without an owner: they stay out unless you put them in",
+        ("round.analysis.part.answer", Locale::PtBr) => "O que devolver",
+        ("round.analysis.part.answer", Locale::EnUs) => "What to return",
+        ("round.analysis.answer", Locale::PtBr) => {
+            "Termine com uma linha só, com JSON válido, só com o que muda e o motivo de cada item \
+             numa frase:\n<ANALYSIS>{\"wave\":{n},\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
+             motivo>\"}],\"added\":[{\"item\":\"<código>\",\"why\":\"<o motivo>\"}]}</ANALYSIS>\nSem \
+             mudança, devolva as duas listas vazias."
+        }
+        ("round.analysis.answer", Locale::EnUs) => {
+            "End with a single line of valid JSON, with only what changes and each item's reason in \
+             one sentence:\n<ANALYSIS>{\"wave\":{n},\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
+             reason>\"}],\"added\":[{\"item\":\"<item code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>\nWith \
+             no change, return both lists empty."
+        }
         ("plan.finding.label", Locale::PtBr) => "achado do plano",
         ("plan.finding.label", Locale::EnUs) => "plan finding",
         ("approve_spec.open_points", Locale::PtBr) => "Pontos do levantamento ainda abertos ({count}): {points}",
@@ -853,8 +913,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            113,
-            0xbe11_4c4d_0145_efca,
+            122,
+            0x2825_43a3_f85e_3da4,
         );
     }
 
@@ -934,7 +994,6 @@ mod tests {
             ("plan.spec_should_split", &["{parts}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),
             ("plan.item_without_task", &["{code}"][..]),
-            ("plan.item_without_owner", &["{code}"][..]),
             ("plan.owner_missing", &["{type}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}", "{files}"][..]),
@@ -1004,6 +1063,16 @@ mod tests {
             ("round.missing", &["{wave}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
+            ("round.analysis", &["{waves}"][..]),
+            ("round.analysis_ignored", &["{wave}", "{item}"][..]),
+            ("round.analysis_unreadable", &["{detail}"][..]),
+            ("round.analysis.title", &["{spec}", "{n}"][..]),
+            ("round.analysis.fixed", &["{n}"][..]),
+            ("round.analysis.part.wave", &[][..]),
+            ("round.analysis.part.project", &[][..]),
+            ("round.analysis.part.unowned", &[][..]),
+            ("round.analysis.part.answer", &[][..]),
+            ("round.analysis.answer", &["{n}"][..]),
             ("page.findings.heading", &[][..]),
             ("prompt.title", &["{spec}", "{n}"][..]),
             ("prompt.fixed", &[][..]),

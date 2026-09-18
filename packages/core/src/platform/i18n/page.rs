@@ -506,6 +506,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.copy", Locale::EnUs) => "Separate copy",
         ("page.field.build_dir", Locale::PtBr) => "Pasta de compilação",
         ("page.field.build_dir", Locale::EnUs) => "Build folder",
+        ("page.field.analysis", Locale::PtBr) => "Análise antes do envio",
+        ("page.field.analysis", Locale::EnUs) => "Analysis before sending",
         ("page.field.title", Locale::PtBr) => "Título",
         ("page.field.title", Locale::EnUs) => "Title",
         ("page.field.waves", Locale::PtBr) => "Ondas",
@@ -828,8 +830,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            327,
-            0xd311_adf3_b2d5_2fef,
+            328,
+            0x109d_123f_4a9c_aa5c,
         );
     }
 }

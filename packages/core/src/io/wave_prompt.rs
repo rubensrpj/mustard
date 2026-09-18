@@ -23,8 +23,8 @@ use serde_json::Value;
 
 use crate::domain::lessons::{defects_in_scope, in_scope, related_to_tasks, Scope};
 use crate::domain::project_map::{check_skill, file_history, MapRefusal, ProjectMap};
-use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
-use crate::domain::wave_prompt::{self, wave_files, Execution, Material, Skill, WaveCopy};
+use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use crate::domain::wave_prompt::{self, wave_files, Choice, Execution, Material, Skill, WaveCopy};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -57,6 +57,9 @@ pub struct Flight {
     /// A cópia de cada onda que sai agora, que a rodada criou antes de gravar
     /// o envio. A cópia de uma onda que já saiu vem do envio gravado dela.
     pub copies: BTreeMap<u64, WaveCopy>,
+    /// A escolha da análise antes do envio de cada onda que sai agora. A de
+    /// uma onda que já saiu vem do envio gravado dela.
+    pub choices: BTreeMap<u64, Choice>,
 }
 
 /// Os pedidos de todas as ondas do plano, em ordem de número, com as ondas
@@ -189,7 +192,9 @@ struct Context<'a> {
 
 fn one(context: &Context, wave: u64) -> WavePrompt {
     let Context { root, spec, log, bank, map, lang, .. } = *context;
-    let read = log.step(&Step::Dispatch { wave });
+    // O que a montagem escolhe, com a escolha da análise antes do envio: a
+    // que a rodada traz agora ou a gravada no envio da onda.
+    let read = wave_prompt::dispatch_items(log, wave, context.flight.choices.get(&wave));
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
     };
@@ -285,7 +290,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         specification,
         agreed,
         delivered,
-        fix: wave_prompt::fix_lines(log, wave),
+        // A linha do conserto que a análise tirou do pedido sai também daqui.
+        fix: wave_prompt::fix_lines(log, wave).into_iter().filter(|line| read.iter().any(|e| e.id == line.id)).collect(),
         own_delivered,
         execution: execution(context, wave),
         lessons,
@@ -600,7 +606,7 @@ mod tests {
             ("delivered", json!({"wave": 1, "text": "A lista saiu.", "files": ["src/a.rs"]})),
         ]);
         let copy = WaveCopy { path: "/c/um".into(), build_dir: Some("/t/a".into()) };
-        let flight = Flight { running: [1].into(), copies: [(1, copy)].into() };
+        let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
         let example = part("prompt.read")
@@ -899,7 +905,7 @@ mod tests {
             ),
         ]);
         let chosen = WaveCopy { path: "/c/dois".into(), build_dir: Some("/t/b".into()) };
-        let flight = Flight { running: [1, 2].into(), copies: [(2, chosen)].into() };
+        let flight = Flight { running: [1, 2].into(), copies: [(2, chosen)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
         let rule = |key: &str, from: &str, to: &str| crate::platform::i18n::translate(key, Locale::PtBr).replace(from, to);
         assert!(built[0].text.contains(&rule("prompt.execution.build_dir", "{dir}", "/t/a")), "{}", built[0].text);
@@ -952,7 +958,7 @@ mod tests {
                            "mustard": "0", "author": "binary", "copy": copy, "build_dir": folder}),
                 ),
             ]);
-            let flight = Flight { running: [1].into(), copies: BTreeMap::new() };
+            let flight = Flight { running: [1].into(), ..Flight::default() };
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let built = prompts(root, "teste", &log, lang, &flight);
                 let last = final_review(root, "teste", &log, lang);

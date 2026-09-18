@@ -29,7 +29,7 @@ use crate::domain::lessons::{applies_to, Scope};
 use crate::domain::mustard_id;
 use crate::domain::project_map::cited_paths;
 use crate::domain::search;
-use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use crate::domain::spec_events::{search_field, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
@@ -299,9 +299,10 @@ pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
     out
 }
 
-/// Os itens combinados que vão no pedido da onda `wave`: os de que ela é
-/// dona e os do projeto. O item sem dono não vai para onda nenhuma: o plano o
-/// recusa até ele ganhar um.
+/// Os itens combinados que vão no pedido da onda `wave`, como a montagem os
+/// escolhe antes da análise: os de que ela é dona e os do projeto. O item sem
+/// dono não entra aqui; só a análise antes do envio ([`dispatch_items`]) pode
+/// pô-lo num pedido.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
@@ -315,11 +316,167 @@ pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
         .collect()
 }
 
-/// Os itens combinados sem dono, em ordem de número: os que o plano recusa.
+/// Os itens combinados sem dono, em ordem de número: os que a análise antes
+/// do envio julga para cada onda.
 #[must_use]
 pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
     let owners = owners(log);
     agreed_items(log).into_iter().filter(|item| !owners.contains_key(&item.id)).collect()
+}
+
+// ---------------------------------------------------------------------------
+// A análise do pedido antes do envio
+// ---------------------------------------------------------------------------
+
+/// Os dois grupos de itens combinados que a análise antes do envio julga para
+/// uma onda: os do projeto todo, que o pedido leva, e os sem dono, que ele não
+/// leva. Os itens que as tarefas da onda fazem ficam fora dos dois: vão
+/// sempre, sem análise.
+#[derive(Debug, Default)]
+pub struct Candidates<'a> {
+    /// Os do projeto todo que as tarefas da onda não fazem.
+    pub project: Vec<&'a SpecEvent>,
+    /// Os sem dono.
+    pub unowned: Vec<&'a SpecEvent>,
+}
+
+impl Candidates<'_> {
+    /// `true` quando não há nada a julgar: a onda sai sem análise.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.project.is_empty() && self.unowned.is_empty()
+    }
+
+    /// Os números dos itens dos dois grupos.
+    #[must_use]
+    pub fn ids(&self) -> BTreeSet<u64> {
+        self.project.iter().chain(&self.unowned).map(|item| item.id).collect()
+    }
+}
+
+/// Os dois grupos que a análise julga para a onda `wave`.
+#[must_use]
+pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
+    let owners = owners(log);
+    let done: BTreeSet<u64> = log
+        .block(BlockQuery::Wave(wave))
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .flat_map(|task| task.ints("covers"))
+        .filter_map(|id| log.current(id).map(|e| e.id))
+        .collect();
+    let mut out = Candidates::default();
+    for item in agreed_items(log).into_iter().filter(|item| !done.contains(&item.id)) {
+        match owners.get(&item.id) {
+            Some(Owner::Project) => out.project.push(item),
+            None => out.unowned.push(item),
+            Some(Owner::Waves(_)) => {}
+        }
+    }
+    out
+}
+
+/// A escolha da análise antes do envio de uma onda, como o envio a grava no
+/// campo `analysis`: os itens julgados, os do projeto todo que saíram e os
+/// sem dono que entraram, cada um com o motivo numa frase.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choice {
+    /// Os itens dos dois grupos que a análise julgou.
+    pub judged: BTreeSet<u64>,
+    /// Os itens do projeto todo que saíram do pedido, com o motivo.
+    pub removed: Vec<(u64, String)>,
+    /// Os itens sem dono que entraram no pedido, com o motivo.
+    pub added: Vec<(u64, String)>,
+}
+
+impl Choice {
+    /// A escolha reduzida aos grupos de agora: sai só o que ainda é do
+    /// projeto todo, entra só o que ainda está sem dono, e o julgado é o que
+    /// está nos dois grupos.
+    #[must_use]
+    pub fn within(&self, found: &Candidates) -> Self {
+        let has = |group: &[&SpecEvent], id: u64| group.iter().any(|item| item.id == id);
+        Self {
+            judged: found.ids(),
+            removed: self.removed.iter().filter(|(id, _)| has(&found.project, *id)).cloned().collect(),
+            added: self.added.iter().filter(|(id, _)| has(&found.unowned, *id)).cloned().collect(),
+        }
+    }
+
+    /// `true` quando a escolha julgou cada item dos dois grupos de agora.
+    #[must_use]
+    pub fn covers(&self, found: &Candidates) -> bool {
+        found.ids().is_subset(&self.judged)
+    }
+
+    /// O campo `analysis` do envio.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        let listed = |items: &[(u64, String)]| -> Vec<Value> {
+            items.iter().map(|(item, why)| serde_json::json!({ "item": item, "why": why })).collect()
+        };
+        serde_json::json!({ "judged": self.judged, "removed": listed(&self.removed), "added": listed(&self.added) })
+    }
+
+    /// A escolha gravada num envio; `None` quando o campo não tem a forma
+    /// de [`Choice::to_value`].
+    #[must_use]
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let listed = |key: &str| -> Option<Vec<(u64, String)>> {
+            value.get(key)?.as_array()?.iter().map(|entry| {
+                Some((entry.get("item")?.as_u64()?, entry.get("why")?.as_str()?.to_string()))
+            }).collect()
+        };
+        let judged = value.get("judged")?.as_array()?.iter().map(Value::as_u64).collect::<Option<_>>()?;
+        Some(Self { judged, removed: listed("removed")?, added: listed("added")? })
+    }
+}
+
+/// A escolha gravada no envio mais novo da onda `wave`, quando ele tem uma.
+#[must_use]
+pub fn recorded_choice(log: &SpecLog, wave: u64) -> Option<Choice> {
+    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
+    Choice::from_value(sent.fields.get("analysis")?)
+}
+
+/// O que o pedido da onda `wave` lê: o que a montagem escolhe
+/// ([`Step::Dispatch`]), sem os itens do projeto todo que a análise tirou e
+/// com os sem dono que ela pôs. A escolha é a dada (`fresh`) ou, sem ela, a
+/// gravada no envio mais novo da onda, e vale só dentro dos grupos de agora:
+/// o item que as tarefas da onda passaram a fazer vai sempre.
+#[must_use]
+pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -> Vec<&'a SpecEvent> {
+    let base = log.step(&Step::Dispatch { wave });
+    let Some(choice) = fresh.cloned().or_else(|| recorded_choice(log, wave)) else { return base };
+    let choice = choice.within(&candidates(log, wave));
+    let removed: BTreeSet<u64> = choice.removed.iter().map(|(id, _)| *id).collect();
+    let mut out: Vec<&SpecEvent> = base.into_iter().filter(|item| !removed.contains(&item.id)).collect();
+    for (id, _) in &choice.added {
+        if let Some(item) = log.get(*id).filter(|item| !out.iter().any(|had| had.id == item.id)) {
+            out.push(item);
+        }
+    }
+    out.sort_by_key(|item| item.id);
+    out
+}
+
+/// O pedido da análise antes do envio da onda do material: o agente lê a
+/// onda e as tarefas dela (`block`) e os dois grupos (`found`), cada item
+/// pelo código, e devolve a linha `<ANALYSIS>` com o que sai e o que entra.
+#[must_use]
+pub fn write_analysis(material: &Material, found: &Candidates, lang: Locale) -> String {
+    let w = Writer { material, lang };
+    let n = material.wave.to_string();
+    let mut out = String::new();
+    let _ = writeln!(out, "# {}\n", w.t("round.analysis.title").replace("{spec}", &material.spec).replace("{n}", &n));
+    let _ = writeln!(out, "{}\n", w.t("round.analysis.fixed").replace("{n}", &n));
+    w.read_example(&mut out, true);
+    w.part(&mut out, "round.analysis.part.wave", &w.wave_items());
+    w.part(&mut out, "round.analysis.part.project", &found.project);
+    w.part(&mut out, "round.analysis.part.unowned", &found.unowned);
+    let _ = writeln!(out, "## {}\n", w.t("round.analysis.part.answer"));
+    out.push_str(&w.t("round.analysis.answer").replace("{n}", &n));
+    out
 }
 
 /// A gravação de um item combinado novo depois da aprovação: ele nasce com
@@ -328,7 +485,7 @@ pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
 ///
 /// A onda que o item diz em `waves` vale mesmo antes de estar no plano: a
 /// decisão costuma vir antes da onda que a faz, e a tarefa entra numa onda no
-/// replanejamento. Até lá, o plano recusa o item, e nenhum pedido o leva.
+/// replanejamento. Até lá, só a análise antes do envio pode pô-lo num pedido.
 ///
 /// # Errors
 ///

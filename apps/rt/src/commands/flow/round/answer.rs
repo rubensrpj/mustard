@@ -1,7 +1,8 @@
 //! A resposta da rodada e o próximo passo: a recusa, com a mensagem no idioma
 //! do projeto, e o caminho de uma chamada — conferir a fase, fechar o que
-//! voltou, despachar as ondas prontas, pedir as revisões e dizer o que fazer
-//! em seguida.
+//! voltou, pedir a análise antes do envio da onda que ainda não tem escolha,
+//! despachar as ondas prontas, pedir as revisões e dizer o que fazer em
+//! seguida.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -14,7 +15,10 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use super::commit::git_lock;
-use super::queue::{first_unfinished, max_parallel, next_waves, open_copies, reviews_due, sent_items, waves_in_progress};
+use super::queue::{
+    analyse, analysis_lines, first_unfinished, max_parallel, next_waves, only_analysis, open_copies, reviews_due,
+    sent_items, waves_in_progress, Analysed,
+};
 use super::report::{take_report, Taken};
 use super::stops::{change_question, stopped_waves, waves_stuck};
 use super::{can_run, RoundOpts, DONE_STEP};
@@ -158,11 +162,15 @@ pub(super) fn run_round(
         return Err(RoundRefusal::NotApproved { phase });
     }
 
-    let Taken { mut recorded, formatted, mut warnings, commit } =
-        match opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-            Some(raw) => take_report(&opts.root, root, &spec, raw, &log, lang)?,
-            None => Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None },
-        };
+    // O relatório que só traz a análise antes do envio não tem o que juntar:
+    // a rodada vai direto ao despacho, com a escolha de cada onda.
+    let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let Taken { mut recorded, formatted, mut warnings, commit } = match raw {
+        Some(raw) if !only_analysis(raw) => take_report(&opts.root, root, &spec, raw, &log, lang)?,
+        _ => Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None },
+    };
+    let (given, unread) = analysis_lines(raw, lang);
+    warnings.extend(unread);
 
     // O despacho — a entrada na execução, a leitura da spec, a escolha das
     // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a
@@ -185,12 +193,18 @@ pub(super) fn run_round(
     let running = waves_in_progress(&log);
     let stuck = waves_stuck(&log);
     let ready = next_waves(&log, max_parallel(root), &running, &stuck);
-    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &ready, &running, lang);
+    // A análise antes do envio, antes da cópia: a onda com item do projeto
+    // todo ou sem dono a julgar só sai com a escolha; sem ela, a resposta traz
+    // o pedido da análise, e a onda fica para a rodada que trouxer a escolha.
+    let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &spec, &log, &ready, &given, lang);
+    warnings.extend(ignored);
+    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, &running, lang);
     warnings.extend(not_copied);
-    let next: Vec<u64> = ready.into_iter().filter(|wave| copies.contains_key(wave)).collect();
+    let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as que
-    // saem junto com ela nesta rodada, e traz a cópia dela.
-    let flight = Flight { running: running.keys().chain(&next).copied().collect(), copies };
+    // saem junto com ela nesta rodada, e traz a cópia dela e a escolha da
+    // análise.
+    let flight = Flight { running: running.keys().chain(&next).copied().collect(), copies, choices };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     let mut in_flight: BTreeMap<u64, String> = running
@@ -205,7 +219,12 @@ pub(super) fn run_round(
         draft.insert("text".into(), json!(prompt.text));
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
-        draft.insert("items".into(), json!(sent_items(&log, *wave)));
+        // Os itens que ficaram, e à parte a escolha da análise: o que saiu e
+        // o que entrou, cada um com o motivo.
+        draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave))));
+        if let Some(choice) = flight.choices.get(wave) {
+            draft.insert("analysis".into(), choice.to_value());
+        }
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         if let Some(copy) = flight.copies.get(wave) {
             draft.insert("copy".into(), json!(copy.path));
@@ -231,6 +250,8 @@ pub(super) fn run_round(
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() || !reviews.is_empty() {
         format!("{} {report_back}", translate("round.next", lang))
+    } else if !asked.is_empty() {
+        String::new()
     } else if !running.is_empty() {
         let waves: Vec<String> = running.keys().map(u64::to_string).collect();
         format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))
@@ -245,9 +266,17 @@ pub(super) fn run_round(
         command = close;
         text
     };
-    // A pergunta da onda parada vem antes do resto, que segue sem ela.
-    let (stopped, asked) = stopped_waves(&stuck, &codes, lang);
-    let then = asked.into_iter().chain(Some(then).filter(|t| !t.is_empty())).collect::<Vec<_>>().join(" ");
+    // A pergunta da onda parada vem antes do resto, que segue sem ela; o
+    // pedido da análise vem logo depois.
+    let (stopped, question) = stopped_waves(&stuck, &codes, lang);
+    let waiting: Vec<String> = asked.iter().filter_map(|a| a["wave"].as_u64()).map(|n| n.to_string()).collect();
+    let analysis = (!asked.is_empty()).then(|| translate("round.analysis", lang).replace("{waves}", &waiting.join(", ")));
+    let then = question
+        .into_iter()
+        .chain(analysis)
+        .chain(Some(then).filter(|t| !t.is_empty()))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // A página sai no fim do passo, uma vez, e a rodada manda publicá-la,
     // menos quando ela não pôde ser refeita.
@@ -275,6 +304,9 @@ pub(super) fn run_round(
     }
     if !stopped.is_empty() {
         out["stopped"] = json!(stopped);
+    }
+    if !asked.is_empty() {
+        out["analysis"] = json!(asked);
     }
     if let Some(commit) = commit {
         out["commit"] = commit;

@@ -17,9 +17,11 @@
 //! que não existe e não está marcado como novo; tarefa que mexe em código
 //! sem dizer em que arquivo, que volta com os arquivos que o mapa sugere;
 //! tarefa sem nota de trabalho, que volta com a escala e o exemplo de cada
-//! nota; tarefa cujo texto não casa com onda nenhuma do plano; e item
-//! combinado sem dono — nenhuma tarefa de uma onda do plano o cobre, ele não
-//! diz as ondas dele nem vale no projeto todo.
+//! nota; e tarefa cujo texto não casa com onda nenhuma do plano.
+//!
+//! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
+//! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
+//! a análise antes do envio de cada onda decide se ele vai para ela.
 //!
 //! **O que só avisa**, e a decisão fica com quem aprova: arquivo citado fora
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
@@ -111,8 +113,6 @@ enum PlanFinding {
     Cited { task: String, finding: Finding },
     /// Um item combinado que nenhuma tarefa cobre.
     ItemWithoutTask { code: String },
-    /// Um item combinado sem dono.
-    ItemWithoutOwner { code: String },
     /// Um contrato que nenhum critério cita.
     ContractWithoutCriterion { code: String },
     /// Uma tarefa que mexe em código e não diz em que arquivo mexe, com os
@@ -139,7 +139,6 @@ impl PlanFinding {
             | Self::WaveLoop { .. }
             | Self::DependsOnMissing { .. }
             | Self::TaskWithoutWave { .. }
-            | Self::ItemWithoutOwner { .. }
             | Self::TaskWithoutFile { .. }
             | Self::TasksWithoutPoints { .. }
             | Self::TaskMatchesNoWave { .. } => true,
@@ -179,7 +178,6 @@ impl PlanFinding {
                 Finding::NoMap => "names-unchecked".into(),
             },
             Self::ItemWithoutTask { .. } => "item-without-task".into(),
-            Self::ItemWithoutOwner { .. } => "item-without-owner".into(),
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
             Self::TaskInTheWrongWave { .. } => "task-in-the-wrong-wave".into(),
@@ -238,7 +236,6 @@ impl PlanFinding {
                 format!("{task}: {text}")
             }
             Self::ItemWithoutTask { code } => fill("plan.item_without_task", &[("{code}", code.clone())]),
-            Self::ItemWithoutOwner { code } => fill("plan.item_without_owner", &[("{code}", code.clone())]),
             Self::ContractWithoutCriterion { code } => {
                 fill("plan.contract_without_criterion", &[("{code}", code.clone())])
             }
@@ -579,9 +576,10 @@ fn check(
         }
     }
 
-    // O dono e a cobertura: o item combinado sem dono trava; o item de uma
-    // onda sem tarefa e o contrato sem critério só avisam, e a decisão fica
-    // com quem aprova.
+    // A cobertura: o item de uma onda sem tarefa e o contrato sem critério só
+    // avisam, e a decisão fica com quem aprova. O item sem dono não é
+    // conferido aqui: a análise antes do envio de cada onda decide se ele vai
+    // para ela.
     let covered: BTreeSet<u64> = tasks
         .iter()
         .flat_map(|task| task.ints("covers"))
@@ -598,8 +596,7 @@ fn check(
     let owners = wave_prompt::owners(log);
     for item in &agreed {
         match owners.get(&item.id) {
-            None => out.push(PlanFinding::ItemWithoutOwner { code: code_of(item) }),
-            Some(Owner::Project) => {}
+            None | Some(Owner::Project) => {}
             Some(Owner::Waves(_)) => {
                 if !covered.contains(&item.id) && item.str_field("no_code").is_none() {
                     out.push(PlanFinding::ItemWithoutTask { code: code_of(item) });
@@ -1456,12 +1453,15 @@ mod tests {
         assert!(uncovered[0].contains("MSTD-DEC-0002"), "{uncovered:?}");
     }
 
-    /// O item combinado sem dono trava o plano, pelo código, e a recusa diz
-    /// como dar dono a ele. Têm dono, e não travam, o item que a tarefa de uma
-    /// onda cobre, o que diz a onda dele e o do projeto todo, que nem avisa
-    /// por não ter tarefa; a onda que o plano não tem não é dona de nada.
+    /// O item combinado sem dono não trava o plano nem avisa: a análise antes
+    /// do envio de cada onda decide se ele vai para ela. Sem dono ficam o item
+    /// que nada cobre e o que diz uma onda que o plano não tem. Os outros
+    /// seguem como eram: o item que a tarefa cobre e o do projeto todo não
+    /// avisam, e o que diz a onda dele sem tarefa que o cubra avisa. Na divisa,
+    /// o plano continua travando o que trava: a tarefa sem nota segura a
+    /// pergunta, e o item sem dono não aparece entre os motivos.
     #[test]
-    fn an_item_without_owner_blocks_the_plan_and_says_how_to_give_it_one() {
+    fn the_plan_accepts_an_item_without_owner() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1476,29 +1476,34 @@ mod tests {
         decision("Da onda um.", json!({"waves": [1]}));
         decision("Do projeto.", json!({"applies_to": {"files": ["**"]}}));
         decision("Da onda que não existe.", json!({"waves": [9]}));
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Mexer no código.", "criteria": [crit], "done_when": "passa", "origin": said}));
         write(root, Some("x"), "task", json!({"points": 1, "wave": 1, "text": "Mexer.", "files": [{"path": "src/a.rs"}],
             "covers": [covered], "origin": said}));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let unowned: Vec<String> = wave_prompt::unowned(&log).iter().map(|e| codes[&e.id].clone()).collect();
+        assert_eq!(unowned, ["MSTD-DEC-0001", "MSTD-DEC-0005"], "the two items really have no owner");
 
         let report = plan(root, "x");
-        assert_eq!(report["ok"], json!(false), "{report}");
-        let hints = |field: &str, reason: &str| -> Vec<String> {
-            report[field]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-                .iter()
-                .filter(|f| f["reason"] == json!(reason))
-                .filter_map(|f| f["hint"].as_str().map(str::to_string))
-                .collect()
-        };
-        let unowned = hints("blocking", "item-without-owner");
-        assert_eq!(unowned.len(), 2, "{report}");
-        assert!(unowned[0].contains("MSTD-DEC-0001") && unowned[1].contains("MSTD-DEC-0005"), "{unowned:?}");
-        assert!(unowned[0].contains("`\"waves\":[<ondas>]`") && unowned[0].contains("**"), "{unowned:?}");
-        let uncovered = hints("warnings", "item-without-task");
+        assert_eq!(report["ok"], json!(true), "the item without owner does not hold the plan: {report}");
+        assert_eq!(report["phase"], json!("plan"), "{report}");
+        let every: Vec<String> = ["blocking", "warnings"]
+            .iter()
+            .flat_map(|field| report[*field].as_array().cloned().unwrap_or_default())
+            .map(|f| f.to_string())
+            .collect();
+        for code in &unowned {
+            assert!(every.iter().all(|f| !f.contains(code.as_str())), "{code} is not a finding: {report}");
+        }
+        let uncovered = hints_of(&report, "warnings", "item-without-task");
         assert_eq!(uncovered.len(), 1, "só a da onda um avisa, o do projeto não: {report}");
         assert!(uncovered[0].contains("MSTD-DEC-0003"), "{uncovered:?}");
+
+        // O que trava continua travando, e o item sem dono não entra na conta.
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer mais.", "files": [{"path": "src/b.rs"}], "origin": said}));
+        let held = plan(root, "x");
+        assert_eq!(held["ok"], json!(false), "{held}");
+        assert_eq!(reasons(&held, "blocking"), ["task-without-points"], "{held}");
     }
 
     /// A tarefa que mexe em código e não nomeia arquivo trava o plano, e a
